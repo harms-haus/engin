@@ -1,6 +1,8 @@
 import { mkdir } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { parse } from "dotenv";
 
 /**
  * Returns the global configuration directory for workflow-harness.
@@ -56,4 +58,76 @@ export function getDefaultWorkDir(cwd: string, workflowName: string): string {
  */
 export async function ensureDir(dirPath: string): Promise<void> {
     await mkdir(dirPath, { recursive: true });
+}
+
+/**
+ * Result of loading .env files from global and local config directories.
+ */
+export interface LoadEnvResult {
+    loadedFiles: string[]; // paths of .env files that existed and were parsed
+    skippedFiles: string[]; // paths of .env files that did not exist
+    keysSet: string[]; // env var names actually written to process.env (excluding already-set keys)
+}
+
+/** Environment variable names that are never loaded from .env files due to security risks. */
+const BLOCKED_ENV_KEYS = new Set([
+    "NODE_OPTIONS",
+    "NODE_TLS_REJECT_UNAUTHORIZED",
+    "NODE_EXTRA_CA_CERTS",
+    "LD_PRELOAD",
+    "LD_LIBRARY_PATH",
+    "PATH",
+    "HOME",
+    "SHELL",
+]);
+
+/**
+ * Loads .env files from global and local config directories, merges them
+ * (local overrides global), and sets keys into process.env only if they are
+ * not already defined.
+ *
+ * Synchronous because .env loading must complete before any command dispatch.
+ */
+export function loadEnvFiles(cwd: string): LoadEnvResult {
+    const globalEnvPath = join(getGlobalConfigDir(), ".env");
+    const localEnvPath = join(getLocalConfigDir(cwd), ".env");
+
+    const loadedFiles: string[] = [];
+    const skippedFiles: string[] = [];
+    let globalVars: Record<string, string> = {};
+    let localVars: Record<string, string> = {};
+
+    for (const envPath of [globalEnvPath, localEnvPath]) {
+        try {
+            const content = readFileSync(envPath, "utf-8");
+            const parsed = parse(content);
+            loadedFiles.push(envPath);
+            if (envPath === globalEnvPath) {
+                globalVars = parsed;
+            } else {
+                localVars = parsed;
+            }
+        } catch (err: unknown) {
+            if (err instanceof Error && "code" in err && (err as NodeJS.ErrnoException).code === "ENOENT") {
+                skippedFiles.push(envPath);
+            } else {
+                throw err;
+            }
+        }
+    }
+
+    const merged = { ...globalVars, ...localVars };
+    const keysSet: string[] = [];
+
+    for (const [key, value] of Object.entries(merged)) {
+        if (BLOCKED_ENV_KEYS.has(key)) {
+            continue;
+        }
+        if (!(key in process.env)) {
+            process.env[key] = value;
+            keysSet.push(key);
+        }
+    }
+
+    return { loadedFiles, skippedFiles, keysSet };
 }

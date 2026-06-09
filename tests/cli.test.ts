@@ -1,10 +1,14 @@
 import { describe, it, expect, mock, spyOn, beforeEach, afterEach } from "bun:test";
+import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import {
   parseArgs,
   formatTime,
   createStatusCallbacks,
   main,
 } from "../src/cli.ts";
+import { useEnvSandbox } from "./helpers/env-sandbox.js";
 
 // ─── parseArgs ──────────────────────────────────────────────────────────────
 
@@ -371,5 +375,91 @@ describe("createStatusCallbacks", () => {
     });
     expect(logSpy).toHaveBeenCalledTimes(1);
     expect(logSpy.mock.calls[0][0]).toMatch(/Tool call/);
+  });
+});
+
+// ─── main() loads .env files ────────────────────────────────────────────────
+
+describe("main() loads .env files", () => {
+  useEnvSandbox();
+
+  let exitSpy: ReturnType<typeof spyOn>;
+  let logSpy: ReturnType<typeof spyOn>;
+  let tempDir: string;
+
+  beforeEach(() => {
+    exitSpy = spyOn(process, "exit").mockImplementation(((
+      code: number,
+    ) => {
+      throw new Error(`process.exit(${code})`);
+    }) as never);
+    logSpy = spyOn(console, "log").mockImplementation(() => {});
+
+    tempDir = mkdtempSync(join(tmpdir(), "wh-cli-test-"));
+  });
+
+  afterEach(() => {
+    exitSpy.mockRestore();
+    logSpy.mockRestore();
+
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it("loads .env from .workflow-harness/.env for list command", async () => {
+    // Create .workflow-harness/.env in temp dir
+    const harnessDir = join(tempDir, ".workflow-harness");
+    mkdirSync(harnessDir, { recursive: true });
+    writeFileSync(
+      join(harnessDir, ".env"),
+      "TEST_CLI_ENV_VAR=from_cli_test\n",
+    );
+
+    const originalArgv = process.argv;
+    process.argv = ["node", "cli.ts", "list", "--cwd", tempDir];
+    try {
+      await main();
+    } finally {
+      process.argv = originalArgv;
+    }
+
+    expect(process.env.TEST_CLI_ENV_VAR).toBe("from_cli_test");
+  });
+
+  it("does not load .env files for help command", async () => {
+    const harnessDir = join(tempDir, ".workflow-harness");
+    mkdirSync(harnessDir, { recursive: true });
+    writeFileSync(
+      join(harnessDir, ".env"),
+      "TEST_CLI_ENV_VAR_HELP=should_not_appear\n",
+    );
+
+    const originalArgv = process.argv;
+    process.argv = ["node", "cli.ts", "--help", "--cwd", tempDir];
+    try {
+      await expect(main()).rejects.toThrow("process.exit(0)");
+    } finally {
+      process.argv = originalArgv;
+    }
+
+    expect(process.env.TEST_CLI_ENV_VAR_HELP).toBeUndefined();
+  });
+
+  it("does not load .env files for version command", async () => {
+    const harnessDir = join(tempDir, ".workflow-harness");
+    mkdirSync(harnessDir, { recursive: true });
+    writeFileSync(
+      join(harnessDir, ".env"),
+      "TEST_CLI_ENV_VAR_VERSION=should_not_appear\n",
+    );
+
+    const originalArgv = process.argv;
+    process.argv = ["node", "cli.ts", "--version", "--cwd", tempDir];
+    try {
+      await expect(main()).rejects.toThrow("process.exit(0)");
+    } finally {
+      process.argv = originalArgv;
+    }
+
+    expect(process.env.TEST_CLI_ENV_VAR_VERSION).toBeUndefined();
   });
 });

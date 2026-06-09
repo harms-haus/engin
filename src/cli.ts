@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import type { StatusCallbacks } from "./core/types.js";
-import { getDefaultWorkDir, resolveProfilesDirs } from "./core/config.js";
+import { getDefaultWorkDir, resolveProfilesDirs, loadEnvFiles } from "./core/config.js";
 import { loadWorkflow, listWorkflows } from "./core/workflow-loader.js";
 import { loadProfilesFromDirs } from "./core/profile.js";
 import { initDefaultConfig } from "./setup.js";
@@ -367,6 +367,16 @@ export async function runCommand(options: CliOptions): Promise<void> {
 
 export async function main(): Promise<void> {
   const options = parseArgs(process.argv.slice(2));
+
+  // Load .env files for commands that need them (skip for help/version)
+  if (options.command !== "help" && options.command !== "version") {
+    const envResult = loadEnvFiles(options.cwd);
+    if (options.verbose && envResult.loadedFiles.length > 0) {
+      for (const file of envResult.loadedFiles) {
+        console.log(`${formatTime()} 📄 Loaded .env: ${file}`);
+      }
+    }
+  }
 
   if (options.command === "help") {
     process.stdout.write(USAGE + "\n");

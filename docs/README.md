@@ -150,7 +150,7 @@ Copies built-in profiles from `defaults/profiles/` and the default `develop` wor
 | `--cwd <path>` | All commands | Project working directory (default: `process.cwd()`) |
 | `--work-dir <path>` | `run` | Directory for workflow state persistence. Default: `.workflow-harness/work/<workflow-name>` inside `cwd` |
 | `--max-concurrent <n>` | `run` | Maximum parallel implementer agents (default: `3`). Must be a positive integer. |
-| `--verbose` | `run` | Enable agent-level output (turns, tool calls, token usage) |
+| `--verbose` | `all commands` | Enable verbose output, including `.env` file loading information and agent-level output (turns, tool calls, token usage) |
 | `--api-key <provider=key>` | `run` | Provider → API key override. Repeatable. **Warning:** values are visible in process listings; prefer environment variables. |
 | `--force` | `init` | Overwrite existing files |
 
@@ -209,14 +209,16 @@ workflow-harness discovers profiles and workflows from two locations, with **loc
 .workflow-harness/           # Local (per-project)
 ├── profiles/                # Agent profile .md files
 ├── workflows/               # Workflow scripts (.js, .mjs, .cjs, .ts)
-└── work/                    # Runtime state (auto-created)
-    └── develop/             # One subdirectory per workflow run
-            └── workflow-state.json
-            └── audit/audit.jsonl
+├── work/                    # Runtime state (auto-created)
+│   └── develop/             # One subdirectory per workflow run
+│       └── workflow-state.json
+│       └── audit/audit.jsonl
+└── .env                     # Project-level environment variables (git-ignored)
 
 ~/.config/workflow-harness/  # Global (user-wide)
 ├── profiles/
-└── workflows/
+├── workflows/
+└── .env                     # User-level environment variables
 ```
 
 ### Resolution Order
@@ -526,6 +528,24 @@ Returns `{cwd}/.workflow-harness/work/{workflowName}`.
 #### `ensureDir(dirPath): Promise<void>`
 
 Recursively creates a directory. Re-throws any errors.
+
+#### `loadEnvFiles(cwd: string): LoadEnvResult`
+
+Loads `.env` files from the global and local config directories, merges them (local overrides global), and sets keys into `process.env` only for variables not already defined. This is called automatically by the CLI before command dispatch, but can also be called programmatically.
+
+- **Synchronous** — must complete before any command execution or env-dependent initialization.
+- **Global path**: `~/.config/workflow-harness/.env` (or `$XDG_CONFIG_HOME/workflow-harness/.env`)
+- **Local path**: `{cwd}/.workflow-harness/.env`
+- **Precedence**: Existing `process.env` values are never overwritten.
+- **Security**: A blocklist of dangerous runtime variables (`NODE_OPTIONS`, `NODE_TLS_REJECT_UNAUTHORIZED`, etc.) is enforced — these are never loaded from `.env` files.
+
+Returns a `LoadEnvResult` object:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `loadedFiles` | `string[]` | Paths of `.env` files that existed and were parsed |
+| `skippedFiles` | `string[]` | Paths of `.env` files that did not exist |
+| `keysSet` | `string[]` | Environment variable names actually written to `process.env` (excluding already-set keys and blocked vars) |
 
 ### Setup
 
@@ -1166,6 +1186,55 @@ All methods are optional.
 ---
 
 ## 12. Configuration
+
+### .env File Loading
+
+workflow-harness automatically loads environment variables from `.env` files at startup, before any command executes. This is useful for storing API keys and other configuration needed by tools and providers.
+
+**File locations (loaded in order):**
+
+| Priority | Path | Scope |
+|----------|------|-------|
+| 1 (lowest) | `~/.config/workflow-harness/.env` | User-level, shared across projects |
+| 2 (highest) | `{cwd}/.workflow-harness/.env` | Project-level, per-project overrides |
+
+**Behavior:**
+
+- Local values override global values for the same key.
+- Environment variables already set in the shell (`process.env`) always take precedence — `.env` files never overwrite existing values.
+- Files that don't exist are silently skipped.
+- Loading is skipped for `help` and `version` commands.
+
+**Security:**
+
+The following environment variable names are **blocked** and will never be loaded from `.env` files:
+
+- `NODE_OPTIONS`
+- `NODE_TLS_REJECT_UNAUTHORIZED`
+- `NODE_EXTRA_CA_CERTS`
+- `LD_PRELOAD`
+- `LD_LIBRARY_PATH`
+- `PATH`
+- `HOME`
+- `SHELL`
+
+**Example `.env` file:**
+
+```env
+# workflow-harness .env file
+OPENAI_API_KEY=sk-...
+ANTHROPIC_API_KEY=sk-ant-...
+MY_TOOL_API_KEY=abc123
+```
+
+**Verbose output:** When run with `--verbose`, loaded `.env` file paths are printed:
+
+```
+[12:34:56] 📄 Loaded .env: /home/user/.config/workflow-harness/.env
+[12:34:56] 📄 Loaded .env: /path/to/project/.workflow-harness/.env
+```
+
+> **Note:** The `.workflow-harness/.env` file should be included in the project's `.gitignore`. Never commit `.env` files containing secrets to version control.
 
 ### Environment Variables
 
