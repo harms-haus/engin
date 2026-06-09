@@ -142,6 +142,22 @@ export interface AgentLoopResult<T> {
     totalTokens: { input: number; output: number };
 }
 
+// ─── Workflow Run Options ──────────────────────────────────────────────────
+export interface WorkflowRunOptions {
+    cwd: string;
+    workDir: string;
+    maxConcurrentTasks?: number;
+    apiKeys?: Record<string, string>;
+    onStatus?: StatusCallbacks;
+}
+
+// ─── Workflow Module ────────────────────────────────────────────────────────
+export interface WorkflowModule {
+    run(taskPrompt: string, options: WorkflowRunOptions): Promise<void>;
+    name?: string;
+    description?: string;
+}
+
 // ─── Harness Creation ───────────────────────────────────────────────────────
 export interface HarnessCreationOptions {
     profile: AgentProfile;

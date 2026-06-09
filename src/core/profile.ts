@@ -49,17 +49,16 @@ export function parseProfile(content: string, filename: string): AgentProfile {
         throw new Error(`Profile "${id}" is missing required frontmatter field "model".`);
     }
 
-    const thinkingLevel: ThinkingLevel =
-        data.thinkingLevel != null
-            ? isThinkingLevel(data.thinkingLevel)
-                ? data.thinkingLevel
-                : ((() => {
-                      throw new Error(
-                          `Profile "${id}" has invalid thinkingLevel "${data.thinkingLevel}". ` +
-                              `Valid values: ${VALID_THINKING_LEVELS.join(", ")}.`,
-                      );
-                  })() as ThinkingLevel)
-            : "medium";
+    let thinkingLevel: ThinkingLevel = "medium";
+    if (data.thinkingLevel != null) {
+        if (!isThinkingLevel(data.thinkingLevel)) {
+            throw new Error(
+                `Profile "${id}" has invalid thinkingLevel "${data.thinkingLevel}". ` +
+                    `Valid values: ${VALID_THINKING_LEVELS.join(", ")}.`,
+            );
+        }
+        thinkingLevel = data.thinkingLevel;
+    }
 
     return {
         id,
@@ -142,6 +141,52 @@ export async function loadProfileSingle(filePath: string): Promise<AgentProfile>
         throw new Error(`Profile file does not exist: ${filePath}`);
     }
     return parseProfile(content, basename(filePath));
+}
+
+/**
+ * Load and merge agent profiles from multiple directories.
+ *
+ * Directories are processed in reverse order (last entry first) so that
+ * entries earlier in the array ("local" dirs) naturally override later
+ * entries ("global" dirs) when profile IDs collide.
+ *
+ * Directories that do not exist or are not directories are silently skipped.
+ * Any other error (e.g. a malformed .md file) is re-thrown.
+ *
+ * The merged result is NOT cached — only the per-directory results from
+ * `loadProfiles` use the module-level cache.
+ */
+export async function loadProfilesFromDirs(
+    dirs: string[],
+): Promise<Map<string, AgentProfile>> {
+    const merged = new Map<string, AgentProfile>();
+
+    for (let i = dirs.length - 1; i >= 0; i--) {
+        try {
+            const profiles = await loadProfiles(dirs[i]);
+            for (const [id, profile] of profiles) {
+                merged.set(id, profile);
+            }
+        } catch (err: unknown) {
+            // Skip directories that don't exist or aren't directories.
+            // Primary check: Node.js system error codes from stat()/readdir().
+            // Fallback check: custom error messages thrown by loadProfiles.
+            if (
+                (err instanceof Error &&
+                    "code" in err &&
+                    ((err as NodeJS.ErrnoException).code === "ENOENT" ||
+                        (err as NodeJS.ErrnoException).code === "ENOTDIR")) ||
+                (err instanceof Error &&
+                    (err.message.startsWith("Directory does not exist") ||
+                        err.message.startsWith("Path is not a directory")))
+            ) {
+                continue;
+            }
+            throw err;
+        }
+    }
+
+    return merged;
 }
 
 /**

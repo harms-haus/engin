@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdir, writeFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { parseProfile, loadProfiles, loadProfile } from "../../src/core/profile.js";
+import { parseProfile, loadProfiles, loadProfile, loadProfilesFromDirs, clearProfileCache } from "../../src/core/profile.js";
 
 // ─── Helper to create a temp directory for each test ────────────────────────
 let tempDir: string;
@@ -13,6 +13,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+    clearProfileCache();
     await rm(tempDir, { recursive: true, force: true });
 });
 
@@ -318,5 +319,154 @@ describe("loadProfile", () => {
         await expect(loadProfile(tempDir, "does-not-exist")).rejects.toThrow(
             /Profile "does-not-exist" not found/,
         );
+    });
+});
+
+// ─── loadProfilesFromDirs ──────────────────────────────────────────────────
+
+describe("loadProfilesFromDirs", () => {
+    it("loads profiles from two directories, local overrides global when same ID", async () => {
+        const globalDir = join(tempDir, `global-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+        const localDir = join(tempDir, `local-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+        await mkdir(globalDir, { recursive: true });
+        await mkdir(localDir, { recursive: true });
+
+        // Global has "shared" and "global-only" profiles
+        await writeFile(
+            join(globalDir, "shared.md"),
+            [
+                "---",
+                "provider: openai",
+                "model: gpt-4o",
+                "name: Global Shared",
+                "---",
+                "Global shared prompt.",
+            ].join("\n"),
+        );
+        await writeFile(
+            join(globalDir, "global-only.md"),
+            [
+                "---",
+                "provider: openai",
+                "model: gpt-4o",
+                "---",
+                "Global only prompt.",
+            ].join("\n"),
+        );
+
+        // Local overrides "shared" and adds "local-only"
+        await writeFile(
+            join(localDir, "shared.md"),
+            [
+                "---",
+                "provider: anthropic",
+                "model: claude-sonnet-4-20250514",
+                "name: Local Shared",
+                "---",
+                "Local shared prompt.",
+            ].join("\n"),
+        );
+        await writeFile(
+            join(localDir, "local-only.md"),
+            [
+                "---",
+                "provider: anthropic",
+                "model: claude-sonnet-4-20250514",
+                "---",
+                "Local only prompt.",
+            ].join("\n"),
+        );
+
+        // [local, global] → local is first, global is second
+        // Reverse iteration processes global first, then local overrides
+        const profiles = await loadProfilesFromDirs([localDir, globalDir]);
+
+        expect(profiles.size).toBe(3);
+        expect(profiles.get("shared")!.name).toBe("Local Shared");
+        expect(profiles.get("shared")!.provider).toBe("anthropic");
+        expect(profiles.has("global-only")).toBe(true);
+        expect(profiles.has("local-only")).toBe(true);
+    });
+
+    it("returns profiles from global-only when local dir doesn't exist", async () => {
+        const globalDir = join(tempDir, `global-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+        const localDir = join(tempDir, `local-missing-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+        await mkdir(globalDir, { recursive: true });
+        // localDir intentionally not created
+
+        await writeFile(
+            join(globalDir, "agent.md"),
+            [
+                "---",
+                "provider: openai",
+                "model: gpt-4o",
+                "---",
+                "Agent prompt.",
+            ].join("\n"),
+        );
+
+        const profiles = await loadProfilesFromDirs([localDir, globalDir]);
+
+        expect(profiles.size).toBe(1);
+        expect(profiles.has("agent")).toBe(true);
+    });
+
+    it("returns empty map when neither dir exists", async () => {
+        const fakeA = join(tempDir, `nope-a-${Date.now()}`);
+        const fakeB = join(tempDir, `nope-b-${Date.now()}`);
+
+        const profiles = await loadProfilesFromDirs([fakeA, fakeB]);
+
+        expect(profiles.size).toBe(0);
+    });
+
+    it("skips non-directory paths silently", async () => {
+        const validDir = join(tempDir, `valid-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+        await mkdir(validDir, { recursive: true });
+
+        // Create a file (not a directory) to pass as a dir path
+        const filePath = join(tempDir, `not-a-dir-${Date.now()}.txt`);
+        await writeFile(filePath, "I am a file");
+
+        await writeFile(
+            join(validDir, "agent.md"),
+            [
+                "---",
+                "provider: openai",
+                "model: gpt-4o",
+                "---",
+                "Agent prompt.",
+            ].join("\n"),
+        );
+
+        const profiles = await loadProfilesFromDirs([validDir, filePath]);
+
+        expect(profiles.size).toBe(1);
+        expect(profiles.has("agent")).toBe(true);
+    });
+
+    it("re-throws unexpected errors from loadProfiles", async () => {
+        const badDir = join(tempDir, `bad-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+        await mkdir(badDir, { recursive: true });
+
+        // Create a .md file with missing required provider field
+        await writeFile(
+            join(badDir, "broken.md"),
+            [
+                "---",
+                "model: gpt-4o",
+                "---",
+                "Missing provider.",
+            ].join("\n"),
+        );
+
+        await expect(loadProfilesFromDirs([badDir])).rejects.toThrow(
+            /missing required frontmatter field "provider"/,
+        );
+    });
+
+    it("returns empty map for empty dirs array", async () => {
+        const profiles = await loadProfilesFromDirs([]);
+        expect(profiles.size).toBe(0);
     });
 });

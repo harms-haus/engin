@@ -1,7 +1,8 @@
 // ─── Development Workflow ────────────────────────────────────────────────────
 import { z } from "zod";
 import type { AgentProfile, AgentStatusCallbacks, HarnessCreationOptions, StatusCallbacks } from "../core/types";
-import { loadProfiles } from "../core/profile";
+import { loadProfilesFromDirs } from "../core/profile";
+import { resolveProfilesDirs } from "../core/config";
 import { createHarness } from "../core/harness-factory";
 import { promptForStructured } from "../core/structured-output";
 import { parallelAgents } from "../core/agent-loop";
@@ -91,7 +92,7 @@ export type FinalReviewTopics = z.infer<typeof FinalReviewTopicsSchema>;
 
 export interface DevelopWorkflowOptions {
     /** Directory containing agent profile .md files */
-    profilesDir: string;
+    profilesDir?: string;
     /** Working directory for the project being developed */
     cwd: string;
     /** Maximum concurrent implementation tasks */
@@ -134,13 +135,13 @@ function errorEvent(
 // ─── Helper: get profile and create harness ─────────────────────────────────
 
 async function getProfile(
-    profilesDir: string,
+    profilesDirs: string[],
     profileId: string,
 ): Promise<AgentProfile> {
-    const profiles = await loadProfiles(profilesDir);
+    const profiles = await loadProfilesFromDirs(profilesDirs);
     const profile = profiles.get(profileId);
     if (!profile) {
-        throw new Error(`Profile "${profileId}" not found in ${profilesDir}`);
+        throw new Error(`Profile "${profileId}" not found in ${profilesDirs.join(", ")}`);
     }
     return profile;
 }
@@ -156,14 +157,202 @@ function agentCallbacks(onStatus?: StatusCallbacks): AgentStatusCallbacks | unde
 }
 
 async function makeHarnessOptions(
-    profilesDir: string,
+    profilesDirs: string[],
     profileId: string,
     cwd: string,
     apiKeys?: Record<string, string>,
     onStatus?: StatusCallbacks,
 ): Promise<HarnessCreationOptions> {
-    const profile = await getProfile(profilesDir, profileId);
+    const profile = await getProfile(profilesDirs, profileId);
     return { profile, cwd, apiKeys, onAgentStatus: agentCallbacks(onStatus) };
+}
+
+// ─── Phase type (shared by run(), completePhase, executePhase) ────────────
+
+type Phase =
+    | "scouting"
+    | "scouting_review"
+    | "planning"
+    | "plan_review"
+    | "implementing"
+    | "final_review"
+    | "done";
+
+const PHASE_ORDER: Phase[] = [
+    "scouting", "scouting_review",
+    "planning", "plan_review",
+    "implementing", "final_review", "done",
+];
+
+/**
+ * Mutable state shared across phase executions within a single `run()` call.
+ * Passed by reference so `executePhase` mutations are visible to the caller.
+ */
+interface RunState {
+    research: string;
+    plan: Plan | undefined;
+    scoutingReports: unknown[];
+    scoutingRounds: number;
+    planningRounds: number;
+}
+
+// ─── Helper: complete a phase transition ────────────────────────────────────
+
+async function completePhase(
+    phase: Phase,
+    tracker: WorkflowStatusTracker,
+    onStatus: StatusCallbacks | undefined,
+    startTime: number,
+    nextPhase?: Phase,
+): Promise<void> {
+    if (nextPhase !== undefined) {
+        tracker.setPhase(nextPhase);
+    } else {
+        tracker.advancePhase();
+    }
+    await tracker.save();
+    onStatus?.onPhaseComplete?.({ phase, durationMs: Date.now() - startTime });
+}
+
+// ─── Helper: execute a single pipeline phase ───────────────────────────────
+
+/**
+ * Execute a single pipeline phase.
+ *
+ * Each case does exactly ONE step. The caller (`run`) handles advancing
+ * phases and looping back when needed (e.g. scouting retries). May return
+ * the name of a phase to jump to instead of advancing linearly.
+ */
+async function executePhase(
+    phase: Phase,
+    state: RunState,
+    tracker: WorkflowStatusTracker,
+    profilesDirs: string[],
+    taskPrompt: string,
+    cwd: string,
+    maxConcurrentTasks: number | undefined,
+    apiKeys?: Record<string, string>,
+    onStatus?: StatusCallbacks,
+): Promise<Phase | void> {
+    const phaseStartTime = Date.now();
+    const round = (phase === "scouting" || phase === "scouting_review")
+        ? state.scoutingRounds
+        : (phase === "planning" || phase === "plan_review")
+            ? state.planningRounds
+            : 0;
+    onStatus?.onPhaseStart?.({ phase, round });
+
+    switch (phase) {
+        // ── Scouting: run scouts, then advance to scouting_review ──
+        case "scouting": {
+            state.scoutingReports = await scoutingPhase(
+                tracker, profilesDirs, taskPrompt, cwd, apiKeys, onStatus,
+            );
+            await completePhase(phase, tracker, onStatus, phaseStartTime);
+            break;
+        }
+
+        // ── Scouting Review: evaluate reports, loop back if needed ──
+        case "scouting_review": {
+            const reports = state.scoutingReports.length > 0
+                ? state.scoutingReports
+                : tracker.scoutingReports;
+            const review = await scoutingReviewPhase(
+                tracker, profilesDirs, reports, cwd, apiKeys, onStatus,
+            );
+            state.scoutingRounds++;
+
+            state.research = review.research;
+            tracker.setResearch(state.research);
+
+            if (review.ready) {
+                await completePhase(phase, tracker, onStatus, phaseStartTime);
+                break;
+            }
+
+            // Not ready — loop back to scouting (max 3 rounds)
+            if (state.scoutingRounds < 3) {
+                await completePhase(phase, tracker, onStatus, phaseStartTime, "scouting");
+                return "scouting";
+            }
+
+            // Exhausted rounds — proceed anyway with what we have
+            await completePhase(phase, tracker, onStatus, phaseStartTime);
+            break;
+        }
+
+        // ── Planning: create a plan, then advance to plan_review ──
+        case "planning": {
+            // Derive research from saved scouting reports if not yet available
+            if (!state.research) {
+                if (tracker.research) {
+                    state.research = tracker.research;
+                } else {
+                    const reports = tracker.scoutingReports;
+                    const review = await scoutingReviewPhase(
+                        tracker, profilesDirs, reports, cwd, apiKeys, onStatus,
+                    );
+                    state.research = review.research;
+                    tracker.setResearch(state.research);
+                }
+            }
+
+            state.plan = await planningPhase(
+                tracker, profilesDirs, state.research, taskPrompt, cwd, apiKeys, onStatus,
+            );
+            await completePhase(phase, tracker, onStatus, phaseStartTime);
+            break;
+        }
+
+        // ── Plan Review: evaluate the plan, loop back if needed ──
+        case "plan_review": {
+            if (!state.plan) {
+                state.plan = tracker.plan as Plan | undefined;
+            }
+
+            const planReview = await planReviewPhase(
+                tracker, profilesDirs, state.plan!, state.research, taskPrompt, cwd, apiKeys, onStatus,
+            );
+            state.planningRounds++;
+
+            if (planReview.ready) {
+                await completePhase(phase, tracker, onStatus, phaseStartTime);
+                break;
+            }
+
+            // Not ready — loop back to planning (max 3 rounds)
+            state.plan = undefined;
+            if (state.planningRounds < 3) {
+                await completePhase(phase, tracker, onStatus, phaseStartTime, "planning");
+                return "planning";
+            }
+
+            // Exhausted rounds — proceed anyway with current plan
+            await completePhase(phase, tracker, onStatus, phaseStartTime);
+            break;
+        }
+
+        // ── Implementation: run the plan tasks ──
+        case "implementing": {
+            if (state.plan) {
+                await implementationPhase(
+                    tracker, profilesDirs, state.plan, cwd, maxConcurrentTasks, apiKeys, onStatus,
+                );
+            }
+            await completePhase(phase, tracker, onStatus, phaseStartTime);
+            break;
+        }
+
+        // ── Final Review: quality check the result ──
+        case "final_review": {
+            await finalReviewPhase(tracker, profilesDirs, cwd, apiKeys, onStatus);
+            await completePhase(phase, tracker, onStatus, phaseStartTime);
+            break;
+        }
+
+        case "done":
+            break;
+    }
 }
 
 // ─── Phase 1: Scouting ──────────────────────────────────────────────────────
@@ -177,14 +366,14 @@ async function makeHarnessOptions(
  */
 export async function scoutingPhase(
     tracker: WorkflowStatusTracker,
-    profilesDir: string,
+    profilesDirs: string[],
     taskPrompt: string,
     cwd: string,
     apiKeys?: Record<string, string>,
     onStatus?: StatusCallbacks,
 ): Promise<unknown[]> {
     // 1. Get scouting topics
-    const scoutOpts = await makeHarnessOptions(profilesDir, "scout", cwd, apiKeys, onStatus);
+    const scoutOpts = await makeHarnessOptions(profilesDirs, "scout", cwd, apiKeys, onStatus);
     const { harness: scoutHarness, unsubscribe: scoutUnsub } = await createHarness(scoutOpts);
     onStatus?.onAgentSpawn?.({ agentId: "scout-coordinator", profile: "scout", phase: "scouting" });
     tracker.incrementAgentCount();
@@ -214,7 +403,7 @@ export async function scoutingPhase(
             tracker.incrementAgentCount();
         }
 
-        const scoutProfile = await getProfile(profilesDir, "scout");
+        const scoutProfile = await getProfile(profilesDirs, "scout");
         const scoutConfigs: HarnessCreationOptions[] = topics.topics.map(() => ({
             profile: scoutProfile,
             cwd,
@@ -265,13 +454,13 @@ export async function scoutingPhase(
  */
 export async function scoutingReviewPhase(
     tracker: WorkflowStatusTracker,
-    profilesDir: string,
+    profilesDirs: string[],
     reports: unknown[],
     cwd: string,
     apiKeys?: Record<string, string>,
     onStatus?: StatusCallbacks,
 ): Promise<ScoutingReview> {
-    const opts = await makeHarnessOptions(profilesDir, "scouting-reviewer", cwd, apiKeys, onStatus);
+    const opts = await makeHarnessOptions(profilesDirs, "scouting-reviewer", cwd, apiKeys, onStatus);
     const { harness, unsubscribe } = await createHarness(opts);
     onStatus?.onAgentSpawn?.({ agentId: "scouting-reviewer", profile: "scouting-reviewer", phase: "scouting_review" });
     tracker.incrementAgentCount();
@@ -317,14 +506,14 @@ export async function scoutingReviewPhase(
  */
 export async function planningPhase(
     tracker: WorkflowStatusTracker,
-    profilesDir: string,
+    profilesDirs: string[],
     research: string,
     taskPrompt: string,
     cwd: string,
     apiKeys?: Record<string, string>,
     onStatus?: StatusCallbacks,
 ): Promise<Plan> {
-    const opts = await makeHarnessOptions(profilesDir, "planner", cwd, apiKeys, onStatus);
+    const opts = await makeHarnessOptions(profilesDirs, "planner", cwd, apiKeys, onStatus);
     const { harness, unsubscribe } = await createHarness(opts);
     onStatus?.onAgentSpawn?.({ agentId: "planner", profile: "planner", phase: "planning" });
     tracker.incrementAgentCount();
@@ -364,7 +553,7 @@ export async function planningPhase(
  */
 export async function planReviewPhase(
     tracker: WorkflowStatusTracker,
-    profilesDir: string,
+    profilesDirs: string[],
     plan: Plan,
     research: string,
     taskPrompt: string,
@@ -372,7 +561,7 @@ export async function planReviewPhase(
     apiKeys?: Record<string, string>,
     onStatus?: StatusCallbacks,
 ): Promise<PlanReview> {
-    const opts = await makeHarnessOptions(profilesDir, "plan-reviewer", cwd, apiKeys, onStatus);
+    const opts = await makeHarnessOptions(profilesDirs, "plan-reviewer", cwd, apiKeys, onStatus);
     const { harness, unsubscribe } = await createHarness(opts);
     onStatus?.onAgentSpawn?.({ agentId: "plan-reviewer", profile: "plan-reviewer", phase: "plan_review" });
     tracker.incrementAgentCount();
@@ -427,7 +616,7 @@ export async function planReviewPhase(
  */
 export async function implementationPhase(
     tracker: WorkflowStatusTracker,
-    profilesDir: string,
+    profilesDirs: string[],
     plan: Plan,
     cwd: string,
     maxConcurrentTasks: number = 3,
@@ -463,7 +652,7 @@ export async function implementationPhase(
         // 2b. Create implementer configs and run in parallel
         const implConfigs: HarnessCreationOptions[] = await Promise.all(
             claimed.map(async (task) => {
-                const profile = await getProfile(profilesDir, task.profile);
+                const profile = await getProfile(profilesDirs, task.profile);
                 return { profile, cwd, apiKeys, onAgentStatus: agentCallbacks(onStatus) };
             }),
         );
@@ -512,7 +701,7 @@ export async function implementationPhase(
 
         const reviewerHarnesses = await Promise.all(
             reviewingTasks.map(async (task) => {
-                const reviewerOpts = await makeHarnessOptions(profilesDir, "implement-reviewer", cwd, apiKeys, onStatus);
+                const reviewerOpts = await makeHarnessOptions(profilesDirs, "implement-reviewer", cwd, apiKeys, onStatus);
                 const { harness, unsubscribe } = await createHarness(reviewerOpts);
                 onStatus?.onAgentSpawn?.({ agentId: `reviewer-${task.id}`, profile: "implement-reviewer", phase: "implementing", taskId: task.id });
                 tracker.incrementAgentCount();
@@ -609,7 +798,7 @@ export async function implementationPhase(
  */
 export async function finalReviewPhase(
     tracker: WorkflowStatusTracker,
-    profilesDir: string,
+    profilesDirs: string[],
     cwd: string,
     apiKeys?: Record<string, string>,
     onStatus?: StatusCallbacks,
@@ -619,7 +808,7 @@ export async function finalReviewPhase(
 
     for (let round = 0; round < maxFixRounds; round++) {
         // 1. Get final review assessment
-        const reviewerOpts = await makeHarnessOptions(profilesDir, "final-reviewer", cwd, apiKeys, onStatus);
+        const reviewerOpts = await makeHarnessOptions(profilesDirs, "final-reviewer", cwd, apiKeys, onStatus);
         const { harness: reviewerHarness, unsubscribe: reviewerUnsub } = await createHarness(reviewerOpts);
         onStatus?.onAgentSpawn?.({ agentId: "final-reviewer", profile: "final-reviewer", phase: "final_review" });
         tracker.incrementAgentCount();
@@ -657,7 +846,7 @@ export async function finalReviewPhase(
 
         const fixerConfigs: HarnessCreationOptions[] = await Promise.all(
             criticalIssues.map(async () => {
-                const profile = await getProfile(profilesDir, "fixer");
+                const profile = await getProfile(profilesDirs, "fixer");
                 return { profile, cwd, apiKeys, onAgentStatus: agentCallbacks(onStatus) };
             }),
         );
@@ -704,6 +893,7 @@ export async function run(
     options: RunOptions,
 ): Promise<void> {
     const { profilesDir, cwd, maxConcurrentTasks, apiKeys, workDir, onStatus } = options;
+    const profilesDirs: string[] = options.profilesDir ? [options.profilesDir] : resolveProfilesDirs(options.cwd);
     const workflowStartTime = Date.now();
 
     // Create or load tracker
@@ -712,10 +902,18 @@ export async function run(
     try {
         tracker = await (await import("../tracking/workflow-status")).WorkflowStatusTracker.load(workDir);
         resumed = true;
-    } catch {
-        const { WorkflowStatusTracker: WST } = await import("../tracking/workflow-status");
-        tracker = new WST(workDir);
-        resumed = false;
+    } catch (err: unknown) {
+        // Only catch "file not found" — any other error (corruption, permissions) must propagate.
+        // WorkflowStatusTracker.load wraps ENOENT as a plain Error with this message.
+        const isNotFound =
+            err instanceof Error && err.message.startsWith("Workflow state file not found");
+        if (isNotFound) {
+            const { WorkflowStatusTracker: WST } = await import("../tracking/workflow-status");
+            tracker = new WST(workDir);
+            resumed = false;
+        } else {
+            throw err;
+        }
     }
 
     tracker.setTaskPrompt(taskPrompt);
@@ -723,189 +921,30 @@ export async function run(
 
     onStatus?.onWorkflowStart?.({ taskPrompt, resumed, workDir });
 
-    // ── Ordered pipeline phases ─────────────────────────────────────
-    // Each handler does exactly ONE step. The outer loop handles
-    // advancing phases and looping back when needed (e.g. scouting
-    // retries). A handler may return the name of a phase to jump to
-    // instead of advancing linearly.
-
-    type Phase =
-        | "scouting"
-        | "scouting_review"
-        | "planning"
-        | "plan_review"
-        | "implementing"
-        | "final_review"
-        | "done";
-
-    const phaseOrder: Phase[] = [
-        "scouting", "scouting_review",
-        "planning", "plan_review",
-        "implementing", "final_review", "done",
-    ];
-
-    // Shared mutable state that flows between phases
-    let research = tracker.research ?? "";
-    let plan: Plan | undefined;
-    let scoutingReports: unknown[] = [];
-    let scoutingRounds = 0;
-    let planningRounds = 0;
-
-    const handlePhase = async (phase: Phase): Promise<Phase | void> => {
-        const phaseStartTime = Date.now();
-        const round = (phase === "scouting" || phase === "scouting_review")
-            ? scoutingRounds
-            : (phase === "planning" || phase === "plan_review")
-                ? planningRounds
-                : 0;
-        onStatus?.onPhaseStart?.({ phase, round });
-
-        switch (phase) {
-            // ── Scouting: run scouts, then advance to scouting_review ──
-            case "scouting": {
-                scoutingReports = await scoutingPhase(
-                    tracker, profilesDir, taskPrompt, cwd, apiKeys, onStatus,
-                );
-                tracker.advancePhase(); // → scouting_review
-                await tracker.save();
-                onStatus?.onPhaseComplete?.({ phase, durationMs: Date.now() - phaseStartTime });
-                break;
-            }
-
-            // ── Scouting Review: evaluate reports, loop back if needed ──
-            case "scouting_review": {
-                const reports = scoutingReports.length > 0
-                    ? scoutingReports
-                    : tracker.scoutingReports;
-                const review = await scoutingReviewPhase(
-                    tracker, profilesDir, reports, cwd, apiKeys, onStatus,
-                );
-                scoutingRounds++;
-
-                research = review.research;
-                tracker.setResearch(research);
-
-                if (review.ready) {
-                    tracker.advancePhase(); // → planning
-                    await tracker.save();
-                    onStatus?.onPhaseComplete?.({ phase, durationMs: Date.now() - phaseStartTime });
-                    break;
-                }
-
-                // Not ready — loop back to scouting (max 3 rounds)
-                if (scoutingRounds < 3) {
-                    tracker.setPhase("scouting");
-                    await tracker.save();
-                    onStatus?.onPhaseComplete?.({ phase, durationMs: Date.now() - phaseStartTime });
-                    return "scouting";
-                }
-
-                // Exhausted rounds — proceed anyway with what we have
-                tracker.advancePhase(); // → planning
-                await tracker.save();
-                onStatus?.onPhaseComplete?.({ phase, durationMs: Date.now() - phaseStartTime });
-                break;
-            }
-
-            // ── Planning: create a plan, then advance to plan_review ──
-            case "planning": {
-                // Derive research from saved scouting reports if not yet available
-                if (!research) {
-                    if (tracker.research) {
-                        research = tracker.research;
-                    } else {
-                        const reports = tracker.scoutingReports;
-                        const review = await scoutingReviewPhase(
-                            tracker, profilesDir, reports, cwd, apiKeys, onStatus,
-                        );
-                        research = review.research;
-                        tracker.setResearch(research);
-                    }
-                }
-
-                plan = await planningPhase(
-                    tracker, profilesDir, research, taskPrompt, cwd, apiKeys, onStatus,
-                );
-                tracker.advancePhase(); // → plan_review
-                await tracker.save();
-                onStatus?.onPhaseComplete?.({ phase, durationMs: Date.now() - phaseStartTime });
-                break;
-            }
-
-            // ── Plan Review: evaluate the plan, loop back if needed ──
-            case "plan_review": {
-                if (!plan) {
-                    plan = tracker.plan as Plan | undefined;
-                }
-
-                const planReview = await planReviewPhase(
-                    tracker, profilesDir, plan!, research, taskPrompt, cwd, apiKeys, onStatus,
-                );
-                planningRounds++;
-
-                if (planReview.ready) {
-                    tracker.advancePhase(); // → implementing
-                    await tracker.save();
-                    onStatus?.onPhaseComplete?.({ phase, durationMs: Date.now() - phaseStartTime });
-                    break;
-                }
-
-                // Not ready — loop back to planning (max 3 rounds)
-                plan = undefined;
-                if (planningRounds < 3) {
-                    tracker.setPhase("planning");
-                    await tracker.save();
-                    onStatus?.onPhaseComplete?.({ phase, durationMs: Date.now() - phaseStartTime });
-                    return "planning";
-                }
-
-                // Exhausted rounds — proceed anyway with current plan
-                tracker.advancePhase(); // → implementing
-                await tracker.save();
-                onStatus?.onPhaseComplete?.({ phase, durationMs: Date.now() - phaseStartTime });
-                break;
-            }
-
-            // ── Implementation: run the plan tasks ──
-            case "implementing": {
-                if (plan) {
-                    await implementationPhase(
-                        tracker, profilesDir, plan, cwd, maxConcurrentTasks, apiKeys, onStatus,
-                    );
-                }
-                tracker.advancePhase(); // → final_review
-                await tracker.save();
-                onStatus?.onPhaseComplete?.({ phase, durationMs: Date.now() - phaseStartTime });
-                break;
-            }
-
-            // ── Final Review: quality check the result ──
-            case "final_review": {
-                await finalReviewPhase(tracker, profilesDir, cwd, apiKeys, onStatus);
-                tracker.advancePhase(); // → done
-                await tracker.save();
-                onStatus?.onPhaseComplete?.({ phase, durationMs: Date.now() - phaseStartTime });
-                break;
-            }
-
-            case "done":
-                break;
-        }
+    // ── Shared mutable state that flows between phases ────────────────
+    const state: RunState = {
+        research: tracker.research ?? "",
+        plan: undefined,
+        scoutingReports: [],
+        scoutingRounds: 0,
+        planningRounds: 0,
     };
 
     // ── Execute phases from the starting point ──────────────────────
-    let currentIndex = phaseOrder.indexOf(tracker.currentPhase as Phase);
+    let currentIndex = PHASE_ORDER.indexOf(tracker.currentPhase as Phase);
     if (currentIndex < 0) currentIndex = 0;
 
     try {
-        while (currentIndex < phaseOrder.length) {
-            const phase = phaseOrder[currentIndex];
+        while (currentIndex < PHASE_ORDER.length) {
+            const phase = PHASE_ORDER[currentIndex];
             if (phase === "done") break;
 
-            const jumpTo = await handlePhase(phase);
+            const jumpTo = await executePhase(
+                phase, state, tracker, profilesDirs, taskPrompt, cwd, maxConcurrentTasks, apiKeys, onStatus,
+            );
 
             if (jumpTo) {
-                currentIndex = phaseOrder.indexOf(jumpTo);
+                currentIndex = PHASE_ORDER.indexOf(jumpTo);
             } else {
                 currentIndex++;
             }

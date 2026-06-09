@@ -1,83 +1,201 @@
 #!/usr/bin/env node
 
-import { run } from "./workflows/develop.js";
 import type { StatusCallbacks } from "./core/types.js";
+import { getDefaultWorkDir, resolveProfilesDirs } from "./core/config.js";
+import { loadWorkflow, listWorkflows } from "./core/workflow-loader.js";
+import { loadProfilesFromDirs } from "./core/profile.js";
+import { initDefaultConfig } from "./setup.js";
 
 // ─── CLI Options ────────────────────────────────────────────────────────────
 
 export interface CliOptions {
-  taskPrompt: string;
-  profilesDir: string;
+  command: "run" | "list" | "init" | "help" | "version";
+  workflowName?: string;
+  taskPrompt?: string;
   cwd: string;
-  workDir: string;
+  workDir?: string;
   maxConcurrent: number;
   verbose: boolean;
   apiKeys: Record<string, string>;
+  force?: boolean;
 }
 
 // ─── Argument Parsing ───────────────────────────────────────────────────────
 
-const USAGE = `Usage: workflow-harness <task-prompt> --profiles-dir <path> --cwd <path> --work-dir <path> [--max-concurrent <n>] [--verbose] [--api-key <provider=key>]`;
+const VERSION = "0.1.0";
+
+const USAGE = `Usage: workflow-harness <command> [options]
+
+Commands:
+  run    <workflow-name> <task-prompt> [options]   Run a workflow
+  list   [--cwd <path>]                             List available workflows
+  init   [--force]                                  Install default config
+
+Options:
+  --cwd <path>            Working directory (default: process.cwd())
+  --work-dir <path>       Workflow working directory (run only)
+  --max-concurrent <n>    Max concurrent tasks (default: 3, run only)
+  --verbose               Enable verbose logging
+  --api-key <provider=key>  API key (repeatable)
+  --force                 Overwrite existing files (init only)
+  --help, -h              Show this help message
+  --version, -v           Show version`;
 
 export function parseArgs(argv: string[]): CliOptions {
-  let taskPrompt: string | undefined;
-  let profilesDir: string | undefined;
-  let cwd: string | undefined;
-  let workDir: string | undefined;
-  let maxConcurrent = 3;
-  let verbose = false;
-  const apiKeys: Record<string, string> = {};
+  // 1. Check for --help / -h anywhere (before positional parsing)
+  if (argv.includes("--help") || argv.includes("-h")) {
+    return {
+      command: "help" as const,
+      cwd: process.cwd(),
+      maxConcurrent: 3,
+      verbose: false,
+      apiKeys: {},
+    };
+  }
 
+  // 2. Check for --version / -v anywhere (before positional parsing)
+  if (argv.includes("--version") || argv.includes("-v")) {
+    return {
+      command: "version" as const,
+      cwd: process.cwd(),
+      maxConcurrent: 3,
+      verbose: false,
+      apiKeys: {},
+    };
+  }
+
+  // 3. Separate positionals from flags
+  const positionals: string[] = [];
+  const flags: string[] = [];
   let i = 0;
   while (i < argv.length) {
     const arg = argv[i];
-
-    if (arg === "--profiles-dir") {
-      profilesDir = argv[++i];
-    } else if (arg === "--cwd") {
-      cwd = argv[++i];
+    if (arg === "--cwd") {
+      const val = argv[++i];
+      if (val === undefined || val.startsWith("--")) {
+        throw new Error(`Missing value for ${arg}\n${USAGE}`);
+      }
+      flags.push(arg, val);
     } else if (arg === "--work-dir") {
-      workDir = argv[++i];
+      const val = argv[++i];
+      if (val === undefined || val.startsWith("--")) {
+        throw new Error(`Missing value for ${arg}\n${USAGE}`);
+      }
+      flags.push(arg, val);
     } else if (arg === "--max-concurrent") {
-      maxConcurrent = Number(argv[++i]);
+      const val = argv[++i];
+      if (val === undefined || val.startsWith("--")) {
+        throw new Error(`Missing value for ${arg}\n${USAGE}`);
+      }
+      flags.push(arg, val);
     } else if (arg === "--verbose") {
-      verbose = true;
+      flags.push(arg);
+    } else if (arg === "--force") {
+      flags.push(arg);
     } else if (arg === "--api-key") {
-      const pair = argv[++i];
+      const val = argv[++i];
+      if (val === undefined || val.startsWith("--")) {
+        throw new Error(`Missing value for ${arg}\n${USAGE}`);
+      }
+      flags.push(arg, val);
+    } else if (arg.startsWith("--")) {
+      throw new Error(`Unknown flag: "${arg}"\n${USAGE}`);
+    } else {
+      positionals.push(arg);
+    }
+    i++;
+  }
+
+  if (positionals.length === 0) {
+    throw new Error(`Missing command\n${USAGE}`);
+  }
+
+  const command = positionals[0];
+
+  // 4. Parse common flags
+  let cwd = process.cwd();
+  let verbose = false;
+  const apiKeys: Record<string, string> = {};
+  let force = false;
+  let apiKeyWarningIssued = false;
+  let workDir: string | undefined;
+  let maxConcurrent = 3;
+
+  for (let j = 0; j < flags.length; j++) {
+    const flag = flags[j];
+    if (flag === "--cwd") {
+      cwd = flags[++j];
+    } else if (flag === "--work-dir") {
+      workDir = flags[++j];
+    } else if (flag === "--max-concurrent") {
+      const raw = flags[++j];
+      const parsed = Number(raw);
+      if (!Number.isFinite(parsed) || parsed < 1 || !Number.isInteger(parsed)) {
+        throw new Error(
+          `--max-concurrent must be a positive integer, got "${raw}"\n${USAGE}`,
+        );
+      }
+      maxConcurrent = parsed;
+    } else if (flag === "--verbose") {
+      verbose = true;
+    } else if (flag === "--force") {
+      force = true;
+    } else if (flag === "--api-key") {
+      const pair = flags[++j];
       const eqIdx = pair.indexOf("=");
       if (eqIdx < 0) {
-        throw new Error(`Invalid --api-key format: expected provider=key, got "${pair}"\n${USAGE}`);
+        throw new Error(
+          `Invalid --api-key format: expected provider=key, got "${pair}"\n${USAGE}`,
+        );
       }
       const provider = pair.slice(0, eqIdx);
       const key = pair.slice(eqIdx + 1);
       apiKeys[provider] = key;
-    } else if (!arg.startsWith("--")) {
-      if (taskPrompt === undefined) {
-        taskPrompt = arg;
-      } else {
-        throw new Error(`Unexpected argument: "${arg}"\n${USAGE}`);
+      if (!apiKeyWarningIssued) {
+        process.stderr.write(
+          "Warning: API keys passed via --api-key are visible in process listings. Consider using environment variables instead.\n",
+        );
+        apiKeyWarningIssued = true;
       }
-    } else {
-      throw new Error(`Unknown flag: "${arg}"\n${USAGE}`);
     }
-
-    i++;
   }
 
-  if (taskPrompt === undefined) {
-    throw new Error(`Missing required <task-prompt>\n${USAGE}`);
-  }
-  if (!profilesDir) {
-    throw new Error(`Missing required --profiles-dir\n${USAGE}`);
-  }
-  if (!cwd) {
-    throw new Error(`Missing required --cwd\n${USAGE}`);
-  }
-  if (!workDir) {
-    throw new Error(`Missing required --work-dir\n${USAGE}`);
+  if (command === "list") {
+    if (positionals.length > 1) {
+      throw new Error(`Unexpected argument: "${positionals[1]}"\n${USAGE}`);
+    }
+    return { command: "list", cwd, verbose, maxConcurrent, apiKeys };
   }
 
-  return { taskPrompt, profilesDir, cwd, workDir, maxConcurrent, verbose, apiKeys };
+  if (command === "init") {
+    if (positionals.length > 1) {
+      throw new Error(`Unexpected argument: "${positionals[1]}"\n${USAGE}`);
+    }
+    return { command: "init", cwd, verbose, maxConcurrent, apiKeys, force };
+  }
+
+  // Any non-list/non-init positional is treated as "run" with the first positional as the workflow name.
+  const workflowName = command; // first positional is workflow name when implicit run
+  const taskPrompt = positionals[1];
+
+  if (!taskPrompt) {
+    throw new Error(`Missing required <task-prompt> for run command\n${USAGE}`);
+  }
+
+  if (positionals.length > 2) {
+    throw new Error(`Unexpected argument: "${positionals[2]}"\n${USAGE}`);
+  }
+
+  return {
+    command: "run",
+    workflowName,
+    taskPrompt,
+    cwd,
+    workDir,
+    maxConcurrent,
+    verbose,
+    apiKeys,
+  };
 }
 
 // ─── Time Formatting ────────────────────────────────────────────────────────
@@ -95,80 +213,178 @@ export function formatTime(): string {
 export function createStatusCallbacks(verbose: boolean): StatusCallbacks {
   const callbacks: StatusCallbacks = {
     onWorkflowStart: (info) => {
-      console.log(`${formatTime()} 🚀 Workflow started: "${info.taskPrompt}" (resumed: ${info.resumed})`);
+      console.log(
+        `${formatTime()} 🚀 Workflow started: "${info.taskPrompt}" (resumed: ${info.resumed})`,
+      );
     },
     onWorkflowComplete: (info) => {
-      console.log(`${formatTime()} 🎉 Workflow complete in ${info.totalDurationMs / 1000}s (${info.agentCount} agents)`);
+      console.log(
+        `${formatTime()} 🎉 Workflow complete in ${info.totalDurationMs / 1000}s (${info.agentCount} agents)`,
+      );
     },
     onWorkflowFailed: (info) => {
-      console.log(`${formatTime()} 💥 Workflow failed at phase ${info.phase}: ${info.error.message}`);
+      console.log(
+        `${formatTime()} 💥 Workflow failed at phase ${info.phase}: ${info.error.message}`,
+      );
     },
     onPhaseStart: (info) => {
-      console.log(`${formatTime()} 📦 Phase started: ${info.phase} (round ${info.round})`);
+      console.log(
+        `${formatTime()} 📦 Phase started: ${info.phase} (round ${info.round})`,
+      );
     },
     onPhaseComplete: (info) => {
-      console.log(`${formatTime()} ✅ Phase completed: ${info.phase} (${info.durationMs / 1000}s)`);
+      console.log(
+        `${formatTime()} ✅ Phase completed: ${info.phase} (${info.durationMs / 1000}s)`,
+      );
     },
     onAgentSpawn: (info) => {
-      console.log(`${formatTime()} ⏳ Agent spawned: ${info.agentId} (profile: ${info.profile})`);
+      console.log(
+        `${formatTime()} ⏳ Agent spawned: ${info.agentId} (profile: ${info.profile})`,
+      );
     },
     onAgentComplete: (info) => {
       console.log(`${formatTime()} ✅ Agent complete: ${info.agentId}`);
     },
     onTaskStart: (info) => {
-      console.log(`${formatTime()} 📋 Task started: ${info.taskId} - "${info.title}"`);
+      console.log(
+        `${formatTime()} 📋 Task started: ${info.taskId} - "${info.title}"`,
+      );
     },
     onTaskComplete: (info) => {
       console.log(`${formatTime()} ✅ Task complete: ${info.taskId}`);
     },
     onTaskRejected: (info) => {
-      console.log(`${formatTime()} ❌ Task rejected: ${info.taskId} - ${info.reason}`);
+      console.log(
+        `${formatTime()} ❌ Task rejected: ${info.taskId} - ${info.reason}`,
+      );
     },
     onDecision: (info) => {
-      console.log(`${formatTime()} 🤝 Decision by ${info.agentId}: ${info.decision}`);
+      console.log(
+        `${formatTime()} 🤝 Decision by ${info.agentId}: ${info.decision}`,
+      );
     },
     onError: (info) => {
-      console.log(`${formatTime()} ⚠️ Error in ${info.agentId}: ${info.error} (phase: ${info.phase})`);
+      console.log(
+        `${formatTime()} ⚠️ Error in ${info.agentId}: ${info.error} (phase: ${info.phase})`,
+      );
     },
   };
 
   if (verbose) {
     callbacks.onTurnStart = (info) => {
-      console.log(`${formatTime()} 🔄 Turn ${info.turn} started (agent: ${info.agentId})`);
+      console.log(
+        `${formatTime()} 🔄 Turn ${info.turn} started (agent: ${info.agentId})`,
+      );
     };
     callbacks.onTurnEnd = (info) => {
-      const tokensPart = info.tokens ? `, tokens: ${info.tokens.input} in / ${info.tokens.output} out` : "";
-      console.log(`${formatTime()} 🔄 Turn ${info.turn} ended (agent: ${info.agentId}${tokensPart})`);
+      const tokensPart = info.tokens
+        ? `, tokens: ${info.tokens.input} in / ${info.tokens.output} out`
+        : "";
+      console.log(
+        `${formatTime()} 🔄 Turn ${info.turn} ended (agent: ${info.agentId}${tokensPart})`,
+      );
     };
     callbacks.onToolCallStart = (info) => {
-      console.log(`${formatTime()} 🔧 Tool call: ${info.toolName} (agent: ${info.agentId})`);
+      console.log(
+        `${formatTime()} 🔧 Tool call: ${info.toolName} (agent: ${info.agentId})`,
+      );
     };
     callbacks.onToolCallEnd = (info) => {
       const icon = info.isError ? "❌" : "✅";
       const label = info.isError ? "Tool error" : "Tool result";
-      console.log(`${formatTime()} ${icon} ${label}: ${info.toolName} (agent: ${info.agentId})`);
+      console.log(
+        `${formatTime()} ${icon} ${label}: ${info.toolName} (agent: ${info.agentId})`,
+      );
     };
   }
 
   return callbacks;
 }
 
+// ─── Commands ───────────────────────────────────────────────────────────────
+
+export async function listCommand(options: CliOptions): Promise<void> {
+  const workflows = await listWorkflows(options.cwd);
+
+  if (workflows.length === 0) {
+    console.log(
+      'No workflows found. Run "workflow-harness init" to install defaults.',
+    );
+    return;
+  }
+
+  console.log("Available workflows:\n");
+  for (const w of workflows) {
+    console.log(`  ${w.name} (${w.source}) — ${w.path}`);
+  }
+
+  // Try to load profiles
+  try {
+    const profileDirs = resolveProfilesDirs(options.cwd);
+    const profiles = await loadProfilesFromDirs(profileDirs);
+    if (profiles.size > 0) {
+      console.log(`\nAvailable profiles (${profiles.size}):\n`);
+      for (const [id, profile] of profiles) {
+        console.log(
+          `  ${id} — ${profile.name} (${profile.provider}/${profile.model})`,
+        );
+      }
+    }
+  } catch (err) {
+    // Log profile loading errors but don't fail the list command
+    if (err instanceof Error) {
+      process.stderr.write(`Warning: Could not load profiles: ${err.message}\n`);
+    }
+  }
+}
+
+export async function initCommand(options: CliOptions): Promise<void> {
+  const { installed, skipped } = await initDefaultConfig({
+    force: options.force,
+  });
+  console.log(
+    `Installed ${installed.length} file(s), skipped ${skipped.length} existing file(s).`,
+  );
+}
+
+export async function runCommand(options: CliOptions): Promise<void> {
+  const workDir =
+    options.workDir ?? getDefaultWorkDir(options.cwd, options.workflowName!);
+
+  const workflow = await loadWorkflow(options.workflowName!, options.cwd);
+
+  await workflow.run(options.taskPrompt!, {
+    cwd: options.cwd,
+    workDir,
+    maxConcurrentTasks: options.maxConcurrent,
+    apiKeys:
+      Object.keys(options.apiKeys).length > 0 ? options.apiKeys : undefined,
+    onStatus: createStatusCallbacks(options.verbose),
+  });
+}
+
 // ─── Main Entry Point ───────────────────────────────────────────────────────
 
 export async function main(): Promise<void> {
   const options = parseArgs(process.argv.slice(2));
-  const callbacks = createStatusCallbacks(options.verbose);
 
-  await run(options.taskPrompt, {
-    profilesDir: options.profilesDir,
-    cwd: options.cwd,
-    workDir: options.workDir,
-    maxConcurrentTasks: options.maxConcurrent,
-    apiKeys: Object.keys(options.apiKeys).length > 0 ? options.apiKeys : undefined,
-    onStatus: callbacks,
-  });
-
-  process.exit(0);
+  if (options.command === "help") {
+    process.stdout.write(USAGE + "\n");
+    process.exit(0);
+  }
+  if (options.command === "version") {
+    process.stdout.write(`workflow-harness v${VERSION}\n`);
+    process.exit(0);
+  }
+  if (options.command === "list") {
+    await listCommand(options);
+    return;
+  }
+  if (options.command === "init") {
+    await initCommand(options);
+    return;
+  }
+  await runCommand(options);
 }
 
 const isDirectRun =
@@ -177,7 +393,9 @@ const isDirectRun =
 
 if (isDirectRun) {
   main().catch((err) => {
-    process.stderr.write(`Error: ${err instanceof Error ? err.message : String(err)}\n`);
+    process.stderr.write(
+      `Error: ${err instanceof Error ? err.message : String(err)}\n`,
+    );
     process.exit(1);
   });
 }

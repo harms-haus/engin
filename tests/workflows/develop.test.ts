@@ -25,9 +25,9 @@ vi.mock("../../src/core/agent-loop.ts", () => ({
     parallelAgents: (...args: unknown[]) => mockParallelAgents(...args),
 }));
 
-const mockLoadProfiles = vi.fn();
+const mockLoadProfilesFromDirs = vi.fn();
 vi.mock("../../src/core/profile.ts", () => ({
-    loadProfiles: (...args: unknown[]) => mockLoadProfiles(...args),
+    loadProfilesFromDirs: (...args: unknown[]) => mockLoadProfilesFromDirs(...args),
 }));
 
 // ─── Imports (after mocks) ─────────────────────────────────────────────────
@@ -35,7 +35,7 @@ vi.mock("../../src/core/profile.ts", () => ({
 import { createHarness } from "../../src/core/harness-factory.ts";
 import { promptForStructured } from "../../src/core/structured-output.ts";
 import { parallelAgents } from "../../src/core/agent-loop.ts";
-import { loadProfiles } from "../../src/core/profile.ts";
+import { loadProfilesFromDirs } from "../../src/core/profile.ts";
 import {
     scoutingPhase,
     scoutingReviewPhase,
@@ -149,7 +149,7 @@ function tmpDir(): string {
 
 beforeEach(() => {
     vi.clearAllMocks();
-    mockLoadProfiles.mockResolvedValue(makeAllProfiles());
+    mockLoadProfilesFromDirs.mockResolvedValue(makeAllProfiles());
     mockCreateHarness.mockResolvedValue(makeHarnessResult());
 });
 
@@ -258,7 +258,7 @@ describe("scoutingPhase", () => {
             { status: "fulfilled", value: { report: "scout report B" } },
         ]);
 
-        const reports = await scoutingPhase(tracker, "/profiles", "Build a feature", "/cwd");
+        const reports = await scoutingPhase(tracker, ["/profiles"], "Build a feature", "/cwd");
 
         expect(reports).toHaveLength(2);
         expect(reports[0]).toEqual({ report: "scout report A" });
@@ -288,7 +288,7 @@ describe("scoutingPhase", () => {
 
         mockPromptForStructured.mockResolvedValueOnce({ topics: [] });
 
-        const reports = await scoutingPhase(tracker, "/profiles", "Build a feature", "/cwd");
+        const reports = await scoutingPhase(tracker, ["/profiles"], "Build a feature", "/cwd");
 
         expect(reports).toEqual([]);
         expect(mockParallelAgents).not.toHaveBeenCalled();
@@ -311,7 +311,7 @@ describe("scoutingPhase", () => {
             { status: "rejected", reason: new Error("scout failed") },
         ]);
 
-        const reports = await scoutingPhase(tracker, "/profiles", "task", "/cwd");
+        const reports = await scoutingPhase(tracker, ["/profiles"], "task", "/cwd");
 
         expect(reports).toHaveLength(1);
         expect(reports[0]).toEqual({ report: "success" });
@@ -321,10 +321,10 @@ describe("scoutingPhase", () => {
         const dir = tmpDir();
         const tracker = new WorkflowStatusTracker(dir);
 
-        mockLoadProfiles.mockResolvedValueOnce(new Map()); // empty profiles
+        mockLoadProfilesFromDirs.mockResolvedValueOnce(new Map()); // empty profiles
 
         await expect(
-            scoutingPhase(tracker, "/profiles", "task", "/cwd"),
+            scoutingPhase(tracker, ["/profiles"], "task", "/cwd"),
         ).rejects.toThrow('Profile "scout" not found');
     });
 });
@@ -345,7 +345,7 @@ describe("scoutingReviewPhase", () => {
 
         const result = await scoutingReviewPhase(
             tracker,
-            "/profiles",
+            ["/profiles"],
             [{ summary: "report 1" }],
             "/cwd",
         );
@@ -367,7 +367,7 @@ describe("scoutingReviewPhase", () => {
 
         const result = await scoutingReviewPhase(
             tracker,
-            "/profiles",
+            ["/profiles"],
             [],
             "/cwd",
         );
@@ -380,10 +380,10 @@ describe("scoutingReviewPhase", () => {
         const dir = tmpDir();
         const tracker = new WorkflowStatusTracker(dir);
 
-        mockLoadProfiles.mockResolvedValueOnce(new Map());
+        mockLoadProfilesFromDirs.mockResolvedValueOnce(new Map());
 
         await expect(
-            scoutingReviewPhase(tracker, "/profiles", [], "/cwd"),
+            scoutingReviewPhase(tracker, ["/profiles"], [], "/cwd"),
         ).rejects.toThrow('Profile "scouting-reviewer" not found');
     });
 });
@@ -421,7 +421,7 @@ describe("planningPhase", () => {
 
         const result = await planningPhase(
             tracker,
-            "/profiles",
+            ["/profiles"],
             "Research summary",
             "Build feature X",
             "/cwd",
@@ -436,10 +436,10 @@ describe("planningPhase", () => {
         const dir = tmpDir();
         const tracker = new WorkflowStatusTracker(dir);
 
-        mockLoadProfiles.mockResolvedValueOnce(new Map());
+        mockLoadProfilesFromDirs.mockResolvedValueOnce(new Map());
 
         await expect(
-            planningPhase(tracker, "/profiles", "research", "task", "/cwd"),
+            planningPhase(tracker, ["/profiles"], "research", "task", "/cwd"),
         ).rejects.toThrow('Profile "planner" not found');
     });
 });
@@ -474,7 +474,7 @@ describe("planReviewPhase", () => {
 
         const result = await planReviewPhase(
             tracker,
-            "/profiles",
+            ["/profiles"],
             plan,
             "research",
             "task prompt",
@@ -503,7 +503,7 @@ describe("planReviewPhase", () => {
 
         const result = await planReviewPhase(
             tracker,
-            "/profiles",
+            ["/profiles"],
             plan,
             "research",
             "task",
@@ -549,7 +549,7 @@ describe("implementationPhase", () => {
         };
         mockPromptForStructured.mockResolvedValueOnce(reviewResult);
 
-        await implementationPhase(tracker, "/profiles", plan, "/cwd", 3);
+        await implementationPhase(tracker, ["/profiles"], plan, "/cwd", 3);
 
         // Task should be done
         expect(tracker.taskTracker.getTask("t1")!.status).toBe("done");
@@ -611,7 +611,7 @@ describe("implementationPhase", () => {
         };
         mockPromptForStructured.mockResolvedValueOnce(approveResult);
 
-        await implementationPhase(tracker, "/profiles", plan, "/cwd", 3);
+        await implementationPhase(tracker, ["/profiles"], plan, "/cwd", 3);
 
         // Task should be done after re-implementation and approval
         expect(tracker.taskTracker.getTask("t1")!.status).toBe("done");
@@ -644,7 +644,7 @@ describe("implementationPhase", () => {
         // Reviewer throws
         mockPromptForStructured.mockRejectedValueOnce(new Error("review failed"));
 
-        await implementationPhase(tracker, "/profiles", plan, "/cwd", 3);
+        await implementationPhase(tracker, ["/profiles"], plan, "/cwd", 3);
 
         // Task should be completed despite review failure
         expect(tracker.taskTracker.getTask("t1")!.status).toBe("done");
@@ -700,7 +700,7 @@ describe("implementationPhase", () => {
             issues: [],
         });
 
-        await implementationPhase(tracker, "/profiles", plan, "/cwd", 3);
+        await implementationPhase(tracker, ["/profiles"], plan, "/cwd", 3);
 
         expect(tracker.taskTracker.getTask("t1")!.status).toBe("done");
         expect(tracker.taskTracker.getTask("t2")!.status).toBe("done");
@@ -736,7 +736,7 @@ describe("implementationPhase", () => {
             issues: [],
         });
 
-        await implementationPhase(tracker, "/profiles", plan, "/cwd", 3);
+        await implementationPhase(tracker, ["/profiles"], plan, "/cwd", 3);
 
         const task = tracker.taskTracker.getTask("t1")!;
         expect(task.status).toBe("done");
@@ -775,7 +775,7 @@ describe("implementationPhase", () => {
             .mockResolvedValueOnce({ approved: true, feedback: "ok", issues: [] })
             .mockResolvedValueOnce({ approved: true, feedback: "ok", issues: [] });
 
-        await implementationPhase(tracker, "/profiles", plan, "/cwd", 2);
+        await implementationPhase(tracker, ["/profiles"], plan, "/cwd", 2);
 
         expect(tracker.taskTracker.areAllDone()).toBe(true);
         // parallelAgents should have been called with at most 2 configs per batch
@@ -797,7 +797,7 @@ describe("finalReviewPhase", () => {
         };
         mockPromptForStructured.mockResolvedValueOnce(assessment);
 
-        const clean = await finalReviewPhase(tracker, "/profiles", "/cwd");
+        const clean = await finalReviewPhase(tracker, ["/profiles"], "/cwd");
 
         expect(clean).toBe(true);
         expect(mockPromptForStructured).toHaveBeenCalledTimes(1);
@@ -830,7 +830,7 @@ describe("finalReviewPhase", () => {
         };
         mockPromptForStructured.mockResolvedValueOnce(secondAssessment);
 
-        const clean = await finalReviewPhase(tracker, "/profiles", "/cwd");
+        const clean = await finalReviewPhase(tracker, ["/profiles"], "/cwd");
 
         expect(clean).toBe(true);
         expect(mockPromptForStructured).toHaveBeenCalledTimes(2); // two review rounds
@@ -850,7 +850,7 @@ describe("finalReviewPhase", () => {
         };
         mockPromptForStructured.mockResolvedValueOnce(assessment);
 
-        const clean = await finalReviewPhase(tracker, "/profiles", "/cwd");
+        const clean = await finalReviewPhase(tracker, ["/profiles"], "/cwd");
 
         expect(clean).toBe(true);
         // No fixers spawned since only minor issues
@@ -875,7 +875,7 @@ describe("finalReviewPhase", () => {
             { status: "fulfilled", value: "attempted fix" },
         ]);
 
-        const clean = await finalReviewPhase(tracker, "/profiles", "/cwd");
+        const clean = await finalReviewPhase(tracker, ["/profiles"], "/cwd");
 
         expect(clean).toBe(false);
         // Should have run 3 rounds of review (all rounds exhausted)

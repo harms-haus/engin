@@ -1,6 +1,8 @@
 {
   "name": "workflow-harness",
   "version": "0.1.0",
+  "description": "An AI-powered development workflow harness with dynamic profile and workflow discovery.",
+  "keywords": ["ai", "agent", "workflow", "development", "automation", "llm", "harness"],
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -17,20 +19,27 @@
     "node": ">=22.19.0"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && npm run copy-defaults",
+    "copy-defaults": "cp -r src/profiles/*.md defaults/profiles/ 2>/dev/null || true",
+    "setup": "node dist/cli.js init",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit"
   },
+  "files": [
+    "dist",
+    "defaults"
+  ],
   "dependencies": {
     "@earendil-works/pi-agent-core": "^0.79.0",
     "@earendil-works/pi-ai": "^0.79.0",
-    "zod": "^3.25.0",
-    "gray-matter": "^4.0.3"
+    "gray-matter": "^4.0.3",
+    "tsx": "^4.22.4",
+    "zod": "^3.25.0"
   },
   "devDependencies": {
+    "@types/node": "^22.0.0",
     "typescript": "^5.8.0",
-    "vitest": "^3.2.0",
-    "@types/node": "^22.0.0"
+    "vitest": "^3.2.0"
   }
 }

@@ -1,199 +1,376 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
-    parseArgs,
-    formatTime,
-    createStatusCallbacks,
+  parseArgs,
+  formatTime,
+  createStatusCallbacks,
+  main,
 } from "../src/cli.ts";
 
 // ─── parseArgs ──────────────────────────────────────────────────────────────
 
 describe("parseArgs", () => {
-    it("parses valid minimal args", () => {
-        const result = parseArgs([
-            "build a feature",
-            "--profiles-dir",
-            "/p",
-            "--cwd",
-            "/c",
-            "--work-dir",
-            "/w",
-        ]);
-        expect(result).toEqual({
-            taskPrompt: "build a feature",
-            profilesDir: "/p",
-            cwd: "/c",
-            workDir: "/w",
-            maxConcurrent: 3,
-            verbose: false,
-            apiKeys: {},
-        });
+  it("parses run command with workflowName and taskPrompt", () => {
+    const result = parseArgs(["develop", "build a feature", "--cwd", "/c"]);
+    expect(result).toEqual({
+      command: "run",
+      workflowName: "develop",
+      taskPrompt: "build a feature",
+      cwd: "/c",
+      workDir: undefined,
+      maxConcurrent: 3,
+      verbose: false,
+      apiKeys: {},
+      force: undefined,
+    });
+  });
+
+  it("parses run with all options", () => {
+    const result = parseArgs([
+      "develop",
+      "build a feature",
+      "--cwd",
+      "/c",
+      "--work-dir",
+      "/w",
+      "--max-concurrent",
+      "5",
+      "--verbose",
+      "--api-key",
+      "anthropic=sk-xxx",
+      "--api-key",
+      "openai=pk-yyy",
+    ]);
+    expect(result.command).toBe("run");
+    expect(result.workflowName).toBe("develop");
+    expect(result.taskPrompt).toBe("build a feature");
+    expect(result.cwd).toBe("/c");
+    expect(result.workDir).toBe("/w");
+    expect(result.maxConcurrent).toBe(5);
+    expect(result.verbose).toBe(true);
+    expect(result.apiKeys).toEqual({
+      anthropic: "sk-xxx",
+      openai: "pk-yyy",
+    });
+  });
+
+  it("parses list command", () => {
+    const result = parseArgs(["list"]);
+    expect(result.command).toBe("list");
+    expect(result.workflowName).toBeUndefined();
+    expect(result.taskPrompt).toBeUndefined();
+  });
+
+  it("parses list with --cwd", () => {
+    const result = parseArgs(["list", "--cwd", "/my/project"]);
+    expect(result).toEqual({
+      command: "list",
+      cwd: "/my/project",
+      workflowName: undefined,
+      taskPrompt: undefined,
+      workDir: undefined,
+      maxConcurrent: 3,
+      verbose: false,
+      apiKeys: {},
+      force: undefined,
+    });
+  });
+
+  it("parses init command", () => {
+    const result = parseArgs(["init"]);
+    expect(result.command).toBe("init");
+    expect(result.force).toBeFalsy();
+  });
+
+  it("parses init with --force", () => {
+    const result = parseArgs(["init", "--force"]);
+    expect(result.command).toBe("init");
+    expect(result.force).toBe(true);
+  });
+
+  it("throws on missing command", () => {
+    expect(() => parseArgs([])).toThrow(/Missing command/);
+  });
+
+  it("throws on missing task prompt for run", () => {
+    expect(() => parseArgs(["develop"])).toThrow(
+      /Missing required <task-prompt>/,
+    );
+  });
+
+  it("throws on unknown flag", () => {
+    expect(() => parseArgs(["develop", "task", "--bogus"])).toThrow(
+      /Unknown flag/,
+    );
+  });
+
+  it("throws on list with extra positional", () => {
+    expect(() => parseArgs(["list", "extra"])).toThrow(/Unexpected argument/);
+  });
+
+  it("throws on init with extra positional", () => {
+    expect(() => parseArgs(["init", "extra"])).toThrow(/Unexpected argument/);
+  });
+
+  it("throws on invalid --api-key format", () => {
+    expect(() =>
+      parseArgs(["develop", "task", "--api-key", "noequals"]),
+    ).toThrow(/Invalid --api-key format/);
+  });
+
+  it("--cwd defaults to process.cwd()", () => {
+    const result = parseArgs(["list"]);
+    expect(result.cwd).toBe(process.cwd());
+  });
+
+  it("--max-concurrent defaults to 3", () => {
+    const result = parseArgs(["develop", "task"]);
+    expect(result.maxConcurrent).toBe(3);
+  });
+
+  it("--verbose defaults to false", () => {
+    const result = parseArgs(["list"]);
+    expect(result.verbose).toBe(false);
+  });
+
+  it("parses --api-key repeatable", () => {
+    const result = parseArgs([
+      "develop",
+      "task",
+      "--api-key",
+      "anthropic=sk-xxx",
+      "--api-key",
+      "openai=pk-yyy",
+    ]);
+    expect(result.apiKeys).toEqual({
+      anthropic: "sk-xxx",
+      openai: "pk-yyy",
+    });
+  });
+
+  describe("--max-concurrent validation", () => {
+    it("accepts valid positive integer", () => {
+      const result = parseArgs(["develop", "task", "--max-concurrent", "5"]);
+      expect(result.maxConcurrent).toBe(5);
     });
 
-    it("parses --verbose flag", () => {
-        const result = parseArgs([
-            "task",
-            "--profiles-dir",
-            "/p",
-            "--cwd",
-            "/c",
-            "--work-dir",
-            "/w",
-            "--verbose",
-        ]);
-        expect(result.verbose).toBe(true);
+    it("rejects zero", () => {
+      expect(() =>
+        parseArgs(["develop", "task", "--max-concurrent", "0"]),
+      ).toThrow(/positive integer/);
     });
 
-    it("parses --max-concurrent 5", () => {
-        const result = parseArgs([
-            "task",
-            "--profiles-dir",
-            "/p",
-            "--cwd",
-            "/c",
-            "--work-dir",
-            "/w",
-            "--max-concurrent",
-            "5",
-        ]);
-        expect(result.maxConcurrent).toBe(5);
+    it("rejects negative number", () => {
+      expect(() =>
+        parseArgs(["develop", "task", "--max-concurrent", "-1"]),
+      ).toThrow(/positive integer/);
     });
 
-    it("parses --api-key repeatable", () => {
-        const result = parseArgs([
-            "task",
-            "--profiles-dir",
-            "/p",
-            "--cwd",
-            "/c",
-            "--work-dir",
-            "/w",
-            "--api-key",
-            "anthropic=sk-xxx",
-            "--api-key",
-            "openai=pk-yyy",
-        ]);
-        expect(result.apiKeys).toEqual({
-            anthropic: "sk-xxx",
-            openai: "pk-yyy",
-        });
+    it("rejects float", () => {
+      expect(() =>
+        parseArgs(["develop", "task", "--max-concurrent", "1.5"]),
+      ).toThrow(/positive integer/);
     });
 
-    it("throws on missing task prompt", () => {
-        expect(() =>
-            parseArgs(["--profiles-dir", "/p", "--cwd", "/c", "--work-dir", "/w"]),
-        ).toThrow(/Missing required <task-prompt>/);
+    it("rejects non-numeric string", () => {
+      expect(() =>
+        parseArgs(["develop", "task", "--max-concurrent", "abc"]),
+      ).toThrow(/positive integer/);
     });
 
-    it("throws on missing --profiles-dir", () => {
-        expect(() =>
-            parseArgs(["task", "--cwd", "/c", "--work-dir", "/w"]),
-        ).toThrow(/Missing required --profiles-dir/);
+    it("rejects empty string", () => {
+      expect(() =>
+        parseArgs(["develop", "task", "--max-concurrent", ""]),
+      ).toThrow(/positive integer/);
+    });
+  });
+
+  describe("--help and --version", () => {
+    it("--help returns { command: 'help' }", () => {
+      const result = parseArgs(["--help"]);
+      expect(result).toEqual({
+        command: "help",
+        cwd: process.cwd(),
+        maxConcurrent: 3,
+        verbose: false,
+        apiKeys: {},
+      });
     });
 
-    it("throws on missing --cwd", () => {
-        expect(() =>
-            parseArgs(["task", "--profiles-dir", "/p", "--work-dir", "/w"]),
-        ).toThrow(/Missing required --cwd/);
+    it("-h returns { command: 'help' }", () => {
+      const result = parseArgs(["-h"]);
+      expect(result.command).toBe("help");
     });
 
-    it("throws on missing --work-dir", () => {
-        expect(() =>
-            parseArgs(["task", "--profiles-dir", "/p", "--cwd", "/c"]),
-        ).toThrow(/Missing required --work-dir/);
+    it("--version returns { command: 'version' }", () => {
+      const result = parseArgs(["--version"]);
+      expect(result).toEqual({
+        command: "version",
+        cwd: process.cwd(),
+        maxConcurrent: 3,
+        verbose: false,
+        apiKeys: {},
+      });
     });
+
+    it("-v returns { command: 'version' }", () => {
+      const result = parseArgs(["-v"]);
+      expect(result.command).toBe("version");
+    });
+
+    it("--help works when mixed with other args", () => {
+      const result = parseArgs(["develop", "task", "--help"]);
+      expect(result.command).toBe("help");
+    });
+  });
+
+  describe("main() handles help and version", () => {
+    let exitSpy: ReturnType<typeof vi.spyOn>;
+    let stdoutSpy: ReturnType<typeof vi.spyOn>;
+
+    beforeEach(() => {
+      exitSpy = vi.spyOn(process, "exit").mockImplementation(((
+        code: number,
+      ) => {
+        throw new Error(`process.exit(${code})`);
+      }) as never);
+      stdoutSpy = vi
+        .spyOn(process.stdout, "write")
+        .mockImplementation(() => true);
+    });
+
+    afterEach(() => {
+      exitSpy.mockRestore();
+      stdoutSpy.mockRestore();
+    });
+
+    it("main() calls process.exit(0) for --help", async () => {
+      const originalArgv = process.argv;
+      process.argv = ["node", "cli.ts", "--help"];
+      try {
+        await expect(main()).rejects.toThrow("process.exit(0)");
+      } finally {
+        process.argv = originalArgv;
+      }
+      expect(exitSpy).toHaveBeenCalledWith(0);
+      expect(stdoutSpy).toHaveBeenCalledTimes(1);
+      const output = stdoutSpy.mock.calls[0][0] as string;
+      expect(output).toContain("Usage:");
+    });
+
+    it("main() calls process.exit(0) for --version", async () => {
+      const originalArgv = process.argv;
+      process.argv = ["node", "cli.ts", "--version"];
+      try {
+        await expect(main()).rejects.toThrow("process.exit(0)");
+      } finally {
+        process.argv = originalArgv;
+      }
+      expect(exitSpy).toHaveBeenCalledWith(0);
+      expect(stdoutSpy).toHaveBeenCalledTimes(1);
+      const output = stdoutSpy.mock.calls[0][0] as string;
+      expect(output).toContain("workflow-harness v");
+    });
+  });
+
+  it("treats non-keyword first positional as workflow name (implicit run)", () => {
+    const result = parseArgs(["my-workflow", "do something", "--cwd", "/c"]);
+    expect(result.command).toBe("run");
+    expect(result.workflowName).toBe("my-workflow");
+    expect(result.taskPrompt).toBe("do something");
+  });
 });
 
 // ─── formatTime ─────────────────────────────────────────────────────────────
 
 describe("formatTime", () => {
-    it("returns bracketed time format", () => {
-        const result = formatTime();
-        expect(result).toMatch(/^\[\d{2}:\d{2}:\d{2}\]$/);
-    });
+  it("returns bracketed time format", () => {
+    const result = formatTime();
+    expect(result).toMatch(/^\[\d{2}:\d{2}:\d{2}\]$/);
+  });
 });
 
 // ─── createStatusCallbacks ─────────────────────────────────────────────────
 
 describe("createStatusCallbacks", () => {
-    let logSpy: ReturnType<typeof vi.spyOn>;
+  let logSpy: ReturnType<typeof vi.spyOn>;
 
-    beforeEach(() => {
-        logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
-    });
+  beforeEach(() => {
+    logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+  });
 
-    afterEach(() => {
-        logSpy.mockRestore();
-    });
+  afterEach(() => {
+    logSpy.mockRestore();
+  });
 
-    it("non-verbose has no agent-level callbacks", () => {
-        const callbacks = createStatusCallbacks(false);
-        expect(callbacks.onTurnStart).toBeUndefined();
-        expect(callbacks.onTurnEnd).toBeUndefined();
-        expect(callbacks.onToolCallStart).toBeUndefined();
-        expect(callbacks.onToolCallEnd).toBeUndefined();
-    });
+  it("non-verbose has no agent-level callbacks", () => {
+    const callbacks = createStatusCallbacks(false);
+    expect(callbacks.onTurnStart).toBeUndefined();
+    expect(callbacks.onTurnEnd).toBeUndefined();
+    expect(callbacks.onToolCallStart).toBeUndefined();
+    expect(callbacks.onToolCallEnd).toBeUndefined();
+  });
 
-    it("verbose has agent-level callbacks", () => {
-        const callbacks = createStatusCallbacks(true);
-        expect(typeof callbacks.onTurnStart).toBe("function");
-        expect(typeof callbacks.onTurnEnd).toBe("function");
-        expect(typeof callbacks.onToolCallStart).toBe("function");
-        expect(typeof callbacks.onToolCallEnd).toBe("function");
-    });
+  it("verbose has agent-level callbacks", () => {
+    const callbacks = createStatusCallbacks(true);
+    expect(typeof callbacks.onTurnStart).toBe("function");
+    expect(typeof callbacks.onTurnEnd).toBe("function");
+    expect(typeof callbacks.onToolCallStart).toBe("function");
+    expect(typeof callbacks.onToolCallEnd).toBe("function");
+  });
 
-    it("onWorkflowStart logs formatted output", () => {
-        const callbacks = createStatusCallbacks(false);
-        callbacks.onWorkflowStart!({
-            taskPrompt: "build it",
-            resumed: false,
-            workDir: "/tmp",
-        });
-        expect(logSpy).toHaveBeenCalledTimes(1);
-        expect(logSpy.mock.calls[0][0]).toMatch(/Workflow started/);
+  it("onWorkflowStart logs formatted output", () => {
+    const callbacks = createStatusCallbacks(false);
+    callbacks.onWorkflowStart!({
+      taskPrompt: "build it",
+      resumed: false,
+      workDir: "/tmp",
     });
+    expect(logSpy).toHaveBeenCalledTimes(1);
+    expect(logSpy.mock.calls[0][0]).toMatch(/Workflow started/);
+  });
 
-    it("onPhaseStart logs formatted output", () => {
-        const callbacks = createStatusCallbacks(false);
-        callbacks.onPhaseStart!({ phase: "planning" as never, round: 1 });
-        expect(logSpy).toHaveBeenCalledTimes(1);
-        expect(logSpy.mock.calls[0][0]).toMatch(/Phase started/);
-    });
+  it("onPhaseStart logs formatted output", () => {
+    const callbacks = createStatusCallbacks(false);
+    callbacks.onPhaseStart!({ phase: "planning" as never, round: 1 });
+    expect(logSpy).toHaveBeenCalledTimes(1);
+    expect(logSpy.mock.calls[0][0]).toMatch(/Phase started/);
+  });
 
-    it("onWorkflowComplete logs duration", () => {
-        const callbacks = createStatusCallbacks(false);
-        callbacks.onWorkflowComplete!({
-            totalDurationMs: 5000,
-            agentCount: 3,
-        });
-        expect(logSpy).toHaveBeenCalledTimes(1);
-        expect(logSpy.mock.calls[0][0]).toMatch(/Workflow complete/);
+  it("onWorkflowComplete logs duration", () => {
+    const callbacks = createStatusCallbacks(false);
+    callbacks.onWorkflowComplete!({
+      totalDurationMs: 5000,
+      agentCount: 3,
     });
+    expect(logSpy).toHaveBeenCalledTimes(1);
+    expect(logSpy.mock.calls[0][0]).toMatch(/Workflow complete/);
+  });
 
-    it("onWorkflowFailed logs error", () => {
-        const callbacks = createStatusCallbacks(false);
-        callbacks.onWorkflowFailed!({
-            error: new Error("boom"),
-            phase: "execution",
-        });
-        expect(logSpy).toHaveBeenCalledTimes(1);
-        expect(logSpy.mock.calls[0][0]).toMatch(/Workflow failed/);
+  it("onWorkflowFailed logs error", () => {
+    const callbacks = createStatusCallbacks(false);
+    callbacks.onWorkflowFailed!({
+      error: new Error("boom"),
+      phase: "execution",
     });
+    expect(logSpy).toHaveBeenCalledTimes(1);
+    expect(logSpy.mock.calls[0][0]).toMatch(/Workflow failed/);
+  });
 
-    it("onTurnStart logs in verbose mode", () => {
-        const callbacks = createStatusCallbacks(true);
-        callbacks.onTurnStart!({ agentId: "agent-1", turn: 2 });
-        expect(logSpy).toHaveBeenCalledTimes(1);
-        expect(logSpy.mock.calls[0][0]).toMatch(/Turn/);
-    });
+  it("onTurnStart logs in verbose mode", () => {
+    const callbacks = createStatusCallbacks(true);
+    callbacks.onTurnStart!({ agentId: "agent-1", turn: 2 });
+    expect(logSpy).toHaveBeenCalledTimes(1);
+    expect(logSpy.mock.calls[0][0]).toMatch(/Turn/);
+  });
 
-    it("onToolCallStart logs tool name", () => {
-        const callbacks = createStatusCallbacks(true);
-        callbacks.onToolCallStart!({
-            agentId: "agent-1",
-            toolName: "read_file",
-            toolCallId: "tc-1",
-        });
-        expect(logSpy).toHaveBeenCalledTimes(1);
-        expect(logSpy.mock.calls[0][0]).toMatch(/Tool call/);
+  it("onToolCallStart logs tool name", () => {
+    const callbacks = createStatusCallbacks(true);
+    callbacks.onToolCallStart!({
+      agentId: "agent-1",
+      toolName: "read_file",
+      toolCallId: "tc-1",
     });
+    expect(logSpy).toHaveBeenCalledTimes(1);
+    expect(logSpy.mock.calls[0][0]).toMatch(/Tool call/);
+  });
 });

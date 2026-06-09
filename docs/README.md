@@ -8,21 +8,12 @@ A script-based workflow engine for AI-driven development, built on top of [pi-ag
 
 **workflow-harness** orchestrates multi-agent AI workflows for software development tasks. It uses `AgentHarness` from `@earendil-works/pi-agent-core` as its inference layer and provides a phase-based approach to breaking down, planning, implementing, and reviewing code changes.
 
-### How it works
-
-The engine follows a structured pipeline of phases, each with internal loops for iterative refinement:
-
-| Phase | Purpose |
-|---|---|
-| **Scouting** | Agents investigate the codebase to understand relevant areas and gather context |
-| **Scouting Review** | A reviewer synthesizes findings and decides whether enough information has been collected |
-| **Planning** | A planner creates a task breakdown with dependencies (a DAG of implementable units) |
-| **Plan Review** | A reviewer evaluates the plan for completeness and feasibility |
-| **Implementation** | Implementer agents claim tasks from the DAG, write code, and submit for review |
-| **Final Review** | A final reviewer checks the entire codebase for remaining issues; fixers address critical problems |
+Workflows are loaded dynamically from config directories — you can use the built-in `develop` workflow or drop in your own. Agent profiles are plain markdown files with YAML frontmatter, so you can customize agent behavior without touching code.
 
 Key properties:
 
+- **Dynamic workflow loading** — workflows are discovered from global and local config directories, loaded at runtime by name.
+- **Layered config resolution** — profiles and workflows are resolved from `~/.config/workflow-harness/` (global) and `.workflow-harness/` (local), with local overriding global.
 - **Agent profiles** are defined as markdown files with YAML frontmatter, making it easy to add or modify agents without touching code.
 - **Structured output** is enforced via Zod schemas — every phase produces validated, typed data.
 - **Task dependency tracking** uses a DAG with cycle detection, so tasks execute in topological order with configurable concurrency.
@@ -31,111 +22,69 @@ Key properties:
 
 ---
 
-## 2. Architecture
-
-workflow-harness is organized into three layers:
-
-```
-src/
-├── index.ts                     # Public API re-exports
-├── cli.ts                       # CLI entry point
-├── profiles/                    # Agent profile definitions (.md files)
-│   ├── scout.md
-│   ├── scouting-reviewer.md
-│   ├── planner.md
-│   ├── plan-reviewer.md
-│   ├── implementer.md
-│   ├── implement-reviewer.md
-│   ├── final-reviewer.md
-│   └── fixer.md
-├── core/
-│   ├── types.ts                 # Shared type definitions and re-exports
-│   ├── profile.ts               # Markdown profile parser and loader
-│   ├── harness-factory.ts       # AgentHarness construction from profiles
-│   ├── structured-output.ts     # JSON extraction, Zod-validated prompting
-│   ├── session-history.ts       # Session statistics and resumption helpers
-│   ├── agent-loop.ts            # Looping, parallel, and sequential agent patterns
-│   ├── auth.ts                  # API key resolution (env vars and overrides)
-│   └── tool-registry.ts         # Tool registration and filtered resolution
-├── tracking/
-│   ├── audit-log.ts             # JSONL-based audit event log
-│   ├── task-status.ts           # Task DAG tracker with state transitions
-│   └── workflow-status.ts       # Full workflow phase state (persisted to JSON)
-└── workflows/
-    └── develop.ts               # The development workflow: phases + orchestrator
-```
-
-### Core Layer (`src/core/`)
-
-The foundational building blocks that every workflow composes:
-
-| Module | Responsibility |
-|---|---|
-| `types.ts` | Re-exports types from `pi-agent-core` and `pi-ai`; defines `AgentProfile`, `Task`, `WorkflowState`, `AuditEvent`, and related types |
-| `profile.ts` | Parses markdown files with YAML frontmatter into `AgentProfile` objects; loads all profiles from a directory |
-| `harness-factory.ts` | Creates a fully-wired `AgentHarness` from a profile: execution environment, session, model, tools, and API key |
-| `structured-output.ts` | Extracts JSON from free-text model responses; prompts a harness and validates output against a Zod schema with automatic retries |
-| `session-history.ts` | Tracks token usage and cost across a session; provides session resumption by copying message history |
-| `agent-loop.ts` | Higher-level patterns: `agentLoopUntil` (loop until condition), `parallelAgents` (concurrent harness execution), `sequentialAgents` (ordered execution) |
-| `auth.ts` | Resolves API keys from caller-supplied overrides or environment variables, with helpful error messages |
-| `tool-registry.ts` | Registers tools by name and resolves a filtered subset based on `includeTools`/`excludeTools` lists from profiles |
-
-### Tracking Layer (`src/tracking/`)
-
-Observability and state management:
-
-| Module | Responsibility |
-|---|---|
-| `audit-log.ts` | Appends `AuditEvent` records to a JSONL file; supports filtering by type or task ID; computes aggregate stats |
-| `task-status.ts` | Manages a collection of `Task` objects with a DAG of dependencies; enforces state transitions (`blocked` → `ready` → `claimed` → `implementing` → `reviewing` → `done`); detects cycles; supports JSON serialization and deserialization |
-| `workflow-status.ts` | Top-level workflow state: current phase, completed phases, scouting reports, plan, stats, and task tracker; persists to `workflow-state.json` for resumption |
-
-### Workflow Layer (`src/workflows/`)
-
-Phase functions and an orchestrator:
-
-| Module | Responsibility |
-|---|---|
-| `develop.ts` | Exports individual phase functions (`scoutingPhase`, `planningPhase`, `implementationPhase`, `finalReviewPhase`, etc.) and a top-level `run()` orchestrator that chains them with retry loops |
-
----
-
-## 3. Getting Started
+## 2. Installation
 
 ### Prerequisites
 
 - **Node.js** >= 22.19.0
 - **npm** (bundled with Node.js)
-- **API keys** — API keys for your configured provider(s); see profiles for details
+- **API keys** for your configured provider(s); see [Configuration](#9-configuration) for details
 
-### Installation
+### Install
 
 ```bash
 git clone <repository-url> workflow-harness
 cd workflow-harness
 npm install
+npm run build
 ```
 
-### Quick Start
+### First-Time Setup
+
+Install default profiles and the `develop` workflow into your global config directory:
+
+```bash
+workflow-harness init
+```
+
+This copies built-in profiles and workflows to `~/.config/workflow-harness/` (or `$XDG_CONFIG_HOME/workflow-harness/`). Files that already exist are skipped unless you pass `--force`.
+
+---
+
+## 3. Quick Start
+
+### CLI
+
+```bash
+# Initialize default config (first time only)
+workflow-harness init
+
+# Run the develop workflow
+workflow-harness develop "Add input validation to all public API endpoints"
+
+# Run with options
+workflow-harness develop "Fix the login bug" \
+  --cwd ./my-project \
+  --max-concurrent 5 \
+  --verbose
+```
+
+### Programmatic
 
 ```typescript
 import { run } from "workflow-harness";
 
 await run("Add input validation to all public API endpoints", {
-  profilesDir: "./src/profiles",
   cwd: "/path/to/project",
   workDir: "/tmp/workflow-run-001",
   maxConcurrentTasks: 3,
 });
 ```
 
-Or with status callbacks to monitor progress:
+With status callbacks to monitor progress:
 
 ```typescript
-import { run } from "workflow-harness";
-
 await run("Add input validation to all public API endpoints", {
-  profilesDir: "./src/profiles",
   cwd: "/path/to/project",
   workDir: "/tmp/workflow-run-001",
   maxConcurrentTasks: 3,
@@ -147,19 +96,163 @@ await run("Add input validation to all public API endpoints", {
 });
 ```
 
-This will:
+---
 
-1. Scout the project at `/path/to/project` to understand its structure.
-2. Create an implementation plan broken into tasks.
-3. Execute tasks in parallel (up to 3 concurrent implementers).
-4. Review each task's output and fix critical issues.
-5. Persist all state to `/tmp/workflow-run-001` for resumption.
+## 4. CLI Reference
+
+The `workflow-harness` binary supports several commands:
+
+```
+workflow-harness <command> [options]
+```
+
+### Commands
+
+| Command | Description |
+|---|---|
+| `run` (default) | Run a named workflow with a task prompt |
+| `list` | List available workflows and profiles |
+| `init` | Install default profiles and workflows to the global config directory |
+| `--help` / `-h` | Show usage information |
+| `--version` / `-v` | Show version |
+
+### `run`
+
+```bash
+workflow-harness <workflow-name> <task-prompt> [options]
+```
+
+The `run` command keyword is implicit — the first positional argument is the workflow name and the second is the task prompt.
+
+```bash
+workflow-harness develop "Refactor the auth module"
+```
+
+### `list`
+
+```bash
+workflow-harness list [--cwd <path>]
+```
+
+Lists all available workflows found in global and local config directories, along with any loadable profiles.
+
+### `init`
+
+```bash
+workflow-harness init [--force]
+```
+
+Copies built-in profiles from `defaults/profiles/` and the default `develop` workflow from `defaults/workflows/` into the global config directory. Skips files that already exist unless `--force` is passed.
+
+### Flags
+
+| Flag | Applies to | Description |
+|---|---|---|
+| `--cwd <path>` | All commands | Project working directory (default: `process.cwd()`) |
+| `--work-dir <path>` | `run` | Directory for workflow state persistence. Default: `.workflow-harness/work/<workflow-name>` inside `cwd` |
+| `--max-concurrent <n>` | `run` | Maximum parallel implementer agents (default: `3`). Must be a positive integer. |
+| `--verbose` | `run` | Enable agent-level output (turns, tool calls, token usage) |
+| `--api-key <provider=key>` | `run` | Provider → API key override. Repeatable. **Warning:** values are visible in process listings; prefer environment variables. |
+| `--force` | `init` | Overwrite existing files |
+
+### Exit Codes
+
+| Code | Meaning |
+|---|---|
+| `0` | Workflow completed successfully |
+| `1` | Workflow failed with an error |
+
+### Example Output
+
+Default (non-verbose) output shows workflow-level and task-level events:
+
+```
+[09:14:32] 🚀 Workflow started: "Add input validation to all public API endpoints" (resumed: false)
+[09:14:32] 📦 Phase started: scouting (round 0)
+[09:14:33] ⏳ Agent spawned: scout-coordinator (profile: scout)
+[09:14:45] ✅ Agent complete: scout-coordinator
+[09:14:46] ⏳ Agent spawned: scout-0 (profile: scout)
+[09:15:02] ✅ Agent complete: scout-0
+[09:15:02] ✅ Phase completed: scouting (30.1s)
+[09:15:02] 📦 Phase started: scouting_review (round 0)
+...
+[09:22:18] 📋 Task started: task-1 - "Add input validation to user routes"
+[09:22:35] ✅ Task complete: task-1
+...
+[09:31:44] 🎉 Workflow complete in 1032.4s (14 agents)
+```
+
+With `--verbose`, agent-level events are also shown:
+
+```
+[09:14:33] 🔄 Turn 1 started (agent: abc123)
+[09:14:33] 🔧 Tool call: read (agent: abc123)
+[09:14:34] ✅ Tool result: read (agent: abc123)
+[09:14:35] 🔄 Turn 1 ended (agent: abc123, tokens: 1520 in / 340 out)
+```
 
 ---
 
-## 4. Profile Authoring Guide
+## 5. Configuration Directory Resolution
 
-Agent profiles are markdown files with YAML frontmatter, stored in a directory (e.g. `src/profiles/`). The filename (without `.md`) becomes the profile's `id`.
+workflow-harness discovers profiles and workflows from two locations, with **local overriding global** on name conflicts.
+
+### Directory Locations
+
+| Scope | Path |
+|---|---|
+| **Global** | `$XDG_CONFIG_HOME/workflow-harness/` — or `~/.config/workflow-harness/` when `XDG_CONFIG_HOME` is unset or empty |
+| **Local** | `{cwd}/.workflow-harness/` — where `cwd` is the project directory |
+
+### Directory Structure
+
+```
+.workflow-harness/           # Local (per-project)
+├── profiles/                # Agent profile .md files
+├── workflows/               # Workflow scripts (.js, .mjs, .cjs, .ts)
+└── work/                    # Runtime state (auto-created)
+    └── develop/             # One subdirectory per workflow run
+            └── workflow-state.json
+            └── audit/audit.jsonl
+
+~/.config/workflow-harness/  # Global (user-wide)
+├── profiles/
+└── workflows/
+```
+
+### Resolution Order
+
+When loading profiles or workflows, the system searches both directories. On name conflict, the **local** entry wins:
+
+```
+resolveProfilesDirs(cwd) → [
+  "{cwd}/.workflow-harness/profiles",   // local — higher priority
+  "~/.config/workflow-harness/profiles" // global
+]
+```
+
+The same pattern applies to workflows via `resolveWorkflowsDirs(cwd)`.
+
+### Default Work Directory
+
+When `--work-dir` is not specified, the CLI uses:
+
+```
+{cwd}/.workflow-harness/work/{workflowName}
+```
+
+---
+
+## 6. Profiles
+
+Agent profiles are markdown files with YAML frontmatter. The filename (without `.md`) becomes the profile's `id`.
+
+### Where to Place Profiles
+
+- **Global:** `~/.config/workflow-harness/profiles/*.md`
+- **Local:** `{cwd}/.workflow-harness/profiles/*.md`
+
+Local profiles override global profiles with the same ID.
 
 ### Format
 
@@ -184,8 +277,8 @@ This body text becomes the system prompt.
 | Field | Required | Default | Description |
 |---|---|---|---|
 | `name` | No | Filename without `.md` | Human-readable display name |
-| `provider` | **Yes** | — | AI provider identifier (e.g. `your-provider`) |
-| `model` | **Yes** | — | Model identifier within the provider (e.g. `your-model`) |
+| `provider` | **Yes** | — | AI provider identifier (e.g. `anthropic`, `openai`) |
+| `model` | **Yes** | — | Model identifier within the provider |
 | `thinkingLevel` | No | `"medium"` | Model thinking depth. One of: `off`, `minimal`, `low`, `medium`, `high`, `xhigh` |
 | `excludeTools` | No | `[]` | Tool names to remove from the default set |
 | `includeTools` | No | `[]` | If non-empty, only these tools are included |
@@ -216,64 +309,268 @@ Output your review as structured JSON with fields:
 - approved: boolean
 ```
 
+### Default Profiles
+
+The built-in profiles in `defaults/profiles/` are installed by `workflow-harness init`:
+
+| Profile ID | Role | Tools |
+|---|---|---|
+| `scout` | Investigates codebase areas | Excludes `write`, `edit` |
+| `scouting-reviewer` | Synthesizes scouting reports | Excludes `write`, `edit` |
+| `planner` | Creates implementation plans | Excludes `write`, `edit` |
+| `plan-reviewer` | Reviews plans for feasibility | Excludes `write`, `edit` |
+| `implementer` | Writes code to implement tasks | All tools available |
+| `implement-reviewer` | Reviews implementations | Excludes `write`, `edit` |
+| `final-reviewer` | Final quality review | Excludes `write`, `edit` |
+| `fixer` | Fixes issues found in review | All tools available |
+
 ---
 
-## 5. API Reference
+## 7. Custom Workflows
 
-### Core
+Workflows are JavaScript or TypeScript modules that export a `run` function. They are discovered by name from the config directories.
 
-#### `parseProfile(content: string, filename: string): AgentProfile`
+### The `WorkflowModule` Interface
+
+```typescript
+interface WorkflowModule {
+  run(taskPrompt: string, options: WorkflowRunOptions): Promise<void>;
+  name?: string;
+  description?: string;
+}
+```
+
+The default export (or the module itself) must have a `run` function. Optional `name` and `description` fields are for documentation.
+
+### Where to Place Workflows
+
+- **Global:** `~/.config/workflow-harness/workflows/`
+- **Local:** `{cwd}/.workflow-harness/workflows/`
+
+Supported file extensions: `.js`, `.mjs`, `.cjs`, `.ts`.
+
+The workflow name is the filename without its extension (e.g. `develop.js` → `develop`).
+
+### Security
+
+Workflow names cannot contain `/`, `\`, or `..` — this prevents path traversal attacks. The loader throws an error for invalid names.
+
+### Example: Minimal Custom Workflow
+
+```javascript
+// ~/.config/workflow-harness/workflows/my-workflow.js
+import { createHarness, loadProfilesFromDirs, resolveProfilesDirs, promptForStructured } from "workflow-harness";
+import { z } from "zod";
+
+export async function run(taskPrompt, options) {
+  const { cwd, workDir, apiKeys, onStatus } = options;
+  const profilesDirs = resolveProfilesDirs(cwd);
+  const profiles = await loadProfilesFromDirs(profilesDirs);
+
+  const profile = profiles.get("implementer");
+  if (!profile) throw new Error("implementer profile not found");
+
+  const { harness } = await createHarness({ profile, cwd, apiKeys });
+  const result = await harness.prompt(`Complete this task: ${taskPrompt}`);
+  console.log("Done:", result);
+}
+```
+
+### Example: Composing Phase Functions
+
+The default `develop` workflow is just a re-export:
+
+```javascript
+// defaults/workflows/develop.js
+export { run } from "workflow-harness";
+```
+
+You can import individual phase functions from `workflow-harness` to compose a custom pipeline:
+
+```typescript
+import {
+  scoutingPhase,
+  planningPhase,
+  implementationPhase,
+  finalReviewPhase,
+  WorkflowStatusTracker,
+} from "workflow-harness";
+
+export async function run(taskPrompt: string, options: WorkflowRunOptions) {
+  const tracker = new WorkflowStatusTracker(options.workDir);
+  const profilesDirs = resolveProfilesDirs(options.cwd);
+
+  const reports = await scoutingPhase(tracker, profilesDirs, taskPrompt, options.cwd, options.apiKeys, options.onStatus);
+  // ... custom orchestration logic
+}
+```
+
+### TypeScript Workflows
+
+`.ts` workflow files are supported at runtime via the `tsx` ESM loader, which is automatically registered the first time a `.ts` workflow is loaded.
+
+---
+
+## 8. Programmatic API
+
+All types and functions below are exported from the top-level `workflow-harness` entry point.
+
+### Workflow Execution
+
+#### `run(taskPrompt, options): Promise<void>`
+
+Execute the full development workflow. Resumes automatically if a `workflow-state.json` exists in `workDir`.
+
+```typescript
+import { run } from "workflow-harness";
+
+await run("Add error handling to the API layer", {
+  cwd: "/path/to/project",
+  workDir: "/tmp/workflow-run-001",
+  maxConcurrentTasks: 3,
+});
+```
+
+If `profilesDir` is omitted, profiles are auto-resolved from the local and global config directories via `resolveProfilesDirs(cwd)`.
+
+### Workflow Loading
+
+#### `loadWorkflow(name, cwd): Promise<WorkflowModule>`
+
+Dynamically load a workflow module by name. Searches local then global workflow directories. Supports `.js`, `.mjs`, `.cjs`, and `.ts` files. Results are cached by resolved file path.
+
+#### `listWorkflows(cwd): Promise<Array<{ name, source, path }>>`
+
+List all available workflows across local and global directories. Returns entries sorted by name, then by source (local first).
+
+#### `clearWorkflowCache(): void`
+
+Clear the in-memory workflow module cache.
+
+### Profile Loading
+
+#### `loadProfiles(dirPath): Promise<Map<string, AgentProfile>>`
+
+Load all `.md` files from a directory into a `Map` keyed by profile ID. Results are cached in-memory for the process lifetime. Throws if the directory does not exist.
+
+#### `loadProfile(dirPath, profileId): Promise<AgentProfile>`
+
+Load a single profile by ID from a directory. Uses the directory cache internally.
+
+#### `loadProfileSingle(filePath): Promise<AgentProfile>`
+
+Load a single profile directly from a `.md` file path. Bypasses the directory cache.
+
+#### `loadProfilesFromDirs(dirs): Promise<Map<string, AgentProfile>>`
+
+Load and merge profiles from multiple directories. Directories are processed in reverse order so that earlier entries (local) override later entries (global) on ID collision. Missing or non-directory paths are silently skipped.
+
+#### `parseProfile(content, filename): AgentProfile`
 
 Parse a markdown string with YAML frontmatter into an `AgentProfile`. Throws if `provider` or `model` is missing, or if `thinkingLevel` is invalid.
 
-#### `loadProfiles(dirPath: string): Promise<Map<string, AgentProfile>>`
-
-Load all `.md` files from a directory into a `Map` keyed by profile id. Throws if the directory does not exist.
-
-> **Caching:** Results are cached in-memory for the lifetime of the process. Use `clearProfileCache()` to invalidate.
-
-#### `loadProfile(dirPath: string, profileId: string): Promise<AgentProfile>`
-
-Load a single profile by id. Uses the directory cache internally. Throws if not found.
-
-> **Caching:** Delegates to `loadProfiles`, which caches results in-memory for the lifetime of the process. Use `clearProfileCache()` to invalidate.
-
-#### `loadProfileSingle(filePath: string): Promise<AgentProfile>`
-
-Load a single profile directly from a `.md` file path. Bypasses the directory cache — use when you know the exact file location. Throws if the file does not exist or is invalid.
-
 #### `clearProfileCache(): void`
 
-Clear the in-memory profile cache. Forces a fresh disk read on the next `loadProfiles()` call.
+Clear the in-memory profile cache.
 
-#### `createHarness(options: HarnessCreationOptions): Promise<{ harness: AgentHarness; sessionId: string; unsubscribe?: () => void }>`
+### Harness Creation
 
-Create a fully-wired `AgentHarness` from an `AgentProfile`. Steps: create execution environment, session (in-memory or JSONL-backed), resolve model, filter tools, resolve API key, subscribe to agent status events.
+#### `createHarness(options): Promise<{ harness, sessionId, unsubscribe? }>`
+
+Create a fully-wired `AgentHarness` from an `AgentProfile`. Resolution steps: create `NodeExecutionEnv`, create session (in-memory or JSONL-backed), resolve model, filter tools, resolve API key, subscribe to agent status events.
 
 **`HarnessCreationOptions` fields:**
-- `profile: AgentProfile` — the agent configuration
-- `cwd: string` — working directory for file operations
-- `sessionId?: string` — provide to use JSONL persistence; omit for in-memory
-- `additionalTools?: AgentTool[]` — extra tools beyond the defaults
-- `apiKeys?: Record<string, string>` — provider → API key overrides
-- `onAgentStatus?: AgentStatusCallbacks` — callbacks for turn-level and tool-level events
+
+| Field | Type | Description |
+|---|---|---|
+| `profile` | `AgentProfile` | The agent configuration |
+| `cwd` | `string` | Working directory for file operations |
+| `sessionId?` | `string` | Provide for JSONL persistence; omit for in-memory |
+| `additionalTools?` | `AgentTool[]` | Extra tools beyond the defaults |
+| `apiKeys?` | `Record<string, string>` | Provider → API key overrides |
+| `onAgentStatus?` | `AgentStatusCallbacks` | Callbacks for turn/tool events |
 
 **Return fields:**
-- `harness: AgentHarness` — the fully-wired agent harness
-- `sessionId: string` — resolved session identifier
-- `unsubscribe?: () => void` — teardown function for agent status subscription. Call after the harness is no longer needed to prevent memory leaks. Only present when `onAgentStatus` is provided AND at least one agent-level callback (`onTurnStart`, `onTurnEnd`, `onToolCallStart`, or `onToolCallEnd`) is defined.
 
-#### `createHarnessFromProfile(dirPath, profileId, options): Promise<{ harness: AgentHarness; sessionId: string; unsubscribe?: () => void }>`
+| Field | Type | Description |
+|---|---|---|
+| `harness` | `AgentHarness` | The fully-wired agent harness |
+| `sessionId` | `string` | Resolved session identifier |
+| `unsubscribe?` | `() => void` | Teardown for agent status subscription. Only present when `onAgentStatus` is provided AND at least one agent-level callback is defined. |
 
-Convenience wrapper: loads a profile from disk, then delegates to `createHarness`. Returns the same shape including `unsubscribe` when agent status callbacks are active.
+#### `createHarnessFromProfile(dirPath, profileId, options): Promise<{ harness, sessionId, unsubscribe? }>`
 
-#### `extractJsonFromText(text: string): string | null`
+Convenience wrapper: loads a profile from disk, then delegates to `createHarness`.
 
-Extract a JSON string from free-text model output. Tries fenced code blocks first, then bracket counting.
+### Config Resolution
+
+#### `getGlobalConfigDir(): string`
+
+Returns the global config directory path. Uses `$XDG_CONFIG_HOME/workflow-harness` if set and non-empty, otherwise `~/.config/workflow-harness`.
+
+#### `getLocalConfigDir(cwd): string`
+
+Returns `{cwd}/.workflow-harness`.
+
+#### `resolveProfilesDirs(cwd): string[]`
+
+Returns `[localProfilesDir, globalProfilesDir]` — local first for override priority.
+
+#### `resolveWorkflowsDirs(cwd): string[]`
+
+Returns `[localWorkflowsDir, globalWorkflowsDir]` — local first for override priority.
+
+#### `getDefaultWorkDir(cwd, workflowName): string`
+
+Returns `{cwd}/.workflow-harness/work/{workflowName}`.
+
+#### `ensureDir(dirPath): Promise<void>`
+
+Recursively creates a directory. Re-throws any errors.
+
+### Setup
+
+#### `initDefaultConfig(options?): Promise<{ installed, skipped }>`
+
+Installs default profiles and workflows from `defaults/` into the global config directory. Skips existing files unless `force: true` is passed. Skips symlinks with a warning.
+
+### Structured Output
 
 #### `promptForStructured<T>(harness, prompt, schema, options?): Promise<T>`
 
 Prompt a harness and parse the response through a Zod schema. Retries up to `maxRetries` (default 3) with error feedback appended to the prompt.
+
+#### `extractJsonFromText(text): string | null`
+
+Extract a JSON string from free-text model output. Tries fenced code blocks first, then bracket counting.
+
+#### `getAssistantText(message): string`
+
+Concatenate all text blocks from an assistant message's content array.
+
+#### `schemaToString(schema): string`
+
+Convert a Zod schema into a human-readable description string.
+
+### Agent Loop Utilities
+
+#### `agentLoopUntil(harness, promptFn, conditionFn, options?): Promise<{ response, attempts }>`
+
+Repeatedly prompt a harness until `conditionFn` returns `true` or `maxAttempts` (default 10) is reached.
+
+#### `retryAgentUntil<T>(harness, prompt, schema, options?): Promise<AgentLoopResult<T>>`
+
+Convenience wrapper around `promptForStructured` that returns an `AgentLoopResult` envelope. Token tracking is not available — `totalTokens` is set to zero.
+
+#### `parallelAgents<T>(configs, promptFn, options?): Promise<PromiseSettledResult<T>[]>`
+
+Create harnesses for every config in parallel, then run prompts via `Promise.allSettled`. Optionally validate through a Zod schema.
+
+#### `sequentialAgents<T>(configs, promptFn, options?): Promise<T[]>`
+
+Same as `parallelAgents` but runs prompts sequentially. Throws on the first failure.
+
+### Session Management
 
 #### `SessionHistory`
 
@@ -285,39 +582,25 @@ class SessionHistory {
 }
 ```
 
-Aggregates token usage and cost from assistant messages in a session.
+#### `createResumableSession(cwd, sessionId?): Promise<{ session, sessionId }>`
 
-#### `createResumableSession(cwd: string, sessionId?: string): Promise<{ session: Session; sessionId: string }>`
+Create a session backed by in-memory or JSONL storage.
 
-Create a resumable session backed by in-memory storage (no `sessionId`) or JSONL file storage (with `sessionId`). Returns both the `Session` instance and its resolved ID.
+#### `resumeSession(source, target): Promise<void>`
 
-#### `resumeSession(source: Session, target: AgentHarness): Promise<void>`
+Copy all message entries from a source session into a target harness.
 
-Copy all message entries from a source session into a target harness for resumption.
-
-#### `agentLoopUntil(harness, promptFn, conditionFn, options?): Promise<{ response, attempts }>`
-
-Repeatedly prompt a harness until `conditionFn` returns `true` or `maxAttempts` (default 10) is reached.
-
-#### `retryAgentUntil<T>(harness, prompt, schema, options?): Promise<AgentLoopResult<T>>`
-
-Convenience wrapper around `promptForStructured` that returns an `AgentLoopResult` envelope. Token tracking is not available through this wrapper — `totalTokens` is set to zero.
-
-#### `parallelAgents<T>(configs, promptFn, options?): Promise<PromiseSettledResult<T>[]>`
-
-Create harnesses for every config in parallel, then run prompts via `Promise.allSettled`. Optionally validate through a Zod schema.
-
-#### `sequentialAgents<T>(configs, promptFn, options?): Promise<T[]>`
-
-Same as `parallelAgents` but runs prompts sequentially. Throws on the first failure.
+### API Key Resolution
 
 #### `resolveApiKey(provider, customKeys?): string | undefined`
 
-Resolve an API key from custom overrides or environment variables.
+Resolve from custom overrides or environment variables.
 
 #### `resolveApiKeyOrThrow(provider, customKeys?): string`
 
 Same as `resolveApiKey` but throws with a helpful error message including expected env var names.
+
+### Tool Registry
 
 #### `ToolRegistry`
 
@@ -330,17 +613,7 @@ class ToolRegistry {
 }
 ```
 
-Name-indexed tool collection with include/exclude filtering.
-
-#### `getAssistantText(message: { content: Array<{ type: string; text?: string }> }): string`
-
-Concatenate all text blocks from an assistant message's content array. Ignores non-text blocks (e.g. thinking, toolCall).
-
-#### `schemaToString(schema: ZodType): string`
-
-Convert a Zod schema into a human-readable description string. Falls back to `JSON.stringify` for unrecognized shapes. Useful for constructing retry prompts that include the expected schema.
-
-#### `createDefaultToolRegistry(env: ExecutionEnv): ToolRegistry`
+#### `createDefaultToolRegistry(env): ToolRegistry`
 
 Creates a registry with seven built-in tools: `read`, `bash`, `write`, `edit`, `grep`, `find`, `ls`.
 
@@ -359,9 +632,7 @@ class AuditLog {
 }
 ```
 
-JSONL-backed audit log. Each event is a JSON line with an auto-generated ISO timestamp.
-
-> **Caching:** Events are cached in-memory after first read. The cache is invalidated on each `append()`.
+JSONL-backed audit log. Events are cached in-memory after first read; the cache is invalidated on each `append()`.
 
 #### `TaskTracker`
 
@@ -385,6 +656,7 @@ class TaskTracker {
 Manages a DAG of tasks with enforced state transitions and cycle detection.
 
 **Task lifecycle:**
+
 ```
 blocked → ready → claimed → implementing → reviewing → done
                                     ↑            ↓
@@ -426,36 +698,144 @@ class WorkflowStatusTracker {
 
 Top-level workflow state manager. Persists to `workflow-state.json` in the working directory.
 
-### Workflow
+### Phase Functions (Develop Workflow)
 
-#### `run(taskPrompt: string, options: RunOptions): Promise<void>`
-
-Execute the full development workflow. Resumes automatically if a `workflow-state.json` exists in `workDir`.
-
-**`RunOptions` fields:**
-- `profilesDir: string` — directory containing agent profile `.md` files
-- `cwd: string` — project directory to operate on
-- `workDir: string` — directory for workflow state persistence
-- `maxConcurrentTasks?: number` — max parallel implementers (default 3)
-- `apiKeys?: Record<string, string>` — provider → API key overrides
-- `onStatus?: StatusCallbacks` — status callbacks for workflow and agent events (inherited from `DevelopWorkflowOptions`)
-
-#### Phase Functions
-
-Each phase is exported individually for custom orchestration:
+Each phase of the develop workflow is exported individually for custom orchestration:
 
 | Function | Signature |
 |---|---|
-| `scoutingPhase` | `(tracker, profilesDir, taskPrompt, cwd, apiKeys?, onStatus?) → Promise<unknown[]>` |
-| `scoutingReviewPhase` | `(tracker, profilesDir, reports, cwd, apiKeys?, onStatus?) → Promise<ScoutingReview>` |
-| `planningPhase` | `(tracker, profilesDir, research, taskPrompt, cwd, apiKeys?, onStatus?) → Promise<Plan>` |
-| `planReviewPhase` | `(tracker, profilesDir, plan, research, taskPrompt, cwd, apiKeys?, onStatus?) → Promise<PlanReview>` |
-| `implementationPhase` | `(tracker, profilesDir, plan, cwd, maxConcurrentTasks?, apiKeys?, onStatus?) → Promise<void>` |
-| `finalReviewPhase` | `(tracker, profilesDir, cwd, apiKeys?, onStatus?) → Promise<boolean>` |
+| `scoutingPhase` | `(tracker, profilesDirs, taskPrompt, cwd, apiKeys?, onStatus?) → Promise<unknown[]>` |
+| `scoutingReviewPhase` | `(tracker, profilesDirs, reports, cwd, apiKeys?, onStatus?) → Promise<ScoutingReview>` |
+| `planningPhase` | `(tracker, profilesDirs, research, taskPrompt, cwd, apiKeys?, onStatus?) → Promise<Plan>` |
+| `planReviewPhase` | `(tracker, profilesDirs, plan, research, taskPrompt, cwd, apiKeys?, onStatus?) → Promise<PlanReview>` |
+| `implementationPhase` | `(tracker, profilesDirs, plan, cwd, maxConcurrentTasks?, apiKeys?, onStatus?) → Promise<void>` |
+| `finalReviewPhase` | `(tracker, profilesDirs, cwd, apiKeys?, onStatus?) → Promise<boolean>` |
+
+Note the `profilesDirs` parameter is a `string[]` (an array of directories), not a single directory path.
 
 ---
 
-## 6. Types Reference
+## 9. Architecture
+
+```
+src/
+├── index.ts                     # Public API re-exports
+├── cli.ts                       # CLI entry point (run, list, init commands)
+├── setup.ts                     # Default config installation (initDefaultConfig)
+├── core/
+│   ├── types.ts                 # Shared type definitions and re-exports
+│   ├── config.ts                # Config directory resolution (global/local/work dirs)
+│   ├── profile.ts               # Markdown profile parser, loader, and multi-dir merge
+│   ├── workflow-loader.ts       # Dynamic workflow module loading and listing
+│   ├── harness-factory.ts       # AgentHarness construction from profiles
+│   ├── structured-output.ts     # JSON extraction, Zod-validated prompting
+│   ├── session-history.ts       # Session statistics and resumption helpers
+│   ├── agent-loop.ts            # Looping, parallel, and sequential agent patterns
+│   ├── auth.ts                  # API key resolution (env vars and overrides)
+│   └── tool-registry.ts         # Tool registration and filtered resolution
+├── tracking/
+│   ├── audit-log.ts             # JSONL-based audit event log
+│   ├── task-status.ts           # Task DAG tracker with state transitions
+│   └── workflow-status.ts       # Full workflow phase state (persisted to JSON)
+├── workflows/
+│   └── develop.ts               # The development workflow: phases + orchestrator
+└── profiles/                    # Built-in agent profile definitions
+    ├── scout.md
+    ├── scouting-reviewer.md
+    ├── planner.md
+    ├── plan-reviewer.md
+    ├── implementer.md
+    ├── implement-reviewer.md
+    ├── final-reviewer.md
+    └── fixer.md
+
+defaults/                        # Files installed by `workflow-harness init`
+├── profiles/                    # Same as src/profiles/
+└── workflows/
+    └── develop.js               # Re-exports run from workflow-harness
+```
+
+### Core Layer (`src/core/`)
+
+| Module | Responsibility |
+|---|---|
+| `types.ts` | Re-exports from `pi-agent-core` and `pi-ai`; defines `AgentProfile`, `Task`, `WorkflowState`, `AuditEvent`, `WorkflowModule`, `WorkflowRunOptions`, and related types |
+| `config.ts` | Resolves global (`~/.config/workflow-harness/`) and local (`.workflow-harness/`) config directories; provides default work directory paths |
+| `profile.ts` | Parses markdown files with YAML frontmatter into `AgentProfile` objects; loads all profiles from a directory or merges from multiple directories |
+| `workflow-loader.ts` | Dynamically loads workflow modules by name from config directories; supports `.js`, `.mjs`, `.cjs`, `.ts`; caches loaded modules |
+| `harness-factory.ts` | Creates a fully-wired `AgentHarness` from a profile: execution environment, session, model, tools, and API key |
+| `structured-output.ts` | Extracts JSON from free-text model responses; prompts a harness and validates output against a Zod schema with automatic retries |
+| `session-history.ts` | Tracks token usage and cost across a session; provides session resumption by copying message history |
+| `agent-loop.ts` | Higher-level patterns: `agentLoopUntil`, `parallelAgents`, `sequentialAgents` |
+| `auth.ts` | Resolves API keys from caller-supplied overrides or environment variables |
+| `tool-registry.ts` | Registers tools by name and resolves a filtered subset based on `includeTools`/`excludeTools` |
+
+### Tracking Layer (`src/tracking/`)
+
+| Module | Responsibility |
+|---|---|
+| `audit-log.ts` | Appends `AuditEvent` records to a JSONL file; supports filtering by type or task ID; computes aggregate stats |
+| `task-status.ts` | Manages a collection of `Task` objects with a DAG of dependencies; enforces state transitions; detects cycles |
+| `workflow-status.ts` | Top-level workflow state: current phase, completed phases, scouting reports, plan, stats, and task tracker; persists to `workflow-state.json` |
+
+### Workflow Layer (`src/workflows/`)
+
+| Module | Responsibility |
+|---|---|
+| `develop.ts` | Exports individual phase functions and a top-level `run()` orchestrator that chains them with retry loops |
+
+---
+
+## 10. How the Develop Workflow Works
+
+The `run()` orchestrator in `develop.ts` uses a **phase-dispatch loop** driven by an ordered `phaseOrder` array:
+
+```
+["scouting", "scouting_review", "planning", "plan_review", "implementing", "final_review", "done"]
+```
+
+Each phase has a handler that performs exactly one step. A handler may return the name of a phase to **jump to** (for retries), or return `void` to **advance linearly** to the next entry. This makes the control flow explicit and easy to extend — to add a new phase, insert it into the array and add a case to the handler.
+
+The pipeline proceeds as follows:
+
+1. **Scouting** — A `scout` agent identifies codebase areas to investigate. For each topic discovered, a parallel scout agent produces a report via `parallelAgents`.
+
+2. **Scouting Review** — The `scouting-reviewer` synthesizes all reports into a research summary and decides whether enough information has been gathered. If `ready` is `false` and fewer than 3 rounds have elapsed, the handler returns `"scouting"` to jump back. After 3 rounds the workflow proceeds regardless.
+
+3. **Planning** — The `planner` agent creates a `Plan` containing an array of `Task` objects, each with `id`, `title`, `prompt`, `profile`, `files`, and `dependencies`. The plan forms a DAG.
+
+4. **Plan Review** — The `plan-reviewer` evaluates the plan. If `ready` is `false` and fewer than 3 rounds have elapsed, the handler returns `"planning"` to jump back. After 3 rounds the workflow proceeds with the current plan.
+
+5. **Implementation** — Tasks are loaded into the `TaskTracker`. The orchestrator claims up to `maxConcurrentTasks` at a time, dispatches them to implementer agents in parallel via `parallelAgents`, and then runs reviewer agents in parallel via `Promise.allSettled`. Approved tasks are completed; rejected tasks return to `"ready"` for re-implementation. If a review itself fails, the failure is logged and the task is still completed to avoid blocking the pipeline.
+
+6. **Final Review** — The `final-reviewer` examines the entire codebase. If critical issues are found, `fixer` agents resolve them in parallel. This loop runs up to 3 rounds.
+
+### Parallel Execution
+
+Concurrency is used at multiple points:
+
+- During **scouting**, one scout agent is spawned per topic via `parallelAgents`.
+- During **implementation**, tasks are claimed in batches of `maxConcurrentTasks`. Each batch runs implementer agents in parallel, and reviews also run in parallel.
+- During **final review**, fixer agents for critical issues run in parallel.
+
+`parallelAgents` uses `Promise.allSettled` under the hood, so a single agent failure does not crash the batch.
+
+### Structured Output Schemas
+
+The develop workflow exports these Zod schemas for reuse:
+
+| Schema | Fields |
+|---|---|
+| `ScoutingTopicSchema` | `topics: Array<{ topic, rationale, files }>` |
+| `ScoutingReviewSchema` | `ready: boolean`, `research: string`, `gaps: string[]` |
+| `PlanSchema` | `tasks: Array<{ id, title, prompt, profile, files, dependencies }>`, `strategy: string` |
+| `PlanReviewSchema` | `ready: boolean`, `feedback: string`, `suggestions: string[]` |
+| `ReviewResultSchema` | `approved: boolean`, `feedback: string`, `issues: Array<{ file, description, severity }>` |
+| `FinalReviewTopicsSchema` | `topics: Array<{ topic, files }>`, `overallAssessment: string`, `issues: Array<{ file, description, severity }>` |
+
+---
+
+## 11. Types Reference
 
 All types listed below are exported from the top-level `workflow-harness` entry point.
 
@@ -467,7 +847,7 @@ All types listed below are exported from the top-level `workflow-harness` entry 
 type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 ```
 
-Controls how much "thinking" the model does before responding. Defaults to `"medium"` in profiles. Re-exported from `@earendil-works/pi-agent-core`.
+Re-exported from `@earendil-works/pi-agent-core`.
 
 #### `WorkflowPhase`
 
@@ -482,7 +862,7 @@ type WorkflowPhase =
     | "done";
 ```
 
-Phases execute in the order listed. `WorkflowStatusTracker.advancePhase()` moves strictly forward; `setPhase()` can jump to any valid phase.
+`advancePhase()` moves strictly forward; `setPhase()` can jump to any valid phase.
 
 #### `TaskStatus`
 
@@ -490,19 +870,17 @@ Phases execute in the order listed. `WorkflowStatusTracker.advancePhase()` moves
 type TaskStatus = "blocked" | "ready" | "claimed" | "implementing" | "reviewing" | "done";
 ```
 
-See [Task lifecycle diagram](#tasktracker) for valid transitions.
+See [Task lifecycle](#tasktracker) for valid transitions.
 
 ---
 
 ### `AgentProfile`
 
-Defines a single agent's configuration. Parsed from markdown files with YAML frontmatter.
-
 | Field | Type | Description |
 |---|---|---|
 | `id` | `string` | Profile identifier — derived from filename without `.md` |
 | `name` | `string` | Human-readable display name. Defaults to `id` |
-| `provider` | `string` | AI provider identifier (e.g. `"anthropic"`, `"openai"`) |
+| `provider` | `string` | AI provider identifier |
 | `model` | `string` | Model identifier within the provider |
 | `thinkingLevel` | `ThinkingLevel` | Model thinking depth |
 | `systemPrompt` | `string` | The full system prompt (markdown body after frontmatter) |
@@ -513,14 +891,12 @@ Defines a single agent's configuration. Parsed from markdown files with YAML fro
 
 ### `Task`
 
-A single unit of work within a plan, tracked by `TaskTracker`.
-
 | Field | Type | Description |
 |---|---|---|
 | `id` | `string` | Unique task identifier |
 | `title` | `string` | Short description |
 | `prompt` | `string` | Detailed prompt for the implementing agent |
-| `profile` | `string` | Agent profile ID to use (e.g. `"implementer"`) |
+| `profile` | `string` | Agent profile ID to use |
 | `files` | `string[]` | Files this task is expected to modify |
 | `dependencies` | `string[]` | Task IDs that must complete before this task |
 | `status` | `TaskStatus` | Current lifecycle state |
@@ -532,7 +908,7 @@ A single unit of work within a plan, tracked by `TaskTracker`.
 
 ### `AuditEvent`
 
-A discriminated union of event types logged by `AuditLog`. Each variant has a `timestamp: string` field added automatically on append.
+A discriminated union logged by `AuditLog`. Each variant has an auto-generated `timestamp: string` field.
 
 #### `agent_start`
 
@@ -542,7 +918,6 @@ A discriminated union of event types logged by `AuditLog`. Each variant has a `t
 | `agentId` | `string` | Identifier of the agent |
 | `profile` | `AgentProfile` | Profile used to create the agent |
 | `taskId?` | `string` | Associated task, if applicable |
-| `timestamp` | `string` | ISO 8601 timestamp (auto-generated) |
 
 #### `agent_end`
 
@@ -552,7 +927,6 @@ A discriminated union of event types logged by `AuditLog`. Each variant has a `t
 | `agentId` | `string` | Identifier of the agent |
 | `result` | `unknown` | The agent's final result (may include `cost` and `tokens`) |
 | `taskId?` | `string` | Associated task, if applicable |
-| `timestamp` | `string` | ISO 8601 timestamp (auto-generated) |
 
 #### `decision`
 
@@ -563,7 +937,6 @@ A discriminated union of event types logged by `AuditLog`. Each variant has a `t
 | `decision` | `string` | Short decision label (e.g. `"approved"`, `"plan_rejected"`) |
 | `reasoning` | `string` | Explanation for the decision |
 | `taskId?` | `string` | Associated task, if applicable |
-| `timestamp` | `string` | ISO 8601 timestamp (auto-generated) |
 
 #### `structured_output`
 
@@ -573,7 +946,6 @@ A discriminated union of event types logged by `AuditLog`. Each variant has a `t
 | `agentId` | `string` | Identifier of the producing agent |
 | `output` | `unknown` | The validated structured output |
 | `taskId?` | `string` | Associated task, if applicable |
-| `timestamp` | `string` | ISO 8601 timestamp (auto-generated) |
 
 #### `error`
 
@@ -583,7 +955,6 @@ A discriminated union of event types logged by `AuditLog`. Each variant has a `t
 | `agentId` | `string` | Identifier of the agent that errored |
 | `error` | `string` | Error description |
 | `taskId?` | `string` | Associated task, if applicable |
-| `timestamp` | `string` | ISO 8601 timestamp (auto-generated) |
 
 ---
 
@@ -593,7 +964,7 @@ Serialized form of `WorkflowStatusTracker`. Written to `workflow-state.json` on 
 
 | Field | Type | Description |
 |---|---|---|
-| `taskPrompt` | `string` | The original task prompt for the workflow |
+| `taskPrompt` | `string` | The original task prompt |
 | `currentPhase` | `WorkflowPhase` | Phase the workflow is currently in |
 | `completedPhases` | `WorkflowPhase[]` | Phases that have finished |
 | `tasks` | `Task[]` | All tasks in the plan |
@@ -601,6 +972,49 @@ Serialized form of `WorkflowStatusTracker`. Written to `workflow-state.json` on 
 | `plan` | `unknown` | The validated implementation plan |
 | `research?` | `string` | Synthesized research summary from scouting review |
 | `stats` | `{ totalTokens: number; totalCost: number; agentCount: number }` | Aggregate statistics |
+
+---
+
+### `WorkflowRunOptions`
+
+Options passed to a workflow's `run()` function.
+
+| Field | Type | Description |
+|---|---|---|
+| `cwd` | `string` | Project directory to operate on |
+| `workDir` | `string` | Directory for workflow state persistence |
+| `maxConcurrentTasks?` | `number` | Maximum parallel implementers (default 3) |
+| `apiKeys?` | `Record<string, string>` | Provider → API key overrides |
+| `onStatus?` | `StatusCallbacks` | Callbacks for workflow/agent events |
+
+---
+
+### `WorkflowModule`
+
+Interface for workflow modules loaded by `loadWorkflow`.
+
+| Field | Type | Description |
+|---|---|---|
+| `run` | `(taskPrompt: string, options: WorkflowRunOptions) => Promise<void>` | The workflow entry point (**required**) |
+| `name?` | `string` | Human-readable workflow name |
+| `description?` | `string` | Workflow description |
+
+---
+
+### `DevelopWorkflowOptions`
+
+Options shared by the develop workflow phases.
+
+| Field | Type | Description |
+|---|---|---|
+| `profilesDir?` | `string` | Explicit profiles directory. If omitted, auto-resolved via `resolveProfilesDirs(cwd)` |
+| `cwd` | `string` | Project directory to operate on |
+| `maxConcurrentTasks?` | `number` | Maximum parallel implementers (default 3) |
+| `apiKeys?` | `Record<string, string>` | Provider → API key overrides |
+| `onStatus?` | `StatusCallbacks` | Callbacks for workflow and agent events |
+| `workDir?` | `string` | Directory for workflow state persistence |
+
+`RunOptions` extends this with `workDir: string` as required.
 
 ---
 
@@ -612,21 +1026,20 @@ Options for `createHarness`.
 |---|---|---|
 | `profile` | `AgentProfile` | The agent configuration to use |
 | `cwd` | `string` | Working directory for file operations |
-| `sessionId?` | `string` | Provide to use JSONL persistence; omit for in-memory |
+| `sessionId?` | `string` | Provide for JSONL persistence; omit for in-memory |
 | `additionalTools?` | `AgentTool[]` | Extra tools beyond the defaults |
 | `apiKeys?` | `Record<string, string>` | Provider → API key overrides |
-| `onAgentStatus?` | `AgentStatusCallbacks` | Callbacks for turn-level and tool-level agent events |
+| `onAgentStatus?` | `AgentStatusCallbacks` | Callbacks for turn-level and tool-level events |
 
 ---
 
 ### `StructuredOutputOptions`
 
-Options for `promptForStructured` and related structured output functions.
+Options for `promptForStructured`.
 
 | Field | Type | Description |
 |---|---|---|
 | `maxRetries` | `number` | Maximum number of retry attempts |
-| `retryPrompt?` | `string` | Custom prompt to use when retrying |
 
 ---
 
@@ -638,32 +1051,53 @@ Options for `agentLoopUntil`.
 |---|---|---|
 | `maxAttempts?` | `number` | Maximum loop iterations (default: 10) |
 
----
+### `ParallelAgentOptions`
 
-### `DevelopWorkflowOptions`
-
-Options shared by the develop workflow phases.
+Options for `parallelAgents`.
 
 | Field | Type | Description |
 |---|---|---|
-| `profilesDir` | `string` | Directory containing agent profile `.md` files |
-| `cwd` | `string` | Project directory to operate on |
-| `maxConcurrentTasks?` | `number` | Maximum parallel implementers (default 3) |
-| `apiKeys?` | `Record<string, string>` | Provider → API key overrides |
-| `onStatus?` | `StatusCallbacks` | Callbacks for workflow, phase, task, and agent-level events |
-| `workDir?` | `string` | Directory for workflow state persistence |
+| `schema?` | `ZodType<any>` | Zod schema for structured output validation |
+| `maxRetries?` | `number` | Max retries for structured output (default: 3) |
 
-`RunOptions` extends this with `workDir: string` as required and inherits `onStatus`.
+### `SequentialAgentOptions`
+
+Options for `sequentialAgents`.
+
+| Field | Type | Description |
+|---|---|---|
+| `schema?` | `ZodType<any>` | Zod schema for structured output validation |
+| `maxRetries?` | `number` | Max retries for structured output (default: 3) |
 
 ---
+
+### `ToolRegistryEntry`
+
+Used by `ToolRegistry.register(entry)`.
+
+```typescript
+interface ToolRegistryEntry {
+    name: string;
+    tool: AgentTool;
+}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `name` | `string` | Tool name used for lookup and filtering |
+| `tool` | `AgentTool` | The tool implementation |
 
 ### `PromptableHarness`
 
-A minimal interface for objects that can be prompted — used by `promptForStructured`, `retryAgentUntil`, and related functions.
+A minimal interface for objects that can be prompted.
 
-| Field | Type | Description |
-|---|---|---|
-| `prompt` | `(text: string) => Promise<{ content: Array<{ type: string; text?: string; thinking?: string }> }>` | Send a prompt and receive a response with content blocks |
+```typescript
+interface PromptableHarness {
+  prompt: (text: string) => Promise<{
+    content: Array<{ type: string; text?: string; thinking?: string }>;
+  }>;
+}
+```
 
 Both `AgentHarness` instances and mock objects satisfy this interface.
 
@@ -682,37 +1116,15 @@ Token usage and cost aggregation returned by `SessionHistory.getStats()`.
 
 ---
 
-### `WorkflowStatusCallbacks`
+### `AgentLoopResult<T>`
 
-Callbacks for workflow-level and task-level events. All methods are optional — implement only the events you care about.
+Envelope returned by `retryAgentUntil`.
 
-| Method | Parameter Shape | Fired when |
+| Field | Type | Description |
 |---|---|---|
-| `onWorkflowStart` | `{ taskPrompt: string; resumed: boolean; workDir: string }` | The `run()` orchestrator starts (new or resumed) |
-| `onPhaseStart` | `{ phase: WorkflowPhase; round: number }` | A phase begins execution |
-| `onPhaseComplete` | `{ phase: WorkflowPhase; durationMs: number }` | A phase finishes |
-| `onAgentSpawn` | `{ agentId: string; profile: string; phase: string; taskId?: string }` | An agent harness is created |
-| `onAgentComplete` | `{ agentId: string; profile: string; phase: string; taskId?: string }` | An agent finishes its prompt |
-| `onTaskStart` | `{ taskId: string; title: string; agentId: string }` | A task is claimed and dispatched to an implementer |
-| `onTaskComplete` | `{ taskId: string; title: string }` | A task passes review and is marked done |
-| `onTaskRejected` | `{ taskId: string; title: string; reason: string }` | A task fails review and returns to ready |
-| `onDecision` | `{ agentId: string; decision: string; reasoning: string; taskId?: string }` | A reviewer makes a decision (e.g. approved, plan_rejected) |
-| `onError` | `{ agentId: string; error: string; phase: string; taskId?: string }` | An agent encounters an error |
-| `onWorkflowComplete` | `{ totalDurationMs: number; agentCount: number }` | The workflow finishes successfully |
-| `onWorkflowFailed` | `{ error: Error; phase: string }` | The workflow throws an unhandled error |
-
----
-
-### `AgentStatusCallbacks`
-
-Callbacks for turn-level and tool-level agent events. These provide fine-grained observability into individual agent turns. All methods are optional.
-
-| Method | Parameter Shape | Fired when |
-|---|---|---|
-| `onTurnStart` | `{ agentId: string; turn: number }` | An agent turn begins |
-| `onTurnEnd` | `{ agentId: string; turn: number; tokens?: { input: number; output: number } }` | An agent turn completes. `tokens` is present when the model reports usage. |
-| `onToolCallStart` | `{ agentId: string; toolName: string; toolCallId: string }` | A tool execution starts |
-| `onToolCallEnd` | `{ agentId: string; toolName: string; toolCallId: string; isError: boolean }` | A tool execution finishes. `isError` is `true` when the tool threw. |
+| `result` | `T` | The validated structured output |
+| `attempts` | `number` | Configured maximum retry attempts (default: 3). This is the configured max, not the actual number of attempts used. |
+| `totalTokens` | `{ input: number; output: number }` | Token usage (zero when using `retryAgentUntil`) |
 
 ---
 
@@ -722,392 +1134,81 @@ Callbacks for turn-level and tool-level agent events. These provide fine-grained
 type StatusCallbacks = WorkflowStatusCallbacks & AgentStatusCallbacks;
 ```
 
-Combined type for all status callbacks. Pass this as `onStatus` to `run()` or individual phase functions.
+#### `WorkflowStatusCallbacks`
 
----
-
-### `AgentLoopResult<T>`
-
-Envelope returned by `retryAgentUntil`.
-
-| Field | Type | Description |
+| Method | Parameter Shape | Fired when |
 |---|---|---|
-| `result` | `T` | The validated structured output |
-| `attempts` | `number` | Configured maximum retry attempts (default: 3). Note: This is the configured max, not the actual number of attempts used. |
-| `totalTokens` | `{ input: number; output: number }` | Token usage (zero when using `retryAgentUntil`) |
+| `onWorkflowStart` | `{ taskPrompt: string; resumed: boolean; workDir: string }` | The `run()` orchestrator starts |
+| `onPhaseStart` | `{ phase: WorkflowPhase; round: number }` | A phase begins execution |
+| `onPhaseComplete` | `{ phase: WorkflowPhase; durationMs: number }` | A phase finishes |
+| `onAgentSpawn` | `{ agentId: string; profile: string; phase: string; taskId?: string }` | An agent harness is created |
+| `onAgentComplete` | `{ agentId: string; profile: string; phase: string; taskId?: string }` | An agent finishes its prompt |
+| `onTaskStart` | `{ taskId: string; title: string; agentId: string }` | A task is claimed and dispatched |
+| `onTaskComplete` | `{ taskId: string; title: string }` | A task passes review |
+| `onTaskRejected` | `{ taskId: string; title: string; reason: string }` | A task fails review |
+| `onDecision` | `{ agentId: string; decision: string; reasoning: string; taskId?: string }` | A reviewer makes a decision |
+| `onError` | `{ agentId: string; error: string; phase: string; taskId?: string }` | An agent encounters an error |
+| `onWorkflowComplete` | `{ totalDurationMs: number; agentCount: number }` | The workflow finishes successfully |
+| `onWorkflowFailed` | `{ error: Error; phase: string }` | The workflow throws an unhandled error |
+
+All methods are optional.
+
+#### `AgentStatusCallbacks`
+
+| Method | Parameter Shape | Fired when |
+|---|---|---|
+| `onTurnStart` | `{ agentId: string; turn: number }` | An agent turn begins |
+| `onTurnEnd` | `{ agentId: string; turn: number; tokens?: { input: number; output: number } }` | An agent turn completes |
+| `onToolCallStart` | `{ agentId: string; toolName: string; toolCallId: string }` | A tool execution starts |
+| `onToolCallEnd` | `{ agentId: string; toolName: string; toolCallId: string; isError: boolean }` | A tool execution finishes |
+
+All methods are optional.
 
 ---
 
-## 7. Workflow Authoring Guide
-
-### How the Develop Workflow Works
-
-The `run()` orchestrator in `develop.ts` uses a **phase-dispatch loop** driven by an ordered `phaseOrder` array:
-
-```
-["scouting", "scouting_review", "planning", "plan_review", "implementing", "final_review", "done"]
-```
-
-Each phase has a handler function (`handlePhase`) that performs exactly one step. A handler may return the name of a phase to **jump to** (for retries), or return `void` to **advance linearly** to the next entry in the array. This design makes the control flow explicit and easy to extend — to add a new phase, insert it into the array and add a case to the handler.
-
-The pipeline proceeds as follows:
-
-1. **Scouting** — A `scout` agent identifies codebase areas to investigate. For each topic discovered, a parallel scout agent produces a report via `parallelAgents`. Reports are collected and stored in the tracker.
-
-2. **Scouting Review** — The `scouting-reviewer` synthesizes all reports into a research summary and decides whether enough information has been gathered. If `ready` is `false` and fewer than 3 rounds have elapsed, the handler returns `"scouting"` to jump back and gather more data. After 3 rounds the workflow proceeds regardless.
-
-3. **Planning** — The `planner` agent creates a `Plan` containing an array of `Task` objects, each with an `id`, `title`, `prompt`, `profile`, `files`, and `dependencies`. The plan forms a DAG.
-
-4. **Plan Review** — The `plan-reviewer` evaluates the plan. If `ready` is `false` and fewer than 3 rounds have elapsed, the handler returns `"planning"` to jump back and regenerate the plan. After 3 rounds the workflow proceeds with the current plan.
-
-5. **Implementation** — Tasks are loaded into the `TaskTracker`. The orchestrator claims up to `maxConcurrentTasks` at a time, dispatches them to implementer agents in parallel via `parallelAgents`, and then runs reviewer agents in parallel via `Promise.allSettled`. Approved tasks are completed; rejected tasks return to `"ready"` state for re-implementation. If a review itself fails (e.g. an error in the reviewer agent), the failure is logged to the audit trail and the task is still completed to avoid blocking the pipeline.
-
-6. **Final Review** — The `final-reviewer` examines the entire codebase. If critical issues are found, `fixer` agents resolve them in parallel via `parallelAgents`. This loop runs up to 3 rounds.
-
-> **Parallel Execution** — Concurrency is used at multiple points:
-> - During **scouting**, one scout agent is spawned per topic via `parallelAgents`.
-> - During **implementation**, tasks are claimed in batches of `maxConcurrentTasks`. Each batch runs implementer agents in parallel via `parallelAgents`, and the resulting reviews also run in parallel via `Promise.allSettled`.
-> - During **final review**, fixer agents for critical issues run in parallel via `parallelAgents`.
->
-> The `parallelAgents` utility uses `Promise.allSettled` under the hood, so a single agent failure does not crash the batch — settled results (fulfilled or rejected) are processed individually after the batch completes.
-
-### Creating a Custom Workflow
-
-To build your own workflow:
-
-1. **Define Zod schemas** for each phase's input/output.
-
-2. **Write phase functions** that create a harness from a profile, prompt it with `promptForStructured`, and return validated data.
-
-3. **Use the tracking layer** — create a `WorkflowStatusTracker` to persist state, a `TaskTracker` for task management, and an `AuditLog` for events.
-
-4. **Write an orchestrator** that chains your phases, with retry loops where needed.
-
-Example skeleton:
-
-```typescript
-import { z } from "zod";
-import { createHarness, loadProfiles, promptForStructured } from "workflow-harness";
-import { WorkflowStatusTracker } from "workflow-harness";
-
-const MyOutputSchema = z.object({
-  result: z.string(),
-});
-
-export async function myCustomPhase(
-  tracker: WorkflowStatusTracker,
-  profilesDir: string,
-  cwd: string,
-): Promise<void> {
-  const profiles = await loadProfiles(profilesDir);
-  const profile = profiles.get("my-agent");
-  if (!profile) throw new Error("Profile 'my-agent' not found");
-
-  const { harness } = await createHarness({ profile, cwd });
-  tracker.incrementAgentCount();
-
-  const output = await promptForStructured(
-    harness,
-    "Do something specific",
-    MyOutputSchema,
-  );
-
-  await tracker.auditLog.append({
-    type: "structured_output",
-    agentId: "my-agent",
-    output,
-  });
-}
-```
-
-### Structured Output Schemas
-
-The `develop.ts` workflow exports these Zod schemas for reuse:
-
-| Schema | Fields |
-|---|---|
-| `ScoutingTopicSchema` | `topics: Array<{ topic, rationale, files }>` |
-| `ScoutingReviewSchema` | `ready: boolean`, `research: string`, `gaps: string[]` |
-| `PlanSchema` | `tasks: Array<{ id, title, prompt, profile, files, dependencies }>`, `strategy: string` |
-| `PlanReviewSchema` | `ready: boolean`, `feedback: string`, `suggestions: string[]` |
-| `ReviewResultSchema` | `approved: boolean`, `feedback: string`, `issues: Array<{ file, description, severity }>` |
-| `ScoutingTopics` | `topics: Array<{ topic, rationale, files }>` |
-| `FinalReviewTopicsSchema` | `topics: Array<{ topic, files }>`, `overallAssessment: string`, `issues: Array<{ file, description, severity }>` |
-
-### Task Dependency Tracking (DAG)
-
-Tasks are managed by `TaskTracker`, which enforces a directed acyclic graph:
-
-- **Adding a task**: `addTask()` validates that no cycle would be introduced. If all dependencies are `"done"`, the task starts as `"ready"`; otherwise `"blocked"`.
-- **Claiming tasks**: `claimTasks(n)` returns up to `n` ready tasks and transitions them to `"claimed"`.
-- **Completing a task**: `completeTask()` moves a reviewed task to `"done"` and recalculates all blocked tasks — any whose dependencies are now all done become `"ready"`.
-- **Rejection**: `rejectTask()` moves a task back to `"ready"` with feedback, allowing it to be reclaimed and re-implemented.
-
-The tracker is serializable via `toJSON()`/`fromJSON()` for persistence across workflow runs.
-
-### Agent Loop Utility Examples
-
-The `agent-loop.ts` module provides three composable patterns for orchestrating multiple agent interactions. Below are practical examples showing how to use each one in a custom workflow.
-
-#### `agentLoopUntil` — iterate until a condition is met
-
-Use this when an agent's output needs iterative refinement. The `promptFn` receives the current attempt number and the previous response, so you can feed context back in:
-
-```typescript
-import { createHarness, agentLoopUntil } from "workflow-harness";
-import { loadProfile } from "workflow-harness";
-
-// 1. Create a harness from a profile
-const profile = await loadProfile("./src/profiles", "scout");
-const { harness } = await createHarness({ profile, cwd: process.cwd() });
-
-// 2. Loop until the response is substantive
-const { response, attempts } = await agentLoopUntil(
-  harness,
-  (attempt, lastResponse) => {
-    if (lastResponse) {
-      return `The previous answer was incomplete. Please try again.\n\nPrevious: ${lastResponse.content}`;
-    }
-    return "Research the authentication module in detail. Describe every publicly exported function.";
-  },
-  (response) => response.content.length > 200, // accept when the answer is substantive
-  { maxAttempts: 3 },
-);
-
-console.log(`Got a substantive response after ${attempts} attempt(s).`);
-```
-
-The harness's `prompt()` method is called repeatedly. If the condition is never met within `maxAttempts`, an error is thrown.
-
-#### `parallelAgents` — run multiple agents concurrently
-
-Use this when you have independent tasks that can run simultaneously. Each config becomes a separate harness; `promptFn` receives the created harness and its index:
-
-```typescript
-import { parallelAgents, loadProfile, createHarness } from "workflow-harness";
-import { z } from "zod";
-
-const ScoutingReportSchema = z.object({
-  report: z.string(),
-  filesExamined: z.array(z.string()),
-});
-
-const topics = [
-  { topic: "Database layer", files: ["src/db/"] },
-  { topic: "API routes", files: ["src/routes/"] },
-  { topic: "Auth middleware", files: ["src/middleware/auth.ts"] },
-];
-
-// Each topic gets its own harness config
-const configs = await Promise.all(
-  topics.map(async () => {
-    const profile = await loadProfile("./src/profiles", "scout");
-    return { profile, cwd: process.cwd() };
-  }),
-);
-
-// Run all scouts in parallel, validating output through the Zod schema
-const results = await parallelAgents(
-  configs,
-  (harness, i) => {
-    const t = topics[i];
-    return `Investigate ${t.topic}. Key areas: ${t.files.join(", ")}. Provide a detailed report.`;
-  },
-  { schema: ScoutingReportSchema },
-);
-
-// results is PromiseSettledResult[] — handle fulfilled and rejected individually
-for (const result of results) {
-  if (result.status === "fulfilled") {
-    console.log(result.value.report);
-  } else {
-    console.error("Scout failed:", result.reason);
-  }
-}
-```
-
-Because `parallelAgents` uses `Promise.allSettled`, one agent failure does not prevent the others from completing.
-
-#### `sequentialAgents` — chain agents where each step depends on the previous
-
-Use this when later prompts need to reference earlier results. Harnesses are created in parallel but prompts run one at a time, so you can build on prior output:
-
-```typescript
-import { sequentialAgents, loadProfile } from "workflow-harness";
-
-const steps = [
-  "Draft an outline of the module",
-  "Write the public API types",
-  "Implement the core logic",
-  "Write unit tests",
-];
-
-const configs = await Promise.all(
-  steps.map(async () => {
-    const profile = await loadProfile("./src/profiles", "implementer");
-    return { profile, cwd: process.cwd() };
-  }),
-);
-
-// sequentialAgents throws on the first failure — all steps must succeed
-const results = await sequentialAgents(
-  configs,
-  (harness, i) => {
-    const prev = i > 0 ? `Previous work completed.\n` : "";
-    return `${prev}Step ${i + 1}: ${steps[i]}`;
-  },
-);
-
-console.log(`Completed ${results.length} steps.`);
-```
-
-Unlike `parallelAgents`, `sequentialAgents` returns a plain `T[]` and throws immediately if any step fails.
-
----
-
-## 8. CLI Reference
-
-The package ships a `workflow-harness` CLI binary (declared in `package.json` → `bin`).
-
-### Installation
-
-```bash
-# Global install
-npm install -g workflow-harness
-
-# Or use without installing
-npx workflow-harness "Fix the login bug" --profiles-dir ./src/profiles --cwd ./my-project --work-dir /tmp/wf
-```
-
-### Usage
-
-```
-workflow-harness <task-prompt> --profiles-dir <path> --cwd <path> --work-dir <path> [options]
-```
-
-### Flags
-
-| Flag | Required | Default | Description |
-|---|---|---|---|
-| `--profiles-dir <path>` | **Yes** | — | Directory containing agent profile `.md` files |
-| `--cwd <path>` | **Yes** | — | Project directory to operate on |
-| `--work-dir <path>` | **Yes** | — | Directory for workflow state persistence |
-| `--max-concurrent <n>` | No | `3` | Maximum parallel implementer agents |
-| `--verbose` | No | `false` | Enable agent-level output (turns, tool calls, token usage) |
-| `--api-key <provider=key>` | No | — | Provider → API key override. Repeatable. |
-
-### Example Output
-
-Default (non-verbose) output shows workflow-level and task-level events:
-
-```
-[09:14:32] 🚀 Workflow started: "Add input validation to all public API endpoints" (resumed: false)
-[09:14:32] 📦 Phase started: scouting (round 0)
-[09:14:33] ⏳ Agent spawned: scout-coordinator (profile: scout)
-[09:14:45] ✅ Agent complete: scout-coordinator
-[09:14:46] ⏳ Agent spawned: scout-0 (profile: scout)
-[09:15:02] ✅ Agent complete: scout-0
-[09:15:02] ✅ Phase completed: scouting (30.1s)
-[09:15:02] 📦 Phase started: scouting_review (round 0)
-...
-[09:22:18] 📋 Task started: task-1 - "Add input validation to user routes"
-[09:22:35] ✅ Task complete: task-1
-...
-[09:31:44] 🎉 Workflow complete in 1032.4s (14 agents)
-```
-
-With `--verbose`, agent-level events are also shown:
-
-```
-[09:14:33] 🔄 Turn 1 started (agent: abc123)
-[09:14:33] 🔧 Tool call: read (agent: abc123)
-[09:14:34] ✅ Tool result: read (agent: abc123)
-[09:14:35] 🔄 Turn 1 ended (agent: abc123, tokens: 1520 in / 340 out)
-```
-
-### Exit Codes
-
-| Code | Meaning |
-|---|---|
-| `0` | Workflow completed successfully |
-| `1` | Workflow failed with an error |
-
----
-
-## 9. Configuration
+## 12. Configuration
 
 ### Environment Variables
 
-API keys for your configured provider(s) are resolved in this order:
+API keys are resolved in this order:
+
 1. The `apiKeys` option passed to `createHarness` or `run`.
 2. The `--api-key` CLI flag.
-3. Provider-specific environment variables (see your provider's documentation for the expected variable names).
+3. Provider-specific environment variables (e.g. `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`).
 
-### Profile Configuration
+> **Warning:** API keys passed via `--api-key` are visible in process listings. Prefer environment variables or the `apiKeys` programmatic option.
 
-See [Section 4: Profile Authoring Guide](#4-profile-authoring-guide) for the full frontmatter schema.
+### Resuming a Workflow
 
-The default profiles in `src/profiles/` are:
-
-| Profile ID | Role | Tools |
-|---|---|---|
-| `scout` | Investigates codebase areas | Excludes `write`, `edit` |
-| `scouting-reviewer` | Synthesizes scouting reports | Excludes `write`, `edit` |
-| `planner` | Creates implementation plans | Excludes `write`, `edit` |
-| `plan-reviewer` | Reviews plans for feasibility | Excludes `write`, `edit` |
-| `implementer` | Writes code to implement tasks | All tools available |
-| `implement-reviewer` | Reviews implementations | Excludes `write`, `edit` |
-| `final-reviewer` | Final quality review | Excludes `write`, `edit` |
-| `fixer` | Fixes issues found in review | All tools available |
-
-### Workflow Options
-
-The `DevelopWorkflowOptions` / `RunOptions` interface:
-
-```typescript
-interface RunOptions extends DevelopWorkflowOptions {
-  workDir: string;  // Required: directory for workflow state persistence
-}
-
-interface DevelopWorkflowOptions {
-  profilesDir: string;              // Directory with .md profile files
-  cwd: string;                      // Project directory to work on
-  maxConcurrentTasks?: number;      // Max parallel implementers (default: 3)
-  apiKeys?: Record<string, string>; // Provider → API key overrides
-  onStatus?: StatusCallbacks;       // Callbacks for workflow/agent events
-  workDir?: string;                 // Directory for workflow state persistence
-}
-```
-
-**Resuming a workflow**: If `workflow-state.json` exists in `workDir`, the `run()` function loads it and resumes from the last saved phase.
+If `workflow-state.json` exists in `workDir`, the `run()` function loads it and resumes from the last saved phase.
 
 ---
 
-## 10. Development
+## 13. Development
 
 ### Scripts
 
 | Command | Description |
 |---|---|
-| `npm run build` | Compile TypeScript to `dist/` |
+| `npm run build` | Compile TypeScript to `dist/` and copy defaults |
 | `npm test` | Run all tests with Vitest |
 | `npm run test:watch` | Run tests in watch mode |
 | `npm run typecheck` | Type-check without emitting |
+| `npm run setup` | Build then run `workflow-harness init` |
 
 ### Project Structure
 
 ```
 workflow-harness/
 ├── src/                # Source code
-│   ├── core/           # Core layer (harness, profiles, tools, auth)
+│   ├── core/           # Core layer (harness, profiles, tools, auth, config)
 │   ├── tracking/       # Tracking layer (audit, tasks, workflow state)
 │   ├── workflows/      # Workflow layer (develop workflow)
-│   └── profiles/       # Agent profile definitions
+│   └── profiles/       # Built-in agent profile definitions
+├── defaults/           # Files installed by workflow-harness init
+│   ├── profiles/       # Copies of built-in profiles
+│   └── workflows/      # Default workflow stubs
 ├── tests/              # Test files mirroring src/ structure
-│   ├── core/
-│   ├── tracking/
-│   ├── workflows/
-│   └── integration/
 ├── docs/               # Documentation
 ├── package.json
 ├── tsconfig.json
@@ -1124,7 +1225,6 @@ tests/
 │   ├── agent-loop.test.ts
 │   ├── auth.test.ts
 │   ├── harness-factory.test.ts
-│   ├── placeholder.test.ts
 │   ├── profile.test.ts
 │   ├── session-history.test.ts
 │   ├── structured-output.test.ts
@@ -1141,14 +1241,19 @@ tests/
 
 ### Adding New Profiles
 
-1. Create a new `.md` file in `src/profiles/` (e.g. `my-agent.md`).
+1. Create a `.md` file in `defaults/profiles/` (e.g. `my-agent.md`).
 2. Add YAML frontmatter with at least `provider` and `model`.
 3. Write the system prompt in the body.
-4. Reference it by filename (without `.md`) in your workflow code:
+4. Run `workflow-harness init --force` to install, or place it directly in `~/.config/workflow-harness/profiles/` or `.workflow-harness/profiles/`.
 
-```typescript
-const profile = await loadProfile("./src/profiles", "my-agent");
-const { harness } = await createHarness({ profile, cwd: process.cwd() });
+### Adding a New Workflow
+
+1. Create a `.js`, `.mjs`, `.cjs`, or `.ts` file in `defaults/workflows/` or directly in a config workflows directory.
+2. Export a `run(taskPrompt, options)` function.
+3. Reference it by filename (without extension) on the CLI:
+
+```bash
+workflow-harness my-workflow "Do the thing"
 ```
 
 ### TypeScript Configuration

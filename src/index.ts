@@ -7,6 +7,9 @@ export * from "./core/session-history.js";
 export * from "./core/agent-loop.js";
 export * from "./core/auth.js";
 export * from "./core/tool-registry.js";
+export * from "./core/config.js";
+export * from "./core/workflow-loader.js";
+export * from "./setup.js";
 
 // ─── Tracking ───────────────────────────────────────────────────────────────
 export * from "./tracking/audit-log.js";

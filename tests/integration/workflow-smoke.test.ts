@@ -67,6 +67,15 @@ vi.mock("@earendil-works/pi-agent-core/node", () => ({
     })),
 }));
 
+vi.mock("../../src/core/config.ts", () => ({
+    resolveProfilesDirs: vi.fn(),
+    getGlobalConfigDir: vi.fn(),
+    getLocalConfigDir: vi.fn(),
+    resolveWorkflowsDirs: vi.fn(),
+    getDefaultWorkDir: vi.fn(),
+    ensureDir: vi.fn(),
+}));
+
 vi.mock("@earendil-works/pi-ai", () => {
     // Minimal TypeBox-like stub so createDefaultToolRegistry can build schemas
     const Type = {
@@ -155,6 +164,7 @@ const ALL_PROFILES = [
     "plan-reviewer",
     "implement-reviewer",
     "implementer",
+    "fixer",
     "final-reviewer",
 ];
 

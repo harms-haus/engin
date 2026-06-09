@@ -24,9 +24,20 @@ vi.mock("../../src/core/agent-loop.ts", () => ({
 }));
 
 const mockLoadProfiles = vi.fn();
+const mockLoadProfilesFromDirs = vi.fn();
 vi.mock("../../src/core/profile.ts", () => ({
     loadProfiles: (...args: unknown[]) => mockLoadProfiles(...args),
+    loadProfilesFromDirs: (...args: unknown[]) => mockLoadProfilesFromDirs(...args),
 }));
+
+vi.mock("../../src/core/config.ts", () => ({
+    resolveProfilesDirs: vi.fn(),
+    getGlobalConfigDir: vi.fn(),
+    getLocalConfigDir: vi.fn(),
+    resolveWorkflowsDirs: vi.fn(),
+    getDefaultWorkDir: vi.fn(),
+    ensureDir: vi.fn(),
+}));;
 
 // ─── Imports (after mocks) ─────────────────────────────────────────────────
 
@@ -84,6 +95,7 @@ function tmpDir(): string {
 /** Set up default mocks for a minimal successful run (no tasks). */
 function setupHappyPathMocks() {
     mockLoadProfiles.mockResolvedValue(makeAllProfiles());
+    mockLoadProfilesFromDirs.mockResolvedValue(makeAllProfiles());
     mockCreateHarness.mockResolvedValue(makeHarnessResult());
 
     mockPromptForStructured
@@ -104,6 +116,7 @@ function setupHappyPathMocks() {
 /** Set up mocks for a run with one implementation task (approved). */
 function setupRunWithTaskMocks() {
     mockLoadProfiles.mockResolvedValue(makeAllProfiles());
+    mockLoadProfilesFromDirs.mockResolvedValue(makeAllProfiles());
     mockCreateHarness.mockResolvedValue(makeHarnessResult());
 
     mockPromptForStructured
@@ -141,6 +154,7 @@ function setupRunWithTaskMocks() {
 /** Set up mocks for a run with one task that gets rejected by reviewer. */
 function setupRunWithRejectedTaskMocks() {
     mockLoadProfiles.mockResolvedValue(makeAllProfiles());
+    mockLoadProfilesFromDirs.mockResolvedValue(makeAllProfiles());
     mockCreateHarness.mockResolvedValue(makeHarnessResult());
 
     mockPromptForStructured
@@ -230,6 +244,7 @@ describe("Workflow-level callbacks", () => {
         // When resuming at "planning", the code first derives research via scoutingReviewPhase,
         // then continues through planning → plan_review → implementing → final_review
         mockLoadProfiles.mockResolvedValue(makeAllProfiles());
+    mockLoadProfilesFromDirs.mockResolvedValue(makeAllProfiles());
         mockCreateHarness.mockResolvedValue(makeHarnessResult());
 
         mockPromptForStructured
@@ -358,6 +373,7 @@ describe("Workflow-level callbacks", () => {
     it("onAgentSpawn/Complete for scout", async () => {
         const workDir = tmpDir();
         mockLoadProfiles.mockResolvedValue(makeAllProfiles());
+    mockLoadProfilesFromDirs.mockResolvedValue(makeAllProfiles());
         mockCreateHarness.mockResolvedValue(makeHarnessResult());
 
         mockPromptForStructured
@@ -528,6 +544,7 @@ describe("Workflow-level callbacks", () => {
     it("onError for review failures", async () => {
         const workDir = tmpDir();
         mockLoadProfiles.mockResolvedValue(makeAllProfiles());
+    mockLoadProfilesFromDirs.mockResolvedValue(makeAllProfiles());
         mockCreateHarness.mockResolvedValue(makeHarnessResult());
 
         mockPromptForStructured
