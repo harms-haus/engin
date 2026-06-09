@@ -46,7 +46,7 @@ Create the config directory structure in your global config directory:
 engin init
 ```
 
-This creates the `profiles/` and `workflows/` subdirectories inside `~/.config/engin/` (or `$XDG_CONFIG_HOME/engin/`). Profiles and workflows are user-managed — place your own `.md` profile files in `profiles/` and `.js`/`.ts` workflow files in `workflows/`.
+This creates the `workflows/` subdirectory inside `~/.config/engin/` (or `$XDG_CONFIG_HOME/engin/`). Workflows are user-managed — place your own workflow directories (each containing a `main.ts` entry point and an optional `profiles/` subdirectory for agent profiles) in `workflows/`.
 
 ---
 
@@ -75,7 +75,7 @@ engin develop "Fix the login bug" \
 ```typescript
 import { createHarness, loadProfilesFromDirs, resolveProfilesDirs } from '@harms-haus/engin';
 
-const profilesDirs = resolveProfilesDirs('/path/to/project');
+const profilesDirs = resolveProfilesDirs('/path/to/project', 'my-workflow');
 const profiles = await loadProfilesFromDirs(profilesDirs);
 
 const profile = profiles.get('implementer');
@@ -105,7 +105,6 @@ engin <command> [options]
 | Command            | Description                                                      |
 | ------------------ | ---------------------------------------------------------------- |
 | `run` (default)    | Run a named workflow with a task prompt                          |
-| `list`             | List available workflows and profiles                            |
 | `init`             | Create config directory structure in the global config directory |
 | `--help` / `-h`    | Show usage information                                           |
 | `--version` / `-v` | Show version                                                     |
@@ -122,27 +121,19 @@ The `run` command keyword is implicit — the first positional argument is the w
 engin develop "Refactor the auth module"
 ```
 
-### `list`
-
-```bash
-engin list [--cwd <path>]
-```
-
-Lists all available workflows found in global and local config directories, along with any loadable profiles.
-
 ### `init`
 
 ```bash
 engin init
 ```
 
-Creates the `profiles/` and `workflows/` subdirectories inside the global config directory (`~/.config/engin/`). The command only ensures directories exist. Profiles and workflows are user-managed; see [Profiles](#6-profiles) and [Custom Workflows](#7-custom-workflows) for authoring guides.
+Creates the `workflows/` subdirectory inside the global config directory (`~/.config/engin/`). The command only ensures directories exist. Workflows are user-managed; see [Custom Workflows](#7-custom-workflows) for authoring guides.
 
 ### Flags
 
 | Flag                       | Applies to     | Description                                                                                                                 |
 | -------------------------- | -------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| `--cwd <path>`             | `run`, `list`  | Project working directory (default: `process.cwd()`)                                                                        |
+| `--cwd <path>`             | `run`          | Project working directory (default: `process.cwd()`)                                                                        |
 | `--work-dir <path>`        | `run`          | Directory for workflow state persistence. Default: `.engin/work/<workflow-name>` inside `cwd`                               |
 | `--max-concurrent <n>`     | `run`          | Maximum parallel implementer agents (default: `3`). Must be a positive integer.                                             |
 | `--verbose`                | `all commands` | Enable verbose output, including `.env` file loading information and agent-level output (turns, tool calls, token usage)    |
@@ -201,8 +192,10 @@ engin discovers profiles and workflows from two locations, with **local overridi
 
 ```
 .engin/           # Local (per-project)
-├── profiles/                # Agent profile .md files
-├── workflows/               # Workflow scripts (.js, .mjs, .cjs, .ts)
+├── workflows/               # Workflow directories (each containing main.ts)
+│   └── develop/             # One subdirectory per workflow
+│       ├── main.ts
+│       └── profiles/        # Workflow-scoped agent profile .md files
 ├── work/                    # Runtime state (auto-created)
 │   └── develop/             # One subdirectory per workflow run
 │       └── .engin-state.json
@@ -210,8 +203,10 @@ engin discovers profiles and workflows from two locations, with **local overridi
 └── .env                     # Project-level environment variables (git-ignored)
 
 ~/.config/engin/  # Global (user-wide)
-├── profiles/
 ├── workflows/
+│   └── develop/
+│       ├── main.ts
+│       └── profiles/        # Workflow-scoped agent profile .md files
 └── .env                     # User-level environment variables
 ```
 
@@ -220,13 +215,13 @@ engin discovers profiles and workflows from two locations, with **local overridi
 When loading profiles or workflows, the system searches both directories. On name conflict, the **local** entry wins:
 
 ```
-resolveProfilesDirs(cwd) → [
-  "{cwd}/.engin/profiles",   // local — higher priority
-  "~/.config/engin/profiles" // global
+resolveProfilesDirs(cwd, 'develop') → [
+  "{cwd}/.engin/workflows/develop/profiles",   // local — higher priority
+  "~/.config/engin/workflows/develop/profiles" // global
 ]
 ```
 
-The same pattern applies to workflows via `resolveWorkflowsDirs(cwd)`.
+Profiles are scoped per-workflow. The `resolveProfilesDirs` function takes a `workflowName` argument and returns profile directories nested inside the corresponding workflow directory. The same pattern applies to workflows via `resolveWorkflowsDirs(cwd)`.
 
 ### Default Work Directory
 
@@ -244,10 +239,10 @@ Agent profiles are markdown files with YAML frontmatter. The filename (without `
 
 ### Where to Place Profiles
 
-- **Global:** `~/.config/engin/profiles/*.md`
-- **Local:** `{cwd}/.engin/profiles/*.md`
+- **Global:** `~/.config/engin/workflows/{name}/profiles/*.md`
+- **Local:** `{cwd}/.engin/workflows/{name}/profiles/*.md`
 
-Local profiles override global profiles with the same ID.
+Profiles are scoped per-workflow. Local profiles override global profiles with the same ID within the same workflow.
 
 ### Format
 
@@ -332,9 +327,7 @@ The default export (or the module itself) must have a `run` function. Optional `
 - **Global:** `~/.config/engin/workflows/`
 - **Local:** `{cwd}/.engin/workflows/`
 
-Supported file extensions: `.js`, `.mjs`, `.cjs`, `.ts`.
-
-The workflow name is the filename without its extension (e.g. `develop.js` → `develop`).
+Workflows are directories containing a `main.ts` entry point. The workflow name is the directory name (e.g. `develop/main.ts` → `develop`). Hidden directories (starting with `.`) are skipped during discovery.
 
 ### Security
 
@@ -342,14 +335,14 @@ Workflow names cannot contain `/`, `\`, or `..` — this prevents path traversal
 
 ### Example: Minimal Custom Workflow
 
-```javascript
-// ~/.config/engin/workflows/my-workflow.js
+```typescript
+// ~/.config/engin/workflows/my-workflow/main.ts
 import { createHarness, loadProfilesFromDirs, resolveProfilesDirs, promptForStructured } from '@harms-haus/engin';
 import { z } from 'zod';
 
 export async function run(taskPrompt, options) {
   const { cwd, workDir, apiKeys, onStatus } = options;
-  const profilesDirs = resolveProfilesDirs(cwd);
+  const profilesDirs = resolveProfilesDirs(cwd, 'my-workflow');
   const profiles = await loadProfilesFromDirs(profilesDirs);
 
   const profile = profiles.get('implementer');
@@ -370,7 +363,7 @@ export async function run(taskPrompt, options) {
 You can import building blocks from `@harms-haus/engin` to compose a custom workflow pipeline. The library provides `createHarness`, `parallelAgents`, `promptForStructured`, `WorkflowStatusTracker`, `TaskTracker`, and other utilities — see [Programmatic API](#8-programmatic-api) for the full list.
 
 ```typescript
-// ~/.config/engin/workflows/develop.ts
+// ~/.config/engin/workflows/develop/main.ts
 import {
   createHarness,
   loadProfilesFromDirs,
@@ -383,7 +376,7 @@ import { z } from 'zod';
 
 export async function run(taskPrompt: string, options: WorkflowRunOptions) {
   const tracker = new WorkflowStatusTracker(options.workDir);
-  const profilesDirs = resolveProfilesDirs(options.cwd);
+  const profilesDirs = resolveProfilesDirs(options.cwd, 'develop');
   const profiles = await loadProfilesFromDirs(profilesDirs);
 
   // ... your custom orchestration logic using the library's building blocks
@@ -392,7 +385,7 @@ export async function run(taskPrompt: string, options: WorkflowRunOptions) {
 
 ### TypeScript Workflows
 
-`.ts` workflow files are natively supported by the Bun runtime — no additional loader or transpilation step is needed.
+Each workflow is a directory with a `main.ts` entry point, loaded natively by the Bun runtime — no additional loader or transpilation step is needed.
 
 ---
 
@@ -404,7 +397,7 @@ All types and functions below are exported from the top-level `@harms-haus/engin
 
 #### `loadWorkflow(name, cwd): Promise<WorkflowModule>`
 
-Dynamically load a workflow module by name. Searches local then global workflow directories. Supports `.js`, `.mjs`, `.cjs`, and `.ts` files. Results are cached by resolved file path.
+Dynamically load a workflow module by name. Searches local then global workflow directories, looking for `{name}/main.ts` inside each. Results are cached by resolved file path.
 
 #### `listWorkflows(cwd): Promise<Array<{ name, source, path }>>`
 
@@ -477,9 +470,9 @@ Returns the global config directory path. Uses `$XDG_CONFIG_HOME/engin` if set a
 
 Returns `{cwd}/.engin`.
 
-#### `resolveProfilesDirs(cwd): string[]`
+#### `resolveProfilesDirs(cwd, workflowName?): string[]`
 
-Returns `[localProfilesDir, globalProfilesDir]` — local first for override priority.
+When `workflowName` is provided, returns `[localWorkflowProfilesDir, globalWorkflowProfilesDir]` — local first for override priority. Profiles are scoped per-workflow, nested inside `workflows/{workflowName}/profiles/` within each config directory. When `workflowName` is omitted, returns `[]`. Throws an `Error` if `workflowName` contains `/`, `\`, or `..` (path traversal prevention).
 
 #### `resolveWorkflowsDirs(cwd): string[]`
 
@@ -515,9 +508,9 @@ Returns a `LoadEnvResult` object:
 
 #### `initDefaultConfig(): Promise<{ createdDirs: string[] }>`
 
-Creates the `profiles/` and `workflows/` subdirectories inside the global config directory (`~/.config/engin/`). No files are installed — profiles and workflows are user-managed. Takes no arguments.
+Creates the `workflows/` subdirectory inside the global config directory (`~/.config/engin/`). No files are installed — workflows are user-managed. Takes no arguments.
 
-Returns `{ createdDirs: string[] }` where `createdDirs` is `['profiles', 'workflows']` — the names of the directories that were ensured to exist.
+Returns `{ createdDirs: string[] }` where `createdDirs` is `['workflows']` — the names of the directories that were ensured to exist.
 
 ### Structured Output
 
@@ -704,7 +697,7 @@ Top-level workflow state manager. Persists to `.engin-state.json` in the working
 ```
 src/
 ├── index.ts                     # Public API re-exports
-├── cli.ts                       # CLI entry point (run, list, init commands)
+├── cli.ts                       # CLI entry point (run, init commands)
 ├── setup.ts                     # Config directory creation (init command)
 ├── core/
 │   ├── types.ts                 # Shared type definitions and re-exports
@@ -729,7 +722,7 @@ src/
 | `types.ts`             | Re-exports from `pi-coding-agent`, `pi-agent-core`, and `pi-ai`; defines `AgentProfile`, `Task`, `WorkflowState`, `AuditEvent`, `WorkflowModule`, `WorkflowRunOptions`, and related types      |
 | `config.ts`            | Resolves global (`~/.config/engin/`) and local (`.engin/`) config directories; provides default work directory paths                                                                           |
 | `profile.ts`           | Parses markdown files with YAML frontmatter into `AgentProfile` objects; loads all profiles from a directory or merges from multiple directories                                               |
-| `workflow-loader.ts`   | Dynamically loads workflow modules by name from config directories; supports `.js`, `.mjs`, `.cjs`, `.ts`; caches loaded modules                                                               |
+| `workflow-loader.ts`   | Dynamically loads workflow modules by name from config directories; discovers `main.ts` inside workflow subdirectories; caches loaded modules                                                  |
 | `harness-factory.ts`   | Creates a fully-wired `AgentSession` from a profile: model resolution, `AuthStorage`, tool filtering, `DefaultResourceLoader`, and `createAgentSession` from `@earendil-works/pi-coding-agent` |
 | `structured-output.ts` | Extracts JSON from free-text model responses; prompts a session and validates output against a Zod schema with automatic retries                                                               |
 | `session-history.ts`   | Tracks token usage and cost across a session; provides session resumption by copying message history                                                                                           |
@@ -752,7 +745,7 @@ This package is a **pure library** — it provides building blocks (harness crea
 
 Workflows are user-managed scripts that use the library's building blocks to define multi-agent pipelines. A typical workflow:
 
-1. Resolves profiles from config directories via `resolveProfilesDirs` and `loadProfilesFromDirs`.
+1. Resolves workflow-scoped profiles from config directories via `resolveProfilesDirs(cwd, workflowName)` and `loadProfilesFromDirs`.
 2. Creates a `WorkflowStatusTracker` for phase and task state persistence.
 3. Uses `createHarness` or `parallelAgents` to spawn agents with specific profiles.
 4. Uses `promptForStructured` with Zod schemas to enforce structured output.
@@ -1238,16 +1231,16 @@ tests/
 
 ### Adding New Profiles
 
-1. Create a `.md` file in `~/.config/engin/profiles/` (e.g. `my-agent.md`).
+1. Create a `.md` file in `~/.config/engin/workflows/{your-workflow}/profiles/` (e.g. `my-agent.md`).
 2. Add YAML frontmatter with at least `provider` and `model`.
 3. Write the system prompt in the body.
 4. The profile is now available to workflows that load profiles from the config directories.
 
 ### Adding a New Workflow
 
-1. Create a `.js`, `.mjs`, `.cjs`, or `.ts` file in `~/.config/engin/workflows/` or `.engin/workflows/`.
-2. Export a `run(taskPrompt, options)` function.
-3. Reference it by filename (without extension) on the CLI:
+1. Create a directory in `~/.config/engin/workflows/` or `.engin/workflows/` (e.g. `my-workflow/`).
+2. Add a `main.ts` file inside that directory exporting a `run(taskPrompt, options)` function.
+3. Reference it by directory name on the CLI:
 
 ```bash
 engin my-workflow "Do the thing"

@@ -38,20 +38,17 @@ describe('initDefaultConfig', () => {
     await rm(tempBase, { recursive: true, force: true });
   });
 
-  it('creates profiles/ and workflows/ directories in global config dir', async () => {
+  it('creates workflows/ directory in global config dir', async () => {
     await initDefaultConfig();
-
-    const profilesStat = await stat(join(mockGlobalDir, 'profiles'));
-    expect(profilesStat.isDirectory()).toBe(true);
 
     const workflowsStat = await stat(join(mockGlobalDir, 'workflows'));
     expect(workflowsStat.isDirectory()).toBe(true);
   });
 
-  it('returns createdDirs with profiles and workflows', async () => {
+  it('returns createdDirs with workflows', async () => {
     const result = await initDefaultConfig();
 
-    expect(result).toEqual({ createdDirs: ['profiles', 'workflows'] });
+    expect(result).toEqual({ createdDirs: ['workflows'] });
   });
 
   it('is idempotent when directories already exist', async () => {
@@ -59,11 +56,9 @@ describe('initDefaultConfig', () => {
 
     // Second call should not throw
     const result = await initDefaultConfig();
-    expect(result).toEqual({ createdDirs: ['profiles', 'workflows'] });
+    expect(result).toEqual({ createdDirs: ['workflows'] });
 
-    // Directories still exist
-    const profilesStat = await stat(join(mockGlobalDir, 'profiles'));
-    expect(profilesStat.isDirectory()).toBe(true);
+    // Directory still exists
     const workflowsStat = await stat(join(mockGlobalDir, 'workflows'));
     expect(workflowsStat.isDirectory()).toBe(true);
   });
@@ -73,11 +68,9 @@ describe('initDefaultConfig', () => {
     mockGlobalDir = join(tempBase, 'brand-new-config');
 
     const result = await initDefaultConfig();
-    expect(result).toEqual({ createdDirs: ['profiles', 'workflows'] });
+    expect(result).toEqual({ createdDirs: ['workflows'] });
 
-    // Both subdirectories were created recursively
-    const profilesStat = await stat(join(mockGlobalDir, 'profiles'));
-    expect(profilesStat.isDirectory()).toBe(true);
+    // The subdirectory was created recursively
     const workflowsStat = await stat(join(mockGlobalDir, 'workflows'));
     expect(workflowsStat.isDirectory()).toBe(true);
   });

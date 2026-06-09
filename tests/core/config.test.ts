@@ -78,16 +78,42 @@ describe('getLocalConfigDir', () => {
 // ─── resolveProfilesDirs ───────────────────────────────────────────────────
 
 describe('resolveProfilesDirs', () => {
-  it('returns local-before-global order', () => {
-    const dirs = resolveProfilesDirs('/project');
+  it('returns workflow-scoped dirs when workflowName is provided', () => {
+    const globalDir = getGlobalConfigDir();
+    const dirs = resolveProfilesDirs('/project', 'develop');
     expect(dirs).toHaveLength(2);
-    expect(dirs[0]).toBe('/project/.engin/profiles');
-    expect(dirs[1]).toMatch(/\/engin\/profiles$/);
+    expect(dirs[0]).toBe('/project/.engin/workflows/develop/profiles');
+    expect(dirs[1]).toBe(join(globalDir, 'workflows', 'develop', 'profiles'));
   });
 
-  it('local dir is first (override priority)', () => {
-    const dirs = resolveProfilesDirs('/project');
-    expect(dirs[0]).toContain('/project/.engin');
+  it('returns local dir first (override priority)', () => {
+    const dirs = resolveProfilesDirs('/project', 'develop');
+    expect(dirs[0]).toBe('/project/.engin/workflows/develop/profiles');
+  });
+
+  it('returns empty array when workflowName is not provided', () => {
+    expect(resolveProfilesDirs('/project')).toEqual([]);
+  });
+
+  it('returns empty array when workflowName is empty string', () => {
+    expect(resolveProfilesDirs('/project', '')).toEqual([]);
+  });
+
+  it('handles workflow names with hyphens', () => {
+    const globalDir = getGlobalConfigDir();
+    const dirs = resolveProfilesDirs('/project', 'my-workflow');
+    expect(dirs).toHaveLength(2);
+    expect(dirs[0]).toContain('my-workflow');
+    expect(dirs[0]).toBe('/project/.engin/workflows/my-workflow/profiles');
+    expect(dirs[1]).toBe(join(globalDir, 'workflows', 'my-workflow', 'profiles'));
+  });
+
+  it('throws on workflow names with path separators', () => {
+    expect(() => resolveProfilesDirs('/project', '../etc')).toThrow('Invalid workflow name');
+  });
+
+  it('throws on workflow names with backslashes', () => {
+    expect(() => resolveProfilesDirs('/project', 'foo\\bar')).toThrow('Invalid workflow name');
   });
 });
 

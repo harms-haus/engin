@@ -1,8 +1,8 @@
 import { readdir, stat } from 'node:fs/promises';
-import { basename, extname, join } from 'node:path';
+import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { resolveWorkflowsDirs } from './config.js';
-import type { WorkflowModule } from './types.js';
+import type { WorkflowEntry, WorkflowModule } from './types.js';
 
 // ─── Cache ──────────────────────────────────────────────────────────────────
 
@@ -12,10 +12,6 @@ const workflowCache = new Map<string, WorkflowModule>();
 export function clearWorkflowCache(): void {
   workflowCache.clear();
 }
-
-// ─── Supported extensions ───────────────────────────────────────────────────
-
-const WORKFLOW_EXTENSIONS = ['.js', '.mjs', '.cjs', '.ts'] as const;
 
 // ─── loadWorkflow ───────────────────────────────────────────────────────────
 
@@ -32,33 +28,31 @@ export async function loadWorkflow(name: string, cwd: string): Promise<WorkflowM
   const dirs = resolveWorkflowsDirs(cwd);
 
   for (const dir of dirs) {
-    for (const ext of WORKFLOW_EXTENSIONS) {
-      const filePath = join(dir, name + ext);
+    const filePath = join(dir, name, 'main.ts');
 
-      try {
-        const fileStat = await stat(filePath);
-        if (!fileStat.isFile()) continue;
-      } catch {
-        continue;
-      }
-
-      // Check cache first
-      const cached = workflowCache.get(filePath);
-      if (cached) return cached;
-
-      const mod = await import(pathToFileURL(filePath).href);
-      const workflow: WorkflowModule = mod.default ?? mod;
-
-      if (typeof workflow.run !== 'function') {
-        throw new Error(`Workflow '${name}' does not export a 'run' function.`);
-      }
-
-      workflowCache.set(filePath, workflow);
-      return workflow;
+    try {
+      const fileStat = await stat(filePath);
+      if (!fileStat.isFile()) continue;
+    } catch {
+      continue;
     }
+
+    // Check cache first
+    const cached = workflowCache.get(filePath);
+    if (cached) return cached;
+
+    const mod = await import(pathToFileURL(filePath).href);
+    const workflow: WorkflowModule = mod.default ?? mod;
+
+    if (typeof workflow.run !== 'function') {
+      throw new Error(`Workflow '${name}' does not export a 'run' function.`);
+    }
+
+    workflowCache.set(filePath, workflow);
+    return workflow;
   }
 
-  throw new Error(`Workflow '${name}' not found. Use 'engin list' to see available workflows.`);
+  throw new Error(`Workflow '${name}' not found.`);
 }
 
 // ─── listWorkflows ──────────────────────────────────────────────────────────
@@ -67,19 +61,15 @@ export async function loadWorkflow(name: string, cwd: string): Promise<WorkflowM
  * Lists available workflow files across local and global directories.
  * Returns entries sorted by name, then by source (local first).
  */
-export async function listWorkflows(
-  cwd: string,
-): Promise<{ name: string; source: 'local' | 'global'; path: string }[]> {
+export async function listWorkflows(cwd: string): Promise<WorkflowEntry[]> {
   const dirs = resolveWorkflowsDirs(cwd);
-  const sourceLabels: ('local' | 'global')[] = ['local', 'global'];
-  const results: { name: string; source: 'local' | 'global'; path: string }[] = [];
+  const dirEntries: { dir: string; source: 'local' | 'global' }[] = [
+    { dir: dirs[0], source: 'local' },
+    { dir: dirs[1], source: 'global' },
+  ];
+  const results: WorkflowEntry[] = [];
 
-  const extSet = new Set<string>(WORKFLOW_EXTENSIONS);
-
-  for (let i = 0; i < dirs.length; i++) {
-    const dir = dirs[i];
-    const source = sourceLabels[i];
-
+  for (const { dir, source } of dirEntries) {
     let entries: string[];
     try {
       entries = await readdir(dir);
@@ -89,21 +79,29 @@ export async function listWorkflows(
     }
 
     for (const entry of entries) {
-      const ext = extname(entry);
-      if (!extSet.has(ext)) continue;
+      // Skip hidden directories
+      if (entry.startsWith('.')) continue;
 
-      const name = basename(entry, ext);
-      const fullPath = join(dir, entry);
+      const entryPath = join(dir, entry);
 
-      // Only include files, not directories
+      // Only include directories
       try {
-        const fileStat = await stat(fullPath);
-        if (!fileStat.isFile()) continue;
+        const entryStat = await stat(entryPath);
+        if (!entryStat.isDirectory()) continue;
       } catch {
         continue;
       }
 
-      results.push({ name, source, path: fullPath });
+      // Check that main.ts exists inside the directory
+      const mainPath = join(entryPath, 'main.ts');
+      try {
+        const mainStat = await stat(mainPath);
+        if (!mainStat.isFile()) continue;
+      } catch {
+        continue;
+      }
+
+      results.push({ name: entry, source, path: mainPath });
     }
   }
 

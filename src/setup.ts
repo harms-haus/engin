@@ -5,19 +5,17 @@ import { ensureDir, getGlobalConfigDir } from './core/config.js';
 
 /**
  * Creates the default directory structure inside the global config directory
- * (~/.config/engin/). Ensures "profiles" and "workflows"
- * subdirectories exist.
+ * (~/.config/engin/). Ensures the "workflows"
+ * subdirectory exists.
  */
 export async function initDefaultConfig(): Promise<{
   createdDirs: string[];
 }> {
   const globalDir = getGlobalConfigDir();
 
-  const profilesDir = join(globalDir, 'profiles');
   const workflowsDir = join(globalDir, 'workflows');
 
-  await ensureDir(profilesDir);
   await ensureDir(workflowsDir);
 
-  return { createdDirs: ['profiles', 'workflows'] };
+  return { createdDirs: ['workflows'] };
 }

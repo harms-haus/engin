@@ -9,8 +9,10 @@ import { clearWorkflowCache, listWorkflows, loadWorkflow } from '../../src/core/
 let tempDir: string;
 let localWorkflowDir: string;
 let globalWorkflowDir: string;
+let savedXdg: string | undefined;
 
 beforeEach(async () => {
+  savedXdg = process.env.XDG_CONFIG_HOME;
   tempDir = join(tmpdir(), `wf-loader-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
   localWorkflowDir = join(tempDir, 'local', '.engin', 'workflows');
   globalWorkflowDir = join(tempDir, 'global', 'engin', 'workflows');
@@ -20,6 +22,11 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  if (savedXdg === undefined) {
+    delete process.env.XDG_CONFIG_HOME;
+  } else {
+    process.env.XDG_CONFIG_HOME = savedXdg;
+  }
   await rm(tempDir, { recursive: true, force: true });
 });
 
@@ -34,11 +41,23 @@ function makeCwd(): string {
   return join(tempDir, 'local');
 }
 
+/**
+ * Helper: create a directory-based workflow in the given workflows directory.
+ * Structure: <workflowsDir>/<name>/main.ts
+ */
+async function createDirWorkflow(
+  workflowsDir: string,
+  name: string,
+  content = "export async function run() { return 'ok'; }",
+): Promise<void> {
+  await mkdir(join(workflowsDir, name), { recursive: true });
+  await writeFile(join(workflowsDir, name, 'main.ts'), content);
+}
+
 // ─── listWorkflows ──────────────────────────────────────────────────────────
 
 describe('listWorkflows', () => {
   it('returns empty array when no dirs exist', async () => {
-    // Use a cwd that doesn't have any workflow dirs
     const emptyCwd = join(tempDir, 'nowhere');
     await mkdir(emptyCwd, { recursive: true });
     process.env.XDG_CONFIG_HOME = join(tempDir, 'nowhere-global');
@@ -46,36 +65,36 @@ describe('listWorkflows', () => {
     expect(result).toEqual([]);
   });
 
-  it('finds .js, .mjs, .cjs, .ts files in global dir with correct source label', async () => {
+  it('finds directories with main.ts in global dir with correct source label', async () => {
     const cwd = makeCwd();
-    await writeFile(join(globalWorkflowDir, 'alpha.js'), 'export function run() {}');
-    await writeFile(join(globalWorkflowDir, 'bravo.mjs'), 'export function run() {}');
-    await writeFile(join(globalWorkflowDir, 'charlie.cjs'), 'module.exports = { run() {} };');
-    await writeFile(join(globalWorkflowDir, 'delta.ts'), 'export function run(): void {}');
+    await createDirWorkflow(globalWorkflowDir, 'alpha');
+    await createDirWorkflow(globalWorkflowDir, 'bravo');
+    await createDirWorkflow(globalWorkflowDir, 'charlie');
 
     const result = await listWorkflows(cwd);
-    expect(result).toHaveLength(4);
-    expect(result.map((r) => r.name)).toEqual(['alpha', 'bravo', 'charlie', 'delta']);
+    expect(result).toHaveLength(3);
+    expect(result.map((r) => r.name)).toEqual(['alpha', 'bravo', 'charlie']);
     for (const entry of result) {
       expect(entry.source).toBe('global');
+      expect(entry.path).toBe(join(globalWorkflowDir, entry.name, 'main.ts'));
     }
   });
 
-  it('finds files in local dir', async () => {
+  it('finds directories in local dir with source label local', async () => {
     const cwd = makeCwd();
-    await writeFile(join(localWorkflowDir, 'local-only.js'), 'export function run() {}');
+    await createDirWorkflow(localWorkflowDir, 'local-only');
 
     const result = await listWorkflows(cwd);
     expect(result).toHaveLength(1);
     expect(result[0].name).toBe('local-only');
     expect(result[0].source).toBe('local');
-    expect(result[0].path).toBe(join(localWorkflowDir, 'local-only.js'));
+    expect(result[0].path).toBe(join(localWorkflowDir, 'local-only', 'main.ts'));
   });
 
-  it('returns both local and global entries for same name', async () => {
+  it('returns both local and global entries for same name, local first', async () => {
     const cwd = makeCwd();
-    await writeFile(join(localWorkflowDir, 'shared.js'), 'export function run() {}');
-    await writeFile(join(globalWorkflowDir, 'shared.js'), 'export function run() {}');
+    await createDirWorkflow(localWorkflowDir, 'shared', "export async function run() { return 'local'; }");
+    await createDirWorkflow(globalWorkflowDir, 'shared', "export async function run() { return 'global'; }");
 
     const result = await listWorkflows(cwd);
     expect(result).toHaveLength(2);
@@ -87,22 +106,50 @@ describe('listWorkflows', () => {
     expect(result[1].source).toBe('global');
   });
 
-  it('ignores files with unsupported extensions', async () => {
+  it('ignores directories without main.ts', async () => {
     const cwd = makeCwd();
-    await writeFile(join(globalWorkflowDir, 'readme.md'), '# docs');
-    await writeFile(join(globalWorkflowDir, 'data.json'), '{}');
-    await writeFile(join(globalWorkflowDir, 'valid.js'), 'export function run() {}');
+    // Create a directory with other.ts but NOT main.ts
+    await mkdir(join(globalWorkflowDir, 'no-main'), { recursive: true });
+    await writeFile(join(globalWorkflowDir, 'no-main', 'other.ts'), 'export function run() {}');
+    // Create a valid workflow
+    await createDirWorkflow(globalWorkflowDir, 'valid');
 
     const result = await listWorkflows(cwd);
     expect(result).toHaveLength(1);
     expect(result[0].name).toBe('valid');
   });
 
-  it('results are sorted by name then source', async () => {
+  it('ignores plain files in workflows dir', async () => {
     const cwd = makeCwd();
-    await writeFile(join(localWorkflowDir, 'beta.js'), 'export function run() {}');
-    await writeFile(join(globalWorkflowDir, 'alpha.js'), 'export function run() {}');
-    await writeFile(join(localWorkflowDir, 'alpha.js'), 'export function run() {}');
+    // Create a flat file (not a directory)
+    await writeFile(join(globalWorkflowDir, 'flat-file.ts'), 'export function run() {}');
+    // Create a valid directory workflow
+    await createDirWorkflow(globalWorkflowDir, 'valid');
+
+    const result = await listWorkflows(cwd);
+    expect(result).toHaveLength(1);
+    expect(result[0].name).toBe('valid');
+  });
+
+  it('ignores hidden directories starting with .', async () => {
+    const cwd = makeCwd();
+    // Create a hidden directory with main.ts inside
+    const hiddenDir = join(globalWorkflowDir, '.hidden');
+    await mkdir(hiddenDir, { recursive: true });
+    await writeFile(join(hiddenDir, 'main.ts'), 'export function run() {}');
+    // Create a valid workflow
+    await createDirWorkflow(globalWorkflowDir, 'visible');
+
+    const result = await listWorkflows(cwd);
+    expect(result).toHaveLength(1);
+    expect(result[0].name).toBe('visible');
+  });
+
+  it('results are sorted by name then source (local before global for same name)', async () => {
+    const cwd = makeCwd();
+    await createDirWorkflow(localWorkflowDir, 'beta');
+    await createDirWorkflow(globalWorkflowDir, 'alpha');
+    await createDirWorkflow(localWorkflowDir, 'alpha');
 
     const result = await listWorkflows(cwd);
     expect(result.map((r) => `${r.name}:${r.source}`)).toEqual(['alpha:local', 'alpha:global', 'beta:local']);
@@ -114,24 +161,23 @@ describe('listWorkflows', () => {
 describe('loadWorkflow', () => {
   it('throws with descriptive error when name not found', async () => {
     const cwd = makeCwd();
-    await expect(loadWorkflow('nonexistent', cwd)).rejects.toThrow(
-      "Workflow 'nonexistent' not found. Use 'engin list' to see available workflows.",
-    );
+    await expect(loadWorkflow('nonexistent', cwd)).rejects.toThrow("Workflow 'nonexistent' not found.");
   });
 
   it('throws when module has no run export', async () => {
     const cwd = makeCwd();
-    await writeFile(join(globalWorkflowDir, 'bad-module.js'), 'export const something = 42;');
+    await createDirWorkflow(globalWorkflowDir, 'bad-module', 'export const something = 42;');
 
     await expect(loadWorkflow('bad-module', cwd)).rejects.toThrow(
       "Workflow 'bad-module' does not export a 'run' function.",
     );
   });
 
-  it('loads a .js file and returns its run function', async () => {
+  it('loads main.ts and returns its run function', async () => {
     const cwd = makeCwd();
-    await writeFile(
-      join(globalWorkflowDir, 'hello.js'),
+    await createDirWorkflow(
+      globalWorkflowDir,
+      'hello',
       "export async function run(taskPrompt, options) { return 'hello-result'; }",
     );
 
@@ -141,23 +187,11 @@ describe('loadWorkflow', () => {
     expect(result).toBe('hello-result');
   });
 
-  it('loads a .mjs file', async () => {
-    const cwd = makeCwd();
-    await writeFile(
-      join(globalWorkflowDir, 'esm-workflow.mjs'),
-      "export async function run(taskPrompt, options) { return 'mjs-result'; }",
-    );
-
-    const mod = await loadWorkflow('esm-workflow', cwd);
-    expect(typeof mod.run).toBe('function');
-    const result = await mod.run('test', { cwd: '/tmp', workDir: '/tmp/work' });
-    expect(result).toBe('mjs-result');
-  });
-
   it('loads a module with default export', async () => {
     const cwd = makeCwd();
-    await writeFile(
-      join(globalWorkflowDir, 'default-export.js'),
+    await createDirWorkflow(
+      globalWorkflowDir,
+      'default-export',
       "export default { async run(taskPrompt, options) { return 'default-result'; } };",
     );
 
@@ -169,18 +203,19 @@ describe('loadWorkflow', () => {
 
   it('prefers local workflow over global with same name', async () => {
     const cwd = makeCwd();
-    await writeFile(join(localWorkflowDir, 'override.js'), "export async function run() { return 'local'; }");
-    await writeFile(join(globalWorkflowDir, 'override.js'), "export async function run() { return 'global'; }");
+    await createDirWorkflow(localWorkflowDir, 'override', "export async function run() { return 'local'; }");
+    await createDirWorkflow(globalWorkflowDir, 'override', "export async function run() { return 'global'; }");
 
     const mod = await loadWorkflow('override', cwd);
     const result = await mod.run('', { cwd: '', workDir: '' });
     expect(result).toBe('local');
   });
 
-  it('caches modules (call twice, same result)', async () => {
+  it('caches modules (call twice, same reference returned)', async () => {
     const cwd = makeCwd();
-    await writeFile(
-      join(globalWorkflowDir, 'cached.js'),
+    await createDirWorkflow(
+      globalWorkflowDir,
+      'cached',
       'let callCount = 0; export async function run() { return ++callCount; }',
     );
 
@@ -197,23 +232,34 @@ describe('loadWorkflow', () => {
     expect(mod1).toBe(mod2);
   });
 
-  it('prefers .js over .mjs over .cjs over .ts for same name', async () => {
+  it('throws for path traversal with forward slash', async () => {
     const cwd = makeCwd();
-    await writeFile(join(globalWorkflowDir, 'ext-pref.mjs'), "export async function run() { return 'mjs'; }");
-    await writeFile(join(globalWorkflowDir, 'ext-pref.js'), "export async function run() { return 'js'; }");
+    await expect(loadWorkflow('../etc/passwd', cwd)).rejects.toThrow(
+      'Invalid workflow name: "../etc/passwd". Names must not contain path separators or "..".',
+    );
+  });
 
-    const mod = await loadWorkflow('ext-pref', cwd);
-    const result = await mod.run('', { cwd: '', workDir: '' });
-    expect(result).toBe('js');
+  it('throws for path traversal with backslash', async () => {
+    const cwd = makeCwd();
+    await expect(loadWorkflow('foo\\bar', cwd)).rejects.toThrow(
+      'Invalid workflow name: "foo\\bar". Names must not contain path separators or "..".',
+    );
+  });
+
+  it('throws for path traversal with double dot', async () => {
+    const cwd = makeCwd();
+    await expect(loadWorkflow('..', cwd)).rejects.toThrow(
+      'Invalid workflow name: "..". Names must not contain path separators or "..".',
+    );
   });
 });
 
 // ─── clearWorkflowCache ─────────────────────────────────────────────────────
 
 describe('clearWorkflowCache', () => {
-  it('clears the internal cache map', async () => {
+  it('clears the cache map', async () => {
     const cwd = makeCwd();
-    await writeFile(join(globalWorkflowDir, 'cache-clear.js'), 'export async function run() { return 42; }');
+    await createDirWorkflow(globalWorkflowDir, 'cache-clear', 'export async function run() { return 42; }');
 
     // First load populates the cache
     const mod1 = await loadWorkflow('cache-clear', cwd);

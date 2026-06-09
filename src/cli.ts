@@ -1,15 +1,14 @@
 #!/usr/bin/env bun
 
-import { getDefaultWorkDir, getGlobalConfigDir, loadEnvFiles, resolveProfilesDirs } from './core/config.js';
-import { loadProfilesFromDirs } from './core/profile.js';
+import { getDefaultWorkDir, getGlobalConfigDir, loadEnvFiles } from './core/config.js';
 import type { StatusCallbacks } from './core/types.js';
-import { listWorkflows, loadWorkflow } from './core/workflow-loader.js';
+import { loadWorkflow } from './core/workflow-loader.js';
 import { initDefaultConfig } from './setup.js';
 
 // ─── CLI Options ────────────────────────────────────────────────────────────
 
 export interface CliOptions {
-  command: 'run' | 'list' | 'init' | 'help' | 'version';
+  command: 'run' | 'init' | 'help' | 'version';
   workflowName?: string;
   taskPrompt?: string;
   cwd: string;
@@ -27,7 +26,6 @@ const USAGE = `Usage: engin <command> [options]
 
 Commands:
   run    <workflow-name> <task-prompt> [options]   Run a workflow
-  list   [--cwd <path>]                             List available workflows
   init                                              Create config directory structure
 
 Options:
@@ -149,13 +147,6 @@ export function parseArgs(argv: string[]): CliOptions {
     }
   }
 
-  if (command === 'list') {
-    if (positionals.length > 1) {
-      throw new Error(`Unexpected argument: "${positionals[1]}"\n${USAGE}`);
-    }
-    return { command: 'list', cwd, verbose, maxConcurrent, apiKeys };
-  }
-
   if (command === 'init') {
     if (positionals.length > 1) {
       throw new Error(`Unexpected argument: "${positionals[1]}"\n${USAGE}`);
@@ -163,7 +154,7 @@ export function parseArgs(argv: string[]): CliOptions {
     return { command: 'init', cwd, verbose, maxConcurrent, apiKeys };
   }
 
-  // Any non-list/non-init positional is treated as "run" with the first positional as the workflow name.
+  // Any non-init positional is treated as "run" with the first positional as the workflow name.
   const workflowName = command; // first positional is workflow name when implicit run
   const taskPrompt = positionals[1];
 
@@ -264,37 +255,6 @@ export function createStatusCallbacks(verbose: boolean): StatusCallbacks {
 
 // ─── Commands ───────────────────────────────────────────────────────────────
 
-export async function listCommand(options: CliOptions): Promise<void> {
-  const workflows = await listWorkflows(options.cwd);
-
-  if (workflows.length === 0) {
-    console.log('No workflows found. Run "engin init" to create the config directory structure.');
-    return;
-  }
-
-  console.log('Available workflows:\n');
-  for (const w of workflows) {
-    console.log(`  ${w.name} (${w.source}) — ${w.path}`);
-  }
-
-  // Try to load profiles
-  try {
-    const profileDirs = resolveProfilesDirs(options.cwd);
-    const profiles = await loadProfilesFromDirs(profileDirs);
-    if (profiles.size > 0) {
-      console.log(`\nAvailable profiles (${profiles.size}):\n`);
-      for (const [id, profile] of profiles) {
-        console.log(`  ${id} — ${profile.name} (${profile.provider}/${profile.model})`);
-      }
-    }
-  } catch (err) {
-    // Log profile loading errors but don't fail the list command
-    if (err instanceof Error) {
-      process.stderr.write(`Warning: Could not load profiles: ${err.message}\n`);
-    }
-  }
-}
-
 export async function initCommand(_options: CliOptions): Promise<void> {
   await initDefaultConfig();
   const globalDir = getGlobalConfigDir();
@@ -303,10 +263,15 @@ export async function initCommand(_options: CliOptions): Promise<void> {
 
 export async function runCommand(options: CliOptions): Promise<void> {
   // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-  const workDir = options.workDir ?? getDefaultWorkDir(options.cwd, options.workflowName!);
+  const workflowName = options.workflowName!;
 
-  // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-  const workflow = await loadWorkflow(options.workflowName!, options.cwd);
+  // Validate workflow name before using it in path construction
+  if (workflowName.includes('/') || workflowName.includes('\\') || workflowName.includes('..')) {
+    throw new Error(`Invalid workflow name: "${workflowName}"`);
+  }
+
+  const workDir = options.workDir ?? getDefaultWorkDir(options.cwd, workflowName);
+  const workflow = await loadWorkflow(workflowName, options.cwd);
 
   // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
   await workflow.run(options.taskPrompt!, {
@@ -340,10 +305,6 @@ export async function main(): Promise<void> {
   if (options.command === 'version') {
     process.stdout.write(`engin v${VERSION}\n`);
     process.exit(0);
-  }
-  if (options.command === 'list') {
-    await listCommand(options);
-    return;
   }
   if (options.command === 'init') {
     await initCommand(options);

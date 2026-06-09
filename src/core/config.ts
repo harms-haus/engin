@@ -27,9 +27,22 @@ export function getLocalConfigDir(cwd: string): string {
 /**
  * Returns profile directories in override-priority order (local first).
  * Does NOT check whether the directories exist.
+ *
+ * When `workflowName` is a non-empty string, returns workflow-scoped
+ * profile directories under `workflows/<workflowName>/profiles`.
+ * When `workflowName` is omitted or empty, returns an empty array.
  */
-export function resolveProfilesDirs(cwd: string): string[] {
-  return [join(getLocalConfigDir(cwd), 'profiles'), join(getGlobalConfigDir(), 'profiles')];
+export function resolveProfilesDirs(cwd: string, workflowName?: string): string[] {
+  if (!workflowName || workflowName.length === 0) {
+    return [];
+  }
+  if (workflowName.includes('/') || workflowName.includes('\\') || workflowName.includes('..')) {
+    throw new Error(`Invalid workflow name: "${workflowName}". Names must not contain path separators or "..".`);
+  }
+  return [
+    join(getLocalConfigDir(cwd), 'workflows', workflowName, 'profiles'),
+    join(getGlobalConfigDir(), 'workflows', workflowName, 'profiles'),
+  ];
 }
 
 /**

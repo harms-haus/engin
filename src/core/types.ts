@@ -118,6 +118,13 @@ export interface WorkflowRunOptions {
   onStatus?: StatusCallbacks;
 }
 
+// ─── Workflow Entry ───────────────────────────────────────────────────────
+export interface WorkflowEntry {
+  name: string;
+  source: 'local' | 'global';
+  path: string;
+}
+
 // ─── Workflow Module ────────────────────────────────────────────────────────
 export interface WorkflowModule {
   run(taskPrompt: string, options: WorkflowRunOptions): Promise<void>;

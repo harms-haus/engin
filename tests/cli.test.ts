@@ -51,27 +51,6 @@ describe('parseArgs', () => {
     });
   });
 
-  it('parses list command', () => {
-    const result = parseArgs(['list']);
-    expect(result.command).toBe('list');
-    expect(result.workflowName).toBeUndefined();
-    expect(result.taskPrompt).toBeUndefined();
-  });
-
-  it('parses list with --cwd', () => {
-    const result = parseArgs(['list', '--cwd', '/my/project']);
-    expect(result).toEqual({
-      command: 'list',
-      cwd: '/my/project',
-      workflowName: undefined,
-      taskPrompt: undefined,
-      workDir: undefined,
-      maxConcurrent: 3,
-      verbose: false,
-      apiKeys: {},
-    });
-  });
-
   it('parses init command', () => {
     const result = parseArgs(['init']);
     expect(result.command).toBe('init');
@@ -89,10 +68,6 @@ describe('parseArgs', () => {
     expect(() => parseArgs(['develop', 'task', '--bogus'])).toThrow(/Unknown flag/);
   });
 
-  it('throws on list with extra positional', () => {
-    expect(() => parseArgs(['list', 'extra'])).toThrow(/Unexpected argument/);
-  });
-
   it('throws on init with extra positional', () => {
     expect(() => parseArgs(['init', 'extra'])).toThrow(/Unexpected argument/);
   });
@@ -102,8 +77,9 @@ describe('parseArgs', () => {
   });
 
   it('--cwd defaults to process.cwd()', () => {
-    const result = parseArgs(['list']);
+    const result = parseArgs(['init']);
     expect(result.cwd).toBe(process.cwd());
+    expect(result.command).toBe('init');
   });
 
   it('--max-concurrent defaults to 3', () => {
@@ -112,8 +88,9 @@ describe('parseArgs', () => {
   });
 
   it('--verbose defaults to false', () => {
-    const result = parseArgs(['list']);
+    const result = parseArgs(['init']);
     expect(result.verbose).toBe(false);
+    expect(result.command).toBe('init');
   });
 
   it('parses --api-key repeatable', () => {
@@ -363,18 +340,27 @@ describe('main() loads .env files', () => {
     rmSync(tempDir, { recursive: true, force: true });
   });
 
-  it('loads .env from .engin/.env for list command', async () => {
+  it('loads .env from .engin/.env for init command', async () => {
     // Create .engin/.env in temp dir
     const harnessDir = join(tempDir, '.engin');
     mkdirSync(harnessDir, { recursive: true });
     writeFileSync(join(harnessDir, '.env'), 'TEST_CLI_ENV_VAR=from_cli_test\n');
 
+    // Point global config to temp so initDefaultConfig() writes there
+    const originalXdg = process.env.XDG_CONFIG_HOME;
+    process.env.XDG_CONFIG_HOME = join(tempDir, 'global');
+
     const originalArgv = process.argv;
-    process.argv = ['node', 'cli.ts', 'list', '--cwd', tempDir];
+    process.argv = ['node', 'cli.ts', 'init', '--cwd', tempDir];
     try {
       await main();
     } finally {
       process.argv = originalArgv;
+      if (originalXdg === undefined) {
+        delete process.env.XDG_CONFIG_HOME;
+      } else {
+        process.env.XDG_CONFIG_HOME = originalXdg;
+      }
     }
 
     expect(process.env.TEST_CLI_ENV_VAR).toBe('from_cli_test');
