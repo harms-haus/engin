@@ -93,28 +93,12 @@ export function extractJsonFromText(text: string): string | null {
     return null;
 }
 
-// ─── getAssistantText ───────────────────────────────────────────────────────
-
-/**
- * Concatenate all text blocks from an assistant message's content array.
- * Ignores non-text blocks (e.g. thinking, toolCall).
- */
-export function getAssistantText(
-    message: { content: Array<{ type: string; text?: string }> },
-): string {
-    return message.content
-        .filter((block) => block.type === "text" && block.text !== undefined)
-        .map((block) => block.text!)
-        .join("");
-}
-
 // ─── promptForStructured ────────────────────────────────────────────────────
 
 /** Minimal harness interface — just enough to call prompt(). */
 export interface PromptableHarness {
-    prompt: (text: string) => Promise<{
-        content: Array<{ type: string; text?: string; thinking?: string }>;
-    }>;
+    prompt: (text: string) => Promise<void>;
+    getLastAssistantText: () => string | undefined;
 }
 
 /**
@@ -134,8 +118,8 @@ export async function promptForStructured<T>(
     let lastError: string | undefined;
 
     for (let attempt = 0; attempt < maxRetries; attempt++) {
-        const response = await harness.prompt(currentPrompt);
-        const text = getAssistantText(response);
+        await harness.prompt(currentPrompt);
+        const text = harness.getLastAssistantText() ?? "";
 
         const jsonStr = extractJsonFromText(text);
         if (jsonStr === null) {

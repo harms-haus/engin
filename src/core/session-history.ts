@@ -1,13 +1,6 @@
 // ─── Session History ────────────────────────────────────────────────────────
-import {
-    InMemorySessionRepo,
-    JsonlSessionRepo,
-    type Session,
-    type SessionTreeEntry,
-    type MessageEntry,
-} from "@earendil-works/pi-agent-core";
-import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
-import type { AgentHarness, AgentMessage } from "./types.ts";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
 
 // ─── SessionStats ───────────────────────────────────────────────────────────
 
@@ -18,36 +11,54 @@ export interface SessionStats {
     messageCount: number;
 }
 
+// ─── SessionWithMessages ────────────────────────────────────────────────────
+
+/**
+ * Minimal interface for an object that exposes a messages array.
+ * Compatible with AgentSession from @earendil-works/pi-coding-agent.
+ */
+export interface SessionWithMessages {
+    readonly messages: AgentMessage[];
+}
+
 // ─── SessionHistory ─────────────────────────────────────────────────────────
 
 export class SessionHistory {
-    constructor(private session: Session) {}
+    constructor(private session: SessionWithMessages) {}
 
     /**
-     * Count the number of message entries in the session.
+     * Count the number of messages in the session.
      */
-    async getMessageCount(): Promise<number> {
-        const entries = await this.session.getEntries();
-        return entries.filter((e): e is MessageEntry => e.type === "message").length;
+    getMessageCount(): number {
+        return this.session.messages.length;
     }
 
     /**
-     * Sum usage from assistant messages in session entries.
+     * Sum usage from assistant messages.
      */
-    async getStats(): Promise<SessionStats> {
-        const entries = await this.session.getEntries();
-        const messageEntries = entries.filter(
-            (e): e is MessageEntry => e.type === "message",
-        );
+    getStats(): SessionStats {
+        const messages = this.session.messages;
 
         let totalInputTokens = 0;
         let totalOutputTokens = 0;
         let totalCost = 0;
 
-        for (const entry of messageEntries) {
-            const msg = entry.message;
-            if (msg && typeof msg === "object" && "role" in msg && msg.role === "assistant") {
-                const usage = (msg as { usage?: { input: number; output: number; cost?: { total: number } } }).usage;
+        for (const msg of messages) {
+            if (
+                msg &&
+                typeof msg === "object" &&
+                "role" in msg &&
+                msg.role === "assistant"
+            ) {
+                const usage = (
+                    msg as {
+                        usage?: {
+                            input: number;
+                            output: number;
+                            cost?: { total: number };
+                        };
+                    }
+                ).usage;
                 if (usage) {
                     totalInputTokens += usage.input ?? 0;
                     totalOutputTokens += usage.output ?? 0;
@@ -60,49 +71,44 @@ export class SessionHistory {
             totalInputTokens,
             totalOutputTokens,
             totalCost,
-            messageCount: messageEntries.length,
+            messageCount: messages.length,
         };
     }
-
-
 }
 
 /**
- * Resume a session by copying all message entries from `source` into `target`.
+ * Resume a session by copying all messages from `source` into `target`.
+ *
+ * Since AgentSession manages its own messages internally, this pushes each
+ * message from the source into the target via the `appendMessage` method when
+ * available, or copies directly into a writable messages array.
  */
 export async function resumeSession(
-    source: Session,
-    target: AgentHarness,
+    source: SessionWithMessages & {
+        messages: AgentMessage[];
+    },
+    target: SessionWithMessages & {
+        appendMessage?: (msg: AgentMessage) => Promise<void>;
+        messages: AgentMessage[];
+    },
 ): Promise<void> {
-    const entries = await source.getEntries();
-    const messageEntries = entries.filter(
-        (e): e is MessageEntry => e.type === "message",
-    );
-
-    for (const entry of messageEntries) {
-        await target.appendMessage(entry.message);
+    for (const msg of source.messages) {
+        if (target.appendMessage) {
+            await target.appendMessage(msg);
+        } else {
+            target.messages.push(msg);
+        }
     }
 }
 
 /**
- * Create a resumable session backed by in-memory storage (no sessionId) or
- * JSONL file storage (with sessionId).
+ * Create a resumable session backed by in-memory storage.
+ * Always uses SessionManager.inMemory().
  */
-export async function createResumableSession(
-    cwd: string,
-    sessionId?: string,
-): Promise<{ session: Session; sessionId: string }> {
-    if (sessionId) {
-        const env = new NodeExecutionEnv({ cwd });
-        const repo = new JsonlSessionRepo({ fs: env, sessionsRoot: cwd });
-        const session = await repo.create({ cwd, id: sessionId });
-        const meta = await session.getMetadata();
-        return { session, sessionId: meta.id };
-    }
-
-    const repo = new InMemorySessionRepo();
-    const session = await repo.create();
-    const meta = await session.getMetadata();
-    return { session, sessionId: meta.id };
+export function createResumableSession(
+    cwd?: string,
+): { sessionManager: SessionManager; sessionId: string } {
+    const sessionManager = SessionManager.inMemory(cwd);
+    const sessionId = sessionManager.getSessionId();
+    return { sessionManager, sessionId };
 }
-

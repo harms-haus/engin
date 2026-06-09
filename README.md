@@ -1,6 +1,6 @@
 # workflow-harness
 
-A script-based workflow engine for AI-driven development, built on top of [pi-agent-core](https://www.npmjs.com/package/@earendil-works/pi-agent-core).
+A script-based workflow engine for AI-driven development, built on top of [pi-coding-agent](https://www.npmjs.com/package/@earendil-works/pi-coding-agent).
 
 ## Install
 

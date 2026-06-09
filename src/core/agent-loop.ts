@@ -1,8 +1,7 @@
 // ─── Agent Loop Utilities ──────────────────────────────────────────────────
-import type { AssistantMessage } from "@earendil-works/pi-ai";
+import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import type { ZodType } from "zod";
 import type {
-    AgentHarness,
     AgentLoopResult,
     HarnessCreationOptions,
 } from "./types";
@@ -19,29 +18,30 @@ export interface AgentLoopUntilOptions {
 }
 
 /**
- * Repeatedly prompt the harness until `conditionFn` returns `true` or
+ * Repeatedly prompt the session until `conditionFn` returns `true` or
  * `maxAttempts` is exhausted.
  *
- * @param harness    Object with a `prompt(text)` method.
- * @param promptFn   Called with `(attempt, lastResponse?)` to build each prompt.
- * @param conditionFn  Return `true` to stop the loop.
+ * @param session    Object with `prompt(text)` and `getLastAssistantText()` methods.
+ * @param promptFn   Called with `(attempt, lastText?)` to build each prompt.
+ * @param conditionFn  Return `true` to stop the loop. Receives the last assistant text.
  * @param options    `{ maxAttempts }` — default 10.
- * @returns The final response and the number of attempts made.
+ * @returns The final text and the number of attempts made.
  */
 export async function agentLoopUntil(
-    harness: { prompt: (text: string) => Promise<AssistantMessage> },
-    promptFn: (attempt: number, lastResponse?: AssistantMessage) => string,
-    conditionFn: (response: AssistantMessage) => boolean,
+    session: { prompt: (text: string) => Promise<void>; getLastAssistantText: () => string | undefined },
+    promptFn: (attempt: number, lastText?: string) => string,
+    conditionFn: (lastText: string | undefined) => boolean,
     options?: AgentLoopUntilOptions,
-): Promise<{ response: AssistantMessage; attempts: number }> {
+): Promise<{ lastText: string | undefined; attempts: number }> {
     const maxAttempts = options?.maxAttempts ?? 10;
-    let lastResponse: AssistantMessage | undefined;
+    let lastText: string | undefined;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-        const prompt = promptFn(attempt, lastResponse);
-        lastResponse = await harness.prompt(prompt);
-        if (conditionFn(lastResponse)) {
-            return { response: lastResponse, attempts: attempt };
+        const prompt = promptFn(attempt, lastText);
+        await session.prompt(prompt);
+        lastText = session.getLastAssistantText();
+        if (conditionFn(lastText)) {
+            return { lastText, attempts: attempt };
         }
     }
 
@@ -60,13 +60,13 @@ export async function agentLoopUntil(
  * set to zero.
  */
 export async function retryAgentUntil<T>(
-    harness: PromptableHarness,
+    session: PromptableHarness,
     prompt: string,
     schema: ZodType<T>,
     options?: { maxRetries?: number },
 ): Promise<AgentLoopResult<T>> {
     const result = await promptForStructured(
-        harness,
+        session,
         prompt,
         schema,
         options?.maxRetries !== undefined
@@ -89,30 +89,30 @@ export interface ParallelAgentOptions {
 }
 
 /**
- * Create harnesses for every config in parallel, then run prompts in parallel
+ * Create sessions for every config in parallel, then run prompts in parallel
  * via `Promise.allSettled`.
  *
  * When `options.schema` is provided each prompt is parsed through
- * {@link promptForStructured}; otherwise the raw `AssistantMessage` is returned.
+ * {@link promptForStructured}; otherwise the last assistant text is returned.
  */
-export async function parallelAgents<T = AssistantMessage>(
+export async function parallelAgents<T = string | undefined>(
     configs: HarnessCreationOptions[],
-    promptFn: (harness: AgentHarness, index: number) => string,
+    promptFn: (session: AgentSession, index: number) => string,
     options?: ParallelAgentOptions,
 ): Promise<PromiseSettledResult<T>[]> {
-    // 1. Create harnesses
-    const harnessResults = await Promise.all(
+    // 1. Create sessions
+    const sessionResults = await Promise.all(
         configs.map((config) => createHarness(config)),
     );
 
     // 2. Run prompts
     try {
         const results = await Promise.allSettled(
-            harnessResults.map(async ({ harness }, i) => {
-                const prompt = promptFn(harness, i);
+            sessionResults.map(async ({ session }, i) => {
+                const prompt = promptFn(session, i);
                 if (options?.schema) {
                     return promptForStructured(
-                        harness,
+                        session,
                         prompt,
                         options.schema,
                         options.maxRetries !== undefined
@@ -120,14 +120,15 @@ export async function parallelAgents<T = AssistantMessage>(
                             : undefined,
                     ) as Promise<T>;
                 }
-                return harness.prompt(prompt) as unknown as Promise<T>;
+                await session.prompt(prompt);
+                return session.getLastAssistantText() as unknown as T;
             }),
         );
 
         return results;
     } finally {
-        for (const { unsubscribe } of harnessResults) {
-            unsubscribe?.();
+        for (const result of sessionResults) {
+            result.dispose?.();
         }
     }
 }
@@ -140,29 +141,29 @@ export interface SequentialAgentOptions {
 }
 
 /**
- * Create harnesses for every config in parallel, then run prompts
+ * Create sessions for every config in parallel, then run prompts
  * sequentially. Throws on the first failure.
  */
-export async function sequentialAgents<T = AssistantMessage>(
+export async function sequentialAgents<T = string | undefined>(
     configs: HarnessCreationOptions[],
-    promptFn: (harness: AgentHarness, index: number) => string,
+    promptFn: (session: AgentSession, index: number) => string,
     options?: SequentialAgentOptions,
 ): Promise<T[]> {
-    // 1. Create harnesses
-    const harnessResults = await Promise.all(
+    // 1. Create sessions
+    const sessionResults = await Promise.all(
         configs.map((config) => createHarness(config)),
     );
 
     // 2. Run prompts sequentially
     try {
         const results: T[] = [];
-        for (let i = 0; i < harnessResults.length; i++) {
-            const { harness } = harnessResults[i];
-            const prompt = promptFn(harness, i);
+        for (let i = 0; i < sessionResults.length; i++) {
+            const { session } = sessionResults[i];
+            const prompt = promptFn(session, i);
             if (options?.schema) {
                 results.push(
                     (await promptForStructured(
-                        harness,
+                        session,
                         prompt,
                         options.schema,
                         options.maxRetries !== undefined
@@ -171,16 +172,15 @@ export async function sequentialAgents<T = AssistantMessage>(
                     )) as T,
                 );
             } else {
-                results.push(
-                    (await harness.prompt(prompt)) as unknown as T,
-                );
+                await session.prompt(prompt);
+                results.push(session.getLastAssistantText() as unknown as T);
             }
         }
 
         return results;
     } finally {
-        for (const { unsubscribe } of harnessResults) {
-            unsubscribe?.();
+        for (const result of sessionResults) {
+            result.dispose?.();
         }
     }
 }

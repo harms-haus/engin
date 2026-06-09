@@ -1,59 +1,42 @@
 import { describe, it, expect, mock, beforeEach, afterAll } from "bun:test";
-import type { AgentTool, AgentProfile } from "../../src/core/types.ts";
+import type { AgentProfile } from "../../src/core/types.ts";
 
 // Capture real modules before mocking so we can restore them in afterAll.
-const realPiAgentCore = Object.assign({}, await import("@earendil-works/pi-agent-core"));
-const realPiAgentCoreNode = Object.assign({}, await import("@earendil-works/pi-agent-core/node"));
+const realPiCodingAgent = Object.assign({}, await import("@earendil-works/pi-coding-agent"));
 const realPiAi = Object.assign({}, await import("@earendil-works/pi-ai"));
 const realAuth = Object.assign({}, await import("../../src/core/auth.ts"));
-const realToolRegistry = Object.assign({}, await import("../../src/core/tool-registry.ts"));
 const realProfile = Object.assign({}, await import("../../src/core/profile.ts"));
 
 // ─── Mocks ──────────────────────────────────────────────────────────────────
 
-// Mock pi-agent-core (AgentHarness, InMemorySessionRepo, JsonlSessionRepo)
-mock.module("@earendil-works/pi-agent-core", () => {
-    const mockSession = {
-        getMetadata: mock(async () => ({ id: "mock-session-id", createdAt: new Date().toISOString() })),
-    };
-    const MockAgentHarness = mock().mockImplementation((_options: unknown) => ({
-        getModel: mock(),
-        getThinkingLevel: mock(),
-        getTools: mock(),
-    }));
-    return {
-        AgentHarness: MockAgentHarness,
-        InMemorySessionRepo: mock().mockImplementation(() => ({
-            create: mock(async () => mockSession),
-        })),
-        JsonlSessionRepo: mock().mockImplementation(() => ({
-            create: mock(async () => mockSession),
-        })),
-    };
-});
+// Mock createAgentSession
+const mockCreateAgentSession = mock(async () => ({
+    session: {
+        prompt: mock(async () => {}),
+        subscribe: mock(() => mock()),
+        getLastAssistantText: mock(() => "mock response"),
+        messages: [],
+        sessionId: "mock-session-id",
+    },
+}));
 
-// Mock NodeExecutionEnv from the /node subpath
-mock.module("@earendil-works/pi-agent-core/node", () => ({
-    NodeExecutionEnv: mock().mockImplementation((_options: unknown) => ({
-        cwd: "/mock/cwd",
-        readTextFile: mock(),
-        writeFile: mock(),
-        exec: mock(),
-        listDir: mock(),
-        absolutePath: mock(),
-        joinPath: mock(),
-        readTextLines: mock(),
-        readBinaryFile: mock(),
-        appendFile: mock(),
-        fileInfo: mock(),
-        canonicalPath: mock(),
-        exists: mock(),
-        createDir: mock(),
-        remove: mock(),
-        createTempDir: mock(),
-        createTempFile: mock(),
-        cleanup: mock(),
-    })),
+const mockSessionManagerInMemory = mock(() => ({
+    getSessionId: () => "mock-session-id",
+}));
+
+const mockAuthStorageInstance = {
+    setRuntimeApiKey: mock(),
+};
+
+const mockDefaultResourceLoaderInstance = {
+    reload: mock(async () => {}),
+};
+
+mock.module("@earendil-works/pi-coding-agent", () => ({
+    createAgentSession: mockCreateAgentSession,
+    SessionManager: { inMemory: mockSessionManagerInMemory },
+    AuthStorage: { inMemory: mock(() => mockAuthStorageInstance) },
+    DefaultResourceLoader: mock().mockImplementation(() => mockDefaultResourceLoaderInstance),
 }));
 
 // Mock getModel
@@ -68,22 +51,6 @@ mock.module("../../src/core/auth.ts", () => ({
     resolveApiKeyOrThrow: (...args: unknown[]) => mockResolveApiKeyOrThrow(...args),
 }));
 
-// Mock createDefaultToolRegistry
-const mockToolRegistry = {
-    resolveTools: mock(() => [
-        { name: "read", label: "Read", description: "", parameters: {}, execute: mock() },
-        { name: "bash", label: "Bash", description: "", parameters: {}, execute: mock() },
-        { name: "write", label: "Write", description: "", parameters: {}, execute: mock() },
-        { name: "edit", label: "Edit", description: "", parameters: {}, execute: mock() },
-        { name: "grep", label: "Grep", description: "", parameters: {}, execute: mock() },
-        { name: "find", label: "Find", description: "", parameters: {}, execute: mock() },
-        { name: "ls", label: "List", description: "", parameters: {}, execute: mock() },
-    ]),
-};
-mock.module("../../src/core/tool-registry.ts", () => ({
-    createDefaultToolRegistry: mock(() => mockToolRegistry),
-}));
-
 // Mock loadProfile
 const mockLoadProfile = mock();
 mock.module("../../src/core/profile.ts", () => ({
@@ -92,14 +59,16 @@ mock.module("../../src/core/profile.ts", () => ({
 
 // ─── Imports (after mocks) ─────────────────────────────────────────────────
 
-import { AgentHarness, InMemorySessionRepo, JsonlSessionRepo } from "@earendil-works/pi-agent-core";
-import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
-import { createDefaultToolRegistry } from "../../src/core/tool-registry.ts";
+import {
+    AuthStorage,
+    DefaultResourceLoader,
+    SessionManager,
+} from "@earendil-works/pi-coding-agent";
 import { createHarness, createHarnessFromProfile } from "../../src/core/harness-factory.ts";
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
-const mockModel = { id: "gpt-4o", provider: "openai", cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+const mockModel = { id: "gpt-4o", provider: "openai", cost: { input: 0, output: 0 } };
 
 function makeProfile(overrides?: Partial<AgentProfile>): AgentProfile {
     return {
@@ -121,40 +90,44 @@ beforeEach(() => {
     mock.clearAllMocks();
     mockGetModel.mockReturnValue(mockModel);
     mockResolveApiKeyOrThrow.mockReturnValue("sk-test-key");
+    // Reset mockAuthStorageInstance.setRuntimeApiKey since it's not auto-cleared
+    mockAuthStorageInstance.setRuntimeApiKey = mock();
+    // Re-seed the mock module factories so fresh instances are returned
+    mockCreateAgentSession.mockResolvedValue({
+        session: {
+            prompt: mock(async () => {}),
+            subscribe: mock(() => mock()),
+            getLastAssistantText: mock(() => "mock response"),
+            messages: [],
+            sessionId: "mock-session-id",
+        },
+    });
+    mockDefaultResourceLoaderInstance.reload = mock(async () => {});
 });
 
 // ─── Tests ──────────────────────────────────────────────────────────────────
 
 describe("createHarness", () => {
-    it("creates a NodeExecutionEnv with the given cwd", async () => {
+    it("creates an in-memory session via SessionManager.inMemory", async () => {
         await createHarness({
             profile: makeProfile(),
             cwd: "/my/project",
         });
 
-        expect(NodeExecutionEnv).toHaveBeenCalledWith({ cwd: "/my/project" });
+        expect(SessionManager.inMemory).toHaveBeenCalledWith("/my/project");
     });
 
-    it("creates an InMemorySessionRepo when sessionId is omitted", async () => {
+    it("creates an in-memory AuthStorage and registers the API key", async () => {
+        mockResolveApiKeyOrThrow.mockReturnValue("sk-custom");
+
         await createHarness({
             profile: makeProfile(),
             cwd: "/tmp",
+            apiKeys: { openai: "sk-custom" },
         });
 
-        expect(InMemorySessionRepo).toHaveBeenCalled();
-        expect(JsonlSessionRepo).not.toHaveBeenCalled();
-    });
-
-    it("creates a JsonlSessionRepo when sessionId is provided", async () => {
-        const result = await createHarness({
-            profile: makeProfile(),
-            cwd: "/tmp",
-            sessionId: "my-session",
-        });
-
-        expect(JsonlSessionRepo).toHaveBeenCalled();
-        expect(InMemorySessionRepo).not.toHaveBeenCalled();
-        expect(result.sessionId).toBe("my-session");
+        expect(AuthStorage.inMemory).toHaveBeenCalled();
+        expect(mockAuthStorageInstance.setRuntimeApiKey).toHaveBeenCalledWith("openai", "sk-custom");
     });
 
     it("resolves model via getModel and throws on unknown model", async () => {
@@ -170,14 +143,14 @@ describe("createHarness", () => {
         expect(mockGetModel).toHaveBeenCalledWith("unknown", "nonexistent");
     });
 
-    it("passes the resolved model to AgentHarness", async () => {
+    it("passes the resolved model to createAgentSession", async () => {
         await createHarness({
             profile: makeProfile(),
             cwd: "/tmp",
         });
 
         expect(mockGetModel).toHaveBeenCalledWith("openai", "gpt-4o");
-        expect(AgentHarness).toHaveBeenCalledWith(
+        expect(mockCreateAgentSession).toHaveBeenCalledWith(
             expect.objectContaining({ model: mockModel }),
         );
     });
@@ -192,106 +165,71 @@ describe("createHarness", () => {
         expect(mockResolveApiKeyOrThrow).toHaveBeenCalledWith("openai", { openai: "sk-custom" });
     });
 
-    it("passes apiKey via getApiKeyAndHeaders callback", async () => {
-        mockResolveApiKeyOrThrow.mockReturnValue("sk-resolved");
-
-        await createHarness({
-            profile: makeProfile(),
-            cwd: "/tmp",
-        });
-
-        const harnessOptions = (AgentHarness as ReturnType<typeof mock>).mock.calls[0][0];
-        const getApiKeyAndHeaders = harnessOptions.getApiKeyAndHeaders!;
-        const result = await getApiKeyAndHeaders(mockModel as never);
-
-        expect(result).toEqual({ apiKey: "sk-resolved" });
-    });
-
-    it("passes thinkingLevel from profile to AgentHarness", async () => {
+    it("passes thinkingLevel from profile to createAgentSession", async () => {
         await createHarness({
             profile: makeProfile({ thinkingLevel: "high" }),
             cwd: "/tmp",
         });
 
-        expect(AgentHarness).toHaveBeenCalledWith(
+        expect(mockCreateAgentSession).toHaveBeenCalledWith(
             expect.objectContaining({ thinkingLevel: "high" }),
         );
     });
 
-    it("passes systemPrompt from profile to AgentHarness", async () => {
+    it("creates a DefaultResourceLoader with systemPrompt", async () => {
         await createHarness({
             profile: makeProfile({ systemPrompt: "Custom system prompt." }),
             cwd: "/tmp",
         });
 
-        expect(AgentHarness).toHaveBeenCalledWith(
-            expect.objectContaining({ systemPrompt: "Custom system prompt." }),
+        expect(DefaultResourceLoader).toHaveBeenCalledWith(
+            expect.objectContaining({
+                cwd: "/tmp",
+                agentDir: "/tmp",
+            }),
         );
+        // Verify reload was called on the resource loader
+        expect(mockDefaultResourceLoaderInstance.reload).toHaveBeenCalled();
     });
 
-    it("passes env to AgentHarness", async () => {
-        await createHarness({
-            profile: makeProfile(),
-            cwd: "/tmp",
-        });
-
-        expect(AgentHarness).toHaveBeenCalledWith(
-            expect.objectContaining({ env: expect.anything() }),
-        );
-    });
-
-    it("creates default tool registry and resolves tools from profile", async () => {
+    it("builds tool list from profile includeTools", async () => {
         await createHarness({
             profile: makeProfile({
                 includeTools: ["read", "bash"],
-                excludeTools: ["ls"],
             }),
             cwd: "/tmp",
         });
 
-        expect(createDefaultToolRegistry).toHaveBeenCalled();
-        expect(mockToolRegistry.resolveTools).toHaveBeenCalledWith(
-            ["read", "bash"],
-            ["ls"],
+        expect(mockCreateAgentSession).toHaveBeenCalledWith(
+            expect.objectContaining({ tools: ["read", "bash"] }),
         );
     });
 
-    it("appends additionalTools to resolved tools", async () => {
-        const extraTool: AgentTool = {
-            name: "custom_tool",
-            label: "Custom",
-            description: "A custom tool",
-            parameters: { type: "object", properties: {} },
-            execute: mock(),
-        };
-
+    it("builds tool list excluding excludeTools", async () => {
         await createHarness({
-            profile: makeProfile(),
+            profile: makeProfile({
+                excludeTools: ["edit"],
+            }),
             cwd: "/tmp",
-            additionalTools: [extraTool],
         });
 
-        const harnessOptions = (AgentHarness as ReturnType<typeof mock>).mock.calls[0][0];
-        const tools = harnessOptions.tools!;
-        const toolNames = tools.map((t: AgentTool) => t.name);
-
-        expect(toolNames).toContain("custom_tool");
-        // The 7 defaults + 1 extra
-        expect(tools.length).toBe(8);
+        expect(mockCreateAgentSession).toHaveBeenCalledWith(
+            expect.objectContaining({ tools: ["read", "bash", "write"] }),
+        );
     });
 
-    it("returns harness and sessionId", async () => {
+    it("returns session and sessionId", async () => {
         const result = await createHarness({
             profile: makeProfile(),
             cwd: "/tmp",
         });
 
-        expect(result).toHaveProperty("harness");
+        expect(result).toHaveProperty("session");
         expect(result).toHaveProperty("sessionId");
         expect(typeof result.sessionId).toBe("string");
     });
 
-    it("returns mock-session-id as sessionId for in-memory sessions", async () => {
+    it("returns mock-session-id as sessionId", async () => {
         const result = await createHarness({
             profile: makeProfile(),
             cwd: "/tmp",
@@ -329,45 +267,35 @@ describe("createHarnessFromProfile", () => {
         const profile = makeProfile();
         mockLoadProfile.mockResolvedValue(profile);
 
-        const extraTool: AgentTool = {
-            name: "extra",
-            label: "Extra",
-            description: "",
-            parameters: {},
-            execute: mock(),
-        };
-
         await createHarnessFromProfile("/profiles", "test-agent", {
             cwd: "/my/project",
             apiKeys: { openai: "sk-from-profile" },
-            additionalTools: [extraTool],
         });
 
         expect(mockResolveApiKeyOrThrow).toHaveBeenCalledWith("openai", { openai: "sk-from-profile" });
-
-        const harnessOptions = (AgentHarness as ReturnType<typeof mock>).mock.calls[0][0];
-        const toolNames = harnessOptions.tools!.map((t: AgentTool) => t.name);
-        expect(toolNames).toContain("extra");
+        expect(mockCreateAgentSession).toHaveBeenCalledWith(
+            expect.objectContaining({
+                model: mockModel,
+            }),
+        );
     });
 
-    it("returns harness and sessionId", async () => {
+    it("returns session and sessionId", async () => {
         mockLoadProfile.mockResolvedValue(makeProfile());
 
         const result = await createHarnessFromProfile("/profiles", "test-agent", {
             cwd: "/tmp",
         });
 
-        expect(result).toHaveProperty("harness");
+        expect(result).toHaveProperty("session");
         expect(result).toHaveProperty("sessionId");
     });
 });
 
 // Restore the real modules so mocks don't leak into other test files.
 afterAll(() => {
-    mock.module("@earendil-works/pi-agent-core", () => realPiAgentCore);
-    mock.module("@earendil-works/pi-agent-core/node", () => realPiAgentCoreNode);
+    mock.module("@earendil-works/pi-coding-agent", () => realPiCodingAgent);
     mock.module("@earendil-works/pi-ai", () => realPiAi);
     mock.module("../../src/core/auth.ts", () => realAuth);
-    mock.module("../../src/core/tool-registry.ts", () => realToolRegistry);
     mock.module("../../src/core/profile.ts", () => realProfile);
 });

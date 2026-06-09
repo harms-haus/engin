@@ -1,15 +1,16 @@
 // ─── Harness Factory ────────────────────────────────────────────────────────
 import {
-    AgentHarness,
-    InMemorySessionRepo,
-    JsonlSessionRepo,
-} from "@earendil-works/pi-agent-core";
-import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
+    AgentSession,
+    type AgentSessionEvent,
+    AuthStorage,
+    createAgentSession,
+    DefaultResourceLoader,
+    SessionManager,
+} from "@earendil-works/pi-coding-agent";
 import { getModel } from "@earendil-works/pi-ai";
 
-import type { AgentTool, HarnessCreationOptions, AgentProfile } from "./types";
+import type { HarnessCreationOptions } from "./types";
 import { resolveApiKeyOrThrow } from "./auth";
-import { createDefaultToolRegistry } from "./tool-registry";
 import { loadProfile } from "./profile";
 
 // ─── Agent Event Types ──────────────────────────────────────────────────────
@@ -23,48 +24,24 @@ type AgentLevelEvent =
 // ─── createHarness ──────────────────────────────────────────────────────────
 
 /**
- * Create an {@link AgentHarness} wired to a real filesystem and session.
+ * Create an {@link AgentSession} wired to an in-memory session.
  *
  * Resolution steps:
- * 1. Create a {@link NodeExecutionEnv} with the given `cwd`.
- * 2. Create a session — {@link InMemorySessionRepo} when `sessionId` is
- *    omitted, or {@link JsonlSessionRepo} when one is provided.
- * 3. Resolve the model via {@link getModel}; throw if the provider/model
+ * 1. Resolve the model via {@link getModel}; throw if the provider/model
  *    combination is unknown.
- * 4. Build the tool list from the default registry, filtered by the profile's
- *    `includeTools` / `excludeTools`, then augmented with any
- *    `additionalTools`.
- * 5. Resolve the API key via {@link resolveApiKeyOrThrow}.
- * 6. Construct and return the harness together with the session id.
+ * 2. Resolve the API key via {@link resolveApiKeyOrThrow} and register it
+ *    with an in-memory {@link AuthStorage}.
+ * 3. Build the tool allowlist/denylist from the profile configuration.
+ * 4. Create a {@link DefaultResourceLoader} with the profile's system prompt.
+ * 5. Construct the session via {@link createAgentSession}.
+ * 6. Optionally subscribe to agent status callbacks.
  */
 export async function createHarness(
     options: HarnessCreationOptions,
-): Promise<{ harness: AgentHarness; sessionId: string; unsubscribe?: () => void }> {
-    const { profile, cwd, sessionId, additionalTools, apiKeys, onAgentStatus } = options;
+): Promise<{ session: AgentSession; sessionId: string; dispose: () => void }> {
+    const { profile, cwd, apiKeys, onAgentStatus } = options;
 
-    // 1. Execution environment
-    const env = new NodeExecutionEnv({ cwd });
-
-    // 2. Session
-    let session;
-    let resolvedSessionId: string;
-
-    if (sessionId) {
-        // Persistent JSONL-backed session
-        const repo = new JsonlSessionRepo({ fs: env, sessionsRoot: cwd });
-        const sess = await repo.create({ cwd });
-        session = sess;
-        resolvedSessionId = sessionId;
-    } else {
-        // In-memory session
-        const repo = new InMemorySessionRepo();
-        const sess = await repo.create();
-        session = sess;
-        const meta = await sess.getMetadata();
-        resolvedSessionId = meta.id;
-    }
-
-    // 3. Model
+    // 1. Model
     const model = getModel(profile.provider as any, profile.model as any);
     if (!model) {
         throw new Error(
@@ -73,31 +50,45 @@ export async function createHarness(
         );
     }
 
-    // 4. Tools
-    const toolRegistry = createDefaultToolRegistry(env);
-    const resolvedTools: AgentTool[] = toolRegistry.resolveTools(
-        profile.includeTools,
-        profile.excludeTools,
-    );
-    if (additionalTools && additionalTools.length > 0) {
-        resolvedTools.push(...additionalTools);
+    // 2. API key
+    const apiKey = resolveApiKeyOrThrow(profile.provider, apiKeys);
+    const authStorage = AuthStorage.inMemory();
+    authStorage.setRuntimeApiKey(profile.provider, apiKey);
+
+    // 3. Tools
+    const defaultTools = ["read", "bash", "edit", "write"];
+    let builtTools: string[];
+    if (profile.includeTools && profile.includeTools.length > 0) {
+        builtTools = defaultTools.filter((name) => profile.includeTools!.includes(name));
+    } else {
+        builtTools = [...defaultTools];
+    }
+    if (profile.excludeTools && profile.excludeTools.length > 0) {
+        builtTools = builtTools.filter((name) => !profile.excludeTools!.includes(name));
     }
 
-    // 5. API key
-    const apiKey = resolveApiKeyOrThrow(profile.provider, apiKeys);
+    // 4. Resource loader
+    const resourceLoader = new DefaultResourceLoader({
+        cwd,
+        agentDir: cwd,
+        systemPromptOverride: () => profile.systemPrompt,
+    });
+    await resourceLoader.reload();
 
-    // 6. Harness
-    const harness = new AgentHarness({
-        env,
-        session,
+    // 5. Session
+    const sessionManager = SessionManager.inMemory(cwd);
+    const { session } = await createAgentSession({
+        sessionManager,
         model,
         thinkingLevel: profile.thinkingLevel,
-        systemPrompt: profile.systemPrompt,
-        tools: resolvedTools,
-        getApiKeyAndHeaders: async () => ({ apiKey }),
+        tools: builtTools,
+        resourceLoader,
+        authStorage,
     });
 
-    // 7. Subscribe to agent status callbacks (if any handlers provided)
+    const sessionId = session.sessionId;
+
+    // 6. Subscribe to agent status callbacks (if any handlers provided)
     let unsubscribe: (() => void) | undefined;
     if (
         onAgentStatus &&
@@ -107,17 +98,17 @@ export async function createHarness(
             onAgentStatus.onToolCallEnd)
     ) {
         let turnCount = 0;
-        unsubscribe = harness.subscribe((event: any) => {
+        unsubscribe = session.subscribe((event: AgentSessionEvent) => {
             const e = event as AgentLevelEvent;
             if (e.type === "turn_start") {
                 onAgentStatus.onTurnStart?.({
-                    agentId: resolvedSessionId,
+                    agentId: sessionId,
                     turn: ++turnCount,
                 });
             } else if (e.type === "turn_end") {
                 const usage = e.message?.usage;
                 onAgentStatus.onTurnEnd?.({
-                    agentId: resolvedSessionId,
+                    agentId: sessionId,
                     turn: turnCount,
                     tokens: usage
                         ? { input: usage.input, output: usage.output }
@@ -125,13 +116,13 @@ export async function createHarness(
                 });
             } else if (e.type === "tool_execution_start") {
                 onAgentStatus.onToolCallStart?.({
-                    agentId: resolvedSessionId,
+                    agentId: sessionId,
                     toolName: e.toolName,
                     toolCallId: e.toolCallId,
                 });
             } else if (e.type === "tool_execution_end") {
                 onAgentStatus.onToolCallEnd?.({
-                    agentId: resolvedSessionId,
+                    agentId: sessionId,
                     toolName: e.toolName,
                     toolCallId: e.toolCallId,
                     isError: e.isError ?? false,
@@ -140,14 +131,12 @@ export async function createHarness(
         });
     }
 
-    const result: { harness: AgentHarness; sessionId: string; unsubscribe?: () => void } = {
-        harness,
-        sessionId: resolvedSessionId,
+    const dispose = () => {
+        unsubscribe?.();
+        session.dispose();
     };
-    if (unsubscribe) {
-        result.unsubscribe = unsubscribe;
-    }
-    return result;
+
+    return { session, sessionId, dispose };
 }
 
 // ─── createHarnessFromProfile ───────────────────────────────────────────────
@@ -160,7 +149,7 @@ export async function createHarnessFromProfile(
     dirPath: string,
     profileId: string,
     options: Omit<HarnessCreationOptions, "profile">,
-): Promise<{ harness: AgentHarness; sessionId: string; unsubscribe?: () => void }> {
+): Promise<{ session: AgentSession; sessionId: string; dispose: () => void }> {
     const profile = await loadProfile(dirPath, profileId);
     return createHarness({ ...options, profile });
 }

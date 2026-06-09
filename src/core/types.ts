@@ -1,39 +1,17 @@
-// ─── Re-exports from @earendil-works/pi-agent-core ─────────────────────────
-import type {
-    AgentHarness,
-    AgentHarnessOptions,
-    AgentMessage,
-    AgentTool,
-    ExecutionEnv,
-    InMemorySessionRepo,
-    JsonlSessionRepo,
-    PromptTemplate,
-    QueueMode,
-    Session,
-    SessionTreeEntry,
-    Skill,
-    ThinkingLevel,
-} from "@earendil-works/pi-agent-core";
+// ─── Re-exports from @earendil-works/pi-coding-agent ───────────────────────
+export {
+    AgentSession,
+    SessionManager,
+    DefaultResourceLoader,
+    AuthStorage,
+} from "@earendil-works/pi-coding-agent";
 
-export type {
-    AgentHarness,
-    AgentHarnessOptions,
-    AgentMessage,
-    AgentTool,
-    ExecutionEnv,
-    InMemorySessionRepo,
-    JsonlSessionRepo,
-    PromptTemplate,
-    QueueMode,
-    Session,
-    SessionTreeEntry,
-    Skill,
-    ThinkingLevel,
-};
+// ─── Peer dependency re-exports (not re-exported by pi-coding-agent) ───────
+import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
+export type { ThinkingLevel };
 
-// ─── Re-exports from @earendil-works/pi-ai ─────────────────────────────────
 export type { Model } from "@earendil-works/pi-ai";
-export { getModel, getEnvApiKey, parseJsonWithRepair } from "@earendil-works/pi-ai";
+export { getModel, parseJsonWithRepair } from "@earendil-works/pi-ai";
 
 // ─── Agent Profile ──────────────────────────────────────────────────────────
 export interface AgentProfile {
@@ -162,8 +140,6 @@ export interface WorkflowModule {
 export interface HarnessCreationOptions {
     profile: AgentProfile;
     cwd: string;
-    sessionId?: string;
-    additionalTools?: AgentTool[];
     apiKeys?: Record<string, string>;
     onAgentStatus?: AgentStatusCallbacks;
 }

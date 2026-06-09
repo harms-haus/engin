@@ -132,7 +132,7 @@ function errorEvent(
     return { type: "error", agentId, error, ...(taskId && { taskId }) };
 }
 
-// ─── Helper: get profile and create harness ─────────────────────────────────
+// ─── Helper: get profile and create session ─────────────────────────────────
 
 async function getProfile(
     profilesDirs: string[],
@@ -374,7 +374,7 @@ export async function scoutingPhase(
 ): Promise<unknown[]> {
     // 1. Get scouting topics
     const scoutOpts = await makeHarnessOptions(profilesDirs, "scout", cwd, apiKeys, onStatus);
-    const { harness: scoutHarness, unsubscribe: scoutUnsub } = await createHarness(scoutOpts);
+    const { session: scoutSession, dispose: scoutDispose } = await createHarness(scoutOpts);
     onStatus?.onAgentSpawn?.({ agentId: "scout-coordinator", profile: "scout", phase: "scouting" });
     tracker.incrementAgentCount();
 
@@ -388,9 +388,9 @@ export async function scoutingPhase(
             "Respond with a JSON object listing the topics to investigate.",
         ].join("\n");
 
-        topics = await promptForStructured(scoutHarness, topicPrompt, ScoutingTopicSchema);
+        topics = await promptForStructured(scoutSession, topicPrompt, ScoutingTopicSchema);
     } finally {
-        scoutUnsub?.();
+        scoutDispose?.();
     }
     onStatus?.onAgentComplete?.({ agentId: "scout-coordinator", profile: "scout", phase: "scouting" });
 
@@ -413,7 +413,7 @@ export async function scoutingPhase(
 
         const results = await parallelAgents(
             scoutConfigs,
-            (_harness, i) => {
+            (_session, i) => {
                 const topic = topics.topics[i];
                 return [
                     `Investigate the following area of the codebase:`,
@@ -432,6 +432,13 @@ export async function scoutingPhase(
             if (result.status === "fulfilled") {
                 reports.push(result.value);
                 onStatus?.onAgentComplete?.({ agentId: `scout-${i}`, profile: "scout", phase: "scouting" });
+            } else {
+                const msg = result.reason instanceof Error ? result.reason.message : String(result.reason);
+                onStatus?.onError?.({
+                    agentId: `scout-${i}`,
+                    error: msg,
+                    phase: "scouting",
+                });
             }
         }
     }
@@ -461,7 +468,7 @@ export async function scoutingReviewPhase(
     onStatus?: StatusCallbacks,
 ): Promise<ScoutingReview> {
     const opts = await makeHarnessOptions(profilesDirs, "scouting-reviewer", cwd, apiKeys, onStatus);
-    const { harness, unsubscribe } = await createHarness(opts);
+    const { session, dispose } = await createHarness(opts);
     onStatus?.onAgentSpawn?.({ agentId: "scouting-reviewer", profile: "scouting-reviewer", phase: "scouting_review" });
     tracker.incrementAgentCount();
 
@@ -476,9 +483,9 @@ export async function scoutingReviewPhase(
 
     let review: ScoutingReview;
     try {
-        review = await promptForStructured(harness, prompt, ScoutingReviewSchema);
+        review = await promptForStructured(session, prompt, ScoutingReviewSchema);
     } finally {
-        unsubscribe?.();
+        dispose?.();
     }
     onStatus?.onAgentComplete?.({ agentId: "scouting-reviewer", profile: "scouting-reviewer", phase: "scouting_review" });
 
@@ -514,7 +521,7 @@ export async function planningPhase(
     onStatus?: StatusCallbacks,
 ): Promise<Plan> {
     const opts = await makeHarnessOptions(profilesDirs, "planner", cwd, apiKeys, onStatus);
-    const { harness, unsubscribe } = await createHarness(opts);
+    const { session, dispose } = await createHarness(opts);
     onStatus?.onAgentSpawn?.({ agentId: "planner", profile: "planner", phase: "planning" });
     tracker.incrementAgentCount();
 
@@ -531,9 +538,9 @@ export async function planningPhase(
 
     let plan: Plan;
     try {
-        plan = await promptForStructured(harness, prompt, PlanSchema);
+        plan = await promptForStructured(session, prompt, PlanSchema);
     } finally {
-        unsubscribe?.();
+        dispose?.();
     }
     onStatus?.onAgentComplete?.({ agentId: "planner", profile: "planner", phase: "planning" });
 
@@ -562,7 +569,7 @@ export async function planReviewPhase(
     onStatus?: StatusCallbacks,
 ): Promise<PlanReview> {
     const opts = await makeHarnessOptions(profilesDirs, "plan-reviewer", cwd, apiKeys, onStatus);
-    const { harness, unsubscribe } = await createHarness(opts);
+    const { session, dispose } = await createHarness(opts);
     onStatus?.onAgentSpawn?.({ agentId: "plan-reviewer", profile: "plan-reviewer", phase: "plan_review" });
     tracker.incrementAgentCount();
 
@@ -582,9 +589,9 @@ export async function planReviewPhase(
 
     let review: PlanReview;
     try {
-        review = await promptForStructured(harness, prompt, PlanReviewSchema);
+        review = await promptForStructured(session, prompt, PlanReviewSchema);
     } finally {
-        unsubscribe?.();
+        dispose?.();
     }
     onStatus?.onAgentComplete?.({ agentId: "plan-reviewer", profile: "plan-reviewer", phase: "plan_review" });
 
@@ -665,7 +672,7 @@ export async function implementationPhase(
 
         const implResults = await parallelAgents(
             implConfigs,
-            (_harness, i) => {
+            (_session, i) => {
                 const task = claimed[i];
                 return [
                     `You are an implementation agent. Complete the following task:`,
@@ -702,15 +709,15 @@ export async function implementationPhase(
         const reviewerHarnesses = await Promise.all(
             reviewingTasks.map(async (task) => {
                 const reviewerOpts = await makeHarnessOptions(profilesDirs, "implement-reviewer", cwd, apiKeys, onStatus);
-                const { harness, unsubscribe } = await createHarness(reviewerOpts);
+                const { session, dispose } = await createHarness(reviewerOpts);
                 onStatus?.onAgentSpawn?.({ agentId: `reviewer-${task.id}`, profile: "implement-reviewer", phase: "implementing", taskId: task.id });
                 tracker.incrementAgentCount();
-                return { task, harness, unsubscribe };
+                return { task, session, dispose };
             }),
         );
 
         const reviewPromises = reviewerHarnesses.map(
-            async ({ task, harness: reviewerHarness, unsubscribe: reviewerUnsub }) => {
+            async ({ task, session: reviewerSession, dispose: reviewerDispose }) => {
                 const taskObj = tracker.taskTracker.getTask(task.id)!;
                 const reviewPrompt = [
                     "You are a code reviewer. Evaluate the following implementation result.",
@@ -726,9 +733,9 @@ export async function implementationPhase(
 
                 let reviewResult: ReviewResult;
                 try {
-                    reviewResult = await promptForStructured(reviewerHarness, reviewPrompt, ReviewResultSchema);
+                    reviewResult = await promptForStructured(reviewerSession, reviewPrompt, ReviewResultSchema);
                 } finally {
-                    reviewerUnsub?.();
+                    reviewerDispose?.();
                 }
                 onStatus?.onAgentComplete?.({ agentId: `reviewer-${task.id}`, profile: "implement-reviewer", phase: "implementing", taskId: task.id });
 
@@ -783,7 +790,8 @@ export async function implementationPhase(
                     ),
                 );
 
-                tracker.taskTracker.completeTask(task.id);
+                tracker.taskTracker.rejectTask(task.id, `Review failed: ${errorMessage}`);
+                onStatus?.onTaskRejected?.({ taskId: task.id, title: task.title, reason: `Review failed: ${errorMessage}` });
             }
         }
         await Promise.all(auditPromises);
@@ -809,7 +817,7 @@ export async function finalReviewPhase(
     for (let round = 0; round < maxFixRounds; round++) {
         // 1. Get final review assessment
         const reviewerOpts = await makeHarnessOptions(profilesDirs, "final-reviewer", cwd, apiKeys, onStatus);
-        const { harness: reviewerHarness, unsubscribe: reviewerUnsub } = await createHarness(reviewerOpts);
+        const { session: reviewerSession, dispose: reviewerDispose } = await createHarness(reviewerOpts);
         onStatus?.onAgentSpawn?.({ agentId: "final-reviewer", profile: "final-reviewer", phase: "final_review" });
         tracker.incrementAgentCount();
 
@@ -822,9 +830,9 @@ export async function finalReviewPhase(
 
         let assessment: FinalReviewTopics;
         try {
-            assessment = await promptForStructured(reviewerHarness, reviewPrompt, FinalReviewTopicsSchema);
+            assessment = await promptForStructured(reviewerSession, reviewPrompt, FinalReviewTopicsSchema);
         } finally {
-            reviewerUnsub?.();
+            reviewerDispose?.();
         }
         onStatus?.onAgentComplete?.({ agentId: "final-reviewer", profile: "final-reviewer", phase: "final_review" });
 
@@ -851,9 +859,9 @@ export async function finalReviewPhase(
             }),
         );
 
-        await parallelAgents(
+        const fixerResults = await parallelAgents(
             fixerConfigs,
-            (_harness, i) => {
+            (_session, i) => {
                 const issue = criticalIssues[i];
                 return [
                     "You are a fix agent. Resolve the following issue:",
@@ -868,6 +876,17 @@ export async function finalReviewPhase(
 
         for (let i = 0; i < criticalIssues.length; i++) {
             tracker.incrementAgentCount();
+        }
+
+        for (const result of fixerResults) {
+            if (result.status === "rejected") {
+                const msg = result.reason instanceof Error ? result.reason.message : String(result.reason);
+                onStatus?.onError?.({
+                    agentId: `fixer`,
+                    error: msg,
+                    phase: "final_review",
+                });
+            }
         }
     }
 

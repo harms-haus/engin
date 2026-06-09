@@ -22,7 +22,6 @@ mock.module("../../src/core/harness-factory.ts", () => ({
 const mockPromptForStructured = mock() as ReturnType<typeof mock> & ((...args: unknown[]) => unknown);
 mock.module("../../src/core/structured-output.ts", () => ({
     promptForStructured: (...args: unknown[]) => mockPromptForStructured(...args),
-    getAssistantText: mock(),
 }));
 
 const mockParallelAgents = mock() as ReturnType<typeof mock> & ((...args: unknown[]) => unknown);
@@ -84,12 +83,16 @@ function makeAllProfiles(): Map<string, AgentProfile> {
 
 function makeHarness() {
     return {
-        prompt: mock(async () => ({ content: [{ type: "text", text: "ok" }] })),
+        prompt: mock(async () => {}),
+        getLastAssistantText: mock(() => "ok"),
+        messages: [],
+        subscribe: mock(() => mock()),
+        sessionId: "test-session",
     };
 }
 
 function makeHarnessResult() {
-    return { harness: makeHarness(), sessionId: "test-session" };
+    return { session: makeHarness(), sessionId: "test-session", dispose: mock() };
 }
 
 function tmpDir(): string {
@@ -575,8 +578,14 @@ describe("Workflow-level callbacks", () => {
             })
             // plan review: approved
             .mockResolvedValueOnce({ ready: true, feedback: "OK", suggestions: [] })
-            // implementation review: THROWS
+            // implementation review: THROWS (first attempt)
             .mockRejectedValueOnce(new Error("review crashed"))
+            // implementation review retry: approved
+            .mockResolvedValueOnce({
+                approved: true,
+                feedback: "Retry succeeded",
+                issues: [],
+            })
             // final review: clean
             .mockResolvedValueOnce({ topics: [], overallAssessment: "OK", issues: [] });
 

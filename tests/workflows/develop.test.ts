@@ -23,7 +23,6 @@ mock.module("../../src/core/harness-factory.ts", () => ({
 const mockPromptForStructured = mock() as ReturnType<typeof mock> & ((...args: unknown[]) => unknown);
 mock.module("../../src/core/structured-output.ts", () => ({
     promptForStructured: (...args: unknown[]) => mockPromptForStructured(...args),
-    getAssistantText: mock(),
 }));
 
 const mockParallelAgents = mock() as ReturnType<typeof mock> & ((...args: unknown[]) => unknown);
@@ -107,12 +106,16 @@ const FIXER_PROFILE: AgentProfile = {
 
 function makeHarness() {
     return {
-        prompt: mock(async () => ({ content: [{ type: "text", text: "ok" }] })),
+        prompt: mock(async () => {}),
+        getLastAssistantText: mock(() => "ok"),
+        messages: [],
+        subscribe: mock(() => mock()),
+        sessionId: "test-session",
     };
 }
 
 function makeHarnessResult() {
-    return { harness: makeHarness(), sessionId: "test-session" };
+    return { session: makeHarness(), sessionId: "test-session", dispose: mock() };
 }
 
 function makeAllProfiles(): Map<string, AgentProfile> {
@@ -625,7 +628,7 @@ describe("implementationPhase", () => {
         expect(tracker.taskTracker.getTask("t1")!.reviewFeedback).toBe("Missing error handling");
     });
 
-    it("completes task when reviewer throws", async () => {
+    it("rejects task when reviewer throws, then completes on retry", async () => {
         const dir = tmpDir();
         const tracker = new WorkflowStatusTracker(dir);
 
@@ -643,16 +646,25 @@ describe("implementationPhase", () => {
             strategy: "Test",
         };
 
+        // First attempt: implementation succeeds, reviewer throws
         mockParallelAgents.mockResolvedValueOnce([
             { status: "fulfilled", value: { result: "ok" } },
         ]);
-
-        // Reviewer throws
         mockPromptForStructured.mockRejectedValueOnce(new Error("review failed"));
+
+        // Second attempt (retry): implementation succeeds, reviewer approves
+        mockParallelAgents.mockResolvedValueOnce([
+            { status: "fulfilled", value: { result: "ok" } },
+        ]);
+        mockPromptForStructured.mockResolvedValueOnce({
+            approved: true,
+            feedback: "Looks good",
+            issues: [],
+        });
 
         await implementationPhase(tracker, ["/profiles"], plan, "/cwd", 3);
 
-        // Task should be completed despite review failure
+        // Task should be completed after successful retry
         expect(tracker.taskTracker.getTask("t1")!.status).toBe("done");
     });
 

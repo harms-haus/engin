@@ -2,7 +2,6 @@ import { describe, it, expect, mock } from "bun:test";
 import { z } from "zod";
 import {
     extractJsonFromText,
-    getAssistantText,
     promptForStructured,
     schemaToString,
     type PromptableHarness,
@@ -47,40 +46,6 @@ describe("extractJsonFromText", () => {
     });
 });
 
-// ─── getAssistantText ───────────────────────────────────────────────────────
-
-describe("getAssistantText", () => {
-    it("joins a single text block", () => {
-        const message = { content: [{ type: "text", text: "hello" }] };
-        expect(getAssistantText(message)).toBe("hello");
-    });
-
-    it("joins multiple text blocks", () => {
-        const message = {
-            content: [
-                { type: "text", text: "hello " },
-                { type: "text", text: "world" },
-            ],
-        };
-        expect(getAssistantText(message)).toBe("hello world");
-    });
-
-    it("ignores thinking blocks", () => {
-        const message = {
-            content: [
-                { type: "thinking", text: "internal reasoning" },
-                { type: "text", text: "visible answer" },
-            ],
-        };
-        expect(getAssistantText(message)).toBe("visible answer");
-    });
-
-    it("returns empty string for empty content array", () => {
-        const message = { content: [] as Array<{ type: string; text?: string }> };
-        expect(getAssistantText(message)).toBe("");
-    });
-});
-
 // ─── promptForStructured ────────────────────────────────────────────────────
 
 describe("promptForStructured", () => {
@@ -90,14 +55,13 @@ describe("promptForStructured", () => {
         responses: Array<string>,
     ): PromptableHarness {
         let callIndex = 0;
+        let lastText: string | undefined;
         return {
             prompt: mock(async (_text: string) => {
-                const responseText = responses[callIndex] ?? responses[responses.length - 1];
+                lastText = responses[callIndex] ?? responses[responses.length - 1];
                 callIndex++;
-                return {
-                    content: [{ type: "text", text: responseText }],
-                };
             }),
+            getLastAssistantText: () => lastText,
         };
     }
 

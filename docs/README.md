@@ -1,12 +1,12 @@
 # workflow-harness
 
-A script-based workflow engine for AI-driven development, built on top of [pi-agent-core](https://www.npmjs.com/package/@earendil-works/pi-agent-core).
+A script-based workflow engine for AI-driven development, built on top of [pi-coding-agent](https://www.npmjs.com/package/@earendil-works/pi-coding-agent).
 
 ---
 
 ## 1. Overview
 
-**workflow-harness** orchestrates multi-agent AI workflows for software development tasks. It uses `AgentHarness` from `@earendil-works/pi-agent-core` as its inference layer and provides a phase-based approach to breaking down, planning, implementing, and reviewing code changes.
+**workflow-harness** orchestrates multi-agent AI workflows for software development tasks. It uses `AgentSession` from `@earendil-works/pi-coding-agent` as its inference layer and provides a phase-based approach to breaking down, planning, implementing, and reviewing code changes.
 
 Workflows are loaded dynamically from config directories — you can use the built-in `develop` workflow or drop in your own. Agent profiles are plain markdown files with YAML frontmatter, so you can customize agent behavior without touching code.
 
@@ -371,9 +371,13 @@ export async function run(taskPrompt, options) {
   const profile = profiles.get("implementer");
   if (!profile) throw new Error("implementer profile not found");
 
-  const { harness } = await createHarness({ profile, cwd, apiKeys });
-  const result = await harness.prompt(`Complete this task: ${taskPrompt}`);
-  console.log("Done:", result);
+  const { session, dispose } = await createHarness({ profile, cwd, apiKeys });
+  try {
+    await session.prompt(`Complete this task: ${taskPrompt}`);
+    console.log("Done:", session.getLastAssistantText());
+  } finally {
+    dispose();
+  }
 }
 ```
 
@@ -476,9 +480,9 @@ Clear the in-memory profile cache.
 
 ### Harness Creation
 
-#### `createHarness(options): Promise<{ harness, sessionId, unsubscribe? }>`
+#### `createHarness(options): Promise<{ session, sessionId, dispose }>`
 
-Create a fully-wired `AgentHarness` from an `AgentProfile`. Resolution steps: create `NodeExecutionEnv`, create session (in-memory or JSONL-backed), resolve model, filter tools, resolve API key, subscribe to agent status events.
+Create a fully-wired `AgentSession` from an `AgentProfile`. All sessions are in-memory via `SessionManager.inMemory()`. Resolution steps: resolve model via `getModel()`, resolve API key and register with `AuthStorage.inMemory()`, build tool allowlist/denylist from profile, create `DefaultResourceLoader` with system prompt override, construct session via `createAgentSession()`, optionally subscribe to agent status events.
 
 **`HarnessCreationOptions` fields:**
 
@@ -486,8 +490,6 @@ Create a fully-wired `AgentHarness` from an `AgentProfile`. Resolution steps: cr
 |---|---|---|
 | `profile` | `AgentProfile` | The agent configuration |
 | `cwd` | `string` | Working directory for file operations |
-| `sessionId?` | `string` | Provide for JSONL persistence; omit for in-memory |
-| `additionalTools?` | `AgentTool[]` | Extra tools beyond the defaults |
 | `apiKeys?` | `Record<string, string>` | Provider → API key overrides |
 | `onAgentStatus?` | `AgentStatusCallbacks` | Callbacks for turn/tool events |
 
@@ -495,11 +497,11 @@ Create a fully-wired `AgentHarness` from an `AgentProfile`. Resolution steps: cr
 
 | Field | Type | Description |
 |---|---|---|
-| `harness` | `AgentHarness` | The fully-wired agent harness |
+| `session` | `AgentSession` | The fully-wired agent session |
 | `sessionId` | `string` | Resolved session identifier |
-| `unsubscribe?` | `() => void` | Teardown for agent status subscription. Only present when `onAgentStatus` is provided AND at least one agent-level callback is defined. |
+| `dispose` | `() => void` | Teardown: unsubscribes from agent events and disposes the session. Always present. |
 
-#### `createHarnessFromProfile(dirPath, profileId, options): Promise<{ harness, sessionId, unsubscribe? }>`
+#### `createHarnessFromProfile(dirPath, profileId, options): Promise<{ session, sessionId, dispose }>`
 
 Convenience wrapper: loads a profile from disk, then delegates to `createHarness`.
 
@@ -557,15 +559,11 @@ Installs default profiles and workflows from `defaults/` into the global config 
 
 #### `promptForStructured<T>(harness, prompt, schema, options?): Promise<T>`
 
-Prompt a harness and parse the response through a Zod schema. Retries up to `maxRetries` (default 3) with error feedback appended to the prompt.
+Prompt a harness (any object satisfying `PromptableHarness`) and parse the response through a Zod schema. The harness's `getLastAssistantText()` is used to extract the response text. Retries up to `maxRetries` (default 3) with error feedback appended to the prompt.
 
 #### `extractJsonFromText(text): string | null`
 
 Extract a JSON string from free-text model output. Tries fenced code blocks first, then bracket counting.
-
-#### `getAssistantText(message): string`
-
-Concatenate all text blocks from an assistant message's content array.
 
 #### `schemaToString(schema): string`
 
@@ -573,21 +571,21 @@ Convert a Zod schema into a human-readable description string.
 
 ### Agent Loop Utilities
 
-#### `agentLoopUntil(harness, promptFn, conditionFn, options?): Promise<{ response, attempts }>`
+#### `agentLoopUntil(session, promptFn, conditionFn, options?): Promise<{ lastText, attempts }>`
 
-Repeatedly prompt a harness until `conditionFn` returns `true` or `maxAttempts` (default 10) is reached.
+Repeatedly prompt a session until `conditionFn` returns `true` or `maxAttempts` (default 10) is reached. The session must satisfy `{ prompt(text): Promise<void>, getLastAssistantText(): string | undefined }`. Returns `{ lastText: string | undefined, attempts: number }`.
 
-#### `retryAgentUntil<T>(harness, prompt, schema, options?): Promise<AgentLoopResult<T>>`
+#### `retryAgentUntil<T>(session, prompt, schema, options?): Promise<AgentLoopResult<T>>`
 
-Convenience wrapper around `promptForStructured` that returns an `AgentLoopResult` envelope. Token tracking is not available — `totalTokens` is set to zero.
+Convenience wrapper around `promptForStructured` that returns an `AgentLoopResult` envelope. Token tracking is not available — `totalTokens` is set to zero. The session must satisfy `PromptableHarness`.
 
 #### `parallelAgents<T>(configs, promptFn, options?): Promise<PromiseSettledResult<T>[]>`
 
-Create harnesses for every config in parallel, then run prompts via `Promise.allSettled`. Optionally validate through a Zod schema.
+Create sessions for every config in parallel via `createHarness`, then run prompts via `Promise.allSettled`. All sessions are disposed in a `finally` block. When `options.schema` is provided, each result is validated through `promptForStructured`; otherwise the raw `getLastAssistantText()` value is returned.
 
 #### `sequentialAgents<T>(configs, promptFn, options?): Promise<T[]>`
 
-Same as `parallelAgents` but runs prompts sequentially. Throws on the first failure.
+Same as `parallelAgents` but runs prompts sequentially. All sessions are disposed in a `finally` block. Throws on the first failure.
 
 ### Session Management
 
@@ -595,46 +593,45 @@ Same as `parallelAgents` but runs prompts sequentially. Throws on the first fail
 
 ```typescript
 class SessionHistory {
-  constructor(session: Session);
-  getMessageCount(): Promise<number>;
-  getStats(): Promise<SessionStats>;
+  constructor(session: SessionWithMessages);
+  getMessageCount(): number;
+  getStats(): SessionStats;
 }
 ```
 
-#### `createResumableSession(cwd, sessionId?): Promise<{ session, sessionId }>`
+Wraps any object with a `messages` array (compatible with `AgentSession`). Methods are synchronous.
 
-Create a session backed by in-memory or JSONL storage.
+#### `createResumableSession(cwd?): { sessionManager, sessionId }`
+
+Create a session manager backed by in-memory storage via `SessionManager.inMemory()`. Returns `{ sessionManager: SessionManager, sessionId: string }`. Always synchronous.
 
 #### `resumeSession(source, target): Promise<void>`
 
-Copy all message entries from a source session into a target harness.
+Copy all message entries from a source session into a target session. Uses `appendMessage` when available, or pushes directly into the `messages` array.
 
 ### API Key Resolution
 
 #### `resolveApiKey(provider, customKeys?): string | undefined`
 
-Resolve from custom overrides or environment variables.
+Resolve from custom overrides (`customKeys[provider]`) or environment variables via `getEnvApiKey(provider)` from `@earendil-works/pi-ai`.
 
 #### `resolveApiKeyOrThrow(provider, customKeys?): string`
 
 Same as `resolveApiKey` but throws with a helpful error message including expected env var names.
 
-### Tool Registry
+### Re-exports from Dependencies
 
-#### `ToolRegistry`
+The following are re-exported from `@earendil-works/pi-coding-agent`:
 
-```typescript
-class ToolRegistry {
-  register(entry: ToolRegistryEntry): void;
-  get(name: string): AgentTool | undefined;
-  getAll(): AgentTool[];
-  resolveTools(includeTools: string[], excludeTools: string[]): AgentTool[];
-}
-```
+- `AgentSession`, `SessionManager`, `DefaultResourceLoader`, `AuthStorage`
 
-#### `createDefaultToolRegistry(env): ToolRegistry`
+The following are re-exported from `@earendil-works/pi-ai` (not re-exported by pi-coding-agent):
 
-Creates a registry with seven built-in tools: `read`, `bash`, `write`, `edit`, `grep`, `find`, `ls`.
+- `Model` (type), `getModel`, `parseJsonWithRepair`
+
+The following are re-exported from `@earendil-works/pi-agent-core` (not re-exported by pi-coding-agent):
+
+- `ThinkingLevel` (type)
 
 ### Tracking
 
@@ -667,12 +664,13 @@ class TaskTracker {
   completeTask(id: string): void;
   rejectTask(id: string, reason: string): void;
   areAllDone(): boolean;
+  recalculateStatuses(): void;
   toJSON(): { tasks: Task[] };
   static fromJSON(data: { tasks: Task[] }): TaskTracker;
 }
 ```
 
-Manages a DAG of tasks with enforced state transitions and cycle detection.
+Manages a DAG of tasks with enforced state transitions and cycle detection. `addTask` performs temporary insertion to check for cycles, rolling back if one is detected.
 
 **Task lifecycle:**
 
@@ -746,12 +744,11 @@ src/
 │   ├── config.ts                # Config directory resolution (global/local/work dirs)
 │   ├── profile.ts               # Markdown profile parser, loader, and multi-dir merge
 │   ├── workflow-loader.ts       # Dynamic workflow module loading and listing
-│   ├── harness-factory.ts       # AgentHarness construction from profiles
+│   ├── harness-factory.ts       # AgentSession construction from profiles
 │   ├── structured-output.ts     # JSON extraction, Zod-validated prompting
 │   ├── session-history.ts       # Session statistics and resumption helpers
 │   ├── agent-loop.ts            # Looping, parallel, and sequential agent patterns
-│   ├── auth.ts                  # API key resolution (env vars and overrides)
-│   └── tool-registry.ts         # Tool registration and filtered resolution
+│   └── auth.ts                  # API key resolution (env vars and overrides)
 ├── tracking/
 │   ├── audit-log.ts             # JSONL-based audit event log
 │   ├── task-status.ts           # Task DAG tracker with state transitions
@@ -778,16 +775,15 @@ defaults/                        # Files installed by `workflow-harness init`
 
 | Module | Responsibility |
 |---|---|
-| `types.ts` | Re-exports from `pi-agent-core` and `pi-ai`; defines `AgentProfile`, `Task`, `WorkflowState`, `AuditEvent`, `WorkflowModule`, `WorkflowRunOptions`, and related types |
+| `types.ts` | Re-exports from `pi-coding-agent`, `pi-agent-core`, and `pi-ai`; defines `AgentProfile`, `Task`, `WorkflowState`, `AuditEvent`, `WorkflowModule`, `WorkflowRunOptions`, and related types |
 | `config.ts` | Resolves global (`~/.config/workflow-harness/`) and local (`.workflow-harness/`) config directories; provides default work directory paths |
 | `profile.ts` | Parses markdown files with YAML frontmatter into `AgentProfile` objects; loads all profiles from a directory or merges from multiple directories |
 | `workflow-loader.ts` | Dynamically loads workflow modules by name from config directories; supports `.js`, `.mjs`, `.cjs`, `.ts`; caches loaded modules |
-| `harness-factory.ts` | Creates a fully-wired `AgentHarness` from a profile: execution environment, session, model, tools, and API key |
-| `structured-output.ts` | Extracts JSON from free-text model responses; prompts a harness and validates output against a Zod schema with automatic retries |
+| `harness-factory.ts` | Creates a fully-wired `AgentSession` from a profile: model resolution, `AuthStorage`, tool filtering, `DefaultResourceLoader`, and `createAgentSession` from `@earendil-works/pi-coding-agent` |
+| `structured-output.ts` | Extracts JSON from free-text model responses; prompts a session and validates output against a Zod schema with automatic retries |
 | `session-history.ts` | Tracks token usage and cost across a session; provides session resumption by copying message history |
-| `agent-loop.ts` | Higher-level patterns: `agentLoopUntil`, `parallelAgents`, `sequentialAgents` |
-| `auth.ts` | Resolves API keys from caller-supplied overrides or environment variables |
-| `tool-registry.ts` | Registers tools by name and resolves a filtered subset based on `includeTools`/`excludeTools` |
+| `agent-loop.ts` | Higher-level patterns: `agentLoopUntil`, `parallelAgents`, `sequentialAgents`. Uses `AgentSession` and `dispose()` for cleanup |
+| `auth.ts` | Resolves API keys from caller-supplied overrides or environment variables via `@earendil-works/pi-ai` |
 
 ### Tracking Layer (`src/tracking/`)
 
@@ -825,7 +821,7 @@ The pipeline proceeds as follows:
 
 4. **Plan Review** — The `plan-reviewer` evaluates the plan. If `ready` is `false` and fewer than 3 rounds have elapsed, the handler returns `"planning"` to jump back. After 3 rounds the workflow proceeds with the current plan.
 
-5. **Implementation** — Tasks are loaded into the `TaskTracker`. The orchestrator claims up to `maxConcurrentTasks` at a time, dispatches them to implementer agents in parallel via `parallelAgents`, and then runs reviewer agents in parallel via `Promise.allSettled`. Approved tasks are completed; rejected tasks return to `"ready"` for re-implementation. If a review itself fails, the failure is logged and the task is still completed to avoid blocking the pipeline.
+5. **Implementation** — Tasks are loaded into the `TaskTracker`. The orchestrator claims up to `maxConcurrentTasks` at a time, dispatches them to implementer agents in parallel via `parallelAgents`, and then runs reviewer agents in parallel via `Promise.allSettled`. Approved tasks are completed; rejected tasks return to `"ready"` for re-implementation. If a review itself fails, the failure is logged and the task is also rejected (returning to `"ready"`) to allow re-implementation.
 
 6. **Final Review** — The `final-reviewer` examines the entire codebase. If critical issues are found, `fixer` agents resolve them in parallel. This loop runs up to 3 rounds.
 
@@ -1045,10 +1041,10 @@ Options for `createHarness`.
 |---|---|---|
 | `profile` | `AgentProfile` | The agent configuration to use |
 | `cwd` | `string` | Working directory for file operations |
-| `sessionId?` | `string` | Provide for JSONL persistence; omit for in-memory |
-| `additionalTools?` | `AgentTool[]` | Extra tools beyond the defaults |
 | `apiKeys?` | `Record<string, string>` | Provider → API key overrides |
 | `onAgentStatus?` | `AgentStatusCallbacks` | Callbacks for turn-level and tool-level events |
+
+Tool filtering is handled internally from the profile's `includeTools`/`excludeTools` fields. The default tool set is `read`, `bash`, `edit`, `write`.
 
 ---
 
@@ -1090,35 +1086,18 @@ Options for `sequentialAgents`.
 
 ---
 
-### `ToolRegistryEntry`
-
-Used by `ToolRegistry.register(entry)`.
-
-```typescript
-interface ToolRegistryEntry {
-    name: string;
-    tool: AgentTool;
-}
-```
-
-| Field | Type | Description |
-|---|---|---|
-| `name` | `string` | Tool name used for lookup and filtering |
-| `tool` | `AgentTool` | The tool implementation |
-
 ### `PromptableHarness`
 
-A minimal interface for objects that can be prompted.
+A minimal interface for objects that can be prompted and return text.
 
 ```typescript
 interface PromptableHarness {
-  prompt: (text: string) => Promise<{
-    content: Array<{ type: string; text?: string; thinking?: string }>;
-  }>;
+  prompt: (text: string) => Promise<void>;
+  getLastAssistantText: () => string | undefined;
 }
 ```
 
-Both `AgentHarness` instances and mock objects satisfy this interface.
+Both `AgentSession` instances and mock objects satisfy this interface. The `prompt` method sends a message to the session; `getLastAssistantText` retrieves the last assistant response as plain text.
 
 ---
 
@@ -1160,7 +1139,7 @@ type StatusCallbacks = WorkflowStatusCallbacks & AgentStatusCallbacks;
 | `onWorkflowStart` | `{ taskPrompt: string; resumed: boolean; workDir: string }` | The `run()` orchestrator starts |
 | `onPhaseStart` | `{ phase: WorkflowPhase; round: number }` | A phase begins execution |
 | `onPhaseComplete` | `{ phase: WorkflowPhase; durationMs: number }` | A phase finishes |
-| `onAgentSpawn` | `{ agentId: string; profile: string; phase: string; taskId?: string }` | An agent harness is created |
+| `onAgentSpawn` | `{ agentId: string; profile: string; phase: string; taskId?: string }` | An agent session is created |
 | `onAgentComplete` | `{ agentId: string; profile: string; phase: string; taskId?: string }` | An agent finishes its prompt |
 | `onTaskStart` | `{ taskId: string; title: string; agentId: string }` | A task is claimed and dispatched |
 | `onTaskComplete` | `{ taskId: string; title: string }` | A task passes review |
@@ -1269,7 +1248,7 @@ If `workflow-state.json` exists in `workDir`, the `run()` function loads it and 
 ```
 workflow-harness/
 ├── src/                # Source code
-│   ├── core/           # Core layer (harness, profiles, tools, auth, config)
+│   ├── core/           # Core layer (sessions, profiles, auth, config)
 │   ├── tracking/       # Tracking layer (audit, tasks, workflow state)
 │   ├── workflows/      # Workflow layer (develop workflow)
 │   └── profiles/       # Built-in agent profile definitions
@@ -1296,8 +1275,7 @@ tests/
 │   ├── harness-factory.test.ts
 │   ├── profile.test.ts
 │   ├── session-history.test.ts
-│   ├── structured-output.test.ts
-│   └── tool-registry.test.ts
+│   └── structured-output.test.ts
 ├── tracking/
 │   ├── audit-log.test.ts
 │   ├── task-status.test.ts

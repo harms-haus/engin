@@ -15,62 +15,63 @@ import * as path from "node:path";
 import * as fs from "node:fs/promises";
 
 // Capture real modules before mocking so we can restore them in afterAll.
-const realPiAgentCore = Object.assign({}, await import("@earendil-works/pi-agent-core"));
-const realPiAgentCoreNode = Object.assign({}, await import("@earendil-works/pi-agent-core/node"));
+const realPiCodingAgent = Object.assign({}, await import("@earendil-works/pi-coding-agent"));
 const realConfig = Object.assign({}, await import("../../src/core/config.ts"));
 const realPiAi = Object.assign({}, await import("@earendil-works/pi-ai"));
 
 // ─── Mocks ──────────────────────────────────────────────────────────────────
 
 /**
- * Central mock for AgentHarness.prompt(). Each test can override this to
+ * Central mock for AgentSession.prompt(). Each test can override this to
  * control what the LLM "returns" for different prompt types.
  */
 const mockPromptFn = mock() as (text: string) => Promise<unknown>;
+const mockGetLastAssistantText = mock(() => "");
 
-mock.module("@earendil-works/pi-agent-core", () => ({
-    AgentHarness: mock().mockImplementation((_options: unknown) => ({
-        prompt: mock(async (text: string) => mockPromptFn(text)),
-    })),
-    InMemorySessionRepo: mock().mockImplementation(() => ({
-        create: mock(async () => ({
-            getMetadata: mock(async () => ({ id: "mock-session-id" })),
-        })),
-    })),
-    JsonlSessionRepo: mock().mockImplementation(() => ({
-        create: mock(async () => ({
-            getMetadata: mock(async () => ({ id: "mock-session-id" })),
-        })),
-    })),
-}));
+/**
+ * Create a mock AgentSession object that mirrors the real interface.
+ */
+function makeMockSession() {
+    return {
+        prompt: mock(async (text: string) => {
+            const result = await mockPromptFn(text);
+            mockGetLastAssistantText.mockReturnValue(
+                typeof result === "object" && result !== null && "content" in result
+                    ? (result as { content: Array<{ type: string; text?: string }> })
+                          .content.filter((b) => b.type === "text")
+                          .map((b) => b.text ?? "")
+                          .join("")
+                    : String(result ?? ""),
+            );
+        }),
+        getLastAssistantText: (...args: unknown[]) => mockGetLastAssistantText(...args),
+        messages: [] as unknown[],
+        subscribe: mock(() => mock()),
+        sessionId: "mock-session-id",
+        dispose: mock(),
+    };
+}
 
-mock.module("@earendil-works/pi-agent-core/node", () => ({
-    NodeExecutionEnv: mock().mockImplementation((_options: { cwd: string }) => ({
-        cwd: _options.cwd,
-        readTextFile: mock(async () => ({ ok: true, value: "" })),
-        writeFile: mock(async () => ({ ok: true, value: undefined })),
-        exec: mock(async () => ({
-            ok: true,
-            value: { stdout: "", stderr: "", exitCode: 0 },
-        })),
-        listDir: mock(async () => ({ ok: true, value: [] })),
-        readTextLines: mock(async () => ({ ok: true, value: [] })),
-        readBinaryFile: mock(async () => ({ ok: true, value: Buffer.alloc(0) })),
-        appendFile: mock(async () => ({ ok: true, value: undefined })),
-        fileInfo: mock(async () => ({ ok: true, value: { exists: false } })),
-        canonicalPath: mock(async (p: string) => ({ ok: true, value: p })),
-        exists: mock(async () => ({ ok: true, value: true })),
-        createDir: mock(async () => ({ ok: true, value: undefined })),
-        remove: mock(async () => ({ ok: true, value: undefined })),
-        createTempDir: mock(async () => ({ ok: true, value: "/tmp/mock-temp" })),
-        createTempFile: mock(async () => ({
-            ok: true,
-            value: "/tmp/mock-temp-file",
-        })),
-        cleanup: mock(async () => ({ ok: true, value: undefined })),
-        absolutePath: mock((p: string) => p),
-        joinPath: mock((...parts: string[]) => path.join(...parts)),
+mock.module("@earendil-works/pi-coding-agent", () => ({
+    AgentSession: mock(),
+    createAgentSession: mock(async () => ({
+        session: makeMockSession(),
+        extensionsResult: { extensions: [], warnings: [] },
     })),
+    SessionManager: {
+        inMemory: mock(() => ({
+            create: mock(async () => ({ getMetadata: mock(async () => ({ id: "mock-session-id" })) })),
+        })),
+    },
+    AuthStorage: {
+        inMemory: mock(() => ({
+            setRuntimeApiKey: mock(),
+        })),
+    },
+    DefaultResourceLoader: mock().mockImplementation((_options: unknown) => ({
+        reload: mock(async () => {}),
+    })),
+    defineTool: mock(),
 }));
 
 mock.module("../../src/core/config.ts", () => ({
@@ -711,8 +712,7 @@ describe("Workflow Smoke Tests", () => {
 
 // Restore the real modules so mocks don't leak into other test files.
 afterAll(() => {
-    mock.module("@earendil-works/pi-agent-core", () => realPiAgentCore);
-    mock.module("@earendil-works/pi-agent-core/node", () => realPiAgentCoreNode);
+    mock.module("@earendil-works/pi-coding-agent", () => realPiCodingAgent);
     mock.module("../../src/core/config.ts", () => realConfig);
     mock.module("@earendil-works/pi-ai", () => realPiAi);
 });

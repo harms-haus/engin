@@ -2,11 +2,9 @@ import { describe, it, expect, mock, beforeEach, afterAll } from "bun:test";
 import type { AgentProfile } from "../../src/core/types.ts";
 
 // Capture real modules before mocking so we can restore them in afterAll.
-const realPiAgentCore = Object.assign({}, await import("@earendil-works/pi-agent-core"));
-const realPiAgentCoreNode = Object.assign({}, await import("@earendil-works/pi-agent-core/node"));
+const realPiCodingAgent = Object.assign({}, await import("@earendil-works/pi-coding-agent"));
 const realPiAi = Object.assign({}, await import("@earendil-works/pi-ai"));
 const realAuth = Object.assign({}, await import("../../src/core/auth.ts"));
-const realToolRegistry = Object.assign({}, await import("../../src/core/tool-registry.ts"));
 const realProfile = Object.assign({}, await import("../../src/core/profile.ts"));
 
 // ─── Mocks ──────────────────────────────────────────────────────────────────
@@ -15,54 +13,34 @@ const realProfile = Object.assign({}, await import("../../src/core/profile.ts"))
 let capturedListener: ((event: any) => void) | undefined;
 let mockUnsubscribe: (() => void) | undefined;
 
-// Mock pi-agent-core (AgentHarness, InMemorySessionRepo, JsonlSessionRepo)
-mock.module("@earendil-works/pi-agent-core", () => {
-    const mockSession = {
-        getMetadata: mock(async () => ({ id: "mock-session-id", createdAt: new Date().toISOString() })),
-    };
-    const MockAgentHarness = mock().mockImplementation((_options: unknown) => ({
-        getModel: mock(),
-        getThinkingLevel: mock(),
-        getTools: mock(),
+const mockAuthStorageInstance = {
+    setRuntimeApiKey: mock(),
+};
+
+const mockDefaultResourceLoaderInstance = {
+    reload: mock(async () => {}),
+};
+
+// Mock createAgentSession — subscribe is on the session object
+const mockCreateAgentSession = mock(async () => ({
+    session: {
+        prompt: mock(async () => {}),
         subscribe: mock().mockImplementation((listener: (event: any) => void) => {
             capturedListener = listener;
             mockUnsubscribe = mock();
             return mockUnsubscribe;
         }),
-    }));
-    return {
-        AgentHarness: MockAgentHarness,
-        InMemorySessionRepo: mock().mockImplementation(() => ({
-            create: mock(async () => mockSession),
-        })),
-        JsonlSessionRepo: mock().mockImplementation(() => ({
-            create: mock(async () => mockSession),
-        })),
-    };
-});
+        getLastAssistantText: mock(() => "mock response"),
+        messages: [],
+        sessionId: "mock-session-id",
+    },
+}));
 
-// Mock NodeExecutionEnv from the /node subpath
-mock.module("@earendil-works/pi-agent-core/node", () => ({
-    NodeExecutionEnv: mock().mockImplementation((_options: unknown) => ({
-        cwd: "/mock/cwd",
-        readTextFile: mock(),
-        writeFile: mock(),
-        exec: mock(),
-        listDir: mock(),
-        absolutePath: mock(),
-        joinPath: mock(),
-        readTextLines: mock(),
-        readBinaryFile: mock(),
-        appendFile: mock(),
-        fileInfo: mock(),
-        canonicalPath: mock(),
-        exists: mock(),
-        createDir: mock(),
-        remove: mock(),
-        createTempDir: mock(),
-        createTempFile: mock(),
-        cleanup: mock(),
-    })),
+mock.module("@earendil-works/pi-coding-agent", () => ({
+    createAgentSession: mockCreateAgentSession,
+    SessionManager: { inMemory: mock(() => ({ getSessionId: () => "mock-session-id" })) },
+    AuthStorage: { inMemory: mock(() => mockAuthStorageInstance) },
+    DefaultResourceLoader: mock().mockImplementation(() => mockDefaultResourceLoaderInstance),
 }));
 
 // Mock getModel
@@ -77,22 +55,6 @@ mock.module("../../src/core/auth.ts", () => ({
     resolveApiKeyOrThrow: (...args: unknown[]) => mockResolveApiKeyOrThrow(...args),
 }));
 
-// Mock createDefaultToolRegistry
-const mockToolRegistry = {
-    resolveTools: mock(() => [
-        { name: "read", label: "Read", description: "", parameters: {}, execute: mock() },
-        { name: "bash", label: "Bash", description: "", parameters: {}, execute: mock() },
-        { name: "write", label: "Write", description: "", parameters: {}, execute: mock() },
-        { name: "edit", label: "Edit", description: "", parameters: {}, execute: mock() },
-        { name: "grep", label: "Grep", description: "", parameters: {}, execute: mock() },
-        { name: "find", label: "Find", description: "", parameters: {}, execute: mock() },
-        { name: "ls", label: "List", description: "", parameters: {}, execute: mock() },
-    ]),
-};
-mock.module("../../src/core/tool-registry.ts", () => ({
-    createDefaultToolRegistry: mock(() => mockToolRegistry),
-}));
-
 // Mock loadProfile (not used in these tests but required by the module)
 mock.module("../../src/core/profile.ts", () => ({
     loadProfile: mock(),
@@ -100,12 +62,11 @@ mock.module("../../src/core/profile.ts", () => ({
 
 // ─── Imports (after mocks) ─────────────────────────────────────────────────
 
-import { AgentHarness, InMemorySessionRepo } from "@earendil-works/pi-agent-core";
 import { createHarness } from "../../src/core/harness-factory.ts";
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
-const mockModel = { id: "gpt-4o", provider: "openai", cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+const mockModel = { id: "gpt-4o", provider: "openai", cost: { input: 0, output: 0 } };
 
 function makeProfile(overrides?: Partial<AgentProfile>): AgentProfile {
     return {
@@ -127,8 +88,25 @@ beforeEach(() => {
     mock.clearAllMocks();
     mockGetModel.mockReturnValue(mockModel);
     mockResolveApiKeyOrThrow.mockReturnValue("sk-test-key");
+    mockAuthStorageInstance.setRuntimeApiKey = mock();
     capturedListener = undefined;
     mockUnsubscribe = undefined;
+    mockDefaultResourceLoaderInstance.reload = mock(async () => {});
+    // Re-seed createAgentSession with a fresh subscribe mock
+    mockCreateAgentSession.mockResolvedValue({
+        session: {
+            prompt: mock(async () => {}),
+            subscribe: mock().mockImplementation((listener: (event: any) => void) => {
+                capturedListener = listener;
+                mockUnsubscribe = mock();
+                return mockUnsubscribe;
+            }),
+            getLastAssistantText: mock(() => "mock response"),
+            messages: [],
+            sessionId: "mock-session-id",
+            dispose: mock(),
+        },
+    });
 });
 
 // ─── Tests ──────────────────────────────────────────────────────────────────
@@ -140,8 +118,9 @@ describe("harness subscribe forwarding", () => {
             cwd: "/tmp",
         });
 
-        const harnessInstance = (AgentHarness as ReturnType<typeof mock>).mock.results[0].value;
-        expect(harnessInstance.subscribe).not.toHaveBeenCalled();
+        const sessionResult = mockCreateAgentSession.mock.results[0].value;
+        const session = await sessionResult;
+        expect(session.session.subscribe).not.toHaveBeenCalled();
     });
 
     it("subscribe not called when onAgentStatus has no methods", async () => {
@@ -151,8 +130,9 @@ describe("harness subscribe forwarding", () => {
             onAgentStatus: {},
         });
 
-        const harnessInstance = (AgentHarness as ReturnType<typeof mock>).mock.results[0].value;
-        expect(harnessInstance.subscribe).not.toHaveBeenCalled();
+        const sessionResult = mockCreateAgentSession.mock.results[0].value;
+        const session = await sessionResult;
+        expect(session.session.subscribe).not.toHaveBeenCalled();
     });
 
     it("subscribe called when onTurnStart is defined", async () => {
@@ -163,8 +143,9 @@ describe("harness subscribe forwarding", () => {
             onAgentStatus: { onTurnStart },
         });
 
-        const harnessInstance = (AgentHarness as ReturnType<typeof mock>).mock.results[0].value;
-        expect(harnessInstance.subscribe).toHaveBeenCalledTimes(1);
+        const sessionResult = mockCreateAgentSession.mock.results[0].value;
+        const session = await sessionResult;
+        expect(session.session.subscribe).toHaveBeenCalledTimes(1);
         expect(capturedListener).toBeTypeOf("function");
     });
 
@@ -305,7 +286,7 @@ describe("harness subscribe forwarding", () => {
 
         // The listener is still captured but the unsubscribe function was called.
         // The test verifies the unsubscribe function exists and was callable.
-        // The actual "stopping" behavior is handled by AgentHarness internally,
+        // The actual "stopping" behavior is handled by AgentSession internally,
         // so we just verify the unsubscribe was returned properly.
         expect(onTurnStart).toHaveBeenCalledWith({
             agentId: "mock-session-id",
@@ -313,7 +294,7 @@ describe("harness subscribe forwarding", () => {
         });
     });
 
-    it("unsubscribe returned in result when subscribe was called", async () => {
+    it("dispose always returned in result", async () => {
         const onTurnStart = mock();
         const result = await createHarness({
             profile: makeProfile(),
@@ -321,25 +302,23 @@ describe("harness subscribe forwarding", () => {
             onAgentStatus: { onTurnStart },
         });
 
-        expect(result.unsubscribe).toBeTypeOf("function");
+        expect(result.dispose).toBeTypeOf("function");
     });
 
-    it("unsubscribe not in result when subscribe was not called", async () => {
+    it("dispose returned in result when subscribe was not called", async () => {
         const result = await createHarness({
             profile: makeProfile(),
             cwd: "/tmp",
         });
 
-        expect(result.unsubscribe).toBeUndefined();
+        expect(result.dispose).toBeTypeOf("function");
     });
 });
 
 // Restore the real modules so mocks don't leak into other test files.
 afterAll(() => {
-    mock.module("@earendil-works/pi-agent-core", () => realPiAgentCore);
-    mock.module("@earendil-works/pi-agent-core/node", () => realPiAgentCoreNode);
+    mock.module("@earendil-works/pi-coding-agent", () => realPiCodingAgent);
     mock.module("@earendil-works/pi-ai", () => realPiAi);
     mock.module("../../src/core/auth.ts", () => realAuth);
-    mock.module("../../src/core/tool-registry.ts", () => realToolRegistry);
     mock.module("../../src/core/profile.ts", () => realProfile);
 });
