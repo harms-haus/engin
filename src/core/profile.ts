@@ -1,16 +1,9 @@
-import matter from "gray-matter";
-import { readdir, readFile, stat } from "node:fs/promises";
-import { join, basename } from "node:path";
-import type { AgentProfile, ThinkingLevel } from "./types.js";
+import matter from 'gray-matter';
+import { readdir, readFile, stat } from 'node:fs/promises';
+import { basename, join } from 'node:path';
+import type { AgentProfile, ThinkingLevel } from './types.js';
 
-const VALID_THINKING_LEVELS: readonly ThinkingLevel[] = [
-    "off",
-    "minimal",
-    "low",
-    "medium",
-    "high",
-    "xhigh",
-];
+const VALID_THINKING_LEVELS: readonly ThinkingLevel[] = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh'];
 
 /**
  * Module-level cache for loaded profiles, keyed by resolved directory path.
@@ -20,7 +13,7 @@ const VALID_THINKING_LEVELS: readonly ThinkingLevel[] = [
 const profileCache = new Map<string, Map<string, AgentProfile>>();
 
 function isThinkingLevel(value: unknown): value is ThinkingLevel {
-    return VALID_THINKING_LEVELS.includes(value as ThinkingLevel);
+  return VALID_THINKING_LEVELS.includes(value as ThinkingLevel);
 }
 
 /**
@@ -37,39 +30,39 @@ function isThinkingLevel(value: unknown): value is ThinkingLevel {
  * The body (content after frontmatter) becomes the system prompt.
  */
 export function parseProfile(content: string, filename: string): AgentProfile {
-    const { data, content: body } = matter(content);
+  const { data, content: body } = matter(content);
 
-    const id = basename(filename, ".md");
-    const name = (data.name as string | undefined) ?? id;
+  const id = basename(filename, '.md');
+  const name = (data.name as string | undefined) ?? id;
 
-    if (data.provider == null || data.provider === "") {
-        throw new Error(`Profile "${id}" is missing required frontmatter field "provider".`);
+  if (data.provider == null || data.provider === '') {
+    throw new Error(`Profile "${id}" is missing required frontmatter field "provider".`);
+  }
+  if (data.model == null || data.model === '') {
+    throw new Error(`Profile "${id}" is missing required frontmatter field "model".`);
+  }
+
+  let thinkingLevel: ThinkingLevel = 'medium';
+  if (data.thinkingLevel != null) {
+    if (!isThinkingLevel(data.thinkingLevel)) {
+      throw new Error(
+        `Profile "${id}" has invalid thinkingLevel "${data.thinkingLevel}". ` +
+          `Valid values: ${VALID_THINKING_LEVELS.join(', ')}.`,
+      );
     }
-    if (data.model == null || data.model === "") {
-        throw new Error(`Profile "${id}" is missing required frontmatter field "model".`);
-    }
+    thinkingLevel = data.thinkingLevel;
+  }
 
-    let thinkingLevel: ThinkingLevel = "medium";
-    if (data.thinkingLevel != null) {
-        if (!isThinkingLevel(data.thinkingLevel)) {
-            throw new Error(
-                `Profile "${id}" has invalid thinkingLevel "${data.thinkingLevel}". ` +
-                    `Valid values: ${VALID_THINKING_LEVELS.join(", ")}.`,
-            );
-        }
-        thinkingLevel = data.thinkingLevel;
-    }
-
-    return {
-        id,
-        name,
-        provider: data.provider as string,
-        model: data.model as string,
-        thinkingLevel,
-        systemPrompt: body.trim(),
-        excludeTools: (data.excludeTools as string[] | undefined) ?? [],
-        includeTools: (data.includeTools as string[] | undefined) ?? [],
-    };
+  return {
+    id,
+    name,
+    provider: data.provider as string,
+    model: data.model as string,
+    thinkingLevel,
+    systemPrompt: body.trim(),
+    excludeTools: (data.excludeTools as string[] | undefined) ?? [],
+    includeTools: (data.includeTools as string[] | undefined) ?? [],
+  };
 }
 
 /**
@@ -80,36 +73,36 @@ export function parseProfile(content: string, filename: string): AgentProfile {
  * Throws if the directory does not exist.
  */
 export async function loadProfiles(dirPath: string): Promise<Map<string, AgentProfile>> {
-    const cached = profileCache.get(dirPath);
-    if (cached) {
-        return cached;
-    }
+  const cached = profileCache.get(dirPath);
+  if (cached) {
+    return cached;
+  }
 
-    let dirStat;
-    try {
-        dirStat = await stat(dirPath);
-    } catch {
-        throw new Error(`Directory does not exist: ${dirPath}`);
-    }
+  let dirStat;
+  try {
+    dirStat = await stat(dirPath);
+  } catch {
+    throw new Error(`Directory does not exist: ${dirPath}`);
+  }
 
-    if (!dirStat.isDirectory()) {
-        throw new Error(`Path is not a directory: ${dirPath}`);
-    }
+  if (!dirStat.isDirectory()) {
+    throw new Error(`Path is not a directory: ${dirPath}`);
+  }
 
-    const entries = await readdir(dirPath);
-    const mdFiles = entries.filter((entry) => entry.endsWith(".md"));
+  const entries = await readdir(dirPath);
+  const mdFiles = entries.filter((entry) => entry.endsWith('.md'));
 
-    const profiles = new Map<string, AgentProfile>();
+  const profiles = new Map<string, AgentProfile>();
 
-    for (const file of mdFiles) {
-        const filePath = join(dirPath, file);
-        const content = await readFile(filePath, "utf-8");
-        const profile = parseProfile(content, file);
-        profiles.set(profile.id, profile);
-    }
+  for (const file of mdFiles) {
+    const filePath = join(dirPath, file);
+    const content = await readFile(filePath, 'utf-8');
+    const profile = parseProfile(content, file);
+    profiles.set(profile.id, profile);
+  }
 
-    profileCache.set(dirPath, profiles);
-    return profiles;
+  profileCache.set(dirPath, profiles);
+  return profiles;
 }
 
 /**
@@ -118,14 +111,14 @@ export async function loadProfiles(dirPath: string): Promise<Map<string, AgentPr
  * Throws if the profile is not found.
  */
 export async function loadProfile(dirPath: string, profileId: string): Promise<AgentProfile> {
-    const profiles = await loadProfiles(dirPath);
-    const profile = profiles.get(profileId);
+  const profiles = await loadProfiles(dirPath);
+  const profile = profiles.get(profileId);
 
-    if (!profile) {
-        throw new Error(`Profile "${profileId}" not found in directory: ${dirPath}`);
-    }
+  if (!profile) {
+    throw new Error(`Profile "${profileId}" not found in directory: ${dirPath}`);
+  }
 
-    return profile;
+  return profile;
 }
 
 /**
@@ -134,13 +127,13 @@ export async function loadProfile(dirPath: string, profileId: string): Promise<A
  * Throws if the file does not exist or is invalid.
  */
 export async function loadProfileSingle(filePath: string): Promise<AgentProfile> {
-    let content: string;
-    try {
-        content = await readFile(filePath, "utf-8");
-    } catch {
-        throw new Error(`Profile file does not exist: ${filePath}`);
-    }
-    return parseProfile(content, basename(filePath));
+  let content: string;
+  try {
+    content = await readFile(filePath, 'utf-8');
+  } catch {
+    throw new Error(`Profile file does not exist: ${filePath}`);
+  }
+  return parseProfile(content, basename(filePath));
 }
 
 /**
@@ -156,37 +149,33 @@ export async function loadProfileSingle(filePath: string): Promise<AgentProfile>
  * The merged result is NOT cached — only the per-directory results from
  * `loadProfiles` use the module-level cache.
  */
-export async function loadProfilesFromDirs(
-    dirs: string[],
-): Promise<Map<string, AgentProfile>> {
-    const merged = new Map<string, AgentProfile>();
+export async function loadProfilesFromDirs(dirs: string[]): Promise<Map<string, AgentProfile>> {
+  const merged = new Map<string, AgentProfile>();
 
-    for (let i = dirs.length - 1; i >= 0; i--) {
-        try {
-            const profiles = await loadProfiles(dirs[i]);
-            for (const [id, profile] of profiles) {
-                merged.set(id, profile);
-            }
-        } catch (err: unknown) {
-            // Skip directories that don't exist or aren't directories.
-            // Primary check: Node.js system error codes from stat()/readdir().
-            // Fallback check: custom error messages thrown by loadProfiles.
-            if (
-                (err instanceof Error &&
-                    "code" in err &&
-                    ((err as NodeJS.ErrnoException).code === "ENOENT" ||
-                        (err as NodeJS.ErrnoException).code === "ENOTDIR")) ||
-                (err instanceof Error &&
-                    (err.message.startsWith("Directory does not exist") ||
-                        err.message.startsWith("Path is not a directory")))
-            ) {
-                continue;
-            }
-            throw err;
-        }
+  for (let i = dirs.length - 1; i >= 0; i--) {
+    try {
+      const profiles = await loadProfiles(dirs[i]);
+      for (const [id, profile] of profiles) {
+        merged.set(id, profile);
+      }
+    } catch (err: unknown) {
+      // Skip directories that don't exist or aren't directories.
+      // Primary check: Node.js system error codes from stat()/readdir().
+      // Fallback check: custom error messages thrown by loadProfiles.
+      if (
+        (err instanceof Error &&
+          'code' in err &&
+          ((err as NodeJS.ErrnoException).code === 'ENOENT' || (err as NodeJS.ErrnoException).code === 'ENOTDIR')) ||
+        (err instanceof Error &&
+          (err.message.startsWith('Directory does not exist') || err.message.startsWith('Path is not a directory')))
+      ) {
+        continue;
+      }
+      throw err;
     }
+  }
 
-    return merged;
+  return merged;
 }
 
 /**
@@ -194,5 +183,5 @@ export async function loadProfilesFromDirs(
  * Call this to force a fresh read on the next loadProfiles() call.
  */
 export function clearProfileCache(): void {
-    profileCache.clear();
+  profileCache.clear();
 }

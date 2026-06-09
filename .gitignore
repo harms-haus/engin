@@ -4,3 +4,4 @@ dist/
 .env
 .workflow-harness/.env
 .workflow-state.json
+coverage/

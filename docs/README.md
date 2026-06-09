@@ -73,18 +73,18 @@ workflow-harness develop "Fix the login bug" \
 ### Programmatic
 
 ```typescript
-import { createHarness, loadProfilesFromDirs, resolveProfilesDirs } from "workflow-harness";
+import { createHarness, loadProfilesFromDirs, resolveProfilesDirs } from 'workflow-harness';
 
-const profilesDirs = resolveProfilesDirs("/path/to/project");
+const profilesDirs = resolveProfilesDirs('/path/to/project');
 const profiles = await loadProfilesFromDirs(profilesDirs);
 
-const profile = profiles.get("implementer");
-if (!profile) throw new Error("implementer profile not found");
+const profile = profiles.get('implementer');
+if (!profile) throw new Error('implementer profile not found');
 
-const { session, dispose } = await createHarness({ profile, cwd: "/path/to/project" });
+const { session, dispose } = await createHarness({ profile, cwd: '/path/to/project' });
 try {
-  await session.prompt("Add input validation to all public API endpoints");
-  console.log("Done:", session.getLastAssistantText());
+  await session.prompt('Add input validation to all public API endpoints');
+  console.log('Done:', session.getLastAssistantText());
 } finally {
   dispose();
 }
@@ -102,13 +102,13 @@ workflow-harness <command> [options]
 
 ### Commands
 
-| Command | Description |
-|---|---|
-| `run` (default) | Run a named workflow with a task prompt |
-| `list` | List available workflows and profiles |
-| `init` | Create config directory structure in the global config directory |
-| `--help` / `-h` | Show usage information |
-| `--version` / `-v` | Show version |
+| Command            | Description                                                      |
+| ------------------ | ---------------------------------------------------------------- |
+| `run` (default)    | Run a named workflow with a task prompt                          |
+| `list`             | List available workflows and profiles                            |
+| `init`             | Create config directory structure in the global config directory |
+| `--help` / `-h`    | Show usage information                                           |
+| `--version` / `-v` | Show version                                                     |
 
 ### `run`
 
@@ -140,20 +140,20 @@ Creates the `profiles/` and `workflows/` subdirectories inside the global config
 
 ### Flags
 
-| Flag | Applies to | Description |
-|---|---|---|
-| `--cwd <path>` | `run`, `list` | Project working directory (default: `process.cwd()`) |
-| `--work-dir <path>` | `run` | Directory for workflow state persistence. Default: `.workflow-harness/work/<workflow-name>` inside `cwd` |
-| `--max-concurrent <n>` | `run` | Maximum parallel implementer agents (default: `3`). Must be a positive integer. |
-| `--verbose` | `all commands` | Enable verbose output, including `.env` file loading information and agent-level output (turns, tool calls, token usage) |
-| `--api-key <provider=key>` | `run` | Provider → API key override. Repeatable. **Warning:** values are visible in process listings; prefer environment variables. |
+| Flag                       | Applies to     | Description                                                                                                                 |
+| -------------------------- | -------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `--cwd <path>`             | `run`, `list`  | Project working directory (default: `process.cwd()`)                                                                        |
+| `--work-dir <path>`        | `run`          | Directory for workflow state persistence. Default: `.workflow-harness/work/<workflow-name>` inside `cwd`                    |
+| `--max-concurrent <n>`     | `run`          | Maximum parallel implementer agents (default: `3`). Must be a positive integer.                                             |
+| `--verbose`                | `all commands` | Enable verbose output, including `.env` file loading information and agent-level output (turns, tool calls, token usage)    |
+| `--api-key <provider=key>` | `run`          | Provider → API key override. Repeatable. **Warning:** values are visible in process listings; prefer environment variables. |
 
 ### Exit Codes
 
-| Code | Meaning |
-|---|---|
-| `0` | Workflow completed successfully |
-| `1` | Workflow failed with an error |
+| Code | Meaning                         |
+| ---- | ------------------------------- |
+| `0`  | Workflow completed successfully |
+| `1`  | Workflow failed with an error   |
 
 ### Example Output
 
@@ -192,10 +192,10 @@ workflow-harness discovers profiles and workflows from two locations, with **loc
 
 ### Directory Locations
 
-| Scope | Path |
-|---|---|
+| Scope      | Path                                                                                                             |
+| ---------- | ---------------------------------------------------------------------------------------------------------------- |
 | **Global** | `$XDG_CONFIG_HOME/workflow-harness/` — or `~/.config/workflow-harness/` when `XDG_CONFIG_HOME` is unset or empty |
-| **Local** | `{cwd}/.workflow-harness/` — where `cwd` is the project directory |
+| **Local**  | `{cwd}/.workflow-harness/` — where `cwd` is the project directory                                                |
 
 ### Directory Structure
 
@@ -269,14 +269,14 @@ This body text becomes the system prompt.
 
 ### Frontmatter Fields
 
-| Field | Required | Default | Description |
-|---|---|---|---|
-| `name` | No | Filename without `.md` | Human-readable display name |
-| `provider` | **Yes** | — | AI provider identifier (e.g. `anthropic`, `openai`) |
-| `model` | **Yes** | — | Model identifier within the provider |
-| `thinkingLevel` | No | `"medium"` | Model thinking depth. One of: `off`, `minimal`, `low`, `medium`, `high`, `xhigh` |
-| `excludeTools` | No | `[]` | Tool names to remove from the default set |
-| `includeTools` | No | `[]` | If non-empty, only these tools are included |
+| Field           | Required | Default                | Description                                                                      |
+| --------------- | -------- | ---------------------- | -------------------------------------------------------------------------------- |
+| `name`          | No       | Filename without `.md` | Human-readable display name                                                      |
+| `provider`      | **Yes**  | —                      | AI provider identifier (e.g. `anthropic`, `openai`)                              |
+| `model`         | **Yes**  | —                      | Model identifier within the provider                                             |
+| `thinkingLevel` | No       | `"medium"`             | Model thinking depth. One of: `off`, `minimal`, `low`, `medium`, `high`, `xhigh` |
+| `excludeTools`  | No       | `[]`                   | Tool names to remove from the default set                                        |
+| `includeTools`  | No       | `[]`                   | If non-empty, only these tools are included                                      |
 
 ### System Prompt Body
 
@@ -299,6 +299,7 @@ You are a Code Reviewer agent. Evaluate code for correctness,
 quality, and adherence to project conventions.
 
 Output your review as structured JSON with fields:
+
 - issues: array of { file, description, severity }
 - quality_score: number 1-10
 - approved: boolean
@@ -343,21 +344,21 @@ Workflow names cannot contain `/`, `\`, or `..` — this prevents path traversal
 
 ```javascript
 // ~/.config/workflow-harness/workflows/my-workflow.js
-import { createHarness, loadProfilesFromDirs, resolveProfilesDirs, promptForStructured } from "workflow-harness";
-import { z } from "zod";
+import { createHarness, loadProfilesFromDirs, resolveProfilesDirs, promptForStructured } from 'workflow-harness';
+import { z } from 'zod';
 
 export async function run(taskPrompt, options) {
   const { cwd, workDir, apiKeys, onStatus } = options;
   const profilesDirs = resolveProfilesDirs(cwd);
   const profiles = await loadProfilesFromDirs(profilesDirs);
 
-  const profile = profiles.get("implementer");
-  if (!profile) throw new Error("implementer profile not found");
+  const profile = profiles.get('implementer');
+  if (!profile) throw new Error('implementer profile not found');
 
   const { session, dispose } = await createHarness({ profile, cwd, apiKeys });
   try {
     await session.prompt(`Complete this task: ${taskPrompt}`);
-    console.log("Done:", session.getLastAssistantText());
+    console.log('Done:', session.getLastAssistantText());
   } finally {
     dispose();
   }
@@ -377,8 +378,8 @@ import {
   promptForStructured,
   WorkflowStatusTracker,
   parallelAgents,
-} from "workflow-harness";
-import { z } from "zod";
+} from 'workflow-harness';
+import { z } from 'zod';
 
 export async function run(taskPrompt: string, options: WorkflowRunOptions) {
   const tracker = new WorkflowStatusTracker(options.workDir);
@@ -447,20 +448,20 @@ Create a fully-wired `AgentSession` from an `AgentProfile`. All sessions are in-
 
 **`HarnessCreationOptions` fields:**
 
-| Field | Type | Description |
-|---|---|---|
-| `profile` | `AgentProfile` | The agent configuration |
-| `cwd` | `string` | Working directory for file operations |
-| `apiKeys?` | `Record<string, string>` | Provider → API key overrides |
-| `onAgentStatus?` | `AgentStatusCallbacks` | Callbacks for turn/tool events |
+| Field            | Type                     | Description                           |
+| ---------------- | ------------------------ | ------------------------------------- |
+| `profile`        | `AgentProfile`           | The agent configuration               |
+| `cwd`            | `string`                 | Working directory for file operations |
+| `apiKeys?`       | `Record<string, string>` | Provider → API key overrides          |
+| `onAgentStatus?` | `AgentStatusCallbacks`   | Callbacks for turn/tool events        |
 
 **Return fields:**
 
-| Field | Type | Description |
-|---|---|---|
-| `session` | `AgentSession` | The fully-wired agent session |
-| `sessionId` | `string` | Resolved session identifier |
-| `dispose` | `() => void` | Teardown: unsubscribes from agent events and disposes the session. Always present. |
+| Field       | Type           | Description                                                                        |
+| ----------- | -------------- | ---------------------------------------------------------------------------------- |
+| `session`   | `AgentSession` | The fully-wired agent session                                                      |
+| `sessionId` | `string`       | Resolved session identifier                                                        |
+| `dispose`   | `() => void`   | Teardown: unsubscribes from agent events and disposes the session. Always present. |
 
 #### `createHarnessFromProfile(dirPath, profileId, options): Promise<{ session, sessionId, dispose }>`
 
@@ -504,11 +505,11 @@ Loads `.env` files from the global and local config directories, merges them (lo
 
 Returns a `LoadEnvResult` object:
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `loadedFiles` | `string[]` | Paths of `.env` files that existed and were parsed |
-| `skippedFiles` | `string[]` | Paths of `.env` files that did not exist |
-| `keysSet` | `string[]` | Environment variable names actually written to `process.env` (excluding already-set keys and blocked vars) |
+| Field          | Type       | Description                                                                                                |
+| -------------- | ---------- | ---------------------------------------------------------------------------------------------------------- |
+| `loadedFiles`  | `string[]` | Paths of `.env` files that existed and were parsed                                                         |
+| `skippedFiles` | `string[]` | Paths of `.env` files that did not exist                                                                   |
+| `keysSet`      | `string[]` | Environment variable names actually written to `process.env` (excluding already-set keys and blocked vars) |
 
 ### Setup
 
@@ -603,7 +604,7 @@ The following are re-exported from `@earendil-works/pi-agent-core` (not re-expor
 ```typescript
 class AuditLog {
   constructor(logDir: string);
-  append(event: Omit<AuditEvent, "timestamp">): Promise<void>;
+  append(event: Omit<AuditEvent, 'timestamp'>): Promise<void>;
   getEvents(filter?: { taskId?: string; type?: string }): Promise<AuditEvent[]>;
   getEventsByTask(taskId: string): Promise<AuditEvent[]>;
   getStats(): Promise<{ totalEvents: number; totalCost: number; totalTokens: number }>;
@@ -617,7 +618,7 @@ JSONL-backed audit log. Events are cached in-memory after first read; the cache 
 
 ```typescript
 class TaskTracker {
-  addTask(task: Omit<Task, "status"> & { status?: TaskStatus }): void;
+  addTask(task: Omit<Task, 'status'> & { status?: TaskStatus }): void;
   getTask(id: string): Task | undefined;
   getAllTasks(): Task[];
   getReadyTasks(): Task[];
@@ -651,13 +652,13 @@ The standard phase execution order as a constant array of `WorkflowPhase` values
 
 ```typescript
 const PHASE_ORDER: WorkflowPhase[] = [
-    "scouting",
-    "scouting_review",
-    "planning",
-    "plan_review",
-    "implementing",
-    "final_review",
-    "done",
+  'scouting',
+  'scouting_review',
+  'planning',
+  'plan_review',
+  'implementing',
+  'final_review',
+  'done',
 ];
 ```
 
@@ -723,24 +724,24 @@ src/
 
 ### Core Layer (`src/core/`)
 
-| Module | Responsibility |
-|---|---|
-| `types.ts` | Re-exports from `pi-coding-agent`, `pi-agent-core`, and `pi-ai`; defines `AgentProfile`, `Task`, `WorkflowState`, `AuditEvent`, `WorkflowModule`, `WorkflowRunOptions`, and related types |
-| `config.ts` | Resolves global (`~/.config/workflow-harness/`) and local (`.workflow-harness/`) config directories; provides default work directory paths |
-| `profile.ts` | Parses markdown files with YAML frontmatter into `AgentProfile` objects; loads all profiles from a directory or merges from multiple directories |
-| `workflow-loader.ts` | Dynamically loads workflow modules by name from config directories; supports `.js`, `.mjs`, `.cjs`, `.ts`; caches loaded modules |
-| `harness-factory.ts` | Creates a fully-wired `AgentSession` from a profile: model resolution, `AuthStorage`, tool filtering, `DefaultResourceLoader`, and `createAgentSession` from `@earendil-works/pi-coding-agent` |
-| `structured-output.ts` | Extracts JSON from free-text model responses; prompts a session and validates output against a Zod schema with automatic retries |
-| `session-history.ts` | Tracks token usage and cost across a session; provides session resumption by copying message history |
-| `agent-loop.ts` | Higher-level patterns: `agentLoopUntil`, `parallelAgents`, `sequentialAgents`. Uses `AgentSession` and `dispose()` for cleanup |
-| `auth.ts` | Resolves API keys from caller-supplied overrides or environment variables via `@earendil-works/pi-ai` |
+| Module                 | Responsibility                                                                                                                                                                                 |
+| ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `types.ts`             | Re-exports from `pi-coding-agent`, `pi-agent-core`, and `pi-ai`; defines `AgentProfile`, `Task`, `WorkflowState`, `AuditEvent`, `WorkflowModule`, `WorkflowRunOptions`, and related types      |
+| `config.ts`            | Resolves global (`~/.config/workflow-harness/`) and local (`.workflow-harness/`) config directories; provides default work directory paths                                                     |
+| `profile.ts`           | Parses markdown files with YAML frontmatter into `AgentProfile` objects; loads all profiles from a directory or merges from multiple directories                                               |
+| `workflow-loader.ts`   | Dynamically loads workflow modules by name from config directories; supports `.js`, `.mjs`, `.cjs`, `.ts`; caches loaded modules                                                               |
+| `harness-factory.ts`   | Creates a fully-wired `AgentSession` from a profile: model resolution, `AuthStorage`, tool filtering, `DefaultResourceLoader`, and `createAgentSession` from `@earendil-works/pi-coding-agent` |
+| `structured-output.ts` | Extracts JSON from free-text model responses; prompts a session and validates output against a Zod schema with automatic retries                                                               |
+| `session-history.ts`   | Tracks token usage and cost across a session; provides session resumption by copying message history                                                                                           |
+| `agent-loop.ts`        | Higher-level patterns: `agentLoopUntil`, `parallelAgents`, `sequentialAgents`. Uses `AgentSession` and `dispose()` for cleanup                                                                 |
+| `auth.ts`              | Resolves API keys from caller-supplied overrides or environment variables via `@earendil-works/pi-ai`                                                                                          |
 
 ### Tracking Layer (`src/tracking/`)
 
-| Module | Responsibility |
-|---|---|
-| `audit-log.ts` | Appends `AuditEvent` records to a JSONL file; supports filtering by type or task ID; computes aggregate stats |
-| `task-status.ts` | Manages a collection of `Task` objects with a DAG of dependencies; enforces state transitions; detects cycles |
+| Module               | Responsibility                                                                                                                                |
+| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `audit-log.ts`       | Appends `AuditEvent` records to a JSONL file; supports filtering by type or task ID; computes aggregate stats                                 |
+| `task-status.ts`     | Manages a collection of `Task` objects with a DAG of dependencies; enforces state transitions; detects cycles                                 |
 | `workflow-status.ts` | Top-level workflow state: current phase, completed phases, scouting reports, plan, stats, and task tracker; persists to `workflow-state.json` |
 
 This package is a **pure library** — it provides building blocks (harness creation, profile loading, structured output, agent loop patterns, task tracking, audit logging) that user-managed workflow scripts compose into pipelines. It does not ship any built-in workflows or agent profiles.
@@ -770,7 +771,7 @@ All types listed below are exported from the top-level `workflow-harness` entry 
 #### `ThinkingLevel`
 
 ```typescript
-type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+type ThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
 ```
 
 Re-exported from `@earendil-works/pi-agent-core`.
@@ -779,13 +780,13 @@ Re-exported from `@earendil-works/pi-agent-core`.
 
 ```typescript
 type WorkflowPhase =
-    | "scouting"
-    | "scouting_review"
-    | "planning"
-    | "plan_review"
-    | "implementing"
-    | "final_review"
-    | "done";
+  | 'scouting'
+  | 'scouting_review'
+  | 'planning'
+  | 'plan_review'
+  | 'implementing'
+  | 'final_review'
+  | 'done';
 ```
 
 `advancePhase()` moves strictly forward; `setPhase()` can jump to any valid phase.
@@ -793,7 +794,7 @@ type WorkflowPhase =
 #### `TaskStatus`
 
 ```typescript
-type TaskStatus = "blocked" | "ready" | "claimed" | "implementing" | "reviewing" | "done";
+type TaskStatus = 'blocked' | 'ready' | 'claimed' | 'implementing' | 'reviewing' | 'done';
 ```
 
 See [Task lifecycle](#tasktracker) for valid transitions.
@@ -802,33 +803,33 @@ See [Task lifecycle](#tasktracker) for valid transitions.
 
 ### `AgentProfile`
 
-| Field | Type | Description |
-|---|---|---|
-| `id` | `string` | Profile identifier — derived from filename without `.md` |
-| `name` | `string` | Human-readable display name. Defaults to `id` |
-| `provider` | `string` | AI provider identifier |
-| `model` | `string` | Model identifier within the provider |
-| `thinkingLevel` | `ThinkingLevel` | Model thinking depth |
-| `systemPrompt` | `string` | The full system prompt (markdown body after frontmatter) |
-| `excludeTools` | `string[]` | Tool names to remove from the default set |
-| `includeTools` | `string[]` | If non-empty, only these tools are included |
+| Field           | Type            | Description                                              |
+| --------------- | --------------- | -------------------------------------------------------- |
+| `id`            | `string`        | Profile identifier — derived from filename without `.md` |
+| `name`          | `string`        | Human-readable display name. Defaults to `id`            |
+| `provider`      | `string`        | AI provider identifier                                   |
+| `model`         | `string`        | Model identifier within the provider                     |
+| `thinkingLevel` | `ThinkingLevel` | Model thinking depth                                     |
+| `systemPrompt`  | `string`        | The full system prompt (markdown body after frontmatter) |
+| `excludeTools`  | `string[]`      | Tool names to remove from the default set                |
+| `includeTools`  | `string[]`      | If non-empty, only these tools are included              |
 
 ---
 
 ### `Task`
 
-| Field | Type | Description |
-|---|---|---|
-| `id` | `string` | Unique task identifier |
-| `title` | `string` | Short description |
-| `prompt` | `string` | Detailed prompt for the implementing agent |
-| `profile` | `string` | Agent profile ID to use |
-| `files` | `string[]` | Files this task is expected to modify |
-| `dependencies` | `string[]` | Task IDs that must complete before this task |
-| `status` | `TaskStatus` | Current lifecycle state |
-| `assignedAgent?` | `string` | ID of the agent currently working on this task |
-| `result?` | `unknown` | Implementation result submitted for review |
-| `reviewFeedback?` | `string` | Feedback from reviewer on rejection |
+| Field             | Type         | Description                                    |
+| ----------------- | ------------ | ---------------------------------------------- |
+| `id`              | `string`     | Unique task identifier                         |
+| `title`           | `string`     | Short description                              |
+| `prompt`          | `string`     | Detailed prompt for the implementing agent     |
+| `profile`         | `string`     | Agent profile ID to use                        |
+| `files`           | `string[]`   | Files this task is expected to modify          |
+| `dependencies`    | `string[]`   | Task IDs that must complete before this task   |
+| `status`          | `TaskStatus` | Current lifecycle state                        |
+| `assignedAgent?`  | `string`     | ID of the agent currently working on this task |
+| `result?`         | `unknown`    | Implementation result submitted for review     |
+| `reviewFeedback?` | `string`     | Feedback from reviewer on rejection            |
 
 ---
 
@@ -838,49 +839,49 @@ A discriminated union logged by `AuditLog`. Each variant has an auto-generated `
 
 #### `agent_start`
 
-| Field | Type | Description |
-|---|---|---|
-| `type` | `"agent_start"` | Discriminant |
-| `agentId` | `string` | Identifier of the agent |
-| `profile` | `AgentProfile` | Profile used to create the agent |
-| `taskId?` | `string` | Associated task, if applicable |
+| Field     | Type            | Description                      |
+| --------- | --------------- | -------------------------------- |
+| `type`    | `"agent_start"` | Discriminant                     |
+| `agentId` | `string`        | Identifier of the agent          |
+| `profile` | `AgentProfile`  | Profile used to create the agent |
+| `taskId?` | `string`        | Associated task, if applicable   |
 
 #### `agent_end`
 
-| Field | Type | Description |
-|---|---|---|
-| `type` | `"agent_end"` | Discriminant |
-| `agentId` | `string` | Identifier of the agent |
-| `result` | `unknown` | The agent's final result (may include `cost` and `tokens`) |
-| `taskId?` | `string` | Associated task, if applicable |
+| Field     | Type          | Description                                                |
+| --------- | ------------- | ---------------------------------------------------------- |
+| `type`    | `"agent_end"` | Discriminant                                               |
+| `agentId` | `string`      | Identifier of the agent                                    |
+| `result`  | `unknown`     | The agent's final result (may include `cost` and `tokens`) |
+| `taskId?` | `string`      | Associated task, if applicable                             |
 
 #### `decision`
 
-| Field | Type | Description |
-|---|---|---|
-| `type` | `"decision"` | Discriminant |
-| `agentId` | `string` | Identifier of the deciding agent |
-| `decision` | `string` | Short decision label (e.g. `"approved"`, `"plan_rejected"`) |
-| `reasoning` | `string` | Explanation for the decision |
-| `taskId?` | `string` | Associated task, if applicable |
+| Field       | Type         | Description                                                 |
+| ----------- | ------------ | ----------------------------------------------------------- |
+| `type`      | `"decision"` | Discriminant                                                |
+| `agentId`   | `string`     | Identifier of the deciding agent                            |
+| `decision`  | `string`     | Short decision label (e.g. `"approved"`, `"plan_rejected"`) |
+| `reasoning` | `string`     | Explanation for the decision                                |
+| `taskId?`   | `string`     | Associated task, if applicable                              |
 
 #### `structured_output`
 
-| Field | Type | Description |
-|---|---|---|
-| `type` | `"structured_output"` | Discriminant |
-| `agentId` | `string` | Identifier of the producing agent |
-| `output` | `unknown` | The validated structured output |
-| `taskId?` | `string` | Associated task, if applicable |
+| Field     | Type                  | Description                       |
+| --------- | --------------------- | --------------------------------- |
+| `type`    | `"structured_output"` | Discriminant                      |
+| `agentId` | `string`              | Identifier of the producing agent |
+| `output`  | `unknown`             | The validated structured output   |
+| `taskId?` | `string`              | Associated task, if applicable    |
 
 #### `error`
 
-| Field | Type | Description |
-|---|---|---|
-| `type` | `"error"` | Discriminant |
-| `agentId` | `string` | Identifier of the agent that errored |
-| `error` | `string` | Error description |
-| `taskId?` | `string` | Associated task, if applicable |
+| Field     | Type      | Description                          |
+| --------- | --------- | ------------------------------------ |
+| `type`    | `"error"` | Discriminant                         |
+| `agentId` | `string`  | Identifier of the agent that errored |
+| `error`   | `string`  | Error description                    |
+| `taskId?` | `string`  | Associated task, if applicable       |
 
 ---
 
@@ -888,16 +889,16 @@ A discriminated union logged by `AuditLog`. Each variant has an auto-generated `
 
 Serialized form of `WorkflowStatusTracker`. Written to `workflow-state.json` on `save()`.
 
-| Field | Type | Description |
-|---|---|---|
-| `taskPrompt` | `string` | The original task prompt |
-| `currentPhase` | `WorkflowPhase` | Phase the workflow is currently in |
-| `completedPhases` | `WorkflowPhase[]` | Phases that have finished |
-| `tasks` | `Task[]` | All tasks in the plan |
-| `scoutingReports` | `unknown[]` | Collected scouting reports |
-| `plan` | `unknown` | The validated implementation plan |
-| `research?` | `string` | Synthesized research summary from scouting review |
-| `stats` | `{ totalTokens: number; totalCost: number; agentCount: number }` | Aggregate statistics |
+| Field             | Type                                                             | Description                                       |
+| ----------------- | ---------------------------------------------------------------- | ------------------------------------------------- |
+| `taskPrompt`      | `string`                                                         | The original task prompt                          |
+| `currentPhase`    | `WorkflowPhase`                                                  | Phase the workflow is currently in                |
+| `completedPhases` | `WorkflowPhase[]`                                                | Phases that have finished                         |
+| `tasks`           | `Task[]`                                                         | All tasks in the plan                             |
+| `scoutingReports` | `unknown[]`                                                      | Collected scouting reports                        |
+| `plan`            | `unknown`                                                        | The validated implementation plan                 |
+| `research?`       | `string`                                                         | Synthesized research summary from scouting review |
+| `stats`           | `{ totalTokens: number; totalCost: number; agentCount: number }` | Aggregate statistics                              |
 
 ---
 
@@ -905,13 +906,13 @@ Serialized form of `WorkflowStatusTracker`. Written to `workflow-state.json` on 
 
 Options passed to a workflow's `run()` function.
 
-| Field | Type | Description |
-|---|---|---|
-| `cwd` | `string` | Project directory to operate on |
-| `workDir` | `string` | Directory for workflow state persistence |
-| `maxConcurrentTasks?` | `number` | Maximum parallel implementers (default 3) |
-| `apiKeys?` | `Record<string, string>` | Provider → API key overrides |
-| `onStatus?` | `StatusCallbacks` | Callbacks for workflow/agent events |
+| Field                 | Type                     | Description                               |
+| --------------------- | ------------------------ | ----------------------------------------- |
+| `cwd`                 | `string`                 | Project directory to operate on           |
+| `workDir`             | `string`                 | Directory for workflow state persistence  |
+| `maxConcurrentTasks?` | `number`                 | Maximum parallel implementers (default 3) |
+| `apiKeys?`            | `Record<string, string>` | Provider → API key overrides              |
+| `onStatus?`           | `StatusCallbacks`        | Callbacks for workflow/agent events       |
 
 ---
 
@@ -919,11 +920,11 @@ Options passed to a workflow's `run()` function.
 
 Interface for workflow modules loaded by `loadWorkflow`.
 
-| Field | Type | Description |
-|---|---|---|
-| `run` | `(taskPrompt: string, options: WorkflowRunOptions) => Promise<void>` | The workflow entry point (**required**) |
-| `name?` | `string` | Human-readable workflow name |
-| `description?` | `string` | Workflow description |
+| Field          | Type                                                                 | Description                             |
+| -------------- | -------------------------------------------------------------------- | --------------------------------------- |
+| `run`          | `(taskPrompt: string, options: WorkflowRunOptions) => Promise<void>` | The workflow entry point (**required**) |
+| `name?`        | `string`                                                             | Human-readable workflow name            |
+| `description?` | `string`                                                             | Workflow description                    |
 
 ---
 
@@ -931,12 +932,12 @@ Interface for workflow modules loaded by `loadWorkflow`.
 
 Options for `createHarness`.
 
-| Field | Type | Description |
-|---|---|---|
-| `profile` | `AgentProfile` | The agent configuration to use |
-| `cwd` | `string` | Working directory for file operations |
-| `apiKeys?` | `Record<string, string>` | Provider → API key overrides |
-| `onAgentStatus?` | `AgentStatusCallbacks` | Callbacks for turn-level and tool-level events |
+| Field            | Type                     | Description                                    |
+| ---------------- | ------------------------ | ---------------------------------------------- |
+| `profile`        | `AgentProfile`           | The agent configuration to use                 |
+| `cwd`            | `string`                 | Working directory for file operations          |
+| `apiKeys?`       | `Record<string, string>` | Provider → API key overrides                   |
+| `onAgentStatus?` | `AgentStatusCallbacks`   | Callbacks for turn-level and tool-level events |
 
 Tool filtering is handled internally from the profile's `includeTools`/`excludeTools` fields. The default tool set is `read`, `bash`, `edit`, `write`.
 
@@ -946,9 +947,9 @@ Tool filtering is handled internally from the profile's `includeTools`/`excludeT
 
 Options for `promptForStructured`.
 
-| Field | Type | Description |
-|---|---|---|
-| `maxRetries` | `number` | Maximum number of retry attempts |
+| Field          | Type     | Description                                                                                                             |
+| -------------- | -------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `maxRetries`   | `number` | Maximum number of retry attempts                                                                                        |
 | `retryPrompt?` | `string` | Custom retry prompt appended on failure (unused by built-in `promptForStructured` but available for external consumers) |
 
 ---
@@ -957,27 +958,27 @@ Options for `promptForStructured`.
 
 Options for `agentLoopUntil`.
 
-| Field | Type | Description |
-|---|---|---|
+| Field          | Type     | Description                           |
+| -------------- | -------- | ------------------------------------- |
 | `maxAttempts?` | `number` | Maximum loop iterations (default: 10) |
 
 ### `ParallelAgentOptions`
 
 Options for `parallelAgents`.
 
-| Field | Type | Description |
-|---|---|---|
-| `schema?` | `ZodType<any>` | Zod schema for structured output validation |
-| `maxRetries?` | `number` | Max retries for structured output (default: 3) |
+| Field         | Type           | Description                                    |
+| ------------- | -------------- | ---------------------------------------------- |
+| `schema?`     | `ZodType<any>` | Zod schema for structured output validation    |
+| `maxRetries?` | `number`       | Max retries for structured output (default: 3) |
 
 ### `SequentialAgentOptions`
 
 Options for `sequentialAgents`.
 
-| Field | Type | Description |
-|---|---|---|
-| `schema?` | `ZodType<any>` | Zod schema for structured output validation |
-| `maxRetries?` | `number` | Max retries for structured output (default: 3) |
+| Field         | Type           | Description                                    |
+| ------------- | -------------- | ---------------------------------------------- |
+| `schema?`     | `ZodType<any>` | Zod schema for structured output validation    |
+| `maxRetries?` | `number`       | Max retries for structured output (default: 3) |
 
 ---
 
@@ -1000,12 +1001,12 @@ Both `AgentSession` instances and mock objects satisfy this interface. The `prom
 
 Token usage and cost aggregation returned by `SessionHistory.getStats()`.
 
-| Field | Type | Description |
-|---|---|---|
-| `totalInputTokens` | `number` | Sum of input tokens from assistant messages |
-| `totalOutputTokens` | `number` | Sum of output tokens from assistant messages |
-| `totalCost` | `number` | Sum of costs from assistant messages |
-| `messageCount` | `number` | Total number of message entries in the session |
+| Field               | Type     | Description                                    |
+| ------------------- | -------- | ---------------------------------------------- |
+| `totalInputTokens`  | `number` | Sum of input tokens from assistant messages    |
+| `totalOutputTokens` | `number` | Sum of output tokens from assistant messages   |
+| `totalCost`         | `number` | Sum of costs from assistant messages           |
+| `messageCount`      | `number` | Total number of message entries in the session |
 
 ---
 
@@ -1013,11 +1014,11 @@ Token usage and cost aggregation returned by `SessionHistory.getStats()`.
 
 Envelope returned by `retryAgentUntil`.
 
-| Field | Type | Description |
-|---|---|---|
-| `result` | `T` | The validated structured output |
-| `attempts` | `number` | Configured maximum retry attempts (default: 3). This is the configured max, not the actual number of attempts used. |
-| `totalTokens` | `{ input: number; output: number }` | Token usage (zero when using `retryAgentUntil`) |
+| Field         | Type                                | Description                                                                                                         |
+| ------------- | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `result`      | `T`                                 | The validated structured output                                                                                     |
+| `attempts`    | `number`                            | Configured maximum retry attempts (default: 3). This is the configured max, not the actual number of attempts used. |
+| `totalTokens` | `{ input: number; output: number }` | Token usage (zero when using `retryAgentUntil`)                                                                     |
 
 ---
 
@@ -1029,31 +1030,31 @@ type StatusCallbacks = WorkflowStatusCallbacks & AgentStatusCallbacks;
 
 #### `WorkflowStatusCallbacks`
 
-| Method | Parameter Shape | Fired when |
-|---|---|---|
-| `onWorkflowStart` | `{ taskPrompt: string; resumed: boolean; workDir: string }` | The `run()` orchestrator starts |
-| `onPhaseStart` | `{ phase: WorkflowPhase; round: number }` | A phase begins execution |
-| `onPhaseComplete` | `{ phase: WorkflowPhase; durationMs: number }` | A phase finishes |
-| `onAgentSpawn` | `{ agentId: string; profile: string; phase: string; taskId?: string }` | An agent session is created |
-| `onAgentComplete` | `{ agentId: string; profile: string; phase: string; taskId?: string }` | An agent finishes its prompt |
-| `onTaskStart` | `{ taskId: string; title: string; agentId: string }` | A task is claimed and dispatched |
-| `onTaskComplete` | `{ taskId: string; title: string }` | A task passes review |
-| `onTaskRejected` | `{ taskId: string; title: string; reason: string }` | A task fails review |
-| `onDecision` | `{ agentId: string; decision: string; reasoning: string; taskId?: string }` | A reviewer makes a decision |
-| `onError` | `{ agentId: string; error: string; phase: string; taskId?: string }` | An agent encounters an error |
-| `onWorkflowComplete` | `{ totalDurationMs: number; agentCount: number }` | The workflow finishes successfully |
-| `onWorkflowFailed` | `{ error: Error; phase: string }` | The workflow throws an unhandled error |
+| Method               | Parameter Shape                                                             | Fired when                             |
+| -------------------- | --------------------------------------------------------------------------- | -------------------------------------- |
+| `onWorkflowStart`    | `{ taskPrompt: string; resumed: boolean; workDir: string }`                 | The `run()` orchestrator starts        |
+| `onPhaseStart`       | `{ phase: WorkflowPhase; round: number }`                                   | A phase begins execution               |
+| `onPhaseComplete`    | `{ phase: WorkflowPhase; durationMs: number }`                              | A phase finishes                       |
+| `onAgentSpawn`       | `{ agentId: string; profile: string; phase: string; taskId?: string }`      | An agent session is created            |
+| `onAgentComplete`    | `{ agentId: string; profile: string; phase: string; taskId?: string }`      | An agent finishes its prompt           |
+| `onTaskStart`        | `{ taskId: string; title: string; agentId: string }`                        | A task is claimed and dispatched       |
+| `onTaskComplete`     | `{ taskId: string; title: string }`                                         | A task passes review                   |
+| `onTaskRejected`     | `{ taskId: string; title: string; reason: string }`                         | A task fails review                    |
+| `onDecision`         | `{ agentId: string; decision: string; reasoning: string; taskId?: string }` | A reviewer makes a decision            |
+| `onError`            | `{ agentId: string; error: string; phase: string; taskId?: string }`        | An agent encounters an error           |
+| `onWorkflowComplete` | `{ totalDurationMs: number; agentCount: number }`                           | The workflow finishes successfully     |
+| `onWorkflowFailed`   | `{ error: Error; phase: string }`                                           | The workflow throws an unhandled error |
 
 All methods are optional.
 
 #### `AgentStatusCallbacks`
 
-| Method | Parameter Shape | Fired when |
-|---|---|---|
-| `onTurnStart` | `{ agentId: string; turn: number }` | An agent turn begins |
-| `onTurnEnd` | `{ agentId: string; turn: number; tokens?: { input: number; output: number } }` | An agent turn completes |
-| `onToolCallStart` | `{ agentId: string; toolName: string; toolCallId: string }` | A tool execution starts |
-| `onToolCallEnd` | `{ agentId: string; toolName: string; toolCallId: string; isError: boolean }` | A tool execution finishes |
+| Method            | Parameter Shape                                                                 | Fired when                |
+| ----------------- | ------------------------------------------------------------------------------- | ------------------------- |
+| `onTurnStart`     | `{ agentId: string; turn: number }`                                             | An agent turn begins      |
+| `onTurnEnd`       | `{ agentId: string; turn: number; tokens?: { input: number; output: number } }` | An agent turn completes   |
+| `onToolCallStart` | `{ agentId: string; toolName: string; toolCallId: string }`                     | A tool execution starts   |
+| `onToolCallEnd`   | `{ agentId: string; toolName: string; toolCallId: string; isError: boolean }`   | A tool execution finishes |
 
 All methods are optional.
 
@@ -1067,10 +1068,10 @@ workflow-harness automatically loads environment variables from `.env` files at 
 
 **File locations (loaded in order):**
 
-| Priority | Path | Scope |
-|----------|------|-------|
-| 1 (lowest) | `~/.config/workflow-harness/.env` | User-level, shared across projects |
-| 2 (highest) | `{cwd}/.workflow-harness/.env` | Project-level, per-project overrides |
+| Priority    | Path                              | Scope                                |
+| ----------- | --------------------------------- | ------------------------------------ |
+| 1 (lowest)  | `~/.config/workflow-harness/.env` | User-level, shared across projects   |
+| 2 (highest) | `{cwd}/.workflow-harness/.env`    | Project-level, per-project overrides |
 
 **Behavior:**
 
@@ -1130,13 +1131,71 @@ If `workflow-state.json` exists in `workDir`, the `run()` function loads it and 
 
 ### Scripts
 
-| Command | Description |
-|---|---|
-| `bun run build` | Compile TypeScript to `dist/` |
-| `bun test` | Run all tests with `bun:test` |
-| `bun run test:watch` | Run tests in watch mode |
-| `bun run typecheck` | Type-check without emitting |
-| `bun run setup` | Build then run `workflow-harness init` to create config directories |
+| Command                | Description                                                           |
+| ---------------------- | --------------------------------------------------------------------- |
+| `bun run build`        | Compile TypeScript to `dist/`                                         |
+| `bun test`             | Run all tests with `bun:test`                                         |
+| `bun run test:watch`   | Run tests in watch mode                                               |
+| `bun run typecheck`    | Type-check without emitting                                           |
+| `bun run lint`         | Run ESLint across the project                                         |
+| `bun run lint:fix`     | Auto-fix ESLint issues                                                |
+| `bun run format`       | Format all files with Prettier                                        |
+| `bun run format:check` | Check formatting without writing                                      |
+| `bun run prepare`      | Install git hooks via `simple-git-hooks` (auto-runs on `bun install`) |
+| `bun run setup`        | Build then run `workflow-harness init` to create config directories   |
+
+### Code Quality
+
+ESLint is configured via flat config in `eslint.config.js` using `typescript-eslint` with the `recommended`, `strict`, and `stylistic` config presets. Key configuration details:
+
+- **`@typescript-eslint/consistent-type-imports`** — enforces `import type` with separate import statements, aligning with `prettier-plugin-organize-imports`.
+- **`@typescript-eslint/no-unused-vars`** — flags unused variables and parameters, with `_`-prefixed names ignored.
+- **Bun globals** — `Bun` is registered as a readonly global so Bun-specific APIs are recognized.
+- **`eslint-config-prettier`** — disables all ESLint rules that conflict with Prettier, applied last to ensure it takes effect.
+
+Run `bun run lint` to check for issues, or `bun run lint:fix` to auto-fix what can be fixed automatically. Some strict rule violations (e.g. `no-explicit-any` in edge cases) may exist and are acceptable.
+
+### Formatting
+
+Prettier is configured via `.prettierrc` with the following settings:
+
+| Setting      | Value                   |
+| ------------ | ----------------------- |
+| Print width  | 120                     |
+| Quotes       | Single quotes           |
+| Commas       | Trailing commas (`all`) |
+| Arrow parens | Always (`(x) => x`)     |
+| Indent       | 2 spaces                |
+| Semicolons   | Always                  |
+| End of line  | `lf`                    |
+
+`prettier-plugin-organize-imports` runs as part of formatting and automatically sorts and consolidates imports. Run `bun run format` to format all files, or `bun run format:check` to verify formatting without writing changes.
+
+### Pre-commit Hooks
+
+`simple-git-hooks` and `lint-staged` are configured in `package.json` to run automatically on `git commit`. The pre-commit hook invokes `bunx lint-staged`, which applies targeted checks to staged files only:
+
+- **`.ts` files** — `eslint --fix` then `prettier --write`
+- **`.json` and `.md` files** — `prettier --write`
+
+Hooks are installed by `bun run prepare` (which runs automatically on `bun install`). Skip hooks on a per-commit basis with `git commit --no-verify`.
+
+### CI/CD
+
+A GitHub Actions workflow at `.github/workflows/ci.yml` runs on every push and pull request to `main`. It uses a single job that executes the full quality pipeline:
+
+1. **Typecheck** (`bun run typecheck`)
+2. **Lint** (`bun run lint`)
+3. **Format check** (`bun run format:check`)
+4. **Test** (`bun test`)
+
+The workflow uses `oven-sh/setup-bun@v2` with Bun dependency caching for faster runs. All GitHub Actions are pinned to specific commit SHAs rather than tags for supply-chain security.
+
+To replicate the full CI pipeline locally:
+
+```bash
+bun run typecheck && bun run lint && bun run format:check && bun test
+```
 
 ### Project Structure
 

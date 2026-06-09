@@ -1,5 +1,7 @@
 # workflow-harness
 
+[![CI](https://github.com/harms-haus/workflow-harness/actions/workflows/ci.yml/badge.svg)](https://github.com/harms-haus/workflow-harness/actions/workflows/ci.yml)
+
 A script-based workflow engine for AI-driven development, built on top of [pi-coding-agent](https://www.npmjs.com/package/@earendil-works/pi-coding-agent).
 
 ## Install

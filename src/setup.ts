@@ -1,5 +1,5 @@
-import { join } from "node:path";
-import { ensureDir, getGlobalConfigDir } from "./core/config.js";
+import { join } from 'node:path';
+import { ensureDir, getGlobalConfigDir } from './core/config.js';
 
 // ─── Installation ───────────────────────────────────────────────────────────
 
@@ -9,15 +9,15 @@ import { ensureDir, getGlobalConfigDir } from "./core/config.js";
  * subdirectories exist.
  */
 export async function initDefaultConfig(): Promise<{
-    createdDirs: string[];
+  createdDirs: string[];
 }> {
-    const globalDir = getGlobalConfigDir();
+  const globalDir = getGlobalConfigDir();
 
-    const profilesDir = join(globalDir, "profiles");
-    const workflowsDir = join(globalDir, "workflows");
+  const profilesDir = join(globalDir, 'profiles');
+  const workflowsDir = join(globalDir, 'workflows');
 
-    await ensureDir(profilesDir);
-    await ensureDir(workflowsDir);
+  await ensureDir(profilesDir);
+  await ensureDir(workflowsDir);
 
-    return { createdDirs: ["profiles", "workflows"] };
+  return { createdDirs: ['profiles', 'workflows'] };
 }

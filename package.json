@@ -2,7 +2,15 @@
   "name": "workflow-harness",
   "version": "0.1.0",
   "description": "An AI-powered development workflow harness with dynamic profile and workflow discovery.",
-  "keywords": ["ai", "agent", "workflow", "development", "automation", "llm", "harness"],
+  "keywords": [
+    "ai",
+    "agent",
+    "workflow",
+    "development",
+    "automation",
+    "llm",
+    "harness"
+  ],
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -20,7 +28,12 @@
     "setup": "bun run build && bun dist/cli.js init",
     "test": "bun test",
     "test:watch": "bun test --watch",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "prepare": "simple-git-hooks"
   },
   "files": [
     "dist"
@@ -32,7 +45,27 @@
     "zod": "^3.25.0"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@types/bun": "^1.2.0",
-    "typescript": "^5.8.0"
+    "eslint": "^10.4.1",
+    "eslint-config-prettier": "^10.1.8",
+    "lint-staged": "^17.0.7",
+    "prettier": "3.8.4",
+    "prettier-plugin-organize-imports": "^4.3.0",
+    "simple-git-hooks": "^2.13.1",
+    "typescript": "^5.8.0",
+    "typescript-eslint": "^8.61.0"
+  },
+  "simple-git-hooks": {
+    "pre-commit": "bunx lint-staged"
+  },
+  "lint-staged": {
+    "*.{ts}": [
+      "eslint --fix",
+      "prettier --write"
+    ],
+    "*.{json,md}": [
+      "prettier --write"
+    ]
   }
 }

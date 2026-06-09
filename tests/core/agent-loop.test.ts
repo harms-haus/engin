@@ -1,453 +1,401 @@
-import { describe, it, expect, mock, beforeEach, afterAll } from "bun:test";
-import { z } from "zod";
-import type {
-    AgentSession,
-    HarnessCreationOptions,
-} from "../../src/core/types.ts";
+import { afterAll, beforeEach, describe, expect, it, mock } from 'bun:test';
+import { z } from 'zod';
+import type { AgentSession, HarnessCreationOptions } from '../../src/core/types.ts';
 
 // Capture real modules before mocking so we can restore them in afterAll.
-const realHarnessFactory = Object.assign({}, await import("../../src/core/harness-factory.ts"));
-const realStructuredOutput = Object.assign({}, await import("../../src/core/structured-output.ts"));
+const realHarnessFactory = Object.assign({}, await import('../../src/core/harness-factory.ts'));
+const realStructuredOutput = Object.assign({}, await import('../../src/core/structured-output.ts'));
 
 // ─── Mocks ──────────────────────────────────────────────────────────────────
 
 const mockCreateHarness = mock() as ReturnType<typeof mock> & ((...args: unknown[]) => unknown);
-mock.module("../../src/core/harness-factory.ts", () => ({
-    createHarness: (...args: unknown[]) => mockCreateHarness(...args),
+mock.module('../../src/core/harness-factory.ts', () => ({
+  createHarness: (...args: unknown[]) => mockCreateHarness(...args),
 }));
 
 const mockPromptForStructured = mock() as ReturnType<typeof mock> & ((...args: unknown[]) => unknown);
-mock.module("../../src/core/structured-output.ts", () => ({
-    promptForStructured: (...args: unknown[]) =>
-        mockPromptForStructured(...args),
+mock.module('../../src/core/structured-output.ts', () => ({
+  promptForStructured: (...args: unknown[]) => mockPromptForStructured(...args),
 }));
 
 // ─── Imports (after mocks) ─────────────────────────────────────────────────
 
-import { createHarness } from "../../src/core/harness-factory.ts";
-import { promptForStructured } from "../../src/core/structured-output.ts";
-import {
-    agentLoopUntil,
-    retryAgentUntil,
-    parallelAgents,
-    sequentialAgents,
-} from "../../src/core/agent-loop.ts";
+import { agentLoopUntil, parallelAgents, retryAgentUntil, sequentialAgents } from '../../src/core/agent-loop.ts';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 interface MockSession {
-    prompt: ReturnType<typeof mock>;
-    getLastAssistantText: ReturnType<typeof mock>;
+  prompt: ReturnType<typeof mock>;
+  getLastAssistantText: ReturnType<typeof mock>;
 }
 
 function makeSession(textFn: (promptText: string) => string | undefined): {
-    session: MockSession;
-    sessionId: string;
+  session: MockSession;
+  sessionId: string;
 } {
-    let lastText: string | undefined;
-    const session: MockSession = {
-        prompt: mock(async (text: string) => {
-            lastText = textFn(text);
-        }),
-        getLastAssistantText: mock(() => lastText),
-    };
-    return {
-        session,
-        sessionId: "test-session",
-    };
+  let lastText: string | undefined;
+  const session: MockSession = {
+    prompt: mock(async (text: string) => {
+      lastText = textFn(text);
+    }),
+    getLastAssistantText: mock(() => lastText),
+  };
+  return {
+    session,
+    sessionId: 'test-session',
+  };
 }
 
 function makeConfig(overrides?: Partial<HarnessCreationOptions>): HarnessCreationOptions {
-    return {
-        profile: {
-            id: "test-agent",
-            name: "Test Agent",
-            provider: "openai",
-            model: "gpt-4",
-            thinkingLevel: "medium",
-            systemPrompt: "You are a test agent.",
-            excludeTools: [],
-            includeTools: [],
-        },
-        cwd: "/tmp",
-        ...overrides,
-    };
+  return {
+    profile: {
+      id: 'test-agent',
+      name: 'Test Agent',
+      provider: 'openai',
+      model: 'gpt-4',
+      thinkingLevel: 'medium',
+      systemPrompt: 'You are a test agent.',
+      excludeTools: [],
+      includeTools: [],
+    },
+    cwd: '/tmp',
+    ...overrides,
+  };
 }
 
 // ─── Setup ──────────────────────────────────────────────────────────────────
 
 beforeEach(() => {
-    mockCreateHarness.mockClear();
-    mockPromptForStructured.mockClear();
+  mockCreateHarness.mockClear();
+  mockPromptForStructured.mockClear();
 });
 
 // ─── agentLoopUntil ────────────────────────────────────────────────────────
 
-describe("agentLoopUntil", () => {
-    it("returns on the first attempt when condition is immediately met", async () => {
-        const { session } = makeSession(() => "done");
+describe('agentLoopUntil', () => {
+  it('returns on the first attempt when condition is immediately met', async () => {
+    const { session } = makeSession(() => 'done');
 
-        const result = await agentLoopUntil(
-            session,
-            () => "hello",
-            () => true,
-        );
+    const result = await agentLoopUntil(
+      session,
+      () => 'hello',
+      () => true,
+    );
 
-        expect(result).toEqual({ lastText: "done", attempts: 1 });
-        expect(session.prompt).toHaveBeenCalledTimes(1);
-        expect(session.prompt).toHaveBeenCalledWith("hello");
+    expect(result).toEqual({ lastText: 'done', attempts: 1 });
+    expect(session.prompt).toHaveBeenCalledTimes(1);
+    expect(session.prompt).toHaveBeenCalledWith('hello');
+  });
+
+  it('loops until condition is met on a later attempt', async () => {
+    let callCount = 0;
+    const { session } = makeSession(() => {
+      callCount++;
+      return callCount < 3 ? 'not yet' : 'done now';
     });
 
-    it("loops until condition is met on a later attempt", async () => {
-        let callCount = 0;
-        const { session } = makeSession(() => {
-            callCount++;
-            return callCount < 3 ? "not yet" : "done now";
-        });
+    const result = await agentLoopUntil(
+      session,
+      (attempt) => `attempt-${attempt}`,
+      (_text) => callCount >= 3,
+    );
 
-        const result = await agentLoopUntil(
-            session,
-            (attempt) => `attempt-${attempt}`,
-            (_text) => callCount >= 3,
-        );
+    expect(result).toEqual({ lastText: 'done now', attempts: 3 });
+    expect(session.prompt).toHaveBeenCalledTimes(3);
+    expect(session.prompt).toHaveBeenCalledWith('attempt-1');
+    expect(session.prompt).toHaveBeenCalledWith('attempt-2');
+    expect(session.prompt).toHaveBeenCalledWith('attempt-3');
+  });
 
-        expect(result).toEqual({ lastText: "done now", attempts: 3 });
-        expect(session.prompt).toHaveBeenCalledTimes(3);
-        expect(session.prompt).toHaveBeenCalledWith("attempt-1");
-        expect(session.prompt).toHaveBeenCalledWith("attempt-2");
-        expect(session.prompt).toHaveBeenCalledWith("attempt-3");
+  it('passes lastText to promptFn on subsequent attempts', async () => {
+    let callCount = 0;
+    const { session } = makeSession(() => {
+      callCount++;
+      return callCount === 1 ? 'first' : 'second';
     });
 
-    it("passes lastText to promptFn on subsequent attempts", async () => {
-        let callCount = 0;
-        const { session } = makeSession(() => {
-            callCount++;
-            return callCount === 1 ? "first" : "second";
-        });
+    const prompts: { attempt: number; lastText?: string }[] = [];
+    await agentLoopUntil(
+      session,
+      (attempt, lastText) => {
+        prompts.push({ attempt, lastText });
+        return 'go';
+      },
+      (_text) => callCount >= 2,
+    );
 
-        const prompts: Array<{ attempt: number; lastText?: string }> = [];
-        await agentLoopUntil(
-            session,
-            (attempt, lastText) => {
-                prompts.push({ attempt, lastText });
-                return "go";
-            },
-            (_text) => callCount >= 2,
-        );
+    expect(prompts[0]).toEqual({ attempt: 1, lastText: undefined });
+    expect(prompts[1]).toEqual({ attempt: 2, lastText: 'first' });
+  });
 
-        expect(prompts[0]).toEqual({ attempt: 1, lastText: undefined });
-        expect(prompts[1]).toEqual({ attempt: 2, lastText: "first" });
-    });
+  it('uses default maxAttempts of 10', async () => {
+    const { session } = makeSession(() => 'nope');
 
-    it("uses default maxAttempts of 10", async () => {
-        const { session } = makeSession(() => "nope");
+    await expect(
+      agentLoopUntil(
+        session,
+        () => 'test',
+        () => false,
+      ),
+    ).rejects.toThrow(/condition not met after 10 attempts/);
+    expect(session.prompt).toHaveBeenCalledTimes(10);
+  });
 
-        await expect(
-            agentLoopUntil(session, () => "test", () => false),
-        ).rejects.toThrow(/condition not met after 10 attempts/);
-        expect(session.prompt).toHaveBeenCalledTimes(10);
-    });
+  it('throws when maxAttempts is exceeded', async () => {
+    const { session } = makeSession(() => 'nope');
 
-    it("throws when maxAttempts is exceeded", async () => {
-        const { session } = makeSession(() => "nope");
+    await expect(
+      agentLoopUntil(
+        session,
+        () => 'test',
+        () => false,
+        { maxAttempts: 5 },
+      ),
+    ).rejects.toThrow(/condition not met after 5 attempts/);
+    expect(session.prompt).toHaveBeenCalledTimes(5);
+  });
 
-        await expect(
-            agentLoopUntil(
-                session,
-                () => "test",
-                () => false,
-                { maxAttempts: 5 },
-            ),
-        ).rejects.toThrow(/condition not met after 5 attempts/);
-        expect(session.prompt).toHaveBeenCalledTimes(5);
-    });
+  it('respects custom maxAttempts', async () => {
+    const { session } = makeSession(() => 'ok');
 
-    it("respects custom maxAttempts", async () => {
-        const { session } = makeSession(() => "ok");
+    const result = await agentLoopUntil(
+      session,
+      () => 'test',
+      () => true,
+      { maxAttempts: 3 },
+    );
 
-        const result = await agentLoopUntil(
-            session,
-            () => "test",
-            () => true,
-            { maxAttempts: 3 },
-        );
-
-        expect(result.attempts).toBe(1);
-        expect(session.prompt).toHaveBeenCalledTimes(1);
-    });
+    expect(result.attempts).toBe(1);
+    expect(session.prompt).toHaveBeenCalledTimes(1);
+  });
 });
 
 // ─── retryAgentUntil ───────────────────────────────────────────────────────
 
-describe("retryAgentUntil", () => {
-    const schema = z.object({ name: z.string(), score: z.number() });
+describe('retryAgentUntil', () => {
+  const schema = z.object({ name: z.string(), score: z.number() });
 
-    it("delegates to promptForStructured and wraps result in AgentLoopResult", async () => {
-        const session = { prompt: mock(), getLastAssistantText: mock() };
-        const expectedResult = { name: "Alice", score: 95 };
-        mockPromptForStructured.mockResolvedValue(expectedResult);
+  it('delegates to promptForStructured and wraps result in AgentLoopResult', async () => {
+    const session = { prompt: mock(), getLastAssistantText: mock() };
+    const expectedResult = { name: 'Alice', score: 95 };
+    mockPromptForStructured.mockResolvedValue(expectedResult);
 
-        const result = await retryAgentUntil(session, "get a result", schema);
+    const result = await retryAgentUntil(session, 'get a result', schema);
 
-        expect(mockPromptForStructured).toHaveBeenCalledTimes(1);
-        expect(mockPromptForStructured).toHaveBeenCalledWith(
-            session,
-            "get a result",
-            schema,
-            undefined,
-        );
-        expect(result).toEqual({
-            result: expectedResult,
-            attempts: 3,
-            totalTokens: { input: 0, output: 0 },
-        });
+    expect(mockPromptForStructured).toHaveBeenCalledTimes(1);
+    expect(mockPromptForStructured).toHaveBeenCalledWith(session, 'get a result', schema, undefined);
+    expect(result).toEqual({
+      result: expectedResult,
+      attempts: 3,
+      totalTokens: { input: 0, output: 0 },
+    });
+  });
+
+  it('passes maxRetries to promptForStructured', async () => {
+    const session = { prompt: mock(), getLastAssistantText: mock() };
+    mockPromptForStructured.mockResolvedValue({ name: 'Bob', score: 80 });
+
+    await retryAgentUntil(session, 'prompt', schema, { maxRetries: 5 });
+
+    expect(mockPromptForStructured).toHaveBeenCalledWith(session, 'prompt', schema, { maxRetries: 5 });
+  });
+
+  it('reports correct attempts when maxRetries is custom', async () => {
+    const session = { prompt: mock(), getLastAssistantText: mock() };
+    mockPromptForStructured.mockResolvedValue({ name: 'C', score: 1 });
+
+    const result = await retryAgentUntil(session, 'p', schema, {
+      maxRetries: 7,
     });
 
-    it("passes maxRetries to promptForStructured", async () => {
-        const session = { prompt: mock(), getLastAssistantText: mock() };
-        mockPromptForStructured.mockResolvedValue({ name: "Bob", score: 80 });
+    expect(result.attempts).toBe(7);
+  });
 
-        await retryAgentUntil(session, "prompt", schema, { maxRetries: 5 });
+  it('propagates errors from promptForStructured', async () => {
+    const session = { prompt: mock(), getLastAssistantText: mock() };
+    mockPromptForStructured.mockRejectedValue(new Error('Failed to produce structured output after 3 attempts'));
 
-        expect(mockPromptForStructured).toHaveBeenCalledWith(
-            session,
-            "prompt",
-            schema,
-            { maxRetries: 5 },
-        );
-    });
-
-    it("reports correct attempts when maxRetries is custom", async () => {
-        const session = { prompt: mock(), getLastAssistantText: mock() };
-        mockPromptForStructured.mockResolvedValue({ name: "C", score: 1 });
-
-        const result = await retryAgentUntil(session, "p", schema, {
-            maxRetries: 7,
-        });
-
-        expect(result.attempts).toBe(7);
-    });
-
-    it("propagates errors from promptForStructured", async () => {
-        const session = { prompt: mock(), getLastAssistantText: mock() };
-        mockPromptForStructured.mockRejectedValue(
-            new Error("Failed to produce structured output after 3 attempts"),
-        );
-
-        await expect(
-            retryAgentUntil(session, "bad prompt", schema),
-        ).rejects.toThrow("Failed to produce structured output");
-    });
+    await expect(retryAgentUntil(session, 'bad prompt', schema)).rejects.toThrow('Failed to produce structured output');
+  });
 });
 
 // ─── parallelAgents ────────────────────────────────────────────────────────
 
-describe("parallelAgents", () => {
-    beforeEach(() => {
-        // Default: createHarness returns a mock session for each config
-        mockCreateHarness.mockImplementation(
-            async (_config: HarnessCreationOptions) =>
-                makeSession(() => "default"),
-        );
+describe('parallelAgents', () => {
+  beforeEach(() => {
+    // Default: createHarness returns a mock session for each config
+    mockCreateHarness.mockImplementation(async (_config: HarnessCreationOptions) => makeSession(() => 'default'));
+  });
+
+  it('creates harnesses and runs prompts in parallel', async () => {
+    const config1 = makeConfig();
+    const config2 = makeConfig();
+
+    let sessionIndex = 0;
+    mockCreateHarness.mockImplementation(async () => {
+      const idx = sessionIndex++;
+      return makeSession((_text) => `response-${idx}`);
     });
 
-    it("creates harnesses and runs prompts in parallel", async () => {
-        const config1 = makeConfig();
-        const config2 = makeConfig();
+    const results = await parallelAgents([config1, config2], (_session, i) => `prompt-${i}`);
 
-        let sessionIndex = 0;
-        mockCreateHarness.mockImplementation(async () => {
-            const idx = sessionIndex++;
-            return makeSession((_text) => `response-${idx}`);
-        });
+    expect(results).toHaveLength(2);
+    expect(results[0].status).toBe('fulfilled');
+    expect(results[1].status).toBe('fulfilled');
 
-        const results = await parallelAgents(
-            [config1, config2],
-            (_session, i) => `prompt-${i}`,
-        );
+    if (results[0].status === 'fulfilled') {
+      expect(results[0].value).toBe('response-0');
+    }
+    if (results[1].status === 'fulfilled') {
+      expect(results[1].value).toBe('response-1');
+    }
 
-        expect(results).toHaveLength(2);
-        expect(results[0].status).toBe("fulfilled");
-        expect(results[1].status).toBe("fulfilled");
+    expect(mockCreateHarness).toHaveBeenCalledTimes(2);
+    expect(mockCreateHarness).toHaveBeenCalledWith(config1);
+    expect(mockCreateHarness).toHaveBeenCalledWith(config2);
+  });
 
-        if (results[0].status === "fulfilled") {
-            expect(results[0].value).toBe("response-0");
-        }
-        if (results[1].status === "fulfilled") {
-            expect(results[1].value).toBe("response-1");
-        }
+  it('uses promptForStructured when schema is provided', async () => {
+    const schema = z.object({ value: z.number() });
+    mockPromptForStructured.mockResolvedValue({ value: 42 });
 
-        expect(mockCreateHarness).toHaveBeenCalledTimes(2);
-        expect(mockCreateHarness).toHaveBeenCalledWith(config1);
-        expect(mockCreateHarness).toHaveBeenCalledWith(config2);
+    const results = await parallelAgents([makeConfig()], () => 'get value', { schema });
+
+    expect(results).toHaveLength(1);
+    expect(mockPromptForStructured).toHaveBeenCalledTimes(1);
+    expect(results[0].status).toBe('fulfilled');
+    if (results[0].status === 'fulfilled') {
+      expect(results[0].value).toEqual({ value: 42 });
+    }
+  });
+
+  it('handles mixed fulfilled and rejected results', async () => {
+    let callCount = 0;
+    mockCreateHarness.mockImplementation(async () => {
+      callCount++;
+      if (callCount === 1) {
+        return makeSession(() => 'ok');
+      }
+      return makeSession(() => {
+        throw new Error('failed');
+      });
     });
 
-    it("uses promptForStructured when schema is provided", async () => {
-        const schema = z.object({ value: z.number() });
-        mockPromptForStructured.mockResolvedValue({ value: 42 });
+    const results = await parallelAgents([makeConfig(), makeConfig()], () => 'test');
 
-        const results = await parallelAgents(
-            [makeConfig()],
-            () => "get value",
-            { schema },
-        );
+    expect(results).toHaveLength(2);
+    expect(results[0].status).toBe('fulfilled');
+    expect(results[1].status).toBe('rejected');
+  });
 
-        expect(results).toHaveLength(1);
-        expect(mockPromptForStructured).toHaveBeenCalledTimes(1);
-        expect(results[0].status).toBe("fulfilled");
-        if (results[0].status === "fulfilled") {
-            expect(results[0].value).toEqual({ value: 42 });
-        }
+  it('passes promptFn result as the prompt text', async () => {
+    const session = {
+      prompt: mock(async () => {}),
+      getLastAssistantText: mock(() => 'ok'),
+    };
+    mockCreateHarness.mockResolvedValue({
+      session: session as unknown as AgentSession,
+      sessionId: 's1',
     });
 
-    it("handles mixed fulfilled and rejected results", async () => {
-        let callCount = 0;
-        mockCreateHarness.mockImplementation(async () => {
-            callCount++;
-            if (callCount === 1) {
-                return makeSession(() => "ok");
-            }
-            return makeSession(() => {
-                throw new Error("failed");
-            });
-        });
+    await parallelAgents([makeConfig()], (_s, i) => `custom-prompt-${i}`);
 
-        const results = await parallelAgents(
-            [makeConfig(), makeConfig()],
-            () => "test",
-        );
-
-        expect(results).toHaveLength(2);
-        expect(results[0].status).toBe("fulfilled");
-        expect(results[1].status).toBe("rejected");
-    });
-
-    it("passes promptFn result as the prompt text", async () => {
-        const session = {
-            prompt: mock(async () => {}),
-            getLastAssistantText: mock(() => "ok"),
-        };
-        mockCreateHarness.mockResolvedValue({
-            session: session as unknown as AgentSession,
-            sessionId: "s1",
-        });
-
-        await parallelAgents([makeConfig()], (_s, i) => `custom-prompt-${i}`);
-
-        expect(session.prompt).toHaveBeenCalledWith("custom-prompt-0");
-    });
+    expect(session.prompt).toHaveBeenCalledWith('custom-prompt-0');
+  });
 });
 
 // ─── sequentialAgents ──────────────────────────────────────────────────────
 
-describe("sequentialAgents", () => {
-    it("preserves order of results", async () => {
-        const configs = [makeConfig(), makeConfig(), makeConfig()];
-        const callOrder: number[] = [];
+describe('sequentialAgents', () => {
+  it('preserves order of results', async () => {
+    const configs = [makeConfig(), makeConfig(), makeConfig()];
+    const callOrder: number[] = [];
 
-        mockCreateHarness.mockImplementation(async () => {
-            return makeSession((text: string) => {
-                const idx = parseInt(text.split("-")[1], 10);
-                callOrder.push(idx);
-                return `result-${idx}`;
-            });
-        });
-
-        const results = await sequentialAgents(
-            configs,
-            (_session, i) => `prompt-${i}`,
-        );
-
-        expect(results).toHaveLength(3);
-        // Each result should be the last assistant text string in order
-        expect(results[0]).toBe("result-0");
-        expect(results[1]).toBe("result-1");
-        expect(results[2]).toBe("result-2");
-
-        // Execution was sequential
-        expect(callOrder).toEqual([0, 1, 2]);
+    mockCreateHarness.mockImplementation(async () => {
+      return makeSession((text: string) => {
+        const idx = parseInt(text.split('-')[1], 10);
+        callOrder.push(idx);
+        return `result-${idx}`;
+      });
     });
 
-    it("throws on the first failure and stops", async () => {
-        const configs = [makeConfig(), makeConfig(), makeConfig()];
-        let callCount = 0;
+    const results = await sequentialAgents(configs, (_session, i) => `prompt-${i}`);
 
-        mockCreateHarness.mockImplementation(async () => {
-            return makeSession(() => {
-                callCount++;
-                if (callCount === 2) {
-                    throw new Error("second agent failed");
-                }
-                return "ok";
-            });
-        });
+    expect(results).toHaveLength(3);
+    // Each result should be the last assistant text string in order
+    expect(results[0]).toBe('result-0');
+    expect(results[1]).toBe('result-1');
+    expect(results[2]).toBe('result-2');
 
-        await expect(
-            sequentialAgents(configs, (_s, i) => `prompt-${i}`),
-        ).rejects.toThrow("second agent failed");
+    // Execution was sequential
+    expect(callOrder).toEqual([0, 1, 2]);
+  });
 
-        // Should only have attempted 2 (first succeeded, second failed)
-        expect(callCount).toBe(2);
+  it('throws on the first failure and stops', async () => {
+    const configs = [makeConfig(), makeConfig(), makeConfig()];
+    let callCount = 0;
+
+    mockCreateHarness.mockImplementation(async () => {
+      return makeSession(() => {
+        callCount++;
+        if (callCount === 2) {
+          throw new Error('second agent failed');
+        }
+        return 'ok';
+      });
     });
 
-    it("uses promptForStructured when schema is provided", async () => {
-        const schema = z.object({ answer: z.string() });
-        mockPromptForStructured
-            .mockResolvedValueOnce({ answer: "first" })
-            .mockResolvedValueOnce({ answer: "second" });
+    await expect(sequentialAgents(configs, (_s, i) => `prompt-${i}`)).rejects.toThrow('second agent failed');
 
-        mockCreateHarness.mockImplementation(async () => {
-            return makeSession(() => "ignored");
-        });
+    // Should only have attempted 2 (first succeeded, second failed)
+    expect(callCount).toBe(2);
+  });
 
-        const results = await sequentialAgents(
-            [makeConfig(), makeConfig()],
-            (_s, i) => `question-${i}`,
-            { schema },
-        );
+  it('uses promptForStructured when schema is provided', async () => {
+    const schema = z.object({ answer: z.string() });
+    mockPromptForStructured.mockResolvedValueOnce({ answer: 'first' }).mockResolvedValueOnce({ answer: 'second' });
 
-        expect(results).toEqual([
-            { answer: "first" },
-            { answer: "second" },
-        ]);
-        expect(mockPromptForStructured).toHaveBeenCalledTimes(2);
+    mockCreateHarness.mockImplementation(async () => {
+      return makeSession(() => 'ignored');
     });
 
-    it("creates all harnesses upfront via Promise.all", async () => {
-        const configs = [makeConfig(), makeConfig()];
-        mockCreateHarness.mockImplementation(async () =>
-            makeSession(() => "ok"),
-        );
+    const results = await sequentialAgents([makeConfig(), makeConfig()], (_s, i) => `question-${i}`, { schema });
 
-        await sequentialAgents(configs, () => "test");
+    expect(results).toEqual([{ answer: 'first' }, { answer: 'second' }]);
+    expect(mockPromptForStructured).toHaveBeenCalledTimes(2);
+  });
 
-        expect(mockCreateHarness).toHaveBeenCalledTimes(2);
+  it('creates all harnesses upfront via Promise.all', async () => {
+    const configs = [makeConfig(), makeConfig()];
+    mockCreateHarness.mockImplementation(async () => makeSession(() => 'ok'));
+
+    await sequentialAgents(configs, () => 'test');
+
+    expect(mockCreateHarness).toHaveBeenCalledTimes(2);
+  });
+
+  it('throws on first failure without processing remaining agents', async () => {
+    const configs = [makeConfig(), makeConfig(), makeConfig()];
+    let promptCount = 0;
+
+    mockCreateHarness.mockImplementation(async () => {
+      return makeSession(() => {
+        promptCount++;
+        if (promptCount === 1) {
+          throw new Error('first agent crashed');
+        }
+        return 'ok';
+      });
     });
 
-    it("throws on first failure without processing remaining agents", async () => {
-        const configs = [makeConfig(), makeConfig(), makeConfig()];
-        let promptCount = 0;
+    await expect(sequentialAgents(configs, () => 'test')).rejects.toThrow('first agent crashed');
 
-        mockCreateHarness.mockImplementation(async () => {
-            return makeSession(() => {
-                promptCount++;
-                if (promptCount === 1) {
-                    throw new Error("first agent crashed");
-                }
-                return "ok";
-            });
-        });
-
-        await expect(
-            sequentialAgents(configs, () => "test"),
-        ).rejects.toThrow("first agent crashed");
-
-        expect(promptCount).toBe(1);
-    });
+    expect(promptCount).toBe(1);
+  });
 });
 
 // Restore the real modules so mocks don't leak into other test files.
 afterAll(() => {
-    mock.module("../../src/core/harness-factory.ts", () => realHarnessFactory);
-    mock.module("../../src/core/structured-output.ts", () => realStructuredOutput);
+  mock.module('../../src/core/harness-factory.ts', () => realHarnessFactory);
+  mock.module('../../src/core/structured-output.ts', () => realStructuredOutput);
 });
