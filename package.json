@@ -1,7 +1,7 @@
 {
-  "name": "workflow-harness",
+  "name": "@harms-haus/engin",
   "version": "0.1.0",
-  "description": "An AI-powered development workflow harness with dynamic profile and workflow discovery.",
+  "description": "An AI-powered development engine with dynamic profile and workflow discovery.",
   "keywords": [
     "ai",
     "agent",
@@ -9,7 +9,7 @@
     "development",
     "automation",
     "llm",
-    "harness"
+    "engine"
   ],
   "type": "module",
   "main": "dist/index.js",
@@ -21,7 +21,10 @@
     }
   },
   "bin": {
-    "workflow-harness": "./dist/cli.js"
+    "engin": "./dist/cli.js"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "build": "tsc",

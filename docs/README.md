@@ -1,4 +1,4 @@
-# workflow-harness
+# @harms-haus/engin
 
 A script-based workflow engine for AI-driven development, built on top of [pi-coding-agent](https://www.npmjs.com/package/@earendil-works/pi-coding-agent).
 
@@ -6,14 +6,14 @@ A script-based workflow engine for AI-driven development, built on top of [pi-co
 
 ## 1. Overview
 
-**workflow-harness** orchestrates multi-agent AI workflows for software development tasks. It uses `AgentSession` from `@earendil-works/pi-coding-agent` as its inference layer and provides a phase-based approach to breaking down, planning, implementing, and reviewing code changes.
+**engin** orchestrates multi-agent AI workflows for software development tasks. It uses `AgentSession` from `@earendil-works/pi-coding-agent` as its inference layer and provides a phase-based approach to breaking down, planning, implementing, and reviewing code changes.
 
-Workflows and profiles are loaded dynamically from config directories — you create your own workflows and agent profiles and place them in `~/.config/workflow-harness/` (or `.workflow-harness/` for per-project config). Agent profiles are plain markdown files with YAML frontmatter, so you can customize agent behavior without touching code.
+Workflows and profiles are loaded dynamically from config directories — you create your own workflows and agent profiles and place them in `~/.config/engin/` (or `.engin/` for per-project config). Agent profiles are plain markdown files with YAML frontmatter, so you can customize agent behavior without touching code.
 
 Key properties:
 
 - **Dynamic workflow loading** — workflows are discovered from global and local config directories, loaded at runtime by name.
-- **Layered config resolution** — profiles and workflows are resolved from `~/.config/workflow-harness/` (global) and `.workflow-harness/` (local), with local overriding global.
+- **Layered config resolution** — profiles and workflows are resolved from `~/.config/engin/` (global) and `.engin/` (local), with local overriding global.
 - **Agent profiles** are defined as markdown files with YAML frontmatter, making it easy to add or modify agents without touching code.
 - **Structured output** is enforced via Zod schemas — every phase produces validated, typed data.
 - **Task dependency tracking** uses a DAG with cycle detection, so tasks execute in topological order with configurable concurrency.
@@ -32,8 +32,8 @@ Key properties:
 ### Install
 
 ```bash
-git clone <repository-url> workflow-harness
-cd workflow-harness
+git clone <repository-url> engin
+cd engin
 bun install
 bun run build
 ```
@@ -43,10 +43,10 @@ bun run build
 Create the config directory structure in your global config directory:
 
 ```bash
-workflow-harness init
+engin init
 ```
 
-This creates the `profiles/` and `workflows/` subdirectories inside `~/.config/workflow-harness/` (or `$XDG_CONFIG_HOME/workflow-harness/`). Profiles and workflows are user-managed — place your own `.md` profile files in `profiles/` and `.js`/`.ts` workflow files in `workflows/`.
+This creates the `profiles/` and `workflows/` subdirectories inside `~/.config/engin/` (or `$XDG_CONFIG_HOME/engin/`). Profiles and workflows are user-managed — place your own `.md` profile files in `profiles/` and `.js`/`.ts` workflow files in `workflows/`.
 
 ---
 
@@ -56,15 +56,15 @@ This creates the `profiles/` and `workflows/` subdirectories inside `~/.config/w
 
 ```bash
 # Create config directory structure (first time only)
-workflow-harness init
+engin init
 
-# Add your profiles and workflows to ~/.config/workflow-harness/
+# Add your profiles and workflows to ~/.config/engin/
 
 # Run a workflow by name (assuming you've created a "develop" workflow)
-workflow-harness develop "Add input validation to all public API endpoints"
+engin develop "Add input validation to all public API endpoints"
 
 # Run with options (same assumption)
-workflow-harness develop "Fix the login bug" \
+engin develop "Fix the login bug" \
   --cwd ./my-project \
   --max-concurrent 5 \
   --verbose
@@ -73,7 +73,7 @@ workflow-harness develop "Fix the login bug" \
 ### Programmatic
 
 ```typescript
-import { createHarness, loadProfilesFromDirs, resolveProfilesDirs } from 'workflow-harness';
+import { createHarness, loadProfilesFromDirs, resolveProfilesDirs } from '@harms-haus/engin';
 
 const profilesDirs = resolveProfilesDirs('/path/to/project');
 const profiles = await loadProfilesFromDirs(profilesDirs);
@@ -94,10 +94,10 @@ try {
 
 ## 4. CLI Reference
 
-The `workflow-harness` binary supports several commands:
+The `engin` binary supports several commands:
 
 ```
-workflow-harness <command> [options]
+engin <command> [options]
 ```
 
 ### Commands
@@ -113,19 +113,19 @@ workflow-harness <command> [options]
 ### `run`
 
 ```bash
-workflow-harness <workflow-name> <task-prompt> [options]
+engin <workflow-name> <task-prompt> [options]
 ```
 
 The `run` command keyword is implicit — the first positional argument is the workflow name and the second is the task prompt.
 
 ```bash
-workflow-harness develop "Refactor the auth module"
+engin develop "Refactor the auth module"
 ```
 
 ### `list`
 
 ```bash
-workflow-harness list [--cwd <path>]
+engin list [--cwd <path>]
 ```
 
 Lists all available workflows found in global and local config directories, along with any loadable profiles.
@@ -133,17 +133,17 @@ Lists all available workflows found in global and local config directories, alon
 ### `init`
 
 ```bash
-workflow-harness init
+engin init
 ```
 
-Creates the `profiles/` and `workflows/` subdirectories inside the global config directory (`~/.config/workflow-harness/`). The command only ensures directories exist. Profiles and workflows are user-managed; see [Profiles](#6-profiles) and [Custom Workflows](#7-custom-workflows) for authoring guides.
+Creates the `profiles/` and `workflows/` subdirectories inside the global config directory (`~/.config/engin/`). The command only ensures directories exist. Profiles and workflows are user-managed; see [Profiles](#6-profiles) and [Custom Workflows](#7-custom-workflows) for authoring guides.
 
 ### Flags
 
 | Flag                       | Applies to     | Description                                                                                                                 |
 | -------------------------- | -------------- | --------------------------------------------------------------------------------------------------------------------------- |
 | `--cwd <path>`             | `run`, `list`  | Project working directory (default: `process.cwd()`)                                                                        |
-| `--work-dir <path>`        | `run`          | Directory for workflow state persistence. Default: `.workflow-harness/work/<workflow-name>` inside `cwd`                    |
+| `--work-dir <path>`        | `run`          | Directory for workflow state persistence. Default: `.engin/work/<workflow-name>` inside `cwd`                               |
 | `--max-concurrent <n>`     | `run`          | Maximum parallel implementer agents (default: `3`). Must be a positive integer.                                             |
 | `--verbose`                | `all commands` | Enable verbose output, including `.env` file loading information and agent-level output (turns, tool calls, token usage)    |
 | `--api-key <provider=key>` | `run`          | Provider → API key override. Repeatable. **Warning:** values are visible in process listings; prefer environment variables. |
@@ -188,28 +188,28 @@ With `--verbose`, agent-level events are also shown:
 
 ## 5. Configuration Directory Resolution
 
-workflow-harness discovers profiles and workflows from two locations, with **local overriding global** on name conflicts.
+engin discovers profiles and workflows from two locations, with **local overriding global** on name conflicts.
 
 ### Directory Locations
 
-| Scope      | Path                                                                                                             |
-| ---------- | ---------------------------------------------------------------------------------------------------------------- |
-| **Global** | `$XDG_CONFIG_HOME/workflow-harness/` — or `~/.config/workflow-harness/` when `XDG_CONFIG_HOME` is unset or empty |
-| **Local**  | `{cwd}/.workflow-harness/` — where `cwd` is the project directory                                                |
+| Scope      | Path                                                                                       |
+| ---------- | ------------------------------------------------------------------------------------------ |
+| **Global** | `$XDG_CONFIG_HOME/engin/` — or `~/.config/engin/` when `XDG_CONFIG_HOME` is unset or empty |
+| **Local**  | `{cwd}/.engin/` — where `cwd` is the project directory                                     |
 
 ### Directory Structure
 
 ```
-.workflow-harness/           # Local (per-project)
+.engin/           # Local (per-project)
 ├── profiles/                # Agent profile .md files
 ├── workflows/               # Workflow scripts (.js, .mjs, .cjs, .ts)
 ├── work/                    # Runtime state (auto-created)
 │   └── develop/             # One subdirectory per workflow run
-│       └── workflow-state.json
+│       └── .engin-state.json
 │       └── audit/audit.jsonl
 └── .env                     # Project-level environment variables (git-ignored)
 
-~/.config/workflow-harness/  # Global (user-wide)
+~/.config/engin/  # Global (user-wide)
 ├── profiles/
 ├── workflows/
 └── .env                     # User-level environment variables
@@ -221,8 +221,8 @@ When loading profiles or workflows, the system searches both directories. On nam
 
 ```
 resolveProfilesDirs(cwd) → [
-  "{cwd}/.workflow-harness/profiles",   // local — higher priority
-  "~/.config/workflow-harness/profiles" // global
+  "{cwd}/.engin/profiles",   // local — higher priority
+  "~/.config/engin/profiles" // global
 ]
 ```
 
@@ -233,7 +233,7 @@ The same pattern applies to workflows via `resolveWorkflowsDirs(cwd)`.
 When `--work-dir` is not specified, the CLI uses:
 
 ```
-{cwd}/.workflow-harness/work/{workflowName}
+{cwd}/.engin/work/{workflowName}
 ```
 
 ---
@@ -244,8 +244,8 @@ Agent profiles are markdown files with YAML frontmatter. The filename (without `
 
 ### Where to Place Profiles
 
-- **Global:** `~/.config/workflow-harness/profiles/*.md`
-- **Local:** `{cwd}/.workflow-harness/profiles/*.md`
+- **Global:** `~/.config/engin/profiles/*.md`
+- **Local:** `{cwd}/.engin/profiles/*.md`
 
 Local profiles override global profiles with the same ID.
 
@@ -329,8 +329,8 @@ The default export (or the module itself) must have a `run` function. Optional `
 
 ### Where to Place Workflows
 
-- **Global:** `~/.config/workflow-harness/workflows/`
-- **Local:** `{cwd}/.workflow-harness/workflows/`
+- **Global:** `~/.config/engin/workflows/`
+- **Local:** `{cwd}/.engin/workflows/`
 
 Supported file extensions: `.js`, `.mjs`, `.cjs`, `.ts`.
 
@@ -343,8 +343,8 @@ Workflow names cannot contain `/`, `\`, or `..` — this prevents path traversal
 ### Example: Minimal Custom Workflow
 
 ```javascript
-// ~/.config/workflow-harness/workflows/my-workflow.js
-import { createHarness, loadProfilesFromDirs, resolveProfilesDirs, promptForStructured } from 'workflow-harness';
+// ~/.config/engin/workflows/my-workflow.js
+import { createHarness, loadProfilesFromDirs, resolveProfilesDirs, promptForStructured } from '@harms-haus/engin';
 import { z } from 'zod';
 
 export async function run(taskPrompt, options) {
@@ -367,10 +367,10 @@ export async function run(taskPrompt, options) {
 
 ### Example: Composing Phase Functions
 
-You can import building blocks from `workflow-harness` to compose a custom workflow pipeline. The library provides `createHarness`, `parallelAgents`, `promptForStructured`, `WorkflowStatusTracker`, `TaskTracker`, and other utilities — see [Programmatic API](#8-programmatic-api) for the full list.
+You can import building blocks from `@harms-haus/engin` to compose a custom workflow pipeline. The library provides `createHarness`, `parallelAgents`, `promptForStructured`, `WorkflowStatusTracker`, `TaskTracker`, and other utilities — see [Programmatic API](#8-programmatic-api) for the full list.
 
 ```typescript
-// ~/.config/workflow-harness/workflows/develop.ts
+// ~/.config/engin/workflows/develop.ts
 import {
   createHarness,
   loadProfilesFromDirs,
@@ -378,7 +378,7 @@ import {
   promptForStructured,
   WorkflowStatusTracker,
   parallelAgents,
-} from 'workflow-harness';
+} from '@harms-haus/engin';
 import { z } from 'zod';
 
 export async function run(taskPrompt: string, options: WorkflowRunOptions) {
@@ -398,7 +398,7 @@ export async function run(taskPrompt: string, options: WorkflowRunOptions) {
 
 ## 8. Programmatic API
 
-All types and functions below are exported from the top-level `workflow-harness` entry point.
+All types and functions below are exported from the top-level `@harms-haus/engin` entry point.
 
 ### Workflow Loading
 
@@ -471,11 +471,11 @@ Convenience wrapper: loads a profile from disk, then delegates to `createHarness
 
 #### `getGlobalConfigDir(): string`
 
-Returns the global config directory path. Uses `$XDG_CONFIG_HOME/workflow-harness` if set and non-empty, otherwise `~/.config/workflow-harness`.
+Returns the global config directory path. Uses `$XDG_CONFIG_HOME/engin` if set and non-empty, otherwise `~/.config/engin`.
 
 #### `getLocalConfigDir(cwd): string`
 
-Returns `{cwd}/.workflow-harness`.
+Returns `{cwd}/.engin`.
 
 #### `resolveProfilesDirs(cwd): string[]`
 
@@ -487,7 +487,7 @@ Returns `[localWorkflowsDir, globalWorkflowsDir]` — local first for override p
 
 #### `getDefaultWorkDir(cwd, workflowName): string`
 
-Returns `{cwd}/.workflow-harness/work/{workflowName}`.
+Returns `{cwd}/.engin/work/{workflowName}`.
 
 #### `ensureDir(dirPath): Promise<void>`
 
@@ -498,8 +498,8 @@ Recursively creates a directory. Re-throws any errors.
 Loads `.env` files from the global and local config directories, merges them (local overrides global), and sets keys into `process.env` only for variables not already defined. This is called automatically by the CLI before command dispatch, but can also be called programmatically.
 
 - **Synchronous** — must complete before any command execution or env-dependent initialization.
-- **Global path**: `~/.config/workflow-harness/.env` (or `$XDG_CONFIG_HOME/workflow-harness/.env`)
-- **Local path**: `{cwd}/.workflow-harness/.env`
+- **Global path**: `~/.config/engin/.env` (or `$XDG_CONFIG_HOME/engin/.env`)
+- **Local path**: `{cwd}/.engin/.env`
 - **Precedence**: Existing `process.env` values are never overwritten.
 - **Security**: A blocklist of dangerous runtime variables (`NODE_OPTIONS`, `NODE_TLS_REJECT_UNAUTHORIZED`, etc.) is enforced — these are never loaded from `.env` files.
 
@@ -515,7 +515,7 @@ Returns a `LoadEnvResult` object:
 
 #### `initDefaultConfig(): Promise<{ createdDirs: string[] }>`
 
-Creates the `profiles/` and `workflows/` subdirectories inside the global config directory (`~/.config/workflow-harness/`). No files are installed — profiles and workflows are user-managed. Takes no arguments.
+Creates the `profiles/` and `workflows/` subdirectories inside the global config directory (`~/.config/engin/`). No files are installed — profiles and workflows are user-managed. Takes no arguments.
 
 Returns `{ createdDirs: string[] }` where `createdDirs` is `['profiles', 'workflows']` — the names of the directories that were ensured to exist.
 
@@ -695,7 +695,7 @@ class WorkflowStatusTracker {
 }
 ```
 
-Top-level workflow state manager. Persists to `workflow-state.json` in the working directory.
+Top-level workflow state manager. Persists to `.engin-state.json` in the working directory.
 
 ---
 
@@ -727,7 +727,7 @@ src/
 | Module                 | Responsibility                                                                                                                                                                                 |
 | ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `types.ts`             | Re-exports from `pi-coding-agent`, `pi-agent-core`, and `pi-ai`; defines `AgentProfile`, `Task`, `WorkflowState`, `AuditEvent`, `WorkflowModule`, `WorkflowRunOptions`, and related types      |
-| `config.ts`            | Resolves global (`~/.config/workflow-harness/`) and local (`.workflow-harness/`) config directories; provides default work directory paths                                                     |
+| `config.ts`            | Resolves global (`~/.config/engin/`) and local (`.engin/`) config directories; provides default work directory paths                                                                           |
 | `profile.ts`           | Parses markdown files with YAML frontmatter into `AgentProfile` objects; loads all profiles from a directory or merges from multiple directories                                               |
 | `workflow-loader.ts`   | Dynamically loads workflow modules by name from config directories; supports `.js`, `.mjs`, `.cjs`, `.ts`; caches loaded modules                                                               |
 | `harness-factory.ts`   | Creates a fully-wired `AgentSession` from a profile: model resolution, `AuthStorage`, tool filtering, `DefaultResourceLoader`, and `createAgentSession` from `@earendil-works/pi-coding-agent` |
@@ -738,11 +738,11 @@ src/
 
 ### Tracking Layer (`src/tracking/`)
 
-| Module               | Responsibility                                                                                                                                |
-| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| `audit-log.ts`       | Appends `AuditEvent` records to a JSONL file; supports filtering by type or task ID; computes aggregate stats                                 |
-| `task-status.ts`     | Manages a collection of `Task` objects with a DAG of dependencies; enforces state transitions; detects cycles                                 |
-| `workflow-status.ts` | Top-level workflow state: current phase, completed phases, scouting reports, plan, stats, and task tracker; persists to `workflow-state.json` |
+| Module               | Responsibility                                                                                                                              |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `audit-log.ts`       | Appends `AuditEvent` records to a JSONL file; supports filtering by type or task ID; computes aggregate stats                               |
+| `task-status.ts`     | Manages a collection of `Task` objects with a DAG of dependencies; enforces state transitions; detects cycles                               |
+| `workflow-status.ts` | Top-level workflow state: current phase, completed phases, scouting reports, plan, stats, and task tracker; persists to `.engin-state.json` |
 
 This package is a **pure library** — it provides building blocks (harness creation, profile loading, structured output, agent loop patterns, task tracking, audit logging) that user-managed workflow scripts compose into pipelines. It does not ship any built-in workflows or agent profiles.
 
@@ -764,7 +764,7 @@ See [Custom Workflows](#7-custom-workflows) for examples and [Programmatic API](
 
 ## 11. Types Reference
 
-All types listed below are exported from the top-level `workflow-harness` entry point.
+All types listed below are exported from the top-level `@harms-haus/engin` entry point.
 
 ### Union Types
 
@@ -887,7 +887,7 @@ A discriminated union logged by `AuditLog`. Each variant has an auto-generated `
 
 ### `WorkflowState`
 
-Serialized form of `WorkflowStatusTracker`. Written to `workflow-state.json` on `save()`.
+Serialized form of `WorkflowStatusTracker`. Written to `.engin-state.json` on `save()`.
 
 | Field             | Type                                                             | Description                                       |
 | ----------------- | ---------------------------------------------------------------- | ------------------------------------------------- |
@@ -1064,14 +1064,14 @@ All methods are optional.
 
 ### .env File Loading
 
-workflow-harness automatically loads environment variables from `.env` files at startup, before any command executes. This is useful for storing API keys and other configuration needed by tools and providers.
+engin automatically loads environment variables from `.env` files at startup, before any command executes. This is useful for storing API keys and other configuration needed by tools and providers.
 
 **File locations (loaded in order):**
 
-| Priority    | Path                              | Scope                                |
-| ----------- | --------------------------------- | ------------------------------------ |
-| 1 (lowest)  | `~/.config/workflow-harness/.env` | User-level, shared across projects   |
-| 2 (highest) | `{cwd}/.workflow-harness/.env`    | Project-level, per-project overrides |
+| Priority    | Path                   | Scope                                |
+| ----------- | ---------------------- | ------------------------------------ |
+| 1 (lowest)  | `~/.config/engin/.env` | User-level, shared across projects   |
+| 2 (highest) | `{cwd}/.engin/.env`    | Project-level, per-project overrides |
 
 **Behavior:**
 
@@ -1096,7 +1096,7 @@ The following environment variable names are **blocked** and will never be loade
 **Example `.env` file:**
 
 ```env
-# workflow-harness .env file
+# engin .env file
 OPENAI_API_KEY=sk-...
 ANTHROPIC_API_KEY=sk-ant-...
 MY_TOOL_API_KEY=abc123
@@ -1105,11 +1105,11 @@ MY_TOOL_API_KEY=abc123
 **Verbose output:** When run with `--verbose`, loaded `.env` file paths are printed:
 
 ```
-[12:34:56] 📄 Loaded .env: /home/user/.config/workflow-harness/.env
-[12:34:56] 📄 Loaded .env: /path/to/project/.workflow-harness/.env
+[12:34:56] 📄 Loaded .env: /home/user/.config/engin/.env
+[12:34:56] 📄 Loaded .env: /path/to/project/.engin/.env
 ```
 
-> **Note:** The `.workflow-harness/.env` file should be included in the project's `.gitignore`. Never commit `.env` files containing secrets to version control.
+> **Note:** The `.engin/.env` file should be included in the project's `.gitignore`. Never commit `.env` files containing secrets to version control.
 
 ### Environment Variables
 
@@ -1123,7 +1123,7 @@ API keys are resolved in this order:
 
 ### Resuming a Workflow
 
-If `workflow-state.json` exists in `workDir`, the `run()` function loads it and resumes from the last saved phase.
+If `.engin-state.json` exists in `workDir`, the `run()` function loads it and resumes from the last saved phase.
 
 ---
 
@@ -1142,7 +1142,7 @@ If `workflow-state.json` exists in `workDir`, the `run()` function loads it and 
 | `bun run format`       | Format all files with Prettier                                        |
 | `bun run format:check` | Check formatting without writing                                      |
 | `bun run prepare`      | Install git hooks via `simple-git-hooks` (auto-runs on `bun install`) |
-| `bun run setup`        | Build then run `workflow-harness init` to create config directories   |
+| `bun run setup`        | Build then run `engin init` to create config directories              |
 
 ### Code Quality
 
@@ -1200,7 +1200,7 @@ bun run typecheck && bun run lint && bun run format:check && bun test
 ### Project Structure
 
 ```
-workflow-harness/
+engin/
 ├── src/                # Source code
 │   ├── core/           # Core layer (sessions, profiles, auth, config)
 │   └── tracking/       # Tracking layer (audit, tasks, workflow state)
@@ -1238,19 +1238,19 @@ tests/
 
 ### Adding New Profiles
 
-1. Create a `.md` file in `~/.config/workflow-harness/profiles/` (e.g. `my-agent.md`).
+1. Create a `.md` file in `~/.config/engin/profiles/` (e.g. `my-agent.md`).
 2. Add YAML frontmatter with at least `provider` and `model`.
 3. Write the system prompt in the body.
 4. The profile is now available to workflows that load profiles from the config directories.
 
 ### Adding a New Workflow
 
-1. Create a `.js`, `.mjs`, `.cjs`, or `.ts` file in `~/.config/workflow-harness/workflows/` or `.workflow-harness/workflows/`.
+1. Create a `.js`, `.mjs`, `.cjs`, or `.ts` file in `~/.config/engin/workflows/` or `.engin/workflows/`.
 2. Export a `run(taskPrompt, options)` function.
 3. Reference it by filename (without extension) on the CLI:
 
 ```bash
-workflow-harness my-workflow "Do the thing"
+engin my-workflow "Do the thing"
 ```
 
 ### TypeScript Configuration

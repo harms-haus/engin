@@ -1,14 +1,16 @@
-# workflow-harness
+# @harms-haus/engin
 
-[![CI](https://github.com/harms-haus/workflow-harness/actions/workflows/ci.yml/badge.svg)](https://github.com/harms-haus/workflow-harness/actions/workflows/ci.yml)
+> Short for "**Engin**eered **In**ference" — Eng. In. → engin.
+
+[![CI](https://github.com/harms-haus/engin/actions/workflows/ci.yml/badge.svg)](https://github.com/harms-haus/engin/actions/workflows/ci.yml)
 
 A script-based workflow engine for AI-driven development, built on top of [pi-coding-agent](https://www.npmjs.com/package/@earendil-works/pi-coding-agent).
 
 ## Install
 
 ```bash
-git clone <repository-url> workflow-harness
-cd workflow-harness
+git clone <repository-url> engin
+cd engin
 bun install
 bun run build
 ```
@@ -17,13 +19,13 @@ bun run build
 
 ```bash
 # Create the config directory structure
-workflow-harness init
+engin init
 
-# Add your own profiles and workflows to ~/.config/workflow-harness/
+# Add your own profiles and workflows to ~/.config/engin/
 # See docs/README.md for profile and workflow authoring guides
 
 # Run a workflow (assuming you've created a "develop" workflow — see docs/README.md)
-workflow-harness develop "Add input validation to all public API endpoints"
+engin develop "Add input validation to all public API endpoints"
 ```
 
 ## Documentation

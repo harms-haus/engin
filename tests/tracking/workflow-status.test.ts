@@ -273,7 +273,7 @@ describe('WorkflowStatusTracker', () => {
 
       await nestedTracker.save();
 
-      const raw = await fs.readFile(path.join(nestedDir, 'workflow-state.json'), 'utf-8');
+      const raw = await fs.readFile(path.join(nestedDir, '.engin-state.json'), 'utf-8');
       const data = JSON.parse(raw);
       expect(data.taskPrompt).toBe('nested');
     });

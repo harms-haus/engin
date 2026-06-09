@@ -136,12 +136,12 @@ export class WorkflowStatusTracker {
 
   async save(): Promise<void> {
     await fs.mkdir(this.workDir, { recursive: true });
-    const filePath = path.join(this.workDir, 'workflow-state.json');
+    const filePath = path.join(this.workDir, '.engin-state.json');
     await fs.writeFile(filePath, JSON.stringify(this.toJSON(), null, 2), 'utf-8');
   }
 
   static async load(workDir: string): Promise<WorkflowStatusTracker> {
-    const filePath = path.join(workDir, 'workflow-state.json');
+    const filePath = path.join(workDir, '.engin-state.json');
     let raw: string;
     try {
       raw = await fs.readFile(filePath, 'utf-8');

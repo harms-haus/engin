@@ -231,7 +231,7 @@ describe('parseArgs', () => {
       expect(exitSpy).toHaveBeenCalledWith(0);
       expect(stdoutSpy).toHaveBeenCalledTimes(1);
       const output = stdoutSpy.mock.calls[0][0] as string;
-      expect(output).toContain('workflow-harness v');
+      expect(output).toContain('engin v');
     });
   });
 
@@ -363,9 +363,9 @@ describe('main() loads .env files', () => {
     rmSync(tempDir, { recursive: true, force: true });
   });
 
-  it('loads .env from .workflow-harness/.env for list command', async () => {
-    // Create .workflow-harness/.env in temp dir
-    const harnessDir = join(tempDir, '.workflow-harness');
+  it('loads .env from .engin/.env for list command', async () => {
+    // Create .engin/.env in temp dir
+    const harnessDir = join(tempDir, '.engin');
     mkdirSync(harnessDir, { recursive: true });
     writeFileSync(join(harnessDir, '.env'), 'TEST_CLI_ENV_VAR=from_cli_test\n');
 
@@ -381,7 +381,7 @@ describe('main() loads .env files', () => {
   });
 
   it('does not load .env files for help command', async () => {
-    const harnessDir = join(tempDir, '.workflow-harness');
+    const harnessDir = join(tempDir, '.engin');
     mkdirSync(harnessDir, { recursive: true });
     writeFileSync(join(harnessDir, '.env'), 'TEST_CLI_ENV_VAR_HELP=should_not_appear\n');
 
@@ -397,7 +397,7 @@ describe('main() loads .env files', () => {
   });
 
   it('does not load .env files for version command', async () => {
-    const harnessDir = join(tempDir, '.workflow-harness');
+    const harnessDir = join(tempDir, '.engin');
     mkdirSync(harnessDir, { recursive: true });
     writeFileSync(join(harnessDir, '.env'), 'TEST_CLI_ENV_VAR_VERSION=should_not_appear\n');
 

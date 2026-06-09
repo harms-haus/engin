@@ -5,7 +5,7 @@ import { ensureDir, getGlobalConfigDir } from './core/config.js';
 
 /**
  * Creates the default directory structure inside the global config directory
- * (~/.config/workflow-harness/). Ensures "profiles" and "workflows"
+ * (~/.config/engin/). Ensures "profiles" and "workflows"
  * subdirectories exist.
  */
 export async function initDefaultConfig(): Promise<{

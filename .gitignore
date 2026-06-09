@@ -2,6 +2,6 @@ node_modules/
 dist/
 *.js.map
 .env
-.workflow-harness/.env
-.workflow-state.json
+.engin/.env
+.engin-state.json
 coverage/

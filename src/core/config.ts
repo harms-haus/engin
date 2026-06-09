@@ -5,23 +5,23 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 /**
- * Returns the global configuration directory for workflow-harness.
- * Uses $XDG_CONFIG_HOME/workflow-harness if XDG_CONFIG_HOME is set and non-empty,
- * otherwise falls back to ~/.config/workflow-harness.
+ * Returns the global configuration directory for engin.
+ * Uses $XDG_CONFIG_HOME/engin if XDG_CONFIG_HOME is set and non-empty,
+ * otherwise falls back to ~/.config/engin.
  */
 export function getGlobalConfigDir(): string {
   const xdg = process.env.XDG_CONFIG_HOME;
   if (xdg && xdg.length > 0) {
-    return join(xdg, 'workflow-harness');
+    return join(xdg, 'engin');
   }
-  return join(homedir(), '.config', 'workflow-harness');
+  return join(homedir(), '.config', 'engin');
 }
 
 /**
- * Returns the local (project-level) configuration directory for workflow-harness.
+ * Returns the local (project-level) configuration directory for engin.
  */
 export function getLocalConfigDir(cwd: string): string {
-  return join(cwd, '.workflow-harness');
+  return join(cwd, '.engin');
 }
 
 /**

@@ -58,7 +58,7 @@ export async function loadWorkflow(name: string, cwd: string): Promise<WorkflowM
     }
   }
 
-  throw new Error(`Workflow '${name}' not found. Use 'workflow-harness list' to see available workflows.`);
+  throw new Error(`Workflow '${name}' not found. Use 'engin list' to see available workflows.`);
 }
 
 // ─── listWorkflows ──────────────────────────────────────────────────────────

@@ -12,8 +12,8 @@ let globalWorkflowDir: string;
 
 beforeEach(async () => {
   tempDir = join(tmpdir(), `wf-loader-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-  localWorkflowDir = join(tempDir, 'local', '.workflow-harness', 'workflows');
-  globalWorkflowDir = join(tempDir, 'global', 'workflow-harness', 'workflows');
+  localWorkflowDir = join(tempDir, 'local', '.engin', 'workflows');
+  globalWorkflowDir = join(tempDir, 'global', 'engin', 'workflows');
   await mkdir(localWorkflowDir, { recursive: true });
   await mkdir(globalWorkflowDir, { recursive: true });
   clearWorkflowCache();
@@ -28,8 +28,8 @@ afterEach(async () => {
  * We set XDG_CONFIG_HOME so that the global dir maps to globalWorkflowDir.
  */
 function makeCwd(): string {
-  // cwd must be <tempDir>/local so that .workflow-harness/workflows = localWorkflowDir
-  // XDG_CONFIG_HOME must be <tempDir>/global so that workflow-harness = globalWorkflowDir
+  // cwd must be <tempDir>/local so that .engin/workflows = localWorkflowDir
+  // XDG_CONFIG_HOME must be <tempDir>/global so that engin = globalWorkflowDir
   process.env.XDG_CONFIG_HOME = join(tempDir, 'global');
   return join(tempDir, 'local');
 }
@@ -115,7 +115,7 @@ describe('loadWorkflow', () => {
   it('throws with descriptive error when name not found', async () => {
     const cwd = makeCwd();
     await expect(loadWorkflow('nonexistent', cwd)).rejects.toThrow(
-      "Workflow 'nonexistent' not found. Use 'workflow-harness list' to see available workflows.",
+      "Workflow 'nonexistent' not found. Use 'engin list' to see available workflows.",
     );
   });
 

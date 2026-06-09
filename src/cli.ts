@@ -23,7 +23,7 @@ export interface CliOptions {
 
 const VERSION = '0.1.0';
 
-const USAGE = `Usage: workflow-harness <command> [options]
+const USAGE = `Usage: engin <command> [options]
 
 Commands:
   run    <workflow-name> <task-prompt> [options]   Run a workflow
@@ -268,7 +268,7 @@ export async function listCommand(options: CliOptions): Promise<void> {
   const workflows = await listWorkflows(options.cwd);
 
   if (workflows.length === 0) {
-    console.log('No workflows found. Run "workflow-harness init" to create the config directory structure.');
+    console.log('No workflows found. Run "engin init" to create the config directory structure.');
     return;
   }
 
@@ -298,7 +298,7 @@ export async function listCommand(options: CliOptions): Promise<void> {
 export async function initCommand(_options: CliOptions): Promise<void> {
   await initDefaultConfig();
   const globalDir = getGlobalConfigDir();
-  console.log('Initialized workflow-harness directory structure at ' + globalDir);
+  console.log('Initialized engin directory structure at ' + globalDir);
 }
 
 export async function runCommand(options: CliOptions): Promise<void> {
@@ -338,7 +338,7 @@ export async function main(): Promise<void> {
     process.exit(0);
   }
   if (options.command === 'version') {
-    process.stdout.write(`workflow-harness v${VERSION}\n`);
+    process.stdout.write(`engin v${VERSION}\n`);
     process.exit(0);
   }
   if (options.command === 'list') {

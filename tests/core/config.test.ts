@@ -44,34 +44,34 @@ describe('getGlobalConfigDir', () => {
     }
   });
 
-  it('returns $XDG_CONFIG_HOME/workflow-harness when XDG_CONFIG_HOME is set', () => {
+  it('returns $XDG_CONFIG_HOME/engin when XDG_CONFIG_HOME is set', () => {
     process.env.XDG_CONFIG_HOME = '/custom/xdg';
-    expect(getGlobalConfigDir()).toBe('/custom/xdg/workflow-harness');
+    expect(getGlobalConfigDir()).toBe('/custom/xdg/engin');
   });
 
-  it('falls back to ~/.config/workflow-harness when XDG_CONFIG_HOME is not set', () => {
+  it('falls back to ~/.config/engin when XDG_CONFIG_HOME is not set', () => {
     delete process.env.XDG_CONFIG_HOME;
     const result = getGlobalConfigDir();
-    expect(result).toMatch(/\/\.config\/workflow-harness$/);
+    expect(result).toMatch(/\/\.config\/engin$/);
     expect(result).toContain('.config');
   });
 
-  it('falls back to ~/.config/workflow-harness when XDG_CONFIG_HOME is empty string', () => {
+  it('falls back to ~/.config/engin when XDG_CONFIG_HOME is empty string', () => {
     process.env.XDG_CONFIG_HOME = '';
     const result = getGlobalConfigDir();
-    expect(result).toMatch(/\/\.config\/workflow-harness$/);
+    expect(result).toMatch(/\/\.config\/engin$/);
   });
 });
 
 // ─── getLocalConfigDir ─────────────────────────────────────────────────────
 
 describe('getLocalConfigDir', () => {
-  it('returns cwd/.workflow-harness', () => {
-    expect(getLocalConfigDir('/project')).toBe('/project/.workflow-harness');
+  it('returns cwd/.engin', () => {
+    expect(getLocalConfigDir('/project')).toBe('/project/.engin');
   });
 
   it('handles nested paths', () => {
-    expect(getLocalConfigDir('/home/user/projects/my-app')).toBe('/home/user/projects/my-app/.workflow-harness');
+    expect(getLocalConfigDir('/home/user/projects/my-app')).toBe('/home/user/projects/my-app/.engin');
   });
 });
 
@@ -81,13 +81,13 @@ describe('resolveProfilesDirs', () => {
   it('returns local-before-global order', () => {
     const dirs = resolveProfilesDirs('/project');
     expect(dirs).toHaveLength(2);
-    expect(dirs[0]).toBe('/project/.workflow-harness/profiles');
-    expect(dirs[1]).toMatch(/\/workflow-harness\/profiles$/);
+    expect(dirs[0]).toBe('/project/.engin/profiles');
+    expect(dirs[1]).toMatch(/\/engin\/profiles$/);
   });
 
   it('local dir is first (override priority)', () => {
     const dirs = resolveProfilesDirs('/project');
-    expect(dirs[0]).toContain('/project/.workflow-harness');
+    expect(dirs[0]).toContain('/project/.engin');
   });
 });
 
@@ -97,13 +97,13 @@ describe('resolveWorkflowsDirs', () => {
   it('returns local-before-global order', () => {
     const dirs = resolveWorkflowsDirs('/project');
     expect(dirs).toHaveLength(2);
-    expect(dirs[0]).toBe('/project/.workflow-harness/workflows');
-    expect(dirs[1]).toMatch(/\/workflow-harness\/workflows$/);
+    expect(dirs[0]).toBe('/project/.engin/workflows');
+    expect(dirs[1]).toMatch(/\/engin\/workflows$/);
   });
 
   it('local dir is first (override priority)', () => {
     const dirs = resolveWorkflowsDirs('/project');
-    expect(dirs[0]).toContain('/project/.workflow-harness');
+    expect(dirs[0]).toContain('/project/.engin');
   });
 });
 
@@ -111,11 +111,11 @@ describe('resolveWorkflowsDirs', () => {
 
 describe('getDefaultWorkDir', () => {
   it('returns correct path under local config dir', () => {
-    expect(getDefaultWorkDir('/project', 'my-workflow')).toBe('/project/.workflow-harness/work/my-workflow');
+    expect(getDefaultWorkDir('/project', 'my-workflow')).toBe('/project/.engin/work/my-workflow');
   });
 
   it('handles workflow names with hyphens', () => {
-    expect(getDefaultWorkDir('/app', 'deploy-prod')).toBe('/app/.workflow-harness/work/deploy-prod');
+    expect(getDefaultWorkDir('/app', 'deploy-prod')).toBe('/app/.engin/work/deploy-prod');
   });
 });
 
@@ -150,14 +150,14 @@ describe('loadEnvFiles', () => {
   // Helper: create a temp-based "global config dir" using XDG_CONFIG_HOME
   async function makeGlobalEnvDir(content: string): Promise<string> {
     const xdgDir = join(tempDir, 'xdg-config');
-    await mkdir(join(xdgDir, 'workflow-harness'), { recursive: true });
-    await writeFile(join(xdgDir, 'workflow-harness', '.env'), content);
+    await mkdir(join(xdgDir, 'engin'), { recursive: true });
+    await writeFile(join(xdgDir, 'engin', '.env'), content);
     return xdgDir;
   }
 
-  // Helper: create a local .env in .workflow-harness under a project dir
+  // Helper: create a local .env in .engin under a project dir
   async function makeLocalEnvFile(projectDir: string, content: string): Promise<void> {
-    const localDir = join(projectDir, '.workflow-harness');
+    const localDir = join(projectDir, '.engin');
     await mkdir(localDir, { recursive: true });
     await writeFile(join(localDir, '.env'), content);
   }
@@ -182,7 +182,7 @@ describe('loadEnvFiles', () => {
     const result = loadEnvFiles(projectDir);
 
     expect(result.loadedFiles).toHaveLength(1);
-    expect(result.loadedFiles[0]).toBe(join(xdgDir, 'workflow-harness', '.env'));
+    expect(result.loadedFiles[0]).toBe(join(xdgDir, 'engin', '.env'));
     expect(result.skippedFiles).toHaveLength(1);
     expect(result.keysSet).toEqual(['GLOBAL_KEY']);
     expect(process.env.GLOBAL_KEY).toBe('global_value');
@@ -196,7 +196,7 @@ describe('loadEnvFiles', () => {
     const result = loadEnvFiles(projectDir);
 
     expect(result.loadedFiles).toHaveLength(1);
-    expect(result.loadedFiles[0]).toBe(join(projectDir, '.workflow-harness', '.env'));
+    expect(result.loadedFiles[0]).toBe(join(projectDir, '.engin', '.env'));
     expect(result.skippedFiles).toHaveLength(1);
     expect(result.keysSet).toEqual(['LOCAL_KEY']);
     expect(process.env.LOCAL_KEY).toBe('local_value');
@@ -277,7 +277,7 @@ describe('loadEnvFiles', () => {
     const result = loadEnvFiles(projectDir);
 
     expect(result.loadedFiles).toHaveLength(1);
-    expect(result.loadedFiles[0]).toBe(join(projectDir, '.workflow-harness', '.env'));
+    expect(result.loadedFiles[0]).toBe(join(projectDir, '.engin', '.env'));
     expect(result.keysSet).toEqual([]);
   });
 
@@ -293,7 +293,7 @@ describe('loadEnvFiles', () => {
   });
 
   it('skips blocked dangerous env vars', async () => {
-    const localDir = join(tempDir, '.workflow-harness');
+    const localDir = join(tempDir, '.engin');
     await mkdir(localDir, { recursive: true });
     await writeFile(join(localDir, '.env'), 'NODE_TLS_REJECT_UNAUTHORIZED=0\nMY_SAFE_KEY=safe_val\n');
     const result = loadEnvFiles(tempDir);
