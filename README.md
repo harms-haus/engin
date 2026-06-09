@@ -14,10 +14,13 @@ bun run build
 ## Quick Start
 
 ```bash
-# Install default profiles and the develop workflow
+# Create the config directory structure
 workflow-harness init
 
-# Run the develop workflow
+# Add your own profiles and workflows to ~/.config/workflow-harness/
+# See docs/README.md for profile and workflow authoring guides
+
+# Run a workflow (assuming you've created a "develop" workflow — see docs/README.md)
 workflow-harness develop "Add input validation to all public API endpoints"
 ```
 
@@ -30,7 +33,7 @@ Full documentation is in [docs/README.md](docs/README.md), covering:
 - Agent profiles (markdown + YAML frontmatter)
 - Custom workflow authoring
 - Programmatic API reference
-- Develop workflow phases and architecture
+- Workflow authoring guide
 - Types reference
 
 ## License

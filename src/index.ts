@@ -15,5 +15,3 @@ export * from "./tracking/audit-log.js";
 export * from "./tracking/task-status.js";
 export * from "./tracking/workflow-status.js";
 
-// ─── Workflows ──────────────────────────────────────────────────────────────
-export * from "./workflows/develop.js";

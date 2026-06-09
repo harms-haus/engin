@@ -24,7 +24,6 @@ describe("parseArgs", () => {
       maxConcurrent: 3,
       verbose: false,
       apiKeys: {},
-      force: undefined,
     });
   });
 
@@ -75,20 +74,12 @@ describe("parseArgs", () => {
       maxConcurrent: 3,
       verbose: false,
       apiKeys: {},
-      force: undefined,
     });
   });
 
   it("parses init command", () => {
     const result = parseArgs(["init"]);
     expect(result.command).toBe("init");
-    expect(result.force).toBeFalsy();
-  });
-
-  it("parses init with --force", () => {
-    const result = parseArgs(["init", "--force"]);
-    expect(result.command).toBe("init");
-    expect(result.force).toBe(true);
   });
 
   it("throws on missing command", () => {

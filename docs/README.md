@@ -8,7 +8,7 @@ A script-based workflow engine for AI-driven development, built on top of [pi-co
 
 **workflow-harness** orchestrates multi-agent AI workflows for software development tasks. It uses `AgentSession` from `@earendil-works/pi-coding-agent` as its inference layer and provides a phase-based approach to breaking down, planning, implementing, and reviewing code changes.
 
-Workflows are loaded dynamically from config directories — you can use the built-in `develop` workflow or drop in your own. Agent profiles are plain markdown files with YAML frontmatter, so you can customize agent behavior without touching code.
+Workflows and profiles are loaded dynamically from config directories — you create your own workflows and agent profiles and place them in `~/.config/workflow-harness/` (or `.workflow-harness/` for per-project config). Agent profiles are plain markdown files with YAML frontmatter, so you can customize agent behavior without touching code.
 
 Key properties:
 
@@ -40,13 +40,13 @@ bun run build
 
 ### First-Time Setup
 
-Install default profiles and the `develop` workflow into your global config directory:
+Create the config directory structure in your global config directory:
 
 ```bash
 workflow-harness init
 ```
 
-This copies built-in profiles and workflows to `~/.config/workflow-harness/` (or `$XDG_CONFIG_HOME/workflow-harness/`). Files that already exist are skipped unless you pass `--force`.
+This creates the `profiles/` and `workflows/` subdirectories inside `~/.config/workflow-harness/` (or `$XDG_CONFIG_HOME/workflow-harness/`). Profiles and workflows are user-managed — place your own `.md` profile files in `profiles/` and `.js`/`.ts` workflow files in `workflows/`.
 
 ---
 
@@ -55,13 +55,15 @@ This copies built-in profiles and workflows to `~/.config/workflow-harness/` (or
 ### CLI
 
 ```bash
-# Initialize default config (first time only)
+# Create config directory structure (first time only)
 workflow-harness init
 
-# Run the develop workflow
+# Add your profiles and workflows to ~/.config/workflow-harness/
+
+# Run a workflow by name (assuming you've created a "develop" workflow)
 workflow-harness develop "Add input validation to all public API endpoints"
 
-# Run with options
+# Run with options (same assumption)
 workflow-harness develop "Fix the login bug" \
   --cwd ./my-project \
   --max-concurrent 5 \
@@ -71,28 +73,21 @@ workflow-harness develop "Fix the login bug" \
 ### Programmatic
 
 ```typescript
-import { run } from "workflow-harness";
+import { createHarness, loadProfilesFromDirs, resolveProfilesDirs } from "workflow-harness";
 
-await run("Add input validation to all public API endpoints", {
-  cwd: "/path/to/project",
-  workDir: "/tmp/workflow-run-001",
-  maxConcurrentTasks: 3,
-});
-```
+const profilesDirs = resolveProfilesDirs("/path/to/project");
+const profiles = await loadProfilesFromDirs(profilesDirs);
 
-With status callbacks to monitor progress:
+const profile = profiles.get("implementer");
+if (!profile) throw new Error("implementer profile not found");
 
-```typescript
-await run("Add input validation to all public API endpoints", {
-  cwd: "/path/to/project",
-  workDir: "/tmp/workflow-run-001",
-  maxConcurrentTasks: 3,
-  onStatus: {
-    onPhaseStart: ({ phase }) => console.log(`Starting: ${phase}`),
-    onPhaseComplete: ({ phase, durationMs }) => console.log(`Done: ${phase} (${durationMs}ms)`),
-    onWorkflowComplete: ({ totalDurationMs }) => console.log(`Finished in ${totalDurationMs}ms`),
-  },
-});
+const { session, dispose } = await createHarness({ profile, cwd: "/path/to/project" });
+try {
+  await session.prompt("Add input validation to all public API endpoints");
+  console.log("Done:", session.getLastAssistantText());
+} finally {
+  dispose();
+}
 ```
 
 ---
@@ -111,7 +106,7 @@ workflow-harness <command> [options]
 |---|---|
 | `run` (default) | Run a named workflow with a task prompt |
 | `list` | List available workflows and profiles |
-| `init` | Install default profiles and workflows to the global config directory |
+| `init` | Create config directory structure in the global config directory |
 | `--help` / `-h` | Show usage information |
 | `--version` / `-v` | Show version |
 
@@ -138,21 +133,20 @@ Lists all available workflows found in global and local config directories, alon
 ### `init`
 
 ```bash
-workflow-harness init [--force]
+workflow-harness init
 ```
 
-Copies built-in profiles from `defaults/profiles/` and the default `develop` workflow from `defaults/workflows/` into the global config directory. Skips files that already exist unless `--force` is passed.
+Creates the `profiles/` and `workflows/` subdirectories inside the global config directory (`~/.config/workflow-harness/`). The command only ensures directories exist. Profiles and workflows are user-managed; see [Profiles](#6-profiles) and [Custom Workflows](#7-custom-workflows) for authoring guides.
 
 ### Flags
 
 | Flag | Applies to | Description |
 |---|---|---|
-| `--cwd <path>` | All commands | Project working directory (default: `process.cwd()`) |
+| `--cwd <path>` | `run`, `list` | Project working directory (default: `process.cwd()`) |
 | `--work-dir <path>` | `run` | Directory for workflow state persistence. Default: `.workflow-harness/work/<workflow-name>` inside `cwd` |
 | `--max-concurrent <n>` | `run` | Maximum parallel implementer agents (default: `3`). Must be a positive integer. |
 | `--verbose` | `all commands` | Enable verbose output, including `.env` file loading information and agent-level output (turns, tool calls, token usage) |
 | `--api-key <provider=key>` | `run` | Provider → API key override. Repeatable. **Warning:** values are visible in process listings; prefer environment variables. |
-| `--force` | `init` | Overwrite existing files |
 
 ### Exit Codes
 
@@ -310,20 +304,9 @@ Output your review as structured JSON with fields:
 - approved: boolean
 ```
 
-### Default Profiles
+### User-Created Profiles
 
-The built-in profiles in `defaults/profiles/` are installed by `workflow-harness init`:
-
-| Profile ID | Role | Tools |
-|---|---|---|
-| `scout` | Investigates codebase areas | Excludes `write`, `edit` |
-| `scouting-reviewer` | Synthesizes scouting reports | Excludes `write`, `edit` |
-| `planner` | Creates implementation plans | Excludes `write`, `edit` |
-| `plan-reviewer` | Reviews plans for feasibility | Excludes `write`, `edit` |
-| `implementer` | Writes code to implement tasks | All tools available |
-| `implement-reviewer` | Reviews implementations | Excludes `write`, `edit` |
-| `final-reviewer` | Final quality review | Excludes `write`, `edit` |
-| `fixer` | Fixes issues found in review | All tools available |
+Profiles are user-created `.md` files placed in the config directories. There are no built-in profiles — you define the agents your workflow needs. See the [Frontmatter Fields](#frontmatter-fields) table and examples above for how to author them.
 
 ---
 
@@ -383,30 +366,26 @@ export async function run(taskPrompt, options) {
 
 ### Example: Composing Phase Functions
 
-The default `develop` workflow is just a re-export:
-
-```javascript
-// defaults/workflows/develop.js
-export { run } from "workflow-harness";
-```
-
-You can import individual phase functions from `workflow-harness` to compose a custom pipeline:
+You can import building blocks from `workflow-harness` to compose a custom workflow pipeline. The library provides `createHarness`, `parallelAgents`, `promptForStructured`, `WorkflowStatusTracker`, `TaskTracker`, and other utilities — see [Programmatic API](#8-programmatic-api) for the full list.
 
 ```typescript
+// ~/.config/workflow-harness/workflows/develop.ts
 import {
-  scoutingPhase,
-  planningPhase,
-  implementationPhase,
-  finalReviewPhase,
+  createHarness,
+  loadProfilesFromDirs,
+  resolveProfilesDirs,
+  promptForStructured,
   WorkflowStatusTracker,
+  parallelAgents,
 } from "workflow-harness";
+import { z } from "zod";
 
 export async function run(taskPrompt: string, options: WorkflowRunOptions) {
   const tracker = new WorkflowStatusTracker(options.workDir);
   const profilesDirs = resolveProfilesDirs(options.cwd);
+  const profiles = await loadProfilesFromDirs(profilesDirs);
 
-  const reports = await scoutingPhase(tracker, profilesDirs, taskPrompt, options.cwd, options.apiKeys, options.onStatus);
-  // ... custom orchestration logic
+  // ... your custom orchestration logic using the library's building blocks
 }
 ```
 
@@ -419,24 +398,6 @@ export async function run(taskPrompt: string, options: WorkflowRunOptions) {
 ## 8. Programmatic API
 
 All types and functions below are exported from the top-level `workflow-harness` entry point.
-
-### Workflow Execution
-
-#### `run(taskPrompt, options): Promise<void>`
-
-Execute the full development workflow. Resumes automatically if a `workflow-state.json` exists in `workDir`.
-
-```typescript
-import { run } from "workflow-harness";
-
-await run("Add error handling to the API layer", {
-  cwd: "/path/to/project",
-  workDir: "/tmp/workflow-run-001",
-  maxConcurrentTasks: 3,
-});
-```
-
-If `profilesDir` is omitted, profiles are auto-resolved from the local and global config directories via `resolveProfilesDirs(cwd)`.
 
 ### Workflow Loading
 
@@ -551,9 +512,11 @@ Returns a `LoadEnvResult` object:
 
 ### Setup
 
-#### `initDefaultConfig(options?): Promise<{ installed, skipped }>`
+#### `initDefaultConfig(): Promise<{ createdDirs: string[] }>`
 
-Installs default profiles and workflows from `defaults/` into the global config directory. Skips existing files unless `force: true` is passed. Skips symlinks with a warning.
+Creates the `profiles/` and `workflows/` subdirectories inside the global config directory (`~/.config/workflow-harness/`). No files are installed — profiles and workflows are user-managed. Takes no arguments.
+
+Returns `{ createdDirs: string[] }` where `createdDirs` is `['profiles', 'workflows']` — the names of the directories that were ensured to exist.
 
 ### Structured Output
 
@@ -682,6 +645,24 @@ blocked → ready → claimed → implementing → reviewing → done
 
 > **Note:** `rejected` is not a `TaskStatus` value. It represents the transition from `reviewing` back to `ready` via `rejectTask()`. The task's status is set to `ready`, not `rejected`.
 
+#### `PHASE_ORDER`
+
+The standard phase execution order as a constant array of `WorkflowPhase` values:
+
+```typescript
+const PHASE_ORDER: WorkflowPhase[] = [
+    "scouting",
+    "scouting_review",
+    "planning",
+    "plan_review",
+    "implementing",
+    "final_review",
+    "done",
+];
+```
+
+Use this constant when iterating over phases in order. `WorkflowStatusTracker.advancePhase()` uses this internally to determine the next phase.
+
 #### `WorkflowStatusTracker`
 
 ```typescript
@@ -715,21 +696,6 @@ class WorkflowStatusTracker {
 
 Top-level workflow state manager. Persists to `workflow-state.json` in the working directory.
 
-### Phase Functions (Develop Workflow)
-
-Each phase of the develop workflow is exported individually for custom orchestration:
-
-| Function | Signature |
-|---|---|
-| `scoutingPhase` | `(tracker, profilesDirs, taskPrompt, cwd, apiKeys?, onStatus?) → Promise<unknown[]>` |
-| `scoutingReviewPhase` | `(tracker, profilesDirs, reports, cwd, apiKeys?, onStatus?) → Promise<ScoutingReview>` |
-| `planningPhase` | `(tracker, profilesDirs, research, taskPrompt, cwd, apiKeys?, onStatus?) → Promise<Plan>` |
-| `planReviewPhase` | `(tracker, profilesDirs, plan, research, taskPrompt, cwd, apiKeys?, onStatus?) → Promise<PlanReview>` |
-| `implementationPhase` | `(tracker, profilesDirs, plan, cwd, maxConcurrentTasks?, apiKeys?, onStatus?) → Promise<void>` |
-| `finalReviewPhase` | `(tracker, profilesDirs, cwd, apiKeys?, onStatus?) → Promise<boolean>` |
-
-Note the `profilesDirs` parameter is a `string[]` (an array of directories), not a single directory path.
-
 ---
 
 ## 9. Architecture
@@ -738,7 +704,7 @@ Note the `profilesDirs` parameter is a `string[]` (an array of directories), not
 src/
 ├── index.ts                     # Public API re-exports
 ├── cli.ts                       # CLI entry point (run, list, init commands)
-├── setup.ts                     # Default config installation (initDefaultConfig)
+├── setup.ts                     # Config directory creation (init command)
 ├── core/
 │   ├── types.ts                 # Shared type definitions and re-exports
 │   ├── config.ts                # Config directory resolution (global/local/work dirs)
@@ -749,26 +715,10 @@ src/
 │   ├── session-history.ts       # Session statistics and resumption helpers
 │   ├── agent-loop.ts            # Looping, parallel, and sequential agent patterns
 │   └── auth.ts                  # API key resolution (env vars and overrides)
-├── tracking/
-│   ├── audit-log.ts             # JSONL-based audit event log
-│   ├── task-status.ts           # Task DAG tracker with state transitions
-│   └── workflow-status.ts       # Full workflow phase state (persisted to JSON)
-├── workflows/
-│   └── develop.ts               # The development workflow: phases + orchestrator
-└── profiles/                    # Built-in agent profile definitions
-    ├── scout.md
-    ├── scouting-reviewer.md
-    ├── planner.md
-    ├── plan-reviewer.md
-    ├── implementer.md
-    ├── implement-reviewer.md
-    ├── final-reviewer.md
-    └── fixer.md
-
-defaults/                        # Files installed by `workflow-harness init`
-├── profiles/                    # Same as src/profiles/
-└── workflows/
-    └── develop.js               # Re-exports run from workflow-harness
+└── tracking/
+    ├── audit-log.ts             # JSONL-based audit event log
+    ├── task-status.ts           # Task DAG tracker with state transitions
+    └── workflow-status.ts       # Full workflow phase state (persisted to JSON)
 ```
 
 ### Core Layer (`src/core/`)
@@ -793,60 +743,21 @@ defaults/                        # Files installed by `workflow-harness init`
 | `task-status.ts` | Manages a collection of `Task` objects with a DAG of dependencies; enforces state transitions; detects cycles |
 | `workflow-status.ts` | Top-level workflow state: current phase, completed phases, scouting reports, plan, stats, and task tracker; persists to `workflow-state.json` |
 
-### Workflow Layer (`src/workflows/`)
-
-| Module | Responsibility |
-|---|---|
-| `develop.ts` | Exports individual phase functions and a top-level `run()` orchestrator that chains them with retry loops |
+This package is a **pure library** — it provides building blocks (harness creation, profile loading, structured output, agent loop patterns, task tracking, audit logging) that user-managed workflow scripts compose into pipelines. It does not ship any built-in workflows or agent profiles.
 
 ---
 
-## 10. How the Develop Workflow Works
+## 10. Authoring Workflows
 
-The `run()` orchestrator in `develop.ts` uses a **phase-dispatch loop** driven by an ordered `phaseOrder` array:
+Workflows are user-managed scripts that use the library's building blocks to define multi-agent pipelines. A typical workflow:
 
-```
-["scouting", "scouting_review", "planning", "plan_review", "implementing", "final_review", "done"]
-```
+1. Resolves profiles from config directories via `resolveProfilesDirs` and `loadProfilesFromDirs`.
+2. Creates a `WorkflowStatusTracker` for phase and task state persistence.
+3. Uses `createHarness` or `parallelAgents` to spawn agents with specific profiles.
+4. Uses `promptForStructured` with Zod schemas to enforce structured output.
+5. Tracks tasks via `TaskTracker` and logs events via `AuditLog`.
 
-Each phase has a handler that performs exactly one step. A handler may return the name of a phase to **jump to** (for retries), or return `void` to **advance linearly** to the next entry. This makes the control flow explicit and easy to extend — to add a new phase, insert it into the array and add a case to the handler.
-
-The pipeline proceeds as follows:
-
-1. **Scouting** — A `scout` agent identifies codebase areas to investigate. For each topic discovered, a parallel scout agent produces a report via `parallelAgents`.
-
-2. **Scouting Review** — The `scouting-reviewer` synthesizes all reports into a research summary and decides whether enough information has been gathered. If `ready` is `false` and fewer than 3 rounds have elapsed, the handler returns `"scouting"` to jump back. After 3 rounds the workflow proceeds regardless.
-
-3. **Planning** — The `planner` agent creates a `Plan` containing an array of `Task` objects, each with `id`, `title`, `prompt`, `profile`, `files`, and `dependencies`. The plan forms a DAG.
-
-4. **Plan Review** — The `plan-reviewer` evaluates the plan. If `ready` is `false` and fewer than 3 rounds have elapsed, the handler returns `"planning"` to jump back. After 3 rounds the workflow proceeds with the current plan.
-
-5. **Implementation** — Tasks are loaded into the `TaskTracker`. The orchestrator claims up to `maxConcurrentTasks` at a time, dispatches them to implementer agents in parallel via `parallelAgents`, and then runs reviewer agents in parallel via `Promise.allSettled`. Approved tasks are completed; rejected tasks return to `"ready"` for re-implementation. If a review itself fails, the failure is logged and the task is also rejected (returning to `"ready"`) to allow re-implementation.
-
-6. **Final Review** — The `final-reviewer` examines the entire codebase. If critical issues are found, `fixer` agents resolve them in parallel. This loop runs up to 3 rounds.
-
-### Parallel Execution
-
-Concurrency is used at multiple points:
-
-- During **scouting**, one scout agent is spawned per topic via `parallelAgents`.
-- During **implementation**, tasks are claimed in batches of `maxConcurrentTasks`. Each batch runs implementer agents in parallel, and reviews also run in parallel.
-- During **final review**, fixer agents for critical issues run in parallel.
-
-`parallelAgents` uses `Promise.allSettled` under the hood, so a single agent failure does not crash the batch.
-
-### Structured Output Schemas
-
-The develop workflow exports these Zod schemas for reuse:
-
-| Schema | Fields |
-|---|---|
-| `ScoutingTopicSchema` | `topics: Array<{ topic, rationale, files }>` |
-| `ScoutingReviewSchema` | `ready: boolean`, `research: string`, `gaps: string[]` |
-| `PlanSchema` | `tasks: Array<{ id, title, prompt, profile, files, dependencies }>`, `strategy: string` |
-| `PlanReviewSchema` | `ready: boolean`, `feedback: string`, `suggestions: string[]` |
-| `ReviewResultSchema` | `approved: boolean`, `feedback: string`, `issues: Array<{ file, description, severity }>` |
-| `FinalReviewTopicsSchema` | `topics: Array<{ topic, files }>`, `overallAssessment: string`, `issues: Array<{ file, description, severity }>` |
+See [Custom Workflows](#7-custom-workflows) for examples and [Programmatic API](#8-programmatic-api) for the full set of available building blocks.
 
 ---
 
@@ -1016,23 +927,6 @@ Interface for workflow modules loaded by `loadWorkflow`.
 
 ---
 
-### `DevelopWorkflowOptions`
-
-Options shared by the develop workflow phases.
-
-| Field | Type | Description |
-|---|---|---|
-| `profilesDir?` | `string` | Explicit profiles directory. If omitted, auto-resolved via `resolveProfilesDirs(cwd)` |
-| `cwd` | `string` | Project directory to operate on |
-| `maxConcurrentTasks?` | `number` | Maximum parallel implementers (default 3) |
-| `apiKeys?` | `Record<string, string>` | Provider → API key overrides |
-| `onStatus?` | `StatusCallbacks` | Callbacks for workflow and agent events |
-| `workDir?` | `string` | Directory for workflow state persistence |
-
-`RunOptions` extends this with `workDir: string` as required.
-
----
-
 ### `HarnessCreationOptions`
 
 Options for `createHarness`.
@@ -1055,6 +949,7 @@ Options for `promptForStructured`.
 | Field | Type | Description |
 |---|---|---|
 | `maxRetries` | `number` | Maximum number of retry attempts |
+| `retryPrompt?` | `string` | Custom retry prompt appended on failure (unused by built-in `promptForStructured` but available for external consumers) |
 
 ---
 
@@ -1237,11 +1132,11 @@ If `workflow-state.json` exists in `workDir`, the `run()` function loads it and 
 
 | Command | Description |
 |---|---|
-| `bun run build` | Compile TypeScript to `dist/` and copy defaults |
+| `bun run build` | Compile TypeScript to `dist/` |
 | `bun test` | Run all tests with `bun:test` |
 | `bun run test:watch` | Run tests in watch mode |
 | `bun run typecheck` | Type-check without emitting |
-| `bun run setup` | Build then run `workflow-harness init` |
+| `bun run setup` | Build then run `workflow-harness init` to create config directories |
 
 ### Project Structure
 
@@ -1249,12 +1144,7 @@ If `workflow-state.json` exists in `workDir`, the `run()` function loads it and 
 workflow-harness/
 ├── src/                # Source code
 │   ├── core/           # Core layer (sessions, profiles, auth, config)
-│   ├── tracking/       # Tracking layer (audit, tasks, workflow state)
-│   ├── workflows/      # Workflow layer (develop workflow)
-│   └── profiles/       # Built-in agent profile definitions
-├── defaults/           # Files installed by workflow-harness init
-│   ├── profiles/       # Copies of built-in profiles
-│   └── workflows/      # Default workflow stubs
+│   └── tracking/       # Tracking layer (audit, tasks, workflow state)
 ├── tests/              # Test files mirroring src/ structure
 ├── docs/               # Documentation
 ├── package.json
@@ -1272,30 +1162,31 @@ tests/
 ├── core/
 │   ├── agent-loop.test.ts
 │   ├── auth.test.ts
+│   ├── config.test.ts
 │   ├── harness-factory.test.ts
+│   ├── harness-factory.subscribe.test.ts
 │   ├── profile.test.ts
 │   ├── session-history.test.ts
-│   └── structured-output.test.ts
+│   ├── structured-output.test.ts
+│   └── workflow-loader.test.ts
 ├── tracking/
 │   ├── audit-log.test.ts
 │   ├── task-status.test.ts
 │   └── workflow-status.test.ts
-├── workflows/
-│   └── develop.test.ts
-└── integration/
-    └── workflow-smoke.test.ts
+├── cli.test.ts
+└── setup.test.ts
 ```
 
 ### Adding New Profiles
 
-1. Create a `.md` file in `defaults/profiles/` (e.g. `my-agent.md`).
+1. Create a `.md` file in `~/.config/workflow-harness/profiles/` (e.g. `my-agent.md`).
 2. Add YAML frontmatter with at least `provider` and `model`.
 3. Write the system prompt in the body.
-4. Run `workflow-harness init --force` to install, or place it directly in `~/.config/workflow-harness/profiles/` or `.workflow-harness/profiles/`.
+4. The profile is now available to workflows that load profiles from the config directories.
 
 ### Adding a New Workflow
 
-1. Create a `.js`, `.mjs`, `.cjs`, or `.ts` file in `defaults/workflows/` or directly in a config workflows directory.
+1. Create a `.js`, `.mjs`, `.cjs`, or `.ts` file in `~/.config/workflow-harness/workflows/` or `.workflow-harness/workflows/`.
 2. Export a `run(taskPrompt, options)` function.
 3. Reference it by filename (without extension) on the CLI:
 

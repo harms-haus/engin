@@ -62,9 +62,9 @@ export interface WorkflowState {
     currentPhase: WorkflowPhase;
     completedPhases: WorkflowPhase[];
     tasks: Task[];
-    /** Scouting reports stored as opaque values; typed as ScoutingTopics in develop.ts */
+    /** Scouting reports stored as opaque values; consumers should cast to their specific schema type */
     scoutingReports: unknown[];
-    /** Plan stored as opaque value; typed as Plan in develop.ts */
+    /** Plan stored as opaque value; consumers should cast to their specific schema type */
     plan: unknown;
     research?: string;
     stats: {

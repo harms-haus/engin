@@ -9,9 +9,9 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { getModel } from "@earendil-works/pi-ai";
 
-import type { HarnessCreationOptions } from "./types";
-import { resolveApiKeyOrThrow } from "./auth";
-import { loadProfile } from "./profile";
+import type { HarnessCreationOptions } from "./types.js";
+import { resolveApiKeyOrThrow } from "./auth.js";
+import { loadProfile } from "./profile.js";
 
 // ─── Agent Event Types ──────────────────────────────────────────────────────
 

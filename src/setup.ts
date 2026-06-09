@@ -1,75 +1,23 @@
-import { copyFile, lstat, readdir, stat } from "node:fs/promises";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import { ensureDir, getGlobalConfigDir } from "./core/config.js";
 
+// ─── Installation ───────────────────────────────────────────────────────────
+
 /**
- * Installs default profiles and workflows into the global config directory.
- * Skips files that already exist unless `force` is true.
+ * Creates the default directory structure inside the global config directory
+ * (~/.config/workflow-harness/). Ensures "profiles" and "workflows"
+ * subdirectories exist.
  */
-export async function initDefaultConfig(options?: {
-    force?: boolean;
-}): Promise<{ installed: string[]; skipped: string[] }> {
+export async function initDefaultConfig(): Promise<{
+    createdDirs: string[];
+}> {
     const globalDir = getGlobalConfigDir();
-    const defaultsDir = join(
-        dirname(fileURLToPath(import.meta.url)),
-        "..",
-        "defaults",
-    );
 
-    const installed: string[] = [];
-    const skipped: string[] = [];
+    const profilesDir = join(globalDir, "profiles");
+    const workflowsDir = join(globalDir, "workflows");
 
-    const subdirs = ["profiles", "workflows"] as const;
+    await ensureDir(profilesDir);
+    await ensureDir(workflowsDir);
 
-    for (const subdir of subdirs) {
-        const sourceDir = join(defaultsDir, subdir);
-        const targetDir = join(globalDir, subdir);
-
-        let files: string[];
-        try {
-            files = await readdir(sourceDir);
-        } catch (err: unknown) {
-            if (err instanceof Error && "code" in err && err.code === "ENOENT") {
-                process.stderr.write(
-                    `warning: defaults directory not found: ${sourceDir}\n`,
-                );
-                continue;
-            }
-            throw err;
-        }
-
-        await ensureDir(targetDir);
-
-        for (const file of files) {
-            const sourcePath = join(sourceDir, file);
-            const targetPath = join(targetDir, file);
-
-            const srcStat = await stat(sourcePath);
-            if (!srcStat.isFile()) continue;
-
-            if (!options?.force) {
-                try {
-                    await stat(targetPath);
-                    skipped.push(join(subdir, file));
-                    continue;
-                } catch {
-                    // target does not exist — proceed to copy
-                }
-            }
-
-            // Check for symlinks before overwriting
-            const targetStat = await lstat(targetPath).catch(() => null);
-            if (targetStat?.isSymbolicLink()) {
-                process.stderr.write(`Warning: Skipping symlink: ${targetPath}\n`);
-                skipped.push(join(subdir, file));
-                continue;
-            }
-
-            await copyFile(sourcePath, targetPath);
-            installed.push(join(subdir, file));
-        }
-    }
-
-    return { installed, skipped };
+    return { createdDirs: ["profiles", "workflows"] };
 }

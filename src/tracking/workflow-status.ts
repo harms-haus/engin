@@ -4,7 +4,7 @@ import type { Task, TaskStatus, WorkflowPhase, WorkflowState } from "../core/typ
 import { TaskTracker } from "./task-status.js";
 import { AuditLog } from "./audit-log.js";
 
-const PHASE_ORDER: WorkflowPhase[] = [
+export const PHASE_ORDER: WorkflowPhase[] = [
     "scouting",
     "scouting_review",
     "planning",

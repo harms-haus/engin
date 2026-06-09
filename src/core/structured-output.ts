@@ -1,7 +1,7 @@
 // ─── Structured Output ──────────────────────────────────────────────────────
 import type { ZodType } from "zod";
 import { parseJsonWithRepair } from "@earendil-works/pi-ai";
-import type { StructuredOutputOptions } from "./types.ts";
+import type { StructuredOutputOptions } from "./types.js";
 
 // ─── extractJsonFromText ────────────────────────────────────────────────────
 

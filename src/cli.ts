@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import type { StatusCallbacks } from "./core/types.js";
-import { getDefaultWorkDir, resolveProfilesDirs, loadEnvFiles } from "./core/config.js";
+import { getDefaultWorkDir, resolveProfilesDirs, loadEnvFiles, getGlobalConfigDir } from "./core/config.js";
 import { loadWorkflow, listWorkflows } from "./core/workflow-loader.js";
 import { loadProfilesFromDirs } from "./core/profile.js";
 import { initDefaultConfig } from "./setup.js";
@@ -17,7 +17,7 @@ export interface CliOptions {
   maxConcurrent: number;
   verbose: boolean;
   apiKeys: Record<string, string>;
-  force?: boolean;
+
 }
 
 // ─── Argument Parsing ───────────────────────────────────────────────────────
@@ -29,7 +29,7 @@ const USAGE = `Usage: workflow-harness <command> [options]
 Commands:
   run    <workflow-name> <task-prompt> [options]   Run a workflow
   list   [--cwd <path>]                             List available workflows
-  init   [--force]                                  Install default config
+  init                                              Create config directory structure
 
 Options:
   --cwd <path>            Working directory (default: process.cwd())
@@ -37,7 +37,6 @@ Options:
   --max-concurrent <n>    Max concurrent tasks (default: 3, run only)
   --verbose               Enable verbose logging
   --api-key <provider=key>  API key (repeatable)
-  --force                 Overwrite existing files (init only)
   --help, -h              Show this help message
   --version, -v           Show version`;
 
@@ -90,8 +89,6 @@ export function parseArgs(argv: string[]): CliOptions {
       flags.push(arg, val);
     } else if (arg === "--verbose") {
       flags.push(arg);
-    } else if (arg === "--force") {
-      flags.push(arg);
     } else if (arg === "--api-key") {
       const val = argv[++i];
       if (val === undefined || val.startsWith("--")) {
@@ -116,7 +113,6 @@ export function parseArgs(argv: string[]): CliOptions {
   let cwd = process.cwd();
   let verbose = false;
   const apiKeys: Record<string, string> = {};
-  let force = false;
   let apiKeyWarningIssued = false;
   let workDir: string | undefined;
   let maxConcurrent = 3;
@@ -138,8 +134,6 @@ export function parseArgs(argv: string[]): CliOptions {
       maxConcurrent = parsed;
     } else if (flag === "--verbose") {
       verbose = true;
-    } else if (flag === "--force") {
-      force = true;
     } else if (flag === "--api-key") {
       const pair = flags[++j];
       const eqIdx = pair.indexOf("=");
@@ -171,7 +165,7 @@ export function parseArgs(argv: string[]): CliOptions {
     if (positionals.length > 1) {
       throw new Error(`Unexpected argument: "${positionals[1]}"\n${USAGE}`);
     }
-    return { command: "init", cwd, verbose, maxConcurrent, apiKeys, force };
+    return { command: "init", cwd, verbose, maxConcurrent, apiKeys };
   }
 
   // Any non-list/non-init positional is treated as "run" with the first positional as the workflow name.
@@ -308,7 +302,7 @@ export async function listCommand(options: CliOptions): Promise<void> {
 
   if (workflows.length === 0) {
     console.log(
-      'No workflows found. Run "workflow-harness init" to install defaults.',
+      'No workflows found. Run "workflow-harness init" to create the config directory structure.',
     );
     return;
   }
@@ -339,12 +333,9 @@ export async function listCommand(options: CliOptions): Promise<void> {
 }
 
 export async function initCommand(options: CliOptions): Promise<void> {
-  const { installed, skipped } = await initDefaultConfig({
-    force: options.force,
-  });
-  console.log(
-    `Installed ${installed.length} file(s), skipped ${skipped.length} existing file(s).`,
-  );
+  await initDefaultConfig();
+  const globalDir = getGlobalConfigDir();
+  console.log("Initialized workflow-harness directory structure at " + globalDir);
 }
 
 export async function runCommand(options: CliOptions): Promise<void> {
