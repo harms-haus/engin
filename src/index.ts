@@ -14,3 +14,6 @@ export * from './setup.js';
 export * from './tracking/audit-log.js';
 export * from './tracking/task-status.js';
 export * from './tracking/workflow-status.js';
+
+// ─── Pool ────────────────────────────────────────────────────────────────
+export * from './pool/index.js';

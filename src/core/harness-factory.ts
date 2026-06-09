@@ -57,7 +57,7 @@ export async function createHarness(
   authStorage.setRuntimeApiKey(profile.provider, apiKey);
 
   // 3. Tools
-  const defaultTools = ['read', 'bash', 'edit', 'write'];
+  const defaultTools = ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls'];
   let builtTools: string[];
   if (profile.includeTools && profile.includeTools.length > 0) {
     // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
@@ -79,7 +79,14 @@ export async function createHarness(
   await resourceLoader.reload();
 
   // 5. Session
-  const sessionManager = SessionManager.inMemory(cwd);
+  let sessionManager;
+  if (options.resumeSessionPath) {
+    sessionManager = SessionManager.open(options.resumeSessionPath, undefined, cwd);
+  } else if (options.sessionDir) {
+    sessionManager = SessionManager.create(cwd, options.sessionDir);
+  } else {
+    sessionManager = SessionManager.inMemory(cwd);
+  }
   const { session } = await createAgentSession({
     sessionManager,
     model,

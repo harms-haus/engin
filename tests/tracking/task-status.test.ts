@@ -10,6 +10,7 @@ function makeTask(overrides: Partial<Task> & { id: string }): Task {
     files: [],
     dependencies: [],
     status: 'ready',
+    isCode: true,
     ...overrides,
   };
 }
@@ -272,6 +273,41 @@ describe('TaskTracker', () => {
     it('returns false when there are no tasks', () => {
       const tracker = new TaskTracker();
       expect(tracker.areAllDone()).toBe(false);
+    });
+  });
+
+  // ── preserve isCode through lifecycle ─────────────────────────────
+
+  describe('preserve isCode through lifecycle', () => {
+    it('preserves isCode through the lifecycle', () => {
+      const tracker = new TaskTracker();
+      tracker.addTask(makeTask({ id: 't1', isCode: false }));
+
+      expect(tracker.getTask('t1')!.isCode).toBe(false);
+
+      const _claimed = tracker.claimTasks(1);
+      tracker.startTask('t1', 'agent-1');
+      expect(tracker.getTask('t1')!.isCode).toBe(false);
+
+      tracker.submitForReview('t1', 'result');
+      expect(tracker.getTask('t1')!.isCode).toBe(false);
+
+      tracker.completeTask('t1');
+      expect(tracker.getTask('t1')!.isCode).toBe(false);
+    });
+  });
+
+  // ── preserve isCode through serialization ───────────────────────────
+
+  describe('preserve isCode through serialization', () => {
+    it('preserves isCode through toJSON/fromJSON round-trip', () => {
+      const tracker = new TaskTracker();
+      tracker.addTask(makeTask({ id: 't1', isCode: false }));
+
+      const json = tracker.toJSON();
+      const restored = TaskTracker.fromJSON(json);
+
+      expect(restored.getTask('t1')!.isCode).toBe(false);
     });
   });
 

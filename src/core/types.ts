@@ -34,6 +34,7 @@ export interface Task {
   assignedAgent?: string;
   result?: unknown;
   reviewFeedback?: string;
+  isCode?: boolean;
 }
 
 // ─── Workflow Phases ────────────────────────────────────────────────────────
@@ -138,4 +139,6 @@ export interface HarnessCreationOptions {
   cwd: string;
   apiKeys?: Record<string, string>;
   onAgentStatus?: AgentStatusCallbacks;
+  sessionDir?: string;
+  resumeSessionPath?: string;
 }

@@ -437,16 +437,24 @@ Clear the in-memory profile cache.
 
 #### `createHarness(options): Promise<{ session, sessionId, dispose }>`
 
-Create a fully-wired `AgentSession` from an `AgentProfile`. All sessions are in-memory via `SessionManager.inMemory()`. Resolution steps: resolve model via `getModel()`, resolve API key and register with `AuthStorage.inMemory()`, build tool allowlist/denylist from profile, create `DefaultResourceLoader` with system prompt override, construct session via `createAgentSession()`, optionally subscribe to agent status events.
+Create a fully-wired `AgentSession` from an `AgentProfile`. Supports three session modes:
+
+- **In-memory** (default) — `SessionManager.inMemory(cwd)`. Used when neither `sessionDir` nor `resumeSessionPath` is provided.
+- **Persisted** — `SessionManager.create(cwd, sessionDir)`. Used when `sessionDir` is provided; session data is written to disk.
+- **Resumed** — `SessionManager.open(resumeSessionPath, ...)`. Used when `resumeSessionPath` is provided; loads an existing session from disk.
+
+Resolution steps: resolve model via `getModel()`, resolve API key and register with `AuthStorage.inMemory()`, build tool allowlist/denylist from profile, create `DefaultResourceLoader` with system prompt override, construct session via `createAgentSession()`, optionally subscribe to agent status events.
 
 **`HarnessCreationOptions` fields:**
 
-| Field            | Type                     | Description                           |
-| ---------------- | ------------------------ | ------------------------------------- |
-| `profile`        | `AgentProfile`           | The agent configuration               |
-| `cwd`            | `string`                 | Working directory for file operations |
-| `apiKeys?`       | `Record<string, string>` | Provider → API key overrides          |
-| `onAgentStatus?` | `AgentStatusCallbacks`   | Callbacks for turn/tool events        |
+| Field                | Type                     | Description                                                                    |
+| -------------------- | ------------------------ | ------------------------------------------------------------------------------ |
+| `profile`            | `AgentProfile`           | The agent configuration                                                        |
+| `cwd`                | `string`                 | Working directory for file operations                                          |
+| `apiKeys?`           | `Record<string, string>` | Provider → API key overrides                                                   |
+| `onAgentStatus?`     | `AgentStatusCallbacks`   | Callbacks for turn-level and tool-level events                                 |
+| `sessionDir?`        | `string`                 | Directory for persisted session storage. Creates via `SessionManager.create()` |
+| `resumeSessionPath?` | `string`                 | Path to an existing session file for resumption via `SessionManager.open()`    |
 
 **Return fields:**
 
@@ -690,6 +698,67 @@ class WorkflowStatusTracker {
 
 Top-level workflow state manager. Persists to `.engin-state.json` in the working directory.
 
+### Task Pool
+
+#### `LanePool`
+
+```typescript
+class LanePool {
+  constructor(options: LanePoolOptions);
+  run(): Promise<LanePoolResult>;
+}
+```
+
+Concurrent task processing pool where N independent "lanes" (workers) claim tasks from a shared [`TaskTracker`](#tasktracker) and process them through configurable sequential steps.
+
+**How it works:**
+
+1. Profiles are loaded once via [`loadProfilesFromDirs`](#loadprofilesdirsdirs) before spawning any lanes.
+2. `maxConcurrentLanes` workers are spawned in parallel via `Promise.all`.
+3. Each lane runs a loop that claims a ready task from the shared [`TaskTracker`](#tasktracker) and processes it through the steps returned by `getStepsForTask`.
+4. On step rejection, the lane backs up to the previous step and retries (up to `maxStepRetries`). The review feedback is written to the task's `reviewFeedback` field and included in the next step's prompt.
+5. On agent crash (unhandled error), the lane fires `onError`, marks the task as failed, and moves on.
+6. When no tasks are available but not all are done, lanes back off with exponential delay (50ms initial, capped at 2000ms).
+7. All sessions are disposed in a `finally` block after each step completes.
+
+Each step gets its own persisted session at `{sessionBaseDir}/{taskId}/{attempt}-{stepIndex}-{stepName}/`. Read-only steps automatically strip `write` and `edit` from the agent's toolset.
+
+**Usage example:**
+
+```typescript
+import { LanePool, TaskTracker, resolveProfilesDirs } from '@harms-haus/engin';
+import { z } from 'zod';
+
+const taskTracker = new TaskTracker();
+// ... populate taskTracker with tasks ...
+
+const ReviewSchema = z.object({
+  approved: z.boolean(),
+  feedback: z.string().optional(),
+});
+
+const pool = new LanePool({
+  maxConcurrentLanes: 3,
+  profilesDirs: resolveProfilesDirs(cwd, 'my-workflow'),
+  sessionBaseDir: `${workDir}/sessions`,
+  cwd,
+  taskTracker,
+  getStepsForTask: (task) => [
+    { name: 'implement', profileId: 'implementer', isReadOnly: false },
+    {
+      name: 'review',
+      profileId: 'reviewer',
+      isReadOnly: true,
+      schema: ReviewSchema,
+    },
+  ],
+  maxStepRetries: 3,
+});
+
+const result = await pool.run();
+console.log(`Completed: ${result.completedTasks}, Failed: ${result.failedTasks}`);
+```
+
 ---
 
 ## 9. Architecture
@@ -709,6 +778,10 @@ src/
 │   ├── session-history.ts       # Session statistics and resumption helpers
 │   ├── agent-loop.ts            # Looping, parallel, and sequential agent patterns
 │   └── auth.ts                  # API key resolution (env vars and overrides)
+├── pool/
+│   ├── index.ts                 # Pool module re-exports
+│   ├── types.ts                 # StepDefinition, LanePoolOptions, LanePoolResult, StepResult types
+│   └── lane-pool.ts             # Concurrent task processing pool (LanePool class)
 └── tracking/
     ├── audit-log.ts             # JSONL-based audit event log
     ├── task-status.ts           # Task DAG tracker with state transitions
@@ -728,6 +801,13 @@ src/
 | `session-history.ts`   | Tracks token usage and cost across a session; provides session resumption by copying message history                                                                                           |
 | `agent-loop.ts`        | Higher-level patterns: `agentLoopUntil`, `parallelAgents`, `sequentialAgents`. Uses `AgentSession` and `dispose()` for cleanup                                                                 |
 | `auth.ts`              | Resolves API keys from caller-supplied overrides or environment variables via `@earendil-works/pi-ai`                                                                                          |
+
+### Pool Layer (`src/pool/`)
+
+| Module         | Responsibility                                                                                                                                |
+| -------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `types.ts`     | Defines `StepDefinition`, `StepResult`, `LanePoolOptions`, and `LanePoolResult` types for configuring the task processing pipeline            |
+| `lane-pool.ts` | Concurrent task processing pool (`LanePool` class); N lanes claim tasks from a shared `TaskTracker` and execute configurable sequential steps |
 
 ### Tracking Layer (`src/tracking/`)
 
@@ -811,18 +891,19 @@ See [Task lifecycle](#tasktracker) for valid transitions.
 
 ### `Task`
 
-| Field             | Type         | Description                                    |
-| ----------------- | ------------ | ---------------------------------------------- |
-| `id`              | `string`     | Unique task identifier                         |
-| `title`           | `string`     | Short description                              |
-| `prompt`          | `string`     | Detailed prompt for the implementing agent     |
-| `profile`         | `string`     | Agent profile ID to use                        |
-| `files`           | `string[]`   | Files this task is expected to modify          |
-| `dependencies`    | `string[]`   | Task IDs that must complete before this task   |
-| `status`          | `TaskStatus` | Current lifecycle state                        |
-| `assignedAgent?`  | `string`     | ID of the agent currently working on this task |
-| `result?`         | `unknown`    | Implementation result submitted for review     |
-| `reviewFeedback?` | `string`     | Feedback from reviewer on rejection            |
+| Field             | Type         | Description                                                                    |
+| ----------------- | ------------ | ------------------------------------------------------------------------------ |
+| `id`              | `string`     | Unique task identifier                                                         |
+| `title`           | `string`     | Short description                                                              |
+| `prompt`          | `string`     | Detailed prompt for the implementing agent                                     |
+| `profile`         | `string`     | Agent profile ID to use                                                        |
+| `files`           | `string[]`   | Files this task is expected to modify                                          |
+| `dependencies`    | `string[]`   | Task IDs that must complete before this task                                   |
+| `status`          | `TaskStatus` | Current lifecycle state                                                        |
+| `assignedAgent?`  | `string`     | ID of the agent currently working on this task                                 |
+| `result?`         | `unknown`    | Implementation result submitted for review                                     |
+| `reviewFeedback?` | `string`     | Feedback from reviewer on rejection                                            |
+| `isCode?`         | `boolean`    | Whether this task involves writing/modifying code (vs. docs/config). Optional. |
 
 ---
 
@@ -925,14 +1006,16 @@ Interface for workflow modules loaded by `loadWorkflow`.
 
 Options for `createHarness`.
 
-| Field            | Type                     | Description                                    |
-| ---------------- | ------------------------ | ---------------------------------------------- |
-| `profile`        | `AgentProfile`           | The agent configuration to use                 |
-| `cwd`            | `string`                 | Working directory for file operations          |
-| `apiKeys?`       | `Record<string, string>` | Provider → API key overrides                   |
-| `onAgentStatus?` | `AgentStatusCallbacks`   | Callbacks for turn-level and tool-level events |
+| Field                | Type                     | Description                                                                    |
+| -------------------- | ------------------------ | ------------------------------------------------------------------------------ |
+| `profile`            | `AgentProfile`           | The agent configuration to use                                                 |
+| `cwd`                | `string`                 | Working directory for file operations                                          |
+| `apiKeys?`           | `Record<string, string>` | Provider → API key overrides                                                   |
+| `onAgentStatus?`     | `AgentStatusCallbacks`   | Callbacks for turn-level and tool-level events                                 |
+| `sessionDir?`        | `string`                 | Directory for persisted session storage. Creates via `SessionManager.create()` |
+| `resumeSessionPath?` | `string`                 | Path to an existing session file for resumption via `SessionManager.open()`    |
 
-Tool filtering is handled internally from the profile's `includeTools`/`excludeTools` fields. The default tool set is `read`, `bash`, `edit`, `write`.
+Tool filtering is handled internally from the profile's `includeTools`/`excludeTools` fields. The default tool set is `read`, `bash`, `edit`, `write`, `grep`, `find`, `ls`.
 
 ---
 
@@ -972,6 +1055,61 @@ Options for `sequentialAgents`.
 | ------------- | -------------- | ---------------------------------------------- |
 | `schema?`     | `ZodType<any>` | Zod schema for structured output validation    |
 | `maxRetries?` | `number`       | Max retries for structured output (default: 3) |
+
+---
+
+### `StepDefinition<T>`
+
+A single step in the task processing pipeline. Each step maps to an agent profile.
+
+| Field          | Type                     | Required | Description                                                                                                 |
+| -------------- | ------------------------ | -------- | ----------------------------------------------------------------------------------------------------------- |
+| `name`         | `string`                 | **Yes**  | Human-readable step name (e.g. `"write-tests"`, `"execute"`, `"review"`)                                    |
+| `profileId`    | `string`                 | **Yes**  | Profile ID to load from the profiles directories                                                            |
+| `isReadOnly`   | `boolean`                | **Yes**  | When `true`, `write` and `edit` tools are stripped from the agent's toolset                                 |
+| `schema?`      | `ZodType<T>`             | No       | Zod schema for structured output steps (reviews). When absent, raw assistant text is used                   |
+| `isApproved?`  | `(result: T) => boolean` | No       | Determines approval from structured output. Defaults to checking `result.approved === true`                 |
+| `getFeedback?` | `(result: T) => string`  | No       | Extracts rejection feedback from structured output. Defaults to `result.feedback ?? 'No feedback provided'` |
+
+---
+
+### `StepResult`
+
+Discriminated union returned by each step execution.
+
+```typescript
+type StepResult = { type: 'approved'; output: unknown } | { type: 'rejected'; feedback: string };
+```
+
+---
+
+### `LanePoolOptions`
+
+Configuration for creating a `LanePool`.
+
+| Field                | Type                               | Required | Description                                                                                                          |
+| -------------------- | ---------------------------------- | -------- | -------------------------------------------------------------------------------------------------------------------- |
+| `maxConcurrentLanes` | `number`                           | **Yes**  | Maximum number of concurrent lanes (workers)                                                                         |
+| `profilesDirs`       | `string[]`                         | **Yes**  | Directories containing `.md` agent profile files. Searched in order, local overrides global                          |
+| `sessionBaseDir`     | `string`                           | **Yes**  | Base directory for persisted session storage. Sessions stored at `{base}/{taskId}/{attempt}-{stepIndex}-{stepName}/` |
+| `cwd`                | `string`                           | **Yes**  | Working directory for agent operations                                                                               |
+| `taskTracker`        | `TaskTracker`                      | **Yes**  | Shared task tracker — lanes claim tasks from here                                                                    |
+| `getStepsForTask`    | `(task: Task) => StepDefinition[]` | **Yes**  | Given a task, return the ordered list of steps to execute                                                            |
+| `apiKeys?`           | `Record<string, string>`           | No       | Optional API key overrides by provider                                                                               |
+| `onStatus?`          | `StatusCallbacks`                  | No       | Status callback handlers                                                                                             |
+| `auditLog?`          | `AuditLog`                         | No       | Audit log for recording events                                                                                       |
+| `maxStepRetries?`    | `number`                           | No       | Maximum retries per step on rejection (default: `3`)                                                                 |
+
+---
+
+### `LanePoolResult`
+
+Aggregate result from running the pool.
+
+| Field            | Type     | Description                                        |
+| ---------------- | -------- | -------------------------------------------------- |
+| `completedTasks` | `number` | Tasks that passed all steps successfully           |
+| `failedTasks`    | `number` | Tasks that exhausted retries or encountered errors |
 
 ---
 
@@ -1196,6 +1334,7 @@ bun run typecheck && bun run lint && bun run format:check && bun test
 engin/
 ├── src/                # Source code
 │   ├── core/           # Core layer (sessions, profiles, auth, config)
+│   ├── pool/           # Pool layer (concurrent task processing)
 │   └── tracking/       # Tracking layer (audit, tasks, workflow state)
 ├── tests/              # Test files mirroring src/ structure
 ├── docs/               # Documentation
@@ -1221,6 +1360,9 @@ tests/
 │   ├── session-history.test.ts
 │   ├── structured-output.test.ts
 │   └── workflow-loader.test.ts
+├── pool/
+│   ├── lane-pool.test.ts
+│   └── types.test.ts
 ├── tracking/
 │   ├── audit-log.test.ts
 │   ├── task-status.test.ts

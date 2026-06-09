@@ -32,9 +32,21 @@ const mockDefaultResourceLoaderInstance = {
   reload: mock(async () => {}),
 };
 
+const mockSessionManagerCreate = mock(() => ({
+  getSessionId: () => 'persisted-session-id',
+}));
+
+const mockSessionManagerOpen = mock(() => ({
+  getSessionId: () => 'resumed-session-id',
+}));
+
 mock.module('@earendil-works/pi-coding-agent', () => ({
   createAgentSession: mockCreateAgentSession,
-  SessionManager: { inMemory: mockSessionManagerInMemory },
+  SessionManager: {
+    inMemory: mockSessionManagerInMemory,
+    create: mockSessionManagerCreate,
+    open: mockSessionManagerOpen,
+  },
   AuthStorage: { inMemory: mock(() => mockAuthStorageInstance) },
   DefaultResourceLoader: mock().mockImplementation(() => mockDefaultResourceLoaderInstance),
 }));
@@ -203,7 +215,9 @@ describe('createHarness', () => {
       cwd: '/tmp',
     });
 
-    expect(mockCreateAgentSession).toHaveBeenCalledWith(expect.objectContaining({ tools: ['read', 'bash', 'write'] }));
+    expect(mockCreateAgentSession).toHaveBeenCalledWith(
+      expect.objectContaining({ tools: ['read', 'bash', 'write', 'grep', 'find', 'ls'] }),
+    );
   });
 
   it('returns session and sessionId', async () => {
@@ -224,6 +238,49 @@ describe('createHarness', () => {
     });
 
     expect(result.sessionId).toBe('mock-session-id');
+  });
+
+  it('creates persisted session when sessionDir is provided', async () => {
+    await createHarness({
+      profile: makeProfile(),
+      cwd: '/tmp',
+      sessionDir: '/tmp/sessions/task1',
+    });
+
+    expect(SessionManager.create).toHaveBeenCalledWith('/tmp', '/tmp/sessions/task1');
+  });
+
+  it('resumes session when resumeSessionPath is provided', async () => {
+    await createHarness({
+      profile: makeProfile(),
+      cwd: '/tmp',
+      resumeSessionPath: '/tmp/sessions/task1/session.json',
+    });
+
+    expect(SessionManager.open).toHaveBeenCalledWith('/tmp/sessions/task1/session.json', undefined, '/tmp');
+  });
+
+  it('resumeSessionPath takes priority over sessionDir', async () => {
+    await createHarness({
+      profile: makeProfile(),
+      cwd: '/tmp',
+      sessionDir: '/tmp/sessions/task1',
+      resumeSessionPath: '/tmp/sessions/task1/session.json',
+    });
+
+    expect(SessionManager.open).toHaveBeenCalledWith('/tmp/sessions/task1/session.json', undefined, '/tmp');
+    expect(SessionManager.create).not.toHaveBeenCalled();
+  });
+
+  it('falls back to in-memory when no session options', async () => {
+    await createHarness({
+      profile: makeProfile(),
+      cwd: '/tmp',
+    });
+
+    expect(SessionManager.inMemory).toHaveBeenCalledWith('/tmp');
+    expect(SessionManager.create).not.toHaveBeenCalled();
+    expect(SessionManager.open).not.toHaveBeenCalled();
   });
 });
 
