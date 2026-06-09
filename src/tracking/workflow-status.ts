@@ -20,6 +20,7 @@ export class WorkflowStatusTracker {
     private _completedPhases: WorkflowPhase[] = [];
     private _scoutingReports: unknown[] = [];
     private _plan: unknown = undefined;
+    private _research?: string;
     private _stats: { totalTokens: number; totalCost: number; agentCount: number } = {
         totalTokens: 0,
         totalCost: 0,
@@ -55,6 +56,10 @@ export class WorkflowStatusTracker {
 
     get plan(): unknown {
         return this._plan;
+    }
+
+    get research(): string | undefined {
+        return this._research;
     }
 
     get stats(): { totalTokens: number; totalCost: number; agentCount: number } {
@@ -104,6 +109,10 @@ export class WorkflowStatusTracker {
         this._plan = plan;
     }
 
+    setResearch(research: string): void {
+        this._research = research;
+    }
+
     addTokensToStats(tokens: { input: number; output: number }): void {
         this._stats.totalTokens += tokens.input + tokens.output;
     }
@@ -122,6 +131,7 @@ export class WorkflowStatusTracker {
             tasks: this._taskTracker.getAllTasks(),
             scoutingReports: this._scoutingReports,
             plan: this._plan,
+            research: this._research,
             stats: { ...this._stats },
         };
     }
@@ -157,6 +167,7 @@ export class WorkflowStatusTracker {
         tracker._completedPhases = [...data.completedPhases];
         tracker._scoutingReports = data.scoutingReports;
         tracker._plan = data.plan;
+        tracker._research = data.research;
         tracker._stats = { ...data.stats };
 
         // Rebuild TaskTracker from saved tasks

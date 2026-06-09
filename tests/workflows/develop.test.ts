@@ -561,7 +561,7 @@ describe("implementationPhase", () => {
         expect(mockPromptForStructured).toHaveBeenCalledTimes(1);
     });
 
-    it("rejects task when reviewer disapproves", async () => {
+    it("rejects task when reviewer disapproves, then re-implements and approves", async () => {
         const dir = tmpDir();
         const tracker = new WorkflowStatusTracker(dir);
 
@@ -579,13 +579,13 @@ describe("implementationPhase", () => {
             strategy: "Test strategy",
         };
 
-        // Implementation succeeds
+        // First implementation
         mockParallelAgents.mockResolvedValueOnce([
             { status: "fulfilled", value: { result: "bad implementation" } },
         ]);
 
-        // Reviewer rejects
-        const reviewResult: ReviewResult = {
+        // Reviewer rejects first attempt
+        const rejectResult: ReviewResult = {
             approved: false,
             feedback: "Missing error handling",
             issues: [
@@ -596,12 +596,26 @@ describe("implementationPhase", () => {
                 },
             ],
         };
-        mockPromptForStructured.mockResolvedValueOnce(reviewResult);
+        mockPromptForStructured.mockResolvedValueOnce(rejectResult);
+
+        // Second implementation (after reclaim)
+        mockParallelAgents.mockResolvedValueOnce([
+            { status: "fulfilled", value: { result: "fixed implementation" } },
+        ]);
+
+        // Reviewer approves second attempt
+        const approveResult: ReviewResult = {
+            approved: true,
+            feedback: "Looks good now",
+            issues: [],
+        };
+        mockPromptForStructured.mockResolvedValueOnce(approveResult);
 
         await implementationPhase(tracker, "/profiles", plan, "/cwd", 3);
 
-        // Task should be back in claimed status (rejected)
-        expect(tracker.taskTracker.getTask("t1")!.status).toBe("claimed");
+        // Task should be done after re-implementation and approval
+        expect(tracker.taskTracker.getTask("t1")!.status).toBe("done");
+        // Feedback from rejection is preserved
         expect(tracker.taskTracker.getTask("t1")!.reviewFeedback).toBe("Missing error handling");
     });
 

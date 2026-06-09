@@ -102,7 +102,7 @@ export class TaskTracker {
             throw new Error(`Task "${id}" must be "reviewing" to reject, got "${task.status}"`);
         }
 
-        task.status = "claimed";
+        task.status = "ready";
         task.reviewFeedback = reason;
     }
 

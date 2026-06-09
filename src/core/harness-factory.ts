@@ -12,6 +12,14 @@ import { resolveApiKeyOrThrow } from "./auth";
 import { createDefaultToolRegistry } from "./tool-registry";
 import { loadProfile } from "./profile";
 
+// ─── Agent Event Types ──────────────────────────────────────────────────────
+
+type AgentLevelEvent =
+    | { type: "turn_start" }
+    | { type: "turn_end"; message?: { usage?: { input: number; output: number } } }
+    | { type: "tool_execution_start"; toolName: string; toolCallId: string }
+    | { type: "tool_execution_end"; toolName: string; toolCallId: string; isError?: boolean };
+
 // ─── createHarness ──────────────────────────────────────────────────────────
 
 /**
@@ -31,8 +39,8 @@ import { loadProfile } from "./profile";
  */
 export async function createHarness(
     options: HarnessCreationOptions,
-): Promise<{ harness: AgentHarness; sessionId: string }> {
-    const { profile, cwd, sessionId, additionalTools, apiKeys } = options;
+): Promise<{ harness: AgentHarness; sessionId: string; unsubscribe?: () => void }> {
+    const { profile, cwd, sessionId, additionalTools, apiKeys, onAgentStatus } = options;
 
     // 1. Execution environment
     const env = new NodeExecutionEnv({ cwd });
@@ -89,7 +97,57 @@ export async function createHarness(
         getApiKeyAndHeaders: async () => ({ apiKey }),
     });
 
-    return { harness, sessionId: resolvedSessionId };
+    // 7. Subscribe to agent status callbacks (if any handlers provided)
+    let unsubscribe: (() => void) | undefined;
+    if (
+        onAgentStatus &&
+        (onAgentStatus.onTurnStart ||
+            onAgentStatus.onTurnEnd ||
+            onAgentStatus.onToolCallStart ||
+            onAgentStatus.onToolCallEnd)
+    ) {
+        let turnCount = 0;
+        unsubscribe = harness.subscribe((event: any) => {
+            const e = event as AgentLevelEvent;
+            if (e.type === "turn_start") {
+                onAgentStatus.onTurnStart?.({
+                    agentId: resolvedSessionId,
+                    turn: ++turnCount,
+                });
+            } else if (e.type === "turn_end") {
+                const usage = e.message?.usage;
+                onAgentStatus.onTurnEnd?.({
+                    agentId: resolvedSessionId,
+                    turn: turnCount,
+                    tokens: usage
+                        ? { input: usage.input, output: usage.output }
+                        : undefined,
+                });
+            } else if (e.type === "tool_execution_start") {
+                onAgentStatus.onToolCallStart?.({
+                    agentId: resolvedSessionId,
+                    toolName: e.toolName,
+                    toolCallId: e.toolCallId,
+                });
+            } else if (e.type === "tool_execution_end") {
+                onAgentStatus.onToolCallEnd?.({
+                    agentId: resolvedSessionId,
+                    toolName: e.toolName,
+                    toolCallId: e.toolCallId,
+                    isError: e.isError ?? false,
+                });
+            }
+        });
+    }
+
+    const result: { harness: AgentHarness; sessionId: string; unsubscribe?: () => void } = {
+        harness,
+        sessionId: resolvedSessionId,
+    };
+    if (unsubscribe) {
+        result.unsubscribe = unsubscribe;
+    }
+    return result;
 }
 
 // ─── createHarnessFromProfile ───────────────────────────────────────────────
@@ -102,7 +160,7 @@ export async function createHarnessFromProfile(
     dirPath: string,
     profileId: string,
     options: Omit<HarnessCreationOptions, "profile">,
-): Promise<{ harness: AgentHarness; sessionId: string }> {
+): Promise<{ harness: AgentHarness; sessionId: string; unsubscribe?: () => void }> {
     const profile = await loadProfile(dirPath, profileId);
     return createHarness({ ...options, profile });
 }

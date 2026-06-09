@@ -523,11 +523,11 @@ describe("Workflow Smoke Tests", () => {
             const state = JSON.parse(stateRaw);
             expect(state.currentPhase).toBe("done");
 
-            // The reviewer rejected the implementation.  rejectTask puts the
-            // task back into "claimed" status (not "ready"), so the loop
-            // exits when claimTasks returns nothing.  Verify the task was
-            // implemented once and rejected.
-            expect(implementationCallCount).toBe(1);
+            // The reviewer rejected the first implementation.  rejectTask puts
+            // the task back into "ready" status, so the next loop iteration
+            // reclaims it and re-implements.  Verify the task was implemented
+            // twice: rejected on the first attempt, approved on the second.
+            expect(implementationCallCount).toBe(2);
 
             // Verify a decision event was logged for the rejection
             const auditPath = path.join(workDir, "audit", "audit.jsonl");
@@ -542,6 +542,131 @@ describe("Workflow Smoke Tests", () => {
             );
             expect(rejectedDecision).toBeDefined();
             expect(rejectedDecision.agentId).toBe("reviewer-t1");
+        }, 30_000);
+    });
+
+    // ── 4. Status callbacks ─────────────────────────────────────────
+
+    describe("Status callbacks", () => {
+        it("all workflow-level callbacks fire during successful run", async () => {
+            const onWorkflowStart = vi.fn();
+            const onPhaseStart = vi.fn();
+            const onPhaseComplete = vi.fn();
+            const onAgentSpawn = vi.fn();
+            const onAgentComplete = vi.fn();
+            const onTaskStart = vi.fn();
+            const onTaskComplete = vi.fn();
+            const onTaskRejected = vi.fn();
+            const onDecision = vi.fn();
+            const onError = vi.fn();
+            const onWorkflowComplete = vi.fn();
+            const onWorkflowFailed = vi.fn();
+
+            await run("Build with callbacks", {
+                profilesDir,
+                cwd: projectDir,
+                workDir,
+                onStatus: {
+                    onWorkflowStart,
+                    onPhaseStart,
+                    onPhaseComplete,
+                    onAgentSpawn,
+                    onAgentComplete,
+                    onTaskStart,
+                    onTaskComplete,
+                    onTaskRejected,
+                    onDecision,
+                    onError,
+                    onWorkflowComplete,
+                    onWorkflowFailed,
+                },
+            });
+
+            // ── Lifecycle callbacks ─────────────────────────────────
+            expect(onWorkflowStart).toHaveBeenCalledOnce();
+            expect(onWorkflowStart).toHaveBeenCalledWith({
+                taskPrompt: "Build with callbacks",
+                resumed: false,
+                workDir,
+            });
+
+            expect(onWorkflowComplete).toHaveBeenCalledOnce();
+            expect(onWorkflowComplete).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    totalDurationMs: expect.any(Number),
+                    agentCount: expect.any(Number),
+                }),
+            );
+
+            // ── Phase callbacks ─────────────────────────────────────
+            // 6 phases: scouting, scouting_review, planning, plan_review,
+            // implementing, final_review
+            expect(onPhaseStart.mock.calls.length).toBeGreaterThanOrEqual(6);
+            expect(onPhaseComplete.mock.calls.length).toBeGreaterThanOrEqual(6);
+
+            // Verify each phase was started
+            const startedPhases = onPhaseStart.mock.calls.map(
+                (call: [{ phase: string }]) => call[0].phase,
+            );
+            expect(startedPhases).toContain("scouting");
+            expect(startedPhases).toContain("scouting_review");
+            expect(startedPhases).toContain("planning");
+            expect(startedPhases).toContain("plan_review");
+            expect(startedPhases).toContain("implementing");
+            expect(startedPhases).toContain("final_review");
+
+            // ── Agent callbacks ─────────────────────────────────────
+            // At minimum: scout-coordinator, planner, final-reviewer
+            expect(onAgentSpawn.mock.calls.length).toBeGreaterThanOrEqual(3);
+            expect(onAgentComplete.mock.calls.length).toBeGreaterThanOrEqual(3);
+
+            // ── Decision callbacks ─────────────────────────────────
+            // At minimum: scouting-reviewer, plan-reviewer
+            expect(onDecision.mock.calls.length).toBeGreaterThanOrEqual(2);
+
+            // ── Error should not have been called ───────────────────
+            expect(onError).not.toHaveBeenCalled();
+            expect(onWorkflowFailed).not.toHaveBeenCalled();
+        }, 30_000);
+
+        it("onWorkflowFailed fires on workflow error", async () => {
+            const onWorkflowFailed = vi.fn();
+            const onWorkflowStart = vi.fn();
+            const onWorkflowComplete = vi.fn();
+
+            // Make the scouting phase throw so the error propagates
+            // to the orchestrator's catch block.
+            mockPromptFn.mockImplementation(async () => {
+                throw new Error("Catastrophic scouting failure");
+            });
+
+            await expect(
+                run("Build with failure", {
+                    profilesDir,
+                    cwd: projectDir,
+                    workDir,
+                    onStatus: {
+                        onWorkflowStart,
+                        onWorkflowFailed,
+                        onWorkflowComplete,
+                    },
+                }),
+            ).rejects.toThrow("Catastrophic scouting failure");
+
+            expect(onWorkflowStart).toHaveBeenCalledOnce();
+            expect(onWorkflowFailed).toHaveBeenCalledOnce();
+            expect(onWorkflowFailed).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    error: expect.any(Error),
+                    phase: expect.any(String),
+                }),
+            );
+            expect(onWorkflowFailed.mock.calls[0][0].error.message).toBe(
+                "Catastrophic scouting failure",
+            );
+
+            // onWorkflowComplete should NOT fire on failure
+            expect(onWorkflowComplete).not.toHaveBeenCalled();
         }, 30_000);
     });
 });

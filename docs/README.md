@@ -38,6 +38,7 @@ workflow-harness is organized into three layers:
 ```
 src/
 ├── index.ts                     # Public API re-exports
+├── cli.ts                       # CLI entry point
 ├── profiles/                    # Agent profile definitions (.md files)
 │   ├── scout.md
 │   ├── scouting-reviewer.md
@@ -105,7 +106,7 @@ Phase functions and an orchestrator:
 
 - **Node.js** >= 22.19.0
 - **npm** (bundled with Node.js)
-- **API keys** — at minimum `ANTHROPIC_API_KEY` for the default profiles (which use Claude models)
+- **API keys** — API keys for your configured provider(s); see profiles for details
 
 ### Installation
 
@@ -128,6 +129,24 @@ await run("Add input validation to all public API endpoints", {
 });
 ```
 
+Or with status callbacks to monitor progress:
+
+```typescript
+import { run } from "workflow-harness";
+
+await run("Add input validation to all public API endpoints", {
+  profilesDir: "./src/profiles",
+  cwd: "/path/to/project",
+  workDir: "/tmp/workflow-run-001",
+  maxConcurrentTasks: 3,
+  onStatus: {
+    onPhaseStart: ({ phase }) => console.log(`Starting: ${phase}`),
+    onPhaseComplete: ({ phase, durationMs }) => console.log(`Done: ${phase} (${durationMs}ms)`),
+    onWorkflowComplete: ({ totalDurationMs }) => console.log(`Finished in ${totalDurationMs}ms`),
+  },
+});
+```
+
 This will:
 
 1. Scout the project at `/path/to/project` to understand its structure.
@@ -147,8 +166,8 @@ Agent profiles are markdown files with YAML frontmatter, stored in a directory (
 ```markdown
 ---
 name: My Agent
-provider: anthropic
-model: claude-sonnet-4-20250514
+provider: your-provider
+model: your-model
 thinkingLevel: medium
 excludeTools:
   - write
@@ -165,8 +184,8 @@ This body text becomes the system prompt.
 | Field | Required | Default | Description |
 |---|---|---|---|
 | `name` | No | Filename without `.md` | Human-readable display name |
-| `provider` | **Yes** | — | AI provider identifier (e.g. `anthropic`, `openai`) |
-| `model` | **Yes** | — | Model identifier within the provider (e.g. `claude-sonnet-4-20250514`) |
+| `provider` | **Yes** | — | AI provider identifier (e.g. `your-provider`) |
+| `model` | **Yes** | — | Model identifier within the provider (e.g. `your-model`) |
 | `thinkingLevel` | No | `"medium"` | Model thinking depth. One of: `off`, `minimal`, `low`, `medium`, `high`, `xhigh` |
 | `excludeTools` | No | `[]` | Tool names to remove from the default set |
 | `includeTools` | No | `[]` | If non-empty, only these tools are included |
@@ -180,8 +199,8 @@ The markdown content after the frontmatter becomes the agent's system prompt. Us
 ```markdown
 ---
 name: Code Reviewer
-provider: anthropic
-model: claude-sonnet-4-20250514
+provider: your-provider
+model: your-model
 thinkingLevel: medium
 excludeTools:
   - write
@@ -227,9 +246,9 @@ Load a single profile directly from a `.md` file path. Bypasses the directory ca
 
 Clear the in-memory profile cache. Forces a fresh disk read on the next `loadProfiles()` call.
 
-#### `createHarness(options: HarnessCreationOptions): Promise<{ harness: AgentHarness; sessionId: string }>`
+#### `createHarness(options: HarnessCreationOptions): Promise<{ harness: AgentHarness; sessionId: string; unsubscribe?: () => void }>`
 
-Create a fully-wired `AgentHarness` from an `AgentProfile`. Steps: create execution environment, session (in-memory or JSONL-backed), resolve model, filter tools, resolve API key.
+Create a fully-wired `AgentHarness` from an `AgentProfile`. Steps: create execution environment, session (in-memory or JSONL-backed), resolve model, filter tools, resolve API key, subscribe to agent status events.
 
 **`HarnessCreationOptions` fields:**
 - `profile: AgentProfile` — the agent configuration
@@ -237,10 +256,16 @@ Create a fully-wired `AgentHarness` from an `AgentProfile`. Steps: create execut
 - `sessionId?: string` — provide to use JSONL persistence; omit for in-memory
 - `additionalTools?: AgentTool[]` — extra tools beyond the defaults
 - `apiKeys?: Record<string, string>` — provider → API key overrides
+- `onAgentStatus?: AgentStatusCallbacks` — callbacks for turn-level and tool-level events
 
-#### `createHarnessFromProfile(dirPath, profileId, options): Promise<...>`
+**Return fields:**
+- `harness: AgentHarness` — the fully-wired agent harness
+- `sessionId: string` — resolved session identifier
+- `unsubscribe?: () => void` — teardown function for agent status subscription. Call after the harness is no longer needed to prevent memory leaks. Only present when `onAgentStatus` is provided AND at least one agent-level callback (`onTurnStart`, `onTurnEnd`, `onToolCallStart`, or `onToolCallEnd`) is defined.
 
-Convenience wrapper: loads a profile from disk, then delegates to `createHarness`.
+#### `createHarnessFromProfile(dirPath, profileId, options): Promise<{ harness: AgentHarness; sessionId: string; unsubscribe?: () => void }>`
+
+Convenience wrapper: loads a profile from disk, then delegates to `createHarness`. Returns the same shape including `unsubscribe` when agent status callbacks are active.
 
 #### `extractJsonFromText(text: string): string | null`
 
@@ -363,10 +388,10 @@ Manages a DAG of tasks with enforced state transitions and cycle detection.
 ```
 blocked → ready → claimed → implementing → reviewing → done
                                     ↑            ↓
-                                    └── rejected ←┘ (returns to "claimed")
+                                    └── rejected ←┘ (returns to "ready")
 ```
 
-> **Note:** `rejected` is not a `TaskStatus` value. It represents the transition from `reviewing` back to `claimed` via `rejectTask()`. The task's status is set to `claimed`, not `rejected`.
+> **Note:** `rejected` is not a `TaskStatus` value. It represents the transition from `reviewing` back to `ready` via `rejectTask()`. The task's status is set to `ready`, not `rejected`.
 
 #### `WorkflowStatusTracker`
 
@@ -379,6 +404,7 @@ class WorkflowStatusTracker {
   get completedPhases(): WorkflowPhase[];
   get scoutingReports(): unknown[];
   get plan(): unknown;
+  get research(): string | undefined;
   get stats(): { totalTokens; totalCost; agentCount };
   get taskTracker(): TaskTracker;
   get auditLog(): AuditLog;
@@ -388,6 +414,7 @@ class WorkflowStatusTracker {
   setPhase(phase: WorkflowPhase): void;
   setScoutingReports(reports: unknown[]): void;
   setPlan(plan: unknown): void;
+  setResearch(research: string): void;
   addTokensToStats(tokens: { input: number; output: number }): void;
   incrementAgentCount(): void;
   // Persistence
@@ -411,6 +438,7 @@ Execute the full development workflow. Resumes automatically if a `workflow-stat
 - `workDir: string` — directory for workflow state persistence
 - `maxConcurrentTasks?: number` — max parallel implementers (default 3)
 - `apiKeys?: Record<string, string>` — provider → API key overrides
+- `onStatus?: StatusCallbacks` — status callbacks for workflow and agent events (inherited from `DevelopWorkflowOptions`)
 
 #### Phase Functions
 
@@ -418,12 +446,12 @@ Each phase is exported individually for custom orchestration:
 
 | Function | Signature |
 |---|---|
-| `scoutingPhase` | `(tracker, profilesDir, taskPrompt, cwd, apiKeys?) → Promise<unknown[]>` |
-| `scoutingReviewPhase` | `(tracker, profilesDir, reports, cwd, apiKeys?) → Promise<ScoutingReview>` |
-| `planningPhase` | `(tracker, profilesDir, research, taskPrompt, cwd, apiKeys?) → Promise<Plan>` |
-| `planReviewPhase` | `(tracker, profilesDir, plan, research, taskPrompt, cwd, apiKeys?) → Promise<PlanReview>` |
-| `implementationPhase` | `(tracker, profilesDir, plan, cwd, maxConcurrentTasks?, apiKeys?) → Promise<void>` |
-| `finalReviewPhase` | `(tracker, profilesDir, cwd, apiKeys?) → Promise<boolean>` |
+| `scoutingPhase` | `(tracker, profilesDir, taskPrompt, cwd, apiKeys?, onStatus?) → Promise<unknown[]>` |
+| `scoutingReviewPhase` | `(tracker, profilesDir, reports, cwd, apiKeys?, onStatus?) → Promise<ScoutingReview>` |
+| `planningPhase` | `(tracker, profilesDir, research, taskPrompt, cwd, apiKeys?, onStatus?) → Promise<Plan>` |
+| `planReviewPhase` | `(tracker, profilesDir, plan, research, taskPrompt, cwd, apiKeys?, onStatus?) → Promise<PlanReview>` |
+| `implementationPhase` | `(tracker, profilesDir, plan, cwd, maxConcurrentTasks?, apiKeys?, onStatus?) → Promise<void>` |
+| `finalReviewPhase` | `(tracker, profilesDir, cwd, apiKeys?, onStatus?) → Promise<boolean>` |
 
 ---
 
@@ -571,6 +599,7 @@ Serialized form of `WorkflowStatusTracker`. Written to `workflow-state.json` on 
 | `tasks` | `Task[]` | All tasks in the plan |
 | `scoutingReports` | `unknown[]` | Collected scouting reports |
 | `plan` | `unknown` | The validated implementation plan |
+| `research?` | `string` | Synthesized research summary from scouting review |
 | `stats` | `{ totalTokens: number; totalCost: number; agentCount: number }` | Aggregate statistics |
 
 ---
@@ -586,6 +615,7 @@ Options for `createHarness`.
 | `sessionId?` | `string` | Provide to use JSONL persistence; omit for in-memory |
 | `additionalTools?` | `AgentTool[]` | Extra tools beyond the defaults |
 | `apiKeys?` | `Record<string, string>` | Provider → API key overrides |
+| `onAgentStatus?` | `AgentStatusCallbacks` | Callbacks for turn-level and tool-level agent events |
 
 ---
 
@@ -620,9 +650,10 @@ Options shared by the develop workflow phases.
 | `cwd` | `string` | Project directory to operate on |
 | `maxConcurrentTasks?` | `number` | Maximum parallel implementers (default 3) |
 | `apiKeys?` | `Record<string, string>` | Provider → API key overrides |
+| `onStatus?` | `StatusCallbacks` | Callbacks for workflow, phase, task, and agent-level events |
 | `workDir?` | `string` | Directory for workflow state persistence |
 
-`RunOptions` extends this with `workDir: string` as required.
+`RunOptions` extends this with `workDir: string` as required and inherits `onStatus`.
 
 ---
 
@@ -648,6 +679,50 @@ Token usage and cost aggregation returned by `SessionHistory.getStats()`.
 | `totalOutputTokens` | `number` | Sum of output tokens from assistant messages |
 | `totalCost` | `number` | Sum of costs from assistant messages |
 | `messageCount` | `number` | Total number of message entries in the session |
+
+---
+
+### `WorkflowStatusCallbacks`
+
+Callbacks for workflow-level and task-level events. All methods are optional — implement only the events you care about.
+
+| Method | Parameter Shape | Fired when |
+|---|---|---|
+| `onWorkflowStart` | `{ taskPrompt: string; resumed: boolean; workDir: string }` | The `run()` orchestrator starts (new or resumed) |
+| `onPhaseStart` | `{ phase: WorkflowPhase; round: number }` | A phase begins execution |
+| `onPhaseComplete` | `{ phase: WorkflowPhase; durationMs: number }` | A phase finishes |
+| `onAgentSpawn` | `{ agentId: string; profile: string; phase: string; taskId?: string }` | An agent harness is created |
+| `onAgentComplete` | `{ agentId: string; profile: string; phase: string; taskId?: string }` | An agent finishes its prompt |
+| `onTaskStart` | `{ taskId: string; title: string; agentId: string }` | A task is claimed and dispatched to an implementer |
+| `onTaskComplete` | `{ taskId: string; title: string }` | A task passes review and is marked done |
+| `onTaskRejected` | `{ taskId: string; title: string; reason: string }` | A task fails review and returns to ready |
+| `onDecision` | `{ agentId: string; decision: string; reasoning: string; taskId?: string }` | A reviewer makes a decision (e.g. approved, plan_rejected) |
+| `onError` | `{ agentId: string; error: string; phase: string; taskId?: string }` | An agent encounters an error |
+| `onWorkflowComplete` | `{ totalDurationMs: number; agentCount: number }` | The workflow finishes successfully |
+| `onWorkflowFailed` | `{ error: Error; phase: string }` | The workflow throws an unhandled error |
+
+---
+
+### `AgentStatusCallbacks`
+
+Callbacks for turn-level and tool-level agent events. These provide fine-grained observability into individual agent turns. All methods are optional.
+
+| Method | Parameter Shape | Fired when |
+|---|---|---|
+| `onTurnStart` | `{ agentId: string; turn: number }` | An agent turn begins |
+| `onTurnEnd` | `{ agentId: string; turn: number; tokens?: { input: number; output: number } }` | An agent turn completes. `tokens` is present when the model reports usage. |
+| `onToolCallStart` | `{ agentId: string; toolName: string; toolCallId: string }` | A tool execution starts |
+| `onToolCallEnd` | `{ agentId: string; toolName: string; toolCallId: string; isError: boolean }` | A tool execution finishes. `isError` is `true` when the tool threw. |
+
+---
+
+### `StatusCallbacks`
+
+```typescript
+type StatusCallbacks = WorkflowStatusCallbacks & AgentStatusCallbacks;
+```
+
+Combined type for all status callbacks. Pass this as `onStatus` to `run()` or individual phase functions.
 
 ---
 
@@ -685,7 +760,7 @@ The pipeline proceeds as follows:
 
 4. **Plan Review** — The `plan-reviewer` evaluates the plan. If `ready` is `false` and fewer than 3 rounds have elapsed, the handler returns `"planning"` to jump back and regenerate the plan. After 3 rounds the workflow proceeds with the current plan.
 
-5. **Implementation** — Tasks are loaded into the `TaskTracker`. The orchestrator claims up to `maxConcurrentTasks` at a time, dispatches them to implementer agents in parallel via `parallelAgents`, and then runs reviewer agents in parallel via `Promise.allSettled`. Approved tasks are completed; rejected tasks return to `"claimed"` state for re-implementation. If a review itself fails (e.g. an error in the reviewer agent), the failure is logged to the audit trail and the task is still completed to avoid blocking the pipeline.
+5. **Implementation** — Tasks are loaded into the `TaskTracker`. The orchestrator claims up to `maxConcurrentTasks` at a time, dispatches them to implementer agents in parallel via `parallelAgents`, and then runs reviewer agents in parallel via `Promise.allSettled`. Approved tasks are completed; rejected tasks return to `"ready"` state for re-implementation. If a review itself fails (e.g. an error in the reviewer agent), the failure is logged to the audit trail and the task is still completed to avoid blocking the pipeline.
 
 6. **Final Review** — The `final-reviewer` examines the entire codebase. If critical issues are found, `fixer` agents resolve them in parallel via `parallelAgents`. This loop runs up to 3 rounds.
 
@@ -766,7 +841,7 @@ Tasks are managed by `TaskTracker`, which enforces a directed acyclic graph:
 - **Adding a task**: `addTask()` validates that no cycle would be introduced. If all dependencies are `"done"`, the task starts as `"ready"`; otherwise `"blocked"`.
 - **Claiming tasks**: `claimTasks(n)` returns up to `n` ready tasks and transitions them to `"claimed"`.
 - **Completing a task**: `completeTask()` moves a reviewed task to `"done"` and recalculates all blocked tasks — any whose dependencies are now all done become `"ready"`.
-- **Rejection**: `rejectTask()` moves a task back to `"claimed"` with feedback, allowing re-implementation.
+- **Rejection**: `rejectTask()` moves a task back to `"ready"` with feedback, allowing it to be reclaimed and re-implemented.
 
 The tracker is serializable via `toJSON()`/`fromJSON()` for persistence across workflow runs.
 
@@ -890,18 +965,83 @@ Unlike `parallelAgents`, `sequentialAgents` returns a plain `T[]` and throws imm
 
 ---
 
-## 8. Configuration
+## 8. CLI Reference
+
+The package ships a `workflow-harness` CLI binary (declared in `package.json` → `bin`).
+
+### Installation
+
+```bash
+# Global install
+npm install -g workflow-harness
+
+# Or use without installing
+npx workflow-harness "Fix the login bug" --profiles-dir ./src/profiles --cwd ./my-project --work-dir /tmp/wf
+```
+
+### Usage
+
+```
+workflow-harness <task-prompt> --profiles-dir <path> --cwd <path> --work-dir <path> [options]
+```
+
+### Flags
+
+| Flag | Required | Default | Description |
+|---|---|---|---|
+| `--profiles-dir <path>` | **Yes** | — | Directory containing agent profile `.md` files |
+| `--cwd <path>` | **Yes** | — | Project directory to operate on |
+| `--work-dir <path>` | **Yes** | — | Directory for workflow state persistence |
+| `--max-concurrent <n>` | No | `3` | Maximum parallel implementer agents |
+| `--verbose` | No | `false` | Enable agent-level output (turns, tool calls, token usage) |
+| `--api-key <provider=key>` | No | — | Provider → API key override. Repeatable. |
+
+### Example Output
+
+Default (non-verbose) output shows workflow-level and task-level events:
+
+```
+[09:14:32] 🚀 Workflow started: "Add input validation to all public API endpoints" (resumed: false)
+[09:14:32] 📦 Phase started: scouting (round 0)
+[09:14:33] ⏳ Agent spawned: scout-coordinator (profile: scout)
+[09:14:45] ✅ Agent complete: scout-coordinator
+[09:14:46] ⏳ Agent spawned: scout-0 (profile: scout)
+[09:15:02] ✅ Agent complete: scout-0
+[09:15:02] ✅ Phase completed: scouting (30.1s)
+[09:15:02] 📦 Phase started: scouting_review (round 0)
+...
+[09:22:18] 📋 Task started: task-1 - "Add input validation to user routes"
+[09:22:35] ✅ Task complete: task-1
+...
+[09:31:44] 🎉 Workflow complete in 1032.4s (14 agents)
+```
+
+With `--verbose`, agent-level events are also shown:
+
+```
+[09:14:33] 🔄 Turn 1 started (agent: abc123)
+[09:14:33] 🔧 Tool call: read (agent: abc123)
+[09:14:34] ✅ Tool result: read (agent: abc123)
+[09:14:35] 🔄 Turn 1 ended (agent: abc123, tokens: 1520 in / 340 out)
+```
+
+### Exit Codes
+
+| Code | Meaning |
+|---|---|
+| `0` | Workflow completed successfully |
+| `1` | Workflow failed with an error |
+
+---
+
+## 9. Configuration
 
 ### Environment Variables
 
-| Variable | Provider | Description |
-|---|---|---|
-| `ANTHROPIC_API_KEY` | `anthropic` | API key for Anthropic (Claude) models |
-| `OPENAI_API_KEY` | `openai` | API key for OpenAI models |
-
-API keys are resolved in this order:
+API keys for your configured provider(s) are resolved in this order:
 1. The `apiKeys` option passed to `createHarness` or `run`.
-2. Well-known environment variables via `getEnvApiKey()`.
+2. The `--api-key` CLI flag.
+3. Provider-specific environment variables (see your provider's documentation for the expected variable names).
 
 ### Profile Configuration
 
@@ -925,12 +1065,17 @@ The default profiles in `src/profiles/` are:
 The `DevelopWorkflowOptions` / `RunOptions` interface:
 
 ```typescript
-interface RunOptions {
-  profilesDir: string;          // Directory with .md profile files
-  cwd: string;                  // Project directory to work on
-  workDir: string;              // Directory for workflow state persistence
-  maxConcurrentTasks?: number;  // Max parallel implementers (default: 3)
+interface RunOptions extends DevelopWorkflowOptions {
+  workDir: string;  // Required: directory for workflow state persistence
+}
+
+interface DevelopWorkflowOptions {
+  profilesDir: string;              // Directory with .md profile files
+  cwd: string;                      // Project directory to work on
+  maxConcurrentTasks?: number;      // Max parallel implementers (default: 3)
   apiKeys?: Record<string, string>; // Provider → API key overrides
+  onStatus?: StatusCallbacks;       // Callbacks for workflow/agent events
+  workDir?: string;                 // Directory for workflow state persistence
 }
 ```
 
@@ -938,7 +1083,7 @@ interface RunOptions {
 
 ---
 
-## 9. Development
+## 10. Development
 
 ### Scripts
 

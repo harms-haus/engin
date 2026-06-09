@@ -14,13 +14,17 @@ function isEnoentError(err: unknown): boolean {
 export class AuditLog {
     private readonly logPath: string;
     private cache: AuditEvent[] | null = null;
+    private dirEnsured = false;
 
     constructor(private readonly logDir: string) {
         this.logPath = path.join(logDir, "audit.jsonl");
     }
 
     async append(event: Omit<AuditEvent, "timestamp">): Promise<void> {
-        await fs.mkdir(this.logDir, { recursive: true });
+        if (!this.dirEnsured) {
+            await fs.mkdir(this.logDir, { recursive: true });
+            this.dirEnsured = true;
+        }
 
         const record = {
             ...event,
@@ -111,5 +115,6 @@ export class AuditLog {
             if (!isEnoentError(err)) throw err;
         }
         this.cache = null;
+        this.dirEnsured = false;
     }
 }

@@ -106,24 +106,30 @@ export async function parallelAgents<T = AssistantMessage>(
     );
 
     // 2. Run prompts
-    const results = await Promise.allSettled(
-        harnessResults.map(async ({ harness }, i) => {
-            const prompt = promptFn(harness, i);
-            if (options?.schema) {
-                return promptForStructured(
-                    harness,
-                    prompt,
-                    options.schema,
-                    options.maxRetries !== undefined
-                        ? { maxRetries: options.maxRetries }
-                        : undefined,
-                ) as Promise<T>;
-            }
-            return harness.prompt(prompt) as unknown as Promise<T>;
-        }),
-    );
+    try {
+        const results = await Promise.allSettled(
+            harnessResults.map(async ({ harness }, i) => {
+                const prompt = promptFn(harness, i);
+                if (options?.schema) {
+                    return promptForStructured(
+                        harness,
+                        prompt,
+                        options.schema,
+                        options.maxRetries !== undefined
+                            ? { maxRetries: options.maxRetries }
+                            : undefined,
+                    ) as Promise<T>;
+                }
+                return harness.prompt(prompt) as unknown as Promise<T>;
+            }),
+        );
 
-    return results;
+        return results;
+    } finally {
+        for (const { unsubscribe } of harnessResults) {
+            unsubscribe?.();
+        }
+    }
 }
 
 // ─── sequentialAgents ──────────────────────────────────────────────────────
@@ -148,27 +154,33 @@ export async function sequentialAgents<T = AssistantMessage>(
     );
 
     // 2. Run prompts sequentially
-    const results: T[] = [];
-    for (let i = 0; i < harnessResults.length; i++) {
-        const { harness } = harnessResults[i];
-        const prompt = promptFn(harness, i);
-        if (options?.schema) {
-            results.push(
-                (await promptForStructured(
-                    harness,
-                    prompt,
-                    options.schema,
-                    options.maxRetries !== undefined
-                        ? { maxRetries: options.maxRetries }
-                        : undefined,
-                )) as T,
-            );
-        } else {
-            results.push(
-                (await harness.prompt(prompt)) as unknown as T,
-            );
+    try {
+        const results: T[] = [];
+        for (let i = 0; i < harnessResults.length; i++) {
+            const { harness } = harnessResults[i];
+            const prompt = promptFn(harness, i);
+            if (options?.schema) {
+                results.push(
+                    (await promptForStructured(
+                        harness,
+                        prompt,
+                        options.schema,
+                        options.maxRetries !== undefined
+                            ? { maxRetries: options.maxRetries }
+                            : undefined,
+                    )) as T,
+                );
+            } else {
+                results.push(
+                    (await harness.prompt(prompt)) as unknown as T,
+                );
+            }
+        }
+
+        return results;
+    } finally {
+        for (const { unsubscribe } of harnessResults) {
+            unsubscribe?.();
         }
     }
-
-    return results;
 }

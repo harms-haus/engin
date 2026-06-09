@@ -1,6 +1,6 @@
 // ─── Development Workflow ────────────────────────────────────────────────────
 import { z } from "zod";
-import type { AgentProfile, HarnessCreationOptions } from "../core/types";
+import type { AgentProfile, AgentStatusCallbacks, HarnessCreationOptions, StatusCallbacks } from "../core/types";
 import { loadProfiles } from "../core/profile";
 import { createHarness } from "../core/harness-factory";
 import { promptForStructured } from "../core/structured-output";
@@ -98,8 +98,37 @@ export interface DevelopWorkflowOptions {
     maxConcurrentTasks?: number;
     /** Custom API keys by provider */
     apiKeys?: Record<string, string>;
+    /** Status callbacks for agent/workflow events */
+    onStatus?: StatusCallbacks;
     /** Existing workDir to resume from */
     workDir?: string;
+}
+
+// ─── Audit Event Helpers ─────────────────────────────────────────────────
+
+function structuredOutputEvent(
+    agentId: string,
+    output: unknown,
+    taskId?: string,
+): Omit<Extract<AuditEvent, { type: "structured_output" }>, "timestamp"> {
+    return { type: "structured_output", agentId, output, ...(taskId && { taskId }) };
+}
+
+function decisionEvent(
+    agentId: string,
+    decision: string,
+    reasoning: string,
+    taskId?: string,
+): Omit<Extract<AuditEvent, { type: "decision" }>, "timestamp"> {
+    return { type: "decision", agentId, decision, reasoning, ...(taskId && { taskId }) };
+}
+
+function errorEvent(
+    agentId: string,
+    error: string,
+    taskId?: string,
+): Omit<Extract<AuditEvent, { type: "error" }>, "timestamp"> {
+    return { type: "error", agentId, error, ...(taskId && { taskId }) };
 }
 
 // ─── Helper: get profile and create harness ─────────────────────────────────
@@ -116,14 +145,25 @@ async function getProfile(
     return profile;
 }
 
+function agentCallbacks(onStatus?: StatusCallbacks): AgentStatusCallbacks | undefined {
+    if (!onStatus) return undefined;
+    return {
+        onTurnStart: onStatus.onTurnStart,
+        onTurnEnd: onStatus.onTurnEnd,
+        onToolCallStart: onStatus.onToolCallStart,
+        onToolCallEnd: onStatus.onToolCallEnd,
+    };
+}
+
 async function makeHarnessOptions(
     profilesDir: string,
     profileId: string,
     cwd: string,
     apiKeys?: Record<string, string>,
+    onStatus?: StatusCallbacks,
 ): Promise<HarnessCreationOptions> {
     const profile = await getProfile(profilesDir, profileId);
-    return { profile, cwd, apiKeys };
+    return { profile, cwd, apiKeys, onAgentStatus: agentCallbacks(onStatus) };
 }
 
 // ─── Phase 1: Scouting ──────────────────────────────────────────────────────
@@ -141,32 +181,46 @@ export async function scoutingPhase(
     taskPrompt: string,
     cwd: string,
     apiKeys?: Record<string, string>,
+    onStatus?: StatusCallbacks,
 ): Promise<unknown[]> {
     // 1. Get scouting topics
-    const scoutOpts = await makeHarnessOptions(profilesDir, "scout", cwd, apiKeys);
-    const { harness: scoutHarness } = await createHarness(scoutOpts);
+    const scoutOpts = await makeHarnessOptions(profilesDir, "scout", cwd, apiKeys, onStatus);
+    const { harness: scoutHarness, unsubscribe: scoutUnsub } = await createHarness(scoutOpts);
+    onStatus?.onAgentSpawn?.({ agentId: "scout-coordinator", profile: "scout", phase: "scouting" });
     tracker.incrementAgentCount();
 
-    const topicPrompt = [
-        "You are a codebase scout. Analyze the task below and identify key areas of the codebase that need investigation.",
-        "",
-        `Task: ${taskPrompt}`,
-        "",
-        "Respond with a JSON object listing the topics to investigate.",
-    ].join("\n");
+    let topics: ScoutingTopics;
+    try {
+        const topicPrompt = [
+            "You are a codebase scout. Analyze the task below and identify key areas of the codebase that need investigation.",
+            "",
+            `Task: ${taskPrompt}`,
+            "",
+            "Respond with a JSON object listing the topics to investigate.",
+        ].join("\n");
 
-    const topics = await promptForStructured(scoutHarness, topicPrompt, ScoutingTopicSchema);
+        topics = await promptForStructured(scoutHarness, topicPrompt, ScoutingTopicSchema);
+    } finally {
+        scoutUnsub?.();
+    }
+    onStatus?.onAgentComplete?.({ agentId: "scout-coordinator", profile: "scout", phase: "scouting" });
 
     // 2. Spawn parallel scouts for each topic
     const reports: unknown[] = [];
 
     if (topics.topics.length > 0) {
-        const scoutConfigs: HarnessCreationOptions[] = await Promise.all(
-            topics.topics.map(async (topic) => {
-                const profile = await getProfile(profilesDir, "scout");
-                return { profile, cwd, apiKeys };
-            }),
-        );
+        for (let i = 0; i < topics.topics.length; i++) {
+            onStatus?.onAgentSpawn?.({ agentId: `scout-${i}`, profile: "scout", phase: "scouting" });
+            tracker.incrementAgentCount();
+        }
+
+        const scoutProfile = await getProfile(profilesDir, "scout");
+        const scoutConfigs: HarnessCreationOptions[] = topics.topics.map(() => ({
+            profile: scoutProfile,
+            cwd,
+            apiKeys,
+            onAgentStatus: agentCallbacks(onStatus),
+        }));
 
         const results = await parallelAgents(
             scoutConfigs,
@@ -184,25 +238,21 @@ export async function scoutingPhase(
             },
         );
 
-        for (const result of results) {
+        for (let i = 0; i < results.length; i++) {
+            const result = results[i];
             if (result.status === "fulfilled") {
                 reports.push(result.value);
+                onStatus?.onAgentComplete?.({ agentId: `scout-${i}`, profile: "scout", phase: "scouting" });
             }
         }
     }
 
     // 3. Update tracker
     tracker.setScoutingReports(reports);
-    for (let i = 0; i < reports.length + 1; i++) {
-        // +1 for the topic scout harness
-        tracker.incrementAgentCount();
-    }
 
-    await tracker.auditLog.append({
-        type: "structured_output",
-        agentId: "scout-coordinator",
-        output: topics,
-    } as Omit<Extract<AuditEvent, { type: "structured_output" }>, "timestamp">);
+    await tracker.auditLog.append(
+        structuredOutputEvent("scout-coordinator", topics),
+    );
 
     return reports;
 }
@@ -219,9 +269,11 @@ export async function scoutingReviewPhase(
     reports: unknown[],
     cwd: string,
     apiKeys?: Record<string, string>,
+    onStatus?: StatusCallbacks,
 ): Promise<ScoutingReview> {
-    const opts = await makeHarnessOptions(profilesDir, "scouting-reviewer", cwd, apiKeys);
-    const { harness } = await createHarness(opts);
+    const opts = await makeHarnessOptions(profilesDir, "scouting-reviewer", cwd, apiKeys, onStatus);
+    const { harness, unsubscribe } = await createHarness(opts);
+    onStatus?.onAgentSpawn?.({ agentId: "scouting-reviewer", profile: "scouting-reviewer", phase: "scouting_review" });
     tracker.incrementAgentCount();
 
     const prompt = [
@@ -233,14 +285,27 @@ export async function scoutingReviewPhase(
         "Determine if we're ready to plan. If not, identify what gaps remain.",
     ].join("\n");
 
-    const review = await promptForStructured(harness, prompt, ScoutingReviewSchema);
+    let review: ScoutingReview;
+    try {
+        review = await promptForStructured(harness, prompt, ScoutingReviewSchema);
+    } finally {
+        unsubscribe?.();
+    }
+    onStatus?.onAgentComplete?.({ agentId: "scouting-reviewer", profile: "scouting-reviewer", phase: "scouting_review" });
 
-    await tracker.auditLog.append({
-        type: "decision",
+    onStatus?.onDecision?.({
         agentId: "scouting-reviewer",
         decision: review.ready ? "proceed_to_planning" : "more_scouting_needed",
         reasoning: review.research,
-    } as Omit<Extract<AuditEvent, { type: "decision" }>, "timestamp">);
+    });
+
+    await tracker.auditLog.append(
+        decisionEvent(
+            "scouting-reviewer",
+            review.ready ? "proceed_to_planning" : "more_scouting_needed",
+            review.research,
+        ),
+    );
 
     return review;
 }
@@ -257,9 +322,11 @@ export async function planningPhase(
     taskPrompt: string,
     cwd: string,
     apiKeys?: Record<string, string>,
+    onStatus?: StatusCallbacks,
 ): Promise<Plan> {
-    const opts = await makeHarnessOptions(profilesDir, "planner", cwd, apiKeys);
-    const { harness } = await createHarness(opts);
+    const opts = await makeHarnessOptions(profilesDir, "planner", cwd, apiKeys, onStatus);
+    const { harness, unsubscribe } = await createHarness(opts);
+    onStatus?.onAgentSpawn?.({ agentId: "planner", profile: "planner", phase: "planning" });
     tracker.incrementAgentCount();
 
     const prompt = [
@@ -273,15 +340,19 @@ export async function planningPhase(
         "Create a plan with specific tasks. Each task should be independently implementable.",
     ].join("\n");
 
-    const plan = await promptForStructured(harness, prompt, PlanSchema);
+    let plan: Plan;
+    try {
+        plan = await promptForStructured(harness, prompt, PlanSchema);
+    } finally {
+        unsubscribe?.();
+    }
+    onStatus?.onAgentComplete?.({ agentId: "planner", profile: "planner", phase: "planning" });
 
     tracker.setPlan(plan);
 
-    await tracker.auditLog.append({
-        type: "structured_output",
-        agentId: "planner",
-        output: plan,
-    } as Omit<Extract<AuditEvent, { type: "structured_output" }>, "timestamp">);
+    await tracker.auditLog.append(
+        structuredOutputEvent("planner", plan),
+    );
 
     return plan;
 }
@@ -299,9 +370,11 @@ export async function planReviewPhase(
     taskPrompt: string,
     cwd: string,
     apiKeys?: Record<string, string>,
+    onStatus?: StatusCallbacks,
 ): Promise<PlanReview> {
-    const opts = await makeHarnessOptions(profilesDir, "plan-reviewer", cwd, apiKeys);
-    const { harness } = await createHarness(opts);
+    const opts = await makeHarnessOptions(profilesDir, "plan-reviewer", cwd, apiKeys, onStatus);
+    const { harness, unsubscribe } = await createHarness(opts);
+    onStatus?.onAgentSpawn?.({ agentId: "plan-reviewer", profile: "plan-reviewer", phase: "plan_review" });
     tracker.incrementAgentCount();
 
     const prompt = [
@@ -318,14 +391,27 @@ export async function planReviewPhase(
         "Approve the plan if it's sound, or provide specific feedback for improvement.",
     ].join("\n");
 
-    const review = await promptForStructured(harness, prompt, PlanReviewSchema);
+    let review: PlanReview;
+    try {
+        review = await promptForStructured(harness, prompt, PlanReviewSchema);
+    } finally {
+        unsubscribe?.();
+    }
+    onStatus?.onAgentComplete?.({ agentId: "plan-reviewer", profile: "plan-reviewer", phase: "plan_review" });
 
-    await tracker.auditLog.append({
-        type: "decision",
+    onStatus?.onDecision?.({
         agentId: "plan-reviewer",
         decision: review.ready ? "plan_approved" : "plan_rejected",
         reasoning: review.feedback,
-    } as Omit<Extract<AuditEvent, { type: "decision" }>, "timestamp">);
+    });
+
+    await tracker.auditLog.append(
+        decisionEvent(
+            "plan-reviewer",
+            review.ready ? "plan_approved" : "plan_rejected",
+            review.feedback,
+        ),
+    );
 
     return review;
 }
@@ -346,6 +432,7 @@ export async function implementationPhase(
     cwd: string,
     maxConcurrentTasks: number = 3,
     apiKeys?: Record<string, string>,
+    onStatus?: StatusCallbacks,
 ): Promise<void> {
     // 1. Load plan tasks into the tracker
     for (const task of plan.tasks) {
@@ -377,12 +464,13 @@ export async function implementationPhase(
         const implConfigs: HarnessCreationOptions[] = await Promise.all(
             claimed.map(async (task) => {
                 const profile = await getProfile(profilesDir, task.profile);
-                return { profile, cwd, apiKeys };
+                return { profile, cwd, apiKeys, onAgentStatus: agentCallbacks(onStatus) };
             }),
         );
 
         for (const task of claimed) {
             tracker.taskTracker.startTask(task.id, `implementer-${task.id}`);
+            onStatus?.onTaskStart?.({ taskId: task.id, title: task.title, agentId: `implementer-${task.id}` });
             tracker.incrementAgentCount();
         }
 
@@ -424,15 +512,16 @@ export async function implementationPhase(
 
         const reviewerHarnesses = await Promise.all(
             reviewingTasks.map(async (task) => {
-                const reviewerOpts = await makeHarnessOptions(profilesDir, "implement-reviewer", cwd, apiKeys);
-                const result = await createHarness(reviewerOpts);
+                const reviewerOpts = await makeHarnessOptions(profilesDir, "implement-reviewer", cwd, apiKeys, onStatus);
+                const { harness, unsubscribe } = await createHarness(reviewerOpts);
+                onStatus?.onAgentSpawn?.({ agentId: `reviewer-${task.id}`, profile: "implement-reviewer", phase: "implementing", taskId: task.id });
                 tracker.incrementAgentCount();
-                return { task, harness: result.harness };
+                return { task, harness, unsubscribe };
             }),
         );
 
         const reviewPromises = reviewerHarnesses.map(
-            async ({ task, harness: reviewerHarness }) => {
+            async ({ task, harness: reviewerHarness, unsubscribe: reviewerUnsub }) => {
                 const taskObj = tracker.taskTracker.getTask(task.id)!;
                 const reviewPrompt = [
                     "You are a code reviewer. Evaluate the following implementation result.",
@@ -446,56 +535,69 @@ export async function implementationPhase(
                     "Determine if the implementation is correct and complete.",
                 ].join("\n");
 
+                let reviewResult: ReviewResult;
+                try {
+                    reviewResult = await promptForStructured(reviewerHarness, reviewPrompt, ReviewResultSchema);
+                } finally {
+                    reviewerUnsub?.();
+                }
+                onStatus?.onAgentComplete?.({ agentId: `reviewer-${task.id}`, profile: "implement-reviewer", phase: "implementing", taskId: task.id });
+
                 return {
                     task,
-                    review: await promptForStructured(reviewerHarness, reviewPrompt, ReviewResultSchema),
+                    review: reviewResult,
                 };
             },
         );
 
         const reviewSettled = await Promise.allSettled(reviewPromises);
 
-        for (const settled of reviewSettled) {
-            if (settled.status === "fulfilled") {
-                const { task, review } = settled.value;
+        const auditPromises: Promise<void>[] = [];
+        for (let i = 0; i < reviewSettled.length; i++) {
+            const settled = reviewSettled[i];
+            const task = reviewingTasks[i];
 
-                await tracker.auditLog.append({
-                    type: "decision",
-                    agentId: `reviewer-${task.id}`,
-                    decision: review.approved ? "approved" : "rejected",
-                    reasoning: review.feedback,
-                    taskId: task.id,
-                } as Omit<Extract<AuditEvent, { type: "decision" }>, "timestamp">);
+            if (settled.status === "fulfilled") {
+                const { review } = settled.value;
+
+                auditPromises.push(
+                    tracker.auditLog.append(
+                        decisionEvent(
+                            `reviewer-${task.id}`,
+                            review.approved ? "approved" : "rejected",
+                            review.feedback,
+                            task.id,
+                        ),
+                    ),
+                );
 
                 if (review.approved) {
                     tracker.taskTracker.completeTask(task.id);
+                    onStatus?.onTaskComplete?.({ taskId: task.id, title: task.title });
                 } else {
                     tracker.taskTracker.rejectTask(task.id, review.feedback);
+                    onStatus?.onTaskRejected?.({ taskId: task.id, title: task.title, reason: review.feedback });
                 }
             } else {
-                // Review itself failed — find which task this was
-                const failedTask = reviewingTasks.find((task) =>
-                    !reviewSettled.some(
-                        (r) =>
-                            r.status === "fulfilled" &&
-                            (r.value as { task: { id: string } }).task.id === task.id,
-                    ),
-                );
-                const taskId = failedTask?.id ?? "unknown";
+                // Review itself failed — task is known via index
                 const errorMessage = settled.reason instanceof Error ? settled.reason.message : String(settled.reason);
 
-                await tracker.auditLog.append({
-                    type: "error",
-                    agentId: `reviewer-${taskId}`,
-                    error: `Review failed: ${errorMessage}`,
-                    taskId,
-                } as Omit<Extract<AuditEvent, { type: "error" }>, "timestamp">);
+                onStatus?.onError?.({ agentId: `reviewer-${task.id}`, error: errorMessage, phase: "implementing", taskId: task.id });
 
-                if (failedTask) {
-                    tracker.taskTracker.completeTask(failedTask.id);
-                }
+                auditPromises.push(
+                    tracker.auditLog.append(
+                        errorEvent(
+                            `reviewer-${task.id}`,
+                            `Review failed: ${errorMessage}`,
+                            task.id,
+                        ),
+                    ),
+                );
+
+                tracker.taskTracker.completeTask(task.id);
             }
         }
+        await Promise.all(auditPromises);
     }
 }
 
@@ -510,14 +612,16 @@ export async function finalReviewPhase(
     profilesDir: string,
     cwd: string,
     apiKeys?: Record<string, string>,
+    onStatus?: StatusCallbacks,
 ): Promise<boolean> {
     const maxFixRounds = 3;
     let clean = false;
 
     for (let round = 0; round < maxFixRounds; round++) {
         // 1. Get final review assessment
-        const reviewerOpts = await makeHarnessOptions(profilesDir, "final-reviewer", cwd, apiKeys);
-        const { harness: reviewerHarness } = await createHarness(reviewerOpts);
+        const reviewerOpts = await makeHarnessOptions(profilesDir, "final-reviewer", cwd, apiKeys, onStatus);
+        const { harness: reviewerHarness, unsubscribe: reviewerUnsub } = await createHarness(reviewerOpts);
+        onStatus?.onAgentSpawn?.({ agentId: "final-reviewer", profile: "final-reviewer", phase: "final_review" });
         tracker.incrementAgentCount();
 
         const reviewPrompt = [
@@ -527,13 +631,17 @@ export async function finalReviewPhase(
             "Respond with your assessment of overall quality and specific issues found.",
         ].join("\n");
 
-        const assessment = await promptForStructured(reviewerHarness, reviewPrompt, FinalReviewTopicsSchema);
+        let assessment: FinalReviewTopics;
+        try {
+            assessment = await promptForStructured(reviewerHarness, reviewPrompt, FinalReviewTopicsSchema);
+        } finally {
+            reviewerUnsub?.();
+        }
+        onStatus?.onAgentComplete?.({ agentId: "final-reviewer", profile: "final-reviewer", phase: "final_review" });
 
-        await tracker.auditLog.append({
-            type: "structured_output",
-            agentId: "final-reviewer",
-            output: assessment,
-        } as Omit<Extract<AuditEvent, { type: "structured_output" }>, "timestamp">);
+        await tracker.auditLog.append(
+            structuredOutputEvent("final-reviewer", assessment),
+        );
 
         if (assessment.issues.length === 0) {
             clean = true;
@@ -550,7 +658,7 @@ export async function finalReviewPhase(
         const fixerConfigs: HarnessCreationOptions[] = await Promise.all(
             criticalIssues.map(async () => {
                 const profile = await getProfile(profilesDir, "fixer");
-                return { profile, cwd, apiKeys };
+                return { profile, cwd, apiKeys, onAgentStatus: agentCallbacks(onStatus) };
             }),
         );
 
@@ -595,19 +703,25 @@ export async function run(
     taskPrompt: string,
     options: RunOptions,
 ): Promise<void> {
-    const { profilesDir, cwd, maxConcurrentTasks, apiKeys, workDir } = options;
+    const { profilesDir, cwd, maxConcurrentTasks, apiKeys, workDir, onStatus } = options;
+    const workflowStartTime = Date.now();
 
     // Create or load tracker
     let tracker: WorkflowStatusTracker;
+    let resumed: boolean;
     try {
         tracker = await (await import("../tracking/workflow-status")).WorkflowStatusTracker.load(workDir);
+        resumed = true;
     } catch {
         const { WorkflowStatusTracker: WST } = await import("../tracking/workflow-status");
         tracker = new WST(workDir);
+        resumed = false;
     }
 
     tracker.setTaskPrompt(taskPrompt);
     await tracker.save();
+
+    onStatus?.onWorkflowStart?.({ taskPrompt, resumed, workDir });
 
     // ── Ordered pipeline phases ─────────────────────────────────────
     // Each handler does exactly ONE step. The outer loop handles
@@ -631,21 +745,30 @@ export async function run(
     ];
 
     // Shared mutable state that flows between phases
-    let research = "";
+    let research = tracker.research ?? "";
     let plan: Plan | undefined;
     let scoutingReports: unknown[] = [];
     let scoutingRounds = 0;
     let planningRounds = 0;
 
     const handlePhase = async (phase: Phase): Promise<Phase | void> => {
+        const phaseStartTime = Date.now();
+        const round = (phase === "scouting" || phase === "scouting_review")
+            ? scoutingRounds
+            : (phase === "planning" || phase === "plan_review")
+                ? planningRounds
+                : 0;
+        onStatus?.onPhaseStart?.({ phase, round });
+
         switch (phase) {
             // ── Scouting: run scouts, then advance to scouting_review ──
             case "scouting": {
                 scoutingReports = await scoutingPhase(
-                    tracker, profilesDir, taskPrompt, cwd, apiKeys,
+                    tracker, profilesDir, taskPrompt, cwd, apiKeys, onStatus,
                 );
                 tracker.advancePhase(); // → scouting_review
                 await tracker.save();
+                onStatus?.onPhaseComplete?.({ phase, durationMs: Date.now() - phaseStartTime });
                 break;
             }
 
@@ -655,14 +778,17 @@ export async function run(
                     ? scoutingReports
                     : tracker.scoutingReports;
                 const review = await scoutingReviewPhase(
-                    tracker, profilesDir, reports, cwd, apiKeys,
+                    tracker, profilesDir, reports, cwd, apiKeys, onStatus,
                 );
                 scoutingRounds++;
 
+                research = review.research;
+                tracker.setResearch(research);
+
                 if (review.ready) {
-                    research = review.research;
                     tracker.advancePhase(); // → planning
                     await tracker.save();
+                    onStatus?.onPhaseComplete?.({ phase, durationMs: Date.now() - phaseStartTime });
                     break;
                 }
 
@@ -670,13 +796,14 @@ export async function run(
                 if (scoutingRounds < 3) {
                     tracker.setPhase("scouting");
                     await tracker.save();
+                    onStatus?.onPhaseComplete?.({ phase, durationMs: Date.now() - phaseStartTime });
                     return "scouting";
                 }
 
                 // Exhausted rounds — proceed anyway with what we have
-                research = review.research;
                 tracker.advancePhase(); // → planning
                 await tracker.save();
+                onStatus?.onPhaseComplete?.({ phase, durationMs: Date.now() - phaseStartTime });
                 break;
             }
 
@@ -684,18 +811,24 @@ export async function run(
             case "planning": {
                 // Derive research from saved scouting reports if not yet available
                 if (!research) {
-                    const reports = tracker.scoutingReports;
-                    const review = await scoutingReviewPhase(
-                        tracker, profilesDir, reports, cwd, apiKeys,
-                    );
-                    research = review.research;
+                    if (tracker.research) {
+                        research = tracker.research;
+                    } else {
+                        const reports = tracker.scoutingReports;
+                        const review = await scoutingReviewPhase(
+                            tracker, profilesDir, reports, cwd, apiKeys, onStatus,
+                        );
+                        research = review.research;
+                        tracker.setResearch(research);
+                    }
                 }
 
                 plan = await planningPhase(
-                    tracker, profilesDir, research, taskPrompt, cwd, apiKeys,
+                    tracker, profilesDir, research, taskPrompt, cwd, apiKeys, onStatus,
                 );
                 tracker.advancePhase(); // → plan_review
                 await tracker.save();
+                onStatus?.onPhaseComplete?.({ phase, durationMs: Date.now() - phaseStartTime });
                 break;
             }
 
@@ -706,13 +839,14 @@ export async function run(
                 }
 
                 const planReview = await planReviewPhase(
-                    tracker, profilesDir, plan!, research, taskPrompt, cwd, apiKeys,
+                    tracker, profilesDir, plan!, research, taskPrompt, cwd, apiKeys, onStatus,
                 );
                 planningRounds++;
 
                 if (planReview.ready) {
                     tracker.advancePhase(); // → implementing
                     await tracker.save();
+                    onStatus?.onPhaseComplete?.({ phase, durationMs: Date.now() - phaseStartTime });
                     break;
                 }
 
@@ -721,12 +855,14 @@ export async function run(
                 if (planningRounds < 3) {
                     tracker.setPhase("planning");
                     await tracker.save();
+                    onStatus?.onPhaseComplete?.({ phase, durationMs: Date.now() - phaseStartTime });
                     return "planning";
                 }
 
                 // Exhausted rounds — proceed anyway with current plan
                 tracker.advancePhase(); // → implementing
                 await tracker.save();
+                onStatus?.onPhaseComplete?.({ phase, durationMs: Date.now() - phaseStartTime });
                 break;
             }
 
@@ -734,19 +870,21 @@ export async function run(
             case "implementing": {
                 if (plan) {
                     await implementationPhase(
-                        tracker, profilesDir, plan, cwd, maxConcurrentTasks, apiKeys,
+                        tracker, profilesDir, plan, cwd, maxConcurrentTasks, apiKeys, onStatus,
                     );
                 }
                 tracker.advancePhase(); // → final_review
                 await tracker.save();
+                onStatus?.onPhaseComplete?.({ phase, durationMs: Date.now() - phaseStartTime });
                 break;
             }
 
             // ── Final Review: quality check the result ──
             case "final_review": {
-                await finalReviewPhase(tracker, profilesDir, cwd, apiKeys);
+                await finalReviewPhase(tracker, profilesDir, cwd, apiKeys, onStatus);
                 tracker.advancePhase(); // → done
                 await tracker.save();
+                onStatus?.onPhaseComplete?.({ phase, durationMs: Date.now() - phaseStartTime });
                 break;
             }
 
@@ -759,16 +897,24 @@ export async function run(
     let currentIndex = phaseOrder.indexOf(tracker.currentPhase as Phase);
     if (currentIndex < 0) currentIndex = 0;
 
-    while (currentIndex < phaseOrder.length) {
-        const phase = phaseOrder[currentIndex];
-        if (phase === "done") break;
+    try {
+        while (currentIndex < phaseOrder.length) {
+            const phase = phaseOrder[currentIndex];
+            if (phase === "done") break;
 
-        const jumpTo = await handlePhase(phase);
+            const jumpTo = await handlePhase(phase);
 
-        if (jumpTo) {
-            currentIndex = phaseOrder.indexOf(jumpTo);
-        } else {
-            currentIndex++;
+            if (jumpTo) {
+                currentIndex = phaseOrder.indexOf(jumpTo);
+            } else {
+                currentIndex++;
+            }
         }
+    } catch (error: unknown) {
+        const err = error instanceof Error ? error : new Error(String(error));
+        onStatus?.onWorkflowFailed?.({ error: err, phase: tracker.currentPhase });
+        throw error;
     }
+
+    onStatus?.onWorkflowComplete?.({ totalDurationMs: Date.now() - workflowStartTime, agentCount: tracker.stats.agentCount });
 }

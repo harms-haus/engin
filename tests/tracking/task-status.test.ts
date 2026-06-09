@@ -148,7 +148,7 @@ describe("TaskTracker", () => {
     // ── rejectTask ─────────────────────────────────────────────────────
 
     describe("rejectTask", () => {
-        it("moves reviewing → claimed and stores feedback", () => {
+        it("moves reviewing → ready and stores feedback", () => {
             const tracker = new TaskTracker();
             tracker.addTask(makeTask({ id: "t1" }));
 
@@ -159,7 +159,7 @@ describe("TaskTracker", () => {
             tracker.rejectTask("t1", "Needs more work");
 
             const task = tracker.getTask("t1")!;
-            expect(task.status).toBe("claimed");
+            expect(task.status).toBe("ready");
             expect(task.reviewFeedback).toBe("Needs more work");
         });
 
@@ -335,10 +335,11 @@ describe("TaskTracker", () => {
             tracker.rejectTask("t1", "Needs revision");
 
             const taskAfterReject = tracker.getTask("t1")!;
-            expect(taskAfterReject.status).toBe("claimed");
+            expect(taskAfterReject.status).toBe("ready");
             expect(taskAfterReject.reviewFeedback).toBe("Needs revision");
 
-            // Restart after rejection
+            // Reclaim and restart after rejection
+            tracker.claimTasks(1);
             tracker.startTask("t1", "agent-2");
             tracker.submitForReview("t1", "revised");
             tracker.completeTask("t1");
