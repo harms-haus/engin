@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, mock, beforeEach } from "bun:test";
 import {
     SessionHistory,
     resumeSession,
@@ -66,7 +66,7 @@ function makeUserMessage(content: string): AgentMessage {
 
 function mockSession(entries: SessionTreeEntry[]): Session {
     return {
-        getEntries: vi.fn(async () => entries),
+        getEntries: mock(async () => entries),
     } as unknown as Session;
 }
 
@@ -74,7 +74,7 @@ function mockHarness(): AgentHarness & { appended: AgentMessage[] } {
     const appended: AgentMessage[] = [];
     return {
         appended,
-        appendMessage: vi.fn(async (msg: AgentMessage) => {
+        appendMessage: mock(async (msg: AgentMessage) => {
             appended.push(msg);
         }),
     } as unknown as AgentHarness & { appended: AgentMessage[] };

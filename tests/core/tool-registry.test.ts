@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, mock, beforeEach } from "bun:test";
 import { ToolRegistry, createDefaultToolRegistry } from "../../src/core/tool-registry.ts";
 import type { ExecutionEnv, AgentTool } from "../../src/core/types.ts";
 
@@ -25,30 +25,30 @@ function makeTool(name: string): AgentTool {
 function mockEnv(): ExecutionEnv {
     return {
         cwd: "/tmp",
-        absolutePath: vi.fn(async (p: string) => ok(p)),
-        joinPath: vi.fn(async (parts: string[]) => ok(parts.join("/"))),
-        readTextFile: vi.fn(async () => ok("file contents")),
-        readTextLines: vi.fn(async () => ok(["line 1", "line 2"])),
-        readBinaryFile: vi.fn(async () => ok(new Uint8Array())),
-        writeFile: vi.fn(async () => ok(undefined)),
-        appendFile: vi.fn(async () => ok(undefined)),
-        fileInfo: vi.fn(async () =>
+        absolutePath: mock(async (p: string) => ok(p)),
+        joinPath: mock(async (parts: string[]) => ok(parts.join("/"))),
+        readTextFile: mock(async () => ok("file contents")),
+        readTextLines: mock(async () => ok(["line 1", "line 2"])),
+        readBinaryFile: mock(async () => ok(new Uint8Array())),
+        writeFile: mock(async () => ok(undefined)),
+        appendFile: mock(async () => ok(undefined)),
+        fileInfo: mock(async () =>
             ok({ name: "test", path: "/tmp/test", kind: "file" as const, size: 100, mtimeMs: 0 }),
         ),
-        listDir: vi.fn(async () =>
+        listDir: mock(async () =>
             ok([
                 { name: "a.txt", path: "/tmp/a.txt", kind: "file" as const, size: 10, mtimeMs: 0 },
                 { name: "sub", path: "/tmp/sub", kind: "directory" as const, size: 0, mtimeMs: 0 },
             ]),
         ),
-        canonicalPath: vi.fn(async (p: string) => ok(p)),
-        exists: vi.fn(async () => ok(true)),
-        createDir: vi.fn(async () => ok(undefined)),
-        remove: vi.fn(async () => ok(undefined)),
-        createTempDir: vi.fn(async () => ok("/tmp/tmp-xyz")),
-        createTempFile: vi.fn(async () => ok("/tmp/tmp-xyz.txt")),
-        cleanup: vi.fn(async () => {}),
-        exec: vi.fn(async () => ok({ stdout: "output", stderr: "", exitCode: 0 })),
+        canonicalPath: mock(async (p: string) => ok(p)),
+        exists: mock(async () => ok(true)),
+        createDir: mock(async () => ok(undefined)),
+        remove: mock(async () => ok(undefined)),
+        createTempDir: mock(async () => ok("/tmp/tmp-xyz")),
+        createTempFile: mock(async () => ok("/tmp/tmp-xyz.txt")),
+        cleanup: mock(async () => {}),
+        exec: mock(async () => ok({ stdout: "output", stderr: "", exitCode: 0 })),
     };
 }
 
@@ -208,7 +208,7 @@ describe("createDefaultToolRegistry", () => {
 
     it("edit tool reads, replaces, and writes back", async () => {
         const env = mockEnv();
-        (env.readTextFile as ReturnType<typeof vi.fn>).mockResolvedValue(
+        (env.readTextFile as ReturnType<typeof mock>).mockResolvedValue(
             ok("foo bar baz"),
         );
         const registry = createDefaultToolRegistry(env);
@@ -225,7 +225,7 @@ describe("createDefaultToolRegistry", () => {
 
     it("edit tool throws when oldText is not found", async () => {
         const env = mockEnv();
-        (env.readTextFile as ReturnType<typeof vi.fn>).mockResolvedValue(
+        (env.readTextFile as ReturnType<typeof mock>).mockResolvedValue(
             ok("original"),
         );
         const registry = createDefaultToolRegistry(env);
@@ -261,7 +261,7 @@ describe("createDefaultToolRegistry", () => {
 
     it("find tool delegates to env.exec with -name flag", async () => {
         const env = mockEnv();
-        (env.exec as ReturnType<typeof vi.fn>).mockResolvedValue(
+        (env.exec as ReturnType<typeof mock>).mockResolvedValue(
             ok({ stdout: "/tmp/src/a.ts\n/tmp/src/b.ts", stderr: "", exitCode: 0 }),
         );
         const registry = createDefaultToolRegistry(env);
@@ -279,7 +279,7 @@ describe("createDefaultToolRegistry", () => {
 
     it("find tool returns no results on empty output", async () => {
         const env = mockEnv();
-        (env.exec as ReturnType<typeof vi.fn>).mockResolvedValue(
+        (env.exec as ReturnType<typeof mock>).mockResolvedValue(
             ok({ stdout: "", stderr: "", exitCode: 0 }),
         );
         const registry = createDefaultToolRegistry(env);
@@ -294,7 +294,7 @@ describe("createDefaultToolRegistry", () => {
 
     it("find tool returns no results on non-zero exit code", async () => {
         const env = mockEnv();
-        (env.exec as ReturnType<typeof vi.fn>).mockResolvedValue(
+        (env.exec as ReturnType<typeof mock>).mockResolvedValue(
             ok({ stdout: "", stderr: "", exitCode: 1 }),
         );
         const registry = createDefaultToolRegistry(env);
@@ -309,7 +309,7 @@ describe("createDefaultToolRegistry", () => {
 
     it("grep tool delegates to env.exec with correct args", async () => {
         const env = mockEnv();
-        (env.exec as ReturnType<typeof vi.fn>).mockResolvedValue(
+        (env.exec as ReturnType<typeof mock>).mockResolvedValue(
             ok({ stdout: "src/app.ts:42:const x = 1", stderr: "", exitCode: 0 }),
         );
         const registry = createDefaultToolRegistry(env);
@@ -328,7 +328,7 @@ describe("createDefaultToolRegistry", () => {
 
     it("grep tool returns no matches on exit code 1", async () => {
         const env = mockEnv();
-        (env.exec as ReturnType<typeof vi.fn>).mockResolvedValue(
+        (env.exec as ReturnType<typeof mock>).mockResolvedValue(
             ok({ stdout: "", stderr: "", exitCode: 1 }),
         );
         const registry = createDefaultToolRegistry(env);

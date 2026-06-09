@@ -1,5 +1,5 @@
 // ─── Develop Workflow Tests ──────────────────────────────────────────────────
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, mock, beforeEach, afterAll } from "bun:test";
 import { z } from "zod";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -7,26 +7,32 @@ import * as fs from "node:fs/promises";
 import type { AgentProfile, HarnessCreationOptions } from "../../src/core/types";
 import type { Plan, ScoutingReview, PlanReview, ReviewResult, FinalReviewTopics } from "../../src/workflows/develop";
 
+// Capture real modules before mocking so we can restore them in afterAll.
+const realHarnessFactory = Object.assign({}, await import("../../src/core/harness-factory.ts"));
+const realStructuredOutput = Object.assign({}, await import("../../src/core/structured-output.ts"));
+const realAgentLoop = Object.assign({}, await import("../../src/core/agent-loop.ts"));
+const realProfile = Object.assign({}, await import("../../src/core/profile.ts"));
+
 // ─── Mocks ──────────────────────────────────────────────────────────────────
 
-const mockCreateHarness = vi.fn();
-vi.mock("../../src/core/harness-factory.ts", () => ({
+const mockCreateHarness = mock() as ReturnType<typeof mock> & ((...args: unknown[]) => unknown);
+mock.module("../../src/core/harness-factory.ts", () => ({
     createHarness: (...args: unknown[]) => mockCreateHarness(...args),
 }));
 
-const mockPromptForStructured = vi.fn();
-vi.mock("../../src/core/structured-output.ts", () => ({
+const mockPromptForStructured = mock() as ReturnType<typeof mock> & ((...args: unknown[]) => unknown);
+mock.module("../../src/core/structured-output.ts", () => ({
     promptForStructured: (...args: unknown[]) => mockPromptForStructured(...args),
-    getAssistantText: vi.fn(),
+    getAssistantText: mock(),
 }));
 
-const mockParallelAgents = vi.fn();
-vi.mock("../../src/core/agent-loop.ts", () => ({
+const mockParallelAgents = mock() as ReturnType<typeof mock> & ((...args: unknown[]) => unknown);
+mock.module("../../src/core/agent-loop.ts", () => ({
     parallelAgents: (...args: unknown[]) => mockParallelAgents(...args),
 }));
 
-const mockLoadProfilesFromDirs = vi.fn();
-vi.mock("../../src/core/profile.ts", () => ({
+const mockLoadProfilesFromDirs = mock() as ReturnType<typeof mock> & ((...args: unknown[]) => unknown);
+mock.module("../../src/core/profile.ts", () => ({
     loadProfilesFromDirs: (...args: unknown[]) => mockLoadProfilesFromDirs(...args),
 }));
 
@@ -101,7 +107,7 @@ const FIXER_PROFILE: AgentProfile = {
 
 function makeHarness() {
     return {
-        prompt: vi.fn(async () => ({ content: [{ type: "text", text: "ok" }] })),
+        prompt: mock(async () => ({ content: [{ type: "text", text: "ok" }] })),
     };
 }
 
@@ -148,7 +154,7 @@ function tmpDir(): string {
 // ─── Setup ──────────────────────────────────────────────────────────────────
 
 beforeEach(() => {
-    vi.clearAllMocks();
+    mock.clearAllMocks();
     mockLoadProfilesFromDirs.mockResolvedValue(makeAllProfiles());
     mockCreateHarness.mockResolvedValue(makeHarnessResult());
 });
@@ -1154,7 +1160,6 @@ describe("run", () => {
         const workDir = tmpDir();
 
         let promptForStructuredCallCount = 0;
-        const originalMock = mockPromptForStructured.bind(vi);
 
         mockPromptForStructured.mockImplementation(async (...args: unknown[]) => {
             promptForStructuredCallCount++;
@@ -1193,4 +1198,12 @@ describe("run", () => {
         const state = JSON.parse(raw);
         expect(state.currentPhase).toBe("done");
     }, 30000);
+});
+
+// Restore the real modules so mocks don't leak into other test files.
+afterAll(() => {
+    mock.module("../../src/core/harness-factory.ts", () => realHarnessFactory);
+    mock.module("../../src/core/structured-output.ts", () => realStructuredOutput);
+    mock.module("../../src/core/agent-loop.ts", () => realAgentLoop);
+    mock.module("../../src/core/profile.ts", () => realProfile);
 });

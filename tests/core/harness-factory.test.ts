@@ -1,84 +1,92 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import type { AgentHarness, AgentTool, ExecutionEnv } from "../../src/core/types.ts";
+import { describe, it, expect, mock, beforeEach, afterAll } from "bun:test";
+import type { AgentTool, AgentProfile } from "../../src/core/types.ts";
+
+// Capture real modules before mocking so we can restore them in afterAll.
+const realPiAgentCore = Object.assign({}, await import("@earendil-works/pi-agent-core"));
+const realPiAgentCoreNode = Object.assign({}, await import("@earendil-works/pi-agent-core/node"));
+const realPiAi = Object.assign({}, await import("@earendil-works/pi-ai"));
+const realAuth = Object.assign({}, await import("../../src/core/auth.ts"));
+const realToolRegistry = Object.assign({}, await import("../../src/core/tool-registry.ts"));
+const realProfile = Object.assign({}, await import("../../src/core/profile.ts"));
 
 // ─── Mocks ──────────────────────────────────────────────────────────────────
 
 // Mock pi-agent-core (AgentHarness, InMemorySessionRepo, JsonlSessionRepo)
-vi.mock("@earendil-works/pi-agent-core", () => {
+mock.module("@earendil-works/pi-agent-core", () => {
     const mockSession = {
-        getMetadata: vi.fn(async () => ({ id: "mock-session-id", createdAt: new Date().toISOString() })),
+        getMetadata: mock(async () => ({ id: "mock-session-id", createdAt: new Date().toISOString() })),
     };
-    const MockAgentHarness = vi.fn().mockImplementation((_options: unknown) => ({
-        getModel: vi.fn(),
-        getThinkingLevel: vi.fn(),
-        getTools: vi.fn(),
+    const MockAgentHarness = mock().mockImplementation((_options: unknown) => ({
+        getModel: mock(),
+        getThinkingLevel: mock(),
+        getTools: mock(),
     }));
     return {
         AgentHarness: MockAgentHarness,
-        InMemorySessionRepo: vi.fn().mockImplementation(() => ({
-            create: vi.fn(async () => mockSession),
+        InMemorySessionRepo: mock().mockImplementation(() => ({
+            create: mock(async () => mockSession),
         })),
-        JsonlSessionRepo: vi.fn().mockImplementation(() => ({
-            create: vi.fn(async () => mockSession),
+        JsonlSessionRepo: mock().mockImplementation(() => ({
+            create: mock(async () => mockSession),
         })),
     };
 });
 
 // Mock NodeExecutionEnv from the /node subpath
-vi.mock("@earendil-works/pi-agent-core/node", () => ({
-    NodeExecutionEnv: vi.fn().mockImplementation((_options: unknown) => ({
+mock.module("@earendil-works/pi-agent-core/node", () => ({
+    NodeExecutionEnv: mock().mockImplementation((_options: unknown) => ({
         cwd: "/mock/cwd",
-        readTextFile: vi.fn(),
-        writeFile: vi.fn(),
-        exec: vi.fn(),
-        listDir: vi.fn(),
-        absolutePath: vi.fn(),
-        joinPath: vi.fn(),
-        readTextLines: vi.fn(),
-        readBinaryFile: vi.fn(),
-        appendFile: vi.fn(),
-        fileInfo: vi.fn(),
-        canonicalPath: vi.fn(),
-        exists: vi.fn(),
-        createDir: vi.fn(),
-        remove: vi.fn(),
-        createTempDir: vi.fn(),
-        createTempFile: vi.fn(),
-        cleanup: vi.fn(),
+        readTextFile: mock(),
+        writeFile: mock(),
+        exec: mock(),
+        listDir: mock(),
+        absolutePath: mock(),
+        joinPath: mock(),
+        readTextLines: mock(),
+        readBinaryFile: mock(),
+        appendFile: mock(),
+        fileInfo: mock(),
+        canonicalPath: mock(),
+        exists: mock(),
+        createDir: mock(),
+        remove: mock(),
+        createTempDir: mock(),
+        createTempFile: mock(),
+        cleanup: mock(),
     })),
 }));
 
 // Mock getModel
-const mockGetModel = vi.fn();
-vi.mock("@earendil-works/pi-ai", () => ({
+const mockGetModel = mock();
+mock.module("@earendil-works/pi-ai", () => ({
     getModel: (...args: unknown[]) => mockGetModel(...args),
 }));
 
 // Mock resolveApiKeyOrThrow
-const mockResolveApiKeyOrThrow = vi.fn();
-vi.mock("../../src/core/auth.ts", () => ({
+const mockResolveApiKeyOrThrow = mock();
+mock.module("../../src/core/auth.ts", () => ({
     resolveApiKeyOrThrow: (...args: unknown[]) => mockResolveApiKeyOrThrow(...args),
 }));
 
 // Mock createDefaultToolRegistry
 const mockToolRegistry = {
-    resolveTools: vi.fn(() => [
-        { name: "read", label: "Read", description: "", parameters: {}, execute: vi.fn() },
-        { name: "bash", label: "Bash", description: "", parameters: {}, execute: vi.fn() },
-        { name: "write", label: "Write", description: "", parameters: {}, execute: vi.fn() },
-        { name: "edit", label: "Edit", description: "", parameters: {}, execute: vi.fn() },
-        { name: "grep", label: "Grep", description: "", parameters: {}, execute: vi.fn() },
-        { name: "find", label: "Find", description: "", parameters: {}, execute: vi.fn() },
-        { name: "ls", label: "List", description: "", parameters: {}, execute: vi.fn() },
+    resolveTools: mock(() => [
+        { name: "read", label: "Read", description: "", parameters: {}, execute: mock() },
+        { name: "bash", label: "Bash", description: "", parameters: {}, execute: mock() },
+        { name: "write", label: "Write", description: "", parameters: {}, execute: mock() },
+        { name: "edit", label: "Edit", description: "", parameters: {}, execute: mock() },
+        { name: "grep", label: "Grep", description: "", parameters: {}, execute: mock() },
+        { name: "find", label: "Find", description: "", parameters: {}, execute: mock() },
+        { name: "ls", label: "List", description: "", parameters: {}, execute: mock() },
     ]),
 };
-vi.mock("../../src/core/tool-registry.ts", () => ({
-    createDefaultToolRegistry: vi.fn(() => mockToolRegistry),
+mock.module("../../src/core/tool-registry.ts", () => ({
+    createDefaultToolRegistry: mock(() => mockToolRegistry),
 }));
 
 // Mock loadProfile
-const mockLoadProfile = vi.fn();
-vi.mock("../../src/core/profile.ts", () => ({
+const mockLoadProfile = mock();
+mock.module("../../src/core/profile.ts", () => ({
     loadProfile: (...args: unknown[]) => mockLoadProfile(...args),
 }));
 
@@ -88,7 +96,6 @@ import { AgentHarness, InMemorySessionRepo, JsonlSessionRepo } from "@earendil-w
 import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
 import { createDefaultToolRegistry } from "../../src/core/tool-registry.ts";
 import { createHarness, createHarnessFromProfile } from "../../src/core/harness-factory.ts";
-import type { AgentProfile } from "../../src/core/types.ts";
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -111,7 +118,7 @@ function makeProfile(overrides?: Partial<AgentProfile>): AgentProfile {
 // ─── Setup ──────────────────────────────────────────────────────────────────
 
 beforeEach(() => {
-    vi.clearAllMocks();
+    mock.clearAllMocks();
     mockGetModel.mockReturnValue(mockModel);
     mockResolveApiKeyOrThrow.mockReturnValue("sk-test-key");
 });
@@ -193,7 +200,7 @@ describe("createHarness", () => {
             cwd: "/tmp",
         });
 
-        const harnessOptions = vi.mocked(AgentHarness).mock.calls[0][0];
+        const harnessOptions = (AgentHarness as ReturnType<typeof mock>).mock.calls[0][0];
         const getApiKeyAndHeaders = harnessOptions.getApiKeyAndHeaders!;
         const result = await getApiKeyAndHeaders(mockModel as never);
 
@@ -255,7 +262,7 @@ describe("createHarness", () => {
             label: "Custom",
             description: "A custom tool",
             parameters: { type: "object", properties: {} },
-            execute: vi.fn(),
+            execute: mock(),
         };
 
         await createHarness({
@@ -264,7 +271,7 @@ describe("createHarness", () => {
             additionalTools: [extraTool],
         });
 
-        const harnessOptions = vi.mocked(AgentHarness).mock.calls[0][0];
+        const harnessOptions = (AgentHarness as ReturnType<typeof mock>).mock.calls[0][0];
         const tools = harnessOptions.tools!;
         const toolNames = tools.map((t: AgentTool) => t.name);
 
@@ -327,7 +334,7 @@ describe("createHarnessFromProfile", () => {
             label: "Extra",
             description: "",
             parameters: {},
-            execute: vi.fn(),
+            execute: mock(),
         };
 
         await createHarnessFromProfile("/profiles", "test-agent", {
@@ -338,7 +345,7 @@ describe("createHarnessFromProfile", () => {
 
         expect(mockResolveApiKeyOrThrow).toHaveBeenCalledWith("openai", { openai: "sk-from-profile" });
 
-        const harnessOptions = vi.mocked(AgentHarness).mock.calls[0][0];
+        const harnessOptions = (AgentHarness as ReturnType<typeof mock>).mock.calls[0][0];
         const toolNames = harnessOptions.tools!.map((t: AgentTool) => t.name);
         expect(toolNames).toContain("extra");
     });
@@ -353,4 +360,14 @@ describe("createHarnessFromProfile", () => {
         expect(result).toHaveProperty("harness");
         expect(result).toHaveProperty("sessionId");
     });
+});
+
+// Restore the real modules so mocks don't leak into other test files.
+afterAll(() => {
+    mock.module("@earendil-works/pi-agent-core", () => realPiAgentCore);
+    mock.module("@earendil-works/pi-agent-core/node", () => realPiAgentCoreNode);
+    mock.module("@earendil-works/pi-ai", () => realPiAi);
+    mock.module("../../src/core/auth.ts", () => realAuth);
+    mock.module("../../src/core/tool-registry.ts", () => realToolRegistry);
+    mock.module("../../src/core/profile.ts", () => realProfile);
 });

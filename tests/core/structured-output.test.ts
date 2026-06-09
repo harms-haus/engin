@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, mock } from "bun:test";
 import { z } from "zod";
 import {
     extractJsonFromText,
@@ -91,7 +91,7 @@ describe("promptForStructured", () => {
     ): PromptableHarness {
         let callIndex = 0;
         return {
-            prompt: vi.fn(async (_text: string) => {
+            prompt: mock(async (_text: string) => {
                 const responseText = responses[callIndex] ?? responses[responses.length - 1];
                 callIndex++;
                 return {
@@ -152,7 +152,7 @@ describe("promptForStructured", () => {
         });
 
         // Second call should contain retry info
-        const secondCall = (harness.prompt as ReturnType<typeof vi.fn>).mock
+        const secondCall = (harness.prompt as ReturnType<typeof mock>).mock
             .calls[1][0] as string;
         expect(secondCall).toContain("original prompt");
         expect(secondCall).toContain("Previous attempt failed");

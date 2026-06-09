@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 
 import type { StatusCallbacks } from "./core/types.js";
 import { getDefaultWorkDir, resolveProfilesDirs } from "./core/config.js";

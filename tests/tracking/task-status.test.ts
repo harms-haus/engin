@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "bun:test";
 import { TaskTracker } from "../../src/tracking/task-status.js";
 import type { Task } from "../../src/core/types.js";
 

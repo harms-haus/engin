@@ -13,20 +13,6 @@ export function clearWorkflowCache(): void {
     workflowCache.clear();
 }
 
-// ─── tsx loader guard ───────────────────────────────────────────────────────
-
-let tsxRegistered = false;
-
-async function registerTsxOnce(): Promise<void> {
-    if (!tsxRegistered) {
-        // tsx/esm is a side-effect import that registers the ESM loader for .ts files.
-        // It has no type declarations.
-        // eslint-disable-next-line @typescript-eslint/no-require-imports
-        await import("tsx/esm" as string);
-        tsxRegistered = true;
-    }
-}
-
 // ─── Supported extensions ───────────────────────────────────────────────────
 
 const WORKFLOW_EXTENSIONS = [".js", ".mjs", ".cjs", ".ts"] as const;
@@ -59,11 +45,6 @@ export async function loadWorkflow(name: string, cwd: string): Promise<WorkflowM
             // Check cache first
             const cached = workflowCache.get(filePath);
             if (cached) return cached;
-
-            // Register tsx loader for .ts files
-            if (ext === ".ts") {
-                await registerTsxOnce();
-            }
 
             const mod = await import(pathToFileURL(filePath).href);
             const workflow: WorkflowModule = mod.default ?? mod;

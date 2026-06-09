@@ -26,8 +26,7 @@ Key properties:
 
 ### Prerequisites
 
-- **Node.js** >= 22.19.0
-- **npm** (bundled with Node.js)
+- **Bun** >= 1.2.0 (used as both runtime and package manager)
 - **API keys** for your configured provider(s); see [Configuration](#9-configuration) for details
 
 ### Install
@@ -35,8 +34,8 @@ Key properties:
 ```bash
 git clone <repository-url> workflow-harness
 cd workflow-harness
-npm install
-npm run build
+bun install
+bun run build
 ```
 
 ### First-Time Setup
@@ -407,7 +406,7 @@ export async function run(taskPrompt: string, options: WorkflowRunOptions) {
 
 ### TypeScript Workflows
 
-`.ts` workflow files are supported at runtime via the `tsx` ESM loader, which is automatically registered the first time a `.ts` workflow is loaded.
+`.ts` workflow files are natively supported by the Bun runtime — no additional loader or transpilation step is needed.
 
 ---
 
@@ -1190,11 +1189,11 @@ If `workflow-state.json` exists in `workDir`, the `run()` function loads it and 
 
 | Command | Description |
 |---|---|
-| `npm run build` | Compile TypeScript to `dist/` and copy defaults |
-| `npm test` | Run all tests with Vitest |
-| `npm run test:watch` | Run tests in watch mode |
-| `npm run typecheck` | Type-check without emitting |
-| `npm run setup` | Build then run `workflow-harness init` |
+| `bun run build` | Compile TypeScript to `dist/` and copy defaults |
+| `bun test` | Run all tests with `bun:test` |
+| `bun run test:watch` | Run tests in watch mode |
+| `bun run typecheck` | Type-check without emitting |
+| `bun run setup` | Build then run `workflow-harness init` |
 
 ### Project Structure
 
@@ -1212,7 +1211,8 @@ workflow-harness/
 ├── docs/               # Documentation
 ├── package.json
 ├── tsconfig.json
-└── vitest.config.ts
+├── bunfig.toml
+└── bun.lock
 ```
 
 ### Test Layout

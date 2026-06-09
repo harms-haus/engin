@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, mock, beforeEach, afterAll } from "bun:test";
 import { z } from "zod";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type {
@@ -6,15 +6,19 @@ import type {
     HarnessCreationOptions,
 } from "../../src/core/types.ts";
 
+// Capture real modules before mocking so we can restore them in afterAll.
+const realHarnessFactory = Object.assign({}, await import("../../src/core/harness-factory.ts"));
+const realStructuredOutput = Object.assign({}, await import("../../src/core/structured-output.ts"));
+
 // ─── Mocks ──────────────────────────────────────────────────────────────────
 
-const mockCreateHarness = vi.fn();
-vi.mock("../../src/core/harness-factory.ts", () => ({
+const mockCreateHarness = mock() as ReturnType<typeof mock> & ((...args: unknown[]) => unknown);
+mock.module("../../src/core/harness-factory.ts", () => ({
     createHarness: (...args: unknown[]) => mockCreateHarness(...args),
 }));
 
-const mockPromptForStructured = vi.fn();
-vi.mock("../../src/core/structured-output.ts", () => ({
+const mockPromptForStructured = mock() as ReturnType<typeof mock> & ((...args: unknown[]) => unknown);
+mock.module("../../src/core/structured-output.ts", () => ({
     promptForStructured: (...args: unknown[]) =>
         mockPromptForStructured(...args),
 }));
@@ -81,7 +85,8 @@ function makeConfig(overrides?: Partial<HarnessCreationOptions>): HarnessCreatio
 // ─── Setup ──────────────────────────────────────────────────────────────────
 
 beforeEach(() => {
-    vi.clearAllMocks();
+    mockCreateHarness.mockClear();
+    mockPromptForStructured.mockClear();
 });
 
 // ─── agentLoopUntil ────────────────────────────────────────────────────────
@@ -90,7 +95,7 @@ describe("agentLoopUntil", () => {
     it("returns on the first attempt when condition is immediately met", async () => {
         const response = makeAssistantMessage("done");
         const harness = {
-            prompt: vi.fn(async () => response),
+            prompt: mock(async () => response),
         };
 
         const result = await agentLoopUntil(
@@ -110,7 +115,7 @@ describe("agentLoopUntil", () => {
         let callCount = 0;
 
         const harness = {
-            prompt: vi.fn(async () => {
+            prompt: mock(async () => {
                 callCount++;
                 return callCount < 3 ? early : final;
             }),
@@ -135,7 +140,7 @@ describe("agentLoopUntil", () => {
         let callCount = 0;
 
         const harness = {
-            prompt: vi.fn(async () => {
+            prompt: mock(async () => {
                 callCount++;
                 return callCount === 1 ? first : second;
             }),
@@ -158,7 +163,7 @@ describe("agentLoopUntil", () => {
     it("uses default maxAttempts of 10", async () => {
         const response = makeAssistantMessage("nope");
         const harness = {
-            prompt: vi.fn(async () => response),
+            prompt: mock(async () => response),
         };
 
         await expect(
@@ -170,7 +175,7 @@ describe("agentLoopUntil", () => {
     it("throws when maxAttempts is exceeded", async () => {
         const response = makeAssistantMessage("nope");
         const harness = {
-            prompt: vi.fn(async () => response),
+            prompt: mock(async () => response),
         };
 
         await expect(
@@ -186,7 +191,7 @@ describe("agentLoopUntil", () => {
 
     it("respects custom maxAttempts", async () => {
         const harness = {
-            prompt: vi.fn(async () => makeAssistantMessage("ok")),
+            prompt: mock(async () => makeAssistantMessage("ok")),
         };
 
         const result = await agentLoopUntil(
@@ -207,7 +212,7 @@ describe("retryAgentUntil", () => {
     const schema = z.object({ name: z.string(), score: z.number() });
 
     it("delegates to promptForStructured and wraps result in AgentLoopResult", async () => {
-        const harness = { prompt: vi.fn() };
+        const harness = { prompt: mock() };
         const expectedResult = { name: "Alice", score: 95 };
         mockPromptForStructured.mockResolvedValue(expectedResult);
 
@@ -228,7 +233,7 @@ describe("retryAgentUntil", () => {
     });
 
     it("passes maxRetries to promptForStructured", async () => {
-        const harness = { prompt: vi.fn() };
+        const harness = { prompt: mock() };
         mockPromptForStructured.mockResolvedValue({ name: "Bob", score: 80 });
 
         await retryAgentUntil(harness, "prompt", schema, { maxRetries: 5 });
@@ -242,7 +247,7 @@ describe("retryAgentUntil", () => {
     });
 
     it("reports correct attempts when maxRetries is custom", async () => {
-        const harness = { prompt: vi.fn() };
+        const harness = { prompt: mock() };
         mockPromptForStructured.mockResolvedValue({ name: "C", score: 1 });
 
         const result = await retryAgentUntil(harness, "p", schema, {
@@ -253,7 +258,7 @@ describe("retryAgentUntil", () => {
     });
 
     it("propagates errors from promptForStructured", async () => {
-        const harness = { prompt: vi.fn() };
+        const harness = { prompt: mock() };
         mockPromptForStructured.mockRejectedValue(
             new Error("Failed to produce structured output after 3 attempts"),
         );
@@ -363,7 +368,7 @@ describe("parallelAgents", () => {
 
     it("passes promptFn result as the prompt text", async () => {
         const harness = {
-            prompt: vi.fn(async () => makeAssistantMessage("ok")),
+            prompt: mock(async () => makeAssistantMessage("ok")),
         };
         mockCreateHarness.mockResolvedValue(
             makeHarness(async () => makeAssistantMessage("ok")),
@@ -494,4 +499,10 @@ describe("sequentialAgents", () => {
 
         expect(promptCount).toBe(1);
     });
+});
+
+// Restore the real modules so mocks don't leak into other test files.
+afterAll(() => {
+    mock.module("../../src/core/harness-factory.ts", () => realHarnessFactory);
+    mock.module("../../src/core/structured-output.ts", () => realStructuredOutput);
 });

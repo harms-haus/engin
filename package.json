@@ -15,15 +15,12 @@
   "bin": {
     "workflow-harness": "./dist/cli.js"
   },
-  "engines": {
-    "node": ">=22.19.0"
-  },
   "scripts": {
-    "build": "tsc && npm run copy-defaults",
+    "build": "tsc && bun run copy-defaults",
     "copy-defaults": "cp -r src/profiles/*.md defaults/profiles/ 2>/dev/null || true",
-    "setup": "node dist/cli.js init",
-    "test": "vitest run",
-    "test:watch": "vitest",
+    "setup": "bun dist/cli.js init",
+    "test": "bun test",
+    "test:watch": "bun test --watch",
     "typecheck": "tsc --noEmit"
   },
   "files": [
@@ -34,12 +31,10 @@
     "@earendil-works/pi-agent-core": "^0.79.0",
     "@earendil-works/pi-ai": "^0.79.0",
     "gray-matter": "^4.0.3",
-    "tsx": "^4.22.4",
     "zod": "^3.25.0"
   },
   "devDependencies": {
-    "@types/node": "^22.0.0",
-    "typescript": "^5.8.0",
-    "vitest": "^3.2.0"
+    "@types/bun": "^1.2.0",
+    "typescript": "^5.8.0"
   }
 }

@@ -9,10 +9,16 @@
 //   - NodeExecutionEnv (filesystem methods)
 // ────────────────────────────────────────────────────────────────────────────
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, mock, beforeEach, afterAll } from "bun:test";
 import * as os from "node:os";
 import * as path from "node:path";
 import * as fs from "node:fs/promises";
+
+// Capture real modules before mocking so we can restore them in afterAll.
+const realPiAgentCore = Object.assign({}, await import("@earendil-works/pi-agent-core"));
+const realPiAgentCoreNode = Object.assign({}, await import("@earendil-works/pi-agent-core/node"));
+const realConfig = Object.assign({}, await import("../../src/core/config.ts"));
+const realPiAi = Object.assign({}, await import("@earendil-works/pi-ai"));
 
 // ─── Mocks ──────────────────────────────────────────────────────────────────
 
@@ -20,63 +26,63 @@ import * as fs from "node:fs/promises";
  * Central mock for AgentHarness.prompt(). Each test can override this to
  * control what the LLM "returns" for different prompt types.
  */
-const mockPromptFn = vi.fn<(text: string) => Promise<unknown>>();
+const mockPromptFn = mock() as (text: string) => Promise<unknown>;
 
-vi.mock("@earendil-works/pi-agent-core", () => ({
-    AgentHarness: vi.fn().mockImplementation((_options: unknown) => ({
-        prompt: vi.fn(async (text: string) => mockPromptFn(text)),
+mock.module("@earendil-works/pi-agent-core", () => ({
+    AgentHarness: mock().mockImplementation((_options: unknown) => ({
+        prompt: mock(async (text: string) => mockPromptFn(text)),
     })),
-    InMemorySessionRepo: vi.fn().mockImplementation(() => ({
-        create: vi.fn(async () => ({
-            getMetadata: vi.fn(async () => ({ id: "mock-session-id" })),
+    InMemorySessionRepo: mock().mockImplementation(() => ({
+        create: mock(async () => ({
+            getMetadata: mock(async () => ({ id: "mock-session-id" })),
         })),
     })),
-    JsonlSessionRepo: vi.fn().mockImplementation(() => ({
-        create: vi.fn(async () => ({
-            getMetadata: vi.fn(async () => ({ id: "mock-session-id" })),
+    JsonlSessionRepo: mock().mockImplementation(() => ({
+        create: mock(async () => ({
+            getMetadata: mock(async () => ({ id: "mock-session-id" })),
         })),
     })),
 }));
 
-vi.mock("@earendil-works/pi-agent-core/node", () => ({
-    NodeExecutionEnv: vi.fn().mockImplementation((_options: { cwd: string }) => ({
+mock.module("@earendil-works/pi-agent-core/node", () => ({
+    NodeExecutionEnv: mock().mockImplementation((_options: { cwd: string }) => ({
         cwd: _options.cwd,
-        readTextFile: vi.fn(async () => ({ ok: true, value: "" })),
-        writeFile: vi.fn(async () => ({ ok: true, value: undefined })),
-        exec: vi.fn(async () => ({
+        readTextFile: mock(async () => ({ ok: true, value: "" })),
+        writeFile: mock(async () => ({ ok: true, value: undefined })),
+        exec: mock(async () => ({
             ok: true,
             value: { stdout: "", stderr: "", exitCode: 0 },
         })),
-        listDir: vi.fn(async () => ({ ok: true, value: [] })),
-        readTextLines: vi.fn(async () => ({ ok: true, value: [] })),
-        readBinaryFile: vi.fn(async () => ({ ok: true, value: Buffer.alloc(0) })),
-        appendFile: vi.fn(async () => ({ ok: true, value: undefined })),
-        fileInfo: vi.fn(async () => ({ ok: true, value: { exists: false } })),
-        canonicalPath: vi.fn(async (p: string) => ({ ok: true, value: p })),
-        exists: vi.fn(async () => ({ ok: true, value: true })),
-        createDir: vi.fn(async () => ({ ok: true, value: undefined })),
-        remove: vi.fn(async () => ({ ok: true, value: undefined })),
-        createTempDir: vi.fn(async () => ({ ok: true, value: "/tmp/mock-temp" })),
-        createTempFile: vi.fn(async () => ({
+        listDir: mock(async () => ({ ok: true, value: [] })),
+        readTextLines: mock(async () => ({ ok: true, value: [] })),
+        readBinaryFile: mock(async () => ({ ok: true, value: Buffer.alloc(0) })),
+        appendFile: mock(async () => ({ ok: true, value: undefined })),
+        fileInfo: mock(async () => ({ ok: true, value: { exists: false } })),
+        canonicalPath: mock(async (p: string) => ({ ok: true, value: p })),
+        exists: mock(async () => ({ ok: true, value: true })),
+        createDir: mock(async () => ({ ok: true, value: undefined })),
+        remove: mock(async () => ({ ok: true, value: undefined })),
+        createTempDir: mock(async () => ({ ok: true, value: "/tmp/mock-temp" })),
+        createTempFile: mock(async () => ({
             ok: true,
             value: "/tmp/mock-temp-file",
         })),
-        cleanup: vi.fn(async () => ({ ok: true, value: undefined })),
-        absolutePath: vi.fn((p: string) => p),
-        joinPath: vi.fn((...parts: string[]) => path.join(...parts)),
+        cleanup: mock(async () => ({ ok: true, value: undefined })),
+        absolutePath: mock((p: string) => p),
+        joinPath: mock((...parts: string[]) => path.join(...parts)),
     })),
 }));
 
-vi.mock("../../src/core/config.ts", () => ({
-    resolveProfilesDirs: vi.fn(),
-    getGlobalConfigDir: vi.fn(),
-    getLocalConfigDir: vi.fn(),
-    resolveWorkflowsDirs: vi.fn(),
-    getDefaultWorkDir: vi.fn(),
-    ensureDir: vi.fn(),
+mock.module("../../src/core/config.ts", () => ({
+    resolveProfilesDirs: mock(),
+    getGlobalConfigDir: mock(),
+    getLocalConfigDir: mock(),
+    resolveWorkflowsDirs: mock(),
+    getDefaultWorkDir: mock(),
+    ensureDir: mock(),
 }));
 
-vi.mock("@earendil-works/pi-ai", () => {
+mock.module("@earendil-works/pi-ai", () => {
     // Minimal TypeBox-like stub so createDefaultToolRegistry can build schemas
     const Type = {
         Object: (properties: Record<string, unknown>, _opts?: unknown) => ({
@@ -101,7 +107,7 @@ vi.mock("@earendil-works/pi-ai", () => {
 
     return {
         Type,
-        getModel: vi.fn().mockReturnValue({
+        getModel: mock().mockReturnValue({
             id: "mock-model",
             provider: "mock-provider",
             cost: {
@@ -112,10 +118,9 @@ vi.mock("@earendil-works/pi-ai", () => {
                 total: 0,
             },
         }),
-        getEnvApiKey: vi.fn().mockReturnValue("mock-api-key"),
-        findEnvKeys: vi.fn().mockReturnValue([]),
-        parseJsonWithRepair: vi
-            .fn()
+        getEnvApiKey: mock().mockReturnValue("mock-api-key"),
+        findEnvKeys: mock().mockReturnValue([]),
+        parseJsonWithRepair: mock()
             .mockImplementation((text: string) => JSON.parse(text)),
     };
 });
@@ -280,8 +285,10 @@ describe("Workflow Smoke Tests", () => {
     let projectDir: string;
 
     beforeEach(async () => {
-        vi.clearAllMocks();
-        mockPromptFn.mockImplementation(defaultPromptHandler);
+        mock.clearAllMocks();
+        (mockPromptFn as ReturnType<typeof mock>).mockImplementation(
+            defaultPromptHandler,
+        );
 
         const base = tmpDir();
         profilesDir = path.join(base, "profiles");
@@ -432,12 +439,14 @@ describe("Workflow Smoke Tests", () => {
     describe("Error handling", () => {
         it("handles harness errors during implementation", async () => {
             // Override prompt handler to throw during implementation
-            mockPromptFn.mockImplementation(async (text: string) => {
-                if (text.includes("implementation agent")) {
-                    throw new Error("Implementation harness crashed");
-                }
-                return defaultPromptHandler(text);
-            });
+            (mockPromptFn as ReturnType<typeof mock>).mockImplementation(
+                async (text: string) => {
+                    if (text.includes("implementation agent")) {
+                        throw new Error("Implementation harness crashed");
+                    }
+                    return defaultPromptHandler(text);
+                },
+            );
 
             // The workflow should still complete without throwing
             await run("Build with errors", {
@@ -483,43 +492,45 @@ describe("Workflow Smoke Tests", () => {
         it("handles reviewer rejection by marking task as claimed", async () => {
             let implementationCallCount = 0;
 
-            mockPromptFn.mockImplementation(async (text: string) => {
-                // Implementation always succeeds
-                if (text.includes("implementation agent")) {
-                    implementationCallCount++;
-                    return makeAssistantMessage(
-                        JSON.stringify({ result: `attempt ${implementationCallCount}` }),
-                    );
-                }
+            (mockPromptFn as ReturnType<typeof mock>).mockImplementation(
+                async (text: string) => {
+                    // Implementation always succeeds
+                    if (text.includes("implementation agent")) {
+                        implementationCallCount++;
+                        return makeAssistantMessage(
+                            JSON.stringify({ result: `attempt ${implementationCallCount}` }),
+                        );
+                    }
 
-                // Reviewer rejects on the first call
-                if (text.includes("code reviewer")) {
-                    if (implementationCallCount <= 1) {
+                    // Reviewer rejects on the first call
+                    if (text.includes("code reviewer")) {
+                        if (implementationCallCount <= 1) {
+                            return makeAssistantMessage(
+                                JSON.stringify({
+                                    approved: false,
+                                    feedback: "Missing error handling",
+                                    issues: [
+                                        {
+                                            file: "src/core.ts",
+                                            description: "No try-catch",
+                                            severity: "critical",
+                                        },
+                                    ],
+                                }),
+                            );
+                        }
                         return makeAssistantMessage(
                             JSON.stringify({
-                                approved: false,
-                                feedback: "Missing error handling",
-                                issues: [
-                                    {
-                                        file: "src/core.ts",
-                                        description: "No try-catch",
-                                        severity: "critical",
-                                    },
-                                ],
+                                approved: true,
+                                feedback: "Looks good now",
+                                issues: [],
                             }),
                         );
                     }
-                    return makeAssistantMessage(
-                        JSON.stringify({
-                            approved: true,
-                            feedback: "Looks good now",
-                            issues: [],
-                        }),
-                    );
-                }
 
-                return defaultPromptHandler(text);
-            });
+                    return defaultPromptHandler(text);
+                },
+            );
 
             await run("Build with rejection", {
                 profilesDir,
@@ -559,18 +570,18 @@ describe("Workflow Smoke Tests", () => {
 
     describe("Status callbacks", () => {
         it("all workflow-level callbacks fire during successful run", async () => {
-            const onWorkflowStart = vi.fn();
-            const onPhaseStart = vi.fn();
-            const onPhaseComplete = vi.fn();
-            const onAgentSpawn = vi.fn();
-            const onAgentComplete = vi.fn();
-            const onTaskStart = vi.fn();
-            const onTaskComplete = vi.fn();
-            const onTaskRejected = vi.fn();
-            const onDecision = vi.fn();
-            const onError = vi.fn();
-            const onWorkflowComplete = vi.fn();
-            const onWorkflowFailed = vi.fn();
+            const onWorkflowStart = mock();
+            const onPhaseStart = mock();
+            const onPhaseComplete = mock();
+            const onAgentSpawn = mock();
+            const onAgentComplete = mock();
+            const onTaskStart = mock();
+            const onTaskComplete = mock();
+            const onTaskRejected = mock();
+            const onDecision = mock();
+            const onError = mock();
+            const onWorkflowComplete = mock();
+            const onWorkflowFailed = mock();
 
             await run("Build with callbacks", {
                 profilesDir,
@@ -611,11 +622,17 @@ describe("Workflow Smoke Tests", () => {
             // ── Phase callbacks ─────────────────────────────────────
             // 6 phases: scouting, scouting_review, planning, plan_review,
             // implementing, final_review
-            expect(onPhaseStart.mock.calls.length).toBeGreaterThanOrEqual(6);
-            expect(onPhaseComplete.mock.calls.length).toBeGreaterThanOrEqual(6);
+            expect(
+                (onPhaseStart as ReturnType<typeof mock>).mock.calls.length,
+            ).toBeGreaterThanOrEqual(6);
+            expect(
+                (onPhaseComplete as ReturnType<typeof mock>).mock.calls.length,
+            ).toBeGreaterThanOrEqual(6);
 
             // Verify each phase was started
-            const startedPhases = onPhaseStart.mock.calls.map(
+            const startedPhases = (
+                onPhaseStart as ReturnType<typeof mock>
+            ).mock.calls.map(
                 (call: [{ phase: string }]) => call[0].phase,
             );
             expect(startedPhases).toContain("scouting");
@@ -627,12 +644,18 @@ describe("Workflow Smoke Tests", () => {
 
             // ── Agent callbacks ─────────────────────────────────────
             // At minimum: scout-coordinator, planner, final-reviewer
-            expect(onAgentSpawn.mock.calls.length).toBeGreaterThanOrEqual(3);
-            expect(onAgentComplete.mock.calls.length).toBeGreaterThanOrEqual(3);
+            expect(
+                (onAgentSpawn as ReturnType<typeof mock>).mock.calls.length,
+            ).toBeGreaterThanOrEqual(3);
+            expect(
+                (onAgentComplete as ReturnType<typeof mock>).mock.calls.length,
+            ).toBeGreaterThanOrEqual(3);
 
             // ── Decision callbacks ─────────────────────────────────
             // At minimum: scouting-reviewer, plan-reviewer
-            expect(onDecision.mock.calls.length).toBeGreaterThanOrEqual(2);
+            expect(
+                (onDecision as ReturnType<typeof mock>).mock.calls.length,
+            ).toBeGreaterThanOrEqual(2);
 
             // ── Error should not have been called ───────────────────
             expect(onError).not.toHaveBeenCalled();
@@ -640,15 +663,17 @@ describe("Workflow Smoke Tests", () => {
         }, 30_000);
 
         it("onWorkflowFailed fires on workflow error", async () => {
-            const onWorkflowFailed = vi.fn();
-            const onWorkflowStart = vi.fn();
-            const onWorkflowComplete = vi.fn();
+            const onWorkflowFailed = mock();
+            const onWorkflowStart = mock();
+            const onWorkflowComplete = mock();
 
             // Make the scouting phase throw so the error propagates
             // to the orchestrator's catch block.
-            mockPromptFn.mockImplementation(async () => {
-                throw new Error("Catastrophic scouting failure");
-            });
+            (mockPromptFn as ReturnType<typeof mock>).mockImplementation(
+                async () => {
+                    throw new Error("Catastrophic scouting failure");
+                },
+            );
 
             await expect(
                 run("Build with failure", {
@@ -671,7 +696,10 @@ describe("Workflow Smoke Tests", () => {
                     phase: expect.any(String),
                 }),
             );
-            expect(onWorkflowFailed.mock.calls[0][0].error.message).toBe(
+            expect(
+                (onWorkflowFailed as ReturnType<typeof mock>).mock
+                    .calls[0][0].error.message,
+            ).toBe(
                 "Catastrophic scouting failure",
             );
 
@@ -679,4 +707,12 @@ describe("Workflow Smoke Tests", () => {
             expect(onWorkflowComplete).not.toHaveBeenCalled();
         }, 30_000);
     });
+});
+
+// Restore the real modules so mocks don't leak into other test files.
+afterAll(() => {
+    mock.module("@earendil-works/pi-agent-core", () => realPiAgentCore);
+    mock.module("@earendil-works/pi-agent-core/node", () => realPiAgentCoreNode);
+    mock.module("../../src/core/config.ts", () => realConfig);
+    mock.module("@earendil-works/pi-ai", () => realPiAi);
 });

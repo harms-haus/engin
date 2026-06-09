@@ -1,0 +1,3 @@
+# Bun configuration for workflow-harness
+[test]
+root = "."

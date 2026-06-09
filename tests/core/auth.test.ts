@@ -1,19 +1,22 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, mock, beforeEach, afterAll } from "bun:test";
 
-// Mock the pi-ai module so we control env-key resolution in tests.
-vi.mock("@earendil-works/pi-ai", () => ({
-    getEnvApiKey: vi.fn(),
-    findEnvKeys: vi.fn(),
-}));
+// Capture real module before mocking so we can restore it in afterAll.
+const realPiAi = Object.assign({}, await import("@earendil-works/pi-ai"));
 
 import { getEnvApiKey, findEnvKeys } from "@earendil-works/pi-ai";
 import { resolveApiKey, resolveApiKeyOrThrow } from "../../src/core/auth.ts";
 
-const mockGetEnvApiKey = vi.mocked(getEnvApiKey);
-const mockFindEnvKeys = vi.mocked(findEnvKeys);
+// Mock the pi-ai module so we control env-key resolution in tests.
+mock.module("@earendil-works/pi-ai", () => ({
+    getEnvApiKey: mock(),
+    findEnvKeys: mock(),
+}));
+
+const mockGetEnvApiKey = getEnvApiKey as ReturnType<typeof mock>;
+const mockFindEnvKeys = findEnvKeys as ReturnType<typeof mock>;
 
 beforeEach(() => {
-    vi.clearAllMocks();
+    mock.clearAllMocks();
 });
 
 // ─── resolveApiKey ──────────────────────────────────────────────────────────
@@ -82,7 +85,7 @@ describe("resolveApiKeyOrThrow", () => {
 
         try {
             resolveApiKeyOrThrow("openai");
-            expect.fail("should have thrown");
+            expect.unreachable("should have thrown");
         } catch (err: any) {
             expect(err.message).toContain("OPENAI_API_KEY");
             expect(err.message).toContain("OPENAI_ORG_KEY");
@@ -95,10 +98,15 @@ describe("resolveApiKeyOrThrow", () => {
 
         try {
             resolveApiKeyOrThrow("unknown");
-            expect.fail("should have thrown");
+            expect.unreachable("should have thrown");
         } catch (err: any) {
             expect(err.message).toContain("No API key found");
             expect(err.message).not.toContain("Expected environment variable");
         }
     });
+});
+
+// Restore the real module so mocks don't leak into other test files.
+afterAll(() => {
+    mock.module("@earendil-works/pi-ai", () => realPiAi);
 });

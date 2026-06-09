@@ -7,8 +7,8 @@ A script-based workflow engine for AI-driven development, built on top of [pi-ag
 ```bash
 git clone <repository-url> workflow-harness
 cd workflow-harness
-npm install
-npm run build
+bun install
+bun run build
 ```
 
 ## Quick Start

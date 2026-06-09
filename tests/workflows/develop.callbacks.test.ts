@@ -1,43 +1,50 @@
 // ─── Develop Workflow Callback Tests ────────────────────────────────────────
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, mock, beforeEach, afterAll } from "bun:test";
 import * as os from "node:os";
 import * as path from "node:path";
 import * as fs from "node:fs/promises";
 import type { AgentProfile, StatusCallbacks } from "../../src/core/types";
 
+// Capture real modules before mocking so we can restore them in afterAll.
+const realHarnessFactory = Object.assign({}, await import("../../src/core/harness-factory.ts"));
+const realStructuredOutput = Object.assign({}, await import("../../src/core/structured-output.ts"));
+const realAgentLoop = Object.assign({}, await import("../../src/core/agent-loop.ts"));
+const realProfile = Object.assign({}, await import("../../src/core/profile.ts"));
+const realConfig = Object.assign({}, await import("../../src/core/config.ts"));
+
 // ─── Mocks ──────────────────────────────────────────────────────────────────
 
-const mockCreateHarness = vi.fn();
-vi.mock("../../src/core/harness-factory.ts", () => ({
+const mockCreateHarness = mock() as ReturnType<typeof mock> & ((...args: unknown[]) => unknown);
+mock.module("../../src/core/harness-factory.ts", () => ({
     createHarness: (...args: unknown[]) => mockCreateHarness(...args),
 }));
 
-const mockPromptForStructured = vi.fn();
-vi.mock("../../src/core/structured-output.ts", () => ({
+const mockPromptForStructured = mock() as ReturnType<typeof mock> & ((...args: unknown[]) => unknown);
+mock.module("../../src/core/structured-output.ts", () => ({
     promptForStructured: (...args: unknown[]) => mockPromptForStructured(...args),
-    getAssistantText: vi.fn(),
+    getAssistantText: mock(),
 }));
 
-const mockParallelAgents = vi.fn();
-vi.mock("../../src/core/agent-loop.ts", () => ({
+const mockParallelAgents = mock() as ReturnType<typeof mock> & ((...args: unknown[]) => unknown);
+mock.module("../../src/core/agent-loop.ts", () => ({
     parallelAgents: (...args: unknown[]) => mockParallelAgents(...args),
 }));
 
-const mockLoadProfiles = vi.fn();
-const mockLoadProfilesFromDirs = vi.fn();
-vi.mock("../../src/core/profile.ts", () => ({
+const mockLoadProfiles = mock() as ReturnType<typeof mock> & ((...args: unknown[]) => unknown);
+const mockLoadProfilesFromDirs = mock() as ReturnType<typeof mock> & ((...args: unknown[]) => unknown);
+mock.module("../../src/core/profile.ts", () => ({
     loadProfiles: (...args: unknown[]) => mockLoadProfiles(...args),
     loadProfilesFromDirs: (...args: unknown[]) => mockLoadProfilesFromDirs(...args),
 }));
 
-vi.mock("../../src/core/config.ts", () => ({
-    resolveProfilesDirs: vi.fn(),
-    getGlobalConfigDir: vi.fn(),
-    getLocalConfigDir: vi.fn(),
-    resolveWorkflowsDirs: vi.fn(),
-    getDefaultWorkDir: vi.fn(),
-    ensureDir: vi.fn(),
-}));;
+mock.module("../../src/core/config.ts", () => ({
+    resolveProfilesDirs: mock(),
+    getGlobalConfigDir: mock(),
+    getLocalConfigDir: mock(),
+    resolveWorkflowsDirs: mock(),
+    getDefaultWorkDir: mock(),
+    ensureDir: mock(),
+}));
 
 // ─── Imports (after mocks) ─────────────────────────────────────────────────
 
@@ -77,7 +84,7 @@ function makeAllProfiles(): Map<string, AgentProfile> {
 
 function makeHarness() {
     return {
-        prompt: vi.fn(async () => ({ content: [{ type: "text", text: "ok" }] })),
+        prompt: mock(async () => ({ content: [{ type: "text", text: "ok" }] })),
     };
 }
 
@@ -204,7 +211,7 @@ function setupRunWithRejectedTaskMocks() {
 // ─── Setup ──────────────────────────────────────────────────────────────────
 
 beforeEach(() => {
-    vi.clearAllMocks();
+    mock.clearAllMocks();
 });
 
 // ─── Tests ──────────────────────────────────────────────────────────────────
@@ -215,7 +222,7 @@ describe("Workflow-level callbacks", () => {
         const workDir = tmpDir();
         setupHappyPathMocks();
 
-        const onWorkflowStart = vi.fn();
+        const onWorkflowStart = mock();
         await run("Build a feature", {
             profilesDir: "/profiles",
             cwd: "/project",
@@ -259,7 +266,7 @@ describe("Workflow-level callbacks", () => {
 
         mockParallelAgents.mockResolvedValue([]);
 
-        const onWorkflowStart = vi.fn();
+        const onWorkflowStart = mock();
         await run("Resumed task", {
             profilesDir: "/profiles",
             cwd: "/project",
@@ -280,7 +287,7 @@ describe("Workflow-level callbacks", () => {
         const workDir = tmpDir();
         setupHappyPathMocks();
 
-        const onPhaseStart = vi.fn();
+        const onPhaseStart = mock();
         await run("Build a feature", {
             profilesDir: "/profiles",
             cwd: "/project",
@@ -303,7 +310,7 @@ describe("Workflow-level callbacks", () => {
         const workDir = tmpDir();
         setupHappyPathMocks();
 
-        const onPhaseComplete = vi.fn();
+        const onPhaseComplete = mock();
         await run("Build a feature", {
             profilesDir: "/profiles",
             cwd: "/project",
@@ -327,7 +334,7 @@ describe("Workflow-level callbacks", () => {
         const workDir = tmpDir();
         setupHappyPathMocks();
 
-        const onWorkflowComplete = vi.fn();
+        const onWorkflowComplete = mock();
         await run("Build a feature", {
             profilesDir: "/profiles",
             cwd: "/project",
@@ -351,7 +358,7 @@ describe("Workflow-level callbacks", () => {
         mockPromptForStructured.mockReset();
         mockPromptForStructured.mockRejectedValue(new Error("LLM unreachable"));
 
-        const onWorkflowFailed = vi.fn();
+        const onWorkflowFailed = mock();
 
         await expect(
             run("Build a feature", {
@@ -395,8 +402,8 @@ describe("Workflow-level callbacks", () => {
             { status: "fulfilled", value: { report: "scout report" } },
         ]);
 
-        const onAgentSpawn = vi.fn();
-        const onAgentComplete = vi.fn();
+        const onAgentSpawn = mock();
+        const onAgentComplete = mock();
         await run("Build a feature", {
             profilesDir: "/profiles",
             cwd: "/project",
@@ -426,8 +433,8 @@ describe("Workflow-level callbacks", () => {
         const workDir = tmpDir();
         setupHappyPathMocks();
 
-        const onAgentSpawn = vi.fn();
-        const onAgentComplete = vi.fn();
+        const onAgentSpawn = mock();
+        const onAgentComplete = mock();
         await run("Build a feature", {
             profilesDir: "/profiles",
             cwd: "/project",
@@ -454,7 +461,7 @@ describe("Workflow-level callbacks", () => {
         const workDir = tmpDir();
         setupHappyPathMocks();
 
-        const onDecision = vi.fn();
+        const onDecision = mock();
         await run("Build a feature", {
             profilesDir: "/profiles",
             cwd: "/project",
@@ -482,8 +489,8 @@ describe("Workflow-level callbacks", () => {
         const workDir = tmpDir();
         setupRunWithTaskMocks();
 
-        const onTaskStart = vi.fn();
-        const onTaskComplete = vi.fn();
+        const onTaskStart = mock();
+        const onTaskComplete = mock();
         await run("Build a feature", {
             profilesDir: "/profiles",
             cwd: "/project",
@@ -509,9 +516,9 @@ describe("Workflow-level callbacks", () => {
         const workDir = tmpDir();
         setupRunWithRejectedTaskMocks();
 
-        const onTaskStart = vi.fn();
-        const onTaskRejected = vi.fn();
-        const onTaskComplete = vi.fn();
+        const onTaskStart = mock();
+        const onTaskRejected = mock();
+        const onTaskComplete = mock();
         await run("Build a feature", {
             profilesDir: "/profiles",
             cwd: "/project",
@@ -577,7 +584,7 @@ describe("Workflow-level callbacks", () => {
             { status: "fulfilled", value: { result: "ok" } },
         ]);
 
-        const onError = vi.fn();
+        const onError = mock();
         await run("Build a feature", {
             profilesDir: "/profiles",
             cwd: "/project",
@@ -596,4 +603,13 @@ describe("Workflow-level callbacks", () => {
         expect(errorInfo.error).toContain("review crashed");
         expect(errorInfo.phase).toBe("implementing");
     });
+});
+
+// Restore the real modules so mocks don't leak into other test files.
+afterAll(() => {
+    mock.module("../../src/core/harness-factory.ts", () => realHarnessFactory);
+    mock.module("../../src/core/structured-output.ts", () => realStructuredOutput);
+    mock.module("../../src/core/agent-loop.ts", () => realAgentLoop);
+    mock.module("../../src/core/profile.ts", () => realProfile);
+    mock.module("../../src/core/config.ts", () => realConfig);
 });

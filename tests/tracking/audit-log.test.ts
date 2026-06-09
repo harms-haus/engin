@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, mock, spyOn, beforeEach, afterEach } from "bun:test";
 import * as os from "node:os";
 import * as path from "node:path";
 import * as fs from "node:fs/promises";
@@ -176,7 +176,7 @@ describe("AuditLog", () => {
         const content = JSON.stringify(valid) + "\nNOT VALID JSON{\n" + JSON.stringify(valid) + "\n";
         await fs.writeFile(path.join(dir, "audit.jsonl"), content, "utf-8");
 
-        const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+        const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
 
         const events = await log.getEvents();
         expect(events).toHaveLength(2);

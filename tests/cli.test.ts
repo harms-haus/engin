@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, mock, spyOn, beforeEach, afterEach } from "bun:test";
 import {
   parseArgs,
   formatTime,
@@ -224,17 +224,16 @@ describe("parseArgs", () => {
   });
 
   describe("main() handles help and version", () => {
-    let exitSpy: ReturnType<typeof vi.spyOn>;
-    let stdoutSpy: ReturnType<typeof vi.spyOn>;
+    let exitSpy: ReturnType<typeof spyOn>;
+    let stdoutSpy: ReturnType<typeof spyOn>;
 
     beforeEach(() => {
-      exitSpy = vi.spyOn(process, "exit").mockImplementation(((
+      exitSpy = spyOn(process, "exit").mockImplementation(((
         code: number,
       ) => {
         throw new Error(`process.exit(${code})`);
       }) as never);
-      stdoutSpy = vi
-        .spyOn(process.stdout, "write")
+      stdoutSpy = spyOn(process.stdout, "write")
         .mockImplementation(() => true);
     });
 
@@ -292,10 +291,10 @@ describe("formatTime", () => {
 // ─── createStatusCallbacks ─────────────────────────────────────────────────
 
 describe("createStatusCallbacks", () => {
-  let logSpy: ReturnType<typeof vi.spyOn>;
+  let logSpy: ReturnType<typeof spyOn>;
 
   beforeEach(() => {
-    logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    logSpy = spyOn(console, "log").mockImplementation(() => {});
   });
 
   afterEach(() => {
