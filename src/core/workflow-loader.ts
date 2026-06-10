@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { resolveWorkflowsDirs } from './config.js';
 import type { WorkflowEntry, WorkflowModule } from './types.js';
-import { validateWorkflowName } from './utils.js';
+import { isEnoentError, validateWorkflowName } from './utils.js';
 
 // ─── Cache ──────────────────────────────────────────────────────────────────
 
@@ -29,16 +29,17 @@ export async function loadWorkflow(name: string, cwd: string): Promise<WorkflowM
   for (const dir of dirs) {
     const filePath = join(dir, name, 'main.ts');
 
+    // Check cache before I/O
+    const cached = workflowCache.get(filePath);
+    if (cached) return cached;
+
     try {
       const fileStat = await stat(filePath);
       if (!fileStat.isFile()) continue;
-    } catch {
-      continue;
+    } catch (err: unknown) {
+      if (isEnoentError(err)) continue;
+      throw err;
     }
-
-    // Check cache first
-    const cached = workflowCache.get(filePath);
-    if (cached) return cached;
 
     const mod = await import(pathToFileURL(filePath).href);
     const workflow: WorkflowModule = mod.default ?? mod;
@@ -72,9 +73,9 @@ export async function listWorkflows(cwd: string): Promise<WorkflowEntry[]> {
     let entries: string[];
     try {
       entries = await readdir(dir);
-    } catch {
-      // Directory does not exist — skip
-      continue;
+    } catch (err: unknown) {
+      if (isEnoentError(err)) continue;
+      throw err;
     }
 
     for (const entry of entries) {
@@ -87,8 +88,9 @@ export async function listWorkflows(cwd: string): Promise<WorkflowEntry[]> {
       try {
         const entryStat = await stat(entryPath);
         if (!entryStat.isDirectory()) continue;
-      } catch {
-        continue;
+      } catch (err: unknown) {
+        if (isEnoentError(err)) continue;
+        throw err;
       }
 
       // Check that main.ts exists inside the directory
@@ -96,8 +98,9 @@ export async function listWorkflows(cwd: string): Promise<WorkflowEntry[]> {
       try {
         const mainStat = await stat(mainPath);
         if (!mainStat.isFile()) continue;
-      } catch {
-        continue;
+      } catch (err: unknown) {
+        if (isEnoentError(err)) continue;
+        throw err;
       }
 
       results.push({ name: entry, source, path: mainPath });
