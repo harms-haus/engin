@@ -51,6 +51,11 @@ export class LanePool {
     clearProfileCache();
     const profiles = await loadProfilesFromDirs(this.options.profilesDirs);
 
+    // Check for cancellation before spawning lanes
+    if (this.options.signal?.aborted) {
+      return { completedTasks: 0, failedTasks: 0 };
+    }
+
     const laneRunners = Array.from({ length: maxConcurrentLanes }, (_, i) => this.runLane(i, profiles));
     const settled = await Promise.allSettled(laneRunners);
 
@@ -114,6 +119,11 @@ export class LanePool {
     let backoff = 50;
 
     while (true) {
+      // Check for cancellation
+      if (this.options.signal?.aborted) {
+        return;
+      }
+
       const claimed = taskTracker.claimTasks(1);
       if (claimed.length === 0) {
         if (taskTracker.areAllDone() || taskTracker.getAllTasks().length === 0) {

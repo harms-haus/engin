@@ -244,8 +244,24 @@ export function createStatusCallbacks(verbose: boolean): StatusCallbacks {
       console.log(`${formatTime()} 🔄 Turn ${info.turn} started (agent: ${info.agentId})`);
     };
     callbacks.onTurnEnd = (info) => {
-      const tokensPart = info.tokens ? `, tokens: ${info.tokens.input} in / ${info.tokens.output} out` : '';
-      console.log(`${formatTime()} 🔄 Turn ${info.turn} ended (agent: ${info.agentId}${tokensPart})`);
+      if (info.contentBlocks && info.contentBlocks.length > 0) {
+        for (const block of info.contentBlocks) {
+          if (block.type === 'text') {
+            console.log(`${formatTime()} 💬 ${block.text}`);
+          } else if (block.type === 'thinking') {
+            if (block.redacted) {
+              console.log(`${formatTime()} 🧠 [redacted thinking]`);
+            } else {
+              console.log(`${formatTime()} 🧠 ${block.thinking}`);
+            }
+          } else if (block.type === 'toolCall') {
+            console.log(`${formatTime()} 🔧 ${block.name}(${JSON.stringify(block.arguments)})`);
+          }
+        }
+      }
+      if (info.tokens) {
+        console.log(`${formatTime()} 📊 Tokens: ${info.tokens.input} in / ${info.tokens.output} out`);
+      }
     };
     callbacks.onToolCallStart = (info) => {
       console.log(`${formatTime()} 🔧 Tool call: ${info.toolName} (agent: ${info.agentId})`);
@@ -278,14 +294,37 @@ export async function runCommand(options: CliOptions): Promise<void> {
   const workDir = options.workDir ?? getDefaultWorkDir(options.cwd, workflowName);
   const workflow = await loadWorkflow(workflowName, options.cwd);
 
-  // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-  await workflow.run(options.taskPrompt!, {
-    cwd: options.cwd,
-    workDir,
-    maxConcurrentTasks: options.maxConcurrent,
-    apiKeys: Object.keys(options.apiKeys).length > 0 ? options.apiKeys : undefined,
-    onStatus: createStatusCallbacks(options.verbose),
-  });
+  // Set up SIGINT handler for cooperative cancellation
+  const controller = new AbortController();
+  let sigintCount = 0;
+
+  const handler = () => {
+    sigintCount++;
+    if (sigintCount === 1) {
+      console.log(
+        `\n${formatTime()} ⏹️  Interrupt received, stopping workflow gracefully... (Ctrl+C again to force quit)`,
+      );
+      controller.abort();
+    } else {
+      console.log(`\n${formatTime()} ⏹️  Force quit.`);
+      process.exit(1);
+    }
+  };
+
+  process.on('SIGINT', handler);
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+    await workflow.run(options.taskPrompt!, {
+      cwd: options.cwd,
+      workDir,
+      maxConcurrentTasks: options.maxConcurrent,
+      apiKeys: Object.keys(options.apiKeys).length > 0 ? options.apiKeys : undefined,
+      onStatus: createStatusCallbacks(options.verbose),
+      signal: controller.signal,
+    });
+  } finally {
+    process.removeListener('SIGINT', handler);
+  }
 }
 
 // ─── Main Entry Point ───────────────────────────────────────────────────────

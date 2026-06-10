@@ -158,6 +158,52 @@ describe('promptForStructured', () => {
     await expect(promptForStructured(harness, 'test', schema, { maxRetries: 2 })).rejects.toThrow(/after 2 attempts/);
     expect(harness.prompt).toHaveBeenCalledTimes(2);
   });
+
+  // ─── Error message readability & schema in initial prompt ─────────────────
+
+  it('error message is readable (not [object Object]) when validation fails', async () => {
+    const harness = makeHarness(['{"name": "X", "age": "not-a-number"}']);
+    let caughtError: Error | undefined;
+    try {
+      await promptForStructured(harness, 'give me a person', schema, { maxRetries: 1 });
+    } catch (err) {
+      caughtError = err as Error;
+    }
+    expect(caughtError).toBeDefined();
+    expect(caughtError!.message).not.toContain('[object Object]');
+    // The error should contain a readable description from the Zod validation
+    expect(caughtError!.message).toMatch(/number|Expected|received|Schema validation/i);
+    expect(harness.prompt).toHaveBeenCalledTimes(1);
+  });
+
+  it('initial prompt includes schema description', async () => {
+    const harness = makeHarness(['{"name": "Alice", "age": 30}']);
+    await promptForStructured(harness, 'give me a person', schema);
+
+    const firstPrompt = (harness.prompt as ReturnType<typeof mock>).mock.calls[0][0] as string;
+    // Schema info should be embedded in the very first prompt
+    expect(firstPrompt).toContain('name');
+    expect(firstPrompt).toContain('string');
+    expect(firstPrompt).toContain('age');
+    expect(firstPrompt).toContain('number');
+    expect(firstPrompt).toContain('schema');
+  });
+
+  it('retry prompt has readable validation error (not [object Object])', async () => {
+    const harness = makeHarness(['{"name": "Charlie", "age": "not-a-number"}', '{"name": "Diana", "age": 42}']);
+    const result = await promptForStructured(harness, 'give me a person', schema, {
+      maxRetries: 3,
+    });
+    expect(result).toEqual({ name: 'Diana', age: 42 });
+    expect(harness.prompt).toHaveBeenCalledTimes(2);
+
+    const retryPrompt = (harness.prompt as ReturnType<typeof mock>).mock.calls[1][0] as string;
+    // Retry prompt must not contain [object Object] — a sign of unreadable errors
+    expect(retryPrompt).not.toContain('[object Object]');
+    // Must contain a readable validation error message
+    expect(retryPrompt).toContain('Schema validation error');
+    expect(retryPrompt).toContain('Previous attempt failed');
+  });
 });
 
 // ─── schemaToString ─────────────────────────────────────────────────────────

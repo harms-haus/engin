@@ -22,6 +22,8 @@ export class WorkflowStatusTracker {
   private _scoutingReports: unknown[] = [];
   private _plan: unknown = undefined;
   private _research?: string;
+  private _planReviewFeedback?: string;
+  private _planReviewSuggestions?: string[];
   private _stats: { totalTokens: number; totalCost: number; agentCount: number } = {
     totalTokens: 0,
     totalCost: 0,
@@ -64,6 +66,17 @@ export class WorkflowStatusTracker {
 
   get research(): string | undefined {
     return this._research;
+  }
+
+  get planReviewFeedback(): string | undefined {
+    return this._planReviewFeedback;
+  }
+
+  get planReviewSuggestions(): string[] | undefined {
+    if (this._planReviewSuggestions) {
+      return [...this._planReviewSuggestions];
+    }
+    return undefined;
   }
 
   get stats(): { totalTokens: number; totalCost: number; agentCount: number } {
@@ -115,6 +128,16 @@ export class WorkflowStatusTracker {
     this._research = research;
   }
 
+  setPlanReviewFeedback(feedback: string, suggestions: string[]): void {
+    this._planReviewFeedback = feedback;
+    this._planReviewSuggestions = suggestions;
+  }
+
+  clearPlanReviewFeedback(): void {
+    this._planReviewFeedback = undefined;
+    this._planReviewSuggestions = undefined;
+  }
+
   addTokensToStats(tokens: { input: number; output: number }): void {
     this._stats.totalTokens += tokens.input + tokens.output;
   }
@@ -134,6 +157,8 @@ export class WorkflowStatusTracker {
       scoutingReports: this._scoutingReports,
       plan: this._plan,
       research: this._research,
+      planReviewFeedback: this._planReviewFeedback,
+      planReviewSuggestions: this._planReviewSuggestions,
       stats: { ...this._stats },
     };
   }
@@ -165,6 +190,8 @@ export class WorkflowStatusTracker {
     tracker._scoutingReports = data.scoutingReports;
     tracker._plan = data.plan;
     tracker._research = data.research;
+    tracker._planReviewFeedback = data.planReviewFeedback;
+    tracker._planReviewSuggestions = data.planReviewSuggestions ? [...data.planReviewSuggestions] : undefined;
     tracker._stats = { ...data.stats };
 
     // Rebuild TaskTracker from saved tasks

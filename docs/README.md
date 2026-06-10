@@ -172,7 +172,10 @@ With `--verbose`, agent-level events are also shown:
 [09:14:33] 🔄 Turn 1 started (agent: abc123)
 [09:14:33] 🔧 Tool call: read (agent: abc123)
 [09:14:34] ✅ Tool result: read (agent: abc123)
-[09:14:35] 🔄 Turn 1 ended (agent: abc123, tokens: 1520 in / 340 out)
+[09:14:35] 🧠 Let me analyze the file structure...
+[09:14:35] 💬 I've found the relevant files. Let me read them.
+[09:14:35] 🔧 read({"path":"src/index.ts"})
+[09:14:35] 📊 Tokens: 1520 in / 340 out
 ```
 
 ---
@@ -1214,14 +1217,26 @@ All methods are optional.
 
 #### `AgentStatusCallbacks`
 
-| Method            | Parameter Shape                                                                 | Fired when                |
-| ----------------- | ------------------------------------------------------------------------------- | ------------------------- |
-| `onTurnStart`     | `{ agentId: string; turn: number }`                                             | An agent turn begins      |
-| `onTurnEnd`       | `{ agentId: string; turn: number; tokens?: { input: number; output: number } }` | An agent turn completes   |
-| `onToolCallStart` | `{ agentId: string; toolName: string; toolCallId: string }`                     | A tool execution starts   |
-| `onToolCallEnd`   | `{ agentId: string; toolName: string; toolCallId: string; isError: boolean }`   | A tool execution finishes |
+| Method            | Parameter Shape                                                                                                     | Fired when                |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------- | ------------------------- |
+| `onTurnStart`     | `{ agentId: string; turn: number }`                                                                                 | An agent turn begins      |
+| `onTurnEnd`       | `{ agentId: string; turn: number; tokens?: { input: number; output: number }; contentBlocks?: TurnContentBlock[] }` | An agent turn completes   |
+| `onToolCallStart` | `{ agentId: string; toolName: string; toolCallId: string }`                                                         | A tool execution starts   |
+| `onToolCallEnd`   | `{ agentId: string; toolName: string; toolCallId: string; isError: boolean }`                                       | A tool execution finishes |
 
 All methods are optional.
+
+##### `TurnContentBlock`
+
+A discriminated union representing the content of an assistant's turn:
+
+| Type       | Shape                                                                                | Description                     |
+| ---------- | ------------------------------------------------------------------------------------ | ------------------------------- |
+| `text`     | `{ type: 'text'; text: string }`                                                     | Message text from the assistant |
+| `thinking` | `{ type: 'thinking'; thinking: string; redacted?: boolean }`                         | Thinking/reasoning text         |
+| `toolCall` | `{ type: 'toolCall'; id: string; name: string; arguments: Record<string, unknown> }` | Tool call with parameters       |
+
+`contentBlocks` is only populated when the turn's message has `role: 'assistant'`. For non-assistant messages, it is `undefined`.
 
 ---
 

@@ -147,13 +147,119 @@ describe('harness subscribe forwarding', () => {
 
     capturedListener!({
       type: 'turn_end',
-      message: { usage: { input: 100, output: 50 } },
+      message: { role: 'assistant', usage: { input: 100, output: 50 } },
     });
 
     expect(onTurnEnd).toHaveBeenCalledWith({
       agentId: 'mock-session-id',
       turn: 0,
       tokens: { input: 100, output: 50 },
+      contentBlocks: undefined,
+    });
+  });
+
+  it('turn_end forwards assistant content blocks', async () => {
+    const onTurnEnd = mock();
+    await createHarness({
+      profile: makeProfile(),
+      cwd: '/tmp',
+      onAgentStatus: { onTurnEnd },
+    });
+
+    capturedListener!({
+      type: 'turn_end',
+      message: {
+        role: 'assistant',
+        content: [
+          { type: 'text', text: 'Hello world' },
+          { type: 'thinking', thinking: 'Let me think...' },
+          { type: 'toolCall', id: 'tc1', name: 'read', arguments: { path: '/foo.ts' } },
+        ],
+      },
+    });
+
+    expect(onTurnEnd).toHaveBeenCalledWith({
+      agentId: 'mock-session-id',
+      turn: 0,
+      tokens: undefined,
+      contentBlocks: [
+        { type: 'text', text: 'Hello world' },
+        { type: 'thinking', thinking: 'Let me think...' },
+        { type: 'toolCall', id: 'tc1', name: 'read', arguments: { path: '/foo.ts' } },
+      ],
+    });
+  });
+
+  it('turn_end with non-assistant message passes undefined contentBlocks', async () => {
+    const onTurnEnd = mock();
+    await createHarness({
+      profile: makeProfile(),
+      cwd: '/tmp',
+      onAgentStatus: { onTurnEnd },
+    });
+
+    capturedListener!({
+      type: 'turn_end',
+      message: {
+        role: 'user',
+        content: [{ type: 'text', text: 'user message' }],
+        usage: { input: 10, output: 5 },
+      },
+    });
+
+    expect(onTurnEnd).toHaveBeenCalledWith({
+      agentId: 'mock-session-id',
+      turn: 0,
+      tokens: undefined,
+      contentBlocks: undefined,
+    });
+  });
+
+  it('turn_end with redacted thinking block', async () => {
+    const onTurnEnd = mock();
+    await createHarness({
+      profile: makeProfile(),
+      cwd: '/tmp',
+      onAgentStatus: { onTurnEnd },
+    });
+
+    capturedListener!({
+      type: 'turn_end',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'thinking', thinking: '', redacted: true }],
+      },
+    });
+
+    expect(onTurnEnd).toHaveBeenCalledWith({
+      agentId: 'mock-session-id',
+      turn: 0,
+      tokens: undefined,
+      contentBlocks: [{ type: 'thinking', thinking: '', redacted: true }],
+    });
+  });
+
+  it('turn_end with empty content array', async () => {
+    const onTurnEnd = mock();
+    await createHarness({
+      profile: makeProfile(),
+      cwd: '/tmp',
+      onAgentStatus: { onTurnEnd },
+    });
+
+    capturedListener!({
+      type: 'turn_end',
+      message: {
+        role: 'assistant',
+        content: [],
+      },
+    });
+
+    expect(onTurnEnd).toHaveBeenCalledWith({
+      agentId: 'mock-session-id',
+      turn: 0,
+      tokens: undefined,
+      contentBlocks: [],
     });
   });
 

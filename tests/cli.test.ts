@@ -316,6 +316,92 @@ describe('createStatusCallbacks', () => {
     expect(logSpy).toHaveBeenCalledTimes(1);
     expect(logSpy.mock.calls[0][0]).toMatch(/Tool call/);
   });
+
+  it('onTurnEnd renders text content blocks in verbose mode', () => {
+    const callbacks = createStatusCallbacks(true);
+    callbacks.onTurnEnd!({
+      agentId: 'a1',
+      turn: 1,
+      contentBlocks: [{ type: 'text', text: 'Hello world' }],
+    });
+    expect(logSpy).toHaveBeenCalledTimes(1);
+    expect(logSpy.mock.calls[0][0]).toMatch(/Hello world/);
+    expect(logSpy.mock.calls[0][0]).not.toMatch(/Turn .* ended/);
+  });
+
+  it('onTurnEnd renders thinking content', () => {
+    const callbacks = createStatusCallbacks(true);
+    callbacks.onTurnEnd!({
+      agentId: 'a1',
+      turn: 1,
+      contentBlocks: [{ type: 'thinking', thinking: 'Let me think...' }],
+    });
+    expect(logSpy).toHaveBeenCalledTimes(1);
+    expect(logSpy.mock.calls[0][0]).toMatch(/🧠/);
+    expect(logSpy.mock.calls[0][0]).toMatch(/Let me think\.\.\./);
+  });
+
+  it('onTurnEnd renders redacted thinking', () => {
+    const callbacks = createStatusCallbacks(true);
+    callbacks.onTurnEnd!({
+      agentId: 'a1',
+      turn: 1,
+      contentBlocks: [{ type: 'thinking', thinking: '', redacted: true }],
+    });
+    expect(logSpy).toHaveBeenCalledTimes(1);
+    expect(logSpy.mock.calls[0][0]).toMatch(/redacted thinking/);
+  });
+
+  it('onTurnEnd renders toolCall with arguments', () => {
+    const callbacks = createStatusCallbacks(true);
+    callbacks.onTurnEnd!({
+      agentId: 'a1',
+      turn: 1,
+      contentBlocks: [{ type: 'toolCall', id: 'tc1', name: 'read', arguments: { path: '/foo.ts' } }],
+    });
+    expect(logSpy).toHaveBeenCalledTimes(1);
+    const output = logSpy.mock.calls[0][0] as string;
+    expect(output).toMatch(/read/);
+    expect(output).toContain('/foo.ts');
+  });
+
+  it('onTurnEnd renders tokens when present', () => {
+    const callbacks = createStatusCallbacks(true);
+    callbacks.onTurnEnd!({
+      agentId: 'a1',
+      turn: 1,
+      contentBlocks: undefined,
+      tokens: { input: 100, output: 50 },
+    });
+    expect(logSpy).toHaveBeenCalledTimes(1);
+    const output = logSpy.mock.calls[0][0] as string;
+    expect(output).toMatch(/Tokens/);
+    expect(output).toMatch(/100 in \/ 50 out/);
+  });
+
+  it('onTurnEnd produces no output when no content and no tokens', () => {
+    const callbacks = createStatusCallbacks(true);
+    callbacks.onTurnEnd!({
+      agentId: 'a1',
+      turn: 1,
+      contentBlocks: undefined,
+    });
+    expect(logSpy).not.toHaveBeenCalled();
+  });
+
+  it('onTurnEnd with multi-line text renders fully', () => {
+    const callbacks = createStatusCallbacks(true);
+    callbacks.onTurnEnd!({
+      agentId: 'a1',
+      turn: 1,
+      contentBlocks: [{ type: 'text', text: 'line1\nline2\nline3' }],
+    });
+    expect(logSpy).toHaveBeenCalledTimes(1);
+    const output = logSpy.mock.calls[0][0] as string;
+    expect(output).toContain('line1');
+    expect(output).toContain('line2');
+    expect(output).toContain('line3');
+  });
 });
 
 // ─── main() loads .env files ────────────────────────────────────────────────

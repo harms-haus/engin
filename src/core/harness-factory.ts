@@ -10,16 +10,18 @@ import {
 } from '@earendil-works/pi-coding-agent';
 
 import { loadProfile } from './profile.js';
-import type { HarnessCreationOptions } from './types.js';
+import type { HarnessCreationOptions, TurnContentBlock } from './types.js';
 import { DEFAULT_TOOLS } from './utils.js';
 
 // ─── Agent Event Types ──────────────────────────────────────────────────────
 
+/* eslint-disable @typescript-eslint/no-explicit-any */
 type AgentLevelEvent =
   | { type: 'turn_start' }
-  | { type: 'turn_end'; message?: { usage?: { input: number; output: number } } }
+  | { type: 'turn_end'; message: { role: string; content?: any[]; usage?: { input: number; output: number } } }
   | { type: 'tool_execution_start'; toolName: string; toolCallId: string }
-  | { type: 'tool_execution_end'; toolName: string; toolCallId: string; isError?: boolean };
+  | { type: 'tool_execution_end'; toolName: string; toolCallId: string; isError: boolean };
+/* eslint-enable @typescript-eslint/no-explicit-any */
 
 // ─── createHarness ──────────────────────────────────────────────────────────
 
@@ -119,11 +121,28 @@ export async function createHarness(
           turn: ++turnCount,
         });
       } else if (e.type === 'turn_end') {
-        const usage = e.message?.usage;
+        const isAssistant = e.message?.role === 'assistant';
+        const usage = isAssistant ? e.message?.usage : undefined;
+        let contentBlocks: TurnContentBlock[] | undefined;
+        if (isAssistant && e.message.content) {
+          contentBlocks = [];
+          // Map only the block types supported by TurnContentBlock.
+          // Unrecognized types (e.g., future upstream additions) are intentionally skipped.
+          for (const block of e.message.content) {
+            if (block.type === 'text') {
+              contentBlocks.push({ type: 'text', text: block.text });
+            } else if (block.type === 'thinking') {
+              contentBlocks.push({ type: 'thinking', thinking: block.thinking, redacted: block.redacted });
+            } else if (block.type === 'toolCall') {
+              contentBlocks.push({ type: 'toolCall', id: block.id, name: block.name, arguments: block.arguments });
+            }
+          }
+        }
         onAgentStatus.onTurnEnd?.({
           agentId: sessionId,
           turn: turnCount,
           tokens: usage ? { input: usage.input, output: usage.output } : undefined,
+          contentBlocks,
         });
       } else if (e.type === 'tool_execution_start') {
         onAgentStatus.onToolCallStart?.({

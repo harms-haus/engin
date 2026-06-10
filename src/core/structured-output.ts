@@ -108,7 +108,8 @@ export async function promptForStructured<T>(
 ): Promise<T> {
   const maxRetries = options?.maxRetries ?? 3;
   const originalPrompt = prompt;
-  let currentPrompt = prompt;
+  const schemaDesc = schemaToString(schema);
+  let currentPrompt = `${prompt}\n\nRespond with valid JSON matching this schema:\n${schemaDesc}`;
   let lastError: string | undefined;
 
   for (let attempt = 0; attempt < maxRetries; attempt++) {
@@ -118,7 +119,7 @@ export async function promptForStructured<T>(
     const jsonStr = extractJsonFromText(text);
     if (jsonStr === null) {
       lastError = 'No JSON found in response';
-      currentPrompt = buildRetryPrompt(originalPrompt, lastError, schema);
+      currentPrompt = buildRetryPrompt(originalPrompt, lastError, schemaDesc);
       continue;
     }
 
@@ -127,7 +128,7 @@ export async function promptForStructured<T>(
       parsed = parseJsonWithRepair(jsonStr);
     } catch (err) {
       lastError = `JSON parse error: ${err instanceof Error ? err.message : String(err)}`;
-      currentPrompt = buildRetryPrompt(originalPrompt, lastError, schema);
+      currentPrompt = buildRetryPrompt(originalPrompt, lastError, schemaDesc);
       continue;
     }
 
@@ -136,8 +137,8 @@ export async function promptForStructured<T>(
       return result.data;
     }
 
-    lastError = `Schema validation error: ${result.error.format()}`;
-    currentPrompt = buildRetryPrompt(originalPrompt, lastError, schema);
+    lastError = `Schema validation error: ${result.error.message}`;
+    currentPrompt = buildRetryPrompt(originalPrompt, lastError, schemaDesc);
   }
 
   throw new Error(`Failed to produce structured output after ${maxRetries} attempts: ${lastError}`);
@@ -159,8 +160,7 @@ export function schemaToString(schema: ZodType): string {
 
 // ─── Internal Helpers ───────────────────────────────────────────────────────
 
-function buildRetryPrompt<T>(originalPrompt: string, error: string, schema: ZodType<T>): string {
-  const schemaDesc = schemaToString(schema);
+function buildRetryPrompt(originalPrompt: string, error: string, schemaDesc: string): string {
   return [
     originalPrompt,
     '',

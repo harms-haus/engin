@@ -60,6 +60,23 @@ fi
 
 # ─── Step 3: Install globally ───────────────────────────────────────────────
 info "Installing $PKG_NAME globally..."
+
+# Bun's `bun add -g` has a bug where it appends a duplicate key to ~/package.json
+# if the package already exists. Work around by removing the key first.
+if [ -f "$HOME/package.json" ]; then
+    # Use a temp file to safely edit JSON — remove any existing entry for our package
+   DEDUPED=$(grep -v "\"$PKG_NAME\"" "$HOME/package.json" | sed "/^{$/,/^}$/{/^}/!{/^[[:space:]]*$/d}}" )
+    # Simpler approach: use node/bun to clean it
+    bun -e "
+      const fs = require('fs');
+      const pkg = JSON.parse(fs.readFileSync('$HOME/package.json', 'utf8'));
+      if (pkg.dependencies && pkg.dependencies['$PKG_NAME']) {
+        delete pkg.dependencies['$PKG_NAME'];
+        fs.writeFileSync('$HOME/package.json', JSON.stringify(pkg, null, 2) + '\n');
+      }
+    " 2>/dev/null || true
+fi
+
 bun add -g "$SCRIPT_DIR"
 
 # ─── Step 4: Verify the `engin` command ─────────────────────────────────────

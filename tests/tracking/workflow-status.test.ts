@@ -169,6 +169,35 @@ describe('WorkflowStatusTracker', () => {
     });
   });
 
+  // ── planReviewFeedback ────────────────────────────────────────────
+
+  describe('planReviewFeedback', () => {
+    it('getters return undefined initially', () => {
+      expect(tracker.planReviewFeedback).toBeUndefined();
+      expect(tracker.planReviewSuggestions).toBeUndefined();
+    });
+
+    it('setPlanReviewFeedback stores both feedback and suggestions', () => {
+      tracker.setPlanReviewFeedback('Missing error handling', ['Add try/catch']);
+      expect(tracker.planReviewFeedback).toBe('Missing error handling');
+      expect(tracker.planReviewSuggestions).toEqual(['Add try/catch']);
+    });
+
+    it('planReviewSuggestions getter returns a defensive copy', () => {
+      tracker.setPlanReviewFeedback('Needs improvement', ['s1', 's2']);
+      const suggestions = tracker.planReviewSuggestions;
+      suggestions!.push('s3');
+      expect(tracker.planReviewSuggestions).toEqual(['s1', 's2']);
+    });
+
+    it('clearPlanReviewFeedback resets both to undefined', () => {
+      tracker.setPlanReviewFeedback('Feedback', ['Suggestion']);
+      tracker.clearPlanReviewFeedback();
+      expect(tracker.planReviewFeedback).toBeUndefined();
+      expect(tracker.planReviewSuggestions).toBeUndefined();
+    });
+  });
+
   // ── toJSON ─────────────────────────────────────────────────────────
 
   describe('toJSON', () => {
@@ -188,6 +217,15 @@ describe('WorkflowStatusTracker', () => {
       expect(json.plan).toEqual({ steps: [1, 2, 3] });
       expect(json.stats).toEqual({ totalTokens: 150, totalCost: 0, agentCount: 1 });
       expect(json.tasks).toEqual([]);
+    });
+
+    it('includes planReviewFeedback fields when set', () => {
+      tracker.setPlanReviewFeedback('Missing error handling', ['Add try/catch']);
+
+      const json = tracker.toJSON();
+
+      expect(json.planReviewFeedback).toBe('Missing error handling');
+      expect(json.planReviewSuggestions).toEqual(['Add try/catch']);
     });
 
     it('includes tasks from the taskTracker', () => {
@@ -245,6 +283,16 @@ describe('WorkflowStatusTracker', () => {
       expect(restored.taskTracker.getAllTasks()).toHaveLength(2);
       expect(restored.taskTracker.getTask('task-a')!.status).toBe('ready');
       expect(restored.taskTracker.getTask('task-b')!.status).toBe('blocked');
+    });
+
+    it('restores planReviewFeedback through save and load', async () => {
+      tracker.setPlanReviewFeedback('Build error handling', ['Add try/catch']);
+
+      await tracker.save();
+      const restored = await WorkflowStatusTracker.load(dir);
+
+      expect(restored.planReviewFeedback).toBe('Build error handling');
+      expect(restored.planReviewSuggestions).toEqual(['Add try/catch']);
     });
 
     it("save creates the workDir if it doesn't exist", async () => {

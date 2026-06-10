@@ -57,6 +57,10 @@ export interface WorkflowState {
   /** Plan stored as opaque value; consumers should cast to their specific schema type */
   plan: unknown;
   research?: string;
+  /** Plan review feedback text from the reviewer when a plan is rejected */
+  planReviewFeedback?: string;
+  /** Specific improvement suggestions from the plan reviewer */
+  planReviewSuggestions?: string[];
   stats: {
     totalTokens: number;
     totalCost: number;
@@ -94,9 +98,19 @@ export interface WorkflowStatusCallbacks {
   onWorkflowFailed?: (info: { error: Error; phase: string }) => void;
 }
 
+export type TurnContentBlock =
+  | { type: 'text'; text: string }
+  | { type: 'thinking'; thinking: string; redacted?: boolean }
+  | { type: 'toolCall'; id: string; name: string; arguments: Record<string, unknown> };
+
 export interface AgentStatusCallbacks {
   onTurnStart?: (info: { agentId: string; turn: number }) => void;
-  onTurnEnd?: (info: { agentId: string; turn: number; tokens?: { input: number; output: number } }) => void;
+  onTurnEnd?: (info: {
+    agentId: string;
+    turn: number;
+    tokens?: { input: number; output: number };
+    contentBlocks?: TurnContentBlock[];
+  }) => void;
   onToolCallStart?: (info: { agentId: string; toolName: string; toolCallId: string }) => void;
   onToolCallEnd?: (info: { agentId: string; toolName: string; toolCallId: string; isError: boolean }) => void;
 }
@@ -117,6 +131,8 @@ export interface WorkflowRunOptions {
   maxConcurrentTasks?: number;
   apiKeys?: Record<string, string>;
   onStatus?: StatusCallbacks;
+  /** Abort signal for cooperative cancellation (e.g. SIGINT) */
+  signal?: AbortSignal;
 }
 
 // ─── Workflow Entry ───────────────────────────────────────────────────────

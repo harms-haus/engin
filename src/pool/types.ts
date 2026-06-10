@@ -44,6 +44,8 @@ export interface LanePoolOptions {
   getStepsForTask: (task: Task) => StepDefinition[];
   /** Maximum retries per step on agent crash. Default: 3 */
   maxStepRetries?: number;
+  /** Abort signal for cooperative cancellation */
+  signal?: AbortSignal;
 }
 
 /** Aggregate result from running the pool. */
