@@ -1,6 +1,7 @@
 import { afterAll, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { z } from 'zod';
 import type { AgentSession, HarnessCreationOptions } from '../../src/core/types.ts';
+import { makeMockSession } from '../helpers/make-session.js';
 
 // Capture real modules before mocking so we can restore them in afterAll.
 const realHarnessFactory = Object.assign({}, await import('../../src/core/harness-factory.ts'));
@@ -24,25 +25,17 @@ import { agentLoopUntil, parallelAgents, retryAgentUntil, sequentialAgents } fro
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
-interface MockSession {
-  prompt: ReturnType<typeof mock>;
-  getLastAssistantText: ReturnType<typeof mock>;
-}
-
 function makeSession(textFn: (promptText: string) => string | undefined): {
-  session: MockSession;
+  session: { prompt: ReturnType<typeof mock>; getLastAssistantText: ReturnType<typeof mock> };
   sessionId: string;
 } {
-  let lastText: string | undefined;
-  const session: MockSession = {
-    prompt: mock(async (text: string) => {
-      lastText = textFn(text);
-    }),
-    getLastAssistantText: mock(() => lastText),
-  };
+  const result = makeMockSession(textFn);
   return {
-    session,
-    sessionId: 'test-session',
+    session: result.session as unknown as {
+      prompt: ReturnType<typeof mock>;
+      getLastAssistantText: ReturnType<typeof mock>;
+    },
+    sessionId: result.sessionId,
   };
 }
 
@@ -200,7 +193,7 @@ describe('retryAgentUntil', () => {
     expect(mockPromptForStructured).toHaveBeenCalledWith(session, 'prompt', schema, { maxRetries: 5 });
   });
 
-  it('reports correct attempts when maxRetries is custom', async () => {
+  it('passes maxRetries value as attempts count', async () => {
     const session = { prompt: mock(), getLastAssistantText: mock() };
     mockPromptForStructured.mockResolvedValue({ name: 'C', score: 1 });
 
@@ -391,6 +384,55 @@ describe('sequentialAgents', () => {
     await expect(sequentialAgents(configs, () => 'test')).rejects.toThrow('first agent crashed');
 
     expect(promptCount).toBe(1);
+  });
+});
+
+// ─── parallelAgents edge cases ─────────────────────────────────────────────
+
+describe('parallelAgents edge cases', () => {
+  it('returns empty array for empty configs', async () => {
+    const results = await parallelAgents([], () => 'test');
+    expect(results).toEqual([]);
+    expect(mockCreateHarness).not.toHaveBeenCalled();
+  });
+
+  it('disposes already-created sessions when createHarness throws for one config', async () => {
+    const disposedSessions: string[] = [];
+    const config1 = makeConfig();
+    const config2 = makeConfig();
+    const config3 = makeConfig();
+
+    let harnessIndex = 0;
+    mockCreateHarness.mockImplementation(async (cfg: HarnessCreationOptions) => {
+      const idx = harnessIndex++;
+      if (idx === 1) {
+        throw new Error('harness creation failed');
+      }
+      const inner = makeSession(() => 'ok');
+      return {
+        session: inner.session,
+        sessionId: inner.sessionId,
+        dispose: () => {
+          disposedSessions.push(cfg.profile.id);
+        },
+      };
+    });
+
+    await expect(parallelAgents([config1, config2, config3], () => 'test')).rejects.toThrow('harness creation failed');
+
+    // The first harness should have been created and then disposed when the second failed
+    expect(disposedSessions).toContain('test-agent');
+    expect(disposedSessions.length).toBe(1);
+  });
+});
+
+// ─── sequentialAgents edge cases ────────────────────────────────────────────
+
+describe('sequentialAgents edge cases', () => {
+  it('returns empty array for empty configs', async () => {
+    const results = await sequentialAgents([], () => 'test');
+    expect(results).toEqual([]);
+    expect(mockCreateHarness).not.toHaveBeenCalled();
   });
 });
 

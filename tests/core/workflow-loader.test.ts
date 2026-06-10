@@ -1,33 +1,32 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
-import { mkdir, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { clearWorkflowCache, listWorkflows, loadWorkflow } from '../../src/core/workflow-loader.js';
+import { useTempDir } from '../helpers/use-temp-dir.js';
 
 // ─── Temp directory helper ──────────────────────────────────────────────────
 
-let tempDir: string;
+const { getDir } = useTempDir();
+
 let localWorkflowDir: string;
 let globalWorkflowDir: string;
 let savedXdg: string | undefined;
 
 beforeEach(async () => {
   savedXdg = process.env.XDG_CONFIG_HOME;
-  tempDir = join(tmpdir(), `wf-loader-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-  localWorkflowDir = join(tempDir, 'local', '.engin', 'workflows');
-  globalWorkflowDir = join(tempDir, 'global', 'engin', 'workflows');
+  localWorkflowDir = join(getDir(), 'local', '.engin', 'workflows');
+  globalWorkflowDir = join(getDir(), 'global', 'engin', 'workflows');
   await mkdir(localWorkflowDir, { recursive: true });
   await mkdir(globalWorkflowDir, { recursive: true });
   clearWorkflowCache();
 });
 
-afterEach(async () => {
+afterEach(() => {
   if (savedXdg === undefined) {
     delete process.env.XDG_CONFIG_HOME;
   } else {
     process.env.XDG_CONFIG_HOME = savedXdg;
   }
-  await rm(tempDir, { recursive: true, force: true });
 });
 
 /**
@@ -35,10 +34,10 @@ afterEach(async () => {
  * We set XDG_CONFIG_HOME so that the global dir maps to globalWorkflowDir.
  */
 function makeCwd(): string {
-  // cwd must be <tempDir>/local so that .engin/workflows = localWorkflowDir
-  // XDG_CONFIG_HOME must be <tempDir>/global so that engin = globalWorkflowDir
-  process.env.XDG_CONFIG_HOME = join(tempDir, 'global');
-  return join(tempDir, 'local');
+  // cwd must be <getDir()>/local so that .engin/workflows = localWorkflowDir
+  // XDG_CONFIG_HOME must be <getDir()>/global so that engin = globalWorkflowDir
+  process.env.XDG_CONFIG_HOME = join(getDir(), 'global');
+  return join(getDir(), 'local');
 }
 
 /**
@@ -58,9 +57,9 @@ async function createDirWorkflow(
 
 describe('listWorkflows', () => {
   it('returns empty array when no dirs exist', async () => {
-    const emptyCwd = join(tempDir, 'nowhere');
+    const emptyCwd = join(getDir(), 'nowhere');
     await mkdir(emptyCwd, { recursive: true });
-    process.env.XDG_CONFIG_HOME = join(tempDir, 'nowhere-global');
+    process.env.XDG_CONFIG_HOME = join(getDir(), 'nowhere-global');
     const result = await listWorkflows(emptyCwd);
     expect(result).toEqual([]);
   });
@@ -257,7 +256,7 @@ describe('loadWorkflow', () => {
 // ─── clearWorkflowCache ─────────────────────────────────────────────────────
 
 describe('clearWorkflowCache', () => {
-  it('clears the cache map', async () => {
+  it('cache clear does not break subsequent loads', async () => {
     const cwd = makeCwd();
     await createDirWorkflow(globalWorkflowDir, 'cache-clear', 'export async function run() { return 42; }');
 
@@ -271,10 +270,7 @@ describe('clearWorkflowCache', () => {
     // Next load still works (re-resolves via the same path)
     const mod2 = await loadWorkflow('cache-clear', cwd);
     expect(typeof mod2.run).toBe('function');
-
-    // Note: Node.js caches ESM modules internally, so mod1 and mod2
-    // are the same underlying module namespace. clearWorkflowCache
-    // only clears our Map; it does not bust Node's ESM cache.
-    expect(mod1).toBe(mod2);
+    const result = await mod2.run('', { cwd: '', workDir: '' });
+    expect(result).toBe(42);
   });
 });

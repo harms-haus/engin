@@ -44,6 +44,53 @@ describe('extractJsonFromText', () => {
   });
 });
 
+// ─── extractJsonFromText edge cases ─────────────────────────────────────────
+
+describe('extractJsonFromText edge cases', () => {
+  it('skips { in prose before valid JSON', () => {
+    const input = 'use {x} to get {"a": 1}';
+    expect(extractJsonFromText(input)).toBe('{"a": 1}');
+  });
+
+  it('extracts first valid JSON array including short arrays like [1]', () => {
+    // [1] is valid JSON, so it is extracted first
+    const input = 'see [1] for ["a","b"]';
+    expect(extractJsonFromText(input)).toBe('[1]');
+  });
+
+  it('finds valid JSON after invalid JSON', () => {
+    const input = 'broken { bad } real {"ok":true}';
+    expect(extractJsonFromText(input)).toBe('{"ok":true}');
+  });
+
+  it('extracts deeply nested JSON', () => {
+    const input = '{"a":{"b":{"c":{"d":1}}}}';
+    expect(extractJsonFromText(input)).toBe('{"a":{"b":{"c":{"d":1}}}}');
+  });
+
+  it('extracts JSON array with nested objects', () => {
+    const input = '[{"x":1},{"y":2}]';
+    expect(extractJsonFromText(input)).toBe('[{"x":1},{"y":2}]');
+  });
+
+  it('extracts empty object', () => {
+    expect(extractJsonFromText('{}')).toBe('{}');
+  });
+
+  it('extracts empty array', () => {
+    expect(extractJsonFromText('[]')).toBe('[]');
+  });
+
+  it('returns null for unmatched opening bracket', () => {
+    expect(extractJsonFromText('just a [ with no close')).toBeNull();
+  });
+
+  it('extracts first valid JSON when multiple are present', () => {
+    const input = 'first: {"a":1} second: {"b":2}';
+    expect(extractJsonFromText(input)).toBe('{"a":1}');
+  });
+});
+
 // ─── promptForStructured ────────────────────────────────────────────────────
 
 describe('promptForStructured', () => {

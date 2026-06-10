@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
-import { mkdir, rm, stat, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdir, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { LoadEnvResult } from '../../src/core/config.js';
 import {
@@ -13,19 +12,11 @@ import {
   resolveWorkflowsDirs,
 } from '../../src/core/config.js';
 import { useEnvSandbox } from '../helpers/env-sandbox.js';
+import { useTempDir } from '../helpers/use-temp-dir.js';
 
 // ─── Temp directory helper ──────────────────────────────────────────────────
 
-let tempDir: string;
-
-beforeEach(async () => {
-  tempDir = join(tmpdir(), `config-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-  await mkdir(tempDir, { recursive: true });
-});
-
-afterEach(async () => {
-  await rm(tempDir, { recursive: true, force: true });
-});
+const { getDir } = useTempDir();
 
 // ─── getGlobalConfigDir ────────────────────────────────────────────────────
 
@@ -115,6 +106,10 @@ describe('resolveProfilesDirs', () => {
   it('throws on workflow names with backslashes', () => {
     expect(() => resolveProfilesDirs('/project', 'foo\\bar')).toThrow('Invalid workflow name');
   });
+
+  it('throws on workflow name containing double-dot traversal', () => {
+    expect(() => resolveProfilesDirs('/project', '..')).toThrow('Invalid workflow name');
+  });
 });
 
 // ─── resolveWorkflowsDirs ──────────────────────────────────────────────────
@@ -149,7 +144,7 @@ describe('getDefaultWorkDir', () => {
 
 describe('ensureDir', () => {
   it('creates a directory that does not exist', async () => {
-    const newDir = join(tempDir, 'nested', 'sub', 'dir');
+    const newDir = join(getDir(), 'nested', 'sub', 'dir');
     await ensureDir(newDir);
 
     const s = await stat(newDir);
@@ -157,7 +152,7 @@ describe('ensureDir', () => {
   });
 
   it('succeeds when directory already exists', async () => {
-    const existingDir = join(tempDir, 'already-here');
+    const existingDir = join(getDir(), 'already-here');
     await mkdir(existingDir, { recursive: true });
 
     // Should not throw
@@ -175,7 +170,7 @@ describe('loadEnvFiles', () => {
 
   // Helper: create a temp-based "global config dir" using XDG_CONFIG_HOME
   async function makeGlobalEnvDir(content: string): Promise<string> {
-    const xdgDir = join(tempDir, 'xdg-config');
+    const xdgDir = join(getDir(), 'xdg-config');
     await mkdir(join(xdgDir, 'engin'), { recursive: true });
     await writeFile(join(xdgDir, 'engin', '.env'), content);
     return xdgDir;
@@ -189,7 +184,7 @@ describe('loadEnvFiles', () => {
   }
 
   it('returns empty results when no .env files exist', () => {
-    const projectDir = join(tempDir, 'project');
+    const projectDir = join(getDir(), 'project');
     // Don't create any directories or files
     delete process.env.XDG_CONFIG_HOME;
 
@@ -203,7 +198,7 @@ describe('loadEnvFiles', () => {
   it('loads global .env when only global exists', async () => {
     const xdgDir = await makeGlobalEnvDir('GLOBAL_KEY=global_value\n');
     process.env.XDG_CONFIG_HOME = xdgDir;
-    const projectDir = join(tempDir, 'project');
+    const projectDir = join(getDir(), 'project');
 
     const result = loadEnvFiles(projectDir);
 
@@ -215,7 +210,7 @@ describe('loadEnvFiles', () => {
   });
 
   it('loads local .env when only local exists', async () => {
-    const projectDir = join(tempDir, 'project');
+    const projectDir = join(getDir(), 'project');
     delete process.env.XDG_CONFIG_HOME;
     await makeLocalEnvFile(projectDir, 'LOCAL_KEY=local_value\n');
 
@@ -231,7 +226,7 @@ describe('loadEnvFiles', () => {
   it('loads keys from both global and local when both exist', async () => {
     const xdgDir = await makeGlobalEnvDir('GLOB_ONLY=glob\nSHARED=from_global\n');
     process.env.XDG_CONFIG_HOME = xdgDir;
-    const projectDir = join(tempDir, 'project');
+    const projectDir = join(getDir(), 'project');
     await makeLocalEnvFile(projectDir, 'LOC_ONLY=loc\n');
 
     const result = loadEnvFiles(projectDir);
@@ -248,7 +243,7 @@ describe('loadEnvFiles', () => {
   it('local value overrides global when same key exists in both', async () => {
     const xdgDir = await makeGlobalEnvDir('SHARED=from_global\n');
     process.env.XDG_CONFIG_HOME = xdgDir;
-    const projectDir = join(tempDir, 'project');
+    const projectDir = join(getDir(), 'project');
     await makeLocalEnvFile(projectDir, 'SHARED=from_local\n');
 
     const result = loadEnvFiles(projectDir);
@@ -262,7 +257,7 @@ describe('loadEnvFiles', () => {
     process.env.PREEXISTING = 'already_here';
     const xdgDir = await makeGlobalEnvDir('PREEXISTING=from_global\n');
     process.env.XDG_CONFIG_HOME = xdgDir;
-    const projectDir = join(tempDir, 'project');
+    const projectDir = join(getDir(), 'project');
     await makeLocalEnvFile(projectDir, 'PREEXISTING=from_local\n');
 
     const result = loadEnvFiles(projectDir);
@@ -272,7 +267,7 @@ describe('loadEnvFiles', () => {
   });
 
   it('does not throw on malformed .env file (dotenv is lenient)', async () => {
-    const projectDir = join(tempDir, 'project');
+    const projectDir = join(getDir(), 'project');
     delete process.env.XDG_CONFIG_HOME;
     await makeLocalEnvFile(projectDir, 'this is just random text without equals\n');
 
@@ -285,7 +280,7 @@ describe('loadEnvFiles', () => {
   });
 
   it('ignores comments and blank lines', async () => {
-    const projectDir = join(tempDir, 'project');
+    const projectDir = join(getDir(), 'project');
     delete process.env.XDG_CONFIG_HOME;
     await makeLocalEnvFile(projectDir, '# this is a comment\n\nKEY=val\n\n# another comment\n');
 
@@ -296,7 +291,7 @@ describe('loadEnvFiles', () => {
   });
 
   it('handles empty .env file (zero bytes)', async () => {
-    const projectDir = join(tempDir, 'project');
+    const projectDir = join(getDir(), 'project');
     delete process.env.XDG_CONFIG_HOME;
     await makeLocalEnvFile(projectDir, '');
 
@@ -308,7 +303,7 @@ describe('loadEnvFiles', () => {
   });
 
   it('sets env var to empty string for KEY=', async () => {
-    const projectDir = join(tempDir, 'project');
+    const projectDir = join(getDir(), 'project');
     delete process.env.XDG_CONFIG_HOME;
     await makeLocalEnvFile(projectDir, 'KEY=\n');
 
@@ -319,10 +314,10 @@ describe('loadEnvFiles', () => {
   });
 
   it('skips blocked dangerous env vars', async () => {
-    const localDir = join(tempDir, '.engin');
+    const localDir = join(getDir(), '.engin');
     await mkdir(localDir, { recursive: true });
     await writeFile(join(localDir, '.env'), 'NODE_TLS_REJECT_UNAUTHORIZED=0\nMY_SAFE_KEY=safe_val\n');
-    const result = loadEnvFiles(tempDir);
+    const result = loadEnvFiles(getDir());
     expect(process.env.NODE_TLS_REJECT_UNAUTHORIZED).toBeUndefined();
     expect(process.env.MY_SAFE_KEY).toBe('safe_val');
     expect(result.keysSet).not.toContain('NODE_TLS_REJECT_UNAUTHORIZED');
@@ -330,7 +325,7 @@ describe('loadEnvFiles', () => {
   });
 
   it('ignores KEY without equals sign', async () => {
-    const projectDir = join(tempDir, 'project');
+    const projectDir = join(getDir(), 'project');
     delete process.env.XDG_CONFIG_HOME;
     await makeLocalEnvFile(projectDir, 'LONELY_KEY\nVALID=val\n');
 
@@ -339,5 +334,22 @@ describe('loadEnvFiles', () => {
     expect(result.keysSet).not.toContain('LONELY_KEY');
     expect(result.keysSet).toContain('VALID');
     expect(process.env.VALID).toBe('val');
+  });
+
+  it('skips additional blocked keys like NODE_OPTIONS and PATH', async () => {
+    const originalPath = process.env.PATH;
+    const localDir = join(getDir(), '.engin');
+    await mkdir(localDir, { recursive: true });
+    await writeFile(join(localDir, '.env'), 'NODE_OPTIONS=--require=/malicious\nPATH=/evil\nSAFE_KEY=safe\n');
+
+    const result = loadEnvFiles(getDir());
+
+    expect(process.env.NODE_OPTIONS).toBeUndefined();
+    // PATH is typically already set in the environment; verify it was NOT overwritten
+    expect(process.env.PATH).toBe(originalPath);
+    expect(process.env.SAFE_KEY).toBe('safe');
+    expect(result.keysSet).not.toContain('NODE_OPTIONS');
+    expect(result.keysSet).not.toContain('PATH');
+    expect(result.keysSet).toContain('SAFE_KEY');
   });
 });

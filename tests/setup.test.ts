@@ -1,7 +1,7 @@
-import { afterAll, afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
-import { mkdir, rm, stat } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { afterAll, beforeEach, describe, expect, it, mock } from 'bun:test';
+import { mkdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
+import { useTempDir } from './helpers/use-temp-dir.js';
 
 // Resolve real module objects before mocking so they can be restored in afterAll
 const actualConfig = Object.assign({}, await import('../src/core/config.js'));
@@ -25,17 +25,11 @@ afterAll(() => {
 });
 
 describe('initDefaultConfig', () => {
-  let tempBase: string;
+  const { getDir } = useTempDir();
 
   beforeEach(async () => {
-    tempBase = join(tmpdir(), `wh-setup-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-    await mkdir(tempBase, { recursive: true });
-    mockGlobalDir = join(tempBase, 'global-config');
+    mockGlobalDir = join(getDir(), 'global-config');
     await mkdir(mockGlobalDir, { recursive: true });
-  });
-
-  afterEach(async () => {
-    await rm(tempBase, { recursive: true, force: true });
   });
 
   it('creates workflows/ directory in global config dir', async () => {
@@ -65,7 +59,7 @@ describe('initDefaultConfig', () => {
 
   it('works when global config dir does not exist yet', async () => {
     // Point mockGlobalDir to a path whose parent exists but it does not
-    mockGlobalDir = join(tempBase, 'brand-new-config');
+    mockGlobalDir = join(getDir(), 'brand-new-config');
 
     const result = await initDefaultConfig();
     expect(result).toEqual({ createdDirs: ['workflows'] });

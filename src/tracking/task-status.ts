@@ -143,6 +143,33 @@ export class TaskTracker {
     return all.length > 0 && all.every((t) => t.status === 'done');
   }
 
+  getBlockedWithMissingDeps(): { taskId: string; missingDepIds: string[] }[] {
+    const results: { taskId: string; missingDepIds: string[] }[] = [];
+
+    for (const task of this.tasks.values()) {
+      if (task.status === 'blocked') {
+        const missingDepIds = task.dependencies.filter((dep) => !this.tasks.has(dep));
+        if (missingDepIds.length > 0) {
+          results.push({ taskId: task.id, missingDepIds });
+        }
+      }
+    }
+
+    return results;
+  }
+
+  areAllDoneOrBlocked(): boolean {
+    const all = this.getAllTasks();
+    if (all.length === 0) return false;
+    return all.every((t) => {
+      if (t.status === 'done') return true;
+      if (t.status === 'blocked') {
+        return t.dependencies.some((dep) => !this.tasks.has(dep));
+      }
+      return false;
+    });
+  }
+
   private detectCycle(startId: string): void {
     const visited = new Set<string>();
     const stack = new Set<string>();

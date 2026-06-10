@@ -21,76 +21,68 @@ export function extractJsonFromText(text: string): string | null {
     return fenceMatch[1].trim();
   }
 
-  // 2. Try bracket counting from first { or [
-  const startBrace = text.indexOf('{');
-  const startBracket = text.indexOf('[');
+  // 2. Try bracket counting from every { or [ candidate
+  const candidates: { start: number; open: string; close: string }[] = [];
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] === '{') {
+      candidates.push({ start: i, open: '{', close: '}' });
+    } else if (text[i] === '[') {
+      candidates.push({ start: i, open: '[', close: ']' });
+    }
+  }
 
-  // eslint-disable-next-line no-useless-assignment
-  let start = -1;
-  let openChar: string;
-  let closeChar: string;
-
-  if (startBrace === -1 && startBracket === -1) {
+  if (candidates.length === 0) {
     return null;
   }
 
-  if (startBrace === -1) {
-    start = startBracket;
-    openChar = '[';
-    closeChar = ']';
-  } else if (startBracket === -1) {
-    start = startBrace;
-    openChar = '{';
-    closeChar = '}';
-  } else if (startBrace < startBracket) {
-    start = startBrace;
-    openChar = '{';
-    closeChar = '}';
-  } else {
-    start = startBracket;
-    openChar = '[';
-    closeChar = ']';
-  }
+  for (const { start, open: openChar, close: closeChar } of candidates) {
+    let depth = 0;
+    let inString = false;
+    let escape = false;
 
-  let depth = 0;
-  let inString = false;
-  let escape = false;
+    for (let i = start; i < text.length; i++) {
+      const ch = text[i];
 
-  for (let i = start; i < text.length; i++) {
-    const ch = text[i];
+      if (escape) {
+        escape = false;
+        continue;
+      }
 
-    if (escape) {
-      escape = false;
-      continue;
-    }
+      if (ch === '\\') {
+        if (inString) {
+          escape = true;
+        }
+        continue;
+      }
 
-    if (ch === '\\') {
+      if (ch === '"') {
+        inString = !inString;
+        continue;
+      }
+
       if (inString) {
-        escape = true;
+        continue;
       }
-      continue;
-    }
 
-    if (ch === '"') {
-      inString = !inString;
-      continue;
-    }
-
-    if (inString) {
-      continue;
-    }
-
-    if (ch === openChar) {
-      depth++;
-    } else if (ch === closeChar) {
-      depth--;
-      if (depth === 0) {
-        return text.slice(start, i + 1);
+      if (ch === openChar) {
+        depth++;
+      } else if (ch === closeChar) {
+        depth--;
+        if (depth === 0) {
+          const extracted = text.slice(start, i + 1);
+          try {
+            JSON.parse(extracted);
+            return extracted;
+          } catch {
+            // Not valid JSON — try next candidate
+            break;
+          }
+        }
       }
     }
   }
 
-  // Bracket didn't close — no valid JSON found
+  // No valid JSON found from any candidate
   return null;
 }
 
@@ -115,6 +107,7 @@ export async function promptForStructured<T>(
   options?: StructuredOutputOptions,
 ): Promise<T> {
   const maxRetries = options?.maxRetries ?? 3;
+  const originalPrompt = prompt;
   let currentPrompt = prompt;
   let lastError: string | undefined;
 
@@ -125,7 +118,7 @@ export async function promptForStructured<T>(
     const jsonStr = extractJsonFromText(text);
     if (jsonStr === null) {
       lastError = 'No JSON found in response';
-      currentPrompt = buildRetryPrompt(currentPrompt, lastError, schema);
+      currentPrompt = buildRetryPrompt(originalPrompt, lastError, schema);
       continue;
     }
 
@@ -134,7 +127,7 @@ export async function promptForStructured<T>(
       parsed = parseJsonWithRepair(jsonStr);
     } catch (err) {
       lastError = `JSON parse error: ${err instanceof Error ? err.message : String(err)}`;
-      currentPrompt = buildRetryPrompt(currentPrompt, lastError, schema);
+      currentPrompt = buildRetryPrompt(originalPrompt, lastError, schema);
       continue;
     }
 
@@ -144,7 +137,7 @@ export async function promptForStructured<T>(
     }
 
     lastError = `Schema validation error: ${result.error.format()}`;
-    currentPrompt = buildRetryPrompt(currentPrompt, lastError, schema);
+    currentPrompt = buildRetryPrompt(originalPrompt, lastError, schema);
   }
 
   throw new Error(`Failed to produce structured output after ${maxRetries} attempts: ${lastError}`);
@@ -166,10 +159,10 @@ export function schemaToString(schema: ZodType): string {
 
 // ─── Internal Helpers ───────────────────────────────────────────────────────
 
-function buildRetryPrompt<T>(_originalPrompt: string, error: string, schema: ZodType<T>): string {
+function buildRetryPrompt<T>(originalPrompt: string, error: string, schema: ZodType<T>): string {
   const schemaDesc = schemaToString(schema);
   return [
-    _originalPrompt,
+    originalPrompt,
     '',
     `--- Previous attempt failed ---`,
     `Error: ${error}`,

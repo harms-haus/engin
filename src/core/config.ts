@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { isEnoentError, validateWorkflowName } from './utils.js';
 
 /**
  * Returns the global configuration directory for engin.
@@ -36,9 +37,7 @@ export function resolveProfilesDirs(cwd: string, workflowName?: string): string[
   if (!workflowName || workflowName.length === 0) {
     return [];
   }
-  if (workflowName.includes('/') || workflowName.includes('\\') || workflowName.includes('..')) {
-    throw new Error(`Invalid workflow name: "${workflowName}". Names must not contain path separators or "..".`);
-  }
+  validateWorkflowName(workflowName);
   return [
     join(getLocalConfigDir(cwd), 'workflows', workflowName, 'profiles'),
     join(getGlobalConfigDir(), 'workflows', workflowName, 'profiles'),
@@ -115,7 +114,7 @@ export function loadEnvFiles(cwd: string): LoadEnvResult {
         localVars = parsed;
       }
     } catch (err: unknown) {
-      if (err instanceof Error && 'code' in err && (err as NodeJS.ErrnoException).code === 'ENOENT') {
+      if (isEnoentError(err)) {
         skippedFiles.push(envPath);
       } else {
         throw err;

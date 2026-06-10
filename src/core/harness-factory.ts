@@ -12,6 +12,7 @@ import {
 import { resolveApiKeyOrThrow } from './auth.js';
 import { loadProfile } from './profile.js';
 import type { HarnessCreationOptions } from './types.js';
+import { DEFAULT_TOOLS } from './utils.js';
 
 // ─── Agent Event Types ──────────────────────────────────────────────────────
 
@@ -57,13 +58,12 @@ export async function createHarness(
   authStorage.setRuntimeApiKey(profile.provider, apiKey);
 
   // 3. Tools
-  const defaultTools = ['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls'];
   let builtTools: string[];
   if (profile.includeTools && profile.includeTools.length > 0) {
     // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-    builtTools = defaultTools.filter((name) => profile.includeTools!.includes(name));
+    builtTools = [...DEFAULT_TOOLS].filter((name) => profile.includeTools!.includes(name));
   } else {
-    builtTools = [...defaultTools];
+    builtTools = [...DEFAULT_TOOLS];
   }
   if (profile.excludeTools && profile.excludeTools.length > 0) {
     // eslint-disable-next-line @typescript-eslint/no-non-null-assertion

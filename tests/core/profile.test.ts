@@ -1,6 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
-import { mkdir, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { afterEach, describe, expect, it } from 'bun:test';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
   clearProfileCache,
@@ -9,18 +8,13 @@ import {
   loadProfilesFromDirs,
   parseProfile,
 } from '../../src/core/profile.js';
+import { useTempDir } from '../helpers/use-temp-dir.js';
 
 // ─── Helper to create a temp directory for each test ────────────────────────
-let tempDir: string;
+const { getDir } = useTempDir();
 
-beforeEach(async () => {
-  tempDir = join(tmpdir(), `profile-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-  await mkdir(tempDir, { recursive: true });
-});
-
-afterEach(async () => {
+afterEach(() => {
   clearProfileCache();
-  await rm(tempDir, { recursive: true, force: true });
 });
 
 // ─── parseProfile ───────────────────────────────────────────────────────────
@@ -164,6 +158,19 @@ describe('parseProfile', () => {
 
     expect(() => parseProfile(content, 'bad-level.md')).toThrow(/invalid thinkingLevel "extreme"/);
   });
+
+  it('applies all defaults when only required fields are present', () => {
+    const content = ['---', 'provider: openai', 'model: gpt-4o', '---', ''].join('\n');
+
+    const profile = parseProfile(content, 'minimal.md');
+
+    expect(profile.id).toBe('minimal');
+    expect(profile.name).toBe('minimal'); // defaults to id when name not provided
+    expect(profile.thinkingLevel).toBe('medium');
+    expect(profile.systemPrompt).toBe('');
+    expect(profile.excludeTools).toEqual([]);
+    expect(profile.includeTools).toEqual([]);
+  });
 });
 
 // ─── loadProfiles ───────────────────────────────────────────────────────────
@@ -171,20 +178,20 @@ describe('parseProfile', () => {
 describe('loadProfiles', () => {
   it('loads all .md files from a directory', async () => {
     await writeFile(
-      join(tempDir, 'alpha.md'),
+      join(getDir(), 'alpha.md'),
       ['---', 'provider: openai', 'model: gpt-4o', '---', 'Alpha prompt.'].join('\n'),
     );
 
     await writeFile(
-      join(tempDir, 'beta.md'),
+      join(getDir(), 'beta.md'),
       ['---', 'provider: anthropic', 'model: claude-sonnet-4-20250514', '---', 'Beta prompt.'].join('\n'),
     );
 
     // Non-.md files should be ignored
-    await writeFile(join(tempDir, 'notes.txt'), 'not a profile');
-    await writeFile(join(tempDir, 'config.json'), JSON.stringify({ key: 'value' }));
+    await writeFile(join(getDir(), 'notes.txt'), 'not a profile');
+    await writeFile(join(getDir(), 'config.json'), JSON.stringify({ key: 'value' }));
 
-    const profiles = await loadProfiles(tempDir);
+    const profiles = await loadProfiles(getDir());
 
     expect(profiles.size).toBe(2);
     expect(profiles.has('alpha')).toBe(true);
@@ -194,9 +201,9 @@ describe('loadProfiles', () => {
   });
 
   it('returns an empty map for a directory with no .md files', async () => {
-    await writeFile(join(tempDir, 'readme.txt'), 'nothing here');
+    await writeFile(join(getDir(), 'readme.txt'), 'nothing here');
 
-    const profiles = await loadProfiles(tempDir);
+    const profiles = await loadProfiles(getDir());
     expect(profiles.size).toBe(0);
   });
 
@@ -205,10 +212,42 @@ describe('loadProfiles', () => {
   });
 
   it('throws when path is a file, not a directory', async () => {
-    const filePath = join(tempDir, 'file.txt');
+    const filePath = join(getDir(), 'file.txt');
     await writeFile(filePath, 'content');
 
     await expect(loadProfiles(filePath)).rejects.toThrow(/Path is not a directory/);
+  });
+});
+
+// ─── clearProfileCache ────────────────────────────────────────────────────────
+
+describe('clearProfileCache', () => {
+  it('causes subsequent loadProfiles to re-read from disk', async () => {
+    await writeFile(
+      join(getDir(), 'cached.md'),
+      ['---', 'provider: openai', 'model: gpt-4o', '---', 'Original prompt.'].join('\n'),
+    );
+
+    // First load populates the cache
+    const profiles1 = await loadProfiles(getDir());
+    expect(profiles1.get('cached')!.systemPrompt).toBe('Original prompt.');
+
+    // Overwrite the file on disk
+    await writeFile(
+      join(getDir(), 'cached.md'),
+      ['---', 'provider: openai', 'model: gpt-4o', '---', 'Updated prompt.'].join('\n'),
+    );
+
+    // Without clearing cache, still returns stale data
+    const profiles2 = await loadProfiles(getDir());
+    expect(profiles2.get('cached')!.systemPrompt).toBe('Original prompt.');
+
+    // Clear the cache
+    clearProfileCache();
+
+    // Now loadProfiles should re-read from disk
+    const profiles3 = await loadProfiles(getDir());
+    expect(profiles3.get('cached')!.systemPrompt).toBe('Updated prompt.');
   });
 });
 
@@ -217,16 +256,16 @@ describe('loadProfiles', () => {
 describe('loadProfile', () => {
   it('loads a single profile by id', async () => {
     await writeFile(
-      join(tempDir, 'target.md'),
+      join(getDir(), 'target.md'),
       ['---', 'provider: openai', 'model: gpt-4o', 'name: Target Agent', '---', 'Target system prompt.'].join('\n'),
     );
 
     await writeFile(
-      join(tempDir, 'other.md'),
+      join(getDir(), 'other.md'),
       ['---', 'provider: openai', 'model: gpt-4o-mini', '---', 'Other.'].join('\n'),
     );
 
-    const profile = await loadProfile(tempDir, 'target');
+    const profile = await loadProfile(getDir(), 'target');
 
     expect(profile.id).toBe('target');
     expect(profile.name).toBe('Target Agent');
@@ -235,11 +274,11 @@ describe('loadProfile', () => {
 
   it('throws when profile id is not found', async () => {
     await writeFile(
-      join(tempDir, 'exists.md'),
+      join(getDir(), 'exists.md'),
       ['---', 'provider: openai', 'model: gpt-4o', '---', 'Body.'].join('\n'),
     );
 
-    await expect(loadProfile(tempDir, 'does-not-exist')).rejects.toThrow(/Profile "does-not-exist" not found/);
+    await expect(loadProfile(getDir(), 'does-not-exist')).rejects.toThrow(/Profile "does-not-exist" not found/);
   });
 });
 
@@ -247,8 +286,8 @@ describe('loadProfile', () => {
 
 describe('loadProfilesFromDirs', () => {
   it('loads profiles from two directories, local overrides global when same ID', async () => {
-    const globalDir = join(tempDir, `global-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-    const localDir = join(tempDir, `local-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    const globalDir = join(getDir(), `global-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    const localDir = join(getDir(), `local-${Date.now()}-${Math.random().toString(36).slice(2)}`);
     await mkdir(globalDir, { recursive: true });
     await mkdir(localDir, { recursive: true });
 
@@ -291,8 +330,8 @@ describe('loadProfilesFromDirs', () => {
   });
 
   it("returns profiles from global-only when local dir doesn't exist", async () => {
-    const globalDir = join(tempDir, `global-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-    const localDir = join(tempDir, `local-missing-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    const globalDir = join(getDir(), `global-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    const localDir = join(getDir(), `local-missing-${Date.now()}-${Math.random().toString(36).slice(2)}`);
     await mkdir(globalDir, { recursive: true });
     // localDir intentionally not created
 
@@ -308,8 +347,8 @@ describe('loadProfilesFromDirs', () => {
   });
 
   it('returns empty map when neither dir exists', async () => {
-    const fakeA = join(tempDir, `nope-a-${Date.now()}`);
-    const fakeB = join(tempDir, `nope-b-${Date.now()}`);
+    const fakeA = join(getDir(), `nope-a-${Date.now()}`);
+    const fakeB = join(getDir(), `nope-b-${Date.now()}`);
 
     const profiles = await loadProfilesFromDirs([fakeA, fakeB]);
 
@@ -317,11 +356,11 @@ describe('loadProfilesFromDirs', () => {
   });
 
   it('skips non-directory paths silently', async () => {
-    const validDir = join(tempDir, `valid-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    const validDir = join(getDir(), `valid-${Date.now()}-${Math.random().toString(36).slice(2)}`);
     await mkdir(validDir, { recursive: true });
 
     // Create a file (not a directory) to pass as a dir path
-    const filePath = join(tempDir, `not-a-dir-${Date.now()}.txt`);
+    const filePath = join(getDir(), `not-a-dir-${Date.now()}.txt`);
     await writeFile(filePath, 'I am a file');
 
     await writeFile(
@@ -336,7 +375,7 @@ describe('loadProfilesFromDirs', () => {
   });
 
   it('re-throws unexpected errors from loadProfiles', async () => {
-    const badDir = join(tempDir, `bad-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    const badDir = join(getDir(), `bad-${Date.now()}-${Math.random().toString(36).slice(2)}`);
     await mkdir(badDir, { recursive: true });
 
     // Create a .md file with missing required provider field

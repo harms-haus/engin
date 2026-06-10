@@ -7,6 +7,7 @@ export * from './core/profile.js';
 export * from './core/session-history.js';
 export * from './core/structured-output.js';
 export * from './core/types.js';
+export * from './core/utils.js';
 export * from './core/workflow-loader.js';
 export * from './setup.js';
 

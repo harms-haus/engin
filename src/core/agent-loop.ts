@@ -1,9 +1,32 @@
 // ─── Agent Loop Utilities ──────────────────────────────────────────────────
 import type { AgentSession } from '@earendil-works/pi-coding-agent';
 import type { ZodType } from 'zod';
-import { createHarness } from './harness-factory';
-import { promptForStructured, type PromptableHarness } from './structured-output';
+import { createHarness } from './harness-factory.js';
+import { promptForStructured, type PromptableHarness } from './structured-output.js';
 import type { AgentLoopResult, HarnessCreationOptions } from './types.js';
+
+// ─── Internal Helpers ─────────────────────────────────────────────────────
+
+/**
+ * Create sessions for every config sequentially, rolling back any
+ * already-created sessions if one fails.
+ */
+async function createSessionsWithCleanup(
+  configs: HarnessCreationOptions[],
+): Promise<Awaited<ReturnType<typeof createHarness>>[]> {
+  const results: Awaited<ReturnType<typeof createHarness>>[] = [];
+  try {
+    for (const config of configs) {
+      results.push(await createHarness(config));
+    }
+  } catch (err) {
+    for (const r of results) {
+      r.dispose?.();
+    }
+    throw err;
+  }
+  return results;
+}
 
 // ─── agentLoopUntil ────────────────────────────────────────────────────────
 
@@ -22,7 +45,7 @@ export interface AgentLoopUntilOptions {
  * @returns The final text and the number of attempts made.
  */
 export async function agentLoopUntil(
-  session: { prompt: (text: string) => Promise<void>; getLastAssistantText: () => string | undefined },
+  session: PromptableHarness,
   promptFn: (attempt: number, lastText?: string) => string,
   conditionFn: (lastText: string | undefined) => boolean,
   options?: AgentLoopUntilOptions,
@@ -67,6 +90,7 @@ export async function retryAgentUntil<T>(
   return {
     result,
     attempts: options?.maxRetries ?? 3,
+    // TODO: Pass actual token counts from the session instead of hardcoding zeros
     totalTokens: { input: 0, output: 0 },
   };
 }
@@ -91,8 +115,8 @@ export async function parallelAgents<T = string | undefined>(
   promptFn: (session: AgentSession, index: number) => string,
   options?: ParallelAgentOptions,
 ): Promise<PromiseSettledResult<T>[]> {
-  // 1. Create sessions
-  const sessionResults = await Promise.all(configs.map((config) => createHarness(config)));
+  // 1. Create sessions sequentially so partial failures dispose already-created sessions
+  const sessionResults = await createSessionsWithCleanup(configs);
 
   // 2. Run prompts
   try {
@@ -129,42 +153,35 @@ export interface SequentialAgentOptions {
 }
 
 /**
- * Create sessions for every config in parallel, then run prompts
- * sequentially. Throws on the first failure.
+ * Create sessions one at a time, run prompts sequentially, and dispose
+ * each session after use. Throws on the first failure.
  */
 export async function sequentialAgents<T = string | undefined>(
   configs: HarnessCreationOptions[],
   promptFn: (session: AgentSession, index: number) => string,
   options?: SequentialAgentOptions,
 ): Promise<T[]> {
-  // 1. Create sessions
-  const sessionResults = await Promise.all(configs.map((config) => createHarness(config)));
-
-  // 2. Run prompts sequentially
-  try {
-    const results: T[] = [];
-    for (let i = 0; i < sessionResults.length; i++) {
-      const { session } = sessionResults[i];
-      const prompt = promptFn(session, i);
+  const results: T[] = [];
+  for (let i = 0; i < configs.length; i++) {
+    const { session, dispose } = await createHarness(configs[i]);
+    try {
+      const promptText = promptFn(session, i);
       if (options?.schema) {
         results.push(
           (await promptForStructured(
             session,
-            prompt,
+            promptText,
             options.schema,
             options.maxRetries !== undefined ? { maxRetries: options.maxRetries } : undefined,
           )) as T,
         );
       } else {
-        await session.prompt(prompt);
+        await session.prompt(promptText);
         results.push(session.getLastAssistantText() as unknown as T);
       }
-    }
-
-    return results;
-  } finally {
-    for (const result of sessionResults) {
-      result.dispose?.();
+    } finally {
+      dispose?.();
     }
   }
+  return results;
 }

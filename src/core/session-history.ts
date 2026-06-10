@@ -87,11 +87,20 @@ export async function resumeSession(
     messages: AgentMessage[];
   },
 ): Promise<void> {
+  function safeClone<T>(obj: T): T {
+    try {
+      return structuredClone(obj);
+    } catch {
+      console.warn('[session-history] structuredClone failed, falling back to shallow copy');
+      return { ...obj } as T;
+    }
+  }
+
   for (const msg of source.messages) {
     if (target.appendMessage) {
-      await target.appendMessage(msg);
+      await target.appendMessage(safeClone(msg));
     } else {
-      target.messages.push(msg);
+      target.messages.push(safeClone(msg));
     }
   }
 }

@@ -1,24 +1,17 @@
-import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
+import { beforeEach, describe, expect, it, spyOn } from 'bun:test';
 import * as fs from 'node:fs/promises';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import { AuditLog } from '../../src/tracking/audit-log.js';
-
-function tmpDir(): string {
-  return path.join(os.tmpdir(), `audit-log-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-}
+import { useTempDir } from '../helpers/use-temp-dir.js';
 
 describe('AuditLog', () => {
+  const { getDir } = useTempDir();
   let dir: string;
   let log: AuditLog;
 
   beforeEach(() => {
-    dir = tmpDir();
+    dir = getDir();
     log = new AuditLog(dir);
-  });
-
-  afterEach(async () => {
-    await fs.rm(dir, { recursive: true, force: true });
   });
 
   // ── append ──────────────────────────────────────────────────────────

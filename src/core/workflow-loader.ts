@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { resolveWorkflowsDirs } from './config.js';
 import type { WorkflowEntry, WorkflowModule } from './types.js';
+import { validateWorkflowName } from './utils.js';
 
 // ─── Cache ──────────────────────────────────────────────────────────────────
 
@@ -21,9 +22,7 @@ export function clearWorkflowCache(): void {
  */
 export async function loadWorkflow(name: string, cwd: string): Promise<WorkflowModule> {
   // Validate workflow name to prevent path traversal
-  if (name.includes('/') || name.includes('\\') || name.includes('..')) {
-    throw new Error(`Invalid workflow name: "${name}". Names must not contain path separators or "..".`);
-  }
+  validateWorkflowName(name);
 
   const dirs = resolveWorkflowsDirs(cwd);
 

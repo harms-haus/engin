@@ -1,6 +1,9 @@
-import { afterAll, beforeEach, describe, expect, it, mock } from 'bun:test';
+import { afterAll, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
 import { z } from 'zod';
 import type { Task } from '../../src/core/types.js';
+import type { TaskTracker } from '../../src/tracking/task-status.js';
+import { makeMockSession } from '../helpers/make-session.js';
+import { makeTask } from '../helpers/make-task.js';
 
 // Capture real modules before mocking so we can restore them in afterAll.
 const realHarnessFactory = Object.assign({}, await import('../../src/core/harness-factory.ts'));
@@ -28,7 +31,6 @@ mock.module('../../src/core/structured-output.ts', () => ({
 
 import { LanePool } from '../../src/pool/lane-pool.ts';
 import type { StepDefinition } from '../../src/pool/types.js';
-import { TaskTracker } from '../../src/tracking/task-status.js';
 
 // ─── Test Helpers ───────────────────────────────────────────────────────────
 
@@ -50,30 +52,7 @@ const reviewerProfile = {
 };
 
 function makeSession(textFn: (promptText: string) => string | undefined) {
-  let lastText: string | undefined;
-  const session = {
-    prompt: mock(async (text: string) => {
-      lastText = textFn(text);
-    }),
-    getLastAssistantText: mock(() => lastText),
-    sessionId: 'test-session',
-    subscribe: mock(() => () => {}),
-    dispose: mock(() => {}),
-  };
-  return session;
-}
-
-function makeTask(overrides?: Partial<Task>): Task {
-  return {
-    id: 'task-1',
-    title: 'Test task',
-    prompt: 'Implement feature X',
-    profile: 'coder',
-    files: ['src/index.ts'],
-    dependencies: [],
-    status: 'ready',
-    ...overrides,
-  };
+  return makeMockSession(textFn).session;
 }
 
 function setupProfileMocks() {
@@ -91,6 +70,31 @@ function setupHarnessMocks(session?: ReturnType<typeof makeSession>) {
     dispose: mock(() => {}),
   });
   return sess;
+}
+
+function createMockAuditLog() {
+  const events: unknown[] = [];
+  return {
+    append: mock(async (event: unknown) => {
+      events.push(event);
+    }),
+    events,
+  };
+}
+
+function createMockTaskTracker(overrides: Record<string, unknown> = {}) {
+  return {
+    claimTasks: mock(() => []),
+    startTask: mock(() => {}),
+    submitForReview: mock(() => {}),
+    completeTask: mock(() => {}),
+    areAllDone: mock(() => true),
+    getAllTasks: mock(() => []),
+    getReadyTasks: mock(() => []),
+    addTask: mock(() => {}),
+    getTask: mock(() => undefined),
+    ...overrides,
+  } as unknown as TaskTracker;
 }
 
 interface PoolOptionsOverrides {
@@ -122,6 +126,7 @@ function createPoolAndTracker(overrides?: PoolOptionsOverrides) {
     getStepsForTask,
     maxStepRetries: overrides?.maxStepRetries,
     onStatus: overrides?.onStatus as unknown as undefined,
+    auditLog: overrides?.auditLog as unknown as undefined,
   });
 
   return { pool, tracker };
@@ -768,6 +773,388 @@ describe('LanePool', () => {
 
       expect(dispose).toHaveBeenCalledTimes(1);
       expect(result.failedTasks).toBe(1);
+    });
+  });
+
+  // ─── Lifecycle Callbacks ────────────────────────────────────────────────
+
+  describe('lifecycle callbacks', () => {
+    it('fires onWorkflowStart at the beginning of run()', async () => {
+      setupProfileMocks();
+      setupHarnessMocks();
+
+      const onWorkflowStart = mock(() => {});
+      const { pool } = createPoolAndTracker({ onStatus: { onWorkflowStart } });
+
+      await pool.run();
+
+      expect(onWorkflowStart).toHaveBeenCalledTimes(1);
+      expect(onWorkflowStart).toHaveBeenCalledWith({
+        taskPrompt: '(pool execution)',
+        resumed: false,
+        workDir: '/tmp/sessions',
+      });
+    });
+
+    it('fires onPhaseStart with implementing phase and round 1', async () => {
+      setupProfileMocks();
+      setupHarnessMocks();
+
+      const onPhaseStart = mock(() => {});
+      const { pool } = createPoolAndTracker({ onStatus: { onPhaseStart } });
+
+      await pool.run();
+
+      expect(onPhaseStart).toHaveBeenCalledTimes(1);
+      expect(onPhaseStart).toHaveBeenCalledWith({ phase: 'implementing', round: 1 });
+    });
+
+    it('fires onPhaseComplete after all lanes finish', async () => {
+      setupProfileMocks();
+      setupHarnessMocks();
+
+      const onPhaseComplete = mock(() => {});
+      const { pool } = createPoolAndTracker({ onStatus: { onPhaseComplete } });
+
+      await pool.run();
+
+      expect(onPhaseComplete).toHaveBeenCalledTimes(1);
+      expect(onPhaseComplete).toHaveBeenCalledWith({
+        phase: 'implementing',
+        durationMs: expect.any(Number),
+      });
+    });
+
+    it('fires onWorkflowComplete on success with no rejected lanes', async () => {
+      setupProfileMocks();
+      setupHarnessMocks();
+
+      const onWorkflowComplete = mock(() => {});
+      const { pool } = createPoolAndTracker({ onStatus: { onWorkflowComplete } });
+
+      await pool.run();
+
+      expect(onWorkflowComplete).toHaveBeenCalledTimes(1);
+      expect(onWorkflowComplete).toHaveBeenCalledWith({
+        totalDurationMs: expect.any(Number),
+        agentCount: 1,
+      });
+    });
+
+    it('fires onWorkflowFailed when a lane rejects', async () => {
+      setupProfileMocks();
+      setupHarnessMocks();
+
+      let claimCount = 0;
+      const mockTracker = createMockTaskTracker({
+        claimTasks: mock(() => {
+          claimCount++;
+          if (claimCount === 1) {
+            return [
+              {
+                id: 'task-1',
+                title: 'Test task',
+                prompt: 'test',
+                profile: 'coder',
+                files: [],
+                dependencies: [],
+                status: 'claimed' as const,
+              },
+            ];
+          }
+          throw new Error('Simulated lane crash');
+        }),
+        areAllDone: mock(() => false),
+        getAllTasks: mock(() => []),
+      });
+
+      const onWorkflowFailed = mock(() => {});
+      const onError = mock(() => {});
+
+      const pool = new LanePool({
+        maxConcurrentLanes: 1,
+        profilesDirs: ['/mock/profiles'],
+        sessionBaseDir: '/tmp/sessions',
+        cwd: '/tmp/project',
+        taskTracker: mockTracker,
+        getStepsForTask: () => [{ name: 'implement', profileId: 'coder', isReadOnly: false }],
+        onStatus: { onWorkflowFailed, onError },
+      });
+
+      await pool.run();
+
+      expect(onWorkflowFailed).toHaveBeenCalledTimes(1);
+      expect(onWorkflowFailed).toHaveBeenCalledWith({
+        error: expect.any(Error),
+        phase: 'implementing',
+      });
+      // onError also fires for the rejected lane in settled
+      expect(onError).toHaveBeenCalled();
+    });
+
+    it('does not fire onWorkflowFailed when all lanes succeed', async () => {
+      setupProfileMocks();
+      setupHarnessMocks();
+
+      const onWorkflowFailed = mock(() => {});
+      const onWorkflowComplete = mock(() => {});
+      const { pool } = createPoolAndTracker({
+        onStatus: { onWorkflowFailed, onWorkflowComplete },
+      });
+
+      await pool.run();
+
+      expect(onWorkflowFailed).not.toHaveBeenCalled();
+      expect(onWorkflowComplete).toHaveBeenCalledTimes(1);
+    });
+
+    it('fires lifecycle callbacks in correct order', async () => {
+      setupProfileMocks();
+      setupHarnessMocks();
+
+      const callOrder: string[] = [];
+      const { pool } = createPoolAndTracker({
+        onStatus: {
+          onWorkflowStart: mock(() => callOrder.push('workflowStart')),
+          onPhaseStart: mock(() => callOrder.push('phaseStart')),
+          onTaskStart: mock(() => callOrder.push('taskStart')),
+          onTaskComplete: mock(() => callOrder.push('taskComplete')),
+          onPhaseComplete: mock(() => callOrder.push('phaseComplete')),
+          onWorkflowComplete: mock(() => callOrder.push('workflowComplete')),
+        },
+      });
+
+      await pool.run();
+
+      expect(callOrder).toEqual([
+        'workflowStart',
+        'phaseStart',
+        'taskStart',
+        'taskComplete',
+        'phaseComplete',
+        'workflowComplete',
+      ]);
+    });
+  });
+
+  // ─── Audit Log ────────────────────────────────────────────────────────
+
+  describe('audit log', () => {
+    it('appends agent_start and agent_end events for each step', async () => {
+      setupProfileMocks();
+      setupHarnessMocks();
+
+      const auditLog = createMockAuditLog();
+
+      const { pool } = createPoolAndTracker({
+        auditLog: auditLog as unknown as undefined,
+        getStepsForTask: () => [
+          { name: 'implement', profileId: 'coder', isReadOnly: false },
+          { name: 'review', profileId: 'reviewer', isReadOnly: true },
+        ],
+      });
+
+      await pool.run();
+
+      // 2 agent_start + 2 agent_end = 4 events
+      expect(auditLog.events).toHaveLength(4);
+      expect(auditLog.events[0]).toMatchObject({ type: 'agent_start', agentId: 'coder', taskId: 'task-1' });
+      expect(auditLog.events[1]).toMatchObject({ type: 'agent_end', agentId: 'coder', taskId: 'task-1' });
+      expect(auditLog.events[2]).toMatchObject({ type: 'agent_start', agentId: 'reviewer', taskId: 'task-1' });
+      expect(auditLog.events[3]).toMatchObject({ type: 'agent_end', agentId: 'reviewer', taskId: 'task-1' });
+    });
+
+    it('appends error audit event when runLane catches a step error', async () => {
+      setupProfileMocks();
+
+      mockCreateHarness.mockRejectedValueOnce(new Error('Harness creation failed'));
+      mockCreateHarness.mockResolvedValue({
+        session: makeSession(() => 'ok'),
+        sessionId: 'test-session',
+        dispose: mock(() => {}),
+      });
+
+      const auditLog = createMockAuditLog();
+
+      const { pool } = createPoolAndTracker({
+        auditLog: auditLog as unknown as undefined,
+      });
+
+      await pool.run();
+
+      // agent_start is appended before createHarness, then error in runLane's catch
+      const errorEvents = auditLog.events.filter((e: Record<string, unknown>) => e.type === 'error');
+      expect(errorEvents).toHaveLength(1);
+      expect(errorEvents[0]).toMatchObject({
+        type: 'error',
+        agentId: 'lane-0',
+        error: expect.stringContaining('Harness creation failed'),
+        taskId: 'task-1',
+      });
+    });
+
+    it('does not append audit events when no audit log is provided', async () => {
+      setupProfileMocks();
+      setupHarnessMocks();
+
+      // No auditLog in options — should not throw
+      const { pool } = createPoolAndTracker();
+      const result = await pool.run();
+
+      expect(result.completedTasks).toBe(1);
+    });
+
+    it('agent_end event is appended even when step fails', async () => {
+      setupProfileMocks();
+
+      const auditLog = createMockAuditLog();
+
+      // First harness creation succeeds, prompting throws
+      const session = makeSession(() => {
+        throw new Error('Prompt failed');
+      });
+      mockCreateHarness.mockResolvedValue({
+        session,
+        sessionId: 'test-session',
+        dispose: mock(() => {}),
+      });
+
+      const { pool } = createPoolAndTracker({
+        auditLog: auditLog as unknown as undefined,
+      });
+
+      await pool.run();
+
+      // agent_start is appended, then the prompt error is caught in runLane,
+      // but agent_end is NOT appended because createHarness succeeded
+      // and the error happens inside the try block before finally.
+      // Actually — the try/finally in runStep means finally DOES run.
+      const startEvents = auditLog.events.filter((e: Record<string, unknown>) => e.type === 'agent_start');
+      const endEvents = auditLog.events.filter((e: Record<string, unknown>) => e.type === 'agent_end');
+      expect(startEvents).toHaveLength(1);
+      expect(endEvents).toHaveLength(1);
+    });
+  });
+
+  // ─── Crash Handling ──────────────────────────────────────────────────────
+
+  describe('crash handling', () => {
+    it('one lane throws while others succeed — Promise.allSettled isolates failures', async () => {
+      setupProfileMocks();
+
+      let createCount = 0;
+      mockCreateHarness.mockImplementation(() => {
+        createCount++;
+        if (createCount === 1) {
+          // First lane (lane-0) will crash during processTask
+          return {
+            session: makeSession(() => {
+              throw new Error('Lane crash');
+            }),
+            sessionId: 'crash-session',
+            dispose: mock(() => {}),
+          };
+        }
+        return {
+          session: makeSession(() => 'done'),
+          sessionId: 'ok-session',
+          dispose: mock(() => {}),
+        };
+      });
+
+      const tasks = [makeTask({ id: 'task-1' }), makeTask({ id: 'task-2' })];
+
+      const { pool } = createPoolAndTracker({ tasks, maxConcurrentLanes: 2 });
+
+      const result = await pool.run();
+
+      // One task failed, one succeeded
+      expect(result.failedTasks + result.completedTasks).toBe(2);
+    });
+
+    it('onAgentComplete still fires when dispose() throws', async () => {
+      setupProfileMocks();
+
+      const badDispose = mock(() => {
+        throw new Error('dispose exploded');
+      });
+      mockCreateHarness.mockResolvedValue({
+        session: makeSession(() => 'ok'),
+        sessionId: 'test-session',
+        dispose: badDispose,
+      });
+
+      const onAgentComplete = mock(() => {});
+      const consoleSpy = spyOn(console, 'error').mockImplementation(() => {});
+
+      try {
+        const { pool } = createPoolAndTracker({
+          onStatus: { onAgentComplete },
+        });
+
+        await pool.run();
+
+        // onAgentComplete must still fire even though dispose threw
+        expect(onAgentComplete).toHaveBeenCalledTimes(1);
+        expect(badDispose).toHaveBeenCalledTimes(1);
+      } finally {
+        consoleSpy.mockRestore();
+      }
+    });
+
+    it('maxStepRetries: 0 results in single attempt with no retry', async () => {
+      setupProfileMocks();
+      setupHarnessMocks();
+
+      mockPromptForStructured.mockResolvedValue({ approved: false, feedback: 'Not good enough' });
+
+      const { pool } = createPoolAndTracker({
+        maxStepRetries: 0,
+        getStepsForTask: () => [
+          { name: 'implement', profileId: 'coder', isReadOnly: false },
+          {
+            name: 'review',
+            profileId: 'reviewer',
+            isReadOnly: true,
+            schema: z.object({ approved: z.boolean(), feedback: z.string().optional() }),
+          },
+        ],
+      });
+
+      const result = await pool.run();
+
+      // With maxStepRetries: 0, the review step runs once then fails
+      expect(mockPromptForStructured).toHaveBeenCalledTimes(1);
+      expect(result.failedTasks).toBe(1);
+    });
+
+    it('falls back to console.error when no onError callback is provided', async () => {
+      setupProfileMocks();
+
+      mockCreateHarness.mockResolvedValue({
+        session: makeSession(() => {
+          throw new Error('Unhandled failure');
+        }),
+        sessionId: 'test-session',
+        dispose: mock(() => {}),
+      });
+
+      const consoleSpy = spyOn(console, 'error').mockImplementation(() => {});
+
+      try {
+        const { pool } = createPoolAndTracker({
+          // No onStatus.onError → should fall back to console.error
+          onStatus: {},
+        });
+
+        await pool.run();
+
+        expect(consoleSpy).toHaveBeenCalled();
+        const firstCall = consoleSpy.mock.calls[0].join(' ');
+        expect(firstCall).toContain('Task task-1 failed');
+      } finally {
+        consoleSpy.mockRestore();
+      }
     });
   });
 

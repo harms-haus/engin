@@ -1,6 +1,7 @@
-import * as fs from 'node:fs/promises';
-import * as path from 'node:path';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import type { WorkflowPhase, WorkflowState } from '../core/types.js';
+import { isEnoentError } from '../core/utils.js';
 import { AuditLog } from './audit-log.js';
 import { TaskTracker } from './task-status.js';
 
@@ -33,7 +34,7 @@ export class WorkflowStatusTracker {
   constructor(workDir: string) {
     this.workDir = workDir;
     this._taskTracker = new TaskTracker();
-    this._auditLog = new AuditLog(path.join(workDir, 'audit'));
+    this._auditLog = new AuditLog(join(workDir, 'audit'));
   }
 
   // ── Getters ────────────────────────────────────────────────────────
@@ -51,10 +52,13 @@ export class WorkflowStatusTracker {
   }
 
   get scoutingReports(): unknown[] {
-    return this._scoutingReports;
+    return [...this._scoutingReports];
   }
 
   get plan(): unknown {
+    if (typeof this._plan === 'object' && this._plan !== null) {
+      return structuredClone(this._plan);
+    }
     return this._plan;
   }
 
@@ -135,18 +139,18 @@ export class WorkflowStatusTracker {
   }
 
   async save(): Promise<void> {
-    await fs.mkdir(this.workDir, { recursive: true });
-    const filePath = path.join(this.workDir, '.engin-state.json');
-    await fs.writeFile(filePath, JSON.stringify(this.toJSON(), null, 2), 'utf-8');
+    await mkdir(this.workDir, { recursive: true });
+    const filePath = join(this.workDir, '.engin-state.json');
+    await writeFile(filePath, JSON.stringify(this.toJSON(), null, 2), 'utf-8');
   }
 
   static async load(workDir: string): Promise<WorkflowStatusTracker> {
-    const filePath = path.join(workDir, '.engin-state.json');
+    const filePath = join(workDir, '.engin-state.json');
     let raw: string;
     try {
-      raw = await fs.readFile(filePath, 'utf-8');
+      raw = await readFile(filePath, 'utf-8');
     } catch (err: unknown) {
-      if (typeof err === 'object' && err !== null && 'code' in err && (err as { code: string }).code === 'ENOENT') {
+      if (isEnoentError(err)) {
         throw new Error(`Workflow state file not found at "${filePath}"`, { cause: err });
       }
       throw new Error('Failed to load workflow state', { cause: err });

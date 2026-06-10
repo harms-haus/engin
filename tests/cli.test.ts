@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createStatusCallbacks, formatTime, main, parseArgs } from '../src/cli.ts';
 import { useEnvSandbox } from './helpers/env-sandbox.js';
+import { useTempDir } from './helpers/use-temp-dir.js';
 
 // ─── parseArgs ──────────────────────────────────────────────────────────────
 
@@ -19,6 +19,7 @@ describe('parseArgs', () => {
       maxConcurrent: 3,
       verbose: false,
       apiKeys: {},
+      warnings: [],
     });
   });
 
@@ -137,6 +138,7 @@ describe('parseArgs', () => {
         maxConcurrent: 3,
         verbose: false,
         apiKeys: {},
+        warnings: [],
       });
     });
 
@@ -153,6 +155,7 @@ describe('parseArgs', () => {
         maxConcurrent: 3,
         verbose: false,
         apiKeys: {},
+        warnings: [],
       });
     });
 
@@ -319,39 +322,35 @@ describe('createStatusCallbacks', () => {
 
 describe('main() loads .env files', () => {
   useEnvSandbox();
+  const { getDir } = useTempDir();
 
   let exitSpy: ReturnType<typeof spyOn>;
   let logSpy: ReturnType<typeof spyOn>;
-  let tempDir: string;
 
   beforeEach(() => {
     exitSpy = spyOn(process, 'exit').mockImplementation(((code: number) => {
       throw new Error(`process.exit(${code})`);
     }) as never);
     logSpy = spyOn(console, 'log').mockImplementation(() => {});
-
-    tempDir = mkdtempSync(join(tmpdir(), 'wh-cli-test-'));
   });
 
   afterEach(() => {
     exitSpy.mockRestore();
     logSpy.mockRestore();
-
-    rmSync(tempDir, { recursive: true, force: true });
   });
 
   it('loads .env from .engin/.env for init command', async () => {
     // Create .engin/.env in temp dir
-    const harnessDir = join(tempDir, '.engin');
+    const harnessDir = join(getDir(), '.engin');
     mkdirSync(harnessDir, { recursive: true });
     writeFileSync(join(harnessDir, '.env'), 'TEST_CLI_ENV_VAR=from_cli_test\n');
 
     // Point global config to temp so initDefaultConfig() writes there
     const originalXdg = process.env.XDG_CONFIG_HOME;
-    process.env.XDG_CONFIG_HOME = join(tempDir, 'global');
+    process.env.XDG_CONFIG_HOME = join(getDir(), 'global');
 
     const originalArgv = process.argv;
-    process.argv = ['node', 'cli.ts', 'init', '--cwd', tempDir];
+    process.argv = ['node', 'cli.ts', 'init', '--cwd', getDir()];
     try {
       await main();
     } finally {
@@ -367,12 +366,12 @@ describe('main() loads .env files', () => {
   });
 
   it('does not load .env files for help command', async () => {
-    const harnessDir = join(tempDir, '.engin');
+    const harnessDir = join(getDir(), '.engin');
     mkdirSync(harnessDir, { recursive: true });
     writeFileSync(join(harnessDir, '.env'), 'TEST_CLI_ENV_VAR_HELP=should_not_appear\n');
 
     const originalArgv = process.argv;
-    process.argv = ['node', 'cli.ts', '--help', '--cwd', tempDir];
+    process.argv = ['node', 'cli.ts', '--help', '--cwd', getDir()];
     try {
       await expect(main()).rejects.toThrow('process.exit(0)');
     } finally {
@@ -383,12 +382,12 @@ describe('main() loads .env files', () => {
   });
 
   it('does not load .env files for version command', async () => {
-    const harnessDir = join(tempDir, '.engin');
+    const harnessDir = join(getDir(), '.engin');
     mkdirSync(harnessDir, { recursive: true });
     writeFileSync(join(harnessDir, '.env'), 'TEST_CLI_ENV_VAR_VERSION=should_not_appear\n');
 
     const originalArgv = process.argv;
-    process.argv = ['node', 'cli.ts', '--version', '--cwd', tempDir];
+    process.argv = ['node', 'cli.ts', '--version', '--cwd', getDir()];
     try {
       await expect(main()).rejects.toThrow('process.exit(0)');
     } finally {

@@ -1,19 +1,6 @@
 import { describe, expect, it } from 'bun:test';
-import type { Task } from '../../src/core/types.js';
 import { TaskTracker } from '../../src/tracking/task-status.js';
-
-function makeTask(overrides: Partial<Task> & { id: string }): Task {
-  return {
-    title: `Task ${overrides.id}`,
-    prompt: `Prompt for ${overrides.id}`,
-    profile: 'default',
-    files: [],
-    dependencies: [],
-    status: 'ready',
-    isCode: true,
-    ...overrides,
-  };
-}
+import { makeTask } from '../helpers/make-task.js';
 
 describe('TaskTracker', () => {
   // ── addTask auto-status ────────────────────────────────────────────
@@ -466,6 +453,214 @@ describe('TaskTracker', () => {
         ],
       };
       expect(() => TaskTracker.fromJSON(data)).toThrow('Cycle detected');
+    });
+  });
+
+  // ── getBlockedWithMissingDeps ──────────────────────────────────────
+
+  describe('getBlockedWithMissingDeps', () => {
+    it('returns empty array when no blocked tasks have missing deps', () => {
+      const tracker = new TaskTracker();
+      tracker.addTask(makeTask({ id: 'a' }));
+      tracker.addTask({ ...makeTask({ id: 'b', dependencies: ['a'] }), status: undefined });
+
+      // b is blocked but dep 'a' exists
+      expect(tracker.getTask('b')!.status).toBe('blocked');
+      expect(tracker.getBlockedWithMissingDeps()).toEqual([]);
+    });
+
+    it('detects blocked tasks with missing dependency ids', () => {
+      const tracker = new TaskTracker();
+      tracker.addTask(makeTask({ id: 'a' }));
+      tracker.addTask({ ...makeTask({ id: 'b', dependencies: ['a', 'ghost'] }), status: undefined });
+
+      const result = tracker.getBlockedWithMissingDeps();
+      expect(result).toHaveLength(1);
+      expect(result[0].taskId).toBe('b');
+      expect(result[0].missingDepIds).toEqual(['ghost']);
+    });
+
+    it('returns empty array for non-blocked tasks with missing deps', () => {
+      const tracker = new TaskTracker();
+      // Add a task with missing dep but set status explicitly to 'ready'
+      tracker.addTask(makeTask({ id: 'a', dependencies: ['ghost'], status: 'ready' }));
+
+      expect(tracker.getBlockedWithMissingDeps()).toEqual([]);
+    });
+
+    it('handles multiple blocked tasks with various missing deps', () => {
+      const tracker = new TaskTracker();
+      tracker.addTask(makeTask({ id: 'a' }));
+      tracker.addTask({ ...makeTask({ id: 'b', dependencies: ['a', 'missing1'] }), status: undefined });
+      tracker.addTask({ ...makeTask({ id: 'c', dependencies: ['missing2', 'missing3'] }), status: undefined });
+
+      const result = tracker.getBlockedWithMissingDeps();
+      expect(result).toHaveLength(2);
+
+      const bResult = result.find((r) => r.taskId === 'b');
+      expect(bResult!.missingDepIds).toEqual(['missing1']);
+
+      const cResult = result.find((r) => r.taskId === 'c');
+      expect(cResult!.missingDepIds).toEqual(['missing2', 'missing3']);
+    });
+
+    it('returns empty array when there are no tasks', () => {
+      const tracker = new TaskTracker();
+      expect(tracker.getBlockedWithMissingDeps()).toEqual([]);
+    });
+  });
+
+  // ── areAllDoneOrBlocked ────────────────────────────────────────────
+
+  describe('areAllDoneOrBlocked', () => {
+    it('returns false when there are no tasks', () => {
+      const tracker = new TaskTracker();
+      expect(tracker.areAllDoneOrBlocked()).toBe(false);
+    });
+
+    it('returns true when all tasks are done', () => {
+      const tracker = new TaskTracker();
+      tracker.addTask(makeTask({ id: 'a' }));
+
+      tracker.claimTasks(1);
+      tracker.startTask('a', 'agent');
+      tracker.submitForReview('a', null);
+      tracker.completeTask('a');
+
+      expect(tracker.areAllDoneOrBlocked()).toBe(true);
+    });
+
+    it('returns true when task is blocked with missing deps (deadlocked)', () => {
+      const tracker = new TaskTracker();
+      tracker.addTask({ ...makeTask({ id: 'a', dependencies: ['ghost'] }), status: undefined });
+
+      expect(tracker.getTask('a')!.status).toBe('blocked');
+      expect(tracker.areAllDoneOrBlocked()).toBe(true);
+    });
+
+    it('returns false when a task is blocked but deps exist (not deadlocked)', () => {
+      const tracker = new TaskTracker();
+      tracker.addTask(makeTask({ id: 'a' }));
+      tracker.addTask({ ...makeTask({ id: 'b', dependencies: ['a'] }), status: undefined });
+
+      expect(tracker.getTask('b')!.status).toBe('blocked');
+      expect(tracker.areAllDoneOrBlocked()).toBe(false);
+    });
+
+    it('returns false when any task is in a non-done/non-blocked state', () => {
+      const tracker = new TaskTracker();
+      tracker.addTask(makeTask({ id: 'a' }));
+      // a is 'ready'
+      expect(tracker.areAllDoneOrBlocked()).toBe(false);
+    });
+
+    it('returns true for a mix of done tasks and deadlocked tasks', () => {
+      const tracker = new TaskTracker();
+      tracker.addTask(makeTask({ id: 'a' }));
+      tracker.addTask({ ...makeTask({ id: 'b', dependencies: ['ghost'] }), status: undefined });
+
+      // Complete a
+      tracker.claimTasks(1);
+      tracker.startTask('a', 'agent');
+      tracker.submitForReview('a', null);
+      tracker.completeTask('a');
+
+      expect(tracker.getTask('a')!.status).toBe('done');
+      expect(tracker.getTask('b')!.status).toBe('blocked');
+      expect(tracker.areAllDoneOrBlocked()).toBe(true);
+    });
+
+    it('returns false for a mix of done tasks and ready tasks', () => {
+      const tracker = new TaskTracker();
+      tracker.addTask(makeTask({ id: 'a' }));
+      tracker.addTask(makeTask({ id: 'b' }));
+
+      // Complete a only
+      tracker.claimTasks(1);
+      tracker.startTask('a', 'agent');
+      tracker.submitForReview('a', null);
+      tracker.completeTask('a');
+
+      expect(tracker.areAllDoneOrBlocked()).toBe(false); // b is still 'ready'
+    });
+  });
+
+  // ── dependency validation ───────────────────────────────────────────
+
+  describe('dependency validation', () => {
+    it('throws for a circular dependency chain of length 3 (a→b→c→a)', () => {
+      const tracker = new TaskTracker();
+      tracker.addTask(makeTask({ id: 'a', dependencies: ['b'] }));
+      tracker.addTask(makeTask({ id: 'b', dependencies: ['c'] }));
+      expect(() => tracker.addTask(makeTask({ id: 'c', dependencies: ['a'] }))).toThrow('Dependency cycle detected');
+    });
+
+    it('unblocks multiple tasks sharing the same dependency when it completes', () => {
+      const tracker = new TaskTracker();
+      tracker.addTask(makeTask({ id: 'shared' }));
+      tracker.addTask({ ...makeTask({ id: 'x', dependencies: ['shared'] }), status: undefined });
+      tracker.addTask({ ...makeTask({ id: 'y', dependencies: ['shared'] }), status: undefined });
+      tracker.addTask({ ...makeTask({ id: 'z', dependencies: ['shared'] }), status: undefined });
+
+      // All three should be blocked
+      expect(tracker.getTask('x')!.status).toBe('blocked');
+      expect(tracker.getTask('y')!.status).toBe('blocked');
+      expect(tracker.getTask('z')!.status).toBe('blocked');
+
+      // Complete the shared dependency
+      tracker.claimTasks(1);
+      tracker.startTask('shared', 'agent-1');
+      tracker.submitForReview('shared', null);
+      tracker.completeTask('shared');
+
+      // All three should now be ready
+      expect(tracker.getTask('x')!.status).toBe('ready');
+      expect(tracker.getTask('y')!.status).toBe('ready');
+      expect(tracker.getTask('z')!.status).toBe('ready');
+    });
+
+    it('claimTasks(0) returns an empty array', () => {
+      const tracker = new TaskTracker();
+      tracker.addTask(makeTask({ id: 'a' }));
+      tracker.addTask(makeTask({ id: 'b' }));
+
+      const claimed = tracker.claimTasks(0);
+      expect(claimed).toEqual([]);
+      // Tasks should still be ready
+      expect(tracker.getTask('a')!.status).toBe('ready');
+      expect(tracker.getTask('b')!.status).toBe('ready');
+    });
+
+    it('transitions from blocked → ready → claimed → implementing → reviewing → done', () => {
+      const tracker = new TaskTracker();
+      tracker.addTask(makeTask({ id: 'root' }));
+      tracker.addTask({ ...makeTask({ id: 'child', dependencies: ['root'] }), status: undefined });
+
+      // child starts blocked
+      expect(tracker.getTask('child')!.status).toBe('blocked');
+
+      // Complete root → child becomes ready
+      tracker.claimTasks(1);
+      tracker.startTask('root', 'agent-1');
+      tracker.submitForReview('root', null);
+      tracker.completeTask('root');
+      expect(tracker.getTask('child')!.status).toBe('ready');
+
+      // Claim → claimed
+      tracker.claimTasks(1);
+      expect(tracker.getTask('child')!.status).toBe('claimed');
+
+      // Start → implementing
+      tracker.startTask('child', 'agent-2');
+      expect(tracker.getTask('child')!.status).toBe('implementing');
+
+      // Submit → reviewing
+      tracker.submitForReview('child', 'final result');
+      expect(tracker.getTask('child')!.status).toBe('reviewing');
+
+      // Complete → done
+      tracker.completeTask('child');
+      expect(tracker.getTask('child')!.status).toBe('done');
     });
   });
 });

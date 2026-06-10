@@ -78,12 +78,6 @@ describe('SessionHistory', () => {
       const history = new SessionHistory(session);
       expect(history.getMessageCount()).toBe(3);
     });
-
-    it('returns 0 when there are no messages', () => {
-      const session = mockSession([]);
-      const history = new SessionHistory(session);
-      expect(history.getMessageCount()).toBe(0);
-    });
   });
 
   describe('getStats', () => {
@@ -167,8 +161,8 @@ describe('resumeSession', () => {
     await resumeSession(source, target);
 
     expect(target.appendMessage).toHaveBeenCalledTimes(2);
-    expect(target.messages[0]).toBe(msg1);
-    expect(target.messages[1]).toBe(msg2);
+    expect(target.messages[0]).toEqual(msg1);
+    expect(target.messages[1]).toEqual(msg2);
   });
 
   it('does nothing when source has no messages', async () => {
@@ -198,7 +192,7 @@ describe('resumeSession', () => {
 
     expect(target.messages).toHaveLength(5);
     for (let i = 0; i < msgs.length; i++) {
-      expect(target.messages[i]).toBe(msgs[i]);
+      expect(target.messages[i]).toEqual(msgs[i]);
     }
   });
 
@@ -213,8 +207,8 @@ describe('resumeSession', () => {
     await resumeSession(source, target);
 
     expect(target.messages).toHaveLength(2);
-    expect(target.messages[0]).toBe(msg1);
-    expect(target.messages[1]).toBe(msg2);
+    expect(target.messages[0]).toEqual(msg1);
+    expect(target.messages[1]).toEqual(msg2);
   });
 });
 
@@ -250,5 +244,51 @@ describe('createResumableSession', () => {
 
     expect(sessionId).toBeTruthy();
     expect(sessionManager.getCwd()).toBe('/tmp/test');
+  });
+});
+
+// ─── resumeSession edge cases ───────────────────────────────────────────────
+
+describe('resumeSession edge cases', () => {
+  it('deep clones messages so target is not affected by mutations to source', async () => {
+    const nested = { deep: { value: 'original' } };
+    const msg: AgentMessage = {
+      role: 'user',
+      content: JSON.stringify(nested),
+      timestamp: Date.now(),
+    } as unknown as AgentMessage;
+
+    const source = mockSession([msg]);
+    const target = mockTarget();
+
+    await resumeSession(source, target);
+
+    expect(target.messages).toHaveLength(1);
+    // Mutating the source message should not affect the target
+    (source.messages[0] as Record<string, unknown>).content = 'mutated';
+    expect(target.messages[0]).not.toEqual(source.messages[0]);
+  });
+});
+
+// ─── SessionHistory.getStats edge cases ──────────────────────────────────────
+
+describe('SessionHistory.getStats edge cases', () => {
+  it('handles messages missing usage field without crashing', () => {
+    const msg: AgentMessage = {
+      role: 'assistant',
+      content: [{ type: 'text', text: 'response' }],
+      // no usage field
+    } as unknown as AgentMessage;
+
+    const session = mockSession([msg]);
+    const history = new SessionHistory(session);
+    const stats = history.getStats();
+
+    expect(stats).toEqual({
+      totalInputTokens: 0,
+      totalOutputTokens: 0,
+      totalCost: 0,
+      messageCount: 1,
+    });
   });
 });

@@ -1,7 +1,9 @@
 #!/usr/bin/env bun
 
+import { pathToFileURL } from 'node:url';
 import { getDefaultWorkDir, getGlobalConfigDir, loadEnvFiles } from './core/config.js';
 import type { StatusCallbacks } from './core/types.js';
+import { validateWorkflowName } from './core/utils.js';
 import { loadWorkflow } from './core/workflow-loader.js';
 import { initDefaultConfig } from './setup.js';
 
@@ -16,6 +18,7 @@ export interface CliOptions {
   maxConcurrent: number;
   verbose: boolean;
   apiKeys: Record<string, string>;
+  warnings: string[];
 }
 
 // ─── Argument Parsing ───────────────────────────────────────────────────────
@@ -46,6 +49,7 @@ export function parseArgs(argv: string[]): CliOptions {
       maxConcurrent: 3,
       verbose: false,
       apiKeys: {},
+      warnings: [],
     };
   }
 
@@ -57,6 +61,7 @@ export function parseArgs(argv: string[]): CliOptions {
       maxConcurrent: 3,
       verbose: false,
       apiKeys: {},
+      warnings: [],
     };
   }
 
@@ -110,6 +115,7 @@ export function parseArgs(argv: string[]): CliOptions {
   let cwd = process.cwd();
   let verbose = false;
   const apiKeys: Record<string, string> = {};
+  const warnings: string[] = [];
   let apiKeyWarningIssued = false;
   let workDir: string | undefined;
   let maxConcurrent = 3;
@@ -139,8 +145,8 @@ export function parseArgs(argv: string[]): CliOptions {
       const key = pair.slice(eqIdx + 1);
       apiKeys[provider] = key;
       if (!apiKeyWarningIssued) {
-        process.stderr.write(
-          'Warning: API keys passed via --api-key are visible in process listings. Consider using environment variables instead.\n',
+        warnings.push(
+          'API keys passed via --api-key are visible in process listings. Consider using environment variables instead.',
         );
         apiKeyWarningIssued = true;
       }
@@ -151,7 +157,7 @@ export function parseArgs(argv: string[]): CliOptions {
     if (positionals.length > 1) {
       throw new Error(`Unexpected argument: "${positionals[1]}"\n${USAGE}`);
     }
-    return { command: 'init', cwd, verbose, maxConcurrent, apiKeys };
+    return { command: 'init', cwd, verbose, maxConcurrent, apiKeys, warnings };
   }
 
   // Any non-init positional is treated as "run" with the first positional as the workflow name.
@@ -175,6 +181,7 @@ export function parseArgs(argv: string[]): CliOptions {
     maxConcurrent,
     verbose,
     apiKeys,
+    warnings,
   };
 }
 
@@ -266,9 +273,7 @@ export async function runCommand(options: CliOptions): Promise<void> {
   const workflowName = options.workflowName!;
 
   // Validate workflow name before using it in path construction
-  if (workflowName.includes('/') || workflowName.includes('\\') || workflowName.includes('..')) {
-    throw new Error(`Invalid workflow name: "${workflowName}"`);
-  }
+  validateWorkflowName(workflowName);
 
   const workDir = options.workDir ?? getDefaultWorkDir(options.cwd, workflowName);
   const workflow = await loadWorkflow(workflowName, options.cwd);
@@ -285,8 +290,16 @@ export async function runCommand(options: CliOptions): Promise<void> {
 
 // ─── Main Entry Point ───────────────────────────────────────────────────────
 
+let cliOptions: CliOptions | undefined;
+
 export async function main(): Promise<void> {
-  const options = parseArgs(process.argv.slice(2));
+  cliOptions = parseArgs(process.argv.slice(2));
+  const options = cliOptions;
+
+  // Print any warnings from argument parsing
+  for (const warning of options.warnings) {
+    process.stderr.write(`Warning: ${warning}\n`);
+  }
 
   // Load .env files for commands that need them (skip for help/version)
   if (options.command !== 'help' && options.command !== 'version') {
@@ -313,11 +326,12 @@ export async function main(): Promise<void> {
   await runCommand(options);
 }
 
-const isDirectRun = process.argv[1] && (process.argv[1].endsWith('cli.ts') || process.argv[1].endsWith('cli.js'));
+const isDirectRun = process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url;
 
 if (isDirectRun) {
   main().catch((err) => {
-    process.stderr.write(`Error: ${err instanceof Error ? err.message : String(err)}\n`);
+    const msg = err instanceof Error ? (cliOptions?.verbose ? err.stack : err.message) : String(err);
+    process.stderr.write(`Error: ${msg}\n`);
     process.exit(1);
   });
 }

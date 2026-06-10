@@ -1,5 +1,5 @@
 import { afterAll, beforeEach, describe, expect, it, mock } from 'bun:test';
-import type { AgentProfile } from '../../src/core/types.ts';
+import { makeProfile } from '../helpers/make-profile.js';
 
 // Capture real modules before mocking so we can restore them in afterAll.
 const realPiCodingAgent = Object.assign({}, await import('@earendil-works/pi-coding-agent'));
@@ -67,20 +67,6 @@ import { createHarness } from '../../src/core/harness-factory.ts';
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 const mockModel = { id: 'gpt-4o', provider: 'openai', cost: { input: 0, output: 0 } };
-
-function makeProfile(overrides?: Partial<AgentProfile>): AgentProfile {
-  return {
-    id: 'test-agent',
-    name: 'Test Agent',
-    provider: 'openai',
-    model: 'gpt-4o',
-    thinkingLevel: 'medium',
-    systemPrompt: 'You are a test agent.',
-    excludeTools: [],
-    includeTools: [],
-    ...overrides,
-  };
-}
 
 // ─── Setup ──────────────────────────────────────────────────────────────────
 
@@ -271,7 +257,7 @@ describe('harness subscribe forwarding', () => {
     expect(onToolCallEnd).not.toHaveBeenCalled();
   });
 
-  it('unsubscribe function stops forwarding', async () => {
+  it('unsubscribe function is returned and callable', async () => {
     const onTurnStart = mock();
     await createHarness({
       profile: makeProfile(),
@@ -284,10 +270,9 @@ describe('harness subscribe forwarding', () => {
 
     capturedListener!({ type: 'turn_start' });
 
-    // The listener is still captured but the unsubscribe function was called.
-    // The test verifies the unsubscribe function exists and was callable.
-    // The actual "stopping" behavior is handled by AgentSession internally,
-    // so we just verify the unsubscribe was returned properly.
+    // The mock session cannot simulate actual forwarding suppression.
+    // Verify the unsubscribe function was returned and is callable.
+    expect(mockUnsubscribe).toBeTypeOf('function');
     expect(onTurnStart).toHaveBeenCalledWith({
       agentId: 'mock-session-id',
       turn: 1,

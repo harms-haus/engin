@@ -1,5 +1,5 @@
 import { afterAll, beforeEach, describe, expect, it, mock } from 'bun:test';
-import type { AgentProfile } from '../../src/core/types.ts';
+import { makeProfile } from '../helpers/make-profile.js';
 
 // Capture real modules before mocking so we can restore them in afterAll.
 const realPiCodingAgent = Object.assign({}, await import('@earendil-works/pi-coding-agent'));
@@ -77,20 +77,6 @@ import { createHarness, createHarnessFromProfile } from '../../src/core/harness-
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 const mockModel = { id: 'gpt-4o', provider: 'openai', cost: { input: 0, output: 0 } };
-
-function makeProfile(overrides?: Partial<AgentProfile>): AgentProfile {
-  return {
-    id: 'test-agent',
-    name: 'Test Agent',
-    provider: 'openai',
-    model: 'gpt-4o',
-    thinkingLevel: 'medium',
-    systemPrompt: 'You are a test agent.',
-    excludeTools: [],
-    includeTools: [],
-    ...overrides,
-  };
-}
 
 // ─── Setup ──────────────────────────────────────────────────────────────────
 

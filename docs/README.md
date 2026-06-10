@@ -512,6 +512,24 @@ Returns a `LoadEnvResult` object:
 | `skippedFiles` | `string[]` | Paths of `.env` files that did not exist                                                                   |
 | `keysSet`      | `string[]` | Environment variable names actually written to `process.env` (excluding already-set keys and blocked vars) |
 
+### Shared Utilities
+
+#### `validateWorkflowName(name: string): void`
+
+Throws an `Error` if the workflow name contains `/`, `\`, or `..` (path traversal prevention). Called internally by `loadWorkflow`, `resolveProfilesDirs`, and the CLI. Can be used by custom workflow loaders for consistent validation.
+
+#### `isEnoentError(err: unknown): boolean`
+
+Returns `true` when `err` is a non-null object with a `code` property equal to `'ENOENT'`. Used internally for graceful handling of missing files and directories.
+
+#### `safeErrorMessage(err: unknown): string`
+
+Returns `err.message` for `Error` instances, otherwise `String(err)`. Provides a safe way to extract a human-readable error message from `unknown` caught values.
+
+#### `DEFAULT_TOOLS: readonly string[]`
+
+Frozen array of the default tool names: `['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls']`. Used by `createHarness` when the profile doesn't specify `includeTools`.
+
 ### Setup
 
 #### `initDefaultConfig(): Promise<{ createdDirs: string[] }>`
@@ -546,11 +564,11 @@ Convenience wrapper around `promptForStructured` that returns an `AgentLoopResul
 
 #### `parallelAgents<T>(configs, promptFn, options?): Promise<PromiseSettledResult<T>[]>`
 
-Create sessions for every config in parallel via `createHarness`, then run prompts via `Promise.allSettled`. All sessions are disposed in a `finally` block. When `options.schema` is provided, each result is validated through `promptForStructured`; otherwise the raw `getLastAssistantText()` value is returned.
+Sessions are created sequentially (with rollback on failure via `createSessionsWithCleanup`), then prompts run in parallel via `Promise.allSettled`. All sessions are disposed in a `finally` block. When `options.schema` is provided, each result is validated through `promptForStructured`; otherwise the raw `getLastAssistantText()` value is returned.
 
 #### `sequentialAgents<T>(configs, promptFn, options?): Promise<T[]>`
 
-Same as `parallelAgents` but runs prompts sequentially. All sessions are disposed in a `finally` block. Throws on the first failure.
+Creates sessions and runs prompts sequentially, one at a time. Each session is created, used, and disposed immediately within the same loop iteration. Throws on the first failure.
 
 ### Session Management
 
@@ -629,6 +647,8 @@ class TaskTracker {
   completeTask(id: string): void;
   rejectTask(id: string, reason: string): void;
   areAllDone(): boolean;
+  getBlockedWithMissingDeps(): Array<{ taskId: string; missingDepIds: string[] }>;
+  areAllDoneOrBlocked(): boolean;
   recalculateStatuses(): void;
   toJSON(): { tasks: Task[] };
   static fromJSON(data: { tasks: Task[] }): TaskTracker;
@@ -646,6 +666,16 @@ blocked → ready → claimed → implementing → reviewing → done
 ```
 
 > **Note:** `rejected` is not a `TaskStatus` value. It represents the transition from `reviewing` back to `ready` via `rejectTask()`. The task's status is set to `ready`, not `rejected`.
+
+**Additional methods:**
+
+#### `getBlockedWithMissingDeps(): Array<{ taskId: string; missingDepIds: string[] }>`
+
+Returns tasks that are currently blocked and reference at least one dependency ID not present in the tracker. Useful for detecting configuration errors (e.g., typos in dependency IDs).
+
+#### `areAllDoneOrBlocked(): boolean`
+
+Returns `true` when every task is either `'done'` or blocked with at least one missing dependency (a deadlocked state). Returns `false` for empty trackers or when any task is in a runnable state. Useful for detecting when no further progress is possible.
 
 #### `PHASE_ORDER`
 
@@ -714,7 +744,7 @@ Concurrent task processing pool where N independent "lanes" (workers) claim task
 **How it works:**
 
 1. Profiles are loaded once via [`loadProfilesFromDirs`](#loadprofilesdirsdirs) before spawning any lanes.
-2. `maxConcurrentLanes` workers are spawned in parallel via `Promise.all`.
+2. `maxConcurrentLanes` workers are spawned in parallel via `Promise.allSettled` (lane failures are isolated and don't crash sibling lanes).
 3. Each lane runs a loop that claims a ready task from the shared [`TaskTracker`](#tasktracker) and processes it through the steps returned by `getStepsForTask`.
 4. On step rejection, the lane backs up to the previous step and retries (up to `maxStepRetries`). The review feedback is written to the task's `reviewFeedback` field and included in the next step's prompt.
 5. On agent crash (unhandled error), the lane fires `onError`, marks the task as failed, and moves on.
@@ -777,7 +807,8 @@ src/
 │   ├── structured-output.ts     # JSON extraction, Zod-validated prompting
 │   ├── session-history.ts       # Session statistics and resumption helpers
 │   ├── agent-loop.ts            # Looping, parallel, and sequential agent patterns
-│   └── auth.ts                  # API key resolution (env vars and overrides)
+│   ├── auth.ts                  # API key resolution (env vars and overrides)
+│   └── utils.ts                 # Shared utilities (path traversal prevention, ENOENT detection, error-to-string, DEFAULT_TOOLS)
 ├── pool/
 │   ├── index.ts                 # Pool module re-exports
 │   ├── types.ts                 # StepDefinition, LanePoolOptions, LanePoolResult, StepResult types
@@ -790,17 +821,18 @@ src/
 
 ### Core Layer (`src/core/`)
 
-| Module                 | Responsibility                                                                                                                                                                                 |
-| ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `types.ts`             | Re-exports from `pi-coding-agent`, `pi-agent-core`, and `pi-ai`; defines `AgentProfile`, `Task`, `WorkflowState`, `AuditEvent`, `WorkflowModule`, `WorkflowRunOptions`, and related types      |
-| `config.ts`            | Resolves global (`~/.config/engin/`) and local (`.engin/`) config directories; provides default work directory paths                                                                           |
-| `profile.ts`           | Parses markdown files with YAML frontmatter into `AgentProfile` objects; loads all profiles from a directory or merges from multiple directories                                               |
-| `workflow-loader.ts`   | Dynamically loads workflow modules by name from config directories; discovers `main.ts` inside workflow subdirectories; caches loaded modules                                                  |
-| `harness-factory.ts`   | Creates a fully-wired `AgentSession` from a profile: model resolution, `AuthStorage`, tool filtering, `DefaultResourceLoader`, and `createAgentSession` from `@earendil-works/pi-coding-agent` |
-| `structured-output.ts` | Extracts JSON from free-text model responses; prompts a session and validates output against a Zod schema with automatic retries                                                               |
-| `session-history.ts`   | Tracks token usage and cost across a session; provides session resumption by copying message history                                                                                           |
-| `agent-loop.ts`        | Higher-level patterns: `agentLoopUntil`, `parallelAgents`, `sequentialAgents`. Uses `AgentSession` and `dispose()` for cleanup                                                                 |
-| `auth.ts`              | Resolves API keys from caller-supplied overrides or environment variables via `@earendil-works/pi-ai`                                                                                          |
+| Module                 | Responsibility                                                                                                                                                                                    |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `types.ts`             | Re-exports from `pi-coding-agent`, `pi-agent-core`, and `pi-ai`; defines `AgentProfile`, `Task`, `WorkflowState`, `AuditEvent`, `WorkflowModule`, `WorkflowRunOptions`, and related types         |
+| `config.ts`            | Resolves global (`~/.config/engin/`) and local (`.engin/`) config directories; provides default work directory paths                                                                              |
+| `profile.ts`           | Parses markdown files with YAML frontmatter into `AgentProfile` objects; loads all profiles from a directory or merges from multiple directories                                                  |
+| `workflow-loader.ts`   | Dynamically loads workflow modules by name from config directories; discovers `main.ts` inside workflow subdirectories; caches loaded modules                                                     |
+| `harness-factory.ts`   | Creates a fully-wired `AgentSession` from a profile: model resolution, `AuthStorage`, tool filtering, `DefaultResourceLoader`, and `createAgentSession` from `@earendil-works/pi-coding-agent`    |
+| `structured-output.ts` | Extracts JSON from free-text model responses; prompts a session and validates output against a Zod schema with automatic retries                                                                  |
+| `session-history.ts`   | Tracks token usage and cost across a session; provides session resumption by copying message history                                                                                              |
+| `agent-loop.ts`        | Higher-level patterns: `agentLoopUntil`, `parallelAgents`, `sequentialAgents`. Uses `AgentSession` and `dispose()` for cleanup                                                                    |
+| `auth.ts`              | Resolves API keys from caller-supplied overrides or environment variables via `@earendil-works/pi-ai`                                                                                             |
+| `utils.ts`             | Shared utilities: `validateWorkflowName` (path traversal prevention), `isEnoentError` (ENOENT detection), `safeErrorMessage` (safe error-to-string), `DEFAULT_TOOLS` (default tool list constant) |
 
 ### Pool Layer (`src/pool/`)
 

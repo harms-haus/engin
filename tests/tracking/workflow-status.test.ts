@@ -1,37 +1,18 @@
-import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { beforeEach, describe, expect, it } from 'bun:test';
 import * as fs from 'node:fs/promises';
-import * as os from 'node:os';
 import * as path from 'node:path';
-import type { Task } from '../../src/core/types.js';
 import { WorkflowStatusTracker } from '../../src/tracking/workflow-status.js';
-
-function tmpDir(): string {
-  return path.join(os.tmpdir(), `workflow-status-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-}
-
-function makeTask(overrides: Partial<Task> & { id: string }): Task {
-  return {
-    title: `Task ${overrides.id}`,
-    prompt: `Prompt for ${overrides.id}`,
-    profile: 'default',
-    files: [],
-    dependencies: [],
-    status: 'ready',
-    ...overrides,
-  };
-}
+import { makeTask } from '../helpers/make-task.js';
+import { useTempDir } from '../helpers/use-temp-dir.js';
 
 describe('WorkflowStatusTracker', () => {
+  const { getDir } = useTempDir();
   let dir: string;
   let tracker: WorkflowStatusTracker;
 
   beforeEach(() => {
-    dir = tmpDir();
+    dir = getDir();
     tracker = new WorkflowStatusTracker(dir);
-  });
-
-  afterEach(async () => {
-    await fs.rm(dir, { recursive: true, force: true });
   });
 
   // ── initial state ──────────────────────────────────────────────────

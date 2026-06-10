@@ -1,10 +1,7 @@
-import * as fs from 'node:fs/promises';
-import * as path from 'node:path';
+import { appendFile, mkdir, readFile, unlink } from 'node:fs/promises';
+import { join } from 'node:path';
 import type { AuditEvent } from '../core/types.js';
-
-function isEnoentError(err: unknown): boolean {
-  return typeof err === 'object' && err !== null && 'code' in err && (err as { code: string }).code === 'ENOENT';
-}
+import { isEnoentError } from '../core/utils.js';
 
 export class AuditLog {
   private readonly logPath: string;
@@ -12,12 +9,12 @@ export class AuditLog {
   private dirEnsured = false;
 
   constructor(private readonly logDir: string) {
-    this.logPath = path.join(logDir, 'audit.jsonl');
+    this.logPath = join(logDir, 'audit.jsonl');
   }
 
   async append(event: Omit<AuditEvent, 'timestamp'>): Promise<void> {
     if (!this.dirEnsured) {
-      await fs.mkdir(this.logDir, { recursive: true });
+      await mkdir(this.logDir, { recursive: true });
       this.dirEnsured = true;
     }
 
@@ -26,7 +23,7 @@ export class AuditLog {
       timestamp: new Date().toISOString(),
     } as AuditEvent;
 
-    await fs.appendFile(this.logPath, JSON.stringify(record) + '\n', 'utf-8');
+    await appendFile(this.logPath, JSON.stringify(record) + '\n', 'utf-8');
     this.cache = null;
   }
 
@@ -34,7 +31,7 @@ export class AuditLog {
     if (this.cache === null) {
       let content: string;
       try {
-        content = await fs.readFile(this.logPath, 'utf-8');
+        content = await readFile(this.logPath, 'utf-8');
       } catch (err: unknown) {
         if (isEnoentError(err)) {
           this.cache = [];
@@ -77,9 +74,10 @@ export class AuditLog {
 
   async getStats(): Promise<{ totalEvents: number; totalCost: number; totalTokens: number }> {
     const allEvents = await this.getEvents();
-    const agentEndEvents = (await this.getEvents({ type: 'agent_end' })).filter(
-      (e): e is Extract<AuditEvent, { type: 'agent_end' }> => e.type === 'agent_end',
-    );
+    const agentEndEvents = (await this.getEvents({ type: 'agent_end' })) as Extract<
+      AuditEvent,
+      { type: 'agent_end' }
+    >[];
 
     let totalCost = 0;
     let totalTokens = 0;
@@ -105,7 +103,7 @@ export class AuditLog {
 
   async clear(): Promise<void> {
     try {
-      await fs.unlink(this.logPath);
+      await unlink(this.logPath);
     } catch (err: unknown) {
       if (!isEnoentError(err)) throw err;
     }
