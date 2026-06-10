@@ -4,8 +4,6 @@ import { makeProfile } from '../helpers/make-profile.js';
 // Capture real modules before mocking so we can restore them in afterAll.
 const realPiCodingAgent = Object.assign({}, await import('@earendil-works/pi-coding-agent'));
 const realPiAi = Object.assign({}, await import('@earendil-works/pi-ai'));
-const realAuth = Object.assign({}, await import('../../src/core/auth.ts'));
-const realProfile = Object.assign({}, await import('../../src/core/profile.ts'));
 
 // ─── Mocks ──────────────────────────────────────────────────────────────────
 
@@ -39,7 +37,7 @@ const mockCreateAgentSession = mock(async () => ({
 mock.module('@earendil-works/pi-coding-agent', () => ({
   createAgentSession: mockCreateAgentSession,
   SessionManager: { inMemory: mock(() => ({ getSessionId: () => 'mock-session-id' })) },
-  AuthStorage: { inMemory: mock(() => mockAuthStorageInstance) },
+  AuthStorage: { create: mock(() => mockAuthStorageInstance) },
   DefaultResourceLoader: mock().mockImplementation(() => mockDefaultResourceLoaderInstance),
 }));
 
@@ -47,17 +45,6 @@ mock.module('@earendil-works/pi-coding-agent', () => ({
 const mockGetModel = mock();
 mock.module('@earendil-works/pi-ai', () => ({
   getModel: (...args: unknown[]) => mockGetModel(...args),
-}));
-
-// Mock resolveApiKeyOrThrow
-const mockResolveApiKeyOrThrow = mock();
-mock.module('../../src/core/auth.ts', () => ({
-  resolveApiKeyOrThrow: (...args: unknown[]) => mockResolveApiKeyOrThrow(...args),
-}));
-
-// Mock loadProfile (not used in these tests but required by the module)
-mock.module('../../src/core/profile.ts', () => ({
-  loadProfile: mock(),
 }));
 
 // ─── Imports (after mocks) ─────────────────────────────────────────────────
@@ -73,7 +60,6 @@ const mockModel = { id: 'gpt-4o', provider: 'openai', cost: { input: 0, output: 
 beforeEach(() => {
   mock.clearAllMocks();
   mockGetModel.mockReturnValue(mockModel);
-  mockResolveApiKeyOrThrow.mockReturnValue('sk-test-key');
   mockAuthStorageInstance.setRuntimeApiKey = mock();
   capturedListener = undefined;
   mockUnsubscribe = undefined;
@@ -304,6 +290,4 @@ describe('harness subscribe forwarding', () => {
 afterAll(() => {
   mock.module('@earendil-works/pi-coding-agent', () => realPiCodingAgent);
   mock.module('@earendil-works/pi-ai', () => realPiAi);
-  mock.module('../../src/core/auth.ts', () => realAuth);
-  mock.module('../../src/core/profile.ts', () => realProfile);
 });

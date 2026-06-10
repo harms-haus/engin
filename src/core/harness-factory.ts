@@ -9,7 +9,6 @@ import {
   SessionManager,
 } from '@earendil-works/pi-coding-agent';
 
-import { resolveApiKeyOrThrow } from './auth.js';
 import { loadProfile } from './profile.js';
 import type { HarnessCreationOptions } from './types.js';
 import { DEFAULT_TOOLS } from './utils.js';
@@ -30,8 +29,9 @@ type AgentLevelEvent =
  * Resolution steps:
  * 1. Resolve the model via {@link getModel}; throw if the provider/model
  *    combination is unknown.
- * 2. Resolve the API key via {@link resolveApiKeyOrThrow} and register it
- *    with an in-memory {@link AuthStorage}.
+ * 2. Create an {@link AuthStorage} via {@link AuthStorage.create} (loads
+ *    credentials from `~/.pi/agent/auth.json`) and apply any caller-supplied
+ *    `apiKeys` as runtime overrides.
  * 3. Build the tool allowlist/denylist from the profile configuration.
  * 4. Create a {@link DefaultResourceLoader} with the profile's system prompt.
  * 5. Construct the session via {@link createAgentSession}.
@@ -52,10 +52,13 @@ export async function createHarness(
     );
   }
 
-  // 2. API key
-  const apiKey = resolveApiKeyOrThrow(profile.provider, apiKeys);
-  const authStorage = AuthStorage.inMemory();
-  authStorage.setRuntimeApiKey(profile.provider, apiKey);
+  // 2. Auth storage — reads ~/.pi/agent/auth.json for stored credentials
+  const authStorage = AuthStorage.create();
+  if (apiKeys) {
+    for (const [provider, key] of Object.entries(apiKeys)) {
+      authStorage.setRuntimeApiKey(provider, key);
+    }
+  }
 
   // 3. Tools
   let builtTools: string[];

@@ -4,7 +4,6 @@ import { makeProfile } from '../helpers/make-profile.js';
 // Capture real modules before mocking so we can restore them in afterAll.
 const realPiCodingAgent = Object.assign({}, await import('@earendil-works/pi-coding-agent'));
 const realPiAi = Object.assign({}, await import('@earendil-works/pi-ai'));
-const realAuth = Object.assign({}, await import('../../src/core/auth.ts'));
 const realProfile = Object.assign({}, await import('../../src/core/profile.ts'));
 
 // ─── Mocks ──────────────────────────────────────────────────────────────────
@@ -47,7 +46,7 @@ mock.module('@earendil-works/pi-coding-agent', () => ({
     create: mockSessionManagerCreate,
     open: mockSessionManagerOpen,
   },
-  AuthStorage: { inMemory: mock(() => mockAuthStorageInstance) },
+  AuthStorage: { create: mock(() => mockAuthStorageInstance) },
   DefaultResourceLoader: mock().mockImplementation(() => mockDefaultResourceLoaderInstance),
 }));
 
@@ -55,12 +54,6 @@ mock.module('@earendil-works/pi-coding-agent', () => ({
 const mockGetModel = mock();
 mock.module('@earendil-works/pi-ai', () => ({
   getModel: (...args: unknown[]) => mockGetModel(...args),
-}));
-
-// Mock resolveApiKeyOrThrow
-const mockResolveApiKeyOrThrow = mock();
-mock.module('../../src/core/auth.ts', () => ({
-  resolveApiKeyOrThrow: (...args: unknown[]) => mockResolveApiKeyOrThrow(...args),
 }));
 
 // Mock loadProfile
@@ -83,7 +76,6 @@ const mockModel = { id: 'gpt-4o', provider: 'openai', cost: { input: 0, output: 
 beforeEach(() => {
   mock.clearAllMocks();
   mockGetModel.mockReturnValue(mockModel);
-  mockResolveApiKeyOrThrow.mockReturnValue('sk-test-key');
   // Reset mockAuthStorageInstance.setRuntimeApiKey since it's not auto-cleared
   mockAuthStorageInstance.setRuntimeApiKey = mock();
   // Re-seed the mock module factories so fresh instances are returned
@@ -111,16 +103,14 @@ describe('createHarness', () => {
     expect(SessionManager.inMemory).toHaveBeenCalledWith('/my/project');
   });
 
-  it('creates an in-memory AuthStorage and registers the API key', async () => {
-    mockResolveApiKeyOrThrow.mockReturnValue('sk-custom');
-
+  it('creates AuthStorage via AuthStorage.create() and registers API keys as runtime overrides', async () => {
     await createHarness({
       profile: makeProfile(),
       cwd: '/tmp',
       apiKeys: { openai: 'sk-custom' },
     });
 
-    expect(AuthStorage.inMemory).toHaveBeenCalled();
+    expect(AuthStorage.create).toHaveBeenCalled();
     expect(mockAuthStorageInstance.setRuntimeApiKey).toHaveBeenCalledWith('openai', 'sk-custom');
   });
 
@@ -147,14 +137,26 @@ describe('createHarness', () => {
     expect(mockCreateAgentSession).toHaveBeenCalledWith(expect.objectContaining({ model: mockModel }));
   });
 
-  it('resolves API key via resolveApiKeyOrThrow', async () => {
+  it('registers all apiKeys entries as runtime overrides on AuthStorage', async () => {
     await createHarness({
       profile: makeProfile(),
       cwd: '/tmp',
-      apiKeys: { openai: 'sk-custom' },
+      apiKeys: { openai: 'sk-openai', anthropic: 'sk-ant-xyz' },
     });
 
-    expect(mockResolveApiKeyOrThrow).toHaveBeenCalledWith('openai', { openai: 'sk-custom' });
+    expect(AuthStorage.create).toHaveBeenCalled();
+    expect(mockAuthStorageInstance.setRuntimeApiKey).toHaveBeenCalledWith('openai', 'sk-openai');
+    expect(mockAuthStorageInstance.setRuntimeApiKey).toHaveBeenCalledWith('anthropic', 'sk-ant-xyz');
+  });
+
+  it('does not call setRuntimeApiKey when apiKeys is undefined', async () => {
+    await createHarness({
+      profile: makeProfile(),
+      cwd: '/tmp',
+    });
+
+    expect(AuthStorage.create).toHaveBeenCalled();
+    expect(mockAuthStorageInstance.setRuntimeApiKey).not.toHaveBeenCalled();
   });
 
   it('passes thinkingLevel from profile to createAgentSession', async () => {
@@ -303,7 +305,6 @@ describe('createHarnessFromProfile', () => {
       apiKeys: { openai: 'sk-from-profile' },
     });
 
-    expect(mockResolveApiKeyOrThrow).toHaveBeenCalledWith('openai', { openai: 'sk-from-profile' });
     expect(mockCreateAgentSession).toHaveBeenCalledWith(
       expect.objectContaining({
         model: mockModel,
@@ -327,6 +328,5 @@ describe('createHarnessFromProfile', () => {
 afterAll(() => {
   mock.module('@earendil-works/pi-coding-agent', () => realPiCodingAgent);
   mock.module('@earendil-works/pi-ai', () => realPiAi);
-  mock.module('../../src/core/auth.ts', () => realAuth);
   mock.module('../../src/core/profile.ts', () => realProfile);
 });

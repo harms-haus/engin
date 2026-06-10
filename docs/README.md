@@ -443,7 +443,7 @@ Create a fully-wired `AgentSession` from an `AgentProfile`. Supports three sessi
 - **Persisted** — `SessionManager.create(cwd, sessionDir)`. Used when `sessionDir` is provided; session data is written to disk.
 - **Resumed** — `SessionManager.open(resumeSessionPath, ...)`. Used when `resumeSessionPath` is provided; loads an existing session from disk.
 
-Resolution steps: resolve model via `getModel()`, resolve API key and register with `AuthStorage.inMemory()`, build tool allowlist/denylist from profile, create `DefaultResourceLoader` with system prompt override, construct session via `createAgentSession()`, optionally subscribe to agent status events.
+Resolution steps: resolve model via `getModel()`, create `AuthStorage` via `AuthStorage.create()` (loads `~/.pi/agent/auth.json`) and apply caller-supplied `apiKeys` as runtime overrides via `setRuntimeApiKey`, build tool allowlist/denylist from profile, create `DefaultResourceLoader` with system prompt override, construct session via `createAgentSession()`, optionally subscribe to agent status events.
 
 **`HarnessCreationOptions` fields:**
 
@@ -597,6 +597,8 @@ Copy all message entries from a source session into a target session. Uses `appe
 #### `resolveApiKey(provider, customKeys?): string | undefined`
 
 Resolve from custom overrides (`customKeys[provider]`) or environment variables via `getEnvApiKey(provider)` from `@earendil-works/pi-ai`.
+
+> **Note:** These are standalone utilities for lightweight key resolution without creating an `AuthStorage` instance. They **do not** check `~/.pi/agent/auth.json` or handle OAuth tokens. For full credential resolution, `createHarness` delegates to `AuthStorage.create()` instead (see [Environment Variables](#environment-variables) above).
 
 #### `resolveApiKeyOrThrow(provider, customKeys?): string`
 
@@ -1276,11 +1278,13 @@ MY_TOOL_API_KEY=abc123
 
 ### Environment Variables
 
-API keys are resolved in this order:
+API keys are resolved by `AuthStorage.getApiKey()` in this priority order:
 
-1. The `apiKeys` option passed to `createHarness` or `run`.
-2. The `--api-key` CLI flag.
-3. Provider-specific environment variables (e.g. `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`).
+1. **Runtime overrides** — the `apiKeys` option passed to `createHarness` / `run`, or the `--api-key` CLI flag (both call `setRuntimeApiKey` under the hood).
+2. **Stored API keys** — explicit keys saved in `~/.pi/agent/auth.json`.
+3. **OAuth tokens** — OAuth access tokens from `~/.pi/agent/auth.json` (auto-refreshed when expired).
+4. **Environment variables** — provider-specific env vars (e.g. `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`).
+5. **Fallback resolver** — custom provider key resolvers defined in `models.json`.
 
 > **Warning:** API keys passed via `--api-key` are visible in process listings. Prefer environment variables or the `apiKeys` programmatic option.
 
