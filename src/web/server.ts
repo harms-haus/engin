@@ -4,13 +4,20 @@ import { getDefaultWorkDir, scanPastRuns } from '../core/config.js';
 import { loadWorkflow } from '../core/workflow-loader.js';
 import { RunRegistry } from './run-registry.js';
 import { createStatusBridge } from './status-bridge.js';
-import type { ClientMessage, ServerMessage, WebServerOptions } from './types.js';
+import type { ClientMessage, ServerMessage, WebServerDependencies, WebServerOptions } from './types.js';
 
-export async function startWebServer(options: WebServerOptions): Promise<Bun.Server<undefined>> {
+export async function startWebServer(
+  options: WebServerOptions,
+  deps: Partial<WebServerDependencies> = {},
+): Promise<Bun.Server<undefined>> {
+  const resolveWorkflow = deps.loadWorkflow ?? loadWorkflow;
+  const resolveWorkDir = deps.getDefaultWorkDir ?? getDefaultWorkDir;
+  const resolvePastRuns = deps.scanPastRuns ?? scanPastRuns;
+
   const registry = new RunRegistry();
 
   try {
-    const pastRuns = await scanPastRuns(options.cwd);
+    const pastRuns = await resolvePastRuns(options.cwd);
     for (const run of pastRuns) {
       const runId = registry.createRun(run.workflowName);
       registry.completeRun(runId);
@@ -47,7 +54,7 @@ export async function startWebServer(options: WebServerOptions): Promise<Bun.Ser
 
     let workflow;
     try {
-      workflow = await loadWorkflow(workflowName, options.cwd);
+      workflow = await resolveWorkflow(workflowName, options.cwd);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       const summary = registry.failRun(runId, msg);
@@ -61,7 +68,7 @@ export async function startWebServer(options: WebServerOptions): Promise<Bun.Ser
     }
 
     const bridge = createStatusBridge(runId, registry, broadcast);
-    const workDir = getDefaultWorkDir(options.cwd, workflowName);
+    const workDir = resolveWorkDir(options.cwd, workflowName);
 
     // Fire-and-forget the workflow run
     workflow

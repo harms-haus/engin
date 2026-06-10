@@ -7,6 +7,9 @@
  * Discriminated unions use the `type` field as the discriminant.
  */
 
+import type { PastRunEntry } from '../core/config.js';
+import type { WorkflowModule } from '../core/types.js';
+
 // ─── Shared value types ─────────────────────────────────────────────────────
 
 export interface PhaseDescriptor {
@@ -72,4 +75,16 @@ export interface WebServerOptions {
   host: string;
   port: number;
   cwd: string;
+}
+
+// ─── Dependency injection for testing ───────────────────────────────────────
+
+/**
+ * Injectable dependencies for `startWebServer`.
+ * All fields are optional; when omitted the real implementations are used.
+ */
+export interface WebServerDependencies {
+  loadWorkflow: (name: string, cwd: string) => Promise<WorkflowModule>;
+  getDefaultWorkDir: (cwd: string, workflowName: string) => string;
+  scanPastRuns: (cwd: string) => Promise<PastRunEntry[]>;
 }

@@ -1,23 +1,31 @@
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, mock } from 'bun:test';
+import { afterEach, beforeAll, describe, expect, it, mock } from 'bun:test';
 import { readdirSync } from 'node:fs';
 import { startWebServer } from '../../src/web/server.ts';
-import type { WebServerOptions } from '../../src/web/types.ts';
+import type { WebServerDependencies, WebServerOptions } from '../../src/web/types.ts';
 
 // ─── Mock workflow modules ──────────────────────────────────────────────────
 
-// Capture real modules so they can be restored in afterAll
-const realWorkflowLoader = await import('../../src/core/workflow-loader.ts');
-const realConfig = await import('../../src/core/config.ts');
-
-/**
- * We mock the workflow-loader module so that loadWorkflow returns a
- * controllable workflow without hitting the filesystem.
- */
 let mockWorkflowRun = mock<(taskPrompt: string, opts: Record<string, unknown>) => Promise<void>>().mockImplementation(
   async () => {},
 );
 let mockWorkflowShouldFail = false;
 let mockWorkflowErrorMsg = '';
+
+/** Build the default deps with controllable mocks. */
+function buildDeps(): WebServerDependencies {
+  return {
+    loadWorkflow: mock<WebServerDependencies['loadWorkflow']>().mockImplementation(async (_name: string) => {
+      if (mockWorkflowShouldFail) {
+        throw new Error(mockWorkflowErrorMsg || 'Workflow failed to load');
+      }
+      return { run: mockWorkflowRun };
+    }),
+    getDefaultWorkDir: mock<WebServerDependencies['getDefaultWorkDir']>().mockImplementation(
+      (cwd: string) => `${cwd}/.engin/work/test-workflow`,
+    ),
+    scanPastRuns: mock<WebServerDependencies['scanPastRuns']>().mockResolvedValue([]),
+  };
+}
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -51,38 +59,19 @@ describe('startWebServer', () => {
   let baseUrl: string;
 
   beforeAll(async () => {
-    // Apply mocks so loadWorkflow returns a controllable workflow
-    mock.module('../../src/core/workflow-loader.ts', () => ({
-      loadWorkflow: mock<(name: string, cwd: string) => Promise<{ run: typeof mockWorkflowRun }>>().mockImplementation(
-        async (_name: string) => {
-          if (mockWorkflowShouldFail) {
-            throw new Error(mockWorkflowErrorMsg || 'Workflow failed to load');
-          }
-          return { run: mockWorkflowRun };
-        },
-      ),
-    }));
-    mock.module('../../src/core/config.ts', () => ({
-      getDefaultWorkDir: mock<(cwd: string, name: string) => string>().mockImplementation(
-        (cwd: string) => `${cwd}/.engin/work/test-workflow`,
-      ),
-      scanPastRuns: mock<() => Promise<never[]>>().mockResolvedValue([]),
-    }));
-
     // Reset mocks before starting the server
     mockWorkflowRun = mock().mockImplementation(async () => {});
     mockWorkflowShouldFail = false;
     mockWorkflowErrorMsg = '';
 
-    server = await startWebServer(TEST_OPTIONS);
+    server = await startWebServer(TEST_OPTIONS, buildDeps());
     baseUrl = `http://${server.hostname}:${server.port}`;
   });
 
-  afterAll(() => {
-    server?.stop();
-    // Restore real modules so mocks don't leak to other test files
-    mock.module('../../src/core/workflow-loader.ts', () => realWorkflowLoader);
-    mock.module('../../src/core/config.ts', () => realConfig);
+  afterEach(() => {
+    // Reset workflow behaviour for each test
+    mockWorkflowShouldFail = false;
+    mockWorkflowRun = mock().mockImplementation(async () => {});
   });
 
   // ─── Static file serving ───────────────────────────────────────────────
@@ -175,12 +164,6 @@ describe('startWebServer', () => {
   // ─── API routes ────────────────────────────────────────────────────────
 
   describe('API routes', () => {
-    beforeEach(() => {
-      // Reset workflow behaviour for each API test
-      mockWorkflowShouldFail = false;
-      mockWorkflowRun = mock().mockImplementation(async () => {});
-    });
-
     it('POST /api/runs - returns 400 when workflowName is missing', async () => {
       const res = await fetch(`${baseUrl}/api/runs`, {
         method: 'POST',
@@ -274,10 +257,9 @@ describe('startWebServer', () => {
       const body = (await res.json()) as Record<string, unknown>[];
       expect(Array.isArray(body)).toBe(true);
 
-      // Find the failed run
-      const failedRun = body.find((s) => s.status === 'failed');
+      // Find the failed run with the expected workflow name
+      const failedRun = body.find((s) => s.status === 'failed' && s.workflowName === 'failing-workflow');
       expect(failedRun).toBeDefined();
-      expect(failedRun!.workflowName).toBe('failing-workflow');
     });
 
     it('GET /api/runs - returns summaries in chronological order', async () => {
@@ -378,14 +360,6 @@ describe('startWebServer', () => {
 
   describe('WebSocket', () => {
     let ws: WebSocket;
-    const receivedMessages: any[] = [];
-
-    beforeEach(() => {
-      receivedMessages.length = 0;
-      // Reset workflow behaviour
-      mockWorkflowShouldFail = false;
-      mockWorkflowRun = mock().mockImplementation(async () => {});
-    });
 
     afterEach(() => {
       ws?.close();
@@ -703,7 +677,7 @@ describe('startWebServer', () => {
     });
 
     it('does not crash when broadcast continues after a client disconnects', async () => {
-      // Connect three clients, disconnect one, then start a workflow
+      // Connect two clients, disconnect one, then start a workflow
       const ws1 = new WebSocket(`ws://${server.hostname}:${server.port}/ws`);
       const ws2 = new WebSocket(`ws://${server.hostname}:${server.port}/ws`);
 
@@ -1079,45 +1053,31 @@ describe('startWebServer', () => {
 
   describe('past runs population', () => {
     it('populates registry with past runs from scanPastRuns on startup', async () => {
-      // Stop the current server so we can restart with different mock behaviour
+      // Stop the current server so we can restart with different deps
       server.stop();
 
-      // Update the scanPastRuns mock to return past run entries
-      mock.module('../../src/core/config.ts', () => ({
-        getDefaultWorkDir: mock<(cwd: string, name: string) => string>().mockImplementation(
-          (cwd: string) => `${cwd}/.engin/work/test-workflow`,
-        ),
-        scanPastRuns: mock<
-          () => Promise<
-            {
-              dirName: string;
-              fullPath: string;
-              workflowName: string;
-              timestamp: number;
-              hasStateFile: boolean;
-            }[]
-          >
-        >().mockResolvedValue([
-          {
-            dirName: '1000-alpha',
-            fullPath: '/tmp/.engin/work/1000-alpha',
-            workflowName: 'alpha',
-            timestamp: 1000,
-            hasStateFile: true,
-          },
-          {
-            dirName: '2000-beta',
-            fullPath: '/tmp/.engin/work/2000-beta',
-            workflowName: 'beta',
-            timestamp: 2000,
-            hasStateFile: false,
-          },
-        ]),
-      }));
+      // Create deps with scanPastRuns that returns past run entries
+      const deps = buildDeps();
+      deps.scanPastRuns = mock<WebServerDependencies['scanPastRuns']>().mockResolvedValue([
+        {
+          dirName: '1000-alpha',
+          fullPath: '/tmp/.engin/work/1000-alpha',
+          workflowName: 'alpha',
+          timestamp: 1000,
+          hasStateFile: true,
+        },
+        {
+          dirName: '2000-beta',
+          fullPath: '/tmp/.engin/work/2000-beta',
+          workflowName: 'beta',
+          timestamp: 2000,
+          hasStateFile: false,
+        },
+      ]);
 
-      // Restart the server with the new mock — it should call scanPastRuns
+      // Restart the server with the new deps — it should call scanPastRuns
       // and populate the registry with the returned entries.
-      server = await startWebServer(TEST_OPTIONS);
+      server = await startWebServer(TEST_OPTIONS, deps);
       baseUrl = `http://${server.hostname}:${server.port}`;
 
       // Connect a WebSocket and check the init message includes past runs
@@ -1141,29 +1101,23 @@ describe('startWebServer', () => {
 
       testWs.close();
 
-      // Restore the scanPastRuns mock to empty array for remaining tests
-      mock.module('../../src/core/config.ts', () => ({
-        getDefaultWorkDir: mock<(cwd: string, name: string) => string>().mockImplementation(
-          (cwd: string) => `${cwd}/.engin/work/test-workflow`,
-        ),
-        scanPastRuns: mock<() => Promise<never[]>>().mockResolvedValue([]),
-      }));
+      // Restart with default deps (empty past runs) for remaining tests
+      server = await startWebServer(TEST_OPTIONS, buildDeps());
+      baseUrl = `http://${server.hostname}:${server.port}`;
     });
 
     it('handles scanPastRuns throwing without crashing the server', async () => {
       // Stop the current server
       server.stop();
 
-      // Update scanPastRuns mock to throw
-      mock.module('../../src/core/config.ts', () => ({
-        getDefaultWorkDir: mock<(cwd: string, name: string) => string>().mockImplementation(
-          (cwd: string) => `${cwd}/.engin/work/test-workflow`,
-        ),
-        scanPastRuns: mock<() => Promise<never[]>>().mockRejectedValue(new Error('Filesystem error')),
-      }));
+      // Create deps with scanPastRuns that throws
+      const deps = buildDeps();
+      deps.scanPastRuns = mock<WebServerDependencies['scanPastRuns']>().mockRejectedValue(
+        new Error('Filesystem error'),
+      );
 
       // Server should start successfully despite scanPastRuns throwing
-      server = await startWebServer(TEST_OPTIONS);
+      server = await startWebServer(TEST_OPTIONS, deps);
       baseUrl = `http://${server.hostname}:${server.port}`;
 
       // The server should still be functional — WebSocket init should work
@@ -1186,13 +1140,9 @@ describe('startWebServer', () => {
 
       testWs.close();
 
-      // Restore the scanPastRuns mock to empty array for remaining tests
-      mock.module('../../src/core/config.ts', () => ({
-        getDefaultWorkDir: mock<(cwd: string, name: string) => string>().mockImplementation(
-          (cwd: string) => `${cwd}/.engin/work/test-workflow`,
-        ),
-        scanPastRuns: mock<() => Promise<never[]>>().mockResolvedValue([]),
-      }));
+      // Restart with default deps for remaining tests
+      server = await startWebServer(TEST_OPTIONS, buildDeps());
+      baseUrl = `http://${server.hostname}:${server.port}`;
     });
   });
 
