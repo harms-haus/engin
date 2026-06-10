@@ -29,13 +29,15 @@
   "scripts": {
     "build": "tsc",
     "setup": "bun run build && bun dist/cli.js init",
-    "test": "bun test",
-    "test:watch": "bun test --watch",
+    "test": "bun test tests/",
+    "test:watch": "bun test tests/ --watch",
+    "test:web": "cd web && bun run test",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
+    "build:web": "cd web && bun install && bun run build",
     "prepare": "simple-git-hooks"
   },
   "files": [

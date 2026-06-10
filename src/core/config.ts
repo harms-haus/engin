@@ -1,6 +1,6 @@
 import { parse } from 'dotenv';
 import { readFileSync } from 'node:fs';
-import { mkdir } from 'node:fs/promises';
+import { mkdir, readdir, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { isEnoentError, validateWorkflowName } from './utils.js';
@@ -53,10 +53,78 @@ export function resolveWorkflowsDirs(cwd: string): string[] {
 }
 
 /**
+ * Metadata about a past workflow run directory.
+ */
+export interface PastRunEntry {
+  dirName: string;
+  fullPath: string;
+  workflowName: string;
+  timestamp: number;
+  hasStateFile: boolean;
+}
+
+/**
  * Returns the default working directory for a named workflow.
  */
 export function getDefaultWorkDir(cwd: string, workflowName: string): string {
-  return join(getLocalConfigDir(cwd), 'work', workflowName);
+  validateWorkflowName(workflowName);
+  return join(getLocalConfigDir(cwd), 'work', `${Date.now()}-${workflowName}`);
+}
+
+/**
+ * Scans the local work directory for past workflow run entries.
+ * Returns entries sorted by timestamp descending (newest first).
+ * Returns an empty array if the work directory does not exist.
+ */
+export async function scanPastRuns(cwd: string): Promise<PastRunEntry[]> {
+  const workDir = join(getLocalConfigDir(cwd), 'work');
+
+  let entries;
+  try {
+    entries = await readdir(workDir, { withFileTypes: true });
+  } catch (err: unknown) {
+    if (isEnoentError(err)) {
+      return [];
+    }
+    throw err;
+  }
+
+  const results: PastRunEntry[] = [];
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) {
+      continue;
+    }
+
+    const match = /^(\d+)-(.+)$/.exec(entry.name);
+    if (!match) {
+      continue;
+    }
+
+    const timestamp = Number(match[1]);
+    const workflowName = match[2];
+    const fullPath = join(workDir, entry.name);
+
+    let hasStateFile = false;
+    try {
+      await stat(join(fullPath, '.engin-state.json'));
+      hasStateFile = true;
+    } catch (err: unknown) {
+      if (!isEnoentError(err)) {
+        throw err;
+      }
+    }
+
+    results.push({
+      dirName: entry.name,
+      fullPath,
+      workflowName,
+      timestamp,
+      hasStateFile,
+    });
+  }
+
+  return results.sort((a, b) => b.timestamp - a.timestamp);
 }
 
 /**

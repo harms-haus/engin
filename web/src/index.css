@@ -1,0 +1,57 @@
+:root {
+  --engin-bg-primary: #0d1117;
+  --engin-bg-secondary: #161b22;
+  --engin-bg-surface: #21262d;
+  --engin-bg-hover: #30363d;
+
+  --engin-text-primary: #e6edf3;
+  --engin-text-secondary: #8b949e;
+  --engin-text-muted: #6e7681;
+
+  --engin-accent: #58a6ff;
+  --engin-accent-hover: #79c0ff;
+
+  --engin-border: #30363d;
+  --engin-success: #3fb950;
+  --engin-warning: #d29922;
+  --engin-error: #f85149;
+
+  --engin-sidebar-width: 280px;
+  --engin-header-height: 48px;
+  --engin-agent-min-width: 320px;
+
+  --engin-space-xs: 4px;
+  --engin-space-sm: 8px;
+  --engin-space-md: 16px;
+  --engin-space-lg: 24px;
+
+  --engin-font-mono: 'SF Mono', 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+  --engin-font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+
+  --engin-radius-sm: 4px;
+  --engin-radius-md: 8px;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+}
+
+body {
+  font-family: var(--engin-font-sans);
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--engin-text-primary);
+  background-color: var(--engin-bg-primary);
+}

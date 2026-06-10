@@ -221,6 +221,101 @@ describe('parseArgs', () => {
     expect(result.workflowName).toBe('my-workflow');
     expect(result.taskPrompt).toBe('do something');
   });
+
+  describe('web command', () => {
+    it('parses web command with defaults', () => {
+      const result = parseArgs(['web']);
+      expect(result.command).toBe('web');
+      expect(result.host).toBeUndefined();
+      expect(result.port).toBeUndefined();
+      expect(result.cwd).toBe(process.cwd());
+      expect(result.verbose).toBe(false);
+      expect(result.maxConcurrent).toBe(3);
+      expect(result.apiKeys).toEqual({});
+      expect(result.warnings).toEqual([]);
+    });
+
+    it('parses web command with --host and --port', () => {
+      const result = parseArgs(['web', '--host', '0.0.0.0', '--port', '3619']);
+      expect(result.command).toBe('web');
+      expect(result.host).toBe('0.0.0.0');
+      expect(result.port).toBe(3619);
+    });
+
+    it('parses web with --cwd', () => {
+      const result = parseArgs(['web', '--cwd', '/some/path']);
+      expect(result.command).toBe('web');
+      expect(result.cwd).toBe('/some/path');
+    });
+
+    it('parses web with --verbose', () => {
+      const result = parseArgs(['web', '--verbose']);
+      expect(result.command).toBe('web');
+      expect(result.verbose).toBe(true);
+    });
+
+    it('parses web with --api-key', () => {
+      const result = parseArgs(['web', '--api-key', 'anthropic=sk-xxx']);
+      expect(result.command).toBe('web');
+      expect(result.apiKeys).toEqual({ anthropic: 'sk-xxx' });
+    });
+
+    it('throws on --port with non-numeric string', () => {
+      expect(() => parseArgs(['web', '--port', 'abc'])).toThrow(/--port must be an integer/);
+    });
+
+    it('throws on --port with zero', () => {
+      expect(() => parseArgs(['web', '--port', '0'])).toThrow(/--port must be an integer between 1 and 65535/);
+    });
+
+    it('throws on --port with value > 65535', () => {
+      expect(() => parseArgs(['web', '--port', '65536'])).toThrow(/--port must be an integer between 1 and 65535/);
+    });
+
+    it('throws on --port with negative value', () => {
+      expect(() => parseArgs(['web', '--port', '-1'])).toThrow(/--port must be an integer between 1 and 65535/);
+    });
+
+    it('throws on --port with float value', () => {
+      expect(() => parseArgs(['web', '--port', '3619.5'])).toThrow(/--port must be an integer/);
+    });
+
+    it('throws on --host without value', () => {
+      expect(() => parseArgs(['web', '--host'])).toThrow(/Missing value/);
+    });
+
+    it('throws on --port without value', () => {
+      expect(() => parseArgs(['web', '--port'])).toThrow(/Missing value/);
+    });
+
+    it('throws on extra positional argument after web', () => {
+      expect(() => parseArgs(['web', 'extra'])).toThrow(/Unexpected argument/);
+    });
+
+    it('throws on multiple extra positional arguments after web', () => {
+      expect(() => parseArgs(['web', 'extra1', 'extra2'])).toThrow(/Unexpected argument/);
+    });
+
+    it('--host can be a valid hostname like 127.0.0.1', () => {
+      const result = parseArgs(['web', '--host', '127.0.0.1']);
+      expect(result.host).toBe('127.0.0.1');
+    });
+
+    it('--host can be a hostname like localhost', () => {
+      const result = parseArgs(['web', '--host', 'localhost']);
+      expect(result.host).toBe('localhost');
+    });
+
+    it('--port accepts valid port 1', () => {
+      const result = parseArgs(['web', '--port', '1']);
+      expect(result.port).toBe(1);
+    });
+
+    it('--port accepts valid port 65535', () => {
+      const result = parseArgs(['web', '--port', '65535']);
+      expect(result.port).toBe(65535);
+    });
+  });
 });
 
 // ─── formatTime ─────────────────────────────────────────────────────────────
@@ -306,15 +401,19 @@ describe('createStatusCallbacks', () => {
     expect(logSpy.mock.calls[0][0]).toMatch(/Turn/);
   });
 
-  it('onToolCallStart logs tool name', () => {
+  it('onToolCallStart logs tool name and arguments', () => {
     const callbacks = createStatusCallbacks(true);
     callbacks.onToolCallStart!({
       agentId: 'agent-1',
       toolName: 'read_file',
       toolCallId: 'tc-1',
+      arguments: { path: '/foo.ts' },
     });
     expect(logSpy).toHaveBeenCalledTimes(1);
-    expect(logSpy.mock.calls[0][0]).toMatch(/Tool call/);
+    const output = logSpy.mock.calls[0][0] as string;
+    expect(output).toContain('read_file');
+    expect(output).toContain('/foo.ts');
+    expect(output).toContain('agent-1');
   });
 
   it('onTurnEnd renders text content blocks in verbose mode', () => {
@@ -352,17 +451,14 @@ describe('createStatusCallbacks', () => {
     expect(logSpy.mock.calls[0][0]).toMatch(/redacted thinking/);
   });
 
-  it('onTurnEnd renders toolCall with arguments', () => {
+  it('onTurnEnd silently ignores toolCall content blocks (regression)', () => {
     const callbacks = createStatusCallbacks(true);
     callbacks.onTurnEnd!({
       agentId: 'a1',
       turn: 1,
       contentBlocks: [{ type: 'toolCall', id: 'tc1', name: 'read', arguments: { path: '/foo.ts' } }],
     });
-    expect(logSpy).toHaveBeenCalledTimes(1);
-    const output = logSpy.mock.calls[0][0] as string;
-    expect(output).toMatch(/read/);
-    expect(output).toContain('/foo.ts');
+    expect(logSpy).not.toHaveBeenCalled();
   });
 
   it('onTurnEnd renders tokens when present', () => {

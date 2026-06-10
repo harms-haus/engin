@@ -1,3 +1,4 @@
 # Bun configuration for engin
 [test]
 root = "."
+pathIgnorePatterns = ["web/**"]

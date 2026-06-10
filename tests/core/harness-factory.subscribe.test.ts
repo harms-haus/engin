@@ -303,6 +303,52 @@ describe('harness subscribe forwarding', () => {
       agentId: 'mock-session-id',
       toolName: 'read',
       toolCallId: 'call_abc',
+      arguments: {},
+    });
+  });
+
+  it('tool_execution_start forwards args from upstream event', async () => {
+    const onToolCallStart = mock();
+    await createHarness({
+      profile: makeProfile(),
+      cwd: '/tmp',
+      onAgentStatus: { onToolCallStart },
+    });
+
+    capturedListener!({
+      type: 'tool_execution_start',
+      toolName: 'read',
+      toolCallId: 'call_def',
+      args: { path: '/foo.ts' },
+    });
+
+    expect(onToolCallStart).toHaveBeenCalledWith({
+      agentId: 'mock-session-id',
+      toolName: 'read',
+      toolCallId: 'call_def',
+      arguments: { path: '/foo.ts' },
+    });
+  });
+
+  it('tool_execution_start defaults arguments to {} when args is undefined', async () => {
+    const onToolCallStart = mock();
+    await createHarness({
+      profile: makeProfile(),
+      cwd: '/tmp',
+      onAgentStatus: { onToolCallStart },
+    });
+
+    capturedListener!({
+      type: 'tool_execution_start',
+      toolName: 'bash',
+      toolCallId: 'call_ghi',
+    });
+
+    expect(onToolCallStart).toHaveBeenCalledWith({
+      agentId: 'mock-session-id',
+      toolName: 'bash',
+      toolCallId: 'call_ghi',
+      arguments: {},
     });
   });
 

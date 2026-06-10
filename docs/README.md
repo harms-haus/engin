@@ -134,7 +134,7 @@ Creates the `workflows/` subdirectory inside the global config directory (`~/.co
 | Flag                       | Applies to     | Description                                                                                                                 |
 | -------------------------- | -------------- | --------------------------------------------------------------------------------------------------------------------------- |
 | `--cwd <path>`             | `run`          | Project working directory (default: `process.cwd()`)                                                                        |
-| `--work-dir <path>`        | `run`          | Directory for workflow state persistence. Default: `.engin/work/<workflow-name>` inside `cwd`                               |
+| `--work-dir <path>`        | `run`          | Directory for workflow state persistence. Default: `.engin/work/<timestamp>-<workflow-name>` inside `cwd`                   |
 | `--max-concurrent <n>`     | `run`          | Maximum parallel implementer agents (default: `3`). Must be a positive integer.                                             |
 | `--verbose`                | `all commands` | Enable verbose output, including `.env` file loading information and agent-level output (turns, tool calls, token usage)    |
 | `--api-key <provider=key>` | `run`          | Provider → API key override. Repeatable. **Warning:** values are visible in process listings; prefer environment variables. |
@@ -200,7 +200,7 @@ engin discovers profiles and workflows from two locations, with **local overridi
 │       ├── main.ts
 │       └── profiles/        # Workflow-scoped agent profile .md files
 ├── work/                    # Runtime state (auto-created)
-│   └── develop/             # One subdirectory per workflow run
+│   └── 1718012345678-develop/  # One subdirectory per run: {timestamp}-{workflow-name}
 │       └── .engin-state.json
 │       └── audit/audit.jsonl
 └── .env                     # Project-level environment variables (git-ignored)
@@ -231,8 +231,10 @@ Profiles are scoped per-workflow. The `resolveProfilesDirs` function takes a `wo
 When `--work-dir` is not specified, the CLI uses:
 
 ```
-{cwd}/.engin/work/{workflowName}
+{cwd}/.engin/work/{Date.now()}-{workflowName}
 ```
+
+Each run gets a unique directory with a millisecond timestamp prefix, allowing the UI to discover and display past runs.
 
 ---
 
@@ -491,7 +493,21 @@ Returns `[localWorkflowsDir, globalWorkflowsDir]` — local first for override p
 
 #### `getDefaultWorkDir(cwd, workflowName): string`
 
-Returns `{cwd}/.engin/work/{workflowName}`.
+Returns `{cwd}/.engin/work/{Date.now()}-{workflowName}`. Each invocation produces a unique path with a millisecond timestamp prefix.
+
+#### `scanPastRuns(cwd): Promise<PastRunEntry[]>`
+
+Scans `{cwd}/.engin/work/` for past run directories matching the pattern `{timestamp}-{workflowName}`. Returns entries sorted newest-first. Returns an empty array if the directory does not exist.
+
+**`PastRunEntry` fields:**
+
+| Field          | Type      | Description                                         |
+| -------------- | --------- | --------------------------------------------------- |
+| `dirName`      | `string`  | Directory name (e.g. `"1718012345678-develop"`)     |
+| `fullPath`     | `string`  | Absolute path to the run directory                  |
+| `workflowName` | `string`  | Parsed workflow name (e.g. `"develop"`)             |
+| `timestamp`    | `number`  | Parsed millisecond timestamp                        |
+| `hasStateFile` | `boolean` | Whether `.engin-state.json` exists in the directory |
 
 #### `ensureDir(dirPath): Promise<void>`
 

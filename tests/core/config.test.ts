@@ -10,6 +10,7 @@ import {
   loadEnvFiles,
   resolveProfilesDirs,
   resolveWorkflowsDirs,
+  scanPastRuns,
 } from '../../src/core/config.js';
 import { useEnvSandbox } from '../helpers/env-sandbox.js';
 import { useTempDir } from '../helpers/use-temp-dir.js';
@@ -131,12 +132,45 @@ describe('resolveWorkflowsDirs', () => {
 // ─── getDefaultWorkDir ─────────────────────────────────────────────────────
 
 describe('getDefaultWorkDir', () => {
-  it('returns correct path under local config dir', () => {
-    expect(getDefaultWorkDir('/project', 'my-workflow')).toBe('/project/.engin/work/my-workflow');
+  const FAKE_TIMESTAMP = 1718012345678;
+  const originalDateNow = Date.now;
+
+  beforeEach(() => {
+    Date.now = () => FAKE_TIMESTAMP;
+  });
+
+  afterEach(() => {
+    Date.now = originalDateNow;
+  });
+
+  it('returns timestamp-prefixed path under local config dir', () => {
+    expect(getDefaultWorkDir('/project', 'my-workflow')).toBe(`/project/.engin/work/${FAKE_TIMESTAMP}-my-workflow`);
   });
 
   it('handles workflow names with hyphens', () => {
-    expect(getDefaultWorkDir('/app', 'deploy-prod')).toBe('/app/.engin/work/deploy-prod');
+    expect(getDefaultWorkDir('/app', 'deploy-prod')).toBe(`/app/.engin/work/${FAKE_TIMESTAMP}-deploy-prod`);
+  });
+
+  it('returns unique paths when Date.now changes between calls', () => {
+    const first = getDefaultWorkDir('/project', 'my-workflow');
+
+    Date.now = () => FAKE_TIMESTAMP + 5000;
+    const second = getDefaultWorkDir('/project', 'my-workflow');
+
+    expect(first).not.toBe(second);
+    expect(first).toContain(`${FAKE_TIMESTAMP}-my-workflow`);
+    expect(second).toContain(`${FAKE_TIMESTAMP + 5000}-my-workflow`);
+  });
+
+  it('reflects a changed timestamp on second call', () => {
+    const first = getDefaultWorkDir('/project', 'my-workflow');
+
+    // Simulate time advancing by 1000ms
+    Date.now = () => FAKE_TIMESTAMP + 1000;
+    const second = getDefaultWorkDir('/project', 'my-workflow');
+
+    expect(first).toBe(`/project/.engin/work/${FAKE_TIMESTAMP}-my-workflow`);
+    expect(second).toBe(`/project/.engin/work/${FAKE_TIMESTAMP + 1000}-my-workflow`);
   });
 });
 
@@ -352,5 +386,99 @@ describe('loadEnvFiles', () => {
     expect(result.keysSet).not.toContain('NODE_OPTIONS');
     expect(result.keysSet).not.toContain('PATH');
     expect(result.keysSet).toContain('SAFE_KEY');
+  });
+});
+
+// ─── scanPastRuns ──────────────────────────────────────────────────────────
+
+describe('scanPastRuns', () => {
+  it('returns entries sorted newest-first', async () => {
+    const workDir = join(getDir(), '.engin', 'work');
+    await mkdir(join(workDir, '1000-alpha'), { recursive: true });
+    await mkdir(join(workDir, '2000-beta'), { recursive: true });
+    await mkdir(join(workDir, '1500-gamma'), { recursive: true });
+
+    const entries = await scanPastRuns(getDir());
+
+    expect(entries).toHaveLength(3);
+    expect(entries[0].dirName).toBe('2000-beta');
+    expect(entries[1].dirName).toBe('1500-gamma');
+    expect(entries[2].dirName).toBe('1000-alpha');
+  });
+
+  it('correctly parses workflow names and timestamps', async () => {
+    const workDir = join(getDir(), '.engin', 'work');
+    await mkdir(join(workDir, '1718012345678-my-workflow'), { recursive: true });
+
+    const entries = await scanPastRuns(getDir());
+
+    expect(entries).toHaveLength(1);
+    const entry = entries[0];
+    expect(entry.dirName).toBe('1718012345678-my-workflow');
+    expect(entry.workflowName).toBe('my-workflow');
+    expect(entry.timestamp).toBe(1718012345678);
+    expect(entry.fullPath).toBe(join(workDir, '1718012345678-my-workflow'));
+  });
+
+  it('hasStateFile is true when state file exists', async () => {
+    const runDir = join(getDir(), '.engin', 'work', '3000-delta');
+    await mkdir(runDir, { recursive: true });
+    await writeFile(join(runDir, '.engin-state.json'), '{}');
+
+    const entries = await scanPastRuns(getDir());
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0].hasStateFile).toBe(true);
+  });
+
+  it('hasStateFile is false when state file does not exist', async () => {
+    const runDir = join(getDir(), '.engin', 'work', '4000-epsilon');
+    await mkdir(runDir, { recursive: true });
+
+    const entries = await scanPastRuns(getDir());
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0].hasStateFile).toBe(false);
+  });
+
+  it('returns empty array when .engin/work/ does not exist', async () => {
+    const entries = await scanPastRuns(getDir());
+
+    expect(entries).toEqual([]);
+  });
+
+  it('ignores non-matching directory names', async () => {
+    const workDir = join(getDir(), '.engin', 'work');
+    await mkdir(join(workDir, '1000-alpha'), { recursive: true });
+    await mkdir(join(workDir, 'not-a-run'), { recursive: true });
+
+    const entries = await scanPastRuns(getDir());
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0].dirName).toBe('1000-alpha');
+  });
+
+  it('ignores files in the work dir', async () => {
+    const workDir = join(getDir(), '.engin', 'work');
+    await mkdir(workDir, { recursive: true });
+    await writeFile(join(workDir, '5000-file.txt'), 'not a directory');
+
+    const entries = await scanPastRuns(getDir());
+
+    expect(entries).toEqual([]);
+  });
+
+  it('handles mixed valid/invalid entries', async () => {
+    const workDir = join(getDir(), '.engin', 'work');
+    await mkdir(join(workDir, '2000-beta'), { recursive: true });
+    await mkdir(join(workDir, '1000-alpha'), { recursive: true });
+    await mkdir(join(workDir, 'not-a-run'), { recursive: true });
+    await writeFile(join(workDir, '5000-file.txt'), 'not a directory');
+
+    const entries = await scanPastRuns(getDir());
+
+    expect(entries).toHaveLength(2);
+    expect(entries[0].dirName).toBe('2000-beta');
+    expect(entries[1].dirName).toBe('1000-alpha');
   });
 });
