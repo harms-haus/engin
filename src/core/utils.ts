@@ -1,5 +1,7 @@
 // ─── Shared Utilities ────────────────────────────────────────────────────────
 
+import type { AgentStatusCallbacks, StatusCallbacks } from './types.js';
+
 /**
  * Validates a workflow name, throwing if it contains path separators or "..".
  */
@@ -22,6 +24,21 @@ export function isEnoentError(err: unknown): boolean {
  */
 export function safeErrorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * Forward agent-status callbacks from a {@link StatusCallbacks} object to an
+ * {@link AgentStatusCallbacks} object. Returns `undefined` when `onStatus` is
+ * not provided, which is the conventional "no-op" value for harness options.
+ */
+export function forwardAgentStatus(onStatus?: StatusCallbacks): AgentStatusCallbacks | undefined {
+  if (!onStatus) return undefined;
+  return {
+    onTurnStart: (info) => onStatus.onTurnStart?.(info),
+    onTurnEnd: (info) => onStatus.onTurnEnd?.(info),
+    onToolCallStart: (info) => onStatus.onToolCallStart?.(info),
+    onToolCallEnd: (info) => onStatus.onToolCallEnd?.(info),
+  };
 }
 
 /** Default tool names used by the harness when no include/exclude list is specified. */

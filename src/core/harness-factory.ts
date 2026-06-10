@@ -19,7 +19,7 @@ import { DEFAULT_TOOLS } from './utils.js';
 type AgentLevelEvent =
   | { type: 'turn_start' }
   | { type: 'turn_end'; message: { role: string; content?: any[]; usage?: { input: number; output: number } } }
-  | { type: 'tool_execution_start'; toolName: string; toolCallId: string }
+  | { type: 'tool_execution_start'; toolName: string; toolCallId: string; args?: Record<string, unknown> }
   | { type: 'tool_execution_end'; toolName: string; toolCallId: string; isError: boolean };
 /* eslint-enable @typescript-eslint/no-explicit-any */
 
@@ -149,6 +149,7 @@ export async function createHarness(
           agentId: sessionId,
           toolName: e.toolName,
           toolCallId: e.toolCallId,
+          arguments: e.args ?? {},
         });
       } else if (e.type === 'tool_execution_end') {
         onAgentStatus.onToolCallEnd?.({

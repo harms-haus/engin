@@ -585,6 +585,141 @@ describe('TaskTracker', () => {
     });
   });
 
+  // ── isPoolDone ────────────────────────────────────────────────────
+
+  describe('isPoolDone', () => {
+    it('returns true when there are no tasks', () => {
+      const tracker = new TaskTracker();
+      expect(tracker.isPoolDone()).toBe(true);
+    });
+
+    it('returns false when tasks are ready', () => {
+      const tracker = new TaskTracker();
+      tracker.addTask(makeTask({ id: 'a' }));
+      expect(tracker.isPoolDone()).toBe(false);
+    });
+
+    it('returns true when all tasks are done', () => {
+      const tracker = new TaskTracker();
+      tracker.addTask(makeTask({ id: 'a' }));
+      tracker.addTask(makeTask({ id: 'b' }));
+
+      for (const id of ['a', 'b']) {
+        tracker.claimTasks(1);
+        tracker.startTask(id, 'agent');
+        tracker.submitForReview(id, null);
+        tracker.completeTask(id);
+      }
+
+      expect(tracker.isPoolDone()).toBe(true);
+    });
+
+    it('returns true when all tasks are failed', () => {
+      const tracker = new TaskTracker();
+      tracker.addTask(makeTask({ id: 'a' }));
+      tracker.addTask(makeTask({ id: 'b' }));
+
+      for (const id of ['a', 'b']) {
+        tracker.claimTasks(1);
+        tracker.startTask(id, 'agent');
+        tracker.failTask(id);
+      }
+
+      expect(tracker.isPoolDone()).toBe(true);
+    });
+
+    it('returns true for a mix of done and failed tasks', () => {
+      const tracker = new TaskTracker();
+      tracker.addTask(makeTask({ id: 'a' }));
+      tracker.addTask(makeTask({ id: 'b' }));
+
+      tracker.claimTasks(1);
+      tracker.startTask('a', 'agent');
+      tracker.submitForReview('a', null);
+      tracker.completeTask('a');
+
+      tracker.claimTasks(1);
+      tracker.startTask('b', 'agent');
+      tracker.failTask('b');
+
+      expect(tracker.isPoolDone()).toBe(true);
+    });
+
+    it('returns false when a task is claimed', () => {
+      const tracker = new TaskTracker();
+      tracker.addTask(makeTask({ id: 'a' }));
+      tracker.addTask(makeTask({ id: 'b' }));
+
+      tracker.claimTasks(1);
+      // One claimed, one still ready
+      expect(tracker.isPoolDone()).toBe(false);
+    });
+
+    it('returns false when a task is implementing', () => {
+      const tracker = new TaskTracker();
+      tracker.addTask(makeTask({ id: 'a' }));
+
+      tracker.claimTasks(1);
+      tracker.startTask('a', 'agent');
+      expect(tracker.isPoolDone()).toBe(false);
+    });
+
+    it('returns false when a task is reviewing', () => {
+      const tracker = new TaskTracker();
+      tracker.addTask(makeTask({ id: 'a' }));
+
+      tracker.claimTasks(1);
+      tracker.startTask('a', 'agent');
+      tracker.submitForReview('a', 'result');
+      expect(tracker.isPoolDone()).toBe(false);
+    });
+
+    it('returns true when task is blocked with missing deps (deadlocked)', () => {
+      const tracker = new TaskTracker();
+      tracker.addTask({ ...makeTask({ id: 'a', dependencies: ['ghost'] }), status: undefined });
+
+      expect(tracker.getTask('a')!.status).toBe('blocked');
+      expect(tracker.isPoolDone()).toBe(true);
+    });
+
+    it('returns false when a task is blocked but deps exist (not deadlocked)', () => {
+      const tracker = new TaskTracker();
+      tracker.addTask(makeTask({ id: 'a' }));
+      tracker.addTask({ ...makeTask({ id: 'b', dependencies: ['a'] }), status: undefined });
+
+      expect(tracker.getTask('b')!.status).toBe('blocked');
+      expect(tracker.isPoolDone()).toBe(false);
+    });
+
+    it('returns true for a mix of done tasks and deadlocked tasks', () => {
+      const tracker = new TaskTracker();
+      tracker.addTask(makeTask({ id: 'a' }));
+      tracker.addTask({ ...makeTask({ id: 'b', dependencies: ['ghost'] }), status: undefined });
+
+      tracker.claimTasks(1);
+      tracker.startTask('a', 'agent');
+      tracker.submitForReview('a', null);
+      tracker.completeTask('a');
+
+      expect(tracker.getTask('a')!.status).toBe('done');
+      expect(tracker.getTask('b')!.status).toBe('blocked');
+      expect(tracker.isPoolDone()).toBe(true);
+    });
+
+    it('returns false for a mix of done tasks and ready tasks', () => {
+      const tracker = new TaskTracker();
+      tracker.addTask(makeTask({ id: 'a' }));
+      tracker.addTask(makeTask({ id: 'b' }));
+
+      tracker.claimTasks(1);
+      tracker.startTask('a', 'agent');
+      tracker.submitForReview('a', null);
+      tracker.completeTask('a');
+
+      expect(tracker.isPoolDone()).toBe(false); // b is still 'ready'
+    });
+  });
+
   // ── dependency validation ───────────────────────────────────────────
 
   describe('dependency validation', () => {
@@ -661,6 +796,225 @@ describe('TaskTracker', () => {
       // Complete → done
       tracker.completeTask('child');
       expect(tracker.getTask('child')!.status).toBe('done');
+    });
+  });
+
+  // ── addTask auto-status with failed deps ───────────────────────────
+
+  describe('addTask auto-status with failed deps', () => {
+    it('sets ready when all dependencies have failed (not blocked)', () => {
+      const tracker = new TaskTracker();
+      tracker.addTask(makeTask({ id: 'a' }));
+
+      // Fail task a: claim → start → failTask
+      tracker.claimTasks(1);
+      tracker.startTask('a', 'agent-1');
+      tracker.failTask('a', 'could not complete');
+
+      expect(tracker.getTask('a')!.status).toBe('failed');
+
+      // Add b depending on a with auto-status (status: undefined)
+      // addTask should treat 'failed' deps as settled, same as recalculateStatuses does
+      tracker.addTask({ ...makeTask({ id: 'b', dependencies: ['a'] }), status: undefined });
+
+      expect(tracker.getTask('b')!.status).toBe('ready');
+    });
+
+    it('sets ready when one dep is done and another is failed', () => {
+      const tracker = new TaskTracker();
+      tracker.addTask(makeTask({ id: 'a' }));
+      tracker.addTask(makeTask({ id: 'b' }));
+
+      // Complete a
+      tracker.claimTasks(1);
+      tracker.startTask('a', 'agent-1');
+      tracker.submitForReview('a', null);
+      tracker.completeTask('a');
+      expect(tracker.getTask('a')!.status).toBe('done');
+
+      // Fail b
+      tracker.claimTasks(1);
+      tracker.startTask('b', 'agent-2');
+      tracker.failTask('b', 'error');
+      expect(tracker.getTask('b')!.status).toBe('failed');
+
+      // c depends on both a (done) and b (failed) — should be ready
+      tracker.addTask({ ...makeTask({ id: 'c', dependencies: ['a', 'b'] }), status: undefined });
+      expect(tracker.getTask('c')!.status).toBe('ready');
+    });
+  });
+
+  // ── rejectTask resets dependent to ready ────────────────────────────
+
+  describe('rejectTask resets dependent to ready', () => {
+    it('reject moves child from reviewing back to ready', () => {
+      const tracker = new TaskTracker();
+      tracker.addTask(makeTask({ id: 'parent' }));
+      tracker.addTask({ ...makeTask({ id: 'child', dependencies: ['parent'] }), status: undefined });
+
+      // Complete parent → child becomes ready
+      tracker.claimTasks(1);
+      tracker.startTask('parent', 'agent-1');
+      tracker.submitForReview('parent', null);
+      tracker.completeTask('parent');
+      expect(tracker.getTask('child')!.status).toBe('ready');
+
+      // Claim, start, submit child for review
+      tracker.claimTasks(1);
+      tracker.startTask('child', 'agent-2');
+      tracker.submitForReview('child', 'first attempt');
+      expect(tracker.getTask('child')!.status).toBe('reviewing');
+
+      // Reject child — should go back to ready
+      tracker.rejectTask('child', 'redo');
+      expect(tracker.getTask('child')!.status).toBe('ready');
+      expect(tracker.getTask('child')!.reviewFeedback).toBe('redo');
+    });
+  });
+
+  // ── rejectTask edge case: downstream stays blocked ─────────────────
+
+  describe('rejectTask edge case: downstream stays blocked', () => {
+    it('c remains blocked after b is rejected (b is ready, not done)', () => {
+      const tracker = new TaskTracker();
+      tracker.addTask(makeTask({ id: 'a' }));
+      tracker.addTask({ ...makeTask({ id: 'b', dependencies: ['a'] }), status: undefined });
+      tracker.addTask({ ...makeTask({ id: 'c', dependencies: ['b'] }), status: undefined });
+
+      // Initially: a=ready, b=blocked, c=blocked
+      expect(tracker.getTask('a')!.status).toBe('ready');
+      expect(tracker.getTask('b')!.status).toBe('blocked');
+      expect(tracker.getTask('c')!.status).toBe('blocked');
+
+      // Complete a → b becomes ready, c stays blocked
+      tracker.claimTasks(1);
+      tracker.startTask('a', 'agent-1');
+      tracker.submitForReview('a', null);
+      tracker.completeTask('a');
+      expect(tracker.getTask('b')!.status).toBe('ready');
+      expect(tracker.getTask('c')!.status).toBe('blocked');
+
+      // Claim/start/submit b, then reject it
+      tracker.claimTasks(1);
+      tracker.startTask('b', 'agent-2');
+      tracker.submitForReview('b', 'attempt');
+      tracker.rejectTask('b', 'try again');
+
+      // b is now ready (not done), so c should remain blocked
+      expect(tracker.getTask('b')!.status).toBe('ready');
+      expect(tracker.getTask('c')!.status).toBe('blocked');
+    });
+  });
+
+  // ── EventEmitter integration ──────────────────────────────────────
+
+  describe('EventEmitter integration', () => {
+    it('emits taskReady when blocked task becomes ready', async () => {
+      const tracker = new TaskTracker();
+      tracker.addTask(makeTask({ id: 'a' }));
+      tracker.addTask({ ...makeTask({ id: 'b', dependencies: ['a'] }), status: undefined });
+
+      expect(tracker.getTask('b')!.status).toBe('blocked');
+
+      const eventPromise = new Promise<unknown>((resolve) => {
+        (tracker as unknown as { once: (event: string, cb: (...args: unknown[]) => void) => void }).once(
+          'taskReady',
+          resolve,
+        );
+      });
+      const timeout = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('taskReady event not emitted within 1000ms')), 1000),
+      );
+
+      // Complete task a via full lifecycle
+      tracker.claimTasks(1);
+      tracker.startTask('a', 'agent-1');
+      tracker.submitForReview('a', 'done');
+      tracker.completeTask('a');
+
+      await Promise.race([eventPromise, timeout]);
+
+      expect(tracker.getTask('b')!.status).toBe('ready');
+    });
+
+    it('emits taskReady when multiple tasks unblock simultaneously', async () => {
+      const tracker = new TaskTracker();
+      tracker.addTask(makeTask({ id: 'a' }));
+      tracker.addTask({ ...makeTask({ id: 'b', dependencies: ['a'] }), status: undefined });
+      tracker.addTask({ ...makeTask({ id: 'c', dependencies: ['a'] }), status: undefined });
+
+      expect(tracker.getTask('b')!.status).toBe('blocked');
+      expect(tracker.getTask('c')!.status).toBe('blocked');
+
+      let emitCount = 0;
+      (tracker as unknown as { on: (event: string, cb: (...args: unknown[]) => void) => void }).on('taskReady', () => {
+        emitCount++;
+      });
+
+      // Complete task a
+      tracker.claimTasks(1);
+      tracker.startTask('a', 'agent-1');
+      tracker.submitForReview('a', 'done');
+      tracker.completeTask('a');
+
+      // Give a microtask tick for any async event delivery
+      await new Promise((r) => setTimeout(r, 50));
+
+      expect(emitCount).toBeGreaterThanOrEqual(1);
+      expect(tracker.getTask('b')!.status).toBe('ready');
+      expect(tracker.getTask('c')!.status).toBe('ready');
+    });
+
+    it('does not emit taskReady when no tasks transition', async () => {
+      const tracker = new TaskTracker();
+      tracker.addTask(makeTask({ id: 'a' }));
+
+      // a starts as ready — no blocked tasks to transition
+      expect(tracker.getTask('a')!.status).toBe('ready');
+
+      let emitted = false;
+      (tracker as unknown as { on: (event: string, cb: (...args: unknown[]) => void) => void }).on('taskReady', () => {
+        emitted = true;
+      });
+
+      tracker.recalculateStatuses();
+
+      // Give a microtask tick for any async event delivery
+      await new Promise((r) => setTimeout(r, 50));
+
+      expect(emitted).toBe(false);
+    });
+
+    it('fromJSON produces a working EventEmitter', async () => {
+      const tracker = new TaskTracker();
+      tracker.addTask(makeTask({ id: 'a' }));
+      tracker.addTask({ ...makeTask({ id: 'b', dependencies: ['a'] }), status: undefined });
+
+      const json = tracker.toJSON();
+      const restored = TaskTracker.fromJSON(json);
+
+      // b should still be blocked after deserialization
+      expect(restored.getTask('b')!.status).toBe('blocked');
+
+      const eventPromise = new Promise<unknown>((resolve) => {
+        (restored as unknown as { once: (event: string, cb: (...args: unknown[]) => void) => void }).once(
+          'taskReady',
+          resolve,
+        );
+      });
+      const timeout = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('taskReady event not emitted within 1000ms')), 1000),
+      );
+
+      // Complete task a on the restored tracker
+      restored.claimTasks(1);
+      restored.startTask('a', 'agent-1');
+      restored.submitForReview('a', 'done');
+      restored.completeTask('a');
+
+      await Promise.race([eventPromise, timeout]);
+
+      expect(restored.getTask('b')!.status).toBe('ready');
     });
   });
 });

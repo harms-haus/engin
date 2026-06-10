@@ -341,7 +341,7 @@ describe('LanePool', () => {
       setupProfileMocks();
       setupHarnessMocks();
 
-      const reviewResult = { approved: false, feedback: 'Missing tests' };
+      const reviewResult = { approved: false, feedback: 'Missing tests', severity: 'critical' };
       mockPromptForStructured.mockResolvedValue(reviewResult);
 
       let rejectReason: string | undefined;
@@ -397,7 +397,7 @@ describe('LanePool', () => {
       setupProfileMocks();
       setupHarnessMocks();
 
-      mockPromptForStructured.mockResolvedValue({ approved: false, feedback: 'Custom feedback' });
+      mockPromptForStructured.mockResolvedValue({ approved: false, feedback: 'Custom feedback', severity: 'critical' });
 
       let rejectReason: string | undefined;
       const { pool } = createPoolAndTracker({
@@ -425,7 +425,7 @@ describe('LanePool', () => {
       setupProfileMocks();
       setupHarnessMocks();
 
-      mockPromptForStructured.mockResolvedValue({ approved: false });
+      mockPromptForStructured.mockResolvedValue({ approved: false, severity: 'critical' });
 
       let rejectReason: string | undefined;
       const { pool } = createPoolAndTracker({
@@ -680,7 +680,7 @@ describe('LanePool', () => {
       setupProfileMocks();
       setupHarnessMocks();
 
-      mockPromptForStructured.mockResolvedValue({ approved: false, feedback: 'Bad code' });
+      mockPromptForStructured.mockResolvedValue({ approved: false, feedback: 'Bad code', severity: 'critical' });
 
       const onTaskRejected = mock(() => {});
 
@@ -719,7 +719,7 @@ describe('LanePool', () => {
       let structuredCallCount = 0;
       mockPromptForStructured.mockImplementation(() => {
         structuredCallCount++;
-        return Promise.resolve({ approved: false, feedback: `Rejection ${structuredCallCount}` });
+        return Promise.resolve({ approved: false, feedback: `Rejection ${structuredCallCount}`, severity: 'critical' });
       });
 
       const { pool } = createPoolAndTracker({
@@ -935,7 +935,17 @@ describe('LanePool', () => {
           throw new Error('Simulated lane crash');
         }),
         areAllSettled: mock(() => false),
-        getAllTasks: mock(() => []),
+        getAllTasks: mock(() => [
+          {
+            id: 'task-1',
+            title: 'Test task',
+            prompt: 'test',
+            profile: 'coder',
+            files: [],
+            dependencies: [],
+            status: 'ready' as const,
+          },
+        ]),
       });
 
       const onWorkflowFailed = mock(() => {});
@@ -1176,7 +1186,7 @@ describe('LanePool', () => {
       setupProfileMocks();
       setupHarnessMocks();
 
-      mockPromptForStructured.mockResolvedValue({ approved: false, feedback: 'Not good enough' });
+      mockPromptForStructured.mockResolvedValue({ approved: false, feedback: 'Not good enough', severity: 'critical' });
 
       const { pool, tracker } = createPoolAndTracker({
         maxStepRetries: 0,
@@ -1244,6 +1254,241 @@ describe('LanePool', () => {
 
       expect(result.completedTasks).toBe(0);
       expect(result.failedTasks).toBe(0);
+    });
+  });
+  // ─── Event-Driven Waiting ──────────────────────────────────────────────
+
+  describe('event-driven waiting', () => {
+    it('processes dependent tasks via event-driven path without polling', async () => {
+      setupProfileMocks();
+
+      const promptCalls: string[] = [];
+      const harnessCount = { value: 0 };
+
+      mockCreateHarness.mockImplementation(() => {
+        harnessCount.value++;
+        const session = makeSession((text) => {
+          promptCalls.push(text);
+          return `result-${harnessCount.value}`;
+        });
+        return {
+          session,
+          sessionId: `session-${harnessCount.value}`,
+          dispose: mock(() => {}),
+        };
+      });
+
+      const task1 = makeTask({ id: 'task-1', title: 'First task', prompt: 'Do first' });
+      const task2 = {
+        ...makeTask({ id: 'task-2', title: 'Second task', prompt: 'Do second', dependencies: ['task-1'] }),
+        status: undefined as const,
+      };
+
+      const { pool, tracker } = createPoolAndTracker({
+        tasks: [task1, task2],
+        maxConcurrentLanes: 1,
+        getStepsForTask: () => [{ name: 'implement', profileId: 'coder', isReadOnly: false }],
+      });
+
+      // task-2 should start as blocked since task-1 is not done
+      expect(tracker.getTask('task-2')!.status).toBe('blocked');
+
+      const result = await pool.run();
+
+      // Both tasks should have been processed
+      expect(result.completedTasks).toBe(2);
+      expect(result.failedTasks).toBe(0);
+      expect(harnessCount.value).toBe(2);
+
+      // Both prompts should contain the correct task content
+      expect(promptCalls.some((p) => p.includes('Do first'))).toBe(true);
+      expect(promptCalls.some((p) => p.includes('Do second'))).toBe(true);
+
+      // Both tasks should be done
+      expect(tracker.getTask('task-1')!.status).toBe('done');
+      expect(tracker.getTask('task-2')!.status).toBe('done');
+    });
+
+    it('does not call setTimeout for polling when events are available', async () => {
+      setupProfileMocks();
+      setupHarnessMocks();
+
+      const setTimeoutSpy = spyOn(globalThis, 'setTimeout');
+
+      try {
+        const tasks = [makeTask({ id: 'task-1' })];
+        const { pool } = createPoolAndTracker({ tasks });
+
+        await pool.run();
+
+        // With a single task and no waiting needed, setTimeout should not
+        // be called with the old polling backoff values (50, 75, etc.)
+        const pollingCalls = setTimeoutSpy.mock.calls.filter((call) => {
+          const delay = call[1];
+          return typeof delay === 'number' && delay >= 50 && delay <= 2000;
+        });
+        expect(pollingCalls).toHaveLength(0);
+      } finally {
+        setTimeoutSpy.mockRestore();
+      }
+    });
+  });
+
+  // ─── Severity-Based Retry Outcome ────────────────────────────────────────
+
+  describe('severity-based retry outcome', () => {
+    const severitySchema = z.object({
+      approved: z.boolean(),
+      feedback: z.string().optional(),
+      severity: z.string().optional(),
+    });
+
+    function severitySteps() {
+      return [
+        { name: 'implement', profileId: 'coder', isReadOnly: false },
+        {
+          name: 'review',
+          profileId: 'reviewer',
+          isReadOnly: true,
+          schema: severitySchema,
+          isApproved: (result: z.infer<typeof severitySchema>) => result.approved === true,
+          getFeedback: (result: z.infer<typeof severitySchema>) => result.feedback ?? 'No feedback provided',
+        },
+      ];
+    }
+
+    it('marks task as failed when severity is critical after max retries', async () => {
+      setupProfileMocks();
+      setupHarnessMocks();
+
+      mockPromptForStructured.mockResolvedValue({ approved: false, feedback: 'bad', severity: 'critical' });
+
+      const { pool, tracker } = createPoolAndTracker({
+        maxStepRetries: 2,
+        getStepsForTask: () => severitySteps(),
+      });
+
+      const result = await pool.run();
+
+      expect(result.failedTasks).toBe(1);
+      expect(result.completedTasks).toBe(0);
+      expect(tracker.getTask('task-1')!.status).toBe('failed');
+    });
+
+    it('marks task as completed when severity is medium after max retries', async () => {
+      setupProfileMocks();
+      setupHarnessMocks();
+
+      mockPromptForStructured.mockResolvedValue({ approved: false, feedback: 'minor issues', severity: 'medium' });
+
+      const { pool, tracker } = createPoolAndTracker({
+        maxStepRetries: 2,
+        getStepsForTask: () => severitySteps(),
+      });
+
+      const result = await pool.run();
+
+      expect(result.completedTasks).toBe(1);
+      expect(result.failedTasks).toBe(0);
+      expect(tracker.getTask('task-1')!.status).toBe('done');
+    });
+
+    it('marks task as completed when severity is low after max retries', async () => {
+      setupProfileMocks();
+      setupHarnessMocks();
+
+      mockPromptForStructured.mockResolvedValue({ approved: false, feedback: 'nitpick', severity: 'low' });
+
+      const { pool, tracker } = createPoolAndTracker({
+        maxStepRetries: 2,
+        getStepsForTask: () => severitySteps(),
+      });
+
+      const result = await pool.run();
+
+      expect(result.completedTasks).toBe(1);
+      expect(result.failedTasks).toBe(0);
+      expect(tracker.getTask('task-1')!.status).toBe('done');
+    });
+
+    it('marks task as failed when severity is high after max retries', async () => {
+      setupProfileMocks();
+      setupHarnessMocks();
+
+      mockPromptForStructured.mockResolvedValue({ approved: false, feedback: 'major issue', severity: 'high' });
+
+      const { pool, tracker } = createPoolAndTracker({
+        maxStepRetries: 2,
+        getStepsForTask: () => severitySteps(),
+      });
+
+      const result = await pool.run();
+
+      expect(result.failedTasks).toBe(1);
+      expect(result.completedTasks).toBe(0);
+      expect(tracker.getTask('task-1')!.status).toBe('failed');
+    });
+
+    it('defaults to medium severity (completed) when no severity field', async () => {
+      setupProfileMocks();
+      setupHarnessMocks();
+
+      mockPromptForStructured.mockResolvedValue({ approved: false, feedback: 'meh' });
+
+      const { pool, tracker } = createPoolAndTracker({
+        maxStepRetries: 2,
+        getStepsForTask: () => [
+          { name: 'implement', profileId: 'coder', isReadOnly: false },
+          {
+            name: 'review',
+            profileId: 'reviewer',
+            isReadOnly: true,
+            schema: z.object({ approved: z.boolean(), feedback: z.string().optional() }),
+          },
+        ],
+      });
+
+      const result = await pool.run();
+
+      // No severity field → defaults to medium → completed
+      expect(result.completedTasks).toBe(1);
+      expect(result.failedTasks).toBe(0);
+      expect(tracker.getTask('task-1')!.status).toBe('done');
+    });
+
+    it('default maxStepRetries is now 5', async () => {
+      setupProfileMocks();
+      setupHarnessMocks();
+
+      let structuredCallCount = 0;
+      mockPromptForStructured.mockImplementation(() => {
+        structuredCallCount++;
+        if (structuredCallCount <= 4) {
+          return Promise.resolve({ approved: false, feedback: `Rejection ${structuredCallCount}` });
+        }
+        return Promise.resolve({ approved: true, feedback: undefined });
+      });
+
+      const { pool, tracker } = createPoolAndTracker({
+        // Do NOT specify maxStepRetries — should default to 5
+        getStepsForTask: () => [
+          { name: 'implement', profileId: 'coder', isReadOnly: false },
+          {
+            name: 'review',
+            profileId: 'reviewer',
+            isReadOnly: true,
+            schema: z.object({ approved: z.boolean(), feedback: z.string().optional() }),
+          },
+        ],
+      });
+
+      const result = await pool.run();
+
+      // 4 rejections < 5 default max → task should complete on 5th attempt
+      expect(result.completedTasks).toBe(1);
+      expect(result.failedTasks).toBe(0);
+      expect(mockPromptForStructured).toHaveBeenCalledTimes(5);
+      expect(tracker.getTask('task-1')!.status).toBe('done');
     });
   });
 });

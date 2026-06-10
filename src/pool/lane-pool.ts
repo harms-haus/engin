@@ -3,9 +3,21 @@ import { join } from 'node:path';
 import { createHarness } from '../core/harness-factory.js';
 import { clearProfileCache, loadProfilesFromDirs } from '../core/profile.js';
 import { promptForStructured } from '../core/structured-output.js';
-import type { AgentProfile, HarnessCreationOptions, Task } from '../core/types.js';
-import { safeErrorMessage } from '../core/utils.js';
+import type { AgentProfile, AuditEvent, HarnessCreationOptions, Task } from '../core/types.js';
+import { forwardAgentStatus, safeErrorMessage } from '../core/utils.js';
 import type { LanePoolOptions, LanePoolResult, StepDefinition, StepResult } from './types.js';
+
+// ─── Types ────────────────────────────────────────────────────────────────
+
+/** Distributive Omit that preserves discriminated union structure. */
+type WithoutTimestamp<T> = T extends infer U ? (U extends T ? Omit<U, 'timestamp'> : never) : never;
+
+// ─── RunStepContext ───────────────────────────────────────────────────────
+
+interface RunStepContext {
+  stepIndex: number;
+  attempt: number;
+}
 
 // ─── LanePool ───────────────────────────────────────────────────────────────
 
@@ -38,6 +50,16 @@ export class LanePool {
     const startTime = Date.now();
     const { maxConcurrentLanes, taskTracker } = this.options;
 
+    // Check for cancellation before doing any work
+    if (this.options.signal?.aborted) {
+      return { completedTasks: 0, failedTasks: 0 };
+    }
+
+    // Skip profile loading and lifecycle callbacks when there's no work
+    if (taskTracker.getAllTasks().length === 0) {
+      return { completedTasks: 0, failedTasks: 0 };
+    }
+
     // Fire lifecycle callbacks
     this.options.onStatus?.onWorkflowStart?.({
       taskPrompt: '(pool execution)',
@@ -49,11 +71,6 @@ export class LanePool {
     // Clear stale cached profiles before loading fresh ones
     clearProfileCache();
     const profiles = await loadProfilesFromDirs(this.options.profilesDirs);
-
-    // Check for cancellation before spawning lanes
-    if (this.options.signal?.aborted) {
-      return { completedTasks: 0, failedTasks: 0 };
-    }
 
     const laneRunners = Array.from({ length: maxConcurrentLanes }, (_, i) => this.runLane(i, profiles));
     const settled = await Promise.allSettled(laneRunners);
@@ -105,7 +122,6 @@ export class LanePool {
   private async runLane(laneIndex: number, profiles: Map<string, AgentProfile>): Promise<void> {
     const { taskTracker } = this.options;
     const agentId = `lane-${laneIndex}`;
-    let backoff = 50;
 
     while (true) {
       // Check for cancellation
@@ -115,16 +131,29 @@ export class LanePool {
 
       const claimed = taskTracker.claimTasks(1);
       if (claimed.length === 0) {
-        if (taskTracker.areAllSettled() || taskTracker.getAllTasks().length === 0) {
+        if (taskTracker.isPoolDone()) {
           return;
         }
-        // Busy-wait with exponential backoff
-        await new Promise((r) => setTimeout(r, backoff));
-        backoff = Math.min(backoff * 1.5, 2000);
+        // Event-driven wait: listen for taskReady or abort signal
+        await new Promise<void>((resolve) => {
+          const onReady = () => {
+            cleanup();
+            resolve();
+          };
+          const onAbort = () => {
+            cleanup();
+            resolve();
+          };
+          const cleanup = () => {
+            taskTracker.removeListener('taskReady', onReady);
+            this.options.signal?.removeEventListener('abort', onAbort);
+          };
+          taskTracker.once('taskReady', onReady);
+          this.options.signal?.addEventListener('abort', onAbort, { once: true });
+        });
         continue;
       }
 
-      backoff = 50;
       const task = claimed[0];
 
       try {
@@ -153,7 +182,7 @@ export class LanePool {
    */
   private async processTask(task: Task, agentId: string, profiles: Map<string, AgentProfile>): Promise<void> {
     const steps = this.options.getStepsForTask(task);
-    const maxStepRetries = this.options.maxStepRetries ?? 3;
+    const maxStepRetries = this.options.maxStepRetries ?? 5;
 
     this.options.onStatus?.onTaskStart?.({
       taskId: task.id,
@@ -168,9 +197,14 @@ export class LanePool {
     while (currentStepIndex < steps.length) {
       const step = steps[currentStepIndex];
       const currentAttempt = stepAttempts.get(currentStepIndex) ?? 0;
-      const isRetry = currentAttempt > 0;
 
-      const result = await this.runStep(task, step, agentId, currentStepIndex, isRetry, currentAttempt, profiles);
+      const result = await this.runStep(
+        task,
+        step,
+        agentId,
+        { stepIndex: currentStepIndex, attempt: currentAttempt },
+        profiles,
+      );
 
       if (result.type === 'approved') {
         currentStepIndex++;
@@ -189,16 +223,27 @@ export class LanePool {
         });
 
         if (newAttempt >= maxStepRetries) {
-          // Max retries exhausted for this step — task failed
-          this.options.onStatus?.onTaskRejected?.({
-            taskId: task.id,
-            title: task.title,
-            reason: result.feedback,
-          });
-          this.safeFailTask(task.id, {
-            completed: false,
-            feedback: result.feedback,
-          });
+          // Extract severity from the last structured rejection result
+          const lastOutput = result.output as Record<string, unknown> | undefined;
+          const severity = (lastOutput?.severity as string) ?? 'medium';
+
+          if (severity === 'critical' || severity === 'high') {
+            // Critical/high → task failed
+            this.options.onStatus?.onTaskRejected?.({
+              taskId: task.id,
+              title: task.title,
+              reason: result.feedback,
+            });
+            this.safeFailTask(task.id, { completed: false, feedback: result.feedback, severity });
+          } else {
+            // Medium/low/missing → accept as completed with caveats
+            if (this.safeSubmitAndComplete(task.id, { completed: true, feedback: result.feedback, severity })) {
+              this.options.onStatus?.onTaskComplete?.({
+                taskId: task.id,
+                title: task.title,
+              });
+            }
+          }
           return;
         }
 
@@ -207,11 +252,12 @@ export class LanePool {
     }
 
     // All steps approved — task complete
-    this.safeSubmitAndComplete(task.id, { completed: true });
-    this.options.onStatus?.onTaskComplete?.({
-      taskId: task.id,
-      title: task.title,
-    });
+    if (this.safeSubmitAndComplete(task.id, { completed: true })) {
+      this.options.onStatus?.onTaskComplete?.({
+        taskId: task.id,
+        title: task.title,
+      });
+    }
   }
 
   // ── Step Execution ──────────────────────────────────────────────────────
@@ -224,9 +270,7 @@ export class LanePool {
     task: Task,
     step: StepDefinition,
     agentId: string,
-    stepIndex: number,
-    isRetry: boolean,
-    attempt: number,
+    ctx: RunStepContext,
     profiles: Map<string, AgentProfile>,
   ): Promise<StepResult> {
     // Use pre-loaded profile
@@ -245,23 +289,15 @@ export class LanePool {
     }
 
     // Compute session directory
-    const sessionDirPath = join(this.options.sessionBaseDir, task.id, `${attempt}-${stepIndex}-${step.name}`);
+    const sessionDirPath = join(this.options.sessionBaseDir, task.id, `${ctx.attempt}-${ctx.stepIndex}-${step.name}`);
 
     // Build harness options
-    const onStatus = this.options.onStatus;
     const harnessOpts: HarnessCreationOptions = {
       profile: adjustedProfile,
       cwd: this.options.cwd,
       apiKeys: this.options.apiKeys,
       sessionDir: sessionDirPath,
-      onAgentStatus: onStatus
-        ? {
-            onTurnStart: onStatus.onTurnStart?.bind(onStatus),
-            onTurnEnd: onStatus.onTurnEnd?.bind(onStatus),
-            onToolCallStart: onStatus.onToolCallStart?.bind(onStatus),
-            onToolCallEnd: onStatus.onToolCallEnd?.bind(onStatus),
-          }
-        : undefined,
+      onAgentStatus: forwardAgentStatus(this.options.onStatus),
     };
 
     // Fire status callbacks
@@ -280,7 +316,7 @@ export class LanePool {
 
     try {
       // Build prompt
-      const promptText = this.buildPrompt(task, step, isRetry);
+      const promptText = this.buildPrompt(task, step, ctx.attempt > 0);
 
       if (step.schema) {
         // Structured output step (review)
@@ -297,7 +333,7 @@ export class LanePool {
           ? step.getFeedback(structuredResult)
           : (structuredResult.feedback ?? 'No feedback provided');
 
-        return { type: 'rejected', feedback };
+        return { type: 'rejected', feedback, output: structuredResult };
       }
 
       // Non-structured step — always approved
@@ -359,13 +395,15 @@ export class LanePool {
    * Safely submit a task for review and complete it. Catches and logs
    * errors from invalid state transitions.
    */
-  private safeSubmitAndComplete(taskId: string, result: unknown): void {
+  private safeSubmitAndComplete(taskId: string, result: unknown): boolean {
     try {
       this.options.taskTracker.submitForReview(taskId, result);
       this.options.taskTracker.completeTask(taskId);
+      return true;
     } catch (err) {
       const errorMsg = `safeSubmitAndComplete failed for ${taskId}: ${safeErrorMessage(err)}`;
       this.reportError('pool', errorMsg, 'implementing', taskId);
+      return false;
     }
   }
 
@@ -398,8 +436,7 @@ export class LanePool {
   /**
    * Append an event to the audit log if available (fire-and-forget).
    */
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private appendAuditEvent(event: any): void {
+  private appendAuditEvent(event: WithoutTimestamp<AuditEvent>): void {
     this.options.auditLog?.append(event).catch(() => {
       // Swallow audit log errors — they must not crash the pool.
     });

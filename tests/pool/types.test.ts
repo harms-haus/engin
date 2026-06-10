@@ -145,6 +145,37 @@ describe('StepResult', () => {
       expect((result.output as { nested: { deep: number[] } }).nested.deep).toEqual([1, 2, 3]);
     }
   });
+
+  it('rejected variant with output field carries structured review data', () => {
+    const result: StepResult = {
+      type: 'rejected',
+      feedback: 'test',
+      output: { approved: false, severity: 'high' },
+    };
+
+    if (result.type === 'rejected') {
+      expect(result.feedback).toBe('test');
+      expect(result.output).toEqual({ approved: false, severity: 'high' });
+      const severity = (result.output as { severity: string }).severity;
+      expect(severity).toBe('high');
+    } else {
+      expect.unreachable('Should have narrowed to rejected');
+    }
+  });
+
+  it('rejected variant without output still works (backward compat)', () => {
+    const result: StepResult = {
+      type: 'rejected',
+      feedback: 'test',
+    };
+
+    if (result.type === 'rejected') {
+      expect(result.feedback).toBe('test');
+      expect(result.output).toBeUndefined();
+    } else {
+      expect.unreachable('Should have narrowed to rejected');
+    }
+  });
 });
 
 // ─── LanePoolResult ─────────────────────────────────────────────────────────

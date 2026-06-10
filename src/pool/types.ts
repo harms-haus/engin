@@ -20,7 +20,9 @@ export interface StepDefinition<T = unknown> {
 }
 
 /** Result from executing a single step. */
-export type StepResult = { type: 'approved'; output: unknown } | { type: 'rejected'; feedback: string };
+export type StepResult =
+  | { type: 'approved'; output: unknown }
+  | { type: 'rejected'; feedback: string; output?: unknown };
 
 /** Configuration for creating a LanePool. */
 export interface LanePoolOptions {
@@ -42,7 +44,7 @@ export interface LanePoolOptions {
   taskTracker: TaskTracker;
   /** Given a task, return the ordered list of steps to execute */
   getStepsForTask: (task: Task) => StepDefinition[];
-  /** Maximum retries per step on agent crash. Default: 3 */
+  /** Maximum retries per step on agent crash. Default: 5 */
   maxStepRetries?: number;
   /** Abort signal for cooperative cancellation */
   signal?: AbortSignal;
