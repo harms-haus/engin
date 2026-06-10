@@ -10,12 +10,12 @@
 
 import '@testing-library/jest-dom/vitest';
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import type { LogEntry } from '../../../types';
 import { AgentGrid } from '../AgentGrid';
 import type { DevelopAgentInfo } from '../types';
-import type { LogEntry } from '../../../types';
 
 // ─── Mock @tanstack/react-virtual ──────────────────────────────────────────
 // AgentLog uses a virtualizer internally; mock it so that log entries
@@ -83,11 +83,7 @@ describe('AgentGrid', () => {
     });
 
     it('renders one agent-cell per agent', () => {
-      const agents = [
-        createAgent({ agentId: 'a' }),
-        createAgent({ agentId: 'b' }),
-        createAgent({ agentId: 'c' }),
-      ];
+      const agents = [createAgent({ agentId: 'a' }), createAgent({ agentId: 'b' }), createAgent({ agentId: 'c' })];
       const { container } = render(<AgentGrid agents={agents} />);
       const cells = container.querySelectorAll('.agent-cell');
       expect(cells).toHaveLength(3);
@@ -108,10 +104,7 @@ describe('AgentGrid', () => {
     });
 
     it('renders profile names for all agents', () => {
-      const agents = [
-        createAgent({ agentId: 'a', profile: 'Alpha' }),
-        createAgent({ agentId: 'b', profile: 'Beta' }),
-      ];
+      const agents = [createAgent({ agentId: 'a', profile: 'Alpha' }), createAgent({ agentId: 'b', profile: 'Beta' })];
       render(<AgentGrid agents={agents} />);
       expect(screen.getByText('Alpha')).toBeInTheDocument();
       expect(screen.getByText('Beta')).toBeInTheDocument();
@@ -214,9 +207,7 @@ describe('AgentGrid', () => {
       ];
       // Stub virtualizer: each AgentLog instance gets its own mock calls.
       // The mock is called twice (once per AgentLog), so we set up two return values.
-      mockGetTotalSize
-        .mockReturnValueOnce(60)
-        .mockReturnValueOnce(60);
+      mockGetTotalSize.mockReturnValueOnce(60).mockReturnValueOnce(60);
       mockGetVirtualItems
         .mockReturnValueOnce([{ key: '0', index: 0, start: 0, size: 60 }] as any)
         .mockReturnValueOnce([{ key: '0', index: 0, start: 0, size: 60 }] as any);
@@ -259,10 +250,7 @@ describe('AgentGrid', () => {
     });
 
     it('uses agentId as the key for each cell', () => {
-      const agents = [
-        createAgent({ agentId: 'uniq-1' }),
-        createAgent({ agentId: 'uniq-2' }),
-      ];
+      const agents = [createAgent({ agentId: 'uniq-1' }), createAgent({ agentId: 'uniq-2' })];
       const { container } = render(<AgentGrid agents={agents} />);
       const cells = container.querySelectorAll('.agent-cell');
       expect(cells).toHaveLength(2);

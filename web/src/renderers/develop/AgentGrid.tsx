@@ -8,8 +8,8 @@
  */
 
 import './AgentGrid.css';
-import type { DevelopAgentInfo } from './types';
 import { AgentLog } from './AgentLog';
+import type { DevelopAgentInfo } from './types';
 
 interface AgentGridProps {
   agents: DevelopAgentInfo[];
@@ -17,11 +17,7 @@ interface AgentGridProps {
 
 export function AgentGrid({ agents }: AgentGridProps) {
   if (agents.length === 0) {
-    return (
-      <div className="agent-grid-empty">
-        No active agents
-      </div>
-    );
+    return <div className="agent-grid-empty">No active agents</div>;
   }
 
   return (

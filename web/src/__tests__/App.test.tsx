@@ -14,12 +14,12 @@
 
 import '@testing-library/jest-dom/vitest';
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ComponentType } from 'react';
-import type { AppGlobalState, WorkflowRunState } from '../types';
 import type { WorkflowRendererProps } from '../renderers/types';
+import type { AppGlobalState, WorkflowRunState } from '../types';
 
 // ─── Mocks ──────────────────────────────────────────────────────────────────
 
@@ -166,10 +166,7 @@ describe('App', () => {
   });
 
   it('passes selectedRunId to Sidebar and highlights selected item', async () => {
-    const workflows = [
-      makeSummary({ id: 'w1', status: 'running' }),
-      makeSummary({ id: 'w2', status: 'completed' }),
-    ];
+    const workflows = [makeSummary({ id: 'w1', status: 'running' }), makeSummary({ id: 'w2', status: 'completed' })];
     mockUseWebSocket.mockReturnValue({
       state: {
         workflows,
@@ -219,9 +216,7 @@ describe('App', () => {
       connected: false,
     });
     await renderApp();
-    expect(
-      screen.getByText('Select a workflow from the sidebar'),
-    ).toBeInTheDocument();
+    expect(screen.getByText('Select a workflow from the sidebar')).toBeInTheDocument();
   });
 
   it('shows placeholder when selectedRunId does not match any workflow', async () => {
@@ -236,9 +231,7 @@ describe('App', () => {
       connected: false,
     });
     await renderApp();
-    expect(
-      screen.getByText('Select a workflow from the sidebar'),
-    ).toBeInTheDocument();
+    expect(screen.getByText('Select a workflow from the sidebar')).toBeInTheDocument();
   });
 
   it('shows placeholder in a div with class app-main-placeholder', async () => {
@@ -343,9 +336,7 @@ describe('App', () => {
     mockGetRenderer.mockReturnValue(undefined);
 
     await renderApp();
-    expect(
-      screen.getByText('Workflow selected, but no renderer available'),
-    ).toBeInTheDocument();
+    expect(screen.getByText('Workflow selected, but no renderer available')).toBeInTheDocument();
   });
 
   it('shows fallback placeholder when Renderer is undefined', async () => {

@@ -37,11 +37,7 @@ export function Sidebar({ workflows, selectedRunId, onSelectRun }: SidebarProps)
   const renderItem = (workflow: WorkflowSummary) => {
     const isSelected = workflow.id === selectedRunId;
     const statusClass =
-      workflow.status === 'running'
-        ? 'running'
-        : workflow.status === 'completed'
-          ? 'completed'
-          : 'failed';
+      workflow.status === 'running' ? 'running' : workflow.status === 'completed' ? 'completed' : 'failed';
 
     return (
       <div

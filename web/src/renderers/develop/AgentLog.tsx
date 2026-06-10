@@ -36,8 +36,8 @@
 
 import './AgentLog.css';
 
-import { useRef, useEffect, useCallback } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
+import { useCallback, useEffect, useRef } from 'react';
 
 import type { LogEntry } from '../../types';
 
@@ -90,9 +90,7 @@ function renderEntryContent(entry: LogEntry): React.ReactNode {
         </>
       );
     case 'tool_call_end': {
-      const isError = Boolean(
-        entry.metadata && (entry.metadata as Record<string, unknown>).isError,
-      );
+      const isError = Boolean(entry.metadata && (entry.metadata as Record<string, unknown>).isError);
       return (
         <>
           <span className="log-entry-prefix">{isError ? '❌' : '✅'}</span>
@@ -147,8 +145,7 @@ export function AgentLog({ entries }: AgentLogProps) {
   const handleScroll = useCallback(() => {
     const el = parentRef.current;
     if (!el) return;
-    isNearBottom.current =
-      el.scrollTop + el.clientHeight >= el.scrollHeight - 100;
+    isNearBottom.current = el.scrollTop + el.clientHeight >= el.scrollHeight - 100;
   }, []);
 
   // ── Auto-scroll when new entries are added ───────────────────────────────
@@ -164,11 +161,7 @@ export function AgentLog({ entries }: AgentLogProps) {
   const virtualItems = virtualizer.getVirtualItems();
 
   return (
-    <div
-      ref={parentRef}
-      className="agent-log"
-      onScroll={handleScroll}
-    >
+    <div ref={parentRef} className="agent-log" onScroll={handleScroll}>
       <div
         style={{
           height: totalSize,

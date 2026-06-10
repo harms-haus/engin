@@ -14,11 +14,11 @@
 
 import '@testing-library/jest-dom/vitest';
 
-import { describe, it, expect, vi, afterEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { Sidebar } from '../Sidebar';
 import type { WorkflowSummary } from '../../types';
+import { Sidebar } from '../Sidebar';
 
 function makeWorkflow(overrides: Partial<WorkflowSummary> & { id: string }): WorkflowSummary {
   return {
@@ -40,9 +40,7 @@ describe('Sidebar', () => {
   // ── Basic rendering ──────────────────────────────────────────────────
 
   it('renders the sidebar element with class "sidebar"', () => {
-    const { container } = render(
-      <Sidebar workflows={[]} selectedRunId={null} onSelectRun={onSelectRun} />,
-    );
+    const { container } = render(<Sidebar workflows={[]} selectedRunId={null} onSelectRun={onSelectRun} />);
     const sidebar = container.querySelector('aside.sidebar');
     expect(sidebar).toBeInTheDocument();
   });
@@ -53,9 +51,7 @@ describe('Sidebar', () => {
   });
 
   it('renders the header text with class "sidebar-header-text"', () => {
-    const { container } = render(
-      <Sidebar workflows={[]} selectedRunId={null} onSelectRun={onSelectRun} />,
-    );
+    const { container } = render(<Sidebar workflows={[]} selectedRunId={null} onSelectRun={onSelectRun} />);
     const header = container.querySelector('.sidebar-header-text');
     expect(header).toBeInTheDocument();
     expect(header).toHaveTextContent('Workflows');
@@ -88,23 +84,15 @@ describe('Sidebar', () => {
   });
 
   it('renders both sections when both running and completed workflows exist', () => {
-    const workflows = [
-      makeWorkflow({ id: '1', status: 'running' }),
-      makeWorkflow({ id: '2', status: 'completed' }),
-    ];
+    const workflows = [makeWorkflow({ id: '1', status: 'running' }), makeWorkflow({ id: '2', status: 'completed' })];
     render(<Sidebar workflows={workflows} selectedRunId={null} onSelectRun={onSelectRun} />);
     expect(screen.getByText('Active')).toBeInTheDocument();
     expect(screen.getByText('Past')).toBeInTheDocument();
   });
 
   it('renders section titles with class "sidebar-section-title"', () => {
-    const workflows = [
-      makeWorkflow({ id: '1', status: 'running' }),
-      makeWorkflow({ id: '2', status: 'completed' }),
-    ];
-    const { container } = render(
-      <Sidebar workflows={workflows} selectedRunId={null} onSelectRun={onSelectRun} />,
-    );
+    const workflows = [makeWorkflow({ id: '1', status: 'running' }), makeWorkflow({ id: '2', status: 'completed' })];
+    const { container } = render(<Sidebar workflows={workflows} selectedRunId={null} onSelectRun={onSelectRun} />);
     const titles = container.querySelectorAll('.sidebar-section-title');
     expect(titles).toHaveLength(2);
     expect(titles[0]).toHaveTextContent('Active');
@@ -119,9 +107,7 @@ describe('Sidebar', () => {
       makeWorkflow({ id: '2', status: 'completed' }),
       makeWorkflow({ id: '3', status: 'failed' }),
     ];
-    const { container } = render(
-      <Sidebar workflows={workflows} selectedRunId={null} onSelectRun={onSelectRun} />,
-    );
+    const { container } = render(<Sidebar workflows={workflows} selectedRunId={null} onSelectRun={onSelectRun} />);
     const items = container.querySelectorAll('.sidebar-item');
     expect(items).toHaveLength(3);
   });
@@ -172,9 +158,7 @@ describe('Sidebar', () => {
         sidebar: { title: 'A long title that will be truncated via CSS', indicator: '🚀' },
       }),
     ];
-    const { container } = render(
-      <Sidebar workflows={workflows} selectedRunId={null} onSelectRun={onSelectRun} />,
-    );
+    const { container } = render(<Sidebar workflows={workflows} selectedRunId={null} onSelectRun={onSelectRun} />);
     const title = container.querySelector('.sidebar-title');
     expect(title).toBeInTheDocument();
     expect(title).toHaveTextContent('A long title that will be truncated via CSS');
@@ -187,9 +171,7 @@ describe('Sidebar', () => {
 
   it('applies "running" class to items with running status', () => {
     const workflows = [makeWorkflow({ id: '1', status: 'running' })];
-    const { container } = render(
-      <Sidebar workflows={workflows} selectedRunId={null} onSelectRun={onSelectRun} />,
-    );
+    const { container } = render(<Sidebar workflows={workflows} selectedRunId={null} onSelectRun={onSelectRun} />);
     const item = container.querySelector('.sidebar-item');
     expect(item).toHaveClass('running');
     expect(item).not.toHaveClass('completed');
@@ -198,9 +180,7 @@ describe('Sidebar', () => {
 
   it('applies "completed" class to items with completed status', () => {
     const workflows = [makeWorkflow({ id: '1', status: 'completed' })];
-    const { container } = render(
-      <Sidebar workflows={workflows} selectedRunId={null} onSelectRun={onSelectRun} />,
-    );
+    const { container } = render(<Sidebar workflows={workflows} selectedRunId={null} onSelectRun={onSelectRun} />);
     const item = container.querySelector('.sidebar-item');
     expect(item).toHaveClass('completed');
     expect(item).not.toHaveClass('running');
@@ -209,9 +189,7 @@ describe('Sidebar', () => {
 
   it('applies "failed" class to items with failed status', () => {
     const workflows = [makeWorkflow({ id: '1', status: 'failed' })];
-    const { container } = render(
-      <Sidebar workflows={workflows} selectedRunId={null} onSelectRun={onSelectRun} />,
-    );
+    const { container } = render(<Sidebar workflows={workflows} selectedRunId={null} onSelectRun={onSelectRun} />);
     const item = container.querySelector('.sidebar-item');
     expect(item).toHaveClass('failed');
     expect(item).not.toHaveClass('running');
@@ -221,13 +199,8 @@ describe('Sidebar', () => {
   // ── Selection ────────────────────────────────────────────────────────
 
   it('applies "selected" class to the item matching selectedRunId', () => {
-    const workflows = [
-      makeWorkflow({ id: '1', status: 'running' }),
-      makeWorkflow({ id: '2', status: 'completed' }),
-    ];
-    const { container } = render(
-      <Sidebar workflows={workflows} selectedRunId="1" onSelectRun={onSelectRun} />,
-    );
+    const workflows = [makeWorkflow({ id: '1', status: 'running' }), makeWorkflow({ id: '2', status: 'completed' })];
+    const { container } = render(<Sidebar workflows={workflows} selectedRunId="1" onSelectRun={onSelectRun} />);
     const items = container.querySelectorAll('.sidebar-item');
     expect(items[0]).toHaveClass('selected');
     expect(items[1]).not.toHaveClass('selected');
@@ -235,9 +208,7 @@ describe('Sidebar', () => {
 
   it('does not apply "selected" when selectedRunId is null', () => {
     const workflows = [makeWorkflow({ id: '1', status: 'running' })];
-    const { container } = render(
-      <Sidebar workflows={workflows} selectedRunId={null} onSelectRun={onSelectRun} />,
-    );
+    const { container } = render(<Sidebar workflows={workflows} selectedRunId={null} onSelectRun={onSelectRun} />);
     const item = container.querySelector('.sidebar-item');
     expect(item).not.toHaveClass('selected');
   });
@@ -246,27 +217,21 @@ describe('Sidebar', () => {
 
   it('applies "pulsing" class on the indicator for running items', () => {
     const workflows = [makeWorkflow({ id: '1', status: 'running' })];
-    const { container } = render(
-      <Sidebar workflows={workflows} selectedRunId={null} onSelectRun={onSelectRun} />,
-    );
+    const { container } = render(<Sidebar workflows={workflows} selectedRunId={null} onSelectRun={onSelectRun} />);
     const indicator = container.querySelector('.sidebar-indicator');
     expect(indicator).toHaveClass('pulsing');
   });
 
   it('does not apply "pulsing" class on the indicator for completed items', () => {
     const workflows = [makeWorkflow({ id: '1', status: 'completed' })];
-    const { container } = render(
-      <Sidebar workflows={workflows} selectedRunId={null} onSelectRun={onSelectRun} />,
-    );
+    const { container } = render(<Sidebar workflows={workflows} selectedRunId={null} onSelectRun={onSelectRun} />);
     const indicator = container.querySelector('.sidebar-indicator');
     expect(indicator).not.toHaveClass('pulsing');
   });
 
   it('does not apply "pulsing" class on the indicator for failed items', () => {
     const workflows = [makeWorkflow({ id: '1', status: 'failed' })];
-    const { container } = render(
-      <Sidebar workflows={workflows} selectedRunId={null} onSelectRun={onSelectRun} />,
-    );
+    const { container } = render(<Sidebar workflows={workflows} selectedRunId={null} onSelectRun={onSelectRun} />);
     const indicator = container.querySelector('.sidebar-indicator');
     expect(indicator).not.toHaveClass('pulsing');
   });
@@ -282,10 +247,7 @@ describe('Sidebar', () => {
   });
 
   it('calls onSelectRun only once when clicking an item', () => {
-    const workflows = [
-      makeWorkflow({ id: '1', status: 'running' }),
-      makeWorkflow({ id: '2', status: 'completed' }),
-    ];
+    const workflows = [makeWorkflow({ id: '1', status: 'running' }), makeWorkflow({ id: '2', status: 'completed' })];
     render(<Sidebar workflows={workflows} selectedRunId={null} onSelectRun={onSelectRun} />);
     const items = screen.getAllByText(/Test Workflow/i);
     fireEvent.click(items[0]);
@@ -309,27 +271,21 @@ describe('Sidebar', () => {
 
   it('each sidebar-item contains a sidebar-indicator span', () => {
     const workflows = [makeWorkflow({ id: '1', status: 'running' })];
-    const { container } = render(
-      <Sidebar workflows={workflows} selectedRunId={null} onSelectRun={onSelectRun} />,
-    );
+    const { container } = render(<Sidebar workflows={workflows} selectedRunId={null} onSelectRun={onSelectRun} />);
     const item = container.querySelector('.sidebar-item');
     expect(item!.querySelector('.sidebar-indicator')).toBeInTheDocument();
   });
 
   it('each sidebar-item contains a sidebar-title span', () => {
     const workflows = [makeWorkflow({ id: '1', status: 'running' })];
-    const { container } = render(
-      <Sidebar workflows={workflows} selectedRunId={null} onSelectRun={onSelectRun} />,
-    );
+    const { container } = render(<Sidebar workflows={workflows} selectedRunId={null} onSelectRun={onSelectRun} />);
     const item = container.querySelector('.sidebar-item');
     expect(item!.querySelector('.sidebar-title')).toBeInTheDocument();
   });
 
   it('each sidebar-item contains a sidebar-time span', () => {
     const workflows = [makeWorkflow({ id: '1', status: 'running' })];
-    const { container } = render(
-      <Sidebar workflows={workflows} selectedRunId={null} onSelectRun={onSelectRun} />,
-    );
+    const { container } = render(<Sidebar workflows={workflows} selectedRunId={null} onSelectRun={onSelectRun} />);
     const item = container.querySelector('.sidebar-item');
     expect(item!.querySelector('.sidebar-time')).toBeInTheDocument();
   });

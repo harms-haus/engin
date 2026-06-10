@@ -6,12 +6,12 @@
  * the current (active) phase name.
  */
 
-import type { WorkflowRendererProps } from '../types';
 import { registerRenderer } from '../registry';
-import { buildDevelopState } from './types';
-import { ProgressIndicator } from './ProgressIndicator';
+import type { WorkflowRendererProps } from '../types';
 import { AgentGrid } from './AgentGrid';
 import './DevelopRenderer.css';
+import { ProgressIndicator } from './ProgressIndicator';
+import { buildDevelopState } from './types';
 
 export function DevelopRenderer({ runState }: WorkflowRendererProps) {
   const state = buildDevelopState(runState);
@@ -20,9 +20,7 @@ export function DevelopRenderer({ runState }: WorkflowRendererProps) {
     <div className="develop-renderer">
       <ProgressIndicator phases={state.phases} />
       <div className="develop-content">
-        {state.currentPhase && (
-          <div className="develop-phase-label">{state.currentPhase}</div>
-        )}
+        {state.currentPhase && <div className="develop-phase-label">{state.currentPhase}</div>}
         <AgentGrid agents={state.agents} />
       </div>
     </div>

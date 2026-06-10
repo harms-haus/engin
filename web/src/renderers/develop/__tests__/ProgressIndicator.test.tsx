@@ -9,17 +9,15 @@
 
 import '@testing-library/jest-dom/vitest';
 
-import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
+import { describe, expect, it } from 'vitest';
 
 import { ProgressIndicator } from '../ProgressIndicator';
 import type { DevelopPhaseInfo } from '../types';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
-function createPhase(
-  overrides: Partial<DevelopPhaseInfo> = {},
-): DevelopPhaseInfo {
+function createPhase(overrides: Partial<DevelopPhaseInfo> = {}): DevelopPhaseInfo {
   return {
     id: 'phase-1',
     label: 'Phase 1',
@@ -56,9 +54,7 @@ describe('ProgressIndicator', () => {
     });
 
     it('shows a checkmark (✅) for completed phases instead of the original icon', () => {
-      const phases = [
-        createPhase({ id: 'a', icon: '📋', status: 'completed' }),
-      ];
+      const phases = [createPhase({ id: 'a', icon: '📋', status: 'completed' })];
       render(<ProgressIndicator phases={phases} />);
       expect(screen.getByText('✅')).toBeInTheDocument();
       expect(screen.queryByText('📋')).not.toBeInTheDocument();
@@ -72,11 +68,7 @@ describe('ProgressIndicator', () => {
     });
 
     it('renders the correct number of phase items', () => {
-      const phases = [
-        createPhase({ id: 'a' }),
-        createPhase({ id: 'b' }),
-        createPhase({ id: 'c' }),
-      ];
+      const phases = [createPhase({ id: 'a' }), createPhase({ id: 'b' }), createPhase({ id: 'c' })];
       const { container } = render(<ProgressIndicator phases={phases} />);
       const items = container.querySelectorAll('.phase-item');
       expect(items).toHaveLength(3);
@@ -114,21 +106,14 @@ describe('ProgressIndicator', () => {
 
   describe('connectors', () => {
     it('renders a connector between each pair of phases', () => {
-      const phases = [
-        createPhase({ id: 'a' }),
-        createPhase({ id: 'b' }),
-        createPhase({ id: 'c' }),
-      ];
+      const phases = [createPhase({ id: 'a' }), createPhase({ id: 'b' }), createPhase({ id: 'c' })];
       const { container } = render(<ProgressIndicator phases={phases} />);
       const connectors = container.querySelectorAll('.phase-connector');
       expect(connectors).toHaveLength(2); // 3 phases → 2 connectors
     });
 
     it('does not render a connector after the last phase', () => {
-      const phases = [
-        createPhase({ id: 'a' }),
-        createPhase({ id: 'b' }),
-      ];
+      const phases = [createPhase({ id: 'a' }), createPhase({ id: 'b' })];
       const { container } = render(<ProgressIndicator phases={phases} />);
       const lastItem = container.querySelector('.phase-item:last-child');
       expect(lastItem?.querySelector('.phase-connector')).toBeNull();
@@ -142,30 +127,21 @@ describe('ProgressIndicator', () => {
     });
 
     it('applies "completed" class to connector after a completed phase', () => {
-      const phases = [
-        createPhase({ id: 'a', status: 'completed' }),
-        createPhase({ id: 'b', status: 'active' }),
-      ];
+      const phases = [createPhase({ id: 'a', status: 'completed' }), createPhase({ id: 'b', status: 'active' })];
       const { container } = render(<ProgressIndicator phases={phases} />);
       const connector = container.querySelector('.phase-connector');
       expect(connector).toHaveClass('completed');
     });
 
     it('applies "pending" class to connector after a non-completed (active) phase', () => {
-      const phases = [
-        createPhase({ id: 'a', status: 'active' }),
-        createPhase({ id: 'b', status: 'pending' }),
-      ];
+      const phases = [createPhase({ id: 'a', status: 'active' }), createPhase({ id: 'b', status: 'pending' })];
       const { container } = render(<ProgressIndicator phases={phases} />);
       const connector = container.querySelector('.phase-connector');
       expect(connector).toHaveClass('pending');
     });
 
     it('applies "pending" class to connector after a pending phase', () => {
-      const phases = [
-        createPhase({ id: 'a', status: 'pending' }),
-        createPhase({ id: 'b', status: 'pending' }),
-      ];
+      const phases = [createPhase({ id: 'a', status: 'pending' }), createPhase({ id: 'b', status: 'pending' })];
       const { container } = render(<ProgressIndicator phases={phases} />);
       const connector = container.querySelector('.phase-connector');
       expect(connector).toHaveClass('pending');

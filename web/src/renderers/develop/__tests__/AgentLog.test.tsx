@@ -19,11 +19,11 @@
 
 import '@testing-library/jest-dom/vitest';
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { AgentLog } from '../AgentLog';
 import type { LogEntry } from '../../../types';
+import { AgentLog } from '../AgentLog';
 
 // ─── Mock @tanstack/react-virtual ──────────────────────────────────────────
 
@@ -46,9 +46,7 @@ import { useVirtualizer } from '@tanstack/react-virtual';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
-function createEntry(
-  overrides: Partial<LogEntry> = {},
-): LogEntry {
+function createEntry(overrides: Partial<LogEntry> = {}): LogEntry {
   return {
     id: 'e-' + Math.random().toString(36).slice(2, 8),
     timestamp: new Date().toISOString(),
@@ -165,10 +163,7 @@ describe('basic rendering', () => {
   });
 
   it('applies data-index attribute to each virtual item for measurement', () => {
-    const entries = [
-      createEntry({ id: 'e1', content: 'Item 0' }),
-      createEntry({ id: 'e2', content: 'Item 1' }),
-    ];
+    const entries = [createEntry({ id: 'e1', content: 'Item 0' }), createEntry({ id: 'e2', content: 'Item 1' })];
 
     setVirtualItems([
       { key: '0', index: 0, start: 0, size: 60 },
@@ -285,9 +280,7 @@ describe('virtualizer configuration', () => {
 
   it('estimateSize returns 24 for unknown/log-default entry types', () => {
     // Directly test the estimateSize logic by examining the options function
-    const entries = [
-      createEntry({ type: 'tool_call', content: 'tool call' }),
-    ];
+    const entries = [createEntry({ type: 'tool_call', content: 'tool call' })];
     renderAgentLog(entries);
     const options = vi.mocked(useVirtualizer).mock.calls[0][0];
     expect(options.estimateSize(0)).toBe(24);
@@ -511,10 +504,7 @@ describe('auto-scroll behaviour', () => {
 
   it('calls scrollToIndex to the last index when multiple entries are added at once while near bottom', () => {
     // Start with 2 entries, then add 3 more at once (simulating a batch update)
-    const entries = [
-      createEntry({ id: 'e1', content: 'First' }),
-      createEntry({ id: 'e2', content: 'Second' }),
-    ];
+    const entries = [createEntry({ id: 'e1', content: 'First' }), createEntry({ id: 'e2', content: 'Second' })];
 
     const { rerender, container } = renderAgentLog(entries);
 
@@ -636,9 +626,7 @@ describe('edge cases', () => {
 
   it('handles rapid addition of entries without crashing', () => {
     // Render with 100 entries (simulates rapid updates)
-    const entries = Array.from({ length: 100 }, (_, i) =>
-      createEntry({ id: `rapid-${i}`, content: `Entry ${i}` }),
-    );
+    const entries = Array.from({ length: 100 }, (_, i) => createEntry({ id: `rapid-${i}`, content: `Entry ${i}` }));
     setVirtualItems(
       entries.map((_, i) => ({
         key: String(i),
@@ -780,5 +768,3 @@ describe('CSS class names', () => {
     // since jsdom doesn't compute CSS by default.
   });
 });
-
-
