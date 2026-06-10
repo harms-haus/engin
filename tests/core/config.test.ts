@@ -337,6 +337,7 @@ describe('loadEnvFiles', () => {
   });
 
   it('skips additional blocked keys like NODE_OPTIONS and PATH', async () => {
+    const originalNodeOptions = process.env.NODE_OPTIONS;
     const originalPath = process.env.PATH;
     const localDir = join(getDir(), '.engin');
     await mkdir(localDir, { recursive: true });
@@ -344,8 +345,8 @@ describe('loadEnvFiles', () => {
 
     const result = loadEnvFiles(getDir());
 
-    expect(process.env.NODE_OPTIONS).toBeUndefined();
-    // PATH is typically already set in the environment; verify it was NOT overwritten
+    // NODE_OPTIONS and PATH should NOT be overwritten by .env values
+    expect(process.env.NODE_OPTIONS).toBe(originalNodeOptions);
     expect(process.env.PATH).toBe(originalPath);
     expect(process.env.SAFE_KEY).toBe('safe');
     expect(result.keysSet).not.toContain('NODE_OPTIONS');
