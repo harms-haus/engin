@@ -5,7 +5,6 @@ import { clearProfileCache, loadProfilesFromDirs } from '../core/profile.js';
 import { promptForStructured } from '../core/structured-output.js';
 import type { AgentProfile, AuditEvent, HarnessCreationOptions, Task } from '../core/types.js';
 import { safeErrorMessage } from '../core/utils.js';
-import type { AuditLog } from '../tracking/audit-log.js';
 import type { LanePoolOptions, LanePoolResult, StepDefinition, StepResult } from './types.js';
 
 // ─── LanePool ───────────────────────────────────────────────────────────────
@@ -66,30 +65,20 @@ export class LanePool {
         const agentId = `lane-${index}`;
         const error = safeErrorMessage(result.reason);
         failedLanes.push(agentId);
-        if (this.options.onStatus?.onError) {
-          this.options.onStatus.onError({
-            agentId,
-            error,
-            phase: 'implementing',
-          });
-        } else {
-          console.error(`[${agentId}] Lane failed:`, error);
-        }
+        this.reportError(agentId, error);
 
         // Audit log — error event for lane failure
-        this.appendErrorAuditLog(agentId, error);
+        this.appendAuditEvent({ type: 'error', agentId, error });
       }
     });
 
     // Fire phase complete callback
     this.options.onStatus?.onPhaseComplete?.({ phase: 'implementing', durationMs: Date.now() - startTime });
 
-    // Count results from the tracker — distinguish successful vs failed by the result payload
+    // Count results from the tracker by status
     const allTasks = taskTracker.getAllTasks();
-    const completedTasks = allTasks.filter(
-      (t) => t.status === 'done' && (t.result as Record<string, unknown> | undefined)?.completed === true,
-    ).length;
-    const failedTasks = allTasks.length - completedTasks;
+    const completedTasks = allTasks.filter((t) => t.status === 'done').length;
+    const failedTasks = allTasks.filter((t) => t.status === 'failed').length;
 
     // Fire workflow completion or failure callback
     if (failedLanes.length > 0) {
@@ -126,7 +115,7 @@ export class LanePool {
 
       const claimed = taskTracker.claimTasks(1);
       if (claimed.length === 0) {
-        if (taskTracker.areAllDone() || taskTracker.getAllTasks().length === 0) {
+        if (taskTracker.areAllSettled() || taskTracker.getAllTasks().length === 0) {
           return;
         }
         // Busy-wait with exponential backoff
@@ -145,22 +134,13 @@ export class LanePool {
       } catch (err) {
         // Fire onError callback on task processing error
         const error = safeErrorMessage(err);
-        if (this.options.onStatus?.onError) {
-          this.options.onStatus.onError({
-            agentId,
-            error,
-            phase: 'implementing',
-            taskId: task.id,
-          });
-        } else {
-          console.error(`[${agentId}] Task ${task.id} failed:`, error);
-        }
-        // Error during task processing — mark as done to prevent the lane
-        // from getting stuck. The task is considered failed.
-        this.safeSubmitAndComplete(task.id, { completed: false, error: true });
+        this.reportError(agentId, error, 'implementing', task.id);
+        // Error during task processing — mark as failed to prevent the lane
+        // from getting stuck.
+        this.safeFailTask(task.id, { completed: false, error: true });
 
         // Audit log — error event
-        this.appendErrorAuditLog(agentId, error, task.id);
+        this.appendAuditEvent({ type: 'error', agentId, error, taskId: task.id });
       }
     }
   }
@@ -215,7 +195,7 @@ export class LanePool {
             title: task.title,
             reason: result.feedback,
           });
-          this.safeSubmitAndComplete(task.id, {
+          this.safeFailTask(task.id, {
             completed: false,
             feedback: result.feedback,
           });
@@ -293,7 +273,7 @@ export class LanePool {
     });
 
     // Audit log
-    this.appendAuditLog(step, adjustedProfile, task.id);
+    this.appendAuditEvent({ type: 'agent_start', agentId: step.profileId, profile: adjustedProfile, taskId: task.id });
 
     // Create harness
     const { session, dispose } = await createHarness(harnessOpts);
@@ -342,7 +322,7 @@ export class LanePool {
       });
 
       // Audit log — agent_end event
-      this.appendAgentEndAuditLog(step.profileId, task.id);
+      this.appendAuditEvent({ type: 'agent_end', agentId: step.profileId, result: {}, taskId: task.id });
     }
   }
 
@@ -385,70 +365,41 @@ export class LanePool {
       this.options.taskTracker.completeTask(taskId);
     } catch (err) {
       const errorMsg = `safeSubmitAndComplete failed for ${taskId}: ${safeErrorMessage(err)}`;
-      if (this.options.onStatus?.onError) {
-        this.options.onStatus.onError({
-          agentId: 'pool',
-          error: errorMsg,
-          phase: 'implementing',
-          taskId,
-        });
-      } else {
-        console.error(errorMsg);
-      }
+      this.reportError('pool', errorMsg, 'implementing', taskId);
     }
   }
 
   /**
-   * Append an agent_start event to the audit log if available.
+   * Safely mark a task as failed. Catches and logs errors from invalid
+   * state transitions.
    */
-  private appendAuditLog(step: StepDefinition, profile: AgentProfile, taskId: string): void {
-    const auditLog: AuditLog | undefined = this.options.auditLog;
-    if (!auditLog) return;
+  private safeFailTask(taskId: string, result: unknown): void {
+    try {
+      this.options.taskTracker.failTask(taskId, result);
+    } catch (err) {
+      const errorMsg = `safeFailTask failed for ${taskId}: ${safeErrorMessage(err)}`;
+      this.reportError('pool', errorMsg, 'implementing', taskId);
+    }
+  }
 
-    // Fire-and-forget — audit log writes should not block the lane.
-    const event: Omit<Extract<AuditEvent, { type: 'agent_start' }>, 'timestamp'> = {
-      type: 'agent_start',
-      agentId: step.profileId,
-      profile,
-      taskId,
-    };
-    auditLog.append(event).catch(() => {
-      // Swallow audit log errors — they must not crash the pool.
-    });
+  // ── Error & Audit Helpers ─────────────────────────────────────────────
+
+  /**
+   * Report an error via the onStatus callback or console.error fallback.
+   */
+  private reportError(agentId: string, error: string, phase = 'implementing', taskId?: string): void {
+    if (this.options.onStatus?.onError) {
+      this.options.onStatus.onError({ agentId, error, phase, taskId });
+    } else {
+      console.error(`[${agentId}] ${error}`);
+    }
   }
 
   /**
-   * Append an agent_end event to the audit log if available.
+   * Append an event to the audit log if available (fire-and-forget).
    */
-  private appendAgentEndAuditLog(agentId: string, taskId: string): void {
-    const auditLog: AuditLog | undefined = this.options.auditLog;
-    if (!auditLog) return;
-
-    const event: Omit<Extract<AuditEvent, { type: 'agent_end' }>, 'timestamp'> = {
-      type: 'agent_end',
-      agentId,
-      result: {},
-      taskId,
-    };
-    auditLog.append(event).catch(() => {
-      // Swallow audit log errors — they must not crash the pool.
-    });
-  }
-
-  /**
-   * Append an error event to the audit log if available.
-   */
-  private appendErrorAuditLog(agentId: string, error: string, taskId?: string): void {
-    const auditLog: AuditLog | undefined = this.options.auditLog;
-    if (!auditLog) return;
-
-    const event: Omit<Extract<AuditEvent, { type: 'error' }>, 'timestamp'> = {
-      type: 'error',
-      agentId,
-      error,
-      taskId,
-    };
-    auditLog.append(event).catch(() => {
+  private appendAuditEvent(event: Omit<AuditEvent, 'timestamp'>): void {
+    this.options.auditLog?.append(event).catch(() => {
       // Swallow audit log errors — they must not crash the pool.
     });
   }

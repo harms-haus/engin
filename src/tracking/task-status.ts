@@ -96,6 +96,19 @@ export class TaskTracker {
     this.recalculateStatuses();
   }
 
+  failTask(id: string, result?: unknown): void {
+    const task = this.tasks.get(id);
+    if (!task) throw new Error(`Task "${id}" not found`);
+    if (task.status !== 'implementing' && task.status !== 'reviewing') {
+      throw new Error(`Task "${id}" must be "implementing" or "reviewing" to fail, got "${task.status}"`);
+    }
+
+    task.status = 'failed';
+    task.result = result;
+    task.assignedAgent = undefined;
+    this.recalculateStatuses();
+  }
+
   rejectTask(id: string, reason: string): void {
     const task = this.tasks.get(id);
     if (!task) throw new Error(`Task "${id}" not found`);
@@ -107,14 +120,33 @@ export class TaskTracker {
     task.reviewFeedback = reason;
   }
 
+  resetFailedTasks(): void {
+    for (const task of this.tasks.values()) {
+      if (task.status === 'failed') {
+        task.status = 'ready';
+        task.assignedAgent = undefined;
+        task.result = undefined;
+      }
+    }
+  }
+
+  resetStuckTasks(): void {
+    for (const task of this.tasks.values()) {
+      if (task.status === 'claimed' || task.status === 'implementing') {
+        task.status = 'ready';
+        task.assignedAgent = undefined;
+      }
+    }
+  }
+
   recalculateStatuses(): void {
     for (const task of this.tasks.values()) {
       if (task.status === 'blocked') {
-        const allDepsDone = task.dependencies.every((dep) => {
+        const allDepsSettled = task.dependencies.every((dep) => {
           const depTask = this.tasks.get(dep);
-          return depTask !== undefined && depTask.status === 'done';
+          return depTask !== undefined && (depTask.status === 'done' || depTask.status === 'failed');
         });
-        if (allDepsDone) {
+        if (allDepsSettled) {
           task.status = 'ready';
         }
       }
@@ -123,6 +155,19 @@ export class TaskTracker {
 
   toJSON(): { tasks: Task[] } {
     return { tasks: this.getAllTasks() };
+  }
+
+  resetForRetry(): void {
+    for (const task of this.tasks.values()) {
+      if (task.status === 'failed') {
+        task.status = 'ready';
+        task.assignedAgent = undefined;
+        task.result = undefined;
+      } else if (task.status === 'claimed' || task.status === 'implementing') {
+        task.status = 'ready';
+        task.assignedAgent = undefined;
+      }
+    }
   }
 
   static fromJSON(data: { tasks: Task[] }): TaskTracker {
@@ -134,13 +179,14 @@ export class TaskTracker {
     for (const id of tracker.tasks.keys()) {
       tracker.detectCycle(id);
     }
+    tracker.resetForRetry();
     tracker.recalculateStatuses();
     return tracker;
   }
 
-  areAllDone(): boolean {
+  areAllSettled(): boolean {
     const all = this.getAllTasks();
-    return all.length > 0 && all.every((t) => t.status === 'done');
+    return all.length > 0 && all.every((t) => t.status === 'done' || t.status === 'failed');
   }
 
   getBlockedWithMissingDeps(): { taskId: string; missingDepIds: string[] }[] {
@@ -162,7 +208,7 @@ export class TaskTracker {
     const all = this.getAllTasks();
     if (all.length === 0) return false;
     return all.every((t) => {
-      if (t.status === 'done') return true;
+      if (t.status === 'done' || t.status === 'failed') return true;
       if (t.status === 'blocked') {
         return t.dependencies.some((dep) => !this.tasks.has(dep));
       }

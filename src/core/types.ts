@@ -21,7 +21,7 @@ export interface AgentProfile {
 }
 
 // ─── Task Tracking ──────────────────────────────────────────────────────────
-export type TaskStatus = 'blocked' | 'ready' | 'claimed' | 'implementing' | 'reviewing' | 'done';
+export type TaskStatus = 'blocked' | 'ready' | 'claimed' | 'implementing' | 'reviewing' | 'done' | 'failed';
 
 export interface Task {
   id: string;
@@ -85,8 +85,8 @@ export interface StructuredOutputOptions {
 // ─── Status Callbacks ──────────────────────────────────────────────────────
 export interface WorkflowStatusCallbacks {
   onWorkflowStart?: (info: { taskPrompt: string; resumed: boolean; workDir: string }) => void;
-  onPhaseStart?: (info: { phase: WorkflowPhase; round: number }) => void;
-  onPhaseComplete?: (info: { phase: WorkflowPhase; durationMs: number }) => void;
+  onPhaseStart?: (info: { phase: string; round: number }) => void;
+  onPhaseComplete?: (info: { phase: string; durationMs: number }) => void;
   onAgentSpawn?: (info: { agentId: string; profile: string; phase: string; taskId?: string }) => void;
   onAgentComplete?: (info: { agentId: string; profile: string; phase: string; taskId?: string }) => void;
   onTaskStart?: (info: { taskId: string; title: string; agentId: string }) => void;
@@ -96,6 +96,11 @@ export interface WorkflowStatusCallbacks {
   onError?: (info: { agentId: string; error: string; phase: string; taskId?: string }) => void;
   onWorkflowComplete?: (info: { totalDurationMs: number; agentCount: number }) => void;
   onWorkflowFailed?: (info: { error: Error; phase: string }) => void;
+  onSidebarUpdate?: (info: {
+    title?: string;
+    indicator?: string;
+    phases?: { id: string; label: string; icon: string }[];
+  }) => void;
 }
 
 export type TurnContentBlock =
@@ -111,7 +116,12 @@ export interface AgentStatusCallbacks {
     tokens?: { input: number; output: number };
     contentBlocks?: TurnContentBlock[];
   }) => void;
-  onToolCallStart?: (info: { agentId: string; toolName: string; toolCallId: string }) => void;
+  onToolCallStart?: (info: {
+    agentId: string;
+    toolName: string;
+    toolCallId: string;
+    arguments: Record<string, unknown>;
+  }) => void;
   onToolCallEnd?: (info: { agentId: string; toolName: string; toolCallId: string; isError: boolean }) => void;
 }
 

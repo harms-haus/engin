@@ -231,15 +231,15 @@ describe('TaskTracker', () => {
     });
   });
 
-  // ── areAllDone ─────────────────────────────────────────────────────
+  // ── areAllSettled ──────────────────────────────────────────────────
 
-  describe('areAllDone', () => {
+  describe('areAllSettled', () => {
     it('returns false when tasks are not all done', () => {
       const tracker = new TaskTracker();
       tracker.addTask(makeTask({ id: 'a' }));
       tracker.addTask(makeTask({ id: 'b' }));
 
-      expect(tracker.areAllDone()).toBe(false);
+      expect(tracker.areAllSettled()).toBe(false);
     });
 
     it('returns true when all tasks are done', () => {
@@ -254,12 +254,12 @@ describe('TaskTracker', () => {
         tracker.completeTask(id);
       }
 
-      expect(tracker.areAllDone()).toBe(true);
+      expect(tracker.areAllSettled()).toBe(true);
     });
 
     it('returns false when there are no tasks', () => {
       const tracker = new TaskTracker();
-      expect(tracker.areAllDone()).toBe(false);
+      expect(tracker.areAllSettled()).toBe(false);
     });
   });
 

@@ -88,7 +88,7 @@ function createMockTaskTracker(overrides: Record<string, unknown> = {}) {
     startTask: mock(() => {}),
     submitForReview: mock(() => {}),
     completeTask: mock(() => {}),
-    areAllDone: mock(() => true),
+    areAllSettled: mock(() => true),
     getAllTasks: mock(() => []),
     getReadyTasks: mock(() => []),
     addTask: mock(() => {}),
@@ -156,7 +156,7 @@ describe('LanePool', () => {
 
       expect(result.completedTasks).toBe(1);
       expect(result.failedTasks).toBe(0);
-      expect(tracker.areAllDone()).toBe(true);
+      expect(tracker.areAllSettled()).toBe(true);
     });
 
     it('calls createHarness with the correct profile and options', async () => {
@@ -496,13 +496,83 @@ describe('LanePool', () => {
 
       const { pool, tracker } = createPoolAndTracker();
 
-      // The pool should not hang — it should mark the task as done (failed)
+      // The pool should not hang — it should mark the task as failed
       const result = await pool.run();
 
       expect(result.failedTasks).toBe(1);
-      // Task should be done (marked as complete via safeSubmitAndComplete after error)
+      expect(result.completedTasks).toBe(0);
+      // Task should be in 'failed' status
       const task = tracker.getTask('task-1');
-      expect(task?.status).toBe('done');
+      expect(task?.status).toBe('failed');
+    });
+
+    it('failed tasks have status failed not done', async () => {
+      setupProfileMocks();
+
+      mockCreateHarness.mockResolvedValue({
+        session: makeSession(() => {
+          throw new Error('Agent crashed');
+        }),
+        sessionId: 'test-session',
+        dispose: mock(() => {}),
+      });
+
+      const { pool, tracker } = createPoolAndTracker();
+
+      const result = await pool.run();
+
+      expect(result.completedTasks).toBe(0);
+      expect(result.failedTasks).toBe(1);
+      const task = tracker.getTask('task-1');
+      expect(task?.status).toBe('failed');
+    });
+
+    it('failed tasks are not retried within same run', async () => {
+      setupProfileMocks();
+
+      const dispose = mock(() => {});
+      mockCreateHarness.mockResolvedValue({
+        session: makeSession(() => {
+          throw new Error('Always fails');
+        }),
+        sessionId: 'test-session',
+        dispose,
+      });
+
+      const { pool } = createPoolAndTracker();
+
+      const result = await pool.run();
+
+      // Harness should only be created once — the failed task is not retried
+      expect(mockCreateHarness).toHaveBeenCalledTimes(1);
+      expect(dispose).toHaveBeenCalledTimes(1);
+      expect(result.failedTasks).toBe(1);
+    });
+
+    it('fromJSON resets failed tasks for retry', async () => {
+      setupProfileMocks();
+
+      mockCreateHarness.mockResolvedValue({
+        session: makeSession(() => {
+          throw new Error('Crash');
+        }),
+        sessionId: 'test-session',
+        dispose: mock(() => {}),
+      });
+
+      const { pool, tracker } = createPoolAndTracker();
+
+      await pool.run();
+
+      // Task should be failed after the pool run
+      expect(tracker.getTask('task-1')?.status).toBe('failed');
+
+      // Serialize and deserialize
+      const json = tracker.toJSON();
+      const newTracker = TaskTracker.fromJSON(json);
+
+      // fromJSON resets failed tasks to ready
+      expect(newTracker.getTask('task-1')?.status).toBe('ready');
     });
 
     it('handles agent errors during step execution', async () => {
@@ -864,7 +934,7 @@ describe('LanePool', () => {
           }
           throw new Error('Simulated lane crash');
         }),
-        areAllDone: mock(() => false),
+        areAllSettled: mock(() => false),
         getAllTasks: mock(() => []),
       });
 
@@ -1108,7 +1178,7 @@ describe('LanePool', () => {
 
       mockPromptForStructured.mockResolvedValue({ approved: false, feedback: 'Not good enough' });
 
-      const { pool } = createPoolAndTracker({
+      const { pool, tracker } = createPoolAndTracker({
         maxStepRetries: 0,
         getStepsForTask: () => [
           { name: 'implement', profileId: 'coder', isReadOnly: false },
@@ -1126,6 +1196,9 @@ describe('LanePool', () => {
       // With maxStepRetries: 0, the review step runs once then fails
       expect(mockPromptForStructured).toHaveBeenCalledTimes(1);
       expect(result.failedTasks).toBe(1);
+      expect(result.completedTasks).toBe(0);
+      const task = tracker.getTask('task-1');
+      expect(task?.status).toBe('failed');
     });
 
     it('falls back to console.error when no onError callback is provided', async () => {
@@ -1151,7 +1224,7 @@ describe('LanePool', () => {
 
         expect(consoleSpy).toHaveBeenCalled();
         const firstCall = consoleSpy.mock.calls[0].join(' ');
-        expect(firstCall).toContain('Task task-1 failed');
+        expect(firstCall).toContain('[lane-0] Unhandled failure');
       } finally {
         consoleSpy.mockRestore();
       }
