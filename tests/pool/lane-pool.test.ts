@@ -1,7 +1,7 @@
 import { afterAll, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
 import { z } from 'zod';
 import type { Task } from '../../src/core/types.js';
-import type { TaskTracker } from '../../src/tracking/task-status.js';
+import { TaskTracker } from '../../src/tracking/task-status.js';
 import { makeMockSession } from '../helpers/make-session.js';
 import { makeTask } from '../helpers/make-task.js';
 
