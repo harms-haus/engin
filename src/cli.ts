@@ -320,7 +320,18 @@ export async function initCommand(_options: CliOptions): Promise<void> {
 
 export async function webCommand(options: CliOptions): Promise<void> {
   const { startWebServer } = await import('./web/server.js');
-  await startWebServer({ host: options.host ?? '127.0.0.1', port: options.port ?? 3619, cwd: options.cwd });
+  const server = await startWebServer({
+    host: options.host ?? '127.0.0.1',
+    port: options.port ?? 3619,
+    cwd: options.cwd,
+  });
+
+  // Graceful SIGINT handling — stop the server and exit
+  process.on('SIGINT', () => {
+    console.log(`\n${formatTime()} ⏹️  Shutting down web server...`);
+    server.stop(true);
+    process.exit(0);
+  });
 }
 
 export async function runCommand(options: CliOptions): Promise<void> {
@@ -336,6 +347,7 @@ export async function runCommand(options: CliOptions): Promise<void> {
   // Set up SIGINT handler for cooperative cancellation
   const controller = new AbortController();
   let sigintCount = 0;
+  let forceExitTimer: ReturnType<typeof setTimeout> | undefined;
 
   const handler = () => {
     sigintCount++;
@@ -344,7 +356,13 @@ export async function runCommand(options: CliOptions): Promise<void> {
         `\n${formatTime()} ⏹️  Interrupt received, stopping workflow gracefully... (Ctrl+C again to force quit)`,
       );
       controller.abort();
+      // Safety net: if graceful shutdown hasn't completed in 5s, force exit
+      forceExitTimer = setTimeout(() => {
+        console.log(`${formatTime()} ⏹️  Graceful shutdown timed out, forcing exit.`);
+        process.exit(1);
+      }, 5000);
     } else {
+      if (forceExitTimer) clearTimeout(forceExitTimer);
       console.log(`\n${formatTime()} ⏹️  Force quit.`);
       process.exit(1);
     }
@@ -362,6 +380,7 @@ export async function runCommand(options: CliOptions): Promise<void> {
       signal: controller.signal,
     });
   } finally {
+    if (forceExitTimer) clearTimeout(forceExitTimer);
     process.removeListener('SIGINT', handler);
   }
 }

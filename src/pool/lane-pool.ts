@@ -35,6 +35,8 @@ interface RunStepContext {
  */
 export class LanePool {
   private readonly options: LanePoolOptions;
+  /** Active sessions that may be mid-prompt; aborted on SIGINT for faster shutdown. */
+  private readonly activeSessions = new Set<{ abort(): Promise<void> }>();
 
   constructor(options: LanePoolOptions) {
     this.options = options;
@@ -71,6 +73,17 @@ export class LanePool {
     // Clear stale cached profiles before loading fresh ones
     clearProfileCache();
     const profiles = await loadProfilesFromDirs(this.options.profilesDirs);
+
+    // When the abort signal fires, abort all active sessions so in-progress
+    // LLM calls are cancelled immediately instead of running to completion.
+    const abortActiveSessions = () => {
+      for (const s of this.activeSessions) {
+        s.abort().catch(() => {
+          /* swallow — we're shutting down */
+        });
+      }
+    };
+    this.options.signal?.addEventListener('abort', abortActiveSessions, { once: true });
 
     const laneRunners = Array.from({ length: maxConcurrentLanes }, (_, i) => this.runLane(i, profiles));
     const settled = await Promise.allSettled(laneRunners);
@@ -314,6 +327,9 @@ export class LanePool {
     // Create harness
     const { session, dispose } = await createHarness(harnessOpts);
 
+    // Track the session so the abort listener can cancel in-progress prompts
+    this.activeSessions.add(session);
+
     try {
       // Build prompt
       const promptText = this.buildPrompt(task, step, ctx.attempt > 0);
@@ -341,6 +357,8 @@ export class LanePool {
       const output = session.getLastAssistantText();
       return { type: 'approved', output };
     } finally {
+      this.activeSessions.delete(session);
+
       // Dispose the harness in its own try/catch so dispose errors don't
       // suppress the onAgentComplete callback below.
       try {
