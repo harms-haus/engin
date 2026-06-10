@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { createHarness } from '../core/harness-factory.js';
 import { clearProfileCache, loadProfilesFromDirs } from '../core/profile.js';
 import { promptForStructured } from '../core/structured-output.js';
-import type { AgentProfile, AuditEvent, HarnessCreationOptions, Task } from '../core/types.js';
+import type { AgentProfile, HarnessCreationOptions, Task } from '../core/types.js';
 import { safeErrorMessage } from '../core/utils.js';
 import type { LanePoolOptions, LanePoolResult, StepDefinition, StepResult } from './types.js';
 
@@ -398,7 +398,8 @@ export class LanePool {
   /**
    * Append an event to the audit log if available (fire-and-forget).
    */
-  private appendAuditEvent(event: Omit<AuditEvent, 'timestamp'>): void {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private appendAuditEvent(event: any): void {
     this.options.auditLog?.append(event).catch(() => {
       // Swallow audit log errors — they must not crash the pool.
     });
