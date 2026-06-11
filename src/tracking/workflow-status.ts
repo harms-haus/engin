@@ -1,25 +1,15 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { PersistedAgentRecord, WorkflowPhase, WorkflowState } from '../core/types.js';
+import type { PersistedAgentRecord, WorkflowState } from '../core/types.js';
 import { isEnoentError } from '../core/utils.js';
 import { AuditLog } from './audit-log.js';
 import { TaskTracker } from './task-status.js';
 
-export const PHASE_ORDER: WorkflowPhase[] = [
-  'scouting',
-  'scouting_review',
-  'planning',
-  'plan_review',
-  'implementing',
-  'final_review',
-  'done',
-];
-
 export class WorkflowStatusTracker {
   private _taskPrompt = '';
-  private _currentPhase: WorkflowPhase = 'scouting';
-  private _completedPhases: WorkflowPhase[] = [];
+  private _currentPhase = '';
+  private _completedPhases: string[] = [];
   private _scoutingReports: unknown[] = [];
   private _plan: unknown = undefined;
   private _research?: string;
@@ -91,11 +81,11 @@ export class WorkflowStatusTracker {
     return this._taskPrompt;
   }
 
-  get currentPhase(): WorkflowPhase {
+  get currentPhase(): string {
     return this._currentPhase;
   }
 
-  get completedPhases(): WorkflowPhase[] {
+  get completedPhases(): string[] {
     return [...this._completedPhases];
   }
 
@@ -155,22 +145,22 @@ export class WorkflowStatusTracker {
     this._taskPrompt = prompt;
   }
 
-  advancePhase(): void {
-    const idx = PHASE_ORDER.indexOf(this._currentPhase);
-    if (idx < 0 || idx >= PHASE_ORDER.length - 1) {
-      throw new Error(`Cannot advance from phase "${this._currentPhase}": already at the final phase`);
+  /**
+   * Transition to a new phase. Pushes the current phase into completedPhases
+   * and sets the new phase as current.
+   */
+  setPhase(phase: string): void {
+    if (this._currentPhase) {
+      this._completedPhases.push(this._currentPhase);
     }
-
-    this._completedPhases.push(this._currentPhase);
-    this._currentPhase = PHASE_ORDER[idx + 1];
+    this._currentPhase = phase;
   }
 
-  setPhase(phase: WorkflowPhase): void {
-    const allowed = PHASE_ORDER.indexOf(phase) >= 0;
-    if (!allowed) {
-      throw new Error(`Invalid phase "${phase}"`);
-    }
-
+  /**
+   * Set the current phase without pushing the previous one to completedPhases.
+   * Used to initialise a fresh tracker or restore from saved state.
+   */
+  setCurrentPhase(phase: string): void {
     this._currentPhase = phase;
   }
 

@@ -38,19 +38,10 @@ export interface Task {
 }
 
 // ─── Workflow Phases ────────────────────────────────────────────────────────
-export type WorkflowPhase =
-  | 'scouting'
-  | 'scouting_review'
-  | 'planning'
-  | 'plan_review'
-  | 'implementing'
-  | 'final_review'
-  | 'done';
-
 export interface WorkflowState {
   taskPrompt: string;
-  currentPhase: WorkflowPhase;
-  completedPhases: WorkflowPhase[];
+  currentPhase: string;
+  completedPhases: string[];
   tasks: Task[];
   /** Scouting reports stored as opaque values; consumers should cast to their specific schema type */
   scoutingReports: unknown[];
