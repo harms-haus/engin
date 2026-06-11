@@ -152,6 +152,8 @@ export interface WorkflowRunOptions {
   signal?: AbortSignal;
   /** Pre-created WorkflowStatusTracker; workflows should reuse instead of creating their own. Typed as `unknown` to avoid circular imports. */
   tracker?: unknown;
+  /** When true, use verbose console output instead of TUI dashboard */
+  verbose?: boolean;
 }
 
 // ─── Workflow Entry ───────────────────────────────────────────────────────

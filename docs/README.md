@@ -106,6 +106,8 @@ engin <command> [options]
 | ------------------ | ---------------------------------------------------------------- |
 | `run` (default)    | Run a named workflow with a task prompt                          |
 | `init`             | Create config directory structure in the global config directory |
+| `resume`           | Resume a past workflow run                                       |
+| `web`              | Start web UI server                                              |
 | `--help` / `-h`    | Show usage information                                           |
 | `--version` / `-v` | Show version                                                     |
 
@@ -131,13 +133,13 @@ Creates the `workflows/` subdirectory inside the global config directory (`~/.co
 
 ### Flags
 
-| Flag                       | Applies to     | Description                                                                                                                 |
-| -------------------------- | -------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| `--cwd <path>`             | `run`          | Project working directory (default: `process.cwd()`)                                                                        |
-| `--work-dir <path>`        | `run`          | Directory for workflow state persistence. Default: `.engin/work/<timestamp>-<workflow-name>` inside `cwd`                   |
-| `--max-concurrent <n>`     | `run`          | Maximum parallel implementer agents (default: `3`). Must be a positive integer.                                             |
-| `--verbose`                | `all commands` | Enable verbose output, including `.env` file loading information and agent-level output (turns, tool calls, token usage)    |
-| `--api-key <provider=key>` | `run`          | Provider → API key override. Repeatable. **Warning:** values are visible in process listings; prefer environment variables. |
+| Flag                       | Applies to     | Description                                                                                                                                                                                                   |
+| -------------------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--cwd <path>`             | `run`          | Project working directory (default: `process.cwd()`)                                                                                                                                                          |
+| `--work-dir <path>`        | `run`          | Directory for workflow state persistence. Default: `.engin/work/<timestamp>-<workflow-name>` inside `cwd`                                                                                                     |
+| `--max-concurrent <n>`     | `run`          | Maximum parallel implementer agents (default: `3`). Must be a positive integer.                                                                                                                               |
+| `--verbose`                | `all commands` | Enable verbose console output. When running in a TTY, this disables the TUI dashboard and uses console output instead. Shows `.env` file loading info and agent-level output (turns, tool calls, token usage) |
+| `--api-key <provider=key>` | `run`          | Provider → API key override. Repeatable. **Warning:** values are visible in process listings; prefer environment variables.                                                                                   |
 
 ### Exit Codes
 
@@ -818,6 +820,232 @@ const result = await pool.run();
 console.log(`Completed: ${result.completedTasks}, Failed: ${result.failedTasks}`);
 ```
 
+### TUI Dashboard
+
+The TUI module provides a terminal user interface for workflow monitoring. When the CLI detects an interactive terminal (TTY) without `--verbose`, it uses `WorkflowTUI` to render a live dashboard instead of plain console output.
+
+#### `WorkflowTUI`
+
+```typescript
+class WorkflowTUI {
+  constructor(options?: WorkflowTUIOptions);
+  start(): void;
+  stop(): void;
+  getStatusCallbacks(): StatusCallbacks;
+  getEventLog(): EventLog;
+  getDashboard(): Dashboard;
+}
+```
+
+Top-level TUI lifecycle manager. Constructs the terminal, widget tree, and status callbacks internally.
+
+**`start()`** — Initialises a `ProcessTerminal`, builds the widget tree (EventLog → separator → Dashboard), sets up input handling (Ctrl+C for graceful abort, Tab for lane cycling), overrides `console.log`/`warn`/`error` to route through the event log, and starts rendering. No-op if already running.
+
+**`stop()`** — Restores original `console` methods, unsubscribes from input, and stops the TUI. Safe to call multiple times.
+
+**Keyboard shortcuts:**
+
+| Key       | Action                                               |
+| --------- | ---------------------------------------------------- |
+| `Ctrl+C`  | First press: calls `abort()`; second: `process.exit` |
+| `Tab`     | Cycle focused task lane                              |
+| `PgUp`    | Scroll event log up                                  |
+| `PgDn`    | Scroll event log down                                |
+| `Home`    | Jump to top of event log                             |
+| `End`     | Jump to bottom (resume auto-scroll)                  |
+| `↑` / `↓` | Navigate focused lane in the lane pool widget        |
+
+#### `WorkflowTUIOptions`
+
+| Field                | Type         | Default | Description                                                      |
+| -------------------- | ------------ | ------- | ---------------------------------------------------------------- |
+| `maxConcurrentLanes` | `number`     | `3`     | Number of lane rows in the dashboard                             |
+| `agentLogLines`      | `number`     | `4`     | Number of lines in the agent detail log                          |
+| `abort`              | `() => void` | —       | Callback invoked on first Ctrl+C; use to cancel the workflow run |
+
+#### `createTuiStatusCallbacks(deps): StatusCallbacks`
+
+Factory that returns a `StatusCallbacks` object routing every status event into the TUI widgets. Handles:
+
+- `onWorkflowStart` / `onWorkflowComplete` / `onWorkflowFailed` → event log entries
+- `onPhaseStart` / `onPhaseComplete` → event log + `PhaseBar` updates
+- `onAgentSpawn` / `onAgentComplete` → event log + `AgentLogWidget` selection
+- `onTaskStart` / `onTaskComplete` / `onTaskRejected` → event log + `LanePoolWidget` lane state
+- `onDecision` / `onError` → event log + agent log entries
+- `onTurnEnd` → text and thinking blocks to agent log; tool calls to event log
+- `onToolCallStart` / `onToolCallEnd` → event log + agent log
+- `onSidebarUpdate` → `PhaseBar` phase descriptors and indicator icon
+
+**`deps` parameter:**
+
+| Field           | Type         | Description                             |
+| --------------- | ------------ | --------------------------------------- |
+| `eventLog`      | `EventLog`   | The event log widget to write into      |
+| `dashboard`     | `Dashboard`  | The dashboard containing sub-widgets    |
+| `requestRender` | `() => void` | Trigger a TUI re-render after mutations |
+
+All text routed through the TUI is sanitised via `stripAnsi` to prevent ANSI escape leakage from agent output.
+
+#### Widget Components
+
+All widgets implement the `Component` interface from `@earendil-works/pi-tui` (`render(width): string[]`, `invalidate(): void`, `handleInput(data): void`).
+
+##### `EventLog`
+
+Scrollable log of timestamped event lines. Auto-scrolls to the bottom; supports PgUp/PgDn/Home/End navigation.
+
+| Method         | Signature              | Description                                                                                  |
+| -------------- | ---------------------- | -------------------------------------------------------------------------------------------- |
+| `addLine`      | `(text: string): void` | Append a line. Oldest lines are pruned beyond `maxBufferLines` (5000).                       |
+| `setMaxLines`  | `(n: number): void`    | Set the number of visible lines. Called by `WorkflowTUI.start()` to fit the terminal height. |
+| `handleInput`  | `(data): void`         | Processes PgUp, PgDn, Home, End keys for scrolling.                                          |
+| `totalLines`   | `number` (getter)      | Total lines in the buffer.                                                                   |
+| `isScrolledUp` | `boolean` (getter)     | Whether the view is scrolled above the bottom.                                               |
+
+When scrolled up, the first visible line is replaced with a dim indicator: `↑ N more lines above (PgUp/PgDn)`.
+
+##### `PhaseBar`
+
+Single-line phase progress indicator.
+
+| Method               | Signature                           | Description                                                      |
+| -------------------- | ----------------------------------- | ---------------------------------------------------------------- |
+| `setPhases`          | `(phases: PhaseDescriptor[]): void` | Set the ordered list of phase descriptors.                       |
+| `setCurrentPhase`    | `(id: string): void`                | Highlight the given phase as current (cyan `●`).                 |
+| `setCompletedPhases` | `(ids: string[]): void`             | Mark phases as completed (green `✓`).                            |
+| `setIndicator`       | `(icon: string): void`              | Prepend an icon (e.g. workflow emoji) before the phase segments. |
+
+When no phases are set, renders just the indicator and/or current phase ID. Phase segments are joined with `│` separators.
+
+##### `LanePoolWidget`
+
+Grid of task lanes, one row per concurrent worker.
+
+| Method                | Signature                   | Description                                                 |
+| --------------------- | --------------------------- | ----------------------------------------------------------- |
+| `updateLanes`         | `(lanes: TaskLane[]): void` | Replace the full lane list. Completed lanes remain visible. |
+| `setFocusedLane`      | `(index: number): void`     | Highlight a specific lane (bold). Used by Tab cycling.      |
+| `getFocusedLaneIndex` | `(): number`                | Current focused lane index (-1 if none).                    |
+| `getLanes`            | `(): TaskLane[]`            | Current lane data.                                          |
+| `getFocusedTaskId`    | `(): string \| undefined`   | Task ID of the focused lane.                                |
+| `handleInput`         | `(data): void`              | Processes ↑/↓ arrow keys for lane focus navigation.         |
+
+Renders `maxLanes` rows (set at construction). Empty slots produce blank lines.
+
+##### `AgentLogWidget`
+
+Detail view showing the last N entries for the currently selected agent.
+
+| Method        | Signature                                  | Description                                                                   |
+| ------------- | ------------------------------------------ | ----------------------------------------------------------------------------- |
+| `selectAgent` | `(agentId: string, profile: string): void` | Switch to a new agent, clearing previous entries.                             |
+| `clearAgent`  | `(): void`                                 | Deselect the current agent.                                                   |
+| `addEntry`    | `(entry: AgentLogEntry): void`             | Append an entry (ignored if no agent is selected). Pruned beyond 200 entries. |
+| `getAgentId`  | `(): string \| null`                       | Currently selected agent ID.                                                  |
+
+Each entry is rendered with a type-specific icon and colour:
+
+| Type              | Icon | Colour |
+| ----------------- | ---- | ------ |
+| `text`            | 💬   | none   |
+| `thinking`        | 🧠   | dim    |
+| `tool_call_start` | 🔧   | cyan   |
+| `tool_call_end`   | ✅   | green  |
+| `error`           | ⚠️   | red    |
+| `decision`        | 🤝   | none   |
+
+##### `Dashboard`
+
+Composite widget containing `PhaseBar`, `LanePoolWidget`, and `AgentLogWidget`.
+
+| Method              | Signature    | Description                                                      |
+| ------------------- | ------------ | ---------------------------------------------------------------- |
+| `phaseBar`          | (getter)     | The `PhaseBar` sub-widget.                                       |
+| `lanePool`          | (getter)     | The `LanePoolWidget` sub-widget.                                 |
+| `agentLog`          | (getter)     | The `AgentLogWidget` sub-widget.                                 |
+| `getComputedHeight` | `(): number` | Total rendered height: `1 + maxConcurrentLanes + agentLogLines`. |
+
+Renders sub-widgets top-to-bottom: phase bar, then lane rows, then agent log.
+
+#### Theme Functions
+
+Exported from `src/tui/theme.ts`. ANSI escape-sequence helpers for terminal styling.
+
+**Foreground colours:**
+
+| Function  | Description            |
+| --------- | ---------------------- |
+| `cyan`    | Cyan foreground        |
+| `dim`     | Dimmed (low intensity) |
+| `bold`    | Bold (high intensity)  |
+| `green`   | Green foreground       |
+| `red`     | Red foreground         |
+| `yellow`  | Yellow foreground      |
+| `blue`    | Blue foreground        |
+| `magenta` | Magenta foreground     |
+
+All foreground functions have the signature `(str: string) => string` — they wrap the input in ANSI codes and reset.
+
+**Background colours:**
+
+| Function      | Description              |
+| ------------- | ------------------------ |
+| `bgDark`      | 256-color background 236 |
+| `bgStatusBar` | 256-color background 237 |
+
+**Status helpers:**
+
+| Function      | Signature                               | Description                                          |
+| ------------- | --------------------------------------- | ---------------------------------------------------- |
+| `statusColor` | `(status: TaskStatus) => (s) => string` | Returns the colour function for a task status.       |
+| `statusIcon`  | `(status: TaskStatus) => string`        | Returns the single-character icon for a task status. |
+
+**Status → colour/icon mapping:**
+
+| Status         | Colour  | Icon |
+| -------------- | ------- | ---- |
+| `done`         | green   | ✓    |
+| `failed`       | red     | ✗    |
+| `implementing` | yellow  | ⟳    |
+| `reviewing`    | magenta | ◎    |
+| `claimed`      | blue    | →    |
+| `ready`        | cyan    | ○    |
+| `blocked`      | dim     | ·    |
+
+**Sanitisation:**
+
+| Function    | Signature               | Description                      |
+| ----------- | ----------------------- | -------------------------------- |
+| `stripAnsi` | `(str: string): string` | Strip all ANSI escape sequences. |
+
+#### Type Exports
+
+##### `PhaseDescriptor`
+
+| Field   | Type     | Description                          |
+| ------- | -------- | ------------------------------------ |
+| `id`    | `string` | Phase identifier (e.g. `"scouting"`) |
+| `label` | `string` | Human-readable label for display     |
+| `icon`  | `string` | Emoji or icon for the phase          |
+
+##### `TaskLane`
+
+| Field       | Type         | Description                                     |
+| ----------- | ------------ | ----------------------------------------------- |
+| `id`        | `string`     | Task identifier                                 |
+| `title`     | `string`     | Short task description                          |
+| `status`    | `TaskStatus` | Current lifecycle state                         |
+| `agentId?`  | `string`     | ID of the assigned agent                        |
+| `profile?`  | `string`     | Profile name of the assigned agent              |
+| `stepInfo?` | `string`     | Current step annotation (e.g. `"implementing"`) |
+
+##### `AgentLogEntry`
+
+| Field     | Type                                                                                    | Description        |
+| --------- | --------------------------------------------------------------------------------------- | ------------------ |
+| `type`    | `'text' \| 'thinking' \| 'tool_call_start' \| 'tool_call_end' \| 'error' \| 'decision'` | Entry discriminant |
+| `content` | `string`                                                                                | Entry text content |
+
 ---
 
 ## 9. Architecture
@@ -842,10 +1070,22 @@ src/
 │   ├── index.ts                 # Pool module re-exports
 │   ├── types.ts                 # StepDefinition, LanePoolOptions, LanePoolResult, StepResult types
 │   └── lane-pool.ts             # Concurrent task processing pool (LanePool class)
-└── tracking/
-    ├── audit-log.ts             # JSONL-based audit event log
-    ├── task-status.ts           # Task DAG tracker with state transitions
-    └── workflow-status.ts       # Full workflow phase state (persisted to JSON)
+├── tracking/
+│   ├── audit-log.ts             # JSONL-based audit event log
+│   ├── task-status.ts           # Task DAG tracker with state transitions
+│   └── workflow-status.ts       # Full workflow phase state (persisted to JSON)
+└── tui/
+    ├── index.ts                 # TUI module re-exports
+    ├── workflow-tui.ts          # TUI lifecycle manager (WorkflowTUI class)
+    ├── status-callbacks.ts      # StatusCallbacks → TUI widget routing
+    ├── theme.ts                 # ANSI styling helpers and status mappings
+    └── components/
+        ├── index.ts             # Component re-exports
+        ├── event-log.ts         # Scrollable event log widget
+        ├── phase-bar.ts         # Phase progress indicator widget
+        ├── lane-pool-widget.ts  # Task lane grid widget
+        ├── agent-log-widget.ts  # Agent detail log widget
+        └── dashboard.ts         # Composite dashboard container
 ```
 
 ### Core Layer (`src/core/`)
@@ -878,6 +1118,19 @@ src/
 | `task-status.ts`     | Manages a collection of `Task` objects with a DAG of dependencies; enforces state transitions; detects cycles                               |
 | `workflow-status.ts` | Top-level workflow state: current phase, completed phases, scouting reports, plan, stats, and task tracker; persists to `.engin-state.json` |
 
+### TUI Layer (`src/tui/`)
+
+| Module                           | Responsibility                                                                                                         |
+| -------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `workflow-tui.ts`                | Top-level TUI lifecycle: creates terminal, builds widget tree, overrides console, handles keyboard input (Ctrl+C, Tab) |
+| `status-callbacks.ts`            | Factory (`createTuiStatusCallbacks`) that routes every `StatusCallbacks` event into the appropriate TUI widget         |
+| `theme.ts`                       | ANSI colour/style helpers (`cyan`, `dim`, `bold`, etc.), status-to-colour/icon mappings, and `stripAnsi` sanitisation  |
+| `components/event-log.ts`        | Scrollable event log widget with PgUp/PgDn navigation and auto-scroll                                                  |
+| `components/phase-bar.ts`        | Single-line phase progress bar with completed/current/pending states                                                   |
+| `components/lane-pool-widget.ts` | Grid of task lanes with focus tracking (↑/↓/Tab)                                                                       |
+| `components/agent-log-widget.ts` | Detail view of the selected agent's recent text, thinking, tool calls, and errors                                      |
+| `components/dashboard.ts`        | Composite container: PhaseBar + LanePoolWidget + AgentLogWidget                                                        |
+
 This package is a **pure library** — it provides building blocks (harness creation, profile loading, structured output, agent loop patterns, task tracking, audit logging) that user-managed workflow scripts compose into pipelines. It does not ship any built-in workflows or agent profiles.
 
 ---
@@ -893,6 +1146,43 @@ Workflows are user-managed scripts that use the library's building blocks to def
 5. Tracks tasks via `TaskTracker` and logs events via `AuditLog`.
 
 See [Custom Workflows](#7-custom-workflows) for examples and [Programmatic API](#8-programmatic-api) for the full set of available building blocks.
+
+### TUI Integration
+
+Workflows that want to support the TUI dashboard can detect when it is active and wire up the TUI status callbacks:
+
+```typescript
+import { WorkflowTUI, resolveProfilesDirs, loadProfilesFromDirs } from '@harms-haus/engin';
+import type { WorkflowRunOptions, StatusCallbacks } from '@harms-haus/engin';
+
+export async function run(taskPrompt: string, options: WorkflowRunOptions) {
+  const useTui = !options.verbose && process.stdout.isTTY;
+  const tui = useTui
+    ? new WorkflowTUI({
+        maxConcurrentLanes: options.maxConcurrentTasks,
+        abort: () => {
+          /* cancel workflow execution */
+        },
+      })
+    : undefined;
+
+  tui?.start();
+  const statusCallbacks = tui?.getStatusCallbacks();
+
+  try {
+    // Use statusCallbacks as onStatus when creating agents/harnesses
+    // ... your workflow logic ...
+  } finally {
+    tui?.stop();
+  }
+}
+```
+
+**Detection:** Check `!options.verbose && process.stdout.isTTY` — the CLI enables the TUI when stdout is a terminal and `--verbose` is not set.
+
+**Lifecycle:** Call `start()` before any workflow work begins and `stop()` in a `finally` block to guarantee cleanup.
+
+**Console capture:** While the TUI is running, `console.log`, `console.warn`, and `console.error` are overridden to route output through the event log widget. Original methods are restored on `stop()`. This means `console.log` calls from deep within your workflow (or from dependencies) will appear in the TUI rather than corrupting the layout.
 
 ---
 
@@ -1131,13 +1421,15 @@ Serialized form of `WorkflowStatusTracker`. Written to `.engin-state.json` on `s
 
 Options passed to a workflow's `run()` function.
 
-| Field                 | Type                     | Description                               |
-| --------------------- | ------------------------ | ----------------------------------------- |
-| `cwd`                 | `string`                 | Project directory to operate on           |
-| `workDir`             | `string`                 | Directory for workflow state persistence  |
-| `maxConcurrentTasks?` | `number`                 | Maximum parallel implementers (default 3) |
-| `apiKeys?`            | `Record<string, string>` | Provider → API key overrides              |
-| `onStatus?`           | `StatusCallbacks`        | Callbacks for workflow/agent events       |
+| Field                 | Type                     | Description                                                    |
+| --------------------- | ------------------------ | -------------------------------------------------------------- |
+| `cwd`                 | `string`                 | Project directory to operate on                                |
+| `workDir`             | `string`                 | Directory for workflow state persistence                       |
+| `maxConcurrentTasks?` | `number`                 | Maximum parallel implementers (default 3)                      |
+| `apiKeys?`            | `Record<string, string>` | Provider → API key overrides                                   |
+| `onStatus?`           | `StatusCallbacks`        | Callbacks for workflow/agent events                            |
+| `verbose?`            | `boolean`                | When true, use verbose console output instead of TUI dashboard |
+| `signal?`             | `AbortSignal`            | Abort signal for cooperative cancellation                      |
 
 ---
 

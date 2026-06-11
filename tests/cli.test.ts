@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { createStatusCallbacks, formatTime, main, parseArgs } from '../src/cli.ts';
+import { createStatusCallbacks, formatTime, main, parseArgs, shouldUseTui } from '../src/cli.ts';
 import { useEnvSandbox } from './helpers/env-sandbox.js';
 import { useTempDir } from './helpers/use-temp-dir.js';
 
@@ -577,5 +577,74 @@ describe('main() loads .env files', () => {
     }
 
     expect(process.env.TEST_CLI_ENV_VAR_VERSION).toBeUndefined();
+  });
+});
+
+// ─── shouldUseTui ────────────────────────────────────────────────────────────
+
+describe('shouldUseTui', () => {
+  const baseOptions = {
+    command: 'run' as const,
+    cwd: '/tmp',
+    maxConcurrent: 3,
+    verbose: false,
+    apiKeys: {},
+    warnings: [],
+  };
+
+  it('returns true when verbose=false and stdout.isTTY=true', () => {
+    const original = process.stdout.isTTY;
+    Object.defineProperty(process.stdout, 'isTTY', { value: true, configurable: true });
+    try {
+      expect(shouldUseTui(baseOptions)).toBe(true);
+    } finally {
+      if (original === undefined) {
+        Object.defineProperty(process.stdout, 'isTTY', { value: undefined, configurable: true });
+      } else {
+        Object.defineProperty(process.stdout, 'isTTY', { value: original, configurable: true });
+      }
+    }
+  });
+
+  it('returns false when verbose=true regardless of TTY', () => {
+    const original = process.stdout.isTTY;
+    Object.defineProperty(process.stdout, 'isTTY', { value: true, configurable: true });
+    try {
+      expect(shouldUseTui({ ...baseOptions, verbose: true })).toBe(false);
+    } finally {
+      if (original === undefined) {
+        Object.defineProperty(process.stdout, 'isTTY', { value: undefined, configurable: true });
+      } else {
+        Object.defineProperty(process.stdout, 'isTTY', { value: original, configurable: true });
+      }
+    }
+  });
+
+  it('returns false when stdout.isTTY is false', () => {
+    const original = process.stdout.isTTY;
+    Object.defineProperty(process.stdout, 'isTTY', { value: false, configurable: true });
+    try {
+      expect(shouldUseTui(baseOptions)).toBe(false);
+    } finally {
+      if (original === undefined) {
+        Object.defineProperty(process.stdout, 'isTTY', { value: undefined, configurable: true });
+      } else {
+        Object.defineProperty(process.stdout, 'isTTY', { value: original, configurable: true });
+      }
+    }
+  });
+
+  it('returns false when stdout.isTTY is undefined', () => {
+    const original = process.stdout.isTTY;
+    Object.defineProperty(process.stdout, 'isTTY', { value: undefined, configurable: true });
+    try {
+      expect(shouldUseTui(baseOptions)).toBe(false);
+    } finally {
+      if (original === undefined) {
+        Object.defineProperty(process.stdout, 'isTTY', { value: undefined, configurable: true });
+      } else {
+        Object.defineProperty(process.stdout, 'isTTY', { value: original, configurable: true });
+      }
+    }
   });
 });

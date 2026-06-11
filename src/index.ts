@@ -16,5 +16,8 @@ export * from './tracking/audit-log.js';
 export * from './tracking/task-status.js';
 export * from './tracking/workflow-status.js';
 
+// ─── TUI ────────────────────────────────────────────────────────────────
+export * from './tui/index.js';
+
 // ─── Pool ────────────────────────────────────────────────────────────────
 export * from './pool/index.js';

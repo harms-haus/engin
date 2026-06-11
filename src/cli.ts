@@ -333,6 +333,16 @@ export function createStatusCallbacks(verbose: boolean): StatusCallbacks {
   return callbacks;
 }
 
+// ─── TUI Detection ─────────────────────────────────────────────────────────
+
+/**
+ * Determine whether to use the TUI dashboard instead of plain console output.
+ * TUI is used when stdout is a TTY and verbose mode is not enabled.
+ */
+export function shouldUseTui(options: CliOptions): boolean {
+  return !options.verbose && !!process.stdout.isTTY;
+}
+
 // ─── Commands ───────────────────────────────────────────────────────────────
 
 export async function initCommand(_options: CliOptions): Promise<void> {
@@ -366,6 +376,7 @@ export async function runCommand(options: CliOptions): Promise<void> {
 
   const workDir = options.workDir ?? getDefaultWorkDir(options.cwd, workflowName);
   const workflow = await loadWorkflow(workflowName, options.cwd);
+  const useTui = shouldUseTui(options);
 
   // Set up SIGINT handler for cooperative cancellation
   const controller = new AbortController();
@@ -375,18 +386,24 @@ export async function runCommand(options: CliOptions): Promise<void> {
   const handler = () => {
     sigintCount++;
     if (sigintCount === 1) {
-      console.log(
-        `\n${formatTime()} ⏹️  Interrupt received, stopping workflow gracefully... (Ctrl+C again to force quit)`,
-      );
+      if (!useTui) {
+        console.log(
+          `\n${formatTime()} ⏹️  Interrupt received, stopping workflow gracefully... (Ctrl+C again to force quit)`,
+        );
+      }
       controller.abort();
       // Safety net: if graceful shutdown hasn't completed in 5s, force exit
       forceExitTimer = setTimeout(() => {
-        console.log(`${formatTime()} ⏹️  Graceful shutdown timed out, forcing exit.`);
+        if (!useTui) {
+          console.log(`${formatTime()} ⏹️  Graceful shutdown timed out, forcing exit.`);
+        }
         process.exit(1);
       }, 5000);
     } else {
       if (forceExitTimer) clearTimeout(forceExitTimer);
-      console.log(`\n${formatTime()} ⏹️  Force quit.`);
+      if (!useTui) {
+        console.log(`\n${formatTime()} ⏹️  Force quit.`);
+      }
       process.exit(1);
     }
   };
@@ -399,7 +416,7 @@ export async function runCommand(options: CliOptions): Promise<void> {
       workDir,
       maxConcurrentTasks: options.maxConcurrent,
       apiKeys: Object.keys(options.apiKeys).length > 0 ? options.apiKeys : undefined,
-      onStatus: createStatusCallbacks(options.verbose),
+      ...(useTui ? { verbose: false } : { verbose: true, onStatus: createStatusCallbacks(options.verbose) }),
       signal: controller.signal,
     });
   } finally {
@@ -573,6 +590,7 @@ export async function resumeCommand(options: CliOptions): Promise<void> {
 
   validateWorkflowName(workflowName);
   const workflow = await loadWorkflow(workflowName, options.cwd);
+  const useTui = shouldUseTui(options);
 
   // Set up SIGINT handler for cooperative cancellation (same as runCommand)
   const controller = new AbortController();
@@ -582,17 +600,23 @@ export async function resumeCommand(options: CliOptions): Promise<void> {
   const handler = () => {
     sigintCount++;
     if (sigintCount === 1) {
-      console.log(
-        `\n${formatTime()} ⏹️  Interrupt received, stopping workflow gracefully... (Ctrl+C again to force quit)`,
-      );
+      if (!useTui) {
+        console.log(
+          `\n${formatTime()} ⏹️  Interrupt received, stopping workflow gracefully... (Ctrl+C again to force quit)`,
+        );
+      }
       controller.abort();
       forceExitTimer = setTimeout(() => {
-        console.log(`${formatTime()} ⏹️  Graceful shutdown timed out, forcing exit.`);
+        if (!useTui) {
+          console.log(`${formatTime()} ⏹️  Graceful shutdown timed out, forcing exit.`);
+        }
         process.exit(1);
       }, 5000);
     } else {
       if (forceExitTimer) clearTimeout(forceExitTimer);
-      console.log(`\n${formatTime()} ⏹️  Force quit.`);
+      if (!useTui) {
+        console.log(`\n${formatTime()} ⏹️  Force quit.`);
+      }
       process.exit(1);
     }
   };
@@ -604,7 +628,7 @@ export async function resumeCommand(options: CliOptions): Promise<void> {
       workDir,
       maxConcurrentTasks: options.maxConcurrent,
       apiKeys: Object.keys(options.apiKeys).length > 0 ? options.apiKeys : undefined,
-      onStatus: createStatusCallbacks(options.verbose),
+      ...(useTui ? { verbose: false } : { verbose: true, onStatus: createStatusCallbacks(options.verbose) }),
       signal: controller.signal,
     });
   } finally {
