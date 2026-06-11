@@ -57,8 +57,8 @@ export type ServerMessage =
   | { type: 'workflow_complete'; summary: WorkflowSummary }
   | { type: 'workflow_failed'; summary: WorkflowSummary; error: string; phase: string }
   | { type: 'agent_spawned'; workflowId: string; agent: AgentWindowState }
-  | { type: 'agent_log'; workflowId: string; agentId: string; entry: LogEntry }
-  | { type: 'agent_complete'; workflowId: string; agentId: string; phase?: string }
+  | { type: 'agent_log'; workflowId: string; agentId: string; entry: LogEntry; taskId?: string }
+  | { type: 'agent_complete'; workflowId: string; agentId: string; phase?: string; taskId?: string }
   | {
       type: 'load_past_run';
       workflowId: string;

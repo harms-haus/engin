@@ -326,4 +326,35 @@ describe('AgentGrid', () => {
       expect(screen.queryByText('No active agents')).toBeNull();
     });
   });
+
+  describe('composite key – agents with same agentId different taskIds', () => {
+    it('renders unique cells for agents with same agentId different taskIds', () => {
+      const agents = [
+        createAgent({ agentId: 'lane-0', profile: 'coder', taskId: 'T1', active: true }),
+        createAgent({ agentId: 'lane-0', profile: 'coder', taskId: 'T2', active: true }),
+      ];
+      const { container } = render(<AgentGrid agents={agents} />);
+      const cells = container.querySelectorAll('.agent-cell');
+      expect(cells).toHaveLength(2);
+
+      // Both cells should have the same profile name but distinct taskId context
+      const headerNames = Array.from(container.querySelectorAll('.agent-cell-header-name'));
+      expect(headerNames).toHaveLength(2);
+      // Both show the same profile name ("coder")
+      expect(headerNames[0].textContent).toContain('coder');
+      expect(headerNames[1].textContent).toContain('coder');
+    });
+
+    it('renders different active statuses for same-agentId agents', () => {
+      const agents = [
+        createAgent({ agentId: 'lane-0', profile: 'coder', taskId: 'T1', active: true }),
+        createAgent({ agentId: 'lane-0', profile: 'coder', taskId: 'T2', active: false }),
+      ];
+      const { container } = render(<AgentGrid agents={agents} />);
+      const dots = container.querySelectorAll('.agent-cell-status-dot');
+      expect(dots).toHaveLength(2);
+      expect(dots[0]).toHaveClass('agent-cell-status-dot--active');
+      expect(dots[1]).toHaveClass('agent-cell-status-dot--inactive');
+    });
+  });
 });

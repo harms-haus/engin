@@ -160,8 +160,8 @@ describe('onAgentSpawn', () => {
       taskId: 'task-42',
     });
 
-    // Registry
-    const agent = registry.getRun(runId)!.agents.get('agent-1');
+    // Registry – stored under composite key
+    const agent = registry.getRun(runId)!.agents.get('agent-1::task-42');
     expect(agent).toBeDefined();
     expect(agent!.agentId).toBe('agent-1');
     expect(agent!.profile).toBe('coder');
@@ -505,7 +505,8 @@ describe('onDecision', () => {
       taskId: 'task-1',
     });
 
-    const agent = registry.getRun(runId)!.agents.get('agent-1');
+    // Agent auto-created under composite key via addAgentLogEntry with taskId
+    const agent = registry.getRun(runId)!.agents.get('agent-1::task-1');
     expect(agent!.log).toHaveLength(1);
     expect(agent!.log[0].type).toBe('decision');
     expect(agent!.log[0].content).toBe('Proceed with plan A');
@@ -605,5 +606,77 @@ describe('integration – combined agent log entries', () => {
     expect(broadcast.mock.calls[0][0]).toMatchObject({ type: 'agent_log', entry: { type: 'tool_call_start' } });
     expect(broadcast.mock.calls[1][0]).toMatchObject({ type: 'agent_log', entry: { type: 'text' } });
     expect(broadcast.mock.calls[2][0]).toMatchObject({ type: 'agent_log', entry: { type: 'tool_call_end' } });
+  });
+});
+
+// ─── Composite key – agent deduplication via taskId ───────────────────────
+
+describe('composite key – agents with same agentId different taskIds', () => {
+  it('spawns agents with same agentId different taskIds without dedup', () => {
+    const { registry, runId, broadcast, bridge } = setup();
+
+    bridge.onAgentSpawn?.({
+      agentId: 'lane-0',
+      profile: 'coder',
+      phase: 'implementing',
+      taskId: 'T1',
+    });
+
+    bridge.onAgentSpawn?.({
+      agentId: 'lane-0',
+      profile: 'coder',
+      phase: 'implementing',
+      taskId: 'T2',
+    });
+
+    // Both agents should exist in the registry
+    const entry = registry.getRun(runId)!;
+    expect(entry.agents.size).toBe(2);
+
+    // Both agent_spawned broadcasts should have been sent
+    const spawnBroadcasts = broadcast.mock.calls.filter((c) => c[0].type === 'agent_spawned');
+    expect(spawnBroadcasts).toHaveLength(2);
+  });
+
+  it('completes only the correct agent by taskId', () => {
+    const { registry, runId, broadcast, bridge } = setup();
+
+    bridge.onAgentSpawn?.({
+      agentId: 'lane-0',
+      profile: 'coder',
+      phase: 'implementing',
+      taskId: 'T1',
+    });
+
+    bridge.onAgentSpawn?.({
+      agentId: 'lane-0',
+      profile: 'coder',
+      phase: 'implementing',
+      taskId: 'T2',
+    });
+
+    broadcast.mockClear();
+
+    // Complete only the T1 agent
+    bridge.onAgentComplete?.({
+      agentId: 'lane-0',
+      profile: 'coder',
+      phase: 'implementing',
+      taskId: 'T1',
+    });
+
+    const entry = registry.getRun(runId)!;
+    const agents = Array.from(entry.agents.values());
+    const t1Agent = agents.find((a) => a.taskId === 'T1');
+    const t2Agent = agents.find((a) => a.taskId === 'T2');
+
+    expect(t1Agent).toBeDefined();
+    expect(t2Agent).toBeDefined();
+    expect(t1Agent!.active).toBe(false);
+    expect(t2Agent!.active).toBe(true);
+
+    // Only one agent_complete broadcast
+    const completeBroadcasts = broadcast.mock.calls.filter((c) => c[0].type === 'agent_complete');
+    expect(completeBroadcasts).toHaveLength(1);
   });
 });

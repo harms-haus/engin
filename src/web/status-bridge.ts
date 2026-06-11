@@ -88,12 +88,13 @@ export function createStatusBridge(
     },
 
     onAgentComplete(info) {
-      registry.completeAgent(runId, info.agentId);
+      registry.completeAgent(runId, info.agentId, info.taskId);
       broadcast({
         type: 'agent_complete',
         workflowId: runId,
         agentId: info.agentId,
         phase: info.phase,
+        taskId: info.taskId,
       });
     },
 
@@ -159,12 +160,13 @@ export function createStatusBridge(
         content: info.error,
         metadata: { phase: info.phase },
       };
-      registry.addAgentLogEntry(runId, info.agentId, entry);
+      registry.addAgentLogEntry(runId, info.agentId, entry, info.taskId);
       broadcast({
         type: 'agent_log',
         workflowId: runId,
         agentId: info.agentId,
         entry,
+        taskId: info.taskId,
       });
     },
 
@@ -178,12 +180,13 @@ export function createStatusBridge(
         content: info.decision,
         metadata: { reasoning: info.reasoning },
       };
-      registry.addAgentLogEntry(runId, info.agentId, entry);
+      registry.addAgentLogEntry(runId, info.agentId, entry, info.taskId);
       broadcast({
         type: 'agent_log',
         workflowId: runId,
         agentId: info.agentId,
         entry,
+        taskId: info.taskId,
       });
     },
 

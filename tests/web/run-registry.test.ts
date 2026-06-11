@@ -919,3 +919,150 @@ describe('getAgentRecords', () => {
     expect(after[0].agentId).toBe('a1');
   });
 });
+
+// ─── Composite Map key for agent deduplication ───────────────────────────
+
+describe('composite key – same agentId different taskIds', () => {
+  it('stores agents with same agentId but different taskIds separately', () => {
+    const { registry, runId } = registryWithOneRun();
+    registry.addAgent(runId, {
+      agentId: 'lane-0',
+      profile: 'coder',
+      phase: 'implementing',
+      taskId: 'T1',
+      active: true,
+      log: [],
+    });
+    registry.addAgent(runId, {
+      agentId: 'lane-0',
+      profile: 'coder',
+      phase: 'implementing',
+      taskId: 'T2',
+      active: true,
+      log: [],
+    });
+
+    const entry = registry.getRun(runId)!;
+    // Should have two distinct agent entries, not one overwritten
+    expect(entry.agents.size).toBe(2);
+  });
+
+  it('completeAgent with taskId only completes the matching agent', () => {
+    const { registry, runId } = registryWithOneRun();
+    registry.addAgent(runId, {
+      agentId: 'lane-0',
+      profile: 'coder',
+      phase: 'implementing',
+      taskId: 'T1',
+      active: true,
+      log: [],
+    });
+    registry.addAgent(runId, {
+      agentId: 'lane-0',
+      profile: 'coder',
+      phase: 'implementing',
+      taskId: 'T2',
+      active: true,
+      log: [],
+    });
+
+    // Complete only the T1 agent using the new taskId parameter
+    registry.completeAgent(runId, 'lane-0', 'T1');
+
+    const entry = registry.getRun(runId)!;
+    // Both entries should still exist
+    expect(entry.agents.size).toBe(2);
+
+    // Find the agents by iterating (we can't use .get with composite key yet)
+    const agents = Array.from(entry.agents.values());
+    const t1Agent = agents.find((a) => a.taskId === 'T1');
+    const t2Agent = agents.find((a) => a.taskId === 'T2');
+    expect(t1Agent).toBeDefined();
+    expect(t2Agent).toBeDefined();
+
+    // T1 should be inactive, T2 should still be active
+    expect(t1Agent!.active).toBe(false);
+    expect(t2Agent!.active).toBe(true);
+  });
+
+  it('addAgentLogEntry with taskId routes logs to correct agent', () => {
+    const { registry, runId } = registryWithOneRun();
+    registry.addAgent(runId, {
+      agentId: 'lane-0',
+      profile: 'coder',
+      phase: 'implementing',
+      taskId: 'T1',
+      active: true,
+      log: [],
+    });
+    registry.addAgent(runId, {
+      agentId: 'lane-0',
+      profile: 'coder',
+      phase: 'implementing',
+      taskId: 'T2',
+      active: true,
+      log: [],
+    });
+
+    // Add logs to each agent using the new taskId parameter
+    registry.addAgentLogEntry(
+      runId,
+      'lane-0',
+      { id: 'log-t1', timestamp: '2026-06-11T00:00:00Z', type: 'text', content: 'log for T1' },
+      'T1',
+    );
+    registry.addAgentLogEntry(
+      runId,
+      'lane-0',
+      { id: 'log-t2', timestamp: '2026-06-11T00:00:01Z', type: 'text', content: 'log for T2' },
+      'T2',
+    );
+
+    const entry = registry.getRun(runId)!;
+    const agents = Array.from(entry.agents.values());
+    const t1Agent = agents.find((a) => a.taskId === 'T1');
+    const t2Agent = agents.find((a) => a.taskId === 'T2');
+
+    expect(t1Agent).toBeDefined();
+    expect(t2Agent).toBeDefined();
+
+    // Each agent should only have its own log entry
+    expect(t1Agent!.log).toHaveLength(1);
+    expect(t1Agent!.log[0].content).toBe('log for T1');
+    expect(t2Agent!.log).toHaveLength(1);
+    expect(t2Agent!.log[0].content).toBe('log for T2');
+  });
+
+  it('agent without taskId does not collide with agent with taskId', () => {
+    const { registry, runId } = registryWithOneRun();
+    // Agent without taskId
+    registry.addAgent(runId, {
+      agentId: 'lane-0',
+      profile: 'reviewer',
+      phase: 'review',
+      active: true,
+      log: [{ id: 'l1', timestamp: '2026-06-11T00:00:00Z', type: 'text', content: 'no-task' }],
+    });
+    // Agent with taskId
+    registry.addAgent(runId, {
+      agentId: 'lane-0',
+      profile: 'coder',
+      phase: 'implementing',
+      taskId: 'T1',
+      active: true,
+      log: [{ id: 'l2', timestamp: '2026-06-11T00:00:00Z', type: 'text', content: 'has-task' }],
+    });
+
+    const entry = registry.getRun(runId)!;
+    // Both should exist as separate entries
+    expect(entry.agents.size).toBe(2);
+
+    const agents = Array.from(entry.agents.values());
+    const withoutTask = agents.find((a) => a.taskId === undefined);
+    const withTask = agents.find((a) => a.taskId === 'T1');
+    expect(withoutTask).toBeDefined();
+    expect(withTask).toBeDefined();
+    expect(withoutTask!.log[0].content).toBe('no-task');
+    expect(withTask!.log[0].content).toBe('has-task');
+  });
+});

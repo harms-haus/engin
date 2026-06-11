@@ -1,6 +1,18 @@
 import type { PersistedAgentRecord } from '../core/types.js';
 import type { AgentWindowState, LogEntry, PhaseDescriptor, SidebarInfo, WorkflowSummary } from './types.js';
 
+// ─── Composite key helper ──────────────────────────────────────────────────
+
+/**
+ * Build a composite Map key from an agentId and optional taskId.
+ *
+ * When taskId is present the key is `agentId::taskId` so that agents with
+ * the same agentId but different tasks are stored as separate entries.
+ */
+function agentKey(agentId: string, taskId?: string): string {
+  return taskId ? `${agentId}::${taskId}` : agentId;
+}
+
 // ─── Internal RunEntry ──────────────────────────────────────────────────────
 
 interface RunEntry {
@@ -132,7 +144,7 @@ export class RunRegistry {
    */
   addAgent(runId: string, agent: AgentWindowState): void {
     const entry = this.getEntryOrThrow(runId);
-    entry.agents.set(agent.agentId, agent);
+    entry.agents.set(agentKey(agent.agentId, agent.taskId), agent);
     entry.onAgentSpawned?.({
       agentId: agent.agentId,
       profile: agent.profile,
@@ -145,9 +157,10 @@ export class RunRegistry {
    * Mark an agent as inactive (completed) within a run.
    * Throws if either the run ID or the agent ID does not exist.
    */
-  completeAgent(runId: string, agentId: string): void {
+  completeAgent(runId: string, agentId: string, taskId?: string): void {
     const entry = this.getEntryOrThrow(runId);
-    const agent = entry.agents.get(agentId);
+    const key = agentKey(agentId, taskId);
+    const agent = entry.agents.get(key);
     if (!agent) {
       throw new Error(`Agent ${agentId} not found in run ${runId}`);
     }
@@ -160,12 +173,13 @@ export class RunRegistry {
    * it is auto-created with an empty profile and active=true.
    * Throws only if the run ID does not exist.
    */
-  addAgentLogEntry(runId: string, agentId: string, logEntry: LogEntry): void {
+  addAgentLogEntry(runId: string, agentId: string, logEntry: LogEntry, taskId?: string): void {
     const entry = this.getEntryOrThrow(runId);
-    let agent = entry.agents.get(agentId);
+    const key = agentKey(agentId, taskId);
+    let agent = entry.agents.get(key);
     if (!agent) {
       agent = { agentId, profile: '', active: true, log: [logEntry] };
-      entry.agents.set(agentId, agent);
+      entry.agents.set(key, agent);
     } else {
       agent.log.push(logEntry);
     }

@@ -1,6 +1,41 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { AppGlobalState, ClientMessage, ServerMessage, WorkflowRunState } from '../types';
 import { isServerMessage } from '../types';
+import { agentKey } from '../utils/agent-key';
+
+/**
+ * Look up an agent in the agents Map using composite-key logic.
+ *
+ * If taskId is provided the lookup uses the composite key directly.
+ * Otherwise it tries the bare agentId first (backward compat) and then
+ * falls back to the first active agent with that agentId, or the last
+ * match if none are active.
+ */
+function findAgentEntry(
+  agents: Map<string, import('../types').AgentWindowState>,
+  agentId: string,
+  taskId?: string,
+): [string, import('../types').AgentWindowState] | undefined {
+  if (taskId) {
+    const key = agentKey(agentId, taskId);
+    const agent = agents.get(key);
+    return agent ? [key, agent] : undefined;
+  }
+
+  // Try bare key first (backward compat with agents that have no taskId)
+  const bare = agents.get(agentId);
+  if (bare) return [agentId, bare];
+
+  // Fall back to iterating — prefer first active, else last match
+  let lastMatch: [string, import('../types').AgentWindowState] | undefined;
+  for (const [key, agent] of agents) {
+    if (agent.agentId === agentId) {
+      if (agent.active) return [key, agent];
+      lastMatch = [key, agent];
+    }
+  }
+  return lastMatch;
+}
 
 export function useWebSocket() {
   const [state, setState] = useState<AppGlobalState>({
@@ -141,9 +176,10 @@ export function useWebSocket() {
         setState((prev) => {
           const runStates = new Map(prev.runStates);
           const existing = runStates.get(msg.workflowId);
+          const key = agentKey(msg.agent.agentId, msg.agent.taskId);
           if (existing) {
             const agents = new Map(existing.agents);
-            agents.set(msg.agent.agentId, msg.agent);
+            agents.set(key, msg.agent);
             runStates.set(msg.workflowId, { ...existing, agents });
           } else {
             const workflow = prev.workflows.find((w) => w.id === msg.workflowId);
@@ -152,7 +188,7 @@ export function useWebSocket() {
             }
             runStates.set(msg.workflowId, {
               summary: workflow,
-              agents: new Map([[msg.agent.agentId, msg.agent]]),
+              agents: new Map([[key, msg.agent]]),
               currentPhase: '',
               completedPhases: [],
             });
@@ -167,9 +203,10 @@ export function useWebSocket() {
           const runState = runStates.get(msg.workflowId);
           if (runState) {
             const agents = new Map(runState.agents);
-            const agent = agents.get(msg.agentId);
-            if (agent) {
-              agents.set(msg.agentId, {
+            const found = findAgentEntry(agents, msg.agentId, msg.taskId);
+            if (found) {
+              const [key, agent] = found;
+              agents.set(key, {
                 ...agent,
                 log: [...agent.log, msg.entry],
               });
@@ -186,9 +223,10 @@ export function useWebSocket() {
           const runState = runStates.get(msg.workflowId);
           if (runState) {
             const agents = new Map(runState.agents);
-            const agent = agents.get(msg.agentId);
-            if (agent) {
-              agents.set(msg.agentId, { ...agent, active: false });
+            const found = findAgentEntry(agents, msg.agentId, msg.taskId);
+            if (found) {
+              const [key, agent] = found;
+              agents.set(key, { ...agent, active: false });
             }
             runStates.set(msg.workflowId, { ...runState, agents });
           }
@@ -199,7 +237,7 @@ export function useWebSocket() {
       case 'load_past_run': {
         setState((prev) => {
           const runStates = new Map(prev.runStates);
-          const agentsMap = new Map(msg.agents.map((a) => [a.agentId, a]));
+          const agentsMap = new Map(msg.agents.map((a) => [agentKey(a.agentId, a.taskId), a]));
           runStates.set(msg.workflowId, {
             summary: msg.summary,
             agents: agentsMap,

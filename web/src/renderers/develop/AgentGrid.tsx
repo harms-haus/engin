@@ -10,6 +10,7 @@
 import './AgentGrid.css';
 import { AgentLog } from './AgentLog';
 import type { DevelopAgentInfo } from './types';
+import { agentKey } from '../../utils/agent-key';
 
 interface AgentGridProps {
   agents: DevelopAgentInfo[];
@@ -24,11 +25,13 @@ export function AgentGrid({ agents, emptyMessage }: AgentGridProps) {
   return (
     <div className="agent-grid">
       {agents.map((agent) => (
-        <div key={agent.agentId} className="agent-cell">
+        <div key={agentKey(agent.agentId, agent.taskId)} className="agent-cell">
           <div className="agent-cell-header">
             <span className="agent-cell-header-name">
               <span
                 className={`agent-cell-status-dot agent-cell-status-dot--${agent.active ? 'active' : 'inactive'}`}
+                role="status"
+                aria-label={agent.active ? 'Active' : 'Completed'}
               />
               {agent.profile}
             </span>

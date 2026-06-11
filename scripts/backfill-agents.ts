@@ -69,6 +69,16 @@ interface RunSummary {
   reason?: string;
 }
 
+// ─── Composite key helper ──────────────────────────────────────────────────
+// Canonical definition: web/src/utils/agent-key.ts
+// Backend copy: src/web/run-registry.ts
+// This script is standalone and cannot import from either, so the logic
+// is duplicated here to avoid a cross-package dependency.
+
+function agentKey(agentId: string, taskId?: string): string {
+  return taskId ? `${agentId}::${taskId}` : agentId;
+}
+
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 function extractProfileId(profile: { id: string; name?: string } | string | undefined): string {
@@ -93,7 +103,22 @@ function parseJsonl(content: string): AuditEvent[] {
 
 // ─── Core logic ─────────────────────────────────────────────────────────────
 
-function reconstructAgents(auditEvents: AuditEvent[]): PersistedAgentRecord[] {
+// Agent ID → phase mapping for non-implementing agents
+const AGENT_PHASE_MAP: Record<string, string> = {
+  'scout-coordinator': 'scouting',
+  'scouting-reviewer': 'scouting_review',
+  planner: 'planning',
+  'plan-reviewer': 'plan_review',
+  'final-reviewer': 'final_review',
+  'title-generator': 'initialization',
+};
+
+// For scout-N agents (parallel scouts)
+function isInferredScoutAgent(agentId: string): boolean {
+  return /^scout-\d+$/.test(agentId);
+}
+
+export function reconstructAgents(auditEvents: AuditEvent[]): PersistedAgentRecord[] {
   const records = new Map<string, PersistedAgentRecord>();
 
   // First pass: create records from agent_start events
@@ -102,7 +127,7 @@ function reconstructAgents(auditEvents: AuditEvent[]): PersistedAgentRecord[] {
     const startEvent = event as AuditStartEvent;
 
     // Skip duplicates (same agentId + taskId combo can appear in implementing phase)
-    const key = startEvent.taskId ? `${startEvent.agentId}::${startEvent.taskId}` : startEvent.agentId;
+    const key = agentKey(startEvent.agentId, startEvent.taskId);
 
     if (!records.has(key)) {
       records.set(key, {
@@ -114,13 +139,36 @@ function reconstructAgents(auditEvents: AuditEvent[]): PersistedAgentRecord[] {
     }
   }
 
-  // Second pass: add completedAt from agent_end events
+  // Second pass: infer non-implementing agents from structured_output / decision events
+  for (const event of auditEvents) {
+    if (event.type !== 'structured_output' && event.type !== 'decision') continue;
+    const ev = event as Record<string, unknown>;
+    const agentId = ev.agentId as string | undefined;
+    if (!agentId) continue;
+
+    // Only infer for known agent IDs (skip unknown ones like lane-N)
+    const inferredPhase = AGENT_PHASE_MAP[agentId] ?? (isInferredScoutAgent(agentId) ? 'scouting' : undefined);
+    if (inferredPhase === undefined) continue;
+
+    // Check if any existing record already has this agentId
+    // (first pass may have stored under agentId::taskId composite key)
+    const hasExistingRecord = Array.from(records.values()).some((r) => r.agentId === agentId);
+    if (!hasExistingRecord) {
+      records.set(agentId, {
+        agentId,
+        profile: '',
+        phase: inferredPhase,
+      });
+    }
+  }
+
+  // Third pass: add completedAt from agent_end events
   for (const event of auditEvents) {
     if (event.type !== 'agent_end') continue;
     const endEvent = event as AuditEndEvent;
 
     // Find matching record
-    const key = endEvent.taskId ? `${endEvent.agentId}::${endEvent.taskId}` : endEvent.agentId;
+    const key = agentKey(endEvent.agentId, endEvent.taskId);
 
     const record = records.get(key);
     if (record) {
@@ -229,7 +277,7 @@ async function processRun(runDir: string, options: { dryRun: boolean; force: boo
 
   if (reconstructed.length === 0) {
     summary.skipped = true;
-    summary.reason = 'no agent_start events found in audit log';
+    summary.reason = 'no reconstructible agent events found in audit log';
     return summary;
   }
 
@@ -313,7 +361,9 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((err) => {
-  console.error('Fatal error:', err);
-  process.exit(1);
-});
+if (import.meta.main) {
+  main().catch((err) => {
+    console.error('Fatal error:', err);
+    process.exit(1);
+  });
+}

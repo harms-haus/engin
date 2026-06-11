@@ -615,3 +615,55 @@ describe('getAgentsForPhase', () => {
     expect(getAgentsForPhase(state, 'any-phase')).toEqual([]);
   });
 });
+
+// ─── Composite key – agent deduplication via taskId ───────────────────────
+
+describe('buildDevelopState – composite key agents', () => {
+  it('groups all agents by phase even with duplicate agentIds', () => {
+    const phases: PhaseDescriptor[] = [
+      createPhase('implementing', 'Implementing', '💻'),
+      createPhase('review', 'Review', '🔍'),
+    ];
+    const summary = createSummary({ sidebar: { title: 'Test', indicator: '…', phases } });
+
+    // Two agents with same agentId but different taskIds.
+    // The Map keys are composite (${agentId}::${taskId}) which is what the
+    // fixed RunRegistry will produce.
+    const agents = new Map<string, AgentWindowState>([
+      [
+        'lane-0::T1',
+        createAgentWindow('lane-0', { profile: 'coder', phase: 'implementing', taskId: 'T1', active: true }),
+      ],
+      [
+        'lane-0::T2',
+        createAgentWindow('lane-0', { profile: 'coder', phase: 'implementing', taskId: 'T2', active: true }),
+      ],
+    ]);
+
+    const state = createRunState({ summary, agents, currentPhase: 'implementing' });
+    const result = buildDevelopState(state);
+
+    // Both agents should appear in the implementing phase group
+    expect(result.agentsByPhase['implementing']).toHaveLength(2);
+    expect(result.agentsByPhase['implementing'][0].taskId).toBe('T1');
+    expect(result.agentsByPhase['implementing'][1].taskId).toBe('T2');
+  });
+
+  it('correctly routes agents with same agentId across different phases', () => {
+    const phases: PhaseDescriptor[] = [createPhase('plan', 'Plan', '📋'), createPhase('code', 'Code', '💻')];
+    const summary = createSummary({ sidebar: { title: 'Test', indicator: '…', phases } });
+
+    const agents = new Map<string, AgentWindowState>([
+      ['lane-0::T1', createAgentWindow('lane-0', { profile: 'coder', phase: 'plan', taskId: 'T1', active: false })],
+      ['lane-0::T2', createAgentWindow('lane-0', { profile: 'coder', phase: 'code', taskId: 'T2', active: true })],
+    ]);
+
+    const state = createRunState({ summary, agents, currentPhase: 'code', completedPhases: ['plan'] });
+    const result = buildDevelopState(state);
+
+    expect(result.agentsByPhase['plan']).toHaveLength(1);
+    expect(result.agentsByPhase['plan'][0].taskId).toBe('T1');
+    expect(result.agentsByPhase['code']).toHaveLength(1);
+    expect(result.agentsByPhase['code'][0].taskId).toBe('T2');
+  });
+});
