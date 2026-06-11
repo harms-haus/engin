@@ -7,10 +7,10 @@
  * displayed.
  */
 
+import { agentKey } from '../../utils/agent-key';
 import './AgentGrid.css';
 import { AgentLog } from './AgentLog';
 import type { DevelopAgentInfo } from './types';
-import { agentKey } from '../../utils/agent-key';
 
 interface AgentGridProps {
   agents: DevelopAgentInfo[];
