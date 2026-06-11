@@ -17,12 +17,12 @@ export function ProgressIndicator({ phases, activePhaseTab, onTabClick }: Progre
           role="tab"
           data-status={phase.status}
           aria-disabled={phase.status === 'pending' || undefined}
-          style={{
-            '--phase-color':
-              phase.status === 'pending'
-                ? 'var(--engin-phase-disabled)'
-                : 'var(--engin-phase-' + phase.index + ')',
-          } as React.CSSProperties}
+          style={
+            {
+              '--phase-color':
+                phase.status === 'pending' ? 'var(--engin-phase-disabled)' : 'var(--engin-phase-' + phase.index + ')',
+            } as React.CSSProperties
+          }
           onClick={() => {
             if (phase.status !== 'pending') {
               onTabClick(phase.id);

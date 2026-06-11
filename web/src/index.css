@@ -17,14 +17,14 @@
   --engin-error: #f85149;
 
   /* Phase colors — theme-dependent; override these for light themes */
-  --engin-phase-0: #e74c3c;   /* red, initialization */
-  --engin-phase-1: #e67e22;   /* orange, scouting */
-  --engin-phase-2: #f1c40f;   /* yellow, scouting review */
-  --engin-phase-3: #2ecc71;   /* green, planning */
-  --engin-phase-4: #1abc9c;   /* teal, plan review */
-  --engin-phase-5: #3498db;   /* blue, implementing */
-  --engin-phase-6: #9b59b6;   /* purple, final review */
-  --engin-phase-disabled: #6e7681;      /* gray for disabled/pending */
+  --engin-phase-0: #e74c3c; /* red, initialization */
+  --engin-phase-1: #e67e22; /* orange, scouting */
+  --engin-phase-2: #f1c40f; /* yellow, scouting review */
+  --engin-phase-3: #2ecc71; /* green, planning */
+  --engin-phase-4: #1abc9c; /* teal, plan review */
+  --engin-phase-5: #3498db; /* blue, implementing */
+  --engin-phase-6: #9b59b6; /* purple, final review */
+  --engin-phase-disabled: #6e7681; /* gray for disabled/pending */
   --engin-phase-disabled-opacity: 0.4;
 
   --engin-sidebar-width: 280px;

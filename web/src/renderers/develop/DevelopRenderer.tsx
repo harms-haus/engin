@@ -18,7 +18,7 @@ export function DevelopRenderer({ runState }: WorkflowRendererProps) {
   const state = buildDevelopState(runState);
   const [manualTab, setManualTab] = useState<string | null>(null);
 
-  const effectiveTab = manualTab ?? state.currentPhase ?? (state.phases[0]?.id ?? '');
+  const effectiveTab = manualTab ?? state.currentPhase ?? state.phases[0]?.id ?? '';
 
   const handleTabClick = (phaseId: string) => {
     if (phaseId === state.currentPhase) {
@@ -32,11 +32,7 @@ export function DevelopRenderer({ runState }: WorkflowRendererProps) {
 
   return (
     <div className="develop-renderer">
-      <ProgressIndicator
-        phases={state.phases}
-        activePhaseTab={effectiveTab}
-        onTabClick={handleTabClick}
-      />
+      <ProgressIndicator phases={state.phases} activePhaseTab={effectiveTab} onTabClick={handleTabClick} />
       <div className="develop-content">
         <AgentGrid agents={activeAgents} emptyMessage="No agents in this phase" />
       </div>

@@ -13,9 +13,8 @@ import '@testing-library/jest-dom/vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
-import type { AgentWindowState, LogEntry, PhaseDescriptor, WorkflowRunState, WorkflowSummary } from '../../../types';
+import type { AgentWindowState, PhaseDescriptor, WorkflowRunState, WorkflowSummary } from '../../../types';
 import { DevelopRenderer } from '../DevelopRenderer';
-import type { DevelopAgentInfo } from '../types';
 
 // ─── Mock @tanstack/react-virtual ──────────────────────────────────────────
 // AgentLog uses a virtualizer internally; mock it so that log entries
@@ -104,10 +103,7 @@ describe('DevelopRenderer', () => {
     });
 
     it('renders the ProgressIndicator component', () => {
-      const phases = [
-        createPhase('init', 'Init', '🚀'),
-        createPhase('build', 'Build', '⚙️'),
-      ];
+      const phases = [createPhase('init', 'Init', '🚀'), createPhase('build', 'Build', '⚙️')];
       const runState = buildRunStateWithPhases(phases, 'build', ['init']);
       const { container } = render(<DevelopRenderer runState={runState} />);
       expect(container.querySelector('.progress-indicator')).toBeInTheDocument();
@@ -153,10 +149,7 @@ describe('DevelopRenderer', () => {
     });
 
     it('renders no selected tab when currentPhase is empty (empty string is not nullish)', () => {
-      const phases = [
-        createPhase('init', 'Init', '🚀'),
-        createPhase('build', 'Build', '⚙️'),
-      ];
+      const phases = [createPhase('init', 'Init', '🚀'), createPhase('build', 'Build', '⚙️')];
       const runState = buildRunStateWithPhases(phases, '', []);
       const { container } = render(<DevelopRenderer runState={runState} />);
       const tabs = container.querySelectorAll('.phase-tab');
@@ -174,10 +167,7 @@ describe('DevelopRenderer', () => {
     });
 
     it('passes the active phase id as activePhaseTab to ProgressIndicator', () => {
-      const phases = [
-        createPhase('plan', 'Plan', '📋'),
-        createPhase('code', 'Code', '💻'),
-      ];
+      const phases = [createPhase('plan', 'Plan', '📋'), createPhase('code', 'Code', '💻')];
       const runState = buildRunStateWithPhases(phases, 'code', ['plan']);
       render(<DevelopRenderer runState={runState} />);
       // The code tab should be selected
@@ -185,11 +175,7 @@ describe('DevelopRenderer', () => {
     });
 
     it('follows currentPhase when there is no manualTab (auto-follow)', () => {
-      const phases = [
-        createPhase('a', 'A', '1'),
-        createPhase('b', 'B', '2'),
-        createPhase('c', 'C', '3'),
-      ];
+      const phases = [createPhase('a', 'A', '1'), createPhase('b', 'B', '2'), createPhase('c', 'C', '3')];
       const runState = buildRunStateWithPhases(phases, 'b', ['a']);
       const { container } = render(<DevelopRenderer runState={runState} />);
       const tabs = container.querySelectorAll('.phase-tab');
@@ -197,10 +183,7 @@ describe('DevelopRenderer', () => {
     });
 
     it('shows first phase as selected when currentPhase matches the first phase id', () => {
-      const phases = [
-        createPhase('init', 'Init', '🚀'),
-        createPhase('build', 'Build', '⚙️'),
-      ];
+      const phases = [createPhase('init', 'Init', '🚀'), createPhase('build', 'Build', '⚙️')];
       const runState = buildRunStateWithPhases(phases, 'init', []);
       const { container } = render(<DevelopRenderer runState={runState} />);
       const tabs = container.querySelectorAll('.phase-tab');
@@ -232,10 +215,7 @@ describe('DevelopRenderer', () => {
     });
 
     it('uses currentPhase when manualTab is null', () => {
-      const phases = [
-        createPhase('a', 'A', '1'),
-        createPhase('b', 'B', '2'),
-      ];
+      const phases = [createPhase('a', 'A', '1'), createPhase('b', 'B', '2')];
       const runState = buildRunStateWithPhases(phases, 'b', ['a']);
       const { container } = render(<DevelopRenderer runState={runState} />);
       const tabs = container.querySelectorAll('.phase-tab');
@@ -261,11 +241,7 @@ describe('DevelopRenderer', () => {
     });
 
     it('pins to a different completed tab than the current active', () => {
-      const phases = [
-        createPhase('a', 'A', '1'),
-        createPhase('b', 'B', '2'),
-        createPhase('c', 'C', '3'),
-      ];
+      const phases = [createPhase('a', 'A', '1'), createPhase('b', 'B', '2'), createPhase('c', 'C', '3')];
       const runState = buildRunStateWithPhases(phases, 'b', ['a']);
 
       const { container } = render(<DevelopRenderer runState={runState} />);
@@ -277,11 +253,7 @@ describe('DevelopRenderer', () => {
     });
 
     it('does not pin when clicking a pending tab (ProgressIndicator ignores clicks on pending)', () => {
-      const phases = [
-        createPhase('a', 'A', '1'),
-        createPhase('b', 'B', '2'),
-        createPhase('c', 'C', '3'),
-      ];
+      const phases = [createPhase('a', 'A', '1'), createPhase('b', 'B', '2'), createPhase('c', 'C', '3')];
       const runState = buildRunStateWithPhases(phases, 'a', []);
 
       const { container } = render(<DevelopRenderer runState={runState} />);
@@ -318,10 +290,7 @@ describe('DevelopRenderer', () => {
     });
 
     it('re-engages auto-follow when clicking the active tab without prior pinning', () => {
-      const phases = [
-        createPhase('a', 'A', '1'),
-        createPhase('b', 'B', '2'),
-      ];
+      const phases = [createPhase('a', 'A', '1'), createPhase('b', 'B', '2')];
       const runState = buildRunStateWithPhases(phases, 'b', ['a']);
 
       const { container } = render(<DevelopRenderer runState={runState} />);
@@ -333,11 +302,7 @@ describe('DevelopRenderer', () => {
     });
 
     it('stays pinned to manual tab when a different non-active tab is clicked', () => {
-      const phases = [
-        createPhase('a', 'A', '1'),
-        createPhase('b', 'B', '2'),
-        createPhase('c', 'C', '3'),
-      ];
+      const phases = [createPhase('a', 'A', '1'), createPhase('b', 'B', '2'), createPhase('c', 'C', '3')];
       const runState = buildRunStateWithPhases(phases, 'b', ['a', 'c']);
 
       const { container } = render(<DevelopRenderer runState={runState} />);
@@ -356,10 +321,7 @@ describe('DevelopRenderer', () => {
 
   describe('agent filtering by effective tab', () => {
     it('shows agents for the active phase in auto-follow mode', () => {
-      const phases = [
-        createPhase('plan', 'Plan', '📋'),
-        createPhase('code', 'Code', '💻'),
-      ];
+      const phases = [createPhase('plan', 'Plan', '📋'), createPhase('code', 'Code', '💻')];
       const agents = new Map<string, AgentWindowState>([
         ['coder-1', createAgentWindow('coder-1', { profile: 'Coder', phase: 'code', active: true })],
         ['planner-1', createAgentWindow('planner-1', { profile: 'Planner', phase: 'plan', active: false })],
@@ -372,10 +334,7 @@ describe('DevelopRenderer', () => {
     });
 
     it('shows agents for the pinned phase after manual click', () => {
-      const phases = [
-        createPhase('plan', 'Plan', '📋'),
-        createPhase('code', 'Code', '💻'),
-      ];
+      const phases = [createPhase('plan', 'Plan', '📋'), createPhase('code', 'Code', '💻')];
       const agents = new Map<string, AgentWindowState>([
         ['coder-1', createAgentWindow('coder-1', { profile: 'Coder', phase: 'code', active: true })],
         ['planner-1', createAgentWindow('planner-1', { profile: 'Planner', phase: 'plan', active: false })],
@@ -414,10 +373,7 @@ describe('DevelopRenderer', () => {
     });
 
     it('switches agents back when auto-follow is re-engaged', () => {
-      const phases = [
-        createPhase('plan', 'Plan', '📋'),
-        createPhase('code', 'Code', '💻'),
-      ];
+      const phases = [createPhase('plan', 'Plan', '📋'), createPhase('code', 'Code', '💻')];
       const agents = new Map<string, AgentWindowState>([
         ['coder-1', createAgentWindow('coder-1', { profile: 'Coder', phase: 'code', active: true })],
         ['planner-1', createAgentWindow('planner-1', { profile: 'Planner', phase: 'plan', active: false })],
@@ -437,11 +393,7 @@ describe('DevelopRenderer', () => {
     });
 
     it('shows the correct agents after multiple pin/unpin cycles', () => {
-      const phases = [
-        createPhase('a', 'A', '1'),
-        createPhase('b', 'B', '2'),
-        createPhase('c', 'C', '3'),
-      ];
+      const phases = [createPhase('a', 'A', '1'), createPhase('b', 'B', '2'), createPhase('c', 'C', '3')];
       const agents = new Map<string, AgentWindowState>([
         ['agent-a', createAgentWindow('agent-a', { profile: 'AgentA', phase: 'a' })],
         ['agent-b', createAgentWindow('agent-b', { profile: 'AgentB', phase: 'b' })],
@@ -467,10 +419,7 @@ describe('DevelopRenderer', () => {
 
   describe('empty agent states', () => {
     it('shows the default empty message when no agents exist for the effective tab', () => {
-      const phases = [
-        createPhase('plan', 'Plan', '📋'),
-        createPhase('code', 'Code', '💻'),
-      ];
+      const phases = [createPhase('plan', 'Plan', '📋'), createPhase('code', 'Code', '💻')];
       const runState = buildRunStateWithPhases(phases, 'code', ['plan']);
       render(<DevelopRenderer runState={runState} />);
       // AgentGrid shows its custom empty state message from DevelopRenderer
@@ -478,10 +427,7 @@ describe('DevelopRenderer', () => {
     });
 
     it('shows empty state for a pinned tab with no agents', () => {
-      const phases = [
-        createPhase('plan', 'Plan', '📋'),
-        createPhase('code', 'Code', '💻'),
-      ];
+      const phases = [createPhase('plan', 'Plan', '📋'), createPhase('code', 'Code', '💻')];
       const agents = new Map<string, AgentWindowState>([
         ['coder-1', createAgentWindow('coder-1', { profile: 'Coder', phase: 'code', active: true })],
       ]);
@@ -494,10 +440,7 @@ describe('DevelopRenderer', () => {
     });
 
     it('shows agents when they exist for the effective tab', () => {
-      const phases = [
-        createPhase('plan', 'Plan', '📋'),
-        createPhase('code', 'Code', '💻'),
-      ];
+      const phases = [createPhase('plan', 'Plan', '📋'), createPhase('code', 'Code', '💻')];
       const agents = new Map<string, AgentWindowState>([
         ['coder-1', createAgentWindow('coder-1', { profile: 'Coder', phase: 'code', active: true })],
       ]);
@@ -510,10 +453,7 @@ describe('DevelopRenderer', () => {
 
   describe('ProgressIndicator props', () => {
     it('passes the phases array to ProgressIndicator', () => {
-      const phases = [
-        createPhase('a', 'Alpha', '1'),
-        createPhase('b', 'Beta', '2'),
-      ];
+      const phases = [createPhase('a', 'Alpha', '1'), createPhase('b', 'Beta', '2')];
       const runState = buildRunStateWithPhases(phases, 'b', ['a']);
       render(<DevelopRenderer runState={runState} />);
       expect(screen.getByText('Alpha')).toBeInTheDocument();
@@ -521,10 +461,7 @@ describe('DevelopRenderer', () => {
     });
 
     it('sets correct selected tab in ProgressIndicator based on effectiveTab', () => {
-      const phases = [
-        createPhase('a', 'Alpha', '1'),
-        createPhase('b', 'Beta', '2'),
-      ];
+      const phases = [createPhase('a', 'Alpha', '1'), createPhase('b', 'Beta', '2')];
       const runState = buildRunStateWithPhases(phases, 'b', ['a']);
       const { container } = render(<DevelopRenderer runState={runState} />);
       const tabs = container.querySelectorAll('.phase-tab');
@@ -544,10 +481,7 @@ describe('DevelopRenderer', () => {
 
   describe('multiple agents in same phase', () => {
     it('shows all agents belonging to the effective tab phase', () => {
-      const phases = [
-        createPhase('code', 'Code', '💻'),
-        createPhase('test', 'Test', '🧪'),
-      ];
+      const phases = [createPhase('code', 'Code', '💻'), createPhase('test', 'Test', '🧪')];
       const agents = new Map<string, AgentWindowState>([
         ['coder-1', createAgentWindow('coder-1', { profile: 'Coder 1', phase: 'code', active: true })],
         ['coder-2', createAgentWindow('coder-2', { profile: 'Coder 2', phase: 'code', active: true })],
@@ -561,10 +495,7 @@ describe('DevelopRenderer', () => {
     });
 
     it('switches to show test agents after pinning to completed test phase', () => {
-      const phases = [
-        createPhase('code', 'Code', '💻'),
-        createPhase('test', 'Test', '🧪'),
-      ];
+      const phases = [createPhase('code', 'Code', '💻'), createPhase('test', 'Test', '🧪')];
       const agents = new Map<string, AgentWindowState>([
         ['coder-1', createAgentWindow('coder-1', { profile: 'Coder 1', phase: 'code', active: true })],
         ['coder-2', createAgentWindow('coder-2', { profile: 'Coder 2', phase: 'code', active: true })],
@@ -625,11 +556,7 @@ describe('DevelopRenderer', () => {
     });
 
     it('handles clicking active tab then non-active tab in rapid succession', () => {
-      const phases = [
-        createPhase('a', 'A', '1'),
-        createPhase('b', 'B', '2'),
-        createPhase('c', 'C', '3'),
-      ];
+      const phases = [createPhase('a', 'A', '1'), createPhase('b', 'B', '2'), createPhase('c', 'C', '3')];
       const agents = new Map<string, AgentWindowState>([
         ['agent-a', createAgentWindow('agent-a', { profile: 'AgentA', phase: 'a' })],
         ['agent-b', createAgentWindow('agent-b', { profile: 'AgentB', phase: 'b' })],
@@ -647,10 +574,7 @@ describe('DevelopRenderer', () => {
     });
 
     it('does not pin when clicking on an already-active phase tab', () => {
-      const phases = [
-        createPhase('a', 'A', '1'),
-        createPhase('b', 'B', '2'),
-      ];
+      const phases = [createPhase('a', 'A', '1'), createPhase('b', 'B', '2')];
       const runState = buildRunStateWithPhases(phases, 'a', []);
 
       const { container } = render(<DevelopRenderer runState={runState} />);
@@ -663,10 +587,7 @@ describe('DevelopRenderer', () => {
     });
 
     it('handles all phases completed with no current phase', () => {
-      const phases = [
-        createPhase('a', 'A', '1'),
-        createPhase('b', 'B', '2'),
-      ];
+      const phases = [createPhase('a', 'A', '1'), createPhase('b', 'B', '2')];
       const runState = buildRunStateWithPhases(phases, '', ['a', 'b']);
       const { container } = render(<DevelopRenderer runState={runState} />);
       const tabs = container.querySelectorAll('.phase-tab');
@@ -677,13 +598,8 @@ describe('DevelopRenderer', () => {
     });
 
     it('auto-follow updates when currentPhase changes (re-render with new props)', () => {
-      const phases = [
-        createPhase('a', 'A', '1'),
-        createPhase('b', 'B', '2'),
-      ];
-      const { container, rerender } = render(
-        <DevelopRenderer runState={buildRunStateWithPhases(phases, 'a', [])} />,
-      );
+      const phases = [createPhase('a', 'A', '1'), createPhase('b', 'B', '2')];
+      const { container, rerender } = render(<DevelopRenderer runState={buildRunStateWithPhases(phases, 'a', [])} />);
       let tabs = container.querySelectorAll('.phase-tab');
       expect(tabs[0]).toHaveClass('phase-tab--selected');
 
@@ -695,10 +611,7 @@ describe('DevelopRenderer', () => {
     });
 
     it('manual pin persists across re-renders with changing currentPhase', () => {
-      const phases = [
-        createPhase('a', 'A', '1'),
-        createPhase('b', 'B', '2'),
-      ];
+      const phases = [createPhase('a', 'A', '1'), createPhase('b', 'B', '2')];
       const { container, rerender } = render(
         <DevelopRenderer runState={buildRunStateWithPhases(phases, 'b', ['a'])} />,
       );

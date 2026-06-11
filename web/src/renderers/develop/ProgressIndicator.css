@@ -18,22 +18,24 @@
   cursor: pointer;
   white-space: nowrap;
   font-size: 12px;
-  transition: border-color 0.15s, opacity 0.15s;
+  transition:
+    border-color 0.15s,
+    opacity 0.15s;
 }
 
-.phase-tab[data-status="pending"] {
+.phase-tab[data-status='pending'] {
   opacity: var(--engin-phase-disabled-opacity);
   cursor: default;
   pointer-events: none;
 }
 
-.phase-tab[data-status="active"] {
+.phase-tab[data-status='active'] {
   color: var(--phase-color);
   border-bottom-color: var(--phase-color);
   font-weight: 700;
 }
 
-.phase-tab[data-status="completed"] {
+.phase-tab[data-status='completed'] {
   color: var(--phase-color);
   border-bottom-color: var(--phase-color);
   opacity: 0.85;

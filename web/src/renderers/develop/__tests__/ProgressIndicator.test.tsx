@@ -35,13 +35,7 @@ function renderIndicator(
   activePhaseTab = '',
   onTabClick: (phaseId: string) => void = noop,
 ) {
-  return render(
-    <ProgressIndicator
-      phases={phases}
-      activePhaseTab={activePhaseTab}
-      onTabClick={onTabClick}
-    />,
-  );
+  return render(<ProgressIndicator phases={phases} activePhaseTab={activePhaseTab} onTabClick={onTabClick} />);
 }
 
 // ─── Tests ──────────────────────────────────────────────────────────────────
@@ -71,9 +65,7 @@ describe('ProgressIndicator', () => {
     });
 
     it('shows a checkmark (✅) for completed phases instead of the original icon', () => {
-      const phases = [
-        createPhase({ id: 'a', icon: '📋', status: 'completed', index: 0 }),
-      ];
+      const phases = [createPhase({ id: 'a', icon: '📋', status: 'completed', index: 0 })];
       renderIndicator(phases);
       expect(screen.getByText('✅')).toBeInTheDocument();
       expect(screen.queryByText('📋')).not.toBeInTheDocument();
@@ -87,11 +79,7 @@ describe('ProgressIndicator', () => {
     });
 
     it('renders the correct number of phase tabs', () => {
-      const phases = [
-        createPhase({ id: 'a' }),
-        createPhase({ id: 'b' }),
-        createPhase({ id: 'c' }),
-      ];
+      const phases = [createPhase({ id: 'a' }), createPhase({ id: 'b' }), createPhase({ id: 'c' })];
       const { container } = renderIndicator(phases);
       const tabs = container.querySelectorAll('.phase-tab');
       expect(tabs).toHaveLength(3);
@@ -106,10 +94,7 @@ describe('ProgressIndicator', () => {
     });
 
     it('sets role="tab" on each phase tab', () => {
-      const phases = [
-        createPhase({ id: 'a' }),
-        createPhase({ id: 'b' }),
-      ];
+      const phases = [createPhase({ id: 'a' }), createPhase({ id: 'b' })];
       const { container } = renderIndicator(phases);
       const tabs = container.querySelectorAll('.phase-tab');
       tabs.forEach((tab) => {
@@ -118,27 +103,21 @@ describe('ProgressIndicator', () => {
     });
 
     it('sets aria-disabled on pending tabs', () => {
-      const phases = [
-        createPhase({ id: 'a', status: 'pending' }),
-      ];
+      const phases = [createPhase({ id: 'a', status: 'pending' })];
       const { container } = renderIndicator(phases);
       const tab = container.querySelector('.phase-tab')!;
       expect(tab).toHaveAttribute('aria-disabled', 'true');
     });
 
     it('does not set aria-disabled on active tabs', () => {
-      const phases = [
-        createPhase({ id: 'a', status: 'active' }),
-      ];
+      const phases = [createPhase({ id: 'a', status: 'active' })];
       const { container } = renderIndicator(phases);
       const tab = container.querySelector('.phase-tab')!;
       expect(tab).not.toHaveAttribute('aria-disabled');
     });
 
     it('does not set aria-disabled on completed tabs', () => {
-      const phases = [
-        createPhase({ id: 'a', status: 'completed' }),
-      ];
+      const phases = [createPhase({ id: 'a', status: 'completed' })];
       const { container } = renderIndicator(phases);
       const tab = container.querySelector('.phase-tab')!;
       expect(tab).not.toHaveAttribute('aria-disabled');
@@ -193,10 +172,7 @@ describe('ProgressIndicator', () => {
 
   describe('tab selection (phase-tab--selected)', () => {
     it('adds phase-tab--selected when phase.id matches activePhaseTab', () => {
-      const phases = [
-        createPhase({ id: 'a', status: 'active' }),
-        createPhase({ id: 'b', status: 'pending' }),
-      ];
+      const phases = [createPhase({ id: 'a', status: 'active' }), createPhase({ id: 'b', status: 'pending' })];
       const { container } = renderIndicator(phases, 'a');
       const tabs = container.querySelectorAll('.phase-tab');
       expect(tabs[0]).toHaveClass('phase-tab--selected');
@@ -204,10 +180,7 @@ describe('ProgressIndicator', () => {
     });
 
     it('does not add phase-tab--selected to any tab when activePhaseTab is empty', () => {
-      const phases = [
-        createPhase({ id: 'a', status: 'active' }),
-        createPhase({ id: 'b', status: 'completed' }),
-      ];
+      const phases = [createPhase({ id: 'a', status: 'active' }), createPhase({ id: 'b', status: 'completed' })];
       const { container } = renderIndicator(phases, '');
       const tabs = container.querySelectorAll('.phase-tab');
       tabs.forEach((tab) => {
@@ -245,9 +218,7 @@ describe('ProgressIndicator', () => {
 
     it('does not call onTabClick when a pending tab is clicked', () => {
       const onTabClick = vi.fn();
-      const phases = [
-        createPhase({ id: 'a', status: 'pending' }),
-      ];
+      const phases = [createPhase({ id: 'a', status: 'pending' })];
       renderIndicator(phases, '', onTabClick);
 
       const tab = screen.getByText('Phase 1').closest('.phase-tab')!;
@@ -285,9 +256,7 @@ describe('ProgressIndicator', () => {
 
     it('calls onTabClick for active tabs', () => {
       const onTabClick = vi.fn();
-      const phases = [
-        createPhase({ id: 'a', status: 'active' }),
-      ];
+      const phases = [createPhase({ id: 'a', status: 'active' })];
       renderIndicator(phases, '', onTabClick);
 
       const tab = screen.getByText('Phase 1').closest('.phase-tab')!;
@@ -324,9 +293,7 @@ describe('ProgressIndicator', () => {
     });
 
     it('each phase-tab contains a phase-icon and a phase-label', () => {
-      const phases = [
-        createPhase({ id: 'a', icon: '🔍', label: 'Search' }),
-      ];
+      const phases = [createPhase({ id: 'a', icon: '🔍', label: 'Search' })];
       const { container } = renderIndicator(phases);
       const tab = container.querySelector('.phase-tab')!;
       expect(tab.querySelector('.phase-icon')).toBeInTheDocument();
@@ -378,10 +345,7 @@ describe('ProgressIndicator', () => {
 
   describe('key prop', () => {
     it('uses phase.id as key for each tab', () => {
-      const phases = [
-        createPhase({ id: 'alpha' }),
-        createPhase({ id: 'beta' }),
-      ];
+      const phases = [createPhase({ id: 'alpha' }), createPhase({ id: 'beta' })];
       const { container } = renderIndicator(phases);
       const tabs = container.querySelectorAll('.phase-tab');
       expect(tabs).toHaveLength(2);
