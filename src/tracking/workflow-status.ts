@@ -36,6 +36,7 @@ export class WorkflowStatusTracker {
   private _savePromise: Promise<void> = Promise.resolve();
   private _pendingSave = false;
   private _needsSave = false;
+  private _sidebar?: { title?: string; indicator?: string; phases?: { id: string; label: string; icon: string }[] };
   private _spawnedAgents: PersistedAgentRecord[] = [];
 
   constructor(workDir: string) {
@@ -136,6 +137,14 @@ export class WorkflowStatusTracker {
     return this._auditLog;
   }
 
+  get sidebar():
+    | { title?: string; indicator?: string; phases?: { id: string; label: string; icon: string }[] }
+    | undefined {
+    return this._sidebar
+      ? { ...this._sidebar, phases: this._sidebar.phases ? [...this._sidebar.phases] : undefined }
+      : undefined;
+  }
+
   get spawnedAgents(): PersistedAgentRecord[] {
     return this._spawnedAgents.map((a) => ({ ...a }));
   }
@@ -195,6 +204,26 @@ export class WorkflowStatusTracker {
     this._stats.agentCount += 1;
   }
 
+  setSidebar(info: {
+    title?: string;
+    indicator?: string;
+    phases?: { id: string; label: string; icon: string }[];
+  }): void {
+    if (!this._sidebar) {
+      this._sidebar = {};
+    }
+    if (info.title !== undefined) {
+      this._sidebar.title = info.title;
+    }
+    if (info.indicator !== undefined) {
+      this._sidebar.indicator = info.indicator;
+    }
+    if (info.phases !== undefined) {
+      this._sidebar.phases = info.phases;
+    }
+    this.persistState();
+  }
+
   recordAgentSpawn(agentId: string, profile: string, phase: string, taskId?: string): void;
   recordAgentSpawn(info: { agentId: string; profile: string; phase: string; taskId?: string }): void;
   recordAgentSpawn(
@@ -236,6 +265,7 @@ export class WorkflowStatusTracker {
       planReviewSuggestions: this._planReviewSuggestions,
       stats: { ...this._stats },
       spawnedAgents: this._spawnedAgents.length > 0 ? this._spawnedAgents.map((a) => ({ ...a })) : [],
+      sidebar: this._sidebar ? { ...this._sidebar } : undefined,
     };
   }
 
@@ -270,6 +300,7 @@ export class WorkflowStatusTracker {
     tracker._planReviewSuggestions = data.planReviewSuggestions ? [...data.planReviewSuggestions] : undefined;
     tracker._stats = { ...data.stats };
     tracker._spawnedAgents = data.spawnedAgents ? data.spawnedAgents.map((a) => ({ ...a })) : [];
+    tracker._sidebar = data.sidebar ? { ...data.sidebar } : undefined;
 
     // Rebuild TaskTracker from saved tasks
     if (data.tasks && data.tasks.length > 0) {

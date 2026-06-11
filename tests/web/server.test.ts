@@ -2,6 +2,7 @@ import { afterEach, beforeAll, describe, expect, it, mock } from 'bun:test';
 import { mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { WorkflowStatusTracker } from '../../src/tracking/workflow-status.ts';
 import { startWebServer } from '../../src/web/server.ts';
 import type { WebServerDependencies, WebServerOptions } from '../../src/web/types.ts';
 
@@ -1107,6 +1108,48 @@ describe('startWebServer', () => {
 
       ws1.close();
       ws2.close();
+    });
+
+    it('passes WorkflowStatusTracker as tracker in workflow run options', async () => {
+      // Capture the options object received by the workflow run
+      let capturedOpts: Record<string, unknown> | null = null;
+      mockWorkflowRun = mock().mockImplementation(async (_taskPrompt: string, opts: Record<string, unknown>) => {
+        capturedOpts = opts;
+      });
+
+      ws = new WebSocket(`ws://${server.hostname}:${server.port}/ws`);
+
+      // Wait for init
+      await new Promise<void>((resolve) => {
+        ws.addEventListener('message', () => resolve(), { once: true });
+      });
+
+      // Send start_workflow
+      ws.send(
+        JSON.stringify({
+          type: 'start_workflow',
+          workflowName: 'test-workflow',
+          taskPrompt: 'Tracker pass-through test',
+        }),
+      );
+
+      // Wait for workflow_started
+      await new Promise<void>((resolve, reject) => {
+        ws.addEventListener('message', (event) => {
+          const msg = JSON.parse(event.data as string);
+          if (msg.type === 'workflow_started') resolve();
+        });
+        setTimeout(() => reject(new Error('Timeout waiting for workflow_started')), 2000);
+      });
+
+      // Allow the fire-and-forget workflow run to invoke the mock
+      await tick();
+      await tick();
+
+      // The workflow should have received a tracker in its options
+      expect(capturedOpts).not.toBeNull();
+      expect(capturedOpts!.tracker).toBeDefined();
+      expect(capturedOpts!.tracker).toBeInstanceOf(WorkflowStatusTracker);
     });
 
     it('includes phase information in workflow_failed when workflow errors at runtime', async () => {

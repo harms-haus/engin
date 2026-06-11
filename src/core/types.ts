@@ -67,6 +67,12 @@ export interface WorkflowState {
     agentCount: number;
   };
   spawnedAgents?: PersistedAgentRecord[];
+  /** Persisted sidebar info for restoring UI state on past runs */
+  sidebar?: {
+    title?: string;
+    indicator?: string;
+    phases?: { id: string; label: string; icon: string }[];
+  };
 }
 
 // ─── Audit Events ───────────────────────────────────────────────────────────
@@ -153,6 +159,8 @@ export interface WorkflowRunOptions {
   onStatus?: StatusCallbacks;
   /** Abort signal for cooperative cancellation (e.g. SIGINT) */
   signal?: AbortSignal;
+  /** Pre-created WorkflowStatusTracker; workflows should reuse instead of creating their own. Typed as `unknown` to avoid circular imports. */
+  tracker?: unknown;
 }
 
 // ─── Workflow Entry ───────────────────────────────────────────────────────
