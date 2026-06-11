@@ -33,7 +33,7 @@ export interface Task {
   status: TaskStatus;
   assignedAgent?: string;
   result?: unknown;
-  reviewFeedback?: string;
+  reviewFeedback?: string[];
   isCode?: boolean;
 }
 

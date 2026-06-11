@@ -4,7 +4,7 @@ import { createHarness } from '../core/harness-factory.js';
 import { clearProfileCache, loadProfilesFromDirs } from '../core/profile.js';
 import { promptForStructured } from '../core/structured-output.js';
 import type { AgentProfile, AuditEvent, HarnessCreationOptions, Task } from '../core/types.js';
-import { forwardAgentStatus, safeErrorMessage } from '../core/utils.js';
+import { appendReviewFeedback, forwardAgentStatus, safeErrorMessage } from '../core/utils.js';
 import { TaskTracker } from '../tracking/task-status.js';
 import type { LanePoolOptions, LanePoolResult, StepDefinition, StepResult } from './types.js';
 
@@ -226,7 +226,7 @@ export class LanePool {
         currentStepIndex++;
       } else {
         // Rejected — record the retry attempt for this step, then back up
-        task.reviewFeedback = result.feedback;
+        appendReviewFeedback(task, result.feedback);
         const newAttempt = currentAttempt + 1;
         stepAttempts.set(currentStepIndex, newAttempt);
 
@@ -433,10 +433,12 @@ export class LanePool {
       parts.push(`## Relevant Files\n${task.files.join('\n')}`);
     }
 
-    if (task.reviewFeedback) {
+    if (task.reviewFeedback && task.reviewFeedback.length > 0) {
       parts.push('');
-      parts.push('## Review Feedback (please address)');
-      parts.push(task.reviewFeedback);
+      parts.push('## Review Feedback History (please address all items)');
+      task.reviewFeedback.forEach((fb, i) => {
+        parts.push(`Attempt ${i + 1}: ${fb}`);
+      });
     }
 
     return parts.join('\n');

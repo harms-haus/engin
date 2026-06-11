@@ -148,7 +148,7 @@ describe('TaskTracker', () => {
 
       const task = tracker.getTask('t1')!;
       expect(task.status).toBe('ready');
-      expect(task.reviewFeedback).toBe('Needs more work');
+      expect(task.reviewFeedback).toEqual(['Needs more work']);
     });
 
     it('throws if task is not in reviewing state', () => {
@@ -157,6 +157,27 @@ describe('TaskTracker', () => {
 
       tracker.claimTasks(1);
       expect(() => tracker.rejectTask('t1', 'reason')).toThrow('must be "reviewing"');
+    });
+
+    it('accumulates feedback across multiple rejections', () => {
+      const tracker = new TaskTracker();
+      tracker.addTask(makeTask({ id: 't1' }));
+
+      // First rejection
+      tracker.claimTasks(1);
+      tracker.startTask('t1', 'agent-1');
+      tracker.submitForReview('t1', 'first attempt');
+      tracker.rejectTask('t1', 'first issue');
+
+      expect(tracker.getTask('t1')!.reviewFeedback).toEqual(['first issue']);
+
+      // Second rejection
+      tracker.claimTasks(1);
+      tracker.startTask('t1', 'agent-2');
+      tracker.submitForReview('t1', 'second attempt');
+      tracker.rejectTask('t1', 'second issue');
+
+      expect(tracker.getTask('t1')!.reviewFeedback).toEqual(['first issue', 'second issue']);
     });
   });
 
@@ -355,7 +376,7 @@ describe('TaskTracker', () => {
 
       const taskAfterReject = tracker.getTask('t1')!;
       expect(taskAfterReject.status).toBe('ready');
-      expect(taskAfterReject.reviewFeedback).toBe('Needs revision');
+      expect(taskAfterReject.reviewFeedback).toEqual(['Needs revision']);
 
       // Reclaim and restart after rejection
       tracker.claimTasks(1);
@@ -868,7 +889,7 @@ describe('TaskTracker', () => {
       // Reject child — should go back to ready
       tracker.rejectTask('child', 'redo');
       expect(tracker.getTask('child')!.status).toBe('ready');
-      expect(tracker.getTask('child')!.reviewFeedback).toBe('redo');
+      expect(tracker.getTask('child')!.reviewFeedback).toEqual(['redo']);
     });
   });
 

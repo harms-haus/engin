@@ -869,10 +869,72 @@ describe('LanePool', () => {
       // Implement step called twice: initial + retry after review rejection
       expect(implementPrompts.length).toBe(2);
 
-      // The retry prompt should include review feedback
+      // The retry prompt should include review feedback in the new format
       const retryPrompt = implementPrompts[1];
-      expect(retryPrompt).toContain('Review Feedback');
+      expect(retryPrompt).toContain('Review Feedback History');
+      expect(retryPrompt).toContain('Attempt 1:');
       expect(retryPrompt).toContain('Fix the null check');
+    });
+
+    it('accumulates feedback from multiple rejections in prompt', async () => {
+      setupProfileMocks();
+
+      const implementPrompts: string[] = [];
+      let harnessCallCount = 0;
+
+      mockCreateHarness.mockImplementation(() => {
+        harnessCallCount++;
+        const isImplementStep = harnessCallCount % 2 === 1;
+        const session = makeSession((text) => {
+          if (isImplementStep) {
+            implementPrompts.push(text);
+          }
+          return 'done';
+        });
+        return {
+          session,
+          sessionId: `session-${harnessCallCount}`,
+          dispose: mock(() => {}),
+        };
+      });
+
+      // Review rejects twice, then approves on the third attempt
+      let reviewCallCount = 0;
+      mockPromptForStructured.mockImplementation(() => {
+        reviewCallCount++;
+        if (reviewCallCount === 1) {
+          return Promise.resolve({ approved: false, feedback: 'Missing error handling', severity: 'medium' });
+        }
+        if (reviewCallCount === 2) {
+          return Promise.resolve({ approved: false, feedback: 'Needs input validation', severity: 'medium' });
+        }
+        return Promise.resolve({ approved: true, feedback: undefined });
+      });
+
+      const { pool } = createPoolAndTracker({
+        getStepsForTask: () => [
+          { name: 'implement', profileId: 'coder', isReadOnly: false },
+          {
+            name: 'review',
+            profileId: 'reviewer',
+            isReadOnly: true,
+            schema: z.object({ approved: z.boolean(), feedback: z.string().optional() }),
+          },
+        ],
+      });
+
+      const result = await pool.run();
+
+      expect(result.completedTasks).toBe(1);
+
+      // Implement step called three times: initial + 2 retries after rejections
+      expect(implementPrompts.length).toBe(3);
+
+      // The third implement prompt should contain accumulated feedback from both rejections
+      const thirdPrompt = implementPrompts[2];
+      expect(thirdPrompt).toContain('Review Feedback History');
+      expect(thirdPrompt).toContain('Attempt 1: Missing error handling');
+      expect(thirdPrompt).toContain('Attempt 2: Needs input validation');
     });
   });
 

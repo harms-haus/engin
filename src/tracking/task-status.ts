@@ -1,5 +1,6 @@
 import { EventEmitter } from 'node:events';
 import type { Task, TaskStatus } from '../core/types.js';
+import { appendReviewFeedback } from '../core/utils.js';
 
 export class TaskTracker extends EventEmitter {
   static readonly Events = {
@@ -98,8 +99,8 @@ export class TaskTracker extends EventEmitter {
    * copies. Callers may safely mutate the following fields on the returned
    * objects without going through a tracker method:
    *
-   * - `reviewFeedback` — set by the lane pool after a rejected review to
-   *   persist feedback across retries.
+   * - `reviewFeedback` — accumulated by the lane pool after each rejected
+   *   review to persist all feedback entries across retries.
    *
    * All other task mutations (status transitions, `result`, `assignedAgent`)
    * **must** go through the corresponding tracker methods (`startTask`,
@@ -173,7 +174,7 @@ export class TaskTracker extends EventEmitter {
     }
 
     task.status = 'ready';
-    task.reviewFeedback = reason;
+    appendReviewFeedback(task, reason);
     this.recalculateStatuses(id);
     this.emit(TaskTracker.Events.TaskReady);
   }
@@ -184,6 +185,7 @@ export class TaskTracker extends EventEmitter {
         task.status = 'ready';
         task.assignedAgent = undefined;
         task.result = undefined;
+        task.reviewFeedback = undefined;
       }
     }
   }
@@ -194,6 +196,7 @@ export class TaskTracker extends EventEmitter {
         task.status = 'ready';
         task.assignedAgent = undefined;
         task.result = undefined;
+        task.reviewFeedback = undefined;
       }
     }
   }

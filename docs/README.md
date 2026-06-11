@@ -1053,7 +1053,7 @@ See [Task lifecycle](#tasktracker) for valid transitions.
 | `status`          | `TaskStatus` | Current lifecycle state                                                        |
 | `assignedAgent?`  | `string`     | ID of the agent currently working on this task                                 |
 | `result?`         | `unknown`    | Implementation result submitted for review                                     |
-| `reviewFeedback?` | `string`     | Feedback from reviewer on rejection                                            |
+| `reviewFeedback?` | `string[]`   | Accumulated feedback entries from reviewer rejections                          |
 | `isCode?`         | `boolean`    | Whether this task involves writing/modifying code (vs. docs/config). Optional. |
 
 ---
