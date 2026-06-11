@@ -112,7 +112,7 @@ describe('startWebServer', () => {
       const res = await fetch(`${baseUrl}/`);
       expect(res.status).toBe(200);
       const text = await res.text();
-      expect(text).toContain('<!doctype html>');
+      expect(text.toLowerCase()).toContain('<!doctype html>');
       // Should have replaced {{WS_ENDPOINT}} with actual ws URL
       expect(text).not.toContain('{{WS_ENDPOINT}}');
       expect(text).toContain(`ws://${server.hostname}:${server.port}/ws`);
@@ -129,7 +129,7 @@ describe('startWebServer', () => {
       const res = await fetch(`${baseUrl}/some/unknown/path`);
       expect(res.status).toBe(200);
       const text = await res.text();
-      expect(text).toContain('<!doctype html>');
+      expect(text.toLowerCase()).toContain('<!doctype html>');
     });
 
     it('serves index.html with correct MIME type', async () => {
@@ -158,7 +158,7 @@ describe('startWebServer', () => {
       const res = await fetch(`${baseUrl}/some/unknown/path`);
       expect(res.status).toBe(200);
       const text = await res.text();
-      expect(text).toContain('<!doctype html>');
+      expect(text.toLowerCase()).toContain('<!doctype html>');
     });
   });
 
