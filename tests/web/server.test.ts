@@ -1179,6 +1179,9 @@ describe('startWebServer', () => {
           currentPhase: 'done',
           completedPhases: ['scouting', 'implementing'],
           tasks: [],
+          spawnedAgents: [
+            { agentId: 'scout-0', profile: 'scout', phase: 'scouting', completedAt: '2024-01-01T00:05:00Z' },
+          ],
         }),
       );
 
@@ -1235,7 +1238,10 @@ describe('startWebServer', () => {
       expect(loadMsg.workflowId).toBe('past-run-1');
       expect(loadMsg.currentPhase).toBe('done');
       expect(loadMsg.completedPhases).toEqual(['scouting', 'implementing']);
-      expect(loadMsg.agents).toEqual([]);
+      expect(loadMsg.agents).toHaveLength(1);
+      expect(loadMsg.agents[0].agentId).toBe('scout-0');
+      expect(loadMsg.agents[0].phase).toBe('scouting');
+      expect(loadMsg.agents[0].active).toBe(false);
       expect(loadMsg.summary).toBeDefined();
       expect(loadMsg.summary.workflowName).toBe('past-workflow');
       expect(loadMsg.summary.status).toBe('completed');
@@ -1244,6 +1250,72 @@ describe('startWebServer', () => {
       rmSync(tmpDir, { recursive: true, force: true });
 
       // Restore server
+      server = await startWebServer(TEST_OPTIONS, buildDeps());
+      baseUrl = `http://${server.hostname}:${server.port}`;
+    });
+
+    it('load_past_run with no spawnedAgents returns empty agents array', async () => {
+      // Create a state file without spawnedAgents (backward compatibility)
+      const tmpDir = mkdtempSync(join(tmpdir(), 'engin-test-'));
+      const stateFile = join(tmpDir, '.engin-state.json');
+      writeFileSync(
+        stateFile,
+        JSON.stringify({
+          taskPrompt: 'Old prompt',
+          currentPhase: 'scouting',
+          completedPhases: [],
+          tasks: [],
+        }),
+      );
+
+      server.stop();
+      const deps = buildDeps();
+      deps.scanPastRuns = mock<WebServerDependencies['scanPastRuns']>().mockResolvedValue([
+        {
+          dirName: 'no-agents-run',
+          fullPath: tmpDir,
+          workflowName: 'no-agents-wf',
+          timestamp: 14000,
+          hasStateFile: true,
+        },
+      ]);
+      server = await startWebServer(TEST_OPTIONS, deps);
+      baseUrl = `http://${server.hostname}:${server.port}`;
+
+      const testWs = new WebSocket(`ws://${server.hostname}:${server.port}/ws`);
+      const initMsg = await new Promise<any>((resolve, reject) => {
+        testWs.addEventListener('message', (event) => {
+          try {
+            resolve(JSON.parse(event.data as string));
+          } catch (e) {
+            reject(e);
+          }
+        });
+        setTimeout(() => reject(new Error('Timeout waiting for init')), 2000);
+      });
+
+      expect(initMsg.type).toBe('init');
+
+      testWs.send(JSON.stringify({ type: 'select_workflow', workflowId: 'no-agents-run' }));
+
+      const loadMsg = await new Promise<any>((resolve, reject) => {
+        testWs.addEventListener('message', (event) => {
+          try {
+            const msg = JSON.parse(event.data as string);
+            if (msg.type === 'load_past_run') resolve(msg);
+          } catch (e) {
+            reject(e);
+          }
+        });
+        setTimeout(() => reject(new Error('Timeout waiting for load_past_run')), 2000);
+      });
+
+      expect(loadMsg.type).toBe('load_past_run');
+      expect(loadMsg.agents).toEqual([]);
+
+      testWs.close();
+      rmSync(tmpDir, { recursive: true, force: true });
+
       server = await startWebServer(TEST_OPTIONS, buildDeps());
       baseUrl = `http://${server.hostname}:${server.port}`;
     });
@@ -1561,6 +1633,416 @@ describe('startWebServer', () => {
       expect(loggedMessages[0]).toContain('http://127.0.0.1:');
 
       srv.stop();
+    });
+  });
+
+  // ─── select_workflow agent persistence loading ─────────────────────
+
+  describe('select_workflow agent persistence loading', () => {
+    it('loads spawnedAgents from .engin-state.json and sends them in load_past_run', async () => {
+      // Create a temp dir with a .engin-state.json that includes spawnedAgents
+      const tmpDir = mkdtempSync(join(tmpdir(), 'engin-test-'));
+      const stateFile = join(tmpDir, '.engin-state.json');
+      writeFileSync(
+        stateFile,
+        JSON.stringify({
+          taskPrompt: 'Test prompt',
+          currentPhase: 'done',
+          completedPhases: ['scouting', 'implementing'],
+          tasks: [],
+          scoutingReports: [],
+          plan: undefined,
+          stats: { totalTokens: 0, totalCost: 0, agentCount: 2 },
+          spawnedAgents: [
+            {
+              agentId: 'agent-1',
+              profile: 'coder',
+              phase: 'implementing',
+              taskId: 'task-1',
+              completedAt: '2026-06-10T12:00:00Z',
+            },
+            {
+              agentId: 'agent-2',
+              profile: 'reviewer',
+              phase: 'scouting_review',
+            },
+          ],
+        }),
+      );
+
+      server.stop();
+      const deps = buildDeps();
+      deps.scanPastRuns = mock<WebServerDependencies['scanPastRuns']>().mockResolvedValue([
+        {
+          dirName: 'agents-run',
+          fullPath: tmpDir,
+          workflowName: 'agent-workflow',
+          timestamp: 8000,
+          hasStateFile: true,
+        },
+      ]);
+      server = await startWebServer(TEST_OPTIONS, deps);
+      baseUrl = `http://${server.hostname}:${server.port}`;
+
+      const testWs = new WebSocket(`ws://${server.hostname}:${server.port}/ws`);
+      const initMsg = await new Promise<any>((resolve, reject) => {
+        testWs.addEventListener('message', (event) => {
+          try {
+            resolve(JSON.parse(event.data as string));
+          } catch (e) {
+            reject(e);
+          }
+        });
+        setTimeout(() => reject(new Error('Timeout waiting for init')), 2000);
+      });
+
+      expect(initMsg.type).toBe('init');
+      const pastRun = initMsg.workflows.find((w: any) => w.id === 'agents-run');
+      expect(pastRun).toBeDefined();
+
+      // Send select_workflow for the past run
+      testWs.send(JSON.stringify({ type: 'select_workflow', workflowId: 'agents-run' }));
+
+      const loadMsg = await new Promise<any>((resolve, reject) => {
+        testWs.addEventListener('message', (event) => {
+          try {
+            const msg = JSON.parse(event.data as string);
+            if (msg.type === 'load_past_run') resolve(msg);
+          } catch (e) {
+            reject(e);
+          }
+        });
+        setTimeout(() => reject(new Error('Timeout waiting for load_past_run')), 2000);
+      });
+
+      expect(loadMsg.type).toBe('load_past_run');
+      expect(loadMsg.workflowId).toBe('agents-run');
+      expect(loadMsg.currentPhase).toBe('done');
+      expect(loadMsg.completedPhases).toEqual(['scouting', 'implementing']);
+
+      // Verify agents are populated from the state file
+      expect(loadMsg.agents).toHaveLength(2);
+      expect(loadMsg.agents[0].agentId).toBe('agent-1');
+      expect(loadMsg.agents[0].profile).toBe('coder');
+      expect(loadMsg.agents[0].phase).toBe('implementing');
+      expect(loadMsg.agents[0].taskId).toBe('task-1');
+      expect(loadMsg.agents[0].active).toBe(false);
+      expect(loadMsg.agents[0].log).toEqual([]);
+
+      expect(loadMsg.agents[1].agentId).toBe('agent-2');
+      expect(loadMsg.agents[1].profile).toBe('reviewer');
+      expect(loadMsg.agents[1].phase).toBe('scouting_review');
+      expect(loadMsg.agents[1].active).toBe(false);
+      expect(loadMsg.agents[1].log).toEqual([]);
+
+      testWs.close();
+      rmSync(tmpDir, { recursive: true, force: true });
+
+      server = await startWebServer(TEST_OPTIONS, buildDeps());
+      baseUrl = `http://${server.hostname}:${server.port}`;
+    });
+
+    it('sends empty agents array when spawnedAgents is missing from state file', async () => {
+      // Create state file WITHOUT spawnedAgents (backward compat)
+      const tmpDir = mkdtempSync(join(tmpdir(), 'engin-test-'));
+      const stateFile = join(tmpDir, '.engin-state.json');
+      writeFileSync(
+        stateFile,
+        JSON.stringify({
+          taskPrompt: 'Legacy prompt',
+          currentPhase: 'scouting',
+          completedPhases: [],
+          tasks: [],
+        }),
+      );
+
+      server.stop();
+      const deps = buildDeps();
+      deps.scanPastRuns = mock<WebServerDependencies['scanPastRuns']>().mockResolvedValue([
+        {
+          dirName: 'legacy-run',
+          fullPath: tmpDir,
+          workflowName: 'legacy-workflow',
+          timestamp: 9000,
+          hasStateFile: true,
+        },
+      ]);
+      server = await startWebServer(TEST_OPTIONS, deps);
+      baseUrl = `http://${server.hostname}:${server.port}`;
+
+      const testWs = new WebSocket(`ws://${server.hostname}:${server.port}/ws`);
+      await new Promise<void>((resolve) => {
+        testWs.addEventListener('message', () => resolve(), { once: true });
+      });
+
+      testWs.send(JSON.stringify({ type: 'select_workflow', workflowId: 'legacy-run' }));
+
+      const loadMsg = await new Promise<any>((resolve, reject) => {
+        testWs.addEventListener('message', (event) => {
+          try {
+            const msg = JSON.parse(event.data as string);
+            if (msg.type === 'load_past_run') resolve(msg);
+          } catch (e) {
+            reject(e);
+          }
+        });
+        setTimeout(() => reject(new Error('Timeout waiting for load_past_run')), 2000);
+      });
+
+      expect(loadMsg.agents).toEqual([]);
+
+      testWs.close();
+      rmSync(tmpDir, { recursive: true, force: true });
+
+      server = await startWebServer(TEST_OPTIONS, buildDeps());
+      baseUrl = `http://${server.hostname}:${server.port}`;
+    });
+
+    it('all loaded agents have active: false and empty log arrays', async () => {
+      const tmpDir = mkdtempSync(join(tmpdir(), 'engin-test-'));
+      const stateFile = join(tmpDir, '.engin-state.json');
+      writeFileSync(
+        stateFile,
+        JSON.stringify({
+          taskPrompt: 'Active check',
+          currentPhase: 'done',
+          completedPhases: [],
+          tasks: [],
+          spawnedAgents: [
+            { agentId: 'a1', profile: 'coder', phase: 'scouting' },
+            {
+              agentId: 'a2',
+              profile: 'reviewer',
+              phase: 'planning',
+              taskId: 't1',
+              completedAt: '2026-06-10T13:00:00Z',
+            },
+          ],
+        }),
+      );
+
+      server.stop();
+      const deps = buildDeps();
+      deps.scanPastRuns = mock<WebServerDependencies['scanPastRuns']>().mockResolvedValue([
+        {
+          dirName: 'active-check-run',
+          fullPath: tmpDir,
+          workflowName: 'active-check-wf',
+          timestamp: 10000,
+          hasStateFile: true,
+        },
+      ]);
+      server = await startWebServer(TEST_OPTIONS, deps);
+      baseUrl = `http://${server.hostname}:${server.port}`;
+
+      const testWs = new WebSocket(`ws://${server.hostname}:${server.port}/ws`);
+      await new Promise<void>((resolve) => {
+        testWs.addEventListener('message', () => resolve(), { once: true });
+      });
+
+      testWs.send(JSON.stringify({ type: 'select_workflow', workflowId: 'active-check-run' }));
+
+      const loadMsg = await new Promise<any>((resolve, reject) => {
+        testWs.addEventListener('message', (event) => {
+          try {
+            const msg = JSON.parse(event.data as string);
+            if (msg.type === 'load_past_run') resolve(msg);
+          } catch (e) {
+            reject(e);
+          }
+        });
+        setTimeout(() => reject(new Error('Timeout')), 2000);
+      });
+
+      expect(loadMsg.agents).toHaveLength(2);
+      for (const agent of loadMsg.agents) {
+        expect(agent.active).toBe(false);
+        expect(agent.log).toEqual([]);
+      }
+
+      testWs.close();
+      rmSync(tmpDir, { recursive: true, force: true });
+
+      server = await startWebServer(TEST_OPTIONS, buildDeps());
+      baseUrl = `http://${server.hostname}:${server.port}`;
+    });
+
+    it('loads agents with empty spawnedAgents array', async () => {
+      const tmpDir = mkdtempSync(join(tmpdir(), 'engin-test-'));
+      const stateFile = join(tmpDir, '.engin-state.json');
+      writeFileSync(
+        stateFile,
+        JSON.stringify({
+          taskPrompt: 'Empty agents',
+          currentPhase: 'done',
+          completedPhases: [],
+          tasks: [],
+          spawnedAgents: [],
+        }),
+      );
+
+      server.stop();
+      const deps = buildDeps();
+      deps.scanPastRuns = mock<WebServerDependencies['scanPastRuns']>().mockResolvedValue([
+        {
+          dirName: 'empty-agents-run',
+          fullPath: tmpDir,
+          workflowName: 'empty-agents-wf',
+          timestamp: 11000,
+          hasStateFile: true,
+        },
+      ]);
+      server = await startWebServer(TEST_OPTIONS, deps);
+      baseUrl = `http://${server.hostname}:${server.port}`;
+
+      const testWs = new WebSocket(`ws://${server.hostname}:${server.port}/ws`);
+      await new Promise<void>((resolve) => {
+        testWs.addEventListener('message', () => resolve(), { once: true });
+      });
+
+      testWs.send(JSON.stringify({ type: 'select_workflow', workflowId: 'empty-agents-run' }));
+
+      const loadMsg = await new Promise<any>((resolve, reject) => {
+        testWs.addEventListener('message', (event) => {
+          try {
+            const msg = JSON.parse(event.data as string);
+            if (msg.type === 'load_past_run') resolve(msg);
+          } catch (e) {
+            reject(e);
+          }
+        });
+        setTimeout(() => reject(new Error('Timeout')), 2000);
+      });
+
+      expect(loadMsg.agents).toEqual([]);
+
+      testWs.close();
+      rmSync(tmpDir, { recursive: true, force: true });
+
+      server = await startWebServer(TEST_OPTIONS, buildDeps());
+      baseUrl = `http://${server.hostname}:${server.port}`;
+    });
+
+    it('includes summary along with loaded agents', async () => {
+      const tmpDir = mkdtempSync(join(tmpdir(), 'engin-test-'));
+      const stateFile = join(tmpDir, '.engin-state.json');
+      writeFileSync(
+        stateFile,
+        JSON.stringify({
+          taskPrompt: 'Summary check',
+          currentPhase: 'done',
+          completedPhases: ['scouting'],
+          tasks: [],
+          spawnedAgents: [{ agentId: 'a1', profile: 'coder', phase: 'scouting' }],
+        }),
+      );
+
+      server.stop();
+      const deps = buildDeps();
+      deps.scanPastRuns = mock<WebServerDependencies['scanPastRuns']>().mockResolvedValue([
+        {
+          dirName: 'summary-run',
+          fullPath: tmpDir,
+          workflowName: 'summary-wf',
+          timestamp: 12000,
+          hasStateFile: true,
+        },
+      ]);
+      server = await startWebServer(TEST_OPTIONS, deps);
+      baseUrl = `http://${server.hostname}:${server.port}`;
+
+      const testWs = new WebSocket(`ws://${server.hostname}:${server.port}/ws`);
+      await new Promise<void>((resolve) => {
+        testWs.addEventListener('message', () => resolve(), { once: true });
+      });
+
+      testWs.send(JSON.stringify({ type: 'select_workflow', workflowId: 'summary-run' }));
+
+      const loadMsg = await new Promise<any>((resolve, reject) => {
+        testWs.addEventListener('message', (event) => {
+          try {
+            const msg = JSON.parse(event.data as string);
+            if (msg.type === 'load_past_run') resolve(msg);
+          } catch (e) {
+            reject(e);
+          }
+        });
+        setTimeout(() => reject(new Error('Timeout')), 2000);
+      });
+
+      expect(loadMsg.summary).toBeDefined();
+      expect(loadMsg.summary.workflowName).toBe('summary-wf');
+      expect(loadMsg.summary.status).toBe('completed');
+      expect(loadMsg.summary.id).toBe('summary-run');
+      expect(loadMsg.agents).toHaveLength(1);
+      expect(loadMsg.agents[0].agentId).toBe('a1');
+
+      testWs.close();
+      rmSync(tmpDir, { recursive: true, force: true });
+
+      server = await startWebServer(TEST_OPTIONS, buildDeps());
+      baseUrl = `http://${server.hostname}:${server.port}`;
+    });
+
+    it('handles agents with taskId field correctly', async () => {
+      const tmpDir = mkdtempSync(join(tmpdir(), 'engin-test-'));
+      const stateFile = join(tmpDir, '.engin-state.json');
+      writeFileSync(
+        stateFile,
+        JSON.stringify({
+          taskPrompt: 'TaskId check',
+          currentPhase: 'implementing',
+          completedPhases: ['scouting'],
+          tasks: [],
+          spawnedAgents: [
+            { agentId: 'coder-1', profile: 'coder', phase: 'implementing', taskId: 'task-42' },
+            { agentId: 'reviewer-1', profile: 'reviewer', phase: 'scouting' },
+          ],
+        }),
+      );
+
+      server.stop();
+      const deps = buildDeps();
+      deps.scanPastRuns = mock<WebServerDependencies['scanPastRuns']>().mockResolvedValue([
+        {
+          dirName: 'taskid-run',
+          fullPath: tmpDir,
+          workflowName: 'taskid-wf',
+          timestamp: 13000,
+          hasStateFile: true,
+        },
+      ]);
+      server = await startWebServer(TEST_OPTIONS, deps);
+      baseUrl = `http://${server.hostname}:${server.port}`;
+
+      const testWs = new WebSocket(`ws://${server.hostname}:${server.port}/ws`);
+      await new Promise<void>((resolve) => {
+        testWs.addEventListener('message', () => resolve(), { once: true });
+      });
+
+      testWs.send(JSON.stringify({ type: 'select_workflow', workflowId: 'taskid-run' }));
+
+      const loadMsg = await new Promise<any>((resolve, reject) => {
+        testWs.addEventListener('message', (event) => {
+          try {
+            const msg = JSON.parse(event.data as string);
+            if (msg.type === 'load_past_run') resolve(msg);
+          } catch (e) {
+            reject(e);
+          }
+        });
+        setTimeout(() => reject(new Error('Timeout')), 2000);
+      });
+
+      expect(loadMsg.agents).toHaveLength(2);
+      expect(loadMsg.agents[0].taskId).toBe('task-42');
+      expect(loadMsg.agents[1].taskId).toBeUndefined();
+
+      testWs.close();
+      rmSync(tmpDir, { recursive: true, force: true });
+
+      server = await startWebServer(TEST_OPTIONS, buildDeps());
+      baseUrl = `http://${server.hostname}:${server.port}`;
     });
   });
 });

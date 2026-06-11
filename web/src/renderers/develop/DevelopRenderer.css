@@ -14,10 +14,3 @@
   gap: var(--engin-space-sm);
 }
 
-.develop-phase-label {
-  font-size: 12px;
-  color: var(--engin-text-muted);
-  padding: 0 var(--engin-space-sm);
-  font-family: var(--engin-font-mono);
-  flex-shrink: 0;
-}

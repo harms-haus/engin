@@ -1,6 +1,7 @@
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { WorkflowPhase, WorkflowState } from '../core/types.js';
+import type { PersistedAgentRecord, WorkflowPhase, WorkflowState } from '../core/types.js';
 import { isEnoentError } from '../core/utils.js';
 import { AuditLog } from './audit-log.js';
 import { TaskTracker } from './task-status.js';
@@ -34,6 +35,8 @@ export class WorkflowStatusTracker {
   private readonly workDir: string;
   private _savePromise: Promise<void> = Promise.resolve();
   private _pendingSave = false;
+  private _needsSave = false;
+  private _spawnedAgents: PersistedAgentRecord[] = [];
 
   constructor(workDir: string) {
     this.workDir = workDir;
@@ -52,7 +55,13 @@ export class WorkflowStatusTracker {
         })
         .finally(() => {
           this._pendingSave = false;
+          if (this._needsSave) {
+            this._needsSave = false;
+            this.persistState();
+          }
         });
+    } else {
+      this._needsSave = true;
     }
   }
 
@@ -60,6 +69,19 @@ export class WorkflowStatusTracker {
     this._taskTracker.on(TaskTracker.Events.TaskSettled, () => {
       this.persistState();
     });
+    this._taskTracker.on(TaskTracker.Events.TaskReady, () => {
+      this.persistState();
+    });
+  }
+
+  private persistStateSync(): void {
+    try {
+      mkdirSync(this.workDir, { recursive: true });
+      const filePath = join(this.workDir, '.engin-state.json');
+      writeFileSync(filePath, JSON.stringify(this.toJSON(), null, 2), 'utf-8');
+    } catch (err) {
+      console.warn('[WorkflowStatusTracker] Sync persist failed:', (err as Error).message);
+    }
   }
 
   // ── Getters ────────────────────────────────────────────────────────
@@ -112,6 +134,10 @@ export class WorkflowStatusTracker {
 
   get auditLog(): AuditLog {
     return this._auditLog;
+  }
+
+  get spawnedAgents(): PersistedAgentRecord[] {
+    return this._spawnedAgents.map((a) => ({ ...a }));
   }
 
   // ── Mutators ───────────────────────────────────────────────────────
@@ -169,6 +195,32 @@ export class WorkflowStatusTracker {
     this._stats.agentCount += 1;
   }
 
+  recordAgentSpawn(agentId: string, profile: string, phase: string, taskId?: string): void;
+  recordAgentSpawn(info: { agentId: string; profile: string; phase: string; taskId?: string }): void;
+  recordAgentSpawn(
+    agentIdOrInfo: string | { agentId: string; profile: string; phase: string; taskId?: string },
+    profile?: string,
+    phase?: string,
+    taskId?: string,
+  ): void {
+    let record: PersistedAgentRecord;
+    if (typeof agentIdOrInfo === 'string') {
+      record = { agentId: agentIdOrInfo, profile: profile as string, phase: phase as string, taskId };
+    } else {
+      record = { ...agentIdOrInfo };
+    }
+    this._spawnedAgents.push(record);
+    this.persistStateSync();
+  }
+
+  recordAgentComplete(agentId: string): void {
+    const agent = this._spawnedAgents.find((a) => a.agentId === agentId);
+    if (agent) {
+      agent.completedAt = new Date().toISOString();
+    }
+    this.persistStateSync();
+  }
+
   // ── Serialization ──────────────────────────────────────────────────
 
   toJSON(): WorkflowState {
@@ -183,6 +235,7 @@ export class WorkflowStatusTracker {
       planReviewFeedback: this._planReviewFeedback,
       planReviewSuggestions: this._planReviewSuggestions,
       stats: { ...this._stats },
+      spawnedAgents: this._spawnedAgents.length > 0 ? this._spawnedAgents.map((a) => ({ ...a })) : [],
     };
   }
 
@@ -216,10 +269,11 @@ export class WorkflowStatusTracker {
     tracker._planReviewFeedback = data.planReviewFeedback;
     tracker._planReviewSuggestions = data.planReviewSuggestions ? [...data.planReviewSuggestions] : undefined;
     tracker._stats = { ...data.stats };
+    tracker._spawnedAgents = data.spawnedAgents ? data.spawnedAgents.map((a) => ({ ...a })) : [];
 
     // Rebuild TaskTracker from saved tasks
     if (data.tasks && data.tasks.length > 0) {
-      tracker._taskTracker = TaskTracker.fromJSON({ tasks: data.tasks }, { preserveState: true });
+      tracker._taskTracker = TaskTracker.fromJSON({ tasks: data.tasks });
       tracker.attachAutoPersist();
     }
 

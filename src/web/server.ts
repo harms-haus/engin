@@ -1,10 +1,18 @@
 import { readFile } from 'node:fs/promises';
 import { extname, join } from 'node:path';
 import { getDefaultWorkDir, scanPastRuns } from '../core/config.js';
+import type { PersistedAgentRecord } from '../core/types.js';
 import { listWorkflows, loadWorkflow } from '../core/workflow-loader.js';
+import { WorkflowStatusTracker } from '../tracking/workflow-status.js';
 import { RunRegistry } from './run-registry.js';
 import { createStatusBridge } from './status-bridge.js';
-import type { ClientMessage, ServerMessage, WebServerDependencies, WebServerOptions } from './types.js';
+import type {
+  AgentWindowState,
+  ClientMessage,
+  ServerMessage,
+  WebServerDependencies,
+  WebServerOptions,
+} from './types.js';
 
 export async function startWebServer(
   options: WebServerOptions,
@@ -55,7 +63,10 @@ export async function startWebServer(
   };
 
   async function startWorkflow(workflowName: string, taskPrompt: string, maxConcurrent?: number): Promise<string> {
-    const runId = registry.createRun(workflowName);
+    const runId = registry.createRun(workflowName, {
+      onAgentSpawned: (info) => tracker.recordAgentSpawn(info.agentId, info.profile, info.phase, info.taskId),
+      onAgentCompleted: (agentId) => tracker.recordAgentComplete(agentId),
+    });
     broadcast({ type: 'workflow_started', summary: registry.getSummary(runId) });
 
     let workflow;
@@ -76,6 +87,15 @@ export async function startWebServer(
     const bridge = createStatusBridge(runId, registry, broadcast);
     const workDir = resolveWorkDir(options.cwd, workflowName);
     runWorkDirs.set(runId, workDir);
+
+    let tracker: WorkflowStatusTracker;
+    try {
+      tracker = await WorkflowStatusTracker.load(workDir);
+    } catch {
+      tracker = new WorkflowStatusTracker(workDir);
+      tracker.setTaskPrompt(taskPrompt);
+    }
+    tracker.setTaskPrompt(taskPrompt);
 
     // Fire-and-forget the workflow run
     workflow
@@ -256,14 +276,23 @@ export async function startWebServer(
                   const state = JSON.parse(stateContent) as {
                     currentPhase?: string;
                     completedPhases?: string[];
+                    spawnedAgents?: PersistedAgentRecord[];
                   };
+                  const spawnedAgents: AgentWindowState[] = (state.spawnedAgents ?? []).map((record) => ({
+                    agentId: record.agentId,
+                    profile: record.profile,
+                    phase: record.phase,
+                    taskId: record.taskId,
+                    active: false,
+                    log: [],
+                  }));
                   const msg: ServerMessage = {
                     type: 'load_past_run',
                     workflowId: parsed.workflowId,
                     summary: registry.getSummary(parsed.workflowId),
                     currentPhase: state.currentPhase ?? '',
                     completedPhases: state.completedPhases ?? [],
-                    agents: [],
+                    agents: spawnedAgents,
                   };
                   ws.send(JSON.stringify(msg));
                 } catch {

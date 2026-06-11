@@ -168,6 +168,7 @@ describe('onAgentSpawn', () => {
     expect(agent!.taskId).toBe('task-42');
     expect(agent!.active).toBe(true);
     expect(agent!.log).toEqual([]);
+    expect(agent!.phase).toBe('implementing');
 
     // Broadcast
     expectBroadcast(broadcast, {
@@ -181,6 +182,10 @@ describe('onAgentSpawn', () => {
         log: [],
       },
     });
+
+    // Broadcast also carries phase
+    const broadcastMsg = broadcast.mock.calls[0][0];
+    expect(broadcastMsg.agent.phase).toBe('implementing');
   });
 
   it('works without optional taskId', () => {
@@ -189,11 +194,48 @@ describe('onAgentSpawn', () => {
 
     const agent = registry.getRun(runId)!.agents.get('agent-2');
     expect(agent?.taskId).toBeUndefined();
+    expect(agent!.phase).toBe('scouting');
 
     expectBroadcast(broadcast, {
       type: 'agent_spawned',
       agent: { agentId: 'agent-2', taskId: undefined },
     });
+  });
+
+  it('propagates phase from callback info into the broadcast agent object', () => {
+    const { broadcast, bridge } = setup();
+    bridge.onAgentSpawn?.({ agentId: 'agent-3', profile: 'coder', phase: 'implementing' });
+
+    const msg = broadcast.mock.calls[0][0] as ServerMessage & { agent: Record<string, unknown> };
+    expect(msg.type).toBe('agent_spawned');
+    expect(msg.agent.phase).toBe('implementing');
+  });
+
+  it('propagates phase into the agent stored in the registry', () => {
+    const { registry, runId, bridge } = setup();
+    bridge.onAgentSpawn?.({ agentId: 'agent-4', profile: 'scout', phase: 'planning' });
+
+    const agent = registry.getRun(runId)!.agents.get('agent-4');
+    expect(agent!.phase).toBe('planning');
+  });
+
+  it('propagates phase field for planning phase', () => {
+    const { registry, runId, broadcast, bridge } = setup();
+    bridge.onAgentSpawn?.({
+      agentId: 'agent-5',
+      profile: 'planner',
+      phase: 'planning',
+    });
+
+    // Registry stores phase explicitly
+    const agent = registry.getRun(runId)!.agents.get('agent-5');
+    expect(agent).toBeDefined();
+    expect(agent!.phase).toBe('planning');
+
+    // Broadcast also carries the phase
+    const broadcastMsg = broadcast.mock.calls[0][0];
+    expect(broadcastMsg.type).toBe('agent_spawned');
+    expect(broadcastMsg.agent.phase).toBe('planning');
   });
 });
 
@@ -221,6 +263,26 @@ describe('onAgentComplete', () => {
       workflowId: runId,
       agentId: 'agent-1',
     });
+
+    // Phase is present in the agent_complete broadcast
+    expect(broadcast.mock.calls[0][0].phase).toBe('implementing');
+  });
+
+  it('propagates phase from callback info into the broadcast message', () => {
+    const { registry, runId, broadcast, bridge } = setup();
+    registry.addAgent(runId, {
+      agentId: 'agent-5',
+      profile: 'reviewer',
+      active: true,
+      log: [],
+    });
+    broadcast.mockClear();
+
+    bridge.onAgentComplete?.({ agentId: 'agent-5', profile: 'reviewer', phase: 'review' });
+
+    const msg = broadcast.mock.calls[0][0] as ServerMessage & { phase?: string };
+    expect(msg.type).toBe('agent_complete');
+    expect(msg.phase).toBe('review');
   });
 });
 

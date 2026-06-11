@@ -464,6 +464,23 @@ describe('TaskTracker failed status and reset', () => {
     expect(tracker.getTask('t1')!.assignedAgent).toBeUndefined();
   });
 
+  it('resetStuckTasks resets reviewing tasks', () => {
+    const tracker = new TaskTracker();
+    tracker.addTask({ id: 't1', title: 'T1', prompt: 'Do it', profile: 'coder', files: [], dependencies: [] });
+    tracker.claimTasks(1);
+    tracker.startTask('t1', 'agent-1');
+    tracker.submitForReview('t1', { output: 'implementation' });
+
+    expect(tracker.getTask('t1')!.status).toBe('reviewing');
+    expect(tracker.getTask('t1')!.result).toBeDefined();
+
+    tracker.resetStuckTasks();
+
+    expect(tracker.getTask('t1')!.status).toBe('ready');
+    expect(tracker.getTask('t1')!.assignedAgent).toBeUndefined();
+    expect(tracker.getTask('t1')!.result).toBeUndefined();
+  });
+
   it('resetStuckTasks does not touch ready/done/failed tasks', () => {
     const tracker = new TaskTracker();
     tracker.addTask({ id: 'ready1', title: 'R', prompt: '...', profile: 'coder', files: [], dependencies: [] });

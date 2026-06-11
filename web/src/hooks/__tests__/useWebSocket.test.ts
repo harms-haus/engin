@@ -424,6 +424,69 @@ describe('useWebSocket', () => {
     unmount();
   });
 
+  it('agent_spawned message preserves phase field', () => {
+    const { result, unmount } = renderHook(() => useWebSocket());
+    const summary = createMockSummary({ id: 'w-phase-agent' });
+    act(() => {
+      getMockWs()._triggerMessage({ type: 'workflow_started', summary });
+    });
+    const agent: AgentWindowState = {
+      agentId: 'scout-1',
+      profile: 'Scout',
+      phase: 'scouting',
+      active: true,
+      log: [],
+    };
+    act(() => {
+      getMockWs()._triggerMessage({
+        type: 'agent_spawned',
+        workflowId: 'w-phase-agent',
+        agent,
+      });
+    });
+    const runState = result.current.state.runStates.get('w-phase-agent');
+    const stored = runState?.agents.get('scout-1');
+    expect(stored).toBeDefined();
+    expect(stored?.phase).toBe('scouting');
+    unmount();
+  });
+
+  it('agent_complete message preserves phase field', () => {
+    const { result, unmount } = renderHook(() => useWebSocket());
+    const summary = createMockSummary({ id: 'w-phase-complete' });
+    act(() => {
+      getMockWs()._triggerMessage({ type: 'workflow_started', summary });
+    });
+    const agent: AgentWindowState = {
+      agentId: 'scout-2',
+      profile: 'Scout',
+      phase: 'scouting',
+      active: true,
+      log: [],
+    };
+    act(() => {
+      getMockWs()._triggerMessage({
+        type: 'agent_spawned',
+        workflowId: 'w-phase-complete',
+        agent,
+      });
+    });
+    // Complete the agent — phase should still be preserved
+    act(() => {
+      getMockWs()._triggerMessage({
+        type: 'agent_complete',
+        workflowId: 'w-phase-complete',
+        agentId: 'scout-2',
+      });
+    });
+    const runState = result.current.state.runStates.get('w-phase-complete');
+    const stored = runState?.agents.get('scout-2');
+    expect(stored).toBeDefined();
+    expect(stored?.phase).toBe('scouting');
+    expect(stored?.active).toBe(false);
+    unmount();
+  });
+
   it('should reconnect on close after 3 seconds', () => {
     vi.useFakeTimers();
     const { unmount } = renderHook(() => useWebSocket());

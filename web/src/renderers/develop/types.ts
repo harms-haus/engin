@@ -4,6 +4,7 @@ import type { LogEntry, WorkflowRunState } from '../../types';
 
 export interface DevelopPhaseInfo {
   id: string;
+  index: number;
   label: string;
   icon: string;
   status: 'completed' | 'active' | 'pending';
@@ -12,6 +13,7 @@ export interface DevelopPhaseInfo {
 export interface DevelopAgentInfo {
   agentId: string;
   profile: string;
+  phase: string;
   taskId?: string;
   active: boolean;
   log: LogEntry[];
@@ -19,18 +21,26 @@ export interface DevelopAgentInfo {
 
 export interface DevelopRendererState {
   phases: DevelopPhaseInfo[];
-  agents: DevelopAgentInfo[];
+  agentsByPhase: Record<string, DevelopAgentInfo[]>;
   currentPhase: string;
 }
 
-// ─── Helper ─────────────────────────────────────────────────────────────────
+// ─── Helpers ────────────────────────────────────────────────────────────────
+
+export function getAgentsForPhase(state: DevelopRendererState, phaseId: string): DevelopAgentInfo[] {
+  return state.agentsByPhase[phaseId] ?? [];
+}
+
+// ─── Build ──────────────────────────────────────────────────────────────────
 
 export function buildDevelopState(runState: WorkflowRunState): DevelopRendererState {
   const phases: DevelopPhaseInfo[] = [];
+  const agentsByPhase: Record<string, DevelopAgentInfo[]> = {};
   const sidebarPhases = runState.summary.sidebar.phases;
   const isBeforeFirstPhase = !runState.currentPhase && runState.completedPhases.length === 0;
   if (sidebarPhases) {
-    for (const phase of sidebarPhases) {
+    for (let i = 0; i < sidebarPhases.length; i++) {
+      const phase = sidebarPhases[i];
       let status: 'completed' | 'active' | 'pending';
       if (phase.id === 'initialization') {
         status = isBeforeFirstPhase ? 'active' : 'completed';
@@ -43,28 +53,35 @@ export function buildDevelopState(runState: WorkflowRunState): DevelopRendererSt
       }
       phases.push({
         id: phase.id,
+        index: i,
         label: phase.label,
         icon: phase.icon,
         status,
       });
+      agentsByPhase[phase.id] = [];
     }
   }
 
-  const agents: DevelopAgentInfo[] = [];
   for (const [_agentId, agent] of runState.agents) {
-    agents.push({
+    const phaseKey = agent.phase ?? 'unknown';
+    agentsByPhase[phaseKey] = agentsByPhase[phaseKey] ?? [];
+    agentsByPhase[phaseKey].push({
       agentId: agent.agentId,
       profile: agent.profile,
+      phase: phaseKey,
       taskId: agent.taskId,
       active: agent.active,
       log: agent.log,
     });
   }
-  agents.sort((a, b) => a.agentId.localeCompare(b.agentId));
+
+  for (const key of Object.keys(agentsByPhase)) {
+    agentsByPhase[key].sort((a, b) => a.agentId.localeCompare(b.agentId));
+  }
 
   return {
     phases,
-    agents,
+    agentsByPhase,
     currentPhase: runState.currentPhase,
   };
 }

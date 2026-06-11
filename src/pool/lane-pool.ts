@@ -13,6 +13,29 @@ import type { LanePoolOptions, LanePoolResult, StepDefinition, StepResult } from
 /** Distributive Omit that preserves discriminated union structure. */
 type WithoutTimestamp<T> = T extends infer U ? (U extends T ? Omit<U, 'timestamp'> : never) : never;
 
+type Severity = 'critical' | 'high' | 'medium' | 'low';
+
+function isFailingSeverity(severity: Severity | string): boolean {
+  return severity === 'critical' || severity === 'high';
+}
+
+function extractSeverity(output: unknown): string {
+  if (typeof output === 'object' && output !== null && 'severity' in output) {
+    const sev = (output as Record<string, unknown>).severity;
+    return typeof sev === 'string' ? sev : 'medium';
+  }
+  return 'medium';
+}
+
+// ─── Path safety ─────────────────────────────────────────────────────────
+
+/** Reject values that could escape the session directory via path traversal. */
+function assertSafeName(value: string, label: string): void {
+  if (!/^[a-zA-Z0-9_-]+$/.test(value)) {
+    throw new Error(`Invalid ${label}: "${value}" contains unsafe characters`);
+  }
+}
+
 // ─── RunStepContext ───────────────────────────────────────────────────────
 
 interface RunStepContext {
@@ -50,7 +73,6 @@ export class LanePool {
    * to complete or fail.
    */
   async run(): Promise<LanePoolResult> {
-    const startTime = Date.now();
     const { maxConcurrentLanes, taskTracker } = this.options;
 
     // Check for cancellation before doing any work
@@ -58,18 +80,10 @@ export class LanePool {
       return { completedTasks: 0, failedTasks: 0 };
     }
 
-    // Skip profile loading and lifecycle callbacks when there's no work
+    // Skip profile loading when there's no work
     if (taskTracker.getAllTasks().length === 0) {
       return { completedTasks: 0, failedTasks: 0 };
     }
-
-    // Fire lifecycle callbacks
-    this.options.onStatus?.onWorkflowStart?.({
-      taskPrompt: '(pool execution)',
-      resumed: false,
-      workDir: this.options.sessionBaseDir ?? process.cwd(),
-    });
-    this.options.onStatus?.onPhaseStart?.({ phase: 'implementing', round: 1 });
 
     // Clear stale cached profiles before loading fresh ones
     clearProfileCache();
@@ -86,45 +100,29 @@ export class LanePool {
     };
     this.options.signal?.addEventListener('abort', abortActiveSessions, { once: true });
 
-    const laneRunners = Array.from({ length: maxConcurrentLanes }, (_, i) => this.runLane(i, profiles));
-    const settled = await Promise.allSettled(laneRunners);
+    try {
+      const laneRunners = Array.from({ length: maxConcurrentLanes }, (_, i) => this.runLane(i, profiles));
+      const settled = await Promise.allSettled(laneRunners);
 
-    // Log any lane that threw an uncaught error
-    const failedLanes: string[] = [];
-    settled.forEach((result, index) => {
-      if (result.status === 'rejected') {
-        const agentId = `lane-${index}`;
-        const error = safeErrorMessage(result.reason);
-        failedLanes.push(agentId);
-        this.reportError(agentId, error);
-
-        // Audit log — error event for lane failure
-        this.appendAuditEvent({ type: 'error', agentId, error });
-      }
-    });
-
-    // Fire phase complete callback
-    this.options.onStatus?.onPhaseComplete?.({ phase: 'implementing', durationMs: Date.now() - startTime });
-
-    // Count results from the tracker by status
-    const allTasks = taskTracker.getAllTasks();
-    const completedTasks = allTasks.filter((t) => t.status === 'done').length;
-    const failedTasks = allTasks.filter((t) => t.status === 'failed').length;
-
-    // Fire workflow completion or failure callback
-    if (failedLanes.length > 0) {
-      this.options.onStatus?.onWorkflowFailed?.({
-        error: new Error(`${failedLanes.length} lane(s) failed`),
-        phase: 'implementing',
+      // Log any lane that threw an uncaught error
+      settled.forEach((result, index) => {
+        if (result.status === 'rejected') {
+          const agentId = `lane-${index}`;
+          const error = safeErrorMessage(result.reason);
+          this.reportError(agentId, error);
+          this.appendAuditEvent({ type: 'error', agentId, error });
+        }
       });
-    } else {
-      this.options.onStatus?.onWorkflowComplete?.({
-        totalDurationMs: Date.now() - startTime,
-        agentCount: maxConcurrentLanes,
-      });
+
+      // Count results from the tracker by status
+      const allTasks = taskTracker.getAllTasks();
+      const completedTasks = allTasks.filter((t) => t.status === 'done').length;
+      const failedTasks = allTasks.filter((t) => t.status === 'failed').length;
+
+      return { completedTasks, failedTasks };
+    } finally {
+      this.options.signal?.removeEventListener('abort', abortActiveSessions);
     }
-
-    return { completedTasks, failedTasks };
   }
 
   // ── Lane Runner ─────────────────────────────────────────────────────────
@@ -242,10 +240,9 @@ export class LanePool {
 
         if (newAttempt >= maxStepRetries) {
           // Extract severity from the last structured rejection result
-          const lastOutput = result.output as Record<string, unknown> | undefined;
-          const severity = (lastOutput?.severity as string) ?? 'medium';
+          const severity = extractSeverity(result.output);
 
-          if (severity === 'critical' || severity === 'high') {
+          if (isFailingSeverity(severity)) {
             // Critical/high → task failed
             this.options.onStatus?.onTaskRejected?.({
               taskId: task.id,
@@ -306,6 +303,10 @@ export class LanePool {
       };
     }
 
+    // Validate task id and step name against path traversal
+    assertSafeName(task.id, 'task id');
+    assertSafeName(step.name, 'step name');
+
     // Compute session directory
     const sessionDirPath = join(this.options.sessionBaseDir, task.id, `${ctx.attempt}-${ctx.stepIndex}-${step.name}`);
 
@@ -327,7 +328,13 @@ export class LanePool {
     });
 
     // Audit log
-    this.appendAuditEvent({ type: 'agent_start', agentId: step.profileId, profile: adjustedProfile, taskId: task.id });
+    this.appendAuditEvent({
+      type: 'agent_start',
+      agentId: step.profileId,
+      profile: adjustedProfile,
+      phase: 'implementing',
+      taskId: task.id,
+    });
 
     // Create harness
     const { session, dispose } = await createHarness(harnessOpts);
@@ -337,14 +344,31 @@ export class LanePool {
 
     try {
       // Build prompt
-      const promptText = this.buildPrompt(task, step, ctx.attempt > 0);
+      const promptText = this.buildPrompt(task, step);
 
       if (step.schema) {
         // Structured output step (review)
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const structuredResult: any = await promptForStructured(session, promptText, step.schema);
+        let structuredResult: unknown;
+        try {
+          structuredResult = await promptForStructured(session, promptText, step.schema, {
+            maxRetries: ctx.attempt === 0 ? 3 : 1,
+          });
+        } catch (err) {
+          const errorMsg = safeErrorMessage(err);
+          // Log the structured output failure for observability
+          this.appendAuditEvent({
+            type: 'error',
+            agentId,
+            error: `promptForStructured failed: ${errorMsg}`,
+            taskId: task.id,
+          });
+          // Treat as critical — the reviewer never produced valid output, so fail-safe
+          return { type: 'rejected', feedback: errorMsg, output: { severity: 'critical' } };
+        }
 
-        const approved = step.isApproved ? step.isApproved(structuredResult) : structuredResult.approved === true;
+        const approved = step.isApproved
+          ? step.isApproved(structuredResult)
+          : (structuredResult as Record<string, unknown>)?.approved === true;
 
         if (approved) {
           return { type: 'approved', output: structuredResult };
@@ -352,7 +376,7 @@ export class LanePool {
 
         const feedback = step.getFeedback
           ? step.getFeedback(structuredResult)
-          : (structuredResult.feedback ?? 'No feedback provided');
+          : (((structuredResult as Record<string, unknown>)?.feedback as string) ?? 'No feedback provided');
 
         return { type: 'rejected', feedback, output: structuredResult };
       }
@@ -381,7 +405,13 @@ export class LanePool {
       });
 
       // Audit log — agent_end event
-      this.appendAuditEvent({ type: 'agent_end', agentId: step.profileId, result: {}, taskId: task.id });
+      this.appendAuditEvent({
+        type: 'agent_end',
+        agentId: step.profileId,
+        result: {},
+        phase: 'implementing',
+        taskId: task.id,
+      });
     }
   }
 
@@ -390,7 +420,7 @@ export class LanePool {
   /**
    * Build the prompt text for a step. On retry, appends review feedback.
    */
-  private buildPrompt(task: Task, step: StepDefinition, isRetry: boolean): string {
+  private buildPrompt(task: Task, step: StepDefinition): string {
     const parts: string[] = [];
 
     parts.push(`## Task: ${task.title}`);
@@ -403,7 +433,7 @@ export class LanePool {
       parts.push(`## Relevant Files\n${task.files.join('\n')}`);
     }
 
-    if (isRetry && task.reviewFeedback) {
+    if (task.reviewFeedback) {
       parts.push('');
       parts.push('## Review Feedback (please address)');
       parts.push(task.reviewFeedback);

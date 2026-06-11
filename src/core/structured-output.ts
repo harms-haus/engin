@@ -182,10 +182,9 @@ function describeSchema(def: any): string {
 
   switch (typeName) {
     case 'ZodObject': {
-      // Zod v3.25 stores shape as a function
-      const shapeFn = def.shape;
-      if (typeof shapeFn !== 'function') return desc ?? '{}';
-      const shape = shapeFn();
+      const shapeDef = def.shape;
+      if (!shapeDef) return desc ?? '{}';
+      const shape = typeof shapeDef === 'function' ? shapeDef() : shapeDef;
       if (!shape) return desc ?? '{}';
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const fields = Object.entries(shape).map(([key, field]: [string, any]) => {
@@ -255,6 +254,65 @@ function describeSchema(def: any): string {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const options = (def.options ?? []).map((opt: any) => describeSchema(opt._def));
       return options.join(' | ');
+    }
+
+    case 'ZodEffects': {
+      const inner = def.schema?._def ? describeSchema(def.schema._def) : 'unknown';
+      return desc ? `${inner} /* ${desc} */` : `${inner} /* with effects */`;
+    }
+
+    case 'ZodBranded': {
+      const inner = def.type?._def ? describeSchema(def.type._def) : 'unknown';
+      return desc ? `${inner} /* ${desc} */` : `${inner} /* branded */`;
+    }
+
+    case 'ZodNativeEnum': {
+      const values: string[] = Object.values(def.values) as string[];
+      return desc
+        ? `${values.map((v) => `"${v}"`).join(' | ')} /* ${desc} */`
+        : values.map((v) => `"${v}"`).join(' | ');
+    }
+
+    case 'ZodRecord': {
+      const keyType = def.keyType?._def ? describeSchema(def.keyType._def) : 'unknown';
+      const valueType = def.valueType?._def ? describeSchema(def.valueType._def) : 'unknown';
+      return desc ? `Record<${keyType}, ${valueType}> /* ${desc} */` : `Record<${keyType}, ${valueType}>`;
+    }
+
+    case 'ZodTuple': {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const items: string[] = (def.items ?? []).map((item: any) => {
+        const itemDef = item._def ?? item;
+        return describeSchema(itemDef);
+      });
+      const tupleStr = `[${items.join(', ')}]`;
+      return desc ? `${tupleStr} /* ${desc} */` : tupleStr;
+    }
+
+    case 'ZodMap': {
+      const keyType = def.keyType?._def ? describeSchema(def.keyType._def) : 'unknown';
+      const valueType = def.valueType?._def ? describeSchema(def.valueType._def) : 'unknown';
+      return desc ? `Map<${keyType}, ${valueType}> /* ${desc} */` : `Map<${keyType}, ${valueType}>`;
+    }
+
+    case 'ZodSet': {
+      const itemType = def.valueType?._def ? describeSchema(def.valueType._def) : 'unknown';
+      return desc ? `Set<${itemType}> /* ${desc} */` : `Set<${itemType}>`;
+    }
+
+    case 'ZodPromise': {
+      const inner = def.type?._def ? describeSchema(def.type._def) : 'unknown';
+      return desc ? `Promise<${inner}> /* ${desc} */` : `Promise<${inner}>`;
+    }
+
+    case 'ZodLazy': {
+      try {
+        const resolved = def.getter();
+        const resolvedDef = resolved?._def ?? resolved;
+        return describeSchema(resolvedDef);
+      } catch {
+        return desc ?? 'lazy';
+      }
     }
 
     default:

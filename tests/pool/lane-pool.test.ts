@@ -817,6 +817,63 @@ describe('LanePool', () => {
       const promptedText = session.prompt.mock.calls[0][0] as string;
       expect(promptedText).not.toContain('## Relevant Files');
     });
+
+    it('includes review feedback in backed-up implement step prompt', async () => {
+      setupProfileMocks();
+
+      const implementPrompts: string[] = [];
+      let harnessCallCount = 0;
+
+      mockCreateHarness.mockImplementation(() => {
+        harnessCallCount++;
+        const isImplementStep = harnessCallCount % 2 === 1;
+        const session = makeSession((text) => {
+          if (isImplementStep) {
+            implementPrompts.push(text);
+          }
+          return 'done';
+        });
+        return {
+          session,
+          sessionId: `session-${harnessCallCount}`,
+          dispose: mock(() => {}),
+        };
+      });
+
+      // Review rejects first time, then approves
+      let reviewCallCount = 0;
+      mockPromptForStructured.mockImplementation(() => {
+        reviewCallCount++;
+        if (reviewCallCount === 1) {
+          return Promise.resolve({ approved: false, feedback: 'Fix the null check', severity: 'medium' });
+        }
+        return Promise.resolve({ approved: true, feedback: undefined });
+      });
+
+      const { pool } = createPoolAndTracker({
+        getStepsForTask: () => [
+          { name: 'implement', profileId: 'coder', isReadOnly: false },
+          {
+            name: 'review',
+            profileId: 'reviewer',
+            isReadOnly: true,
+            schema: z.object({ approved: z.boolean(), feedback: z.string().optional() }),
+          },
+        ],
+      });
+
+      const result = await pool.run();
+
+      expect(result.completedTasks).toBe(1);
+
+      // Implement step called twice: initial + retry after review rejection
+      expect(implementPrompts.length).toBe(2);
+
+      // The retry prompt should include review feedback
+      const retryPrompt = implementPrompts[1];
+      expect(retryPrompt).toContain('Review Feedback');
+      expect(retryPrompt).toContain('Fix the null check');
+    });
   });
 
   // ─── Harness Disposal ──────────────────────────────────────────────────
@@ -849,7 +906,7 @@ describe('LanePool', () => {
   // ─── Lifecycle Callbacks ────────────────────────────────────────────────
 
   describe('lifecycle callbacks', () => {
-    it('fires onWorkflowStart at the beginning of run()', async () => {
+    it('does NOT fire onWorkflowStart', async () => {
       setupProfileMocks();
       setupHarnessMocks();
 
@@ -858,15 +915,10 @@ describe('LanePool', () => {
 
       await pool.run();
 
-      expect(onWorkflowStart).toHaveBeenCalledTimes(1);
-      expect(onWorkflowStart).toHaveBeenCalledWith({
-        taskPrompt: '(pool execution)',
-        resumed: false,
-        workDir: '/tmp/sessions',
-      });
+      expect(onWorkflowStart).not.toHaveBeenCalled();
     });
 
-    it('fires onPhaseStart with implementing phase and round 1', async () => {
+    it('does NOT fire onPhaseStart', async () => {
       setupProfileMocks();
       setupHarnessMocks();
 
@@ -875,11 +927,10 @@ describe('LanePool', () => {
 
       await pool.run();
 
-      expect(onPhaseStart).toHaveBeenCalledTimes(1);
-      expect(onPhaseStart).toHaveBeenCalledWith({ phase: 'implementing', round: 1 });
+      expect(onPhaseStart).not.toHaveBeenCalled();
     });
 
-    it('fires onPhaseComplete after all lanes finish', async () => {
+    it('does NOT fire onPhaseComplete', async () => {
       setupProfileMocks();
       setupHarnessMocks();
 
@@ -888,14 +939,10 @@ describe('LanePool', () => {
 
       await pool.run();
 
-      expect(onPhaseComplete).toHaveBeenCalledTimes(1);
-      expect(onPhaseComplete).toHaveBeenCalledWith({
-        phase: 'implementing',
-        durationMs: expect.any(Number),
-      });
+      expect(onPhaseComplete).not.toHaveBeenCalled();
     });
 
-    it('fires onWorkflowComplete on success with no rejected lanes', async () => {
+    it('does NOT fire onWorkflowComplete', async () => {
       setupProfileMocks();
       setupHarnessMocks();
 
@@ -904,14 +951,10 @@ describe('LanePool', () => {
 
       await pool.run();
 
-      expect(onWorkflowComplete).toHaveBeenCalledTimes(1);
-      expect(onWorkflowComplete).toHaveBeenCalledWith({
-        totalDurationMs: expect.any(Number),
-        agentCount: 1,
-      });
+      expect(onWorkflowComplete).not.toHaveBeenCalled();
     });
 
-    it('fires onWorkflowFailed when a lane rejects', async () => {
+    it('does NOT fire onWorkflowFailed even when a lane rejects', async () => {
       setupProfileMocks();
       setupHarnessMocks();
 
@@ -963,12 +1006,8 @@ describe('LanePool', () => {
 
       await pool.run();
 
-      expect(onWorkflowFailed).toHaveBeenCalledTimes(1);
-      expect(onWorkflowFailed).toHaveBeenCalledWith({
-        error: expect.any(Error),
-        phase: 'implementing',
-      });
-      // onError also fires for the rejected lane in settled
+      expect(onWorkflowFailed).not.toHaveBeenCalled();
+      // onError still fires for the rejected lane in settled
       expect(onError).toHaveBeenCalled();
     });
 
@@ -985,35 +1024,24 @@ describe('LanePool', () => {
       await pool.run();
 
       expect(onWorkflowFailed).not.toHaveBeenCalled();
-      expect(onWorkflowComplete).toHaveBeenCalledTimes(1);
+      expect(onWorkflowComplete).not.toHaveBeenCalled();
     });
 
-    it('fires lifecycle callbacks in correct order', async () => {
+    it('fires task-level lifecycle callbacks in correct order', async () => {
       setupProfileMocks();
       setupHarnessMocks();
 
       const callOrder: string[] = [];
       const { pool } = createPoolAndTracker({
         onStatus: {
-          onWorkflowStart: mock(() => callOrder.push('workflowStart')),
-          onPhaseStart: mock(() => callOrder.push('phaseStart')),
           onTaskStart: mock(() => callOrder.push('taskStart')),
           onTaskComplete: mock(() => callOrder.push('taskComplete')),
-          onPhaseComplete: mock(() => callOrder.push('phaseComplete')),
-          onWorkflowComplete: mock(() => callOrder.push('workflowComplete')),
         },
       });
 
       await pool.run();
 
-      expect(callOrder).toEqual([
-        'workflowStart',
-        'phaseStart',
-        'taskStart',
-        'taskComplete',
-        'phaseComplete',
-        'workflowComplete',
-      ]);
+      expect(callOrder).toEqual(['taskStart', 'taskComplete']);
     });
   });
 
@@ -1488,6 +1516,78 @@ describe('LanePool', () => {
       expect(result.completedTasks).toBe(1);
       expect(result.failedTasks).toBe(0);
       expect(mockPromptForStructured).toHaveBeenCalledTimes(5);
+      expect(tracker.getTask('task-1')!.status).toBe('done');
+    });
+  });
+
+  // ─── promptForStructured Exception Handling ──────────────────────────────
+
+  describe('promptForStructured exception handling', () => {
+    it('converts promptForStructured exception to step rejection and retries', async () => {
+      setupProfileMocks();
+      setupHarnessMocks();
+
+      // promptForStructured always throws
+      mockPromptForStructured.mockRejectedValue(new Error('Structured output failed'));
+
+      const { pool, tracker } = createPoolAndTracker({
+        maxStepRetries: 3,
+        getStepsForTask: () => [
+          { name: 'implement', profileId: 'coder', isReadOnly: false },
+          {
+            name: 'review',
+            profileId: 'reviewer',
+            isReadOnly: true,
+            schema: z.object({ approved: z.boolean() }),
+          },
+        ],
+      });
+
+      const result = await pool.run();
+
+      // The exception should be converted to a rejection, engaging the retry
+      // system. The review step should be attempted maxStepRetries times.
+      expect(mockPromptForStructured).toHaveBeenCalledTimes(3);
+
+      // Severity is 'critical' (fail-safe for infrastructure failures), so
+      // the task is marked as failed after max retries are exhausted.
+      expect(result.completedTasks).toBe(0);
+      expect(result.failedTasks).toBe(1);
+      expect(tracker.getTask('task-1')!.status).toBe('failed');
+    });
+
+    it('recovers when promptForStructured fails then succeeds', async () => {
+      setupProfileMocks();
+      setupHarnessMocks();
+
+      let structuredCallCount = 0;
+      mockPromptForStructured.mockImplementation(() => {
+        structuredCallCount++;
+        if (structuredCallCount <= 2) {
+          return Promise.reject(new Error('Temporary structured output failure'));
+        }
+        return Promise.resolve({ approved: true });
+      });
+
+      const { pool, tracker } = createPoolAndTracker({
+        maxStepRetries: 5,
+        getStepsForTask: () => [
+          { name: 'implement', profileId: 'coder', isReadOnly: false },
+          {
+            name: 'review',
+            profileId: 'reviewer',
+            isReadOnly: true,
+            schema: z.object({ approved: z.boolean() }),
+          },
+        ],
+      });
+
+      const result = await pool.run();
+
+      // Two failures then success on the third attempt
+      expect(mockPromptForStructured).toHaveBeenCalledTimes(3);
+      expect(result.completedTasks).toBe(1);
+      expect(result.failedTasks).toBe(0);
       expect(tracker.getTask('task-1')!.status).toBe('done');
     });
   });

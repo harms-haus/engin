@@ -223,3 +223,126 @@ describe('schemaToString', () => {
     expect(schemaToString(z.boolean())).toBe('boolean');
   });
 });
+
+// ─── schemaToString – additional Zod types ──────────────────────────────────
+
+describe('schemaToString – additional Zod types', () => {
+  it('describes ZodEffects (transform) as inner type, not raw typeName', () => {
+    const s = z.string().transform((v) => v.toUpperCase());
+    const result = schemaToString(s);
+    expect(result).toContain('string');
+    expect(result).not.toContain('ZodEffects');
+    expect(result).toContain('with effects');
+  });
+
+  it('describes ZodEffects (refine) as inner type', () => {
+    const s = z.string().refine((v) => v.length > 0);
+    const result = schemaToString(s);
+    expect(result).toContain('string');
+    expect(result).not.toContain('ZodEffects');
+    expect(result).toContain('with effects');
+  });
+
+  it('describes ZodBranded as inner type, not raw typeName', () => {
+    const s = z.string().brand('UserId');
+    const result = schemaToString(s);
+    expect(result).toContain('string');
+    expect(result).not.toContain('ZodBranded');
+    expect(result).toContain('branded');
+  });
+
+  it('describes ZodNativeEnum with its values', () => {
+    const s = z.nativeEnum({ A: 'a', B: 'b' });
+    const result = schemaToString(s);
+    expect(result).toContain('a');
+    expect(result).toContain('b');
+    expect(result).not.toContain('ZodNativeEnum');
+  });
+
+  it('describes ZodRecord with key and value types', () => {
+    const s = z.record(z.string(), z.number());
+    const result = schemaToString(s);
+    expect(result).toContain('string');
+    expect(result).toContain('number');
+    expect(result).not.toContain('ZodRecord');
+  });
+
+  it('describes ZodTuple with element types', () => {
+    const s = z.tuple([z.string(), z.number()]);
+    const result = schemaToString(s);
+    expect(result).toContain('string');
+    expect(result).toContain('number');
+    expect(result).not.toContain('ZodTuple');
+  });
+
+  it('describes ZodSet with element type', () => {
+    const s = z.set(z.string());
+    const result = schemaToString(s);
+    expect(result).toContain('string');
+    expect(result).not.toContain('ZodSet');
+  });
+
+  it('describes ZodMap with key and value types', () => {
+    const s = z.map(z.string(), z.number());
+    const result = schemaToString(s);
+    expect(result).toContain('string');
+    expect(result).toContain('number');
+    expect(result).not.toContain('ZodMap');
+  });
+
+  it('describes ZodLazy by resolving the inner type', () => {
+    const s = z.lazy(() => z.object({ x: z.number() }));
+    const result = schemaToString(s);
+    expect(result).toContain('x');
+    expect(result).toContain('number');
+    expect(result).not.toContain('ZodLazy');
+  });
+
+  it('describes ZodPromise with inner type', () => {
+    const s = z.promise(z.string());
+    const result = schemaToString(s);
+    expect(result).toContain('string');
+    expect(result).not.toContain('ZodPromise');
+  });
+
+  it('respects description field on ZodEffects', () => {
+    const s = z
+      .string()
+      .transform((v) => v)
+      .describe('uppercased name');
+    const result = schemaToString(s);
+    expect(result).toContain('string');
+    expect(result).toContain('uppercased name');
+  });
+
+  it('respects description field on ZodBranded', () => {
+    const s = z.string().brand('UserId').describe('user identifier');
+    const result = schemaToString(s);
+    expect(result).toContain('string');
+    expect(result).toContain('user identifier');
+  });
+
+  it('respects description field on ZodRecord', () => {
+    const s = z.record(z.string(), z.number()).describe('score map');
+    const result = schemaToString(s);
+    expect(result).toContain('score map');
+  });
+
+  it('respects description field on ZodSet', () => {
+    const s = z.set(z.string()).describe('unique tags');
+    const result = schemaToString(s);
+    expect(result).toContain('unique tags');
+  });
+
+  it('respects description field on ZodMap', () => {
+    const s = z.map(z.string(), z.number()).describe('lookup table');
+    const result = schemaToString(s);
+    expect(result).toContain('lookup table');
+  });
+
+  it('respects description field on ZodTuple', () => {
+    const s = z.tuple([z.string(), z.number()]).describe('pair');
+    const result = schemaToString(s);
+    expect(result).toContain('pair');
+  });
+});

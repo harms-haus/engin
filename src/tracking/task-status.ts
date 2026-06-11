@@ -190,9 +190,10 @@ export class TaskTracker extends EventEmitter {
 
   resetStuckTasks(): void {
     for (const task of this.tasks.values()) {
-      if (task.status === 'claimed' || task.status === 'implementing') {
+      if (task.status === 'claimed' || task.status === 'implementing' || task.status === 'reviewing') {
         task.status = 'ready';
         task.assignedAgent = undefined;
+        task.result = undefined;
       }
     }
   }

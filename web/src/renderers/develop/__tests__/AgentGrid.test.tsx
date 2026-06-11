@@ -73,6 +73,39 @@ describe('AgentGrid', () => {
       const { container } = render(<AgentGrid agents={[]} />);
       expect(container.querySelector('.agent-grid-empty')).toBeInTheDocument();
     });
+
+    it('renders the default message when emptyMessage is not provided', () => {
+      render(<AgentGrid agents={[]} />);
+      expect(screen.getByText('No active agents')).toBeInTheDocument();
+    });
+
+    it('renders a custom emptyMessage when provided', () => {
+      render(<AgentGrid agents={[]} emptyMessage="No agents found" />);
+      expect(screen.getByText('No agents found')).toBeInTheDocument();
+    });
+
+    it('does not render the default message when a custom emptyMessage is provided', () => {
+      render(<AgentGrid agents={[]} emptyMessage="Custom empty" />);
+      expect(screen.queryByText('No active agents')).not.toBeInTheDocument();
+    });
+
+    it('renders the empty state div with class "agent-grid-empty" when custom emptyMessage is provided', () => {
+      const { container } = render(<AgentGrid agents={[]} emptyMessage="Nothing here" />);
+      expect(container.querySelector('.agent-grid-empty')).toBeInTheDocument();
+    });
+
+    it('renders custom emptyMessage as a string even when it is empty', () => {
+      const { container } = render(<AgentGrid agents={[]} emptyMessage="" />);
+      const emptyEl = container.querySelector('.agent-grid-empty');
+      expect(emptyEl).toBeInTheDocument();
+      expect(emptyEl?.textContent).toBe('');
+    });
+
+    it('renders custom emptyMessage for agents array that is empty', () => {
+      render(<AgentGrid agents={[]} emptyMessage="Waiting for agents…" />);
+      expect(screen.getByText('Waiting for agents…')).toBeInTheDocument();
+      expect(screen.queryByText('No active agents')).not.toBeInTheDocument();
+    });
   });
 
   describe('grid rendering', () => {

@@ -1,3 +1,4 @@
+import type { PersistedAgentRecord } from '../core/types.js';
 import type { AgentWindowState, LogEntry, PhaseDescriptor, SidebarInfo, WorkflowSummary } from './types.js';
 
 // ─── Internal RunEntry ──────────────────────────────────────────────────────
@@ -14,6 +15,8 @@ interface RunEntry {
   completedPhases: string[];
   agents: Map<string, AgentWindowState>;
   abortController: AbortController;
+  onAgentSpawned?: (info: { agentId: string; profile: string; phase: string; taskId?: string }) => void;
+  onAgentCompleted?: (agentId: string) => void;
 }
 
 // ─── RunRegistry ────────────────────────────────────────────────────────────
@@ -38,7 +41,15 @@ export class RunRegistry {
    * @param options - Optional overrides for id and startedAt. When omitted,
    *                  a random UUID and the current timestamp are used.
    */
-  createRun(workflowName: string, options?: { id?: string; startedAt?: string }): string {
+  createRun(
+    workflowName: string,
+    options?: {
+      id?: string;
+      startedAt?: string;
+      onAgentSpawned?: (info: { agentId: string; profile: string; phase: string; taskId?: string }) => void;
+      onAgentCompleted?: (agentId: string) => void;
+    },
+  ): string {
     const id = options?.id ?? crypto.randomUUID();
     const entry: RunEntry = {
       id,
@@ -50,6 +61,8 @@ export class RunRegistry {
       completedPhases: [],
       agents: new Map(),
       abortController: new AbortController(),
+      onAgentSpawned: options?.onAgentSpawned,
+      onAgentCompleted: options?.onAgentCompleted,
     };
     this.runs.set(id, entry);
     this.order.push(id);
@@ -120,6 +133,12 @@ export class RunRegistry {
   addAgent(runId: string, agent: AgentWindowState): void {
     const entry = this.getEntryOrThrow(runId);
     entry.agents.set(agent.agentId, agent);
+    entry.onAgentSpawned?.({
+      agentId: agent.agentId,
+      profile: agent.profile,
+      phase: agent.phase ?? '',
+      taskId: agent.taskId,
+    });
   }
 
   /**
@@ -133,6 +152,7 @@ export class RunRegistry {
       throw new Error(`Agent ${agentId} not found in run ${runId}`);
     }
     agent.active = false;
+    entry.onAgentCompleted?.(agentId);
   }
 
   /**
@@ -149,6 +169,20 @@ export class RunRegistry {
     } else {
       agent.log.push(logEntry);
     }
+  }
+
+  /**
+   * Return PersistedAgentRecord array for all agents in a run.
+   * Throws if the run ID does not exist.
+   */
+  getAgentRecords(runId: string): PersistedAgentRecord[] {
+    const entry = this.getEntryOrThrow(runId);
+    return Array.from(entry.agents.values()).map((agent) => ({
+      agentId: agent.agentId,
+      profile: agent.profile,
+      phase: agent.phase ?? '',
+      taskId: agent.taskId,
+    }));
   }
 
   // ─── Queries ───────────────────────────────────────────────────────────

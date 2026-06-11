@@ -9,12 +9,38 @@
   flex-shrink: 0;
 }
 
-.phase-item {
-  display: flex;
+.phase-tab {
+  display: inline-flex;
   align-items: center;
   gap: var(--engin-space-xs);
+  padding: var(--engin-space-xs) var(--engin-space-md);
+  border-bottom: 3px solid transparent;
+  cursor: pointer;
   white-space: nowrap;
   font-size: 12px;
+  transition: border-color 0.15s, opacity 0.15s;
+}
+
+.phase-tab[data-status="pending"] {
+  opacity: var(--engin-phase-disabled-opacity);
+  cursor: default;
+  pointer-events: none;
+}
+
+.phase-tab[data-status="active"] {
+  color: var(--phase-color);
+  border-bottom-color: var(--phase-color);
+  font-weight: 700;
+}
+
+.phase-tab[data-status="completed"] {
+  color: var(--phase-color);
+  border-bottom-color: var(--phase-color);
+  opacity: 0.85;
+}
+
+.phase-tab--selected {
+  border-bottom-width: 3px;
 }
 
 .phase-icon {
@@ -25,57 +51,4 @@
 .phase-label {
   font-size: 12px;
   line-height: 1;
-}
-
-/* ── Status: completed ──────────────────────────────────────────────────── */
-
-.phase-item.completed .phase-icon {
-  color: var(--engin-success);
-}
-
-.phase-item.completed .phase-label {
-  color: var(--engin-text-muted);
-}
-
-/* ── Status: active ─────────────────────────────────────────────────────── */
-
-.phase-item.active .phase-icon {
-  color: var(--engin-accent);
-}
-
-.phase-item.active .phase-label {
-  color: var(--engin-accent);
-  font-weight: 700;
-}
-
-.phase-item.active {
-  background: var(--engin-bg-hover);
-  border-radius: var(--engin-radius-sm);
-  padding: 2px 4px;
-}
-
-/* ── Status: pending ────────────────────────────────────────────────────── */
-
-.phase-item.pending .phase-icon {
-  opacity: 0.4;
-}
-
-.phase-item.pending .phase-label {
-  color: var(--engin-text-muted);
-}
-
-/* ── Connector ──────────────────────────────────────────────────────────── */
-
-.phase-connector {
-  width: 20px;
-  height: 1px;
-  flex-shrink: 0;
-}
-
-.phase-connector.completed {
-  background: var(--engin-success);
-}
-
-.phase-connector.pending {
-  background: var(--engin-border);
 }

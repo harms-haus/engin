@@ -26,6 +26,7 @@ export interface AgentWindowState {
   agentId: string;
   profile: string;
   taskId?: string;
+  phase?: string;
   active: boolean;
   log: LogEntry[];
 }
@@ -57,7 +58,7 @@ export type ServerMessage =
   | { type: 'workflow_failed'; summary: WorkflowSummary; error: string; phase: string }
   | { type: 'agent_spawned'; workflowId: string; agent: AgentWindowState }
   | { type: 'agent_log'; workflowId: string; agentId: string; entry: LogEntry }
-  | { type: 'agent_complete'; workflowId: string; agentId: string }
+  | { type: 'agent_complete'; workflowId: string; agentId: string; phase?: string }
   | {
       type: 'load_past_run';
       workflowId: string;

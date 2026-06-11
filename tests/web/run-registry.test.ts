@@ -335,12 +335,14 @@ describe('addAgent', () => {
     const agent = {
       agentId: 'agent-1',
       profile: 'coder',
+      phase: 'scouting',
       active: true,
       log: [],
     };
     registry.addAgent(runId, agent);
     const entry = registry.getRun(runId);
     expect(entry!.agents.get('agent-1')).toEqual(agent);
+    expect(entry!.agents.get('agent-1')!.phase).toBe('scouting');
   });
 
   it('replaces an existing agent with the same ID', () => {
@@ -359,6 +361,21 @@ describe('addAgent', () => {
     });
     const agent = registry.getRun(runId)!.agents.get('a1');
     expect(agent!.profile).toBe('new');
+  });
+
+  it('stores agent with phase field', () => {
+    const { registry, runId } = registryWithOneRun();
+    registry.addAgent(runId, {
+      agentId: 'agent-phase',
+      profile: 'planner',
+      phase: 'planning',
+      active: true,
+      log: [],
+    });
+    const entry = registry.getRun(runId);
+    const agent = entry!.agents.get('agent-phase');
+    expect(agent).toBeDefined();
+    expect(agent!.phase).toBe('planning');
   });
 
   it('throws if run does not exist', () => {
@@ -607,5 +624,298 @@ describe('getAbortController', () => {
     // Re-fetch to confirm it's the same object
     const ctrl2 = registry.getAbortController(runId);
     expect(ctrl2!.signal.aborted).toBe(true);
+  });
+});
+
+// ─── createRun with agent lifecycle callbacks ────────────────────────────
+
+describe('createRun – agent lifecycle callbacks', () => {
+  it('accepts onAgentSpawned callback in options', () => {
+    const registry = new RunRegistry();
+    const onAgentSpawned = () => {};
+    const id = registry.createRun('CB Workflow', { onAgentSpawned });
+    const entry = registry.getRun(id);
+    expect(entry).toBeDefined();
+    // Entry should be created without error
+  });
+
+  it('accepts onAgentCompleted callback in options', () => {
+    const registry = new RunRegistry();
+    const onAgentCompleted = () => {};
+    const id = registry.createRun('CB Workflow', { onAgentCompleted });
+    const entry = registry.getRun(id);
+    expect(entry).toBeDefined();
+  });
+
+  it('accepts both onAgentSpawned and onAgentCompleted callbacks', () => {
+    const registry = new RunRegistry();
+    const onAgentSpawned = () => {};
+    const onAgentCompleted = () => {};
+    const id = registry.createRun('CB Both', { onAgentSpawned, onAgentCompleted });
+    const entry = registry.getRun(id);
+    expect(entry).toBeDefined();
+  });
+
+  it('still works without any callback options (backward compatible)', () => {
+    const registry = new RunRegistry();
+    const id = registry.createRun('No CB');
+    expect(id).toBeDefined();
+    const entry = registry.getRun(id);
+    expect(entry).toBeDefined();
+  });
+
+  it('onAgentSpawned is called when addAgent is invoked with taskId', () => {
+    const calls: { agentId: string; profile: string; phase: string; taskId?: string }[] = [];
+    const registry = new RunRegistry();
+    const id = registry.createRun('Spawn CB', {
+      onAgentSpawned: (info) => calls.push(info),
+    });
+
+    registry.addAgent(id, {
+      agentId: 'agent-1',
+      profile: 'coder',
+      phase: 'scouting',
+      taskId: 'task-1',
+      active: true,
+      log: [],
+    });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].agentId).toBe('agent-1');
+    expect(calls[0].profile).toBe('coder');
+    expect(calls[0].phase).toBe('scouting');
+    expect(calls[0].taskId).toBe('task-1');
+  });
+
+  it('onAgentSpawned is called with empty phase when agent has no phase', () => {
+    const calls: { agentId: string; profile: string; phase: string; taskId?: string }[] = [];
+    const registry = new RunRegistry();
+    const id = registry.createRun('Spawn No Phase', {
+      onAgentSpawned: (info) => calls.push(info),
+    });
+
+    registry.addAgent(id, {
+      agentId: 'agent-np',
+      profile: 'reviewer',
+      active: true,
+      log: [],
+    });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].phase).toBe('');
+    expect(calls[0].taskId).toBeUndefined();
+  });
+
+  it('onAgentSpawned is called with taskId from the agent state', () => {
+    const calls: { agentId: string; profile: string; phase: string; taskId?: string }[] = [];
+    const registry = new RunRegistry();
+    const id = registry.createRun('Spawn With TaskId', {
+      onAgentSpawned: (info) => calls.push(info),
+    });
+
+    registry.addAgent(id, {
+      agentId: 'agent-t',
+      profile: 'coder',
+      taskId: 'task-99',
+      active: true,
+      log: [],
+    });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].taskId).toBe('task-99');
+  });
+
+  it('onAgentCompleted is called when completeAgent is invoked', () => {
+    const calls: string[] = [];
+    const registry = new RunRegistry();
+    const id = registry.createRun('Complete CB', {
+      onAgentCompleted: (agentId) => calls.push(agentId),
+    });
+
+    registry.addAgent(id, {
+      agentId: 'agent-c',
+      profile: 'tester',
+      active: true,
+      log: [],
+    });
+    registry.completeAgent(id, 'agent-c');
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toBe('agent-c');
+  });
+
+  it('onAgentCompleted is called after agent is set to inactive', () => {
+    const order: string[] = [];
+    const registry = new RunRegistry();
+    const id = registry.createRun('Order CB', {
+      onAgentCompleted: (agentId) => {
+        // At the point the callback fires, the agent should already be inactive
+        order.push(`callback:${agentId}`);
+      },
+    });
+
+    registry.addAgent(id, {
+      agentId: 'agent-order',
+      profile: 'x',
+      active: true,
+      log: [],
+    });
+    registry.completeAgent(id, 'agent-order');
+
+    expect(order).toEqual(['callback:agent-order']);
+    // Verify agent is actually inactive
+    const entry = registry.getRun(id)!;
+    expect(entry.agents.get('agent-order')!.active).toBe(false);
+  });
+
+  it('onAgentCompleted receives correct agentId for multiple agents', () => {
+    const calls: string[] = [];
+    const registry = new RunRegistry();
+    const id = registry.createRun('Multi Complete', {
+      onAgentCompleted: (agentId) => calls.push(agentId),
+    });
+
+    registry.addAgent(id, { agentId: 'a1', profile: 'p', active: true, log: [] });
+    registry.addAgent(id, { agentId: 'a2', profile: 'q', active: true, log: [] });
+    registry.completeAgent(id, 'a2');
+    registry.completeAgent(id, 'a1');
+
+    expect(calls).toEqual(['a2', 'a1']);
+  });
+
+  it('does not call onAgentSpawned when no callback is provided', () => {
+    const registry = new RunRegistry();
+    const id = registry.createRun('No Spawn CB');
+
+    // Should not throw
+    registry.addAgent(id, {
+      agentId: 'agent-nocb',
+      profile: 'p',
+      active: true,
+      log: [],
+    });
+  });
+
+  it('does not call onAgentCompleted when no callback is provided', () => {
+    const registry = new RunRegistry();
+    const id = registry.createRun('No Complete CB');
+
+    registry.addAgent(id, {
+      agentId: 'agent-nocb',
+      profile: 'p',
+      active: true,
+      log: [],
+    });
+    // Should not throw
+    registry.completeAgent(id, 'agent-nocb');
+  });
+});
+
+// ─── getAgentRecords ──────────────────────────────────────────────────────
+
+describe('getAgentRecords', () => {
+  it('returns empty array when no agents exist', () => {
+    const { registry, runId } = registryWithOneRun();
+    const records = registry.getAgentRecords(runId);
+    expect(records).toEqual([]);
+  });
+
+  it('returns PersistedAgentRecord array for stored agents', () => {
+    const { registry, runId } = registryWithOneRun();
+    registry.addAgent(runId, {
+      agentId: 'agent-1',
+      profile: 'coder',
+      phase: 'scouting',
+      taskId: 'task-1',
+      active: true,
+      log: [],
+    });
+
+    const records = registry.getAgentRecords(runId);
+    expect(records).toHaveLength(1);
+    expect(records[0].agentId).toBe('agent-1');
+    expect(records[0].profile).toBe('coder');
+    expect(records[0].phase).toBe('scouting');
+    expect(records[0].taskId).toBe('task-1');
+  });
+
+  it('returns multiple records for multiple agents', () => {
+    const { registry, runId } = registryWithOneRun();
+    registry.addAgent(runId, {
+      agentId: 'a1',
+      profile: 'coder',
+      phase: 'scouting',
+      active: true,
+      log: [],
+    });
+    registry.addAgent(runId, {
+      agentId: 'a2',
+      profile: 'reviewer',
+      phase: 'planning',
+      taskId: 't1',
+      active: true,
+      log: [],
+    });
+
+    const records = registry.getAgentRecords(runId);
+    expect(records).toHaveLength(2);
+    expect(records[0].agentId).toBe('a1');
+    expect(records[1].agentId).toBe('a2');
+  });
+
+  it('returns a copy of the internal records array', () => {
+    const { registry, runId } = registryWithOneRun();
+    registry.addAgent(runId, {
+      agentId: 'a1',
+      profile: 'p',
+      active: true,
+      log: [],
+    });
+
+    const records = registry.getAgentRecords(runId);
+    records.push({ agentId: 'fake', profile: 'x', phase: '' });
+    expect(registry.getAgentRecords(runId)).toHaveLength(1);
+  });
+
+  it('throws if run does not exist', () => {
+    const registry = new RunRegistry();
+    expect(() => registry.getAgentRecords('nonexistent')).toThrow('nonexistent not found');
+  });
+
+  it('excludes log entries from persisted records', () => {
+    const { registry, runId } = registryWithOneRun();
+    registry.addAgent(runId, {
+      agentId: 'a1',
+      profile: 'p',
+      active: true,
+      log: [{ id: 'l1', timestamp: '2026-01-01', type: 'text', content: 'hi' }],
+    });
+
+    const records = registry.getAgentRecords(runId);
+    expect(records).toHaveLength(1);
+    expect(records[0].agentId).toBe('a1');
+    // PersistedAgentRecord should not contain log
+    expect((records[0] as Record<string, unknown>).log).toBeUndefined();
+  });
+
+  it('reflects active status correctly', () => {
+    const { registry, runId } = registryWithOneRun();
+    registry.addAgent(runId, {
+      agentId: 'a1',
+      profile: 'p',
+      active: true,
+      log: [],
+    });
+
+    // Before completing, there's no completedAt equivalent on PersistedAgentRecord
+    const before = registry.getAgentRecords(runId);
+    expect(before).toHaveLength(1);
+
+    registry.completeAgent(runId, 'a1');
+
+    const after = registry.getAgentRecords(runId);
+    expect(after).toHaveLength(1);
+    // The agent still appears in records
+    expect(after[0].agentId).toBe('a1');
   });
 });

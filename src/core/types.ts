@@ -66,15 +66,25 @@ export interface WorkflowState {
     totalCost: number;
     agentCount: number;
   };
+  spawnedAgents?: PersistedAgentRecord[];
 }
 
 // ─── Audit Events ───────────────────────────────────────────────────────────
 export type AuditEvent =
-  | { type: 'agent_start'; agentId: string; profile: AgentProfile; taskId?: string; timestamp: string }
-  | { type: 'agent_end'; agentId: string; result: unknown; taskId?: string; timestamp: string }
+  | { type: 'agent_start'; agentId: string; profile: AgentProfile; taskId?: string; timestamp: string; phase?: string }
+  | { type: 'agent_end'; agentId: string; result: unknown; taskId?: string; timestamp: string; phase?: string }
   | { type: 'decision'; agentId: string; decision: string; reasoning: string; taskId?: string; timestamp: string }
   | { type: 'structured_output'; agentId: string; output: unknown; taskId?: string; timestamp: string }
   | { type: 'error'; agentId: string; error: string; taskId?: string; timestamp: string };
+
+// ─── Persisted Agent Record ────────────────────────────────────────────────
+export interface PersistedAgentRecord {
+  agentId: string;
+  profile: string;
+  phase: string;
+  taskId?: string;
+  completedAt?: string;
+}
 
 // ─── Structured Output ──────────────────────────────────────────────────────
 export interface StructuredOutputOptions {

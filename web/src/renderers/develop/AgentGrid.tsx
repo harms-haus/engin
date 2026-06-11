@@ -13,11 +13,12 @@ import type { DevelopAgentInfo } from './types';
 
 interface AgentGridProps {
   agents: DevelopAgentInfo[];
+  emptyMessage?: string;
 }
 
-export function AgentGrid({ agents }: AgentGridProps) {
+export function AgentGrid({ agents, emptyMessage }: AgentGridProps) {
   if (agents.length === 0) {
-    return <div className="agent-grid-empty">No active agents</div>;
+    return <div className="agent-grid-empty">{emptyMessage ?? 'No active agents'}</div>;
   }
 
   return (

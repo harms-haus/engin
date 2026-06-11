@@ -377,7 +377,8 @@ describe('WorkflowStatusTracker', () => {
       await new Promise((r) => setTimeout(r, 50));
 
       const restored = await WorkflowStatusTracker.load(dir);
-      expect(restored.taskTracker.getTask('t1')!.status).toBe('failed');
+      // On resume, failed tasks are reset to 'ready' for retry
+      expect(restored.taskTracker.getTask('t1')!.status).toBe('ready');
       expect(restored.taskPrompt).toBe('fail-persist-test');
     });
 

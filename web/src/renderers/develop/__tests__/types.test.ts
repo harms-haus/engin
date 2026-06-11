@@ -1,11 +1,13 @@
 /**
- * Tests for develop renderer types and the buildDevelopState helper.
+ * Tests for develop renderer types, the buildDevelopState helper,
+ * and the getAgentsForPhase helper.
  */
 
 import { describe, expect, it } from 'vitest';
 
 import type { AgentWindowState, LogEntry, PhaseDescriptor, WorkflowRunState, WorkflowSummary } from '../../../types';
-import { buildDevelopState } from '../types';
+import type { DevelopAgentInfo, DevelopRendererState } from '../types';
+import { buildDevelopState, getAgentsForPhase } from '../types';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -186,41 +188,69 @@ describe('buildDevelopState', () => {
       const result = buildDevelopState(state);
       expect(result.phases[0]).toEqual({
         id: 'research',
+        index: 0,
         label: 'Research',
         icon: '🔍',
         status: 'completed',
       });
       expect(result.phases[1]).toEqual({
         id: 'implement',
+        index: 1,
         label: 'Implement',
         icon: '⚙️',
         status: 'active',
       });
     });
+
+    it('should assign sequential index values to phases', () => {
+      const phases: PhaseDescriptor[] = [
+        createPhase('first', 'First', '1️⃣'),
+        createPhase('second', 'Second', '2️⃣'),
+        createPhase('third', 'Third', '3️⃣'),
+      ];
+      const summary = createSummary({ sidebar: { title: 'Test', indicator: '…', phases } });
+      const state = createRunState({ summary, currentPhase: 'second' });
+      const result = buildDevelopState(state);
+      expect(result.phases[0].index).toBe(0);
+      expect(result.phases[1].index).toBe(1);
+      expect(result.phases[2].index).toBe(2);
+    });
+
+    it('should assign index 0 when there is only one phase', () => {
+      const phases: PhaseDescriptor[] = [createPhase('solo', 'Solo', ' lonely')];
+      const summary = createSummary({ sidebar: { title: 'Test', indicator: '…', phases } });
+      const state = createRunState({ summary, currentPhase: 'solo' });
+      const result = buildDevelopState(state);
+      expect(result.phases[0].index).toBe(0);
+      expect(result.phases).toHaveLength(1);
+    });
   });
 
   describe('agents', () => {
-    it('should return empty agents array when runState has no agents', () => {
+    it('should return empty agentsByPhase record when runState has no agents', () => {
       const state = createRunState({ agents: new Map() });
       const result = buildDevelopState(state);
-      expect(result.agents).toEqual([]);
+      expect(result.agentsByPhase).toEqual({});
     });
 
-    it('should convert agents Map to sorted array by agentId', () => {
+    it('should group agents by their phase field in agentsByPhase', () => {
       const agents = new Map<string, AgentWindowState>([
-        ['agent-beta', createAgentWindow('agent-beta', { profile: 'beta', active: true })],
-        ['agent-alpha', createAgentWindow('agent-alpha', { profile: 'alpha', active: false })],
-        ['agent-gamma', createAgentWindow('agent-gamma', { profile: 'gamma', active: true })],
+        ['agent-1', createAgentWindow('agent-1', { profile: 'alpha' })],
+        ['agent-2', createAgentWindow('agent-2', { profile: 'beta' })],
+        ['agent-3', createAgentWindow('agent-3', { profile: 'gamma' })],
       ]);
-      const state = createRunState({ agents });
+      const state = createRunState({
+        agents,
+        currentPhase: 'code',
+        completedPhases: ['plan'],
+      });
       const result = buildDevelopState(state);
-      expect(result.agents).toHaveLength(3);
-      expect(result.agents[0].agentId).toBe('agent-alpha');
-      expect(result.agents[1].agentId).toBe('agent-beta');
-      expect(result.agents[2].agentId).toBe('agent-gamma');
+      // Agents should be grouped under their respective phase keys
+      expect(result.agentsByPhase).toBeDefined();
+      expect(typeof result.agentsByPhase).toBe('object');
     });
 
-    it('should include all agent properties', () => {
+    it('should include all agent properties including the phase field', () => {
       const logEntry: LogEntry = {
         id: 'log-1',
         timestamp: new Date().toISOString(),
@@ -236,13 +266,18 @@ describe('buildDevelopState', () => {
       const agents = new Map([['agent-1', agent]]);
       const state = createRunState({ agents });
       const result = buildDevelopState(state);
-      expect(result.agents[0]).toEqual({
-        agentId: 'agent-1',
-        profile: 'worker',
-        taskId: 'task-42',
-        active: true,
-        log: [logEntry],
-      });
+      // Gather all agents across all phase buckets
+      const allAgents = Object.values(result.agentsByPhase).flat();
+      expect(allAgents[0]).toEqual(
+        expect.objectContaining({
+          agentId: 'agent-1',
+          profile: 'worker',
+          taskId: 'task-42',
+          active: true,
+          log: [logEntry],
+          phase: expect.any(String),
+        }),
+      );
     });
 
     it('should handle agents without taskId', () => {
@@ -254,7 +289,8 @@ describe('buildDevelopState', () => {
       const agents = new Map([['agent-1', agent]]);
       const state = createRunState({ agents });
       const result = buildDevelopState(state);
-      expect(result.agents[0].taskId).toBeUndefined();
+      const allAgents = Object.values(result.agentsByPhase).flat();
+      expect(allAgents[0].taskId).toBeUndefined();
     });
 
     it('should preserve log entries array order', () => {
@@ -267,7 +303,102 @@ describe('buildDevelopState', () => {
       const agents = new Map([['agent-1', agent]]);
       const state = createRunState({ agents });
       const result = buildDevelopState(state);
-      expect(result.agents[0].log).toEqual([entry1, entry2, entry3]);
+      const allAgents = Object.values(result.agentsByPhase).flat();
+      expect(allAgents[0].log).toEqual([entry1, entry2, entry3]);
+    });
+
+    it('should set a phase string on each agent', () => {
+      const agents = new Map<string, AgentWindowState>([
+        ['agent-1', createAgentWindow('agent-1', { profile: 'alpha' })],
+      ]);
+      const state = createRunState({ agents });
+      const result = buildDevelopState(state);
+      const allAgents = Object.values(result.agentsByPhase).flat();
+      for (const agent of allAgents) {
+        expect(typeof agent.phase).toBe('string');
+      }
+    });
+
+    it('should default agent phase to "unknown" when agent.phase is undefined', () => {
+      const agents = new Map<string, AgentWindowState>([
+        ['agent-1', createAgentWindow('agent-1', { profile: 'alpha' })],
+        ['agent-2', createAgentWindow('agent-2', { profile: 'beta', phase: undefined })],
+      ]);
+      const state = createRunState({ agents });
+      const result = buildDevelopState(state);
+      const allAgents = Object.values(result.agentsByPhase).flat();
+      for (const agent of allAgents) {
+        expect(agent.phase).toBe('unknown');
+      }
+    });
+
+    it('should use agent.phase as the grouping key when it is defined', () => {
+      const agents = new Map<string, AgentWindowState>([
+        ['agent-1', createAgentWindow('agent-1', { profile: 'alpha', phase: 'plan' })],
+        ['agent-2', createAgentWindow('agent-2', { profile: 'beta', phase: 'code' })],
+        ['agent-3', createAgentWindow('agent-3', { profile: 'gamma', phase: 'plan' })],
+      ]);
+      const state = createRunState({ agents });
+      const result = buildDevelopState(state);
+      expect(result.agentsByPhase['plan']).toHaveLength(2);
+      expect(result.agentsByPhase['code']).toHaveLength(1);
+      expect(result.agentsByPhase['plan'][0].agentId).toBe('agent-1');
+      expect(result.agentsByPhase['plan'][1].agentId).toBe('agent-3');
+      expect(result.agentsByPhase['code'][0].agentId).toBe('agent-2');
+    });
+
+    it('should sort agents by agentId lexicographically within each phase bucket', () => {
+      const agents = new Map<string, AgentWindowState>([
+        ['z-agent', createAgentWindow('z-agent', { profile: 'Z', phase: 'code' })],
+        ['a-agent', createAgentWindow('a-agent', { profile: 'A', phase: 'code' })],
+        ['m-agent', createAgentWindow('m-agent', { profile: 'M', phase: 'code' })],
+        ['b-agent', createAgentWindow('b-agent', { profile: 'B', phase: 'plan' })],
+      ]);
+      const state = createRunState({ agents });
+      const result = buildDevelopState(state);
+      // code phase agents should be sorted: a-agent, m-agent, z-agent
+      expect(result.agentsByPhase['code'].map((a) => a.agentId)).toEqual(['a-agent', 'm-agent', 'z-agent']);
+      // plan phase agents should be sorted: b-agent
+      expect(result.agentsByPhase['plan'].map((a) => a.agentId)).toEqual(['b-agent']);
+    });
+
+    it('should pre-populate agentsByPhase with empty arrays for every sidebar phase ID', () => {
+      const phases: PhaseDescriptor[] = [
+        createPhase('plan', 'Plan', '📋'),
+        createPhase('code', 'Code', '💻'),
+        createPhase('deploy', 'Deploy', '🚀'),
+      ];
+      const summary = createSummary({ sidebar: { title: 'Test', indicator: '…', phases } });
+      const state = createRunState({ summary, agents: new Map() });
+      const result = buildDevelopState(state);
+      expect(result.agentsByPhase).toEqual({
+        plan: [],
+        code: [],
+        deploy: [],
+      });
+    });
+
+    it('should not return the old flat agents array', () => {
+      const agents = new Map<string, AgentWindowState>([['agent-1', createAgentWindow('agent-1', { phase: 'code' })]]);
+      const state = createRunState({ agents });
+      const result = buildDevelopState(state);
+      expect((result as any).agents).toBeUndefined();
+    });
+
+    it('should place agents with a phase not matching any sidebar phase into its own bucket', () => {
+      const phases: PhaseDescriptor[] = [createPhase('plan', 'Plan', '📋'), createPhase('code', 'Code', '💻')];
+      const summary = createSummary({ sidebar: { title: 'Test', indicator: '…', phases } });
+      const agents = new Map<string, AgentWindowState>([
+        ['agent-1', createAgentWindow('agent-1', { profile: 'alpha', phase: 'deploy' })],
+      ]);
+      const state = createRunState({ summary, agents });
+      const result = buildDevelopState(state);
+      // Sidebar phases pre-populated
+      expect(result.agentsByPhase['plan']).toEqual([]);
+      expect(result.agentsByPhase['code']).toEqual([]);
+      // Agent with non-sidebar phase gets its own bucket
+      expect(result.agentsByPhase['deploy']).toHaveLength(1);
+      expect(result.agentsByPhase['deploy'][0].agentId).toBe('agent-1');
     });
   });
 
@@ -346,27 +477,141 @@ describe('buildDevelopState', () => {
 
       // Verify phases
       expect(result.phases).toHaveLength(4);
-      expect(result.phases[0]).toEqual({ id: 'plan', label: 'Plan', icon: '📋', status: 'completed' });
-      expect(result.phases[1]).toEqual({ id: 'code', label: 'Code', icon: '💻', status: 'active' });
-      expect(result.phases[2]).toEqual({ id: 'test', label: 'Test', icon: '🧪', status: 'pending' });
-      expect(result.phases[3]).toEqual({ id: 'deploy', label: 'Deploy', icon: '🚀', status: 'pending' });
+      expect(result.phases[0]).toEqual({ id: 'plan', label: 'Plan', icon: '📋', status: 'completed', index: 0 });
+      expect(result.phases[1]).toEqual({ id: 'code', label: 'Code', icon: '💻', status: 'active', index: 1 });
+      expect(result.phases[2]).toEqual({ id: 'test', label: 'Test', icon: '🧪', status: 'pending', index: 2 });
+      expect(result.phases[3]).toEqual({ id: 'deploy', label: 'Deploy', icon: '🚀', status: 'pending', index: 3 });
 
-      // Verify agents (sorted by agentId: coder before planner)
-      expect(result.agents).toHaveLength(2);
-      expect(result.agents[0].agentId).toBe('coder');
-      expect(result.agents[0].profile).toBe('Coder Agent');
-      expect(result.agents[0].taskId).toBe('task-code');
-      expect(result.agents[0].active).toBe(true);
-      expect(result.agents[0].log).toEqual(logB);
+      // Verify agentsByPhase is a plain object (Record), not a Map
+      expect(result.agentsByPhase).toBeDefined();
+      expect(typeof result.agentsByPhase).toBe('object');
+      expect(result.agentsByPhase).not.toBeInstanceOf(Map);
 
-      expect(result.agents[1].agentId).toBe('planner');
-      expect(result.agents[1].profile).toBe('Planner Agent');
-      expect(result.agents[1].taskId).toBe('task-plan');
-      expect(result.agents[1].active).toBe(false);
-      expect(result.agents[1].log).toEqual(logA);
+      // Verify all agents are present across phase buckets
+      const allAgents = Object.values(result.agentsByPhase).flat();
+      expect(allAgents).toHaveLength(2);
 
       // Verify currentPhase
       expect(result.currentPhase).toBe('code');
     });
+  });
+});
+
+describe('getAgentsForPhase', () => {
+  it('should return an empty array when phaseId does not exist in agentsByPhase', () => {
+    const state: DevelopRendererState = {
+      phases: [],
+      agentsByPhase: {},
+      currentPhase: '',
+    };
+    expect(getAgentsForPhase(state, 'nonexistent')).toEqual([]);
+  });
+
+  it('should return an empty array for a phase that has no agents', () => {
+    const state: DevelopRendererState = {
+      phases: [],
+      agentsByPhase: {
+        plan: [],
+        code: [],
+      },
+      currentPhase: 'code',
+    };
+    expect(getAgentsForPhase(state, 'plan')).toEqual([]);
+  });
+
+  it('should return agents belonging to the requested phase', () => {
+    const agentA: DevelopAgentInfo = {
+      agentId: 'agent-a',
+      profile: 'Alpha',
+      phase: 'plan',
+      active: false,
+      log: [],
+    };
+    const agentB: DevelopAgentInfo = {
+      agentId: 'agent-b',
+      profile: 'Beta',
+      phase: 'code',
+      active: true,
+      log: [],
+    };
+    const state: DevelopRendererState = {
+      phases: [],
+      agentsByPhase: {
+        plan: [agentA],
+        code: [agentB],
+      },
+      currentPhase: 'code',
+    };
+    const result = getAgentsForPhase(state, 'plan');
+    expect(result).toHaveLength(1);
+    expect(result[0]).toEqual(agentA);
+  });
+
+  it('should return all agents for a phase when multiple agents share the same phase', () => {
+    const agentA: DevelopAgentInfo = {
+      agentId: 'agent-a',
+      profile: 'Alpha',
+      phase: 'code',
+      active: true,
+      log: [],
+    };
+    const agentB: DevelopAgentInfo = {
+      agentId: 'agent-b',
+      profile: 'Beta',
+      phase: 'code',
+      active: false,
+      log: [],
+    };
+    const agentC: DevelopAgentInfo = {
+      agentId: 'agent-c',
+      profile: 'Gamma',
+      phase: 'plan',
+      active: false,
+      log: [],
+    };
+    const state: DevelopRendererState = {
+      phases: [],
+      agentsByPhase: {
+        code: [agentA, agentB],
+        plan: [agentC],
+      },
+      currentPhase: 'code',
+    };
+    const result = getAgentsForPhase(state, 'code');
+    expect(result).toHaveLength(2);
+    expect(result[0]).toEqual(agentA);
+    expect(result[1]).toEqual(agentB);
+  });
+
+  it('should return the same reference as stored in agentsByPhase (not a copy)', () => {
+    const agents: DevelopAgentInfo[] = [{ agentId: 'x', profile: 'X', phase: 'a', active: false, log: [] }];
+    const state: DevelopRendererState = {
+      phases: [],
+      agentsByPhase: { a: agents },
+      currentPhase: 'a',
+    };
+    const result = getAgentsForPhase(state, 'a');
+    expect(result).toBe(agents);
+  });
+
+  it('should handle empty phaseId string', () => {
+    const state: DevelopRendererState = {
+      phases: [],
+      agentsByPhase: { '': [{ agentId: 'z', profile: 'Z', phase: '', active: false, log: [] }] },
+      currentPhase: '',
+    };
+    const result = getAgentsForPhase(state, '');
+    expect(result).toHaveLength(1);
+    expect(result[0].agentId).toBe('z');
+  });
+
+  it('should handle undefined-like keys by falling back to empty array', () => {
+    const state: DevelopRendererState = {
+      phases: [],
+      agentsByPhase: {},
+      currentPhase: '',
+    };
+    // Any arbitrary string not in the record should yield []
+    expect(getAgentsForPhase(state, 'any-phase')).toEqual([]);
   });
 });

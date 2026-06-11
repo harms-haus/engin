@@ -79,6 +79,7 @@ export function createStatusBridge(
         agentId: info.agentId,
         profile: info.profile,
         taskId: info.taskId,
+        phase: info.phase,
         active: true,
         log: [],
       };
@@ -92,6 +93,7 @@ export function createStatusBridge(
         type: 'agent_complete',
         workflowId: runId,
         agentId: info.agentId,
+        phase: info.phase,
       });
     },
 

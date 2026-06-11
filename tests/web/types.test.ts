@@ -139,6 +139,7 @@ describe('AgentWindowState', () => {
     expect(parsed.active).toBe(true);
     expect(parsed.log).toEqual([]);
     expect(parsed.taskId).toBeUndefined();
+    expect(parsed.phase).toBeUndefined();
   });
 
   it('includes taskId when set', () => {
@@ -169,6 +170,135 @@ describe('AgentWindowState', () => {
     expect(state.log).toHaveLength(2);
     expect(state.log[0].content).toBe('Start');
     expect(state.log[1].type).toBe('thinking');
+  });
+
+  // ── phase field (optional) ────────────────────────────────────────────
+
+  it('is assignable with phase set to a string', () => {
+    const state: AgentWindowState = {
+      agentId: 'agent-phase-1',
+      profile: 'coder',
+      active: true,
+      log: [],
+      phase: 'implementing',
+    };
+
+    expect(state.phase).toBe('implementing');
+  });
+
+  it('serializes and round-trips with phase', () => {
+    const state: AgentWindowState = {
+      agentId: 'agent-phase-2',
+      profile: 'scout',
+      active: false,
+      log: [],
+      phase: 'planning',
+    };
+
+    const json = JSON.stringify(state);
+    const parsed = JSON.parse(json) as AgentWindowState;
+
+    expect(parsed.phase).toBe('planning');
+  });
+
+  it('phase is optional and defaults to undefined', () => {
+    const state: AgentWindowState = {
+      agentId: 'agent-no-phase',
+      profile: 'reviewer',
+      active: true,
+      log: [],
+    };
+
+    expect(state.phase).toBeUndefined();
+  });
+
+  it('phase accepts any string value', () => {
+    const phases = ['scouting', 'planning', 'implementing', 'review', 'custom_phase_42', ''];
+
+    for (const phase of phases) {
+      const state: AgentWindowState = {
+        agentId: `agent-${phase}`,
+        profile: 'coder',
+        active: true,
+        log: [],
+        phase,
+      };
+      expect(state.phase).toBe(phase);
+    }
+  });
+
+  it('round-trips agents without phase for backward compatibility', () => {
+    // Simulate loading existing data that has no phase field
+    const legacyData = {
+      agentId: 'legacy-agent',
+      profile: 'coder',
+      active: true,
+      log: [],
+    };
+
+    const state = legacyData as AgentWindowState;
+    expect(state.agentId).toBe('legacy-agent');
+    expect(state.phase).toBeUndefined();
+  });
+
+  it('load_past_run message can carry agents with phase', () => {
+    const msg: ServerMessage = {
+      type: 'load_past_run',
+      workflowId: 'wf-past',
+      summary: {
+        id: 'wf-past',
+        workflowName: 'Past WF',
+        status: 'completed',
+        sidebar: { title: 'Past', indicator: 'green' },
+        startedAt: '2026-06-10T08:00:00Z',
+        completedAt: '2026-06-10T08:30:00Z',
+      },
+      currentPhase: 'done',
+      completedPhases: ['scouting', 'planning', 'implementing'],
+      agents: [
+        {
+          agentId: 'agent-1',
+          profile: 'coder',
+          active: false,
+          log: [],
+          phase: 'implementing',
+        },
+        {
+          agentId: 'agent-2',
+          profile: 'scout',
+          active: false,
+          log: [],
+          // phase omitted – backward compatible
+        },
+      ],
+    };
+
+    if (msg.type === 'load_past_run') {
+      expect(msg.agents[0].phase).toBe('implementing');
+      expect(msg.agents[1].phase).toBeUndefined();
+    } else {
+      expect.unreachable('Should have narrowed to load_past_run');
+    }
+  });
+
+  it('agent_spawned message can carry agent with phase', () => {
+    const msg: ServerMessage = {
+      type: 'agent_spawned',
+      workflowId: 'wf-spawn',
+      agent: {
+        agentId: 'agent-new',
+        profile: 'reviewer',
+        active: true,
+        log: [],
+        phase: 'review',
+      },
+    };
+
+    if (msg.type === 'agent_spawned') {
+      expect(msg.agent.phase).toBe('review');
+    } else {
+      expect.unreachable('Should have narrowed to agent_spawned');
+    }
   });
 });
 
@@ -454,6 +584,37 @@ describe('ServerMessage', () => {
     if (msg.type === 'agent_complete') {
       expect(msg.workflowId).toBe('wf-12');
       expect(msg.agentId).toBe('agent-3');
+    } else {
+      expect.unreachable('Should have narrowed to agent_complete');
+    }
+  });
+
+  it('agent_complete message can carry optional phase', () => {
+    const msg: ServerMessage = {
+      type: 'agent_complete',
+      workflowId: 'wf-13',
+      agentId: 'agent-4',
+      phase: 'implementing',
+    };
+
+    if (msg.type === 'agent_complete') {
+      expect(msg.workflowId).toBe('wf-13');
+      expect(msg.agentId).toBe('agent-4');
+      expect(msg.phase).toBe('implementing');
+    } else {
+      expect.unreachable('Should have narrowed to agent_complete');
+    }
+  });
+
+  it('agent_complete message is valid without phase (backward compat)', () => {
+    const msg: ServerMessage = {
+      type: 'agent_complete',
+      workflowId: 'wf-14',
+      agentId: 'agent-5',
+    };
+
+    if (msg.type === 'agent_complete') {
+      expect(msg.phase).toBeUndefined();
     } else {
       expect.unreachable('Should have narrowed to agent_complete');
     }
