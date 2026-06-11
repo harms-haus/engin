@@ -43,6 +43,7 @@ export interface WorkflowSummary {
   sidebar: SidebarInfo;
   startedAt: string;
   completedAt?: string;
+  errorMessage?: string;
 }
 
 // ─── Server → Client messages (mirrored from T02) ───────────────────────────
@@ -56,7 +57,15 @@ export type ServerMessage =
   | { type: 'workflow_failed'; summary: WorkflowSummary; error: string; phase: string }
   | { type: 'agent_spawned'; workflowId: string; agent: AgentWindowState }
   | { type: 'agent_log'; workflowId: string; agentId: string; entry: LogEntry }
-  | { type: 'agent_complete'; workflowId: string; agentId: string };
+  | { type: 'agent_complete'; workflowId: string; agentId: string }
+  | {
+      type: 'load_past_run';
+      workflowId: string;
+      summary: WorkflowSummary;
+      currentPhase: string;
+      completedPhases: string[];
+      agents: AgentWindowState[];
+    };
 
 // ─── Client → Server messages (mirrored from T02) ───────────────────────────
 
@@ -72,6 +81,7 @@ export interface WorkflowRunState {
   agents: Map<string, AgentWindowState>;
   currentPhase: string;
   completedPhases: string[];
+  error?: string;
 }
 
 export interface AppGlobalState {

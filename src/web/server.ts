@@ -16,11 +16,16 @@ export async function startWebServer(
   const resolveListWorkflows = deps.listWorkflows ?? listWorkflows;
 
   const registry = new RunRegistry();
+  const runWorkDirs = new Map<string, string>();
 
   try {
     const pastRuns = await resolvePastRuns(options.cwd);
     for (const run of pastRuns) {
-      const runId = registry.createRun(run.workflowName);
+      const runId = registry.createRun(run.workflowName, {
+        id: run.dirName,
+        startedAt: new Date(run.timestamp).toISOString(),
+      });
+      runWorkDirs.set(runId, run.fullPath);
       registry.completeRun(runId);
     }
   } catch (err) {
@@ -70,6 +75,7 @@ export async function startWebServer(
 
     const bridge = createStatusBridge(runId, registry, broadcast);
     const workDir = resolveWorkDir(options.cwd, workflowName);
+    runWorkDirs.set(runId, workDir);
 
     // Fire-and-forget the workflow run
     workflow
@@ -216,7 +222,7 @@ export async function startWebServer(
         clients.add(ws);
         ws.send(JSON.stringify({ type: 'init', workflows: registry.getAllSummaries() }));
       },
-      message(ws, msg) {
+      async message(ws, msg) {
         let parsed: ClientMessage;
         try {
           parsed = JSON.parse(typeof msg === 'string' ? msg : msg.toString()) as ClientMessage;
@@ -227,8 +233,8 @@ export async function startWebServer(
         switch (parsed.type) {
           case 'start_workflow': {
             // Fire and forget – don't await
-            startWorkflow(parsed.workflowName, parsed.taskPrompt, parsed.maxConcurrent).catch((_err: unknown) => {
-              /* noop */
+            startWorkflow(parsed.workflowName, parsed.taskPrompt, parsed.maxConcurrent).catch((err: unknown) => {
+              console.error('Failed to start workflow:', err);
             });
             break;
           }
@@ -240,7 +246,31 @@ export async function startWebServer(
             break;
           }
           case 'select_workflow': {
-            // Currently no server-side action needed for selection
+            // Lazy-load past run data for completed/failed runs
+            const runEntry = registry.getRun(parsed.workflowId);
+            if (runEntry && runEntry.status !== 'running') {
+              const workDir = runWorkDirs.get(parsed.workflowId);
+              if (workDir) {
+                try {
+                  const stateContent = await readFile(join(workDir, '.engin-state.json'), 'utf-8');
+                  const state = JSON.parse(stateContent) as {
+                    currentPhase?: string;
+                    completedPhases?: string[];
+                  };
+                  const msg: ServerMessage = {
+                    type: 'load_past_run',
+                    workflowId: parsed.workflowId,
+                    summary: registry.getSummary(parsed.workflowId),
+                    currentPhase: state.currentPhase ?? '',
+                    completedPhases: state.completedPhases ?? [],
+                    agents: [],
+                  };
+                  ws.send(JSON.stringify(msg));
+                } catch {
+                  // File doesn't exist or is corrupt — silently skip
+                }
+              }
+            }
             break;
           }
         }

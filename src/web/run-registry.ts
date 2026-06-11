@@ -9,6 +9,7 @@ interface RunEntry {
   sidebar: SidebarInfo;
   startedAt: string;
   completedAt?: string;
+  errorMessage?: string;
   currentPhase: string;
   completedPhases: string[];
   agents: Map<string, AgentWindowState>;
@@ -32,15 +33,19 @@ export class RunRegistry {
 
   /**
    * Create a new workflow run and return its unique ID.
+   *
+   * @param workflowName - Human-readable name for the workflow.
+   * @param options - Optional overrides for id and startedAt. When omitted,
+   *                  a random UUID and the current timestamp are used.
    */
-  createRun(workflowName: string): string {
-    const id = crypto.randomUUID();
+  createRun(workflowName: string, options?: { id?: string; startedAt?: string }): string {
+    const id = options?.id ?? crypto.randomUUID();
     const entry: RunEntry = {
       id,
       workflowName,
       status: 'running',
       sidebar: { title: workflowName, indicator: '...' },
-      startedAt: new Date().toISOString(),
+      startedAt: options?.startedAt ?? new Date().toISOString(),
       currentPhase: '',
       completedPhases: [],
       agents: new Map(),
@@ -56,10 +61,7 @@ export class RunRegistry {
    * Throws if the run ID does not exist.
    */
   completeRun(runId: string): WorkflowSummary {
-    const entry = this.runs.get(runId);
-    if (!entry) {
-      throw new Error(`Run ${runId} not found`);
-    }
+    const entry = this.getEntryOrThrow(runId);
     entry.status = 'completed';
     entry.completedAt = new Date().toISOString();
     return this.toSummary(entry);
@@ -69,13 +71,11 @@ export class RunRegistry {
    * Mark a run as failed.  Returns the finished summary.
    * Throws if the run ID does not exist.
    */
-  failRun(runId: string, _errorMsg: string): WorkflowSummary {
-    const entry = this.runs.get(runId);
-    if (!entry) {
-      throw new Error(`Run ${runId} not found`);
-    }
+  failRun(runId: string, errorMsg: string): WorkflowSummary {
+    const entry = this.getEntryOrThrow(runId);
     entry.status = 'failed';
     entry.completedAt = new Date().toISOString();
+    entry.errorMessage = errorMsg;
     return this.toSummary(entry);
   }
 
@@ -86,10 +86,7 @@ export class RunRegistry {
    * Throws if the run ID does not exist.
    */
   updateSidebar(runId: string, info: { title?: string; indicator?: string; phases?: PhaseDescriptor[] }): void {
-    const entry = this.runs.get(runId);
-    if (!entry) {
-      throw new Error(`Run ${runId} not found`);
-    }
+    const entry = this.getEntryOrThrow(runId);
     if (info.title !== undefined) {
       entry.sidebar.title = info.title;
     }
@@ -107,10 +104,7 @@ export class RunRegistry {
    * Throws if the run ID does not exist.
    */
   setPhase(runId: string, phase: string): void {
-    const entry = this.runs.get(runId);
-    if (!entry) {
-      throw new Error(`Run ${runId} not found`);
-    }
+    const entry = this.getEntryOrThrow(runId);
     if (entry.currentPhase) {
       entry.completedPhases.push(entry.currentPhase);
     }
@@ -124,10 +118,7 @@ export class RunRegistry {
    * Throws if the run ID does not exist.
    */
   addAgent(runId: string, agent: AgentWindowState): void {
-    const entry = this.runs.get(runId);
-    if (!entry) {
-      throw new Error(`Run ${runId} not found`);
-    }
+    const entry = this.getEntryOrThrow(runId);
     entry.agents.set(agent.agentId, agent);
   }
 
@@ -136,10 +127,7 @@ export class RunRegistry {
    * Throws if either the run ID or the agent ID does not exist.
    */
   completeAgent(runId: string, agentId: string): void {
-    const entry = this.runs.get(runId);
-    if (!entry) {
-      throw new Error(`Run ${runId} not found`);
-    }
+    const entry = this.getEntryOrThrow(runId);
     const agent = entry.agents.get(agentId);
     if (!agent) {
       throw new Error(`Agent ${agentId} not found in run ${runId}`);
@@ -153,10 +141,7 @@ export class RunRegistry {
    * Throws only if the run ID does not exist.
    */
   addAgentLogEntry(runId: string, agentId: string, logEntry: LogEntry): void {
-    const entry = this.runs.get(runId);
-    if (!entry) {
-      throw new Error(`Run ${runId} not found`);
-    }
+    const entry = this.getEntryOrThrow(runId);
     let agent = entry.agents.get(agentId);
     if (!agent) {
       agent = { agentId, profile: '', active: true, log: [logEntry] };
@@ -173,10 +158,7 @@ export class RunRegistry {
    * Throws if the run ID does not exist.
    */
   getSummary(runId: string): WorkflowSummary {
-    const entry = this.runs.get(runId);
-    if (!entry) {
-      throw new Error(`Run ${runId} not found`);
-    }
+    const entry = this.getEntryOrThrow(runId);
     return this.toSummary(entry);
   }
 
@@ -207,6 +189,12 @@ export class RunRegistry {
 
   // ─── Internal helpers ──────────────────────────────────────────────────
 
+  private getEntryOrThrow(runId: string): RunEntry {
+    const entry = this.runs.get(runId);
+    if (!entry) throw new Error(`Run ${runId} not found`);
+    return entry;
+  }
+
   private toSummary(entry: RunEntry): WorkflowSummary {
     return {
       id: entry.id,
@@ -215,6 +203,7 @@ export class RunRegistry {
       sidebar: entry.sidebar,
       startedAt: entry.startedAt,
       completedAt: entry.completedAt,
+      errorMessage: entry.errorMessage,
     };
   }
 }

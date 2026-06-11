@@ -480,4 +480,179 @@ describe('useWebSocket', () => {
     consoleWarnSpy.mockRestore();
     unmount();
   });
+
+  // ── State sync tests (Bug A–E) ──────────────────────────────────────────
+
+  it('should create runStates entries for each workflow on init', () => {
+    const { result, unmount } = renderHook(() => useWebSocket());
+    const workflows: WorkflowSummary[] = [
+      createMockSummary({ id: 'init-w1', workflowName: 'Workflow A' }),
+      createMockSummary({ id: 'init-w2', workflowName: 'Workflow B' }),
+      createMockSummary({ id: 'init-w3', workflowName: 'Workflow C' }),
+    ];
+    act(() => {
+      getMockWs()._triggerMessage({ type: 'init', workflows });
+    });
+    expect(result.current.state.workflows).toEqual(workflows);
+    // runStates should have an entry for each workflow
+    expect(result.current.state.runStates.size).toBe(3);
+    for (const w of workflows) {
+      const runState = result.current.state.runStates.get(w.id);
+      expect(runState).toBeDefined();
+      expect(runState?.summary).toEqual(w);
+      expect(runState?.agents).toBeInstanceOf(Map);
+      expect(runState?.agents.size).toBe(0);
+      expect(runState?.currentPhase).toBe('');
+      expect(runState?.completedPhases).toEqual([]);
+    }
+    unmount();
+  });
+
+  it('should sync runStates summary.sidebar on workflow_sidebar', () => {
+    const { result, unmount } = renderHook(() => useWebSocket());
+    const summary = createMockSummary({
+      id: 'sync-side',
+      sidebar: { title: 'Old Title', indicator: '⏳' },
+    });
+    act(() => {
+      getMockWs()._triggerMessage({ type: 'workflow_started', summary });
+    });
+    // Verify initial state in runStates
+    expect(result.current.state.runStates.get('sync-side')?.summary.sidebar).toEqual({
+      title: 'Old Title',
+      indicator: '⏳',
+    });
+
+    const newSidebar: SidebarInfo = { title: 'Updated Title', indicator: '✓', phases: [] };
+    act(() => {
+      getMockWs()._triggerMessage({
+        type: 'workflow_sidebar',
+        workflowId: 'sync-side',
+        sidebar: newSidebar,
+      });
+    });
+    // Both workflows and runStates should be updated
+    const workflowItem = result.current.state.workflows.find((w) => w.id === 'sync-side');
+    expect(workflowItem?.sidebar).toEqual(newSidebar);
+    const runState = result.current.state.runStates.get('sync-side');
+    expect(runState?.summary.sidebar).toEqual(newSidebar);
+    unmount();
+  });
+
+  it('should sync runStates summary on workflow_complete', () => {
+    const { result, unmount } = renderHook(() => useWebSocket());
+    const summary = createMockSummary({ id: 'sync-complete', status: 'running' });
+    act(() => {
+      getMockWs()._triggerMessage({ type: 'workflow_started', summary });
+    });
+    expect(result.current.state.runStates.get('sync-complete')?.summary.status).toBe('running');
+
+    const completedSummary = createMockSummary({
+      id: 'sync-complete',
+      status: 'completed',
+      completedAt: '2026-06-10T12:00:00.000Z',
+    });
+    act(() => {
+      getMockWs()._triggerMessage({ type: 'workflow_complete', summary: completedSummary });
+    });
+    // workflows should be updated
+    const workflowItem = result.current.state.workflows.find((w) => w.id === 'sync-complete');
+    expect(workflowItem?.status).toBe('completed');
+    expect(workflowItem?.completedAt).toBe('2026-06-10T12:00:00.000Z');
+    // runStates should also be synced
+    const runState = result.current.state.runStates.get('sync-complete');
+    expect(runState?.summary.status).toBe('completed');
+    expect(runState?.summary.completedAt).toBe('2026-06-10T12:00:00.000Z');
+    unmount();
+  });
+
+  it('should sync runStates summary on workflow_failed', () => {
+    const { result, unmount } = renderHook(() => useWebSocket());
+    const summary = createMockSummary({ id: 'sync-fail', status: 'running' });
+    act(() => {
+      getMockWs()._triggerMessage({ type: 'workflow_started', summary });
+    });
+    expect(result.current.state.runStates.get('sync-fail')?.summary.status).toBe('running');
+
+    const failedSummary = createMockSummary({
+      id: 'sync-fail',
+      status: 'failed',
+      completedAt: '2026-06-10T12:05:00.000Z',
+    });
+    act(() => {
+      getMockWs()._triggerMessage({
+        type: 'workflow_failed',
+        summary: failedSummary,
+        error: 'Boom',
+        phase: 'deploy',
+      });
+    });
+    // workflows should be updated
+    const workflowItem = result.current.state.workflows.find((w) => w.id === 'sync-fail');
+    expect(workflowItem?.status).toBe('failed');
+    expect(workflowItem?.completedAt).toBe('2026-06-10T12:05:00.000Z');
+    // runStates should also be synced
+    const runState = result.current.state.runStates.get('sync-fail');
+    expect(runState?.summary.status).toBe('failed');
+    expect(runState?.summary.completedAt).toBe('2026-06-10T12:05:00.000Z');
+    unmount();
+  });
+
+  it('should create runState and set selectedRunId on load_past_run', () => {
+    const { result, unmount } = renderHook(() => useWebSocket());
+    const agents: AgentWindowState[] = [
+      {
+        agentId: 'past-agent-1',
+        profile: 'planner',
+        active: false,
+        log: [
+          {
+            id: 'log-1',
+            timestamp: '2026-06-10T10:00:00.000Z',
+            type: 'text',
+            content: 'Planning done',
+          },
+        ],
+      },
+      {
+        agentId: 'past-agent-2',
+        profile: 'worker',
+        active: true,
+        log: [],
+      },
+    ];
+    const summary = createMockSummary({
+      id: 'past-run-1',
+      workflowName: 'Past Run',
+      status: 'running',
+    });
+
+    act(() => {
+      getMockWs()._triggerMessage({
+        type: 'load_past_run',
+        workflowId: 'past-run-1',
+        summary,
+        currentPhase: 'build',
+        completedPhases: ['setup', 'test'],
+        agents,
+      });
+    });
+
+    // runStates should have the entry
+    const runState = result.current.state.runStates.get('past-run-1');
+    expect(runState).toBeDefined();
+    expect(runState?.summary).toEqual(summary);
+    expect(runState?.currentPhase).toBe('build');
+    expect(runState?.completedPhases).toEqual(['setup', 'test']);
+
+    // Agents array should be converted to a Map
+    expect(runState?.agents).toBeInstanceOf(Map);
+    expect(runState?.agents.size).toBe(2);
+    expect(runState?.agents.get('past-agent-1')).toEqual(agents[0]);
+    expect(runState?.agents.get('past-agent-2')).toEqual(agents[1]);
+
+    // selectedRunId should be set
+    expect(result.current.state.selectedRunId).toBe('past-run-1');
+    unmount();
+  });
 });

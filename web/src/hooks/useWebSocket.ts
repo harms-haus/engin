@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { AppGlobalState, ClientMessage, ServerMessage, WorkflowSummary } from '../types';
+import type { AppGlobalState, ClientMessage, ServerMessage, WorkflowRunState } from '../types';
 import { isServerMessage } from '../types';
 
 export function useWebSocket() {
@@ -60,10 +60,16 @@ export function useWebSocket() {
   function handleServerMessage(msg: ServerMessage) {
     switch (msg.type) {
       case 'init': {
-        setState((prev) => ({
-          ...prev,
-          workflows: msg.workflows,
-        }));
+        const runStates = new Map<string, WorkflowRunState>();
+        for (const w of msg.workflows) {
+          runStates.set(w.id, {
+            summary: w,
+            agents: new Map(),
+            currentPhase: '',
+            completedPhases: [],
+          });
+        }
+        setState((prev) => ({ ...prev, workflows: msg.workflows, runStates }));
         break;
       }
       case 'workflow_started': {
@@ -80,10 +86,18 @@ export function useWebSocket() {
         break;
       }
       case 'workflow_sidebar': {
-        setState((prev) => ({
-          ...prev,
-          workflows: prev.workflows.map((w) => (w.id === msg.workflowId ? { ...w, sidebar: msg.sidebar } : w)),
-        }));
+        setState((prev) => {
+          const workflows = prev.workflows.map((w) => (w.id === msg.workflowId ? { ...w, sidebar: msg.sidebar } : w));
+          const runStates = new Map(prev.runStates);
+          const existing = runStates.get(msg.workflowId);
+          if (existing) {
+            runStates.set(msg.workflowId, {
+              ...existing,
+              summary: { ...existing.summary, sidebar: msg.sidebar },
+            });
+          }
+          return { ...prev, workflows, runStates };
+        });
         break;
       }
       case 'workflow_phase': {
@@ -101,22 +115,26 @@ export function useWebSocket() {
         });
         break;
       }
-      case 'workflow_complete': {
-        setState((prev) => ({
-          ...prev,
-          workflows: prev.workflows.map((w) =>
-            w.id === msg.summary.id ? { ...w, status: msg.summary.status, completedAt: msg.summary.completedAt } : w,
-          ),
-        }));
-        break;
-      }
+      case 'workflow_complete':
       case 'workflow_failed': {
-        setState((prev) => ({
-          ...prev,
-          workflows: prev.workflows.map((w) =>
+        setState((prev) => {
+          const workflows = prev.workflows.map((w) =>
             w.id === msg.summary.id ? { ...w, status: msg.summary.status, completedAt: msg.summary.completedAt } : w,
-          ),
-        }));
+          );
+          const runStates = new Map(prev.runStates);
+          const existing = runStates.get(msg.summary.id);
+          if (existing) {
+            const update: WorkflowRunState = {
+              ...existing,
+              summary: { ...existing.summary, status: msg.summary.status, completedAt: msg.summary.completedAt },
+            };
+            if (msg.type === 'workflow_failed') {
+              update.error = msg.error;
+            }
+            runStates.set(msg.summary.id, update);
+          }
+          return { ...prev, workflows, runStates };
+        });
         break;
       }
       case 'agent_spawned': {
@@ -128,10 +146,12 @@ export function useWebSocket() {
             agents.set(msg.agent.agentId, msg.agent);
             runStates.set(msg.workflowId, { ...existing, agents });
           } else {
-            // Create new run state if not exists
-            const workflow = prev.workflows.find((w) => w.id === msg.workflowId) as WorkflowSummary | undefined;
+            const workflow = prev.workflows.find((w) => w.id === msg.workflowId);
+            if (!workflow) {
+              return prev;
+            }
             runStates.set(msg.workflowId, {
-              summary: workflow as WorkflowSummary,
+              summary: workflow,
               agents: new Map([[msg.agent.agentId, msg.agent]]),
               currentPhase: '',
               completedPhases: [],
@@ -173,6 +193,20 @@ export function useWebSocket() {
             runStates.set(msg.workflowId, { ...runState, agents });
           }
           return { ...prev, runStates };
+        });
+        break;
+      }
+      case 'load_past_run': {
+        setState((prev) => {
+          const runStates = new Map(prev.runStates);
+          const agentsMap = new Map(msg.agents.map((a) => [a.agentId, a]));
+          runStates.set(msg.workflowId, {
+            summary: msg.summary,
+            agents: agentsMap,
+            currentPhase: msg.currentPhase,
+            completedPhases: msg.completedPhases,
+          });
+          return { ...prev, runStates, selectedRunId: msg.workflowId };
         });
         break;
       }

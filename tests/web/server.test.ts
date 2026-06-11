@@ -1,5 +1,7 @@
 import { afterEach, beforeAll, describe, expect, it, mock } from 'bun:test';
-import { readdirSync } from 'node:fs';
+import { mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { startWebServer } from '../../src/web/server.ts';
 import type { WebServerDependencies, WebServerOptions } from '../../src/web/types.ts';
 
@@ -1163,6 +1165,258 @@ describe('startWebServer', () => {
     });
   });
 
+  // ─── select_workflow lazy loading ───────────────────────────────────
+
+  describe('select_workflow lazy loading', () => {
+    it('sends load_past_run for completed run with valid state file', async () => {
+      // Create a temp dir with a .engin-state.json file
+      const tmpDir = mkdtempSync(join(tmpdir(), 'engin-test-'));
+      const stateFile = join(tmpDir, '.engin-state.json');
+      writeFileSync(
+        stateFile,
+        JSON.stringify({
+          taskPrompt: 'Test prompt',
+          currentPhase: 'done',
+          completedPhases: ['scouting', 'implementing'],
+          tasks: [],
+        }),
+      );
+
+      // Stop current server and restart with the past run pointing to tmpDir
+      server.stop();
+      const deps = buildDeps();
+      deps.scanPastRuns = mock<WebServerDependencies['scanPastRuns']>().mockResolvedValue([
+        {
+          dirName: 'past-run-1',
+          fullPath: tmpDir,
+          workflowName: 'past-workflow',
+          timestamp: 5000,
+          hasStateFile: true,
+        },
+      ]);
+      server = await startWebServer(TEST_OPTIONS, deps);
+      baseUrl = `http://${server.hostname}:${server.port}`;
+
+      // Connect a WebSocket and wait for init
+      const testWs = new WebSocket(`ws://${server.hostname}:${server.port}/ws`);
+      const initMsg = await new Promise<any>((resolve, reject) => {
+        testWs.addEventListener('message', (event) => {
+          try {
+            resolve(JSON.parse(event.data as string));
+          } catch (e) {
+            reject(e);
+          }
+        });
+        setTimeout(() => reject(new Error('Timeout waiting for init')), 2000);
+      });
+
+      expect(initMsg.type).toBe('init');
+      const pastRun = initMsg.workflows.find((w: any) => w.id === 'past-run-1');
+      expect(pastRun).toBeDefined();
+      expect(pastRun.status).toBe('completed');
+
+      // Send select_workflow for the past run
+      testWs.send(JSON.stringify({ type: 'select_workflow', workflowId: 'past-run-1' }));
+
+      // Wait for load_past_run message
+      const loadMsg = await new Promise<any>((resolve, reject) => {
+        testWs.addEventListener('message', (event) => {
+          try {
+            const msg = JSON.parse(event.data as string);
+            if (msg.type === 'load_past_run') resolve(msg);
+          } catch (e) {
+            reject(e);
+          }
+        });
+        setTimeout(() => reject(new Error('Timeout waiting for load_past_run')), 2000);
+      });
+
+      expect(loadMsg.type).toBe('load_past_run');
+      expect(loadMsg.workflowId).toBe('past-run-1');
+      expect(loadMsg.currentPhase).toBe('done');
+      expect(loadMsg.completedPhases).toEqual(['scouting', 'implementing']);
+      expect(loadMsg.agents).toEqual([]);
+      expect(loadMsg.summary).toBeDefined();
+      expect(loadMsg.summary.workflowName).toBe('past-workflow');
+      expect(loadMsg.summary.status).toBe('completed');
+
+      testWs.close();
+      rmSync(tmpDir, { recursive: true, force: true });
+
+      // Restore server
+      server = await startWebServer(TEST_OPTIONS, buildDeps());
+      baseUrl = `http://${server.hostname}:${server.port}`;
+    });
+
+    it('does not send load_past_run for a running run', async () => {
+      // Start a workflow that stays running
+      let resolveWorkflow: (() => void) | null = null;
+      mockWorkflowRun = mock().mockImplementation(async () => {
+        await new Promise<void>((resolve) => {
+          resolveWorkflow = resolve;
+        });
+      });
+
+      const testWs = new WebSocket(`ws://${server.hostname}:${server.port}/ws`);
+
+      // Wait for init
+      await new Promise<void>((resolve) => {
+        testWs.addEventListener('message', () => resolve(), { once: true });
+      });
+
+      // Start a workflow
+      testWs.send(
+        JSON.stringify({
+          type: 'start_workflow',
+          workflowName: 'running-workflow',
+          taskPrompt: 'Long task',
+        }),
+      );
+
+      // Wait for workflow_started
+      const startedMsg = await new Promise<any>((resolve, reject) => {
+        testWs.addEventListener('message', (event) => {
+          const msg = JSON.parse(event.data as string);
+          if (msg.type === 'workflow_started') resolve(msg);
+        });
+        setTimeout(() => reject(new Error('Timeout')), 2000);
+      });
+
+      const runId = startedMsg.summary.id;
+
+      // Send select_workflow for the running run
+      let receivedLoadPastRun = false;
+      testWs.addEventListener('message', (event) => {
+        const msg = JSON.parse(event.data as string);
+        if (msg.type === 'load_past_run') {
+          receivedLoadPastRun = true;
+        }
+      });
+
+      testWs.send(JSON.stringify({ type: 'select_workflow', workflowId: runId }));
+
+      // Give it time to process
+      await tick();
+      await tick();
+
+      expect(receivedLoadPastRun).toBe(false);
+
+      // Clean up – resolve the workflow so it completes
+      resolveWorkflow?.();
+      await tick();
+      await tick();
+
+      testWs.close();
+    });
+
+    it('handles missing .engin-state.json gracefully', async () => {
+      // Create a temp dir WITHOUT .engin-state.json
+      const tmpDir = mkdtempSync(join(tmpdir(), 'engin-test-'));
+
+      // Stop current server and restart with the past run pointing to tmpDir
+      server.stop();
+      const deps = buildDeps();
+      deps.scanPastRuns = mock<WebServerDependencies['scanPastRuns']>().mockResolvedValue([
+        {
+          dirName: 'no-state-run',
+          fullPath: tmpDir,
+          workflowName: 'no-state-workflow',
+          timestamp: 6000,
+          hasStateFile: false,
+        },
+      ]);
+      server = await startWebServer(TEST_OPTIONS, deps);
+      baseUrl = `http://${server.hostname}:${server.port}`;
+
+      // Connect a WebSocket and wait for init
+      const testWs = new WebSocket(`ws://${server.hostname}:${server.port}/ws`);
+      await new Promise<void>((resolve) => {
+        testWs.addEventListener('message', () => resolve(), { once: true });
+      });
+
+      // Send select_workflow for the past run (no state file)
+      let receivedLoadPastRun = false;
+      testWs.addEventListener('message', (event) => {
+        const msg = JSON.parse(event.data as string);
+        if (msg.type === 'load_past_run') {
+          receivedLoadPastRun = true;
+        }
+      });
+
+      testWs.send(JSON.stringify({ type: 'select_workflow', workflowId: 'no-state-run' }));
+
+      // Give it time to process
+      await tick();
+      await tick();
+
+      // No load_past_run should be sent since there's no state file
+      expect(receivedLoadPastRun).toBe(false);
+      // Server should still be functional
+      expect(testWs.readyState).toBe(WebSocket.OPEN);
+
+      testWs.close();
+      rmSync(tmpDir, { recursive: true, force: true });
+
+      // Restore server
+      server = await startWebServer(TEST_OPTIONS, buildDeps());
+      baseUrl = `http://${server.hostname}:${server.port}`;
+    });
+
+    it('handles corrupt .engin-state.json gracefully', async () => {
+      // Create a temp dir with corrupt .engin-state.json
+      const tmpDir = mkdtempSync(join(tmpdir(), 'engin-test-'));
+      writeFileSync(join(tmpDir, '.engin-state.json'), '{ invalid json!!!');
+
+      // Stop current server and restart with the past run pointing to tmpDir
+      server.stop();
+      const deps = buildDeps();
+      deps.scanPastRuns = mock<WebServerDependencies['scanPastRuns']>().mockResolvedValue([
+        {
+          dirName: 'corrupt-run',
+          fullPath: tmpDir,
+          workflowName: 'corrupt-workflow',
+          timestamp: 7000,
+          hasStateFile: true,
+        },
+      ]);
+      server = await startWebServer(TEST_OPTIONS, deps);
+      baseUrl = `http://${server.hostname}:${server.port}`;
+
+      // Connect a WebSocket and wait for init
+      const testWs = new WebSocket(`ws://${server.hostname}:${server.port}/ws`);
+      await new Promise<void>((resolve) => {
+        testWs.addEventListener('message', () => resolve(), { once: true });
+      });
+
+      // Send select_workflow for the past run (corrupt state file)
+      let receivedLoadPastRun = false;
+      testWs.addEventListener('message', (event) => {
+        const msg = JSON.parse(event.data as string);
+        if (msg.type === 'load_past_run') {
+          receivedLoadPastRun = true;
+        }
+      });
+
+      testWs.send(JSON.stringify({ type: 'select_workflow', workflowId: 'corrupt-run' }));
+
+      // Give it time to process
+      await tick();
+      await tick();
+
+      // No load_past_run should be sent since the state file is corrupt
+      expect(receivedLoadPastRun).toBe(false);
+      // Server should still be functional
+      expect(testWs.readyState).toBe(WebSocket.OPEN);
+
+      testWs.close();
+      rmSync(tmpDir, { recursive: true, force: true });
+
+      // Restore server
+      server = await startWebServer(TEST_OPTIONS, buildDeps());
+      baseUrl = `http://${server.hostname}:${server.port}`;
+    });
+  });
+
   // ─── Past runs population ─────────────────────────────────────────────
 
   describe('past runs population', () => {
@@ -1212,6 +1466,14 @@ describe('startWebServer', () => {
       expect(initMsg.workflows.length).toBe(2);
       expect(initMsg.workflows.some((w: any) => w.workflowName === 'alpha')).toBe(true);
       expect(initMsg.workflows.some((w: any) => w.workflowName === 'beta')).toBe(true);
+      // Past run IDs should be directory names, not UUIDs
+      expect(initMsg.workflows.some((w: any) => w.id === '1000-alpha')).toBe(true);
+      expect(initMsg.workflows.some((w: any) => w.id === '2000-beta')).toBe(true);
+      // Past run startedAt should reflect the timestamp from PastRunEntry
+      const alphaRun = initMsg.workflows.find((w: any) => w.id === '1000-alpha');
+      expect(alphaRun.startedAt).toBe(new Date(1000).toISOString());
+      const betaRun = initMsg.workflows.find((w: any) => w.id === '2000-beta');
+      expect(betaRun.startedAt).toBe(new Date(2000).toISOString());
 
       testWs.close();
 

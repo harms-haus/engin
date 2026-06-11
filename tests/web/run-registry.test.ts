@@ -87,6 +87,54 @@ describe('createRun', () => {
     const id2 = registry.createRun('Run 2');
     expect(id1).not.toBe(id2);
   });
+
+  it('uses the provided id when options.id is given', () => {
+    const registry = new RunRegistry();
+    const id = registry.createRun('Custom ID Run', { id: 'my-custom-id' });
+    expect(id).toBe('my-custom-id');
+    const entry = registry.getRun(id);
+    expect(entry).toBeDefined();
+    expect(entry!.id).toBe('my-custom-id');
+  });
+
+  it('uses the provided startedAt when options.startedAt is given', () => {
+    const registry = new RunRegistry();
+    const id = registry.createRun('Timestamp Run', {
+      startedAt: '2024-01-01T00:00:00Z',
+    });
+    const entry = registry.getRun(id);
+    expect(entry!.startedAt).toBe('2024-01-01T00:00:00Z');
+  });
+
+  it('combines both options.id and options.startedAt', () => {
+    const registry = new RunRegistry();
+    const id = registry.createRun('Combined Options', {
+      id: 'combined-run-1',
+      startedAt: '2023-06-15T12:30:00Z',
+    });
+    expect(id).toBe('combined-run-1');
+    const entry = registry.getRun(id);
+    expect(entry!.id).toBe('combined-run-1');
+    expect(entry!.startedAt).toBe('2023-06-15T12:30:00Z');
+  });
+
+  it('falls back to UUID when options.id is omitted', () => {
+    const registry = new RunRegistry();
+    const id = registry.createRun('No ID Option', { startedAt: '2024-01-01T00:00:00Z' });
+    // Should be a UUID, not the startedAt string
+    expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
+  });
+
+  it('falls back to current timestamp when options.startedAt is omitted', () => {
+    const registry = new RunRegistry();
+    const before = Date.now();
+    const id = registry.createRun('No Timestamp Option', { id: 'custom-id' });
+    const after = Date.now();
+    const entry = registry.getRun(id);
+    const started = new Date(entry!.startedAt).getTime();
+    expect(started).toBeGreaterThanOrEqual(before);
+    expect(started).toBeLessThanOrEqual(after);
+  });
 });
 
 // ─── completeRun ────────────────────────────────────────────────────────────
@@ -117,6 +165,12 @@ describe('completeRun', () => {
     expect(summary.id).toBe(runId);
     expect(summary.status).toBe('completed');
     expect(summary.completedAt).toBeDefined();
+  });
+
+  it('returns errorMessage as undefined for a completed run', () => {
+    const { registry, runId } = registryWithOneRun();
+    const summary = registry.completeRun(runId);
+    expect(summary.errorMessage).toBeUndefined();
   });
 
   it('returns a summary with the correct workflowName', () => {
@@ -166,6 +220,19 @@ describe('failRun', () => {
     expect(summary.id).toBe(runId);
     expect(summary.status).toBe('failed');
     expect(summary.completedAt).toBeDefined();
+  });
+
+  it('stores the error message on the entry', () => {
+    const { registry, runId } = registryWithOneRun();
+    registry.failRun(runId, 'Something went wrong');
+    const entry = registry.getRun(runId);
+    expect(entry!.errorMessage).toBe('Something went wrong');
+  });
+
+  it('returns a summary with the errorMessage', () => {
+    const { registry, runId } = registryWithOneRun();
+    const summary = registry.failRun(runId, 'fail message');
+    expect(summary.errorMessage).toBe('fail message');
   });
 
   it('throws if run does not exist', () => {
@@ -421,6 +488,12 @@ describe('getSummary', () => {
     const summary = registry.getSummary(runId);
     expect(summary.status).toBe('completed');
     expect(summary.completedAt).toBeDefined();
+  });
+
+  it('returns errorMessage as undefined for a running run', () => {
+    const { registry, runId } = registryWithOneRun();
+    const summary = registry.getSummary(runId);
+    expect(summary.errorMessage).toBeUndefined();
   });
 
   it('throws if run does not exist', () => {
