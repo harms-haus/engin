@@ -94,6 +94,13 @@ describe('AgentGrid', () => {
       const cells = container.querySelectorAll('.agent-cell');
       expect(cells).toHaveLength(0);
     });
+
+    it('renders all 6 agent cells for a 6-agent grid (multi-row layout)', () => {
+      const agents = Array.from({ length: 6 }, (_, i) => createAgent({ agentId: `agent-${i}`, profile: `Agent ${i}` }));
+      const { container } = render(<AgentGrid agents={agents} />);
+      const cells = container.querySelectorAll('.agent-cell');
+      expect(cells).toHaveLength(6);
+    });
   });
 
   describe('agent-cell-header', () => {

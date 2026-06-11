@@ -28,10 +28,13 @@ export interface DevelopRendererState {
 export function buildDevelopState(runState: WorkflowRunState): DevelopRendererState {
   const phases: DevelopPhaseInfo[] = [];
   const sidebarPhases = runState.summary.sidebar.phases;
+  const isBeforeFirstPhase = !runState.currentPhase && runState.completedPhases.length === 0;
   if (sidebarPhases) {
     for (const phase of sidebarPhases) {
       let status: 'completed' | 'active' | 'pending';
-      if (runState.completedPhases.includes(phase.id)) {
+      if (phase.id === 'initialization') {
+        status = isBeforeFirstPhase ? 'active' : 'completed';
+      } else if (runState.completedPhases.includes(phase.id)) {
         status = 'completed';
       } else if (phase.id === runState.currentPhase) {
         status = 'active';

@@ -124,6 +124,54 @@ describe('buildDevelopState', () => {
       expect(result.phases[0].status).toBe('completed');
     });
 
+    it('should mark initialization as active when currentPhase is empty and completedPhases is empty', () => {
+      const phases: PhaseDescriptor[] = [
+        createPhase('initialization', 'Initialization', '🚀'),
+        createPhase('scouting', 'Scouting', '🔭'),
+      ];
+      const summary = createSummary({ sidebar: { title: 'Test', indicator: '…', phases } });
+      const state = createRunState({
+        summary,
+        currentPhase: '',
+        completedPhases: [],
+      });
+      const result = buildDevelopState(state);
+      expect(result.phases[0].status).toBe('active');
+      expect(result.phases[1].status).toBe('pending');
+    });
+
+    it('should mark initialization as completed when currentPhase is set to scouting', () => {
+      const phases: PhaseDescriptor[] = [
+        createPhase('initialization', 'Initialization', '🚀'),
+        createPhase('scouting', 'Scouting', '🔭'),
+      ];
+      const summary = createSummary({ sidebar: { title: 'Test', indicator: '…', phases } });
+      const state = createRunState({
+        summary,
+        currentPhase: 'scouting',
+        completedPhases: [],
+      });
+      const result = buildDevelopState(state);
+      expect(result.phases[0].status).toBe('completed');
+      expect(result.phases[1].status).toBe('active');
+    });
+
+    it('should mark initialization as completed when completedPhases includes scouting', () => {
+      const phases: PhaseDescriptor[] = [
+        createPhase('initialization', 'Initialization', '🚀'),
+        createPhase('scouting', 'Scouting', '🔭'),
+      ];
+      const summary = createSummary({ sidebar: { title: 'Test', indicator: '…', phases } });
+      const state = createRunState({
+        summary,
+        currentPhase: '',
+        completedPhases: ['scouting'],
+      });
+      const result = buildDevelopState(state);
+      expect(result.phases[0].status).toBe('completed');
+      expect(result.phases[1].status).toBe('completed');
+    });
+
     it('should preserve id, label, and icon from PhaseDescriptor', () => {
       const phases: PhaseDescriptor[] = [
         { id: 'research', label: 'Research', icon: '🔍' },

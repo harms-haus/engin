@@ -201,4 +201,42 @@ describe('ProgressIndicator', () => {
       expect(item.querySelector('.phase-label')).toBeInTheDocument();
     });
   });
+
+  describe('initialization phase', () => {
+    it('when initialization is active, renders the gear icon and "Initialization" label', () => {
+      const phase = createPhase({
+        id: 'initialization',
+        label: 'Initialization',
+        icon: '⚙️',
+        status: 'active',
+      });
+      render(<ProgressIndicator phases={[phase]} />);
+      expect(screen.getByText('⚙️')).toBeInTheDocument();
+      expect(screen.getByText('Initialization')).toBeInTheDocument();
+    });
+
+    it('when initialization is completed, renders the checkmark icon', () => {
+      const phase = createPhase({
+        id: 'initialization',
+        label: 'Initialization',
+        icon: '⚙️',
+        status: 'completed',
+      });
+      render(<ProgressIndicator phases={[phase]} />);
+      expect(screen.getByText('✅')).toBeInTheDocument();
+      expect(screen.queryByText('⚙️')).not.toBeInTheDocument();
+    });
+
+    it('when initialization is pending, has the pending CSS class', () => {
+      const phase = createPhase({
+        id: 'initialization',
+        label: 'Initialization',
+        icon: '⚙️',
+        status: 'pending',
+      });
+      const { container } = render(<ProgressIndicator phases={[phase]} />);
+      const item = container.querySelector('.phase-item');
+      expect(item).toHaveClass('pending');
+    });
+  });
 });
