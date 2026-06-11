@@ -9,13 +9,39 @@ const WIDTH = 40;
 
 describe('LanePoolWidget', () => {
   describe('rendering empty lanes', () => {
-    it('renders empty lanes as blank padded lines', () => {
+    it('renders zero lanes when no lanes are set', () => {
       const widget = new LanePoolWidget(3);
       const lines = widget.render(WIDTH);
-      expect(lines).toHaveLength(3);
-      for (const line of lines) {
-        expect(line).toBe(' '.repeat(WIDTH));
-      }
+      expect(lines).toHaveLength(0);
+    });
+  });
+
+  describe('getVisibleLaneCount', () => {
+    it('returns 0 when no lanes are set', () => {
+      const widget = new LanePoolWidget(3);
+      expect(widget.getVisibleLaneCount()).toBe(0);
+    });
+
+    it('returns the number of lanes set via updateLanes', () => {
+      const widget = new LanePoolWidget(5);
+      widget.updateLanes([
+        { id: 't1', title: 'A', status: 'ready' },
+        { id: 't2', title: 'B', status: 'done' },
+      ]);
+      expect(widget.getVisibleLaneCount()).toBe(2);
+    });
+
+    it('updates when lanes change', () => {
+      const widget = new LanePoolWidget(5);
+      expect(widget.getVisibleLaneCount()).toBe(0);
+      widget.updateLanes([{ id: 't1', title: 'A', status: 'ready' }]);
+      expect(widget.getVisibleLaneCount()).toBe(1);
+      widget.updateLanes([
+        { id: 't1', title: 'A', status: 'ready' },
+        { id: 't2', title: 'B', status: 'done' },
+        { id: 't3', title: 'C', status: 'failed' },
+      ]);
+      expect(widget.getVisibleLaneCount()).toBe(3);
     });
   });
 
@@ -43,19 +69,14 @@ describe('LanePoolWidget', () => {
       expect(lines[2].startsWith(expected2)).toBe(true);
     });
 
-    it('renders fewer lanes than maxLanes, padding remaining with blanks', () => {
+    it('renders only actual lanes with no blank padding', () => {
       const widget = new LanePoolWidget(4);
       widget.updateLanes([{ id: 't1', title: 'Only', status: 'ready' }]);
       const lines = widget.render(WIDTH);
 
-      expect(lines).toHaveLength(4);
-      // First line has content
+      expect(lines).toHaveLength(1);
       const expected = statusIcon('ready') + ' ' + statusColor('ready')('Only');
       expect(lines[0].startsWith(expected)).toBe(true);
-      // Remaining lines are blank padded
-      expect(lines[1]).toBe(' '.repeat(WIDTH));
-      expect(lines[2]).toBe(' '.repeat(WIDTH));
-      expect(lines[3]).toBe(' '.repeat(WIDTH));
     });
   });
 

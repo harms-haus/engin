@@ -63,8 +63,20 @@ function createMockAgentLog() {
     clearAgent() {
       calls.push({ method: 'clearAgent', args: [] });
     },
-    addEntry(entry: AgentLogEntry) {
-      calls.push({ method: 'addEntry', args: [entry] });
+    addEntry(entry: AgentLogEntry, agentId?: string) {
+      calls.push({ method: 'addEntry', args: [entry, agentId] });
+    },
+    updateStats(
+      agentId: string,
+      partial: {
+        toolCallCount?: number;
+        inputTokens?: number;
+        outputTokens?: number;
+        taskTitle?: string;
+        profile?: string;
+      },
+    ) {
+      calls.push({ method: 'updateStats', args: [agentId, partial] });
     },
     invalidate() {
       calls.push({ method: 'invalidate', args: [] });
@@ -202,13 +214,28 @@ describe('createTuiStatusCallbacks', () => {
       const ctx = createTestDeps();
       ctx.callbacks.onAgentSpawn!({ agentId: 'a1', profile: 'scout', phase: 'scouting' });
       expect(ctx.eventLog.lines).toEqual(['⏳ Agent a1 spawned (scout)']);
-      expect(ctx.agentLog.calls).toEqual([{ method: 'selectAgent', args: ['a1', 'scout'] }]);
+      expect(ctx.agentLog.calls).toEqual([
+        { method: 'selectAgent', args: ['a1', 'scout'] },
+        { method: 'updateStats', args: ['a1', { profile: 'scout' }] },
+      ]);
     });
 
     it('calls requestRender', () => {
       const ctx = createTestDeps();
       ctx.callbacks.onAgentSpawn!({ agentId: 'a1', profile: 'p', phase: 'x' });
       expect(ctx.renderCount).toBe(1);
+    });
+
+    it('builds reverse maps when taskId is provided', () => {
+      const ctx = createTestDeps();
+      ctx.callbacks.onAgentSpawn!({ agentId: 'a1', profile: 'coder', phase: 'implement', taskId: 't1' });
+      // Verify the reverse map works by triggering onTaskStart with the same taskId
+      ctx.callbacks.onTaskStart!({ taskId: 't1', title: 'My task', agentId: 'a1' });
+      // The taskTitle updateStats call should use agentId 'a1' from the reverse map
+      expect(ctx.agentLog.calls).toContainEqual({
+        method: 'updateStats',
+        args: ['a1', { taskTitle: 'My task' }],
+      });
     });
   });
 
@@ -218,7 +245,7 @@ describe('createTuiStatusCallbacks', () => {
       ctx.callbacks.onAgentComplete!({ agentId: 'a1', profile: 'scout', phase: 'scouting' });
       expect(ctx.eventLog.lines).toEqual(['✅ Agent a1 complete']);
       expect(ctx.agentLog.calls).toEqual([
-        { method: 'addEntry', args: [{ type: 'text', content: 'Agent session ended' }] },
+        { method: 'addEntry', args: [{ type: 'text', content: 'Agent session ended' }, 'a1'] },
       ]);
     });
 
@@ -255,6 +282,22 @@ describe('createTuiStatusCallbacks', () => {
       const ctx = createTestDeps();
       ctx.callbacks.onTaskStart!({ taskId: 't1', title: 'T', agentId: 'a1' });
       expect(ctx.renderCount).toBe(1);
+    });
+
+    it('updates taskTitle on the associated agent when agent was spawned with taskId', () => {
+      const ctx = createTestDeps();
+      ctx.callbacks.onAgentSpawn!({ agentId: 'a1', profile: 'coder', phase: 'implement', taskId: 't1' });
+      ctx.callbacks.onTaskStart!({ taskId: 't1', title: 'Implement feature', agentId: 'a1' });
+      expect(ctx.agentLog.calls).toContainEqual({
+        method: 'updateStats',
+        args: ['a1', { taskTitle: 'Implement feature' }],
+      });
+    });
+
+    it('uses info.agentId as fallback for taskTitle when no reverse map entry', () => {
+      const ctx = createTestDeps();
+      ctx.callbacks.onTaskStart!({ taskId: 't1', title: 'Standalone task', agentId: 'a1' });
+      expect(ctx.agentLog.calls).toEqual([{ method: 'updateStats', args: ['a1', { taskTitle: 'Standalone task' }] }]);
     });
   });
 
@@ -311,10 +354,10 @@ describe('createTuiStatusCallbacks', () => {
   });
 
   describe('onDecision', () => {
-    it('adds expected line to eventLog', () => {
+    it('does not add to eventLog', () => {
       const ctx = createTestDeps();
       ctx.callbacks.onDecision!({ agentId: 'a1', decision: 'proceed', reasoning: 'looks good' });
-      expect(ctx.eventLog.lines).toEqual(['🤝 a1: proceed']);
+      expect(ctx.eventLog.lines).toEqual([]);
     });
 
     it('calls requestRender', () => {
@@ -329,7 +372,7 @@ describe('createTuiStatusCallbacks', () => {
       const ctx = createTestDeps();
       ctx.callbacks.onError!({ agentId: 'a1', error: 'crash', phase: 'planning' });
       expect(ctx.eventLog.lines).toEqual(['⚠️ Error in a1: crash (planning)']);
-      expect(ctx.agentLog.calls).toEqual([{ method: 'addEntry', args: [{ type: 'error', content: 'crash' }] }]);
+      expect(ctx.agentLog.calls).toEqual([{ method: 'addEntry', args: [{ type: 'error', content: 'crash' }, 'a1'] }]);
     });
 
     it('calls requestRender', () => {
@@ -347,8 +390,10 @@ describe('createTuiStatusCallbacks', () => {
         turn: 1,
         contentBlocks: [{ type: 'text', text: 'Hello world' }],
       });
-      expect(ctx.agentLog.calls).toEqual([{ method: 'addEntry', args: [{ type: 'text', content: 'Hello world' }] }]);
-      expect(ctx.eventLog.lines).toEqual(['💬 Hello world']);
+      expect(ctx.agentLog.calls).toEqual([
+        { method: 'addEntry', args: [{ type: 'text', content: 'Hello world' }, 'a1'] },
+      ]);
+      expect(ctx.eventLog.lines).toEqual([]);
     });
 
     it('ignores empty text blocks', () => {
@@ -370,22 +415,10 @@ describe('createTuiStatusCallbacks', () => {
         contentBlocks: [{ type: 'thinking', thinking: 'deep thoughts' }],
       });
       expect(ctx.agentLog.calls).toEqual([
-        { method: 'addEntry', args: [{ type: 'thinking', content: 'deep thoughts' }] },
+        { method: 'addEntry', args: [{ type: 'thinking', content: 'deep thoughts' }, 'a1'] },
       ]);
       // Thinking blocks should not be added to eventLog
       expect(ctx.eventLog.lines.length).toBe(0);
-    });
-
-    it('processes toolCall content blocks', () => {
-      const ctx = createTestDeps();
-      ctx.callbacks.onTurnEnd!({
-        agentId: 'a1',
-        turn: 1,
-        contentBlocks: [{ type: 'toolCall', id: 'tc1', name: 'readFile', arguments: { path: 'a.ts' } }],
-      });
-      expect(ctx.agentLog.calls).toEqual([
-        { method: 'addEntry', args: [{ type: 'tool_call_start', content: 'readFile' }] },
-      ]);
     });
 
     it('processes multiple content blocks in order', () => {
@@ -396,11 +429,10 @@ describe('createTuiStatusCallbacks', () => {
         contentBlocks: [
           { type: 'thinking', thinking: 'hmm' },
           { type: 'text', text: 'doing stuff' },
-          { type: 'toolCall', id: 'tc1', name: 'write', arguments: {} },
         ],
       });
-      expect(ctx.agentLog.calls.length).toBe(3);
-      expect(ctx.eventLog.lines).toEqual(['💬 doing stuff']);
+      expect(ctx.agentLog.calls.length).toBe(2);
+      expect(ctx.eventLog.lines).toEqual([]);
     });
 
     it('calls requestRender', () => {
@@ -415,20 +447,70 @@ describe('createTuiStatusCallbacks', () => {
       expect(ctx.agentLog.calls.length).toBe(0);
       expect(ctx.eventLog.lines.length).toBe(0);
     });
+
+    it('updates token stats when tokens are present', () => {
+      const ctx = createTestDeps();
+      ctx.callbacks.onTurnEnd!({
+        agentId: 'a1',
+        turn: 1,
+        tokens: { input: 100, output: 50 },
+      });
+      expect(ctx.agentLog.calls).toEqual([
+        { method: 'updateStats', args: ['a1', { inputTokens: 100, outputTokens: 50 }] },
+      ]);
+    });
+
+    it('accumulates tokens across multiple turns', () => {
+      const ctx = createTestDeps();
+      ctx.callbacks.onTurnEnd!({
+        agentId: 'a1',
+        turn: 1,
+        tokens: { input: 100, output: 50 },
+      });
+      ctx.callbacks.onTurnEnd!({
+        agentId: 'a1',
+        turn: 2,
+        tokens: { input: 200, output: 75 },
+      });
+      expect(ctx.agentLog.calls.length).toBe(2);
+      expect(ctx.agentLog.calls[0]).toEqual({
+        method: 'updateStats',
+        args: ['a1', { inputTokens: 100, outputTokens: 50 }],
+      });
+      expect(ctx.agentLog.calls[1]).toEqual({
+        method: 'updateStats',
+        args: ['a1', { inputTokens: 200, outputTokens: 75 }],
+      });
+    });
+
+    it('processes content blocks and tokens together', () => {
+      const ctx = createTestDeps();
+      ctx.callbacks.onTurnEnd!({
+        agentId: 'a1',
+        turn: 1,
+        tokens: { input: 500, output: 200 },
+        contentBlocks: [{ type: 'text', text: 'output text' }],
+      });
+      expect(ctx.agentLog.calls).toEqual([
+        { method: 'addEntry', args: [{ type: 'text', content: 'output text' }, 'a1'] },
+        { method: 'updateStats', args: ['a1', { inputTokens: 500, outputTokens: 200 }] },
+      ]);
+    });
   });
 
   describe('onToolCallStart', () => {
-    it('adds expected line to eventLog and entry to agentLog', () => {
+    it('does not add to eventLog but adds entry and increments toolCallCount in agentLog', () => {
       const ctx = createTestDeps();
       ctx.callbacks.onToolCallStart!({
         agentId: 'a1',
-        toolName: 'readFile',
+        toolName: 'read',
         toolCallId: 'tc1',
         arguments: { path: 'test.ts' },
       });
-      expect(ctx.eventLog.lines).toEqual(['🔧 readFile(...)']);
+      expect(ctx.eventLog.lines).toEqual([]);
       expect(ctx.agentLog.calls).toEqual([
-        { method: 'addEntry', args: [{ type: 'tool_call_start', content: 'readFile' }] },
+        { method: 'addEntry', args: [{ type: 'tool_call_start', content: '📖 read → test.ts' }, 'a1'] },
+        { method: 'updateStats', args: ['a1', { toolCallCount: 1 }] },
       ]);
     });
 
@@ -444,12 +526,12 @@ describe('createTuiStatusCallbacks', () => {
       const ctx = createTestDeps();
       ctx.callbacks.onToolCallEnd!({
         agentId: 'a1',
-        toolName: 'readFile',
+        toolName: 'read',
         toolCallId: 'tc1',
         isError: false,
       });
       expect(ctx.agentLog.calls).toEqual([
-        { method: 'addEntry', args: [{ type: 'tool_call_end', content: 'readFile ✅' }] },
+        { method: 'addEntry', args: [{ type: 'tool_call_end', content: '📖 read → ? ✅' }, 'a1'] },
       ]);
     });
 
@@ -457,12 +539,12 @@ describe('createTuiStatusCallbacks', () => {
       const ctx = createTestDeps();
       ctx.callbacks.onToolCallEnd!({
         agentId: 'a1',
-        toolName: 'writeFile',
+        toolName: 'bash',
         toolCallId: 'tc2',
         isError: true,
       });
       expect(ctx.agentLog.calls).toEqual([
-        { method: 'addEntry', args: [{ type: 'tool_call_end', content: 'writeFile ❌' }] },
+        { method: 'addEntry', args: [{ type: 'tool_call_end', content: '💻 bash →  ❌' }, 'a1'] },
       ]);
     });
 
@@ -542,6 +624,35 @@ describe('createTuiStatusCallbacks', () => {
 
       // 16 callbacks total (onTurnStart removed – it was a no-op)
       expect(ctx.renderCount).toBe(16);
+    });
+  });
+
+  describe('verbose callbacks do not pollute eventLog', () => {
+    it('onDecision does not add to eventLog', () => {
+      const ctx = createTestDeps();
+      ctx.callbacks.onDecision!({ agentId: 'a1', decision: 'proceed', reasoning: 'ok' });
+      expect(ctx.eventLog.lines).toEqual([]);
+    });
+
+    it('onTurnEnd text blocks do not add to eventLog', () => {
+      const ctx = createTestDeps();
+      ctx.callbacks.onTurnEnd!({
+        agentId: 'a1',
+        turn: 1,
+        contentBlocks: [{ type: 'text', text: 'some output' }],
+      });
+      expect(ctx.eventLog.lines).toEqual([]);
+    });
+
+    it('onToolCallStart does not add to eventLog', () => {
+      const ctx = createTestDeps();
+      ctx.callbacks.onToolCallStart!({
+        agentId: 'a1',
+        toolName: 'readFile',
+        toolCallId: 'tc1',
+        arguments: {},
+      });
+      expect(ctx.eventLog.lines).toEqual([]);
     });
   });
 });

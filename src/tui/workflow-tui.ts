@@ -47,7 +47,7 @@ export class WorkflowTUI {
 
   constructor(options: WorkflowTUIOptions = {}) {
     this.maxConcurrentLanes = options.maxConcurrentLanes ?? 3;
-    this.agentLogLines = options.agentLogLines ?? 4;
+    this.agentLogLines = options.agentLogLines ?? 10;
     this.abortFn = options.abort;
 
     this.eventLog = new EventLog();

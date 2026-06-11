@@ -300,7 +300,7 @@ describe('EventLog', () => {
       log.addLine('a');
       log.render(40);
       // Mutate internal state directly to simulate external change
-      (log as any).lines[0] = 'changed';
+      (log as any).buf[0] = 'changed';
       log.invalidate();
       const second = log.render(40);
       expect(second[2].trim()).toBe('changed');

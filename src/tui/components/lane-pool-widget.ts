@@ -17,15 +17,10 @@ export interface TaskLane {
 
 export class LanePoolWidget implements Component {
   private lanes: TaskLane[] = [];
-  private maxLanes: number;
   private focusedLaneIndex = -1;
   private dirty = true;
   private cachedWidth = -1;
   private cachedLines: string[] = [];
-
-  constructor(maxLanes: number) {
-    this.maxLanes = maxLanes;
-  }
 
   updateLanes(lanes: TaskLane[]): void {
     this.lanes = lanes;
@@ -53,6 +48,10 @@ export class LanePoolWidget implements Component {
     this.dirty = true;
   }
 
+  getVisibleLaneCount(): number {
+    return this.lanes.length;
+  }
+
   render(width: number): string[] {
     if (!this.dirty && this.cachedWidth === width) {
       return this.cachedLines;
@@ -60,20 +59,16 @@ export class LanePoolWidget implements Component {
 
     const lines: string[] = [];
 
-    for (let i = 0; i < this.maxLanes; i++) {
+    for (let i = 0; i < this.lanes.length; i++) {
       const lane = this.lanes[i];
-      if (lane) {
-        let text = statusIcon(lane.status) + ' ' + statusColor(lane.status)(lane.title);
-        if (lane.stepInfo) {
-          text += ' ' + dim(lane.stepInfo);
-        }
-        if (i === this.focusedLaneIndex) {
-          text = bold(text);
-        }
-        lines.push(truncateToWidth(text, width, '…', true));
-      } else {
-        lines.push(truncateToWidth('', width, '…', true));
+      let text = statusIcon(lane.status) + ' ' + statusColor(lane.status)(lane.title);
+      if (lane.stepInfo) {
+        text += ' ' + dim(lane.stepInfo);
       }
+      if (i === this.focusedLaneIndex) {
+        text = bold(text);
+      }
+      lines.push(truncateToWidth(text, width, '…', true));
     }
 
     this.cachedLines = lines;

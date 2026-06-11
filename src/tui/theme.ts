@@ -44,7 +44,9 @@ export const statusIcon = (status: TaskStatus): string => statusIconMap[status];
 
 // ─── Sanitization ────────────────────────────────────────────────────────────
 
-/** Strip all ANSI escape sequences from a string */
+export const borderLine = (left: string, fill: string, right: string, innerWidth: number): string => {
+  return left + fill.repeat(innerWidth) + right;
+};
 export function stripAnsi(str: string): string {
   // eslint-disable-next-line no-control-regex
   return str.replace(/\x1b\[[^a-zA-Z]*[a-zA-Z]/g, '').replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, '');

@@ -2,6 +2,7 @@ import type { StatusCallbacks, TaskStatus } from '../core/types.js';
 import type { Dashboard } from './components/dashboard.js';
 import type { EventLog } from './components/event-log.js';
 import type { TaskLane } from './components/lane-pool-widget.js';
+import { formatToolCall } from './format-tool-call.js';
 import { stripAnsi } from './theme.js';
 
 // ─── Factory ─────────────────────────────────────────────────────────────────
@@ -16,6 +17,8 @@ export function createTuiStatusCallbacks(deps: {
   const lanes = new Map<string, TaskLane>();
   // Lanes accumulate for the lifetime of the workflow; completed lanes remain visible.
   const completedPhases: string[] = [];
+  // Reverse map for task → agent lookups
+  const taskToAgent = new Map<string, string>();
 
   return {
     onWorkflowStart(info) {
@@ -51,12 +54,16 @@ export function createTuiStatusCallbacks(deps: {
     onAgentSpawn(info) {
       eventLog.addLine('⏳ Agent ' + info.agentId + ' spawned (' + info.profile + ')');
       dashboard.agentLog.selectAgent(info.agentId, info.profile);
+      dashboard.agentLog.updateStats(info.agentId, { profile: info.profile });
+      if (info.taskId) {
+        taskToAgent.set(info.taskId, info.agentId);
+      }
       requestRender();
     },
 
     onAgentComplete(info) {
       eventLog.addLine('✅ Agent ' + info.agentId + ' complete');
-      dashboard.agentLog.addEntry({ type: 'text', content: 'Agent session ended' });
+      dashboard.agentLog.addEntry({ type: 'text', content: 'Agent session ended' }, info.agentId);
       requestRender();
     },
 
@@ -70,6 +77,9 @@ export function createTuiStatusCallbacks(deps: {
         agentId: info.agentId,
       });
       dashboard.lanePool.updateLanes(Array.from(lanes.values()));
+      // Update task title on the associated agent
+      const agentId = taskToAgent.get(info.taskId) ?? info.agentId;
+      dashboard.agentLog.updateStats(agentId, { taskTitle: safeTitle });
       requestRender();
     },
 
@@ -93,15 +103,14 @@ export function createTuiStatusCallbacks(deps: {
       requestRender();
     },
 
-    onDecision(info) {
-      eventLog.addLine('🤝 ' + info.agentId + ': ' + stripAnsi(info.decision));
+    onDecision(_info) {
       requestRender();
     },
 
     onError(info) {
       const safeError = stripAnsi(info.error);
       eventLog.addLine('⚠️ Error in ' + info.agentId + ': ' + safeError + ' (' + info.phase + ')');
-      dashboard.agentLog.addEntry({ type: 'error', content: safeError });
+      dashboard.agentLog.addEntry({ type: 'error', content: safeError }, info.agentId);
       requestRender();
     },
 
@@ -110,33 +119,39 @@ export function createTuiStatusCallbacks(deps: {
         for (const block of info.contentBlocks) {
           if (block.type === 'text' && block.text.length > 0) {
             const safeText = stripAnsi(block.text);
-            dashboard.agentLog.addEntry({ type: 'text', content: safeText });
-            eventLog.addLine('💬 ' + safeText);
+            dashboard.agentLog.addEntry({ type: 'text', content: safeText }, info.agentId);
           } else if (block.type === 'thinking') {
-            dashboard.agentLog.addEntry({ type: 'thinking', content: stripAnsi(block.thinking) });
-          } else if (block.type === 'toolCall') {
-            dashboard.agentLog.addEntry({
-              type: 'tool_call_start',
-              content: stripAnsi(block.name),
-            });
+            dashboard.agentLog.addEntry({ type: 'thinking', content: stripAnsi(block.thinking) }, info.agentId);
           }
         }
+      }
+      if (info.tokens) {
+        dashboard.agentLog.updateStats(info.agentId, {
+          inputTokens: info.tokens.input,
+          outputTokens: info.tokens.output,
+        });
       }
       requestRender();
     },
 
     onToolCallStart(info) {
-      const safeName = stripAnsi(info.toolName);
-      eventLog.addLine('🔧 ' + safeName + '(...)');
-      dashboard.agentLog.addEntry({ type: 'tool_call_start', content: safeName });
+      dashboard.agentLog.addEntry(
+        { type: 'tool_call_start', content: formatToolCall(info.toolName, info.arguments ?? {}) },
+        info.agentId,
+      );
+      dashboard.agentLog.updateStats(info.agentId, { toolCallCount: 1 });
       requestRender();
     },
 
     onToolCallEnd(info) {
-      dashboard.agentLog.addEntry({
-        type: 'tool_call_end',
-        content: stripAnsi(info.toolName) + (info.isError ? ' ❌' : ' ✅'),
-      });
+      const formatted = formatToolCall(info.toolName, {});
+      dashboard.agentLog.addEntry(
+        {
+          type: 'tool_call_end',
+          content: formatted + (info.isError ? ' ❌' : ' ✅'),
+        },
+        info.agentId,
+      );
       requestRender();
     },
 

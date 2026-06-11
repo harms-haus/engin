@@ -196,14 +196,15 @@ describe('WorkflowTUI', () => {
     it('uses custom maxConcurrentLanes and agentLogLines', () => {
       const tui = new WorkflowTUI({ maxConcurrentLanes: 5, agentLogLines: 8 });
       const dashboard = tui.getDashboard();
-      // getComputedHeight = 1 (phaseBar) + maxConcurrentLanes + agentLogLines
-      expect(dashboard.getComputedHeight()).toBe(1 + 5 + 8);
+      // getComputedHeight = 1 (phaseBar) + 0 (no lanes) + agentLogLines + 4 (borders)
+      expect(dashboard.getComputedHeight()).toBe(1 + 0 + 8 + 4);
     });
 
-    it('uses default maxConcurrentLanes (3) and agentLogLines (4)', () => {
+    it('uses default maxConcurrentLanes (3) and agentLogLines (10)', () => {
       const tui = new WorkflowTUI();
       const dashboard = tui.getDashboard();
-      expect(dashboard.getComputedHeight()).toBe(1 + 3 + 4);
+      // getComputedHeight = 1 (phaseBar) + 0 (no lanes) + 10 (agentLog) + 4 (borders)
+      expect(dashboard.getComputedHeight()).toBe(1 + 0 + 10 + 4);
     });
   });
 });

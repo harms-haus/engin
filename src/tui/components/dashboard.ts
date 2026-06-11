@@ -1,4 +1,5 @@
-import { type Component } from '@earendil-works/pi-tui';
+import { type Component, matchesKey } from '@earendil-works/pi-tui';
+import { borderLine } from '../theme.js';
 import { AgentLogWidget } from './agent-log-widget.js';
 import { LanePoolWidget } from './lane-pool-widget.js';
 import { PhaseBar } from './phase-bar.js';
@@ -9,14 +10,12 @@ export class Dashboard implements Component {
   private readonly _phaseBar: PhaseBar;
   private readonly _lanePool: LanePoolWidget;
   private readonly _agentLog: AgentLogWidget;
-  private readonly _maxConcurrentLanes: number;
   private readonly _agentLogLines: number;
 
-  constructor(maxConcurrentLanes: number, agentLogLines = 4) {
-    this._maxConcurrentLanes = maxConcurrentLanes;
+  constructor(maxConcurrentLanes: number, agentLogLines = 10) {
     this._agentLogLines = agentLogLines;
     this._phaseBar = new PhaseBar();
-    this._lanePool = new LanePoolWidget(maxConcurrentLanes);
+    this._lanePool = new LanePoolWidget();
     this._agentLog = new AgentLogWidget(agentLogLines);
   }
 
@@ -33,7 +32,11 @@ export class Dashboard implements Component {
   }
 
   getComputedHeight(): number {
-    return 1 + this._maxConcurrentLanes + this._agentLogLines;
+    // PhaseBar always renders exactly 1 line; no need to call render()
+    const phaseBarLines = 1;
+    const contentLines = phaseBarLines + this._lanePool.getVisibleLaneCount() + this._agentLogLines;
+    // +4 border lines: top + 2 separators + bottom
+    return contentLines + 4;
   }
 
   invalidate(): void {
@@ -43,10 +46,44 @@ export class Dashboard implements Component {
   }
 
   render(width: number): string[] {
-    return [...this._phaseBar.render(width), ...this._lanePool.render(width), ...this._agentLog.render(width)];
+    const innerWidth = Math.max(0, width - 2);
+    const lines: string[] = [];
+
+    // Top border
+    lines.push(borderLine('┌', '─', '┐', innerWidth));
+
+    // Phase bar content
+    for (const line of this._phaseBar.render(innerWidth)) {
+      lines.push('│' + line.padEnd(innerWidth).slice(0, innerWidth) + '│');
+    }
+
+    // Separator
+    lines.push(borderLine('├', '─', '┤', innerWidth));
+
+    // Lane pool content
+    for (const line of this._lanePool.render(innerWidth)) {
+      lines.push('│' + line.padEnd(innerWidth).slice(0, innerWidth) + '│');
+    }
+
+    // Separator
+    lines.push(borderLine('├', '─', '┤', innerWidth));
+
+    // Agent log content
+    for (const line of this._agentLog.render(innerWidth)) {
+      lines.push('│' + line.padEnd(innerWidth).slice(0, innerWidth) + '│');
+    }
+
+    // Bottom border
+    lines.push(borderLine('└', '─', '┘', innerWidth));
+
+    return lines;
   }
 
   handleInput(data: string): void {
-    this._lanePool.handleInput(data);
+    if (matchesKey(data, 'left') || matchesKey(data, 'right')) {
+      this._agentLog.handleInput(data);
+    } else {
+      this._lanePool.handleInput(data);
+    }
   }
 }

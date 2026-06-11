@@ -5,14 +5,27 @@ const WIDTH = 80;
 
 describe('Dashboard', () => {
   // ── getComputedHeight ───────────────────────────────────────────────
-  it('returns correct total height (1 + maxConcurrentLanes + agentLogLines)', () => {
+  it('returns correct total height including border lines', () => {
     const d = new Dashboard(3, 4);
-    expect(d.getComputedHeight()).toBe(1 + 3 + 4);
+    // PhaseBar renders 1 line, 0 lanes, agentLogLines=4
+    // content = 1 + 0 + 4 = 5, + 4 borders = 9
+    expect(d.getComputedHeight()).toBe(1 + 0 + 4 + 4);
   });
 
-  it('uses default agentLogLines of 4', () => {
+  it('accounts for visible lanes in computed height', () => {
+    const d = new Dashboard(3, 4);
+    d.lanePool.updateLanes([
+      { id: 't1', title: 'A', status: 'ready' },
+      { id: 't2', title: 'B', status: 'done' },
+    ]);
+    // PhaseBar=1, lanes=2, agentLog=4 => content=7, +4 borders=11
+    expect(d.getComputedHeight()).toBe(1 + 2 + 4 + 4);
+  });
+
+  it('uses default agentLogLines of 10', () => {
     const d = new Dashboard(5);
-    expect(d.getComputedHeight()).toBe(1 + 5 + 4);
+    // PhaseBar=1, lanes=0, agentLog=10 => content=11, +4 borders=15
+    expect(d.getComputedHeight()).toBe(1 + 0 + 10 + 4);
   });
 
   // ── Sub-component getters ──────────────────────────────────────────
@@ -24,39 +37,68 @@ describe('Dashboard', () => {
   });
 
   // ── render line count ──────────────────────────────────────────────
-  it('render() returns correct total line count', () => {
+  it('render() returns correct total line count with borders', () => {
     const d = new Dashboard(3, 4);
     const lines = d.render(WIDTH);
-    expect(lines).toHaveLength(d.getComputedHeight());
+    // PhaseBar=1, lanes=0 (no lanes set), agentLog=4 => content=5, +4 borders=9
+    expect(lines).toHaveLength(1 + 0 + 4 + 4);
+  });
+
+  it('render() with lanes returns correct line count', () => {
+    const d = new Dashboard(3, 4);
+    d.lanePool.updateLanes([
+      { id: 't1', title: 'A', status: 'ready' },
+      { id: 't2', title: 'B', status: 'done' },
+    ]);
+    const lines = d.render(WIDTH);
+    // PhaseBar=1, lanes=2, agentLog=4 => content=7, +4 borders=11
+    expect(lines).toHaveLength(1 + 2 + 4 + 4);
   });
 
   it('render() with default agentLogLines returns correct line count', () => {
     const d = new Dashboard(2);
     const lines = d.render(WIDTH);
-    expect(lines).toHaveLength(1 + 2 + 4);
+    // PhaseBar=1, lanes=0, agentLog=10 => content=11, +4 borders=15
+    expect(lines).toHaveLength(1 + 0 + 10 + 4);
   });
 
-  // ── render() concatenation ─────────────────────────────────────────
-  it('render() output matches concatenation of sub-component renders', () => {
+  // ── render() border structure ──────────────────────────────────────
+  it('render() starts with top border ┌─┐', () => {
     const d = new Dashboard(2, 3);
+    const lines = d.render(WIDTH);
+    expect(lines[0]).toBe('┌' + '─'.repeat(WIDTH - 2) + '┐');
+  });
 
-    // Configure sub-components with some state
+  it('render() ends with bottom border └─┘', () => {
+    const d = new Dashboard(2, 3);
+    const lines = d.render(WIDTH);
+    expect(lines[lines.length - 1]).toBe('└' + '─'.repeat(WIDTH - 2) + '┘');
+  });
+
+  it('render() has separators ├─┤ between sections', () => {
+    const d = new Dashboard(2, 3);
+    const lines = d.render(WIDTH);
+    const sep = '├' + '─'.repeat(WIDTH - 2) + '┤';
+    // Separator positions: after phaseBar (index 1), after lanePool content
+    // With 0 lanes: lines = [top, phaseContent, sep, sep, agentLog..., bottom]
+    // line[0]=top, line[1]=phase, line[2]=sep(phase/lanes), line[3]=sep(lanes/log) ... wait
+    // PhaseBar=1, lanes=0 => after phaseBar separator, then immediately lanes separator (0 lanes),
+    // then agentLog content, then bottom
+    // Structure: top(0), phase(1), sep(2), sep(3), log(4-6), bottom(7)
+    const sepCount = lines.filter((l) => l === sep).length;
+    expect(sepCount).toBe(2);
+  });
+
+  it('render() wraps content lines with │', () => {
+    const d = new Dashboard(2, 3);
     d.phaseBar.setPhases([{ id: 'plan', label: 'Plan', icon: '📋' }]);
     d.phaseBar.setCurrentPhase('plan');
-    d.lanePool.updateLanes([
-      { id: 't1', title: 'Task A', status: 'ready' },
-      { id: 't2', title: 'Task B', status: 'done' },
-    ]);
-    d.agentLog.selectAgent('agent-1', 'coder');
+    const lines = d.render(WIDTH);
 
-    const phaseLines = d.phaseBar.render(WIDTH);
-    const laneLines = d.lanePool.render(WIDTH);
-    const logLines = d.agentLog.render(WIDTH);
-
-    const expected = [...phaseLines, ...laneLines, ...logLines];
-    const actual = d.render(WIDTH);
-
-    expect(actual).toEqual(expected);
+    // Phase content line (index 1)
+    expect(lines[1].startsWith('│')).toBe(true);
+    expect(lines[1].endsWith('│')).toBe(true);
+    expect(lines[1].length).toBe(WIDTH);
   });
 
   // ── invalidate ─────────────────────────────────────────────────────
@@ -79,7 +121,7 @@ describe('Dashboard', () => {
   });
 
   // ── handleInput delegation ─────────────────────────────────────────
-  it('handleInput delegates to lanePool', () => {
+  it('handleInput delegates to lanePool for non-arrow keys', () => {
     const d = new Dashboard(3, 4);
     d.lanePool.updateLanes([
       { id: 't1', title: 'A', status: 'ready' },
@@ -92,5 +134,20 @@ describe('Dashboard', () => {
 
     d.handleInput('\x1b[B'); // Down arrow
     expect(d.lanePool.getFocusedTaskId()).toBe('t2');
+  });
+
+  it('handleInput routes left/right arrows to agentLog', () => {
+    const d = new Dashboard(3, 4);
+    // Set up two agents so navigation works
+    d.agentLog.selectAgent('agent-1', 'coder');
+    d.agentLog.selectAgent('agent-2', 'scout');
+    // Current agent is agent-2
+    expect(d.agentLog.getCurrentAgentId()).toBe('agent-2');
+
+    d.handleInput('\x1b[D'); // Left arrow
+    expect(d.agentLog.getCurrentAgentId()).toBe('agent-1');
+
+    d.handleInput('\x1b[C'); // Right arrow
+    expect(d.agentLog.getCurrentAgentId()).toBe('agent-2');
   });
 });

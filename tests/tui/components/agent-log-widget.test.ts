@@ -3,6 +3,10 @@ import { AgentLogWidget } from '../../../src/tui/components/agent-log-widget.js'
 
 const WIDTH = 40;
 
+// Arrow key escape sequences
+const LEFT_ARROW = '\x1b[D';
+const RIGHT_ARROW = '\x1b[C';
+
 describe('AgentLogWidget', () => {
   it("renders 'No agent selected' when empty", () => {
     const widget = new AgentLogWidget(5);
@@ -22,7 +26,7 @@ describe('AgentLogWidget', () => {
     const lines = widget.render(WIDTH);
 
     expect(lines.length).toBe(5);
-    expect(lines[0]).toContain('Agent: coder');
+    expect(lines[0]).toContain('coder');
   });
 
   it('renders entries with correct type icons', () => {
@@ -42,10 +46,9 @@ describe('AgentLogWidget', () => {
   });
 
   it('ring buffer drops old entries when maxEntries exceeded', () => {
+    // Access private maxEntries via a workaround: add 201 entries
     const widget = new AgentLogWidget(5);
     widget.selectAgent('agent-1', 'coder');
-
-    // Access private maxEntries via a workaround: add 201 entries
     for (let i = 0; i < 201; i++) {
       widget.addEntry({ type: 'text', content: `entry-${i}` });
     }
@@ -127,8 +130,275 @@ describe('AgentLogWidget', () => {
     w4.addEntry({ type: 'text', content: 'd' });
     const lines = w4.render(WIDTH);
     expect(lines.length).toBe(3);
-    // Only the latest entries should show (header + 2 most recent)
+    // Only the latest entries should show (header + 1 most recent, since maxLines=3 and header takes 1)
+    // visibleCount = 2, startIdx = max(0, 4-2) = 2, so entries[2]='c' and entries[3]='d'
     expect(lines[1]).toContain('c');
     expect(lines[2]).toContain('d');
+  });
+
+  it('uses default maxLines of 10', () => {
+    const widget = new AgentLogWidget();
+    widget.selectAgent('a', 'p');
+    const lines = widget.render(WIDTH);
+    expect(lines.length).toBe(10);
+  });
+
+  // ─── Per-agent state tests ──────────────────────────────────────────
+
+  it('preserves entries when switching agents', () => {
+    const widget = new AgentLogWidget(5);
+    widget.selectAgent('agent-1', 'coder');
+    widget.addEntry({ type: 'text', content: 'hello from agent 1' });
+
+    widget.selectAgent('agent-2', 'scout');
+    widget.addEntry({ type: 'text', content: 'hello from agent 2' });
+
+    // Switch back to agent 1
+    widget.selectAgent('agent-1', 'coder');
+    const lines1 = widget.render(WIDTH);
+    // Header + entries for agent 1
+    expect(lines1[1]).toContain('hello from agent 1');
+
+    // Switch to agent 2
+    widget.selectAgent('agent-2', 'scout');
+    const lines2 = widget.render(WIDTH);
+    expect(lines2[1]).toContain('hello from agent 2');
+  });
+
+  it('re-selecting an agent preserves previous entries', () => {
+    const widget = new AgentLogWidget(5);
+    widget.selectAgent('agent-1', 'coder');
+    widget.addEntry({ type: 'text', content: 'first entry' });
+    widget.addEntry({ type: 'text', content: 'second entry' });
+
+    // Re-select same agent
+    widget.selectAgent('agent-1', 'coder');
+    const lines = widget.render(WIDTH);
+    // Both entries should still be there
+    expect(lines[1]).toContain('first entry');
+    expect(lines[2]).toContain('second entry');
+  });
+
+  it('header shows stats (toolCallCount, tokens)', () => {
+    const widget = new AgentLogWidget(5);
+    widget.selectAgent('agent-1', 'coder');
+    widget.updateStats('agent-1', { toolCallCount: 1 });
+    widget.updateStats('agent-1', { toolCallCount: 1 });
+    widget.updateStats('agent-1', { inputTokens: 100 });
+    widget.updateStats('agent-1', { outputTokens: 50 });
+
+    const lines = widget.render(80);
+    expect(lines[0]).toContain('2 tool calls');
+    expect(lines[0]).toContain('↑100');
+    expect(lines[0]).toContain('↓50');
+  });
+
+  it('header shows taskTitle when set', () => {
+    const widget = new AgentLogWidget(5);
+    widget.selectAgent('agent-1', 'coder');
+    widget.updateStats('agent-1', { taskTitle: 'Implement feature X' });
+
+    const lines = widget.render(WIDTH);
+    expect(lines[0]).toContain('Implement feature X');
+    expect(lines[0]).toContain('profile: coder');
+  });
+
+  it('getAgentIds returns all stored agent IDs', () => {
+    const widget = new AgentLogWidget(5);
+    expect(widget.getAgentIds()).toEqual([]);
+
+    widget.selectAgent('agent-1', 'coder');
+    widget.selectAgent('agent-2', 'scout');
+    widget.selectAgent('agent-3', 'planner');
+
+    expect(widget.getAgentIds()).toEqual(['agent-1', 'agent-2', 'agent-3']);
+  });
+
+  it('getCurrentAgentId returns the currently selected agent', () => {
+    const widget = new AgentLogWidget(5);
+    expect(widget.getCurrentAgentId()).toBeNull();
+    expect(widget.getCurrentAgentId()).toBeNull();
+
+    widget.selectAgent('agent-1', 'coder');
+    expect(widget.getCurrentAgentId()).toBe('agent-1');
+    expect(widget.getCurrentAgentId()).toBe('agent-1');
+
+    widget.selectAgent('agent-2', 'scout');
+    expect(widget.getCurrentAgentId()).toBe('agent-2');
+  });
+
+  // ─── updateStats tests ──────────────────────────────────────────────
+
+  it('updateStats accumulates numeric fields', () => {
+    const widget = new AgentLogWidget(5);
+    widget.selectAgent('agent-1', 'coder');
+
+    widget.updateStats('agent-1', { toolCallCount: 1 });
+    widget.updateStats('agent-1', { toolCallCount: 2 });
+    widget.updateStats('agent-1', { inputTokens: 100 });
+    widget.updateStats('agent-1', { inputTokens: 200 });
+    widget.updateStats('agent-1', { outputTokens: 50 });
+    widget.updateStats('agent-1', { outputTokens: 25 });
+
+    const lines = widget.render(80);
+    expect(lines[0]).toContain('3 tool calls');
+    expect(lines[0]).toContain('↑300');
+    expect(lines[0]).toContain('↓75');
+  });
+
+  it('updateStats sets string fields', () => {
+    const widget = new AgentLogWidget(5);
+    widget.selectAgent('agent-1', 'coder');
+    widget.updateStats('agent-1', { taskTitle: 'First title' });
+    widget.updateStats('agent-1', { taskTitle: 'Updated title' });
+    widget.updateStats('agent-1', { profile: 'scout' });
+
+    const lines = widget.render(WIDTH);
+    expect(lines[0]).toContain('Updated title');
+    expect(lines[0]).toContain('profile: scout');
+  });
+
+  it('updateStats creates agent data if not found', () => {
+    const widget = new AgentLogWidget(5);
+    // No selectAgent call — updateStats should still work
+    widget.updateStats('agent-x', { toolCallCount: 5, taskTitle: 'Test' });
+
+    expect(widget.getAgentIds()).toContain('agent-x');
+    // But it's not selected, so it shouldn't affect render
+    const lines = widget.render(WIDTH);
+    expect(lines[0]).toContain('No agent selected');
+  });
+
+  // ─── Footer / multi-agent navigation ───────────────────────────────
+
+  it('shows footer when multiple agents exist', () => {
+    const widget = new AgentLogWidget(5);
+    widget.selectAgent('agent-1', 'coder');
+    widget.selectAgent('agent-2', 'scout');
+    // agent-2 is current
+    const lines = widget.render(80);
+    // Last line should have footer
+    expect(lines[lines.length - 1]).toContain('← → switch agent');
+    expect(lines[lines.length - 1]).toContain('2/2');
+  });
+
+  it('does not show footer with single agent', () => {
+    const widget = new AgentLogWidget(5);
+    widget.selectAgent('agent-1', 'coder');
+    const lines = widget.render(WIDTH);
+    // No line should contain the footer text
+    for (const line of lines) {
+      expect(line).not.toContain('← → switch agent');
+    }
+  });
+
+  it('footer shows correct index for first agent', () => {
+    const widget = new AgentLogWidget(5);
+    widget.selectAgent('agent-1', 'coder');
+    widget.selectAgent('agent-2', 'scout');
+    // Navigate back to first
+    widget.selectAgent('agent-1', 'coder');
+    const lines = widget.render(80);
+    expect(lines[lines.length - 1]).toContain('1/2');
+  });
+
+  // ─── Left/right navigation ─────────────────────────────────────────
+
+  it('left arrow cycles to previous agent (wrapping)', () => {
+    const widget = new AgentLogWidget(5);
+    widget.selectAgent('agent-1', 'coder');
+    widget.selectAgent('agent-2', 'scout');
+    widget.selectAgent('agent-3', 'planner');
+    // Current is agent-3
+
+    widget.handleInput(LEFT_ARROW);
+    expect(widget.getCurrentAgentId()).toBe('agent-2');
+
+    widget.handleInput(LEFT_ARROW);
+    expect(widget.getCurrentAgentId()).toBe('agent-1');
+
+    // Wrap around
+    widget.handleInput(LEFT_ARROW);
+    expect(widget.getCurrentAgentId()).toBe('agent-3');
+  });
+
+  it('right arrow cycles to next agent (wrapping)', () => {
+    const widget = new AgentLogWidget(5);
+    widget.selectAgent('agent-1', 'coder');
+    widget.selectAgent('agent-2', 'scout');
+    widget.selectAgent('agent-3', 'planner');
+    // Current is agent-3
+
+    // Wrap around to first
+    widget.handleInput(RIGHT_ARROW);
+    expect(widget.getCurrentAgentId()).toBe('agent-1');
+
+    widget.handleInput(RIGHT_ARROW);
+    expect(widget.getCurrentAgentId()).toBe('agent-2');
+
+    widget.handleInput(RIGHT_ARROW);
+    expect(widget.getCurrentAgentId()).toBe('agent-3');
+  });
+
+  it('handleInput does nothing with single agent', () => {
+    const widget = new AgentLogWidget(5);
+    widget.selectAgent('agent-1', 'coder');
+    widget.handleInput(LEFT_ARROW);
+    expect(widget.getCurrentAgentId()).toBe('agent-1');
+    widget.handleInput(RIGHT_ARROW);
+    expect(widget.getCurrentAgentId()).toBe('agent-1');
+  });
+
+  it('handleInput does nothing with no agents', () => {
+    const widget = new AgentLogWidget(5);
+    widget.handleInput(LEFT_ARROW);
+    expect(widget.getCurrentAgentId()).toBeNull();
+    widget.handleInput(RIGHT_ARROW);
+    expect(widget.getCurrentAgentId()).toBeNull();
+  });
+
+  it('navigation preserves per-agent entries', () => {
+    const widget = new AgentLogWidget(5);
+    widget.selectAgent('agent-1', 'coder');
+    widget.addEntry({ type: 'text', content: 'agent-1-msg' });
+
+    widget.selectAgent('agent-2', 'scout');
+    widget.addEntry({ type: 'text', content: 'agent-2-msg' });
+
+    // Navigate back to agent-1
+    widget.handleInput(LEFT_ARROW);
+    expect(widget.getCurrentAgentId()).toBe('agent-1');
+    const lines = widget.render(WIDTH);
+    expect(lines[1]).toContain('agent-1-msg');
+
+    // Navigate to agent-2
+    widget.handleInput(RIGHT_ARROW);
+    expect(widget.getCurrentAgentId()).toBe('agent-2');
+    const lines2 = widget.render(WIDTH);
+    expect(lines2[1]).toContain('agent-2-msg');
+  });
+
+  // ─── clearAgent ─────────────────────────────────────────────────────
+
+  it('clearAgent resets to no agent selected', () => {
+    const widget = new AgentLogWidget(5);
+    widget.selectAgent('agent-1', 'coder');
+    widget.addEntry({ type: 'text', content: 'hello' });
+
+    widget.clearAgent();
+    expect(widget.getCurrentAgentId()).toBeNull();
+    const lines = widget.render(WIDTH);
+    expect(lines[0]).toContain('No agent selected');
+  });
+
+  it('clearAgent preserves agent data for later re-selection', () => {
+    const widget = new AgentLogWidget(5);
+    widget.selectAgent('agent-1', 'coder');
+    widget.addEntry({ type: 'text', content: 'hello' });
+
+    widget.clearAgent();
+    widget.selectAgent('agent-1', 'coder');
+    const lines = widget.render(WIDTH);
+    expect(lines[1]).toContain('hello');
   });
 });
