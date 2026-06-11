@@ -20,7 +20,7 @@ describe('WorkflowStatusTracker', () => {
   describe('initial state', () => {
     it('starts with default values', () => {
       expect(tracker.taskPrompt).toBe('');
-      expect(tracker.currentPhase).toBe('scouting');
+      expect(tracker.currentPhase).toBe('');
       expect(tracker.completedPhases).toEqual([]);
       expect(tracker.scoutingReports).toEqual([]);
       expect(tracker.plan).toBeUndefined();
@@ -52,61 +52,52 @@ describe('WorkflowStatusTracker', () => {
     });
   });
 
-  // ── advancePhase ───────────────────────────────────────────────────
-
-  describe('advancePhase', () => {
-    it('advances through each phase in order', () => {
-      const expectedOrder = ['scouting_review', 'planning', 'plan_review', 'implementing', 'final_review', 'done'];
-
-      for (const expected of expectedOrder) {
-        tracker.advancePhase();
-        expect(tracker.currentPhase).toBe(expected);
-      }
-    });
-
-    it('tracks completed phases', () => {
-      tracker.advancePhase();
-      expect(tracker.completedPhases).toEqual(['scouting']);
-
-      tracker.advancePhase();
-      expect(tracker.completedPhases).toEqual(['scouting', 'scouting_review']);
-    });
-
-    it('completedPhases getter returns a copy', () => {
-      tracker.advancePhase();
-      const phases = tracker.completedPhases;
-      phases.push('fake' as never);
-      expect(tracker.completedPhases).toEqual(['scouting']);
-    });
-
-    it('throws when already at the final phase', () => {
-      // Advance to done
-      for (let i = 0; i < 6; i++) {
-        tracker.advancePhase();
-      }
-      expect(tracker.currentPhase).toBe('done');
-      expect(() => tracker.advancePhase()).toThrow('already at the final phase');
-    });
-  });
-
   // ── setPhase ───────────────────────────────────────────────────────
 
   describe('setPhase', () => {
-    it('allows setting a valid phase', () => {
+    it('pushes current phase to completedPhases and sets new phase', () => {
+      tracker.setCurrentPhase('scouting');
+      tracker.setPhase('planning');
+      expect(tracker.currentPhase).toBe('planning');
+      expect(tracker.completedPhases).toEqual(['scouting']);
+    });
+
+    it('chains multiple transitions', () => {
+      tracker.setCurrentPhase('scouting');
+      tracker.setPhase('planning');
       tracker.setPhase('implementing');
-      expect(tracker.currentPhase).toBe('implementing');
+      tracker.setPhase('review');
+      expect(tracker.currentPhase).toBe('review');
+      expect(tracker.completedPhases).toEqual(['scouting', 'planning', 'implementing']);
     });
 
-    it('throws for an invalid phase string', () => {
-      expect(() => tracker.setPhase('invalid' as never)).toThrow('Invalid phase');
+    it('accepts any string — no validation', () => {
+      expect(() => tracker.setPhase('custom-phase')).not.toThrow();
+      expect(tracker.currentPhase).toBe('custom-phase');
     });
 
-    it('allows jumping to any valid phase (for restore)', () => {
-      tracker.setPhase('done');
-      expect(tracker.currentPhase).toBe('done');
-
+    it('does not push empty string to completedPhases', () => {
+      // Fresh tracker has currentPhase="", so setPhase should skip pushing it
       tracker.setPhase('scouting');
+      expect(tracker.completedPhases).toEqual([]);
       expect(tracker.currentPhase).toBe('scouting');
+    });
+  });
+
+  // ── setCurrentPhase ─────────────────────────────────────────────────
+
+  describe('setCurrentPhase', () => {
+    it('sets the current phase without pushing to completedPhases', () => {
+      tracker.setCurrentPhase('scouting');
+      expect(tracker.currentPhase).toBe('scouting');
+      expect(tracker.completedPhases).toEqual([]);
+    });
+
+    it('overwrites the current phase without history', () => {
+      tracker.setCurrentPhase('scouting');
+      tracker.setCurrentPhase('planning');
+      expect(tracker.currentPhase).toBe('planning');
+      expect(tracker.completedPhases).toEqual([]);
     });
   });
 
@@ -211,7 +202,7 @@ describe('WorkflowStatusTracker', () => {
       const json = tracker.toJSON();
 
       expect(json.taskPrompt).toBe('my prompt');
-      expect(json.currentPhase).toBe('scouting');
+      expect(json.currentPhase).toBe('');
       expect(json.completedPhases).toEqual([]);
       expect(json.scoutingReports).toEqual([{ note: 'hello' }]);
       expect(json.plan).toEqual({ steps: [1, 2, 3] });
@@ -255,9 +246,9 @@ describe('WorkflowStatusTracker', () => {
       tracker.incrementAgentCount();
       tracker.incrementAgentCount();
 
-      // Advance two phases
-      tracker.advancePhase(); // → scouting_review
-      tracker.advancePhase(); // → planning
+      // Transition two phases
+      tracker.setPhase('scouting');
+      tracker.setPhase('planning');
 
       // Add a task
       tracker.taskTracker.addTask(makeTask({ id: 'task-a' }));
@@ -270,7 +261,7 @@ describe('WorkflowStatusTracker', () => {
 
       expect(restored.taskPrompt).toBe('Build something great');
       expect(restored.currentPhase).toBe('planning');
-      expect(restored.completedPhases).toEqual(['scouting', 'scouting_review']);
+      expect(restored.completedPhases).toEqual(['scouting']);
       expect(restored.scoutingReports).toEqual([{ summary: 'report 1' }, { summary: 'report 2' }]);
       expect(restored.plan).toEqual({ phases: ['a', 'b', 'c'] });
       expect(restored.stats).toEqual({
@@ -438,21 +429,21 @@ describe('WorkflowStatusTracker', () => {
   // ── edge cases ─────────────────────────────────────────────────────
 
   describe('edge cases', () => {
-    it('advancePhase works from a non-default starting point', () => {
-      tracker.setPhase('plan_review');
-      tracker.advancePhase();
-      expect(tracker.currentPhase).toBe('implementing');
+    it('setPhase works from a non-default starting point', () => {
+      tracker.setCurrentPhase('scouting');
+      tracker.setPhase('planning');
+      expect(tracker.currentPhase).toBe('planning');
+      expect(tracker.completedPhases).toEqual(['scouting']);
     });
 
-    it('completedPhases only tracks advances, not setPhase jumps', () => {
-      tracker.setPhase('implementing');
-      // completedPhases should still be empty since we jumped, not advanced
+    it('completedPhases only tracks setPhase transitions, not setCurrentPhase', () => {
+      tracker.setCurrentPhase('scouting');
+      // completedPhases should still be empty since setCurrentPhase doesn't push
       expect(tracker.completedPhases).toEqual([]);
 
-      tracker.advancePhase();
-      expect(tracker.currentPhase).toBe('final_review');
-      // Only the most recent advance is tracked
-      expect(tracker.completedPhases).toEqual(['implementing']);
+      tracker.setPhase('planning');
+      expect(tracker.currentPhase).toBe('planning');
+      expect(tracker.completedPhases).toEqual(['scouting']);
     });
 
     it('auditLog points to workDir/audit', async () => {
