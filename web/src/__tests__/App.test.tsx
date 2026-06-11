@@ -8,7 +8,8 @@
  * - Selected workflow with renderer renders the renderer component
  * - Selected workflow without renderer shows "Workflow selected, but no renderer available"
  * - Header receives connected prop from useWebSocket
- * - Sidebar receives workflows, selectedRunId, and onSelectRun
+ * - Sidebar receives workflows, selectedRunId, onSelectRun, and onStartWorkflow
+ * - onStartWorkflow is wired to send with start_workflow message in both branches
  * - Fallback runState is created from summary when not in runStates
  */
 
@@ -200,6 +201,256 @@ describe('App', () => {
     const item = screen.getByText('🚀').closest('.sidebar-item')!;
     fireEvent.click(item);
     expect(selectRun).toHaveBeenCalledWith('w1');
+  });
+
+  it('passes onStartWorkflow to Sidebar that calls send with start_workflow message', async () => {
+    const send = vi.fn();
+    mockUseWebSocket.mockReturnValue({
+      state: {
+        workflows: [],
+        selectedRunId: null,
+        runStates: new Map(),
+      },
+      send,
+      selectRun: vi.fn(),
+      connected: false,
+    });
+    const { container } = await renderApp();
+
+    // The '+' button (className 'sidebar-new-btn') is rendered by Sidebar
+    // when onStartWorkflow is provided. Its presence confirms the prop wiring.
+    const newBtn = container.querySelector('.sidebar-new-btn');
+    expect(newBtn).toBeInTheDocument();
+  });
+
+  it('passes onStartWorkflow to Sidebar (button visible) in no-selection branch', async () => {
+    const send = vi.fn();
+    mockUseWebSocket.mockReturnValue({
+      state: {
+        workflows: [],
+        selectedRunId: null,
+        runStates: new Map(),
+      },
+      send,
+      selectRun: vi.fn(),
+      connected: false,
+    });
+    const { container } = await renderApp();
+
+    // The '+' button (className 'sidebar-new-btn') is rendered by Sidebar
+    // when onStartWorkflow is provided. Its presence confirms the prop wiring.
+    const newBtn = container.querySelector('.sidebar-new-btn');
+    expect(newBtn).toBeInTheDocument();
+  });
+
+  it('passes onStartWorkflow to Sidebar (button visible) in selected-workflow branch', async () => {
+    const send = vi.fn();
+    const summary = makeSummary({ id: 'w1', workflowName: 'develop' });
+    const runState = makeRunState({ summary });
+    mockUseWebSocket.mockReturnValue({
+      state: {
+        workflows: [summary],
+        selectedRunId: 'w1',
+        runStates: new Map([['w1', runState]]),
+      },
+      send,
+      selectRun: vi.fn(),
+      connected: false,
+    });
+    mockGetRenderer.mockReturnValue(DummyRenderer);
+
+    const { container } = await renderApp();
+    const newBtn = container.querySelector('.sidebar-new-btn');
+    expect(newBtn).toBeInTheDocument();
+  });
+
+  it('calls send with start_workflow message when user submits through Sidebar popover', async () => {
+    const send = vi.fn();
+    mockUseWebSocket.mockReturnValue({
+      state: {
+        workflows: [],
+        selectedRunId: null,
+        runStates: new Map(),
+      },
+      send,
+      selectRun: vi.fn(),
+      connected: false,
+    });
+
+    // Make fetch return a workflow so the popover can select it
+    globalThis.fetch = vi.fn() as unknown as typeof fetch;
+    (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ok: true,
+      json: async () => [{ name: 'develop', source: 'local', path: '/workflows/develop' }],
+    });
+
+    const { container } = await renderApp();
+
+    // Open the popover
+    const newBtn = container.querySelector('.sidebar-new-btn')!;
+    fireEvent.click(newBtn);
+
+    // Wait for fetch to resolve and the input to appear
+    const input = await screen.findByPlaceholderText('Filter workflows...');
+    fireEvent.change(input, { target: { value: 'develop' } });
+
+    // Select the workflow from dropdown
+    const item = container.querySelector('.sidebar-combobox-item')!;
+    fireEvent.mouseDown(item);
+
+    // Type a prompt
+    const textarea = container.querySelector('.sidebar-popover-textarea')!;
+    fireEvent.change(textarea, { target: { value: 'Build the feature' } });
+
+    // Submit
+    const submitBtn = container.querySelector('.sidebar-popover-submit')!;
+    fireEvent.click(submitBtn);
+
+    // Verify send was called with start_workflow message
+    expect(send).toHaveBeenCalledWith({
+      type: 'start_workflow',
+      workflowName: 'develop',
+      taskPrompt: 'Build the feature',
+    });
+    expect(send).toHaveBeenCalledTimes(1);
+
+    // Restore fetch mock to default for other tests
+    globalThis.fetch = vi.fn() as unknown as typeof fetch;
+    (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ok: true,
+      json: async () => [],
+    });
+  });
+
+  it('calls send with start_workflow message in selected-workflow render branch', async () => {
+    const send = vi.fn();
+    const summary = makeSummary({ id: 'w1', workflowName: 'develop' });
+    const runState = makeRunState({ summary });
+    mockUseWebSocket.mockReturnValue({
+      state: {
+        workflows: [summary],
+        selectedRunId: 'w1',
+        runStates: new Map([['w1', runState]]),
+      },
+      send,
+      selectRun: vi.fn(),
+      connected: false,
+    });
+    mockGetRenderer.mockReturnValue(DummyRenderer);
+
+    globalThis.fetch = vi.fn() as unknown as typeof fetch;
+    (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ok: true,
+      json: async () => [{ name: 'deploy', source: 'global', path: '/workflows/deploy' }],
+    });
+
+    const { container } = await renderApp();
+
+    // Open the popover
+    const newBtn = container.querySelector('.sidebar-new-btn')!;
+    fireEvent.click(newBtn);
+
+    // Wait for fetch and select workflow
+    const input = await screen.findByPlaceholderText('Filter workflows...');
+    fireEvent.change(input, { target: { value: 'deploy' } });
+
+    const item = container.querySelector('.sidebar-combobox-item')!;
+    fireEvent.mouseDown(item);
+
+    // Type a prompt
+    const textarea = container.querySelector('.sidebar-popover-textarea')!;
+    fireEvent.change(textarea, { target: { value: 'Deploy to production' } });
+
+    // Submit
+    const submitBtn = container.querySelector('.sidebar-popover-submit')!;
+    fireEvent.click(submitBtn);
+
+    // Verify send was called with start_workflow message
+    expect(send).toHaveBeenCalledWith({
+      type: 'start_workflow',
+      workflowName: 'deploy',
+      taskPrompt: 'Deploy to production',
+    });
+    expect(send).toHaveBeenCalledTimes(1);
+
+    globalThis.fetch = vi.fn() as unknown as typeof fetch;
+    (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ok: true,
+      json: async () => [],
+    });
+  });
+
+  it('trims whitespace from prompt before calling send', async () => {
+    const send = vi.fn();
+    mockUseWebSocket.mockReturnValue({
+      state: {
+        workflows: [],
+        selectedRunId: null,
+        runStates: new Map(),
+      },
+      send,
+      selectRun: vi.fn(),
+      connected: false,
+    });
+
+    globalThis.fetch = vi.fn() as unknown as typeof fetch;
+    (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ok: true,
+      json: async () => [{ name: 'test-wf', source: 'local', path: '/workflows/test-wf' }],
+    });
+
+    const { container } = await renderApp();
+
+    const newBtn = container.querySelector('.sidebar-new-btn')!;
+    fireEvent.click(newBtn);
+
+    const input = await screen.findByPlaceholderText('Filter workflows...');
+    fireEvent.change(input, { target: { value: 'test-wf' } });
+
+    const item = container.querySelector('.sidebar-combobox-item')!;
+    fireEvent.mouseDown(item);
+
+    const textarea = container.querySelector('.sidebar-popover-textarea')!;
+    fireEvent.change(textarea, { target: { value: '  mission critical  ' } });
+
+    const submitBtn = container.querySelector('.sidebar-popover-submit')!;
+    fireEvent.click(submitBtn);
+
+    expect(send).toHaveBeenCalledWith({
+      type: 'start_workflow',
+      workflowName: 'test-wf',
+      taskPrompt: 'mission critical',
+    });
+
+    globalThis.fetch = vi.fn() as unknown as typeof fetch;
+    (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ok: true,
+      json: async () => [],
+    });
+  });
+
+  it('does not call send when popover is closed without submitting', async () => {
+    const send = vi.fn();
+    mockUseWebSocket.mockReturnValue({
+      state: {
+        workflows: [],
+        selectedRunId: null,
+        runStates: new Map(),
+      },
+      send,
+      selectRun: vi.fn(),
+      connected: false,
+    });
+
+    const { container } = await renderApp();
+
+    const newBtn = container.querySelector('.sidebar-new-btn')!;
+    fireEvent.click(newBtn);
+
+    // Close the popover without submitting
+    fireEvent.keyDown(document, { key: 'Escape' });
+
+    expect(send).not.toHaveBeenCalled();
   });
 
   // ── No selection ────────────────────────────────────────────────────

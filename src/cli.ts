@@ -1,7 +1,10 @@
 #!/usr/bin/env bun
 
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { getDefaultWorkDir, getGlobalConfigDir, loadEnvFiles } from './core/config.js';
+import type { PastRunEntry } from './core/config.js';
+import { getDefaultWorkDir, getGlobalConfigDir, loadEnvFiles, scanPastRuns } from './core/config.js';
 import type { StatusCallbacks } from './core/types.js';
 import { validateWorkflowName } from './core/utils.js';
 import { loadWorkflow } from './core/workflow-loader.js';
@@ -10,7 +13,7 @@ import { initDefaultConfig } from './setup.js';
 // ─── CLI Options ────────────────────────────────────────────────────────────
 
 export interface CliOptions {
-  command: 'run' | 'init' | 'help' | 'version' | 'web';
+  command: 'run' | 'init' | 'help' | 'version' | 'web' | 'resume';
   workflowName?: string;
   taskPrompt?: string;
   cwd: string;
@@ -21,6 +24,8 @@ export interface CliOptions {
   warnings: string[];
   host?: string;
   port?: number;
+  /** Session name for the resume command (the directory name under .engin/work/) */
+  sessionName?: string;
 }
 
 // ─── Argument Parsing ───────────────────────────────────────────────────────
@@ -31,6 +36,7 @@ const USAGE = `Usage: engin <command> [options]
 
 Commands:
   run    <workflow-name> <task-prompt> [options]   Run a workflow
+  resume [session-name] [options]                  Resume a past workflow run
   init                                              Create config directory structure
   web    [options]                                   Start web UI server
 
@@ -194,6 +200,23 @@ export function parseArgs(argv: string[]): CliOptions {
       throw new Error(`Unexpected argument: "${positionals[1]}"\n${USAGE}`);
     }
     return { command: 'init', cwd, verbose, maxConcurrent, apiKeys, warnings };
+  }
+
+  if (command === 'resume') {
+    const sessionName = positionals[1];
+    if (positionals.length > 2) {
+      throw new Error(`Unexpected argument: "${positionals[2]}"\n${USAGE}`);
+    }
+    return {
+      command: 'resume',
+      cwd,
+      workDir,
+      maxConcurrent,
+      verbose,
+      apiKeys,
+      warnings,
+      sessionName,
+    };
   }
 
   // Any non-init positional is treated as "run" with the first positional as the workflow name.
@@ -385,6 +408,211 @@ export async function runCommand(options: CliOptions): Promise<void> {
   }
 }
 
+// ─── Interactive Session Selector ───────────────────────────────────────────
+
+/**
+ * Format a timestamp (ms since epoch) into a human-readable relative time.
+ */
+function formatRelativeTime(timestamp: number): string {
+  const now = Date.now();
+  const diffMs = now - timestamp;
+  const diffSec = Math.floor(diffMs / 1000);
+  const diffMin = Math.floor(diffSec / 60);
+  const diffHour = Math.floor(diffMin / 60);
+  const diffDay = Math.floor(diffHour / 24);
+
+  if (diffSec < 60) return `${diffSec}s ago`;
+  if (diffMin < 60) return `${diffMin}m ago`;
+  if (diffHour < 24) return `${diffHour}h ago`;
+  return `${diffDay}d ago`;
+}
+
+/**
+ * Read a single line from stdin (for interactive selection).
+ * Returns the trimmed input, or undefined on EOF.
+ */
+async function readLineFromStdin(): Promise<string | undefined> {
+  return new Promise((resolve) => {
+    const { stdin } = process;
+    if (stdin.isTTY) {
+      stdin.setRawMode?.(false);
+    }
+    stdin.setEncoding('utf-8');
+    stdin.resume();
+
+    let data = '';
+    const onData = (chunk: string) => {
+      data += chunk;
+      // Check for newline (Enter key)
+      const newlineIdx = data.indexOf('\n');
+      if (newlineIdx >= 0) {
+        const line = data.slice(0, newlineIdx).replace(/\r$/, '');
+        stdin.removeListener('data', onData);
+        stdin.pause();
+        resolve(line.trim() || undefined);
+      }
+    };
+    const onEnd = () => {
+      stdin.removeListener('data', onData);
+      stdin.removeListener('end', onEnd);
+      stdin.pause();
+      resolve(data.trim() || undefined);
+    };
+    stdin.once('end', onEnd);
+    stdin.on('data', onData);
+  });
+}
+
+/**
+ * Present an interactive list of past runs and let the user pick one.
+ * Returns the selected PastRunEntry, or undefined if the user cancels.
+ */
+export async function interactiveSelectRun(cwd: string): Promise<PastRunEntry | undefined> {
+  const runs = await scanPastRuns(cwd);
+
+  if (runs.length === 0) {
+    console.log('No past workflow runs found.');
+    return undefined;
+  }
+
+  console.log('\nPast workflow runs (newest first):\n');
+  const displayLimit = Math.min(runs.length, 20);
+  for (let i = 0; i < displayLimit; i++) {
+    const run = runs[i];
+    const relTime = formatRelativeTime(run.timestamp);
+    const stateIndicator = run.hasStateFile ? '💾' : '  ';
+    console.log(`  ${String(i + 1).padStart(2)}  ${stateIndicator}  ${run.dirName}  (${relTime})`);
+  }
+  if (runs.length > displayLimit) {
+    console.log(`     ... and ${runs.length - displayLimit} more`);
+  }
+  console.log();
+  console.log('  💾 = has resumable state');
+  console.log();
+
+  while (true) {
+    process.stdout.write('Select a run (1-' + displayLimit + ') or press Enter to cancel: ');
+    const input = await readLineFromStdin();
+
+    if (input === undefined || input === '') {
+      console.log('Cancelled.');
+      return undefined;
+    }
+
+    const num = Number(input);
+    if (Number.isFinite(num) && Number.isInteger(num) && num >= 1 && num <= displayLimit) {
+      return runs[num - 1];
+    }
+
+    console.log(`Invalid selection: "${input}". Enter a number between 1 and ${displayLimit}.`);
+  }
+}
+
+/**
+ * Resolve a partial or full session name to a PastRunEntry.
+ * Matches by directory name, supporting partial prefix matching.
+ */
+export async function resolveSessionName(sessionName: string, cwd: string): Promise<PastRunEntry> {
+  const runs = await scanPastRuns(cwd);
+
+  // Try exact match first
+  const exact = runs.find((r) => r.dirName === sessionName);
+  if (exact) return exact;
+
+  // Try prefix match (e.g. just the timestamp portion)
+  const prefixMatches = runs.filter((r) => r.dirName.startsWith(sessionName));
+  if (prefixMatches.length === 1) return prefixMatches[0];
+  if (prefixMatches.length > 1) {
+    const names = prefixMatches.map((r) => r.dirName).join(', ');
+    throw new Error(`Ambiguous session name "${sessionName}" matches multiple runs: ${names}. Be more specific.`);
+  }
+
+  throw new Error(
+    `No past run found matching "${sessionName}". Use 'engin resume' without arguments to see available runs.`,
+  );
+}
+
+// ─── Resume Command ──────────────────────────────────────────────────────────
+
+export async function resumeCommand(options: CliOptions): Promise<void> {
+  let run: PastRunEntry;
+
+  if (options.sessionName) {
+    run = await resolveSessionName(options.sessionName, options.cwd);
+  } else {
+    const selected = await interactiveSelectRun(options.cwd);
+    if (!selected) {
+      process.exit(0);
+    }
+    run = selected;
+  }
+
+  if (!run.hasStateFile) {
+    throw new Error(
+      `Run "${run.dirName}" does not have a resumable state file. It may have been manually cleaned up or interrupted before saving state.`,
+    );
+  }
+
+  // Read the state file to get the task prompt
+  const statePath = join(run.fullPath, '.engin-state.json');
+  const stateRaw = readFileSync(statePath, 'utf-8');
+  const state = JSON.parse(stateRaw) as { taskPrompt: string };
+  const taskPrompt = state.taskPrompt;
+
+  if (!taskPrompt) {
+    throw new Error(`Run "${run.dirName}" has no task prompt in its state file. Cannot resume.`);
+  }
+
+  const workDir = run.fullPath;
+  const workflowName = run.workflowName;
+
+  console.log(`${formatTime()} 🔄 Resuming run: ${run.dirName}`);
+  console.log(`${formatTime()}    Workflow: ${workflowName}`);
+  console.log(`${formatTime()}    Prompt:   ${taskPrompt}`);
+  console.log();
+
+  validateWorkflowName(workflowName);
+  const workflow = await loadWorkflow(workflowName, options.cwd);
+
+  // Set up SIGINT handler for cooperative cancellation (same as runCommand)
+  const controller = new AbortController();
+  let sigintCount = 0;
+  let forceExitTimer: ReturnType<typeof setTimeout> | undefined;
+
+  const handler = () => {
+    sigintCount++;
+    if (sigintCount === 1) {
+      console.log(
+        `\n${formatTime()} ⏹️  Interrupt received, stopping workflow gracefully... (Ctrl+C again to force quit)`,
+      );
+      controller.abort();
+      forceExitTimer = setTimeout(() => {
+        console.log(`${formatTime()} ⏹️  Graceful shutdown timed out, forcing exit.`);
+        process.exit(1);
+      }, 5000);
+    } else {
+      if (forceExitTimer) clearTimeout(forceExitTimer);
+      console.log(`\n${formatTime()} ⏹️  Force quit.`);
+      process.exit(1);
+    }
+  };
+
+  process.on('SIGINT', handler);
+  try {
+    await workflow.run(taskPrompt, {
+      cwd: options.cwd,
+      workDir,
+      maxConcurrentTasks: options.maxConcurrent,
+      apiKeys: Object.keys(options.apiKeys).length > 0 ? options.apiKeys : undefined,
+      onStatus: createStatusCallbacks(options.verbose),
+      signal: controller.signal,
+    });
+  } finally {
+    if (forceExitTimer) clearTimeout(forceExitTimer);
+    process.removeListener('SIGINT', handler);
+  }
+}
+
 // ─── Main Entry Point ───────────────────────────────────────────────────────
 
 let cliOptions: CliOptions | undefined;
@@ -422,6 +650,10 @@ export async function main(): Promise<void> {
   }
   if (options.command === 'web') {
     await webCommand(options);
+    return;
+  }
+  if (options.command === 'resume') {
+    await resumeCommand(options);
     return;
   }
   await runCommand(options);

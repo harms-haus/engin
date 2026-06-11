@@ -346,6 +346,94 @@ describe('WorkflowStatusTracker', () => {
     });
   });
 
+  // ── auto-persist on task settlement ────────────────────────────────
+
+  describe('auto-persist on task settlement', () => {
+    it('completeTask triggers auto-persist to disk', async () => {
+      tracker.setTaskPrompt('auto-persist-test');
+      tracker.taskTracker.addTask(makeTask({ id: 't1' }));
+
+      const _claimed = tracker.taskTracker.claimTasks(1);
+      tracker.taskTracker.startTask('t1', 'agent-x');
+      tracker.taskTracker.submitForReview('t1', { ok: true });
+      tracker.taskTracker.completeTask('t1');
+
+      // Allow the fire-and-forget save() promise to settle
+      await new Promise((r) => setTimeout(r, 50));
+
+      const restored = await WorkflowStatusTracker.load(dir);
+      expect(restored.taskTracker.getTask('t1')!.status).toBe('done');
+      expect(restored.taskPrompt).toBe('auto-persist-test');
+    });
+
+    it('failTask triggers auto-persist to disk', async () => {
+      tracker.setTaskPrompt('fail-persist-test');
+      tracker.taskTracker.addTask(makeTask({ id: 't1' }));
+
+      const _claimed = tracker.taskTracker.claimTasks(1);
+      tracker.taskTracker.startTask('t1', 'agent-x');
+      tracker.taskTracker.failTask('t1', { error: 'boom' });
+
+      await new Promise((r) => setTimeout(r, 50));
+
+      const restored = await WorkflowStatusTracker.load(dir);
+      expect(restored.taskTracker.getTask('t1')!.status).toBe('failed');
+      expect(restored.taskPrompt).toBe('fail-persist-test');
+    });
+
+    it('auto-persist works after load() (resume scenario)', async () => {
+      // Save a tracker with a ready task
+      tracker.setTaskPrompt('resume-test');
+      tracker.taskTracker.addTask(makeTask({ id: 't1' }));
+      await tracker.save();
+
+      // Load it — this should re-attach the auto-persist listener
+      const restored = await WorkflowStatusTracker.load(dir);
+      expect(restored.taskTracker.getTask('t1')!.status).toBe('ready');
+
+      // Run the full lifecycle on the loaded tracker
+      const _claimed = restored.taskTracker.claimTasks(1);
+      restored.taskTracker.startTask('t1', 'agent-x');
+      restored.taskTracker.submitForReview('t1', { ok: true });
+      restored.taskTracker.completeTask('t1');
+
+      await new Promise((r) => setTimeout(r, 50));
+
+      // Reload from disk — should reflect the completed task
+      const reloaded = await WorkflowStatusTracker.load(dir);
+      expect(reloaded.taskTracker.getTask('t1')!.status).toBe('done');
+    });
+
+    it('auto-persist does not throw on disk error', async () => {
+      tracker.taskTracker.addTask(makeTask({ id: 't1' }));
+
+      // Override save to simulate a disk error
+      const originalSave = tracker.save.bind(tracker);
+      let saveWasCalled = false;
+      tracker.save = async () => {
+        saveWasCalled = true;
+        throw new Error('Simulated disk write failure');
+      };
+
+      const _claimed = tracker.taskTracker.claimTasks(1);
+      tracker.taskTracker.startTask('t1', 'agent-x');
+      tracker.taskTracker.submitForReview('t1', { ok: true });
+
+      // completeTask should not throw — save() is fire-and-forget with .catch()
+      tracker.taskTracker.completeTask('t1');
+
+      // Wait for the fire-and-forget save attempt to settle
+      await new Promise((r) => setTimeout(r, 50));
+
+      // In-memory state is still correct despite the save failure
+      expect(tracker.taskTracker.getTask('t1')!.status).toBe('done');
+      expect(saveWasCalled).toBe(true);
+
+      // Restore original save method for cleanup
+      tracker.save = originalSave;
+    });
+  });
+
   // ── edge cases ─────────────────────────────────────────────────────
 
   describe('edge cases', () => {

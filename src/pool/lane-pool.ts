@@ -5,6 +5,7 @@ import { clearProfileCache, loadProfilesFromDirs } from '../core/profile.js';
 import { promptForStructured } from '../core/structured-output.js';
 import type { AgentProfile, AuditEvent, HarnessCreationOptions, Task } from '../core/types.js';
 import { forwardAgentStatus, safeErrorMessage } from '../core/utils.js';
+import { TaskTracker } from '../tracking/task-status.js';
 import type { LanePoolOptions, LanePoolResult, StepDefinition, StepResult } from './types.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────
@@ -147,7 +148,9 @@ export class LanePool {
         if (taskTracker.isPoolDone()) {
           return;
         }
-        // Event-driven wait: listen for taskReady or abort signal
+        // Note: taskReady handlers run cleanup synchronously, which removes the
+        // taskSettled listener. This prevents a double-wake when
+        // recalculateStatuses emits taskReady before taskSettled fires.
         await new Promise<void>((resolve) => {
           const onReady = () => {
             cleanup();
@@ -158,10 +161,12 @@ export class LanePool {
             resolve();
           };
           const cleanup = () => {
-            taskTracker.removeListener('taskReady', onReady);
+            taskTracker.removeListener(TaskTracker.Events.TaskReady, onReady);
+            taskTracker.removeListener(TaskTracker.Events.TaskSettled, onReady);
             this.options.signal?.removeEventListener('abort', onAbort);
           };
-          taskTracker.once('taskReady', onReady);
+          taskTracker.once(TaskTracker.Events.TaskReady, onReady);
+          taskTracker.once(TaskTracker.Events.TaskSettled, onReady);
           this.options.signal?.addEventListener('abort', onAbort, { once: true });
         });
         continue;

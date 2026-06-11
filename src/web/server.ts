@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { extname, join } from 'node:path';
 import { getDefaultWorkDir, scanPastRuns } from '../core/config.js';
-import { loadWorkflow } from '../core/workflow-loader.js';
+import { listWorkflows, loadWorkflow } from '../core/workflow-loader.js';
 import { RunRegistry } from './run-registry.js';
 import { createStatusBridge } from './status-bridge.js';
 import type { ClientMessage, ServerMessage, WebServerDependencies, WebServerOptions } from './types.js';
@@ -13,6 +13,7 @@ export async function startWebServer(
   const resolveWorkflow = deps.loadWorkflow ?? loadWorkflow;
   const resolveWorkDir = deps.getDefaultWorkDir ?? getDefaultWorkDir;
   const resolvePastRuns = deps.scanPastRuns ?? scanPastRuns;
+  const resolveListWorkflows = deps.listWorkflows ?? listWorkflows;
 
   const registry = new RunRegistry();
 
@@ -137,6 +138,18 @@ export async function startWebServer(
 
         if (req.method === 'GET' && url.pathname === '/api/runs') {
           return Response.json(registry.getAllSummaries());
+        }
+
+        if (req.method === 'GET' && url.pathname === '/api/workflows') {
+          try {
+            const entries = await resolveListWorkflows(options.cwd);
+            return Response.json(entries);
+          } catch {
+            return new Response(JSON.stringify({ error: 'Failed to list workflows' }), {
+              status: 500,
+              headers: { 'Content-Type': 'application/json' },
+            });
+          }
         }
 
         return new Response('Not Found', { status: 404 });

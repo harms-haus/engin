@@ -1,3 +1,4 @@
+import { useCallback } from 'react';
 import './App.css';
 import { Header } from './components/Header';
 import { Sidebar } from './components/Sidebar';
@@ -6,7 +7,14 @@ import { getRenderer } from './renderers/registry';
 import type { WorkflowRunState } from './types';
 
 export function App() {
-  const { state, selectRun, connected } = useWebSocket();
+  const { state, send, selectRun, connected } = useWebSocket();
+
+  const handleStartWorkflow = useCallback(
+    (workflowName: string, taskPrompt: string) => {
+      send({ type: 'start_workflow', workflowName, taskPrompt });
+    },
+    [send],
+  );
 
   const selectedWorkflow = state.workflows.find((w) => w.id === state.selectedRunId);
 
@@ -15,7 +23,12 @@ export function App() {
       <div className="app">
         <Header connected={connected} />
         <div className="app-body">
-          <Sidebar workflows={state.workflows} selectedRunId={state.selectedRunId} onSelectRun={selectRun} />
+          <Sidebar
+            workflows={state.workflows}
+            selectedRunId={state.selectedRunId}
+            onSelectRun={selectRun}
+            onStartWorkflow={handleStartWorkflow}
+          />
           <main className="app-main">
             <div className="app-main-placeholder">Select a workflow from the sidebar</div>
           </main>
@@ -37,7 +50,12 @@ export function App() {
     <div className="app">
       <Header connected={connected} />
       <div className="app-body">
-        <Sidebar workflows={state.workflows} selectedRunId={state.selectedRunId} onSelectRun={selectRun} />
+        <Sidebar
+          workflows={state.workflows}
+          selectedRunId={state.selectedRunId}
+          onSelectRun={selectRun}
+          onStartWorkflow={handleStartWorkflow}
+        />
         <main className="app-main">
           {Renderer && runState ? (
             <Renderer runState={runState} />

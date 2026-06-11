@@ -24,6 +24,7 @@ function buildDeps(): WebServerDependencies {
       (cwd: string) => `${cwd}/.engin/work/test-workflow`,
     ),
     scanPastRuns: mock<WebServerDependencies['scanPastRuns']>().mockResolvedValue([]),
+    listWorkflows: mock<WebServerDependencies['listWorkflows']>().mockResolvedValue([]),
   };
 }
 
@@ -111,7 +112,7 @@ describe('startWebServer', () => {
       const res = await fetch(`${baseUrl}/`);
       expect(res.status).toBe(200);
       const text = await res.text();
-      expect(text).toContain('<!DOCTYPE html>');
+      expect(text).toContain('<!doctype html>');
       // Should have replaced {{WS_ENDPOINT}} with actual ws URL
       expect(text).not.toContain('{{WS_ENDPOINT}}');
       expect(text).toContain(`ws://${server.hostname}:${server.port}/ws`);
@@ -128,7 +129,7 @@ describe('startWebServer', () => {
       const res = await fetch(`${baseUrl}/some/unknown/path`);
       expect(res.status).toBe(200);
       const text = await res.text();
-      expect(text).toContain('<!DOCTYPE html>');
+      expect(text).toContain('<!doctype html>');
     });
 
     it('serves index.html with correct MIME type', async () => {
@@ -157,7 +158,7 @@ describe('startWebServer', () => {
       const res = await fetch(`${baseUrl}/some/unknown/path`);
       expect(res.status).toBe(200);
       const text = await res.text();
-      expect(text).toContain('<!DOCTYPE html>');
+      expect(text).toContain('<!doctype html>');
     });
   });
 
@@ -353,6 +354,119 @@ describe('startWebServer', () => {
     it('returns 404 for unknown API paths', async () => {
       const res = await fetch(`${baseUrl}/api/unknown`);
       expect(res.status).toBe(404);
+    });
+  });
+
+  // ─── GET /api/workflows ────────────────────────────────────────────────
+
+  describe('GET /api/workflows', () => {
+    it('returns workflow entries from listWorkflows', async () => {
+      server.stop();
+      const deps = buildDeps();
+      deps.listWorkflows = mock<WebServerDependencies['listWorkflows']>().mockResolvedValue([
+        { name: 'develop', source: 'local', path: '/path/to/develop/main.ts' },
+      ]);
+      server = await startWebServer(TEST_OPTIONS, deps);
+      baseUrl = `http://${server.hostname}:${server.port}`;
+
+      const res = await fetch(`${baseUrl}/api/workflows`);
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(Array.isArray(body)).toBe(true);
+      expect(body.length).toBe(1);
+      expect(body[0].name).toBe('develop');
+      expect(body[0].source).toBe('local');
+
+      server = await startWebServer(TEST_OPTIONS, buildDeps());
+      baseUrl = `http://${server.hostname}:${server.port}`;
+    });
+
+    it('returns empty array when no workflows exist', async () => {
+      server.stop();
+      const deps = buildDeps();
+      deps.listWorkflows = mock<WebServerDependencies['listWorkflows']>().mockResolvedValue([]);
+      server = await startWebServer(TEST_OPTIONS, deps);
+      baseUrl = `http://${server.hostname}:${server.port}`;
+
+      const res = await fetch(`${baseUrl}/api/workflows`);
+      expect(res.status).toBe(200);
+      expect(res.headers.get('Content-Type')).toContain('application/json');
+      const body = await res.json();
+      expect(Array.isArray(body)).toBe(true);
+      expect(body.length).toBe(0);
+
+      server = await startWebServer(TEST_OPTIONS, buildDeps());
+      baseUrl = `http://${server.hostname}:${server.port}`;
+    });
+
+    it('returns full workflow entry shape with name, source, and path', async () => {
+      server.stop();
+      const deps = buildDeps();
+      deps.listWorkflows = mock<WebServerDependencies['listWorkflows']>().mockResolvedValue([
+        { name: 'deploy', source: 'project', path: '/workflows/deploy.ts' },
+      ]);
+      server = await startWebServer(TEST_OPTIONS, deps);
+      baseUrl = `http://${server.hostname}:${server.port}`;
+
+      const res = await fetch(`${baseUrl}/api/workflows`);
+      expect(res.status).toBe(200);
+      expect(res.headers.get('Content-Type')).toContain('application/json');
+      const body = await res.json();
+      expect(Array.isArray(body)).toBe(true);
+      expect(body.length).toBe(1);
+      const entry = body[0];
+      expect(entry.name).toBe('deploy');
+      expect(entry.source).toBe('project');
+      expect(entry.path).toBe('/workflows/deploy.ts');
+      // Ensure no extra unexpected fields are present
+      expect(Object.keys(entry)).toEqual(['name', 'source', 'path']);
+
+      server = await startWebServer(TEST_OPTIONS, buildDeps());
+      baseUrl = `http://${server.hostname}:${server.port}`;
+    });
+
+    it('returns 500 when listWorkflows throws', async () => {
+      server.stop();
+      const deps = buildDeps();
+      deps.listWorkflows = mock<WebServerDependencies['listWorkflows']>().mockRejectedValue(
+        new Error('Filesystem error'),
+      );
+      server = await startWebServer(TEST_OPTIONS, deps);
+      baseUrl = `http://${server.hostname}:${server.port}`;
+
+      const res = await fetch(`${baseUrl}/api/workflows`);
+      expect(res.status).toBe(500);
+      const body = await res.json();
+      expect(body.error).toContain('Failed to list workflows');
+
+      server = await startWebServer(TEST_OPTIONS, buildDeps());
+      baseUrl = `http://${server.hostname}:${server.port}`;
+    });
+
+    it('returns multiple entries in the order returned by listWorkflows', async () => {
+      server.stop();
+      const deps = buildDeps();
+      deps.listWorkflows = mock<WebServerDependencies['listWorkflows']>().mockResolvedValue([
+        { name: 'zebra', source: 'global', path: '/z' },
+        { name: 'alpha', source: 'local', path: '/a' },
+      ]);
+      server = await startWebServer(TEST_OPTIONS, deps);
+      baseUrl = `http://${server.hostname}:${server.port}`;
+
+      const res = await fetch(`${baseUrl}/api/workflows`);
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(Array.isArray(body)).toBe(true);
+      expect(body.length).toBe(2);
+      expect(body[0].name).toBe('zebra');
+      expect(body[0].source).toBe('global');
+      expect(body[0].path).toBe('/z');
+      expect(body[1].name).toBe('alpha');
+      expect(body[1].source).toBe('local');
+      expect(body[1].path).toBe('/a');
+
+      server = await startWebServer(TEST_OPTIONS, buildDeps());
+      baseUrl = `http://${server.hostname}:${server.port}`;
     });
   });
 

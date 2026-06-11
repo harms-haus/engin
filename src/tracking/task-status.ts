@@ -2,6 +2,13 @@ import { EventEmitter } from 'node:events';
 import type { Task, TaskStatus } from '../core/types.js';
 
 export class TaskTracker extends EventEmitter {
+  static readonly Events = {
+    TaskReady: 'taskReady' as const,
+    TaskSettled: 'taskSettled' as const,
+  };
+
+  private static readonly EMPTY_SET: ReadonlySet<string> = new Set();
+
   private tasks: Map<string, Task>;
   private reverseDeps: Map<string, Set<string>>;
 
@@ -35,12 +42,7 @@ export class TaskTracker extends EventEmitter {
 
     // Build reverse dependency entries
     for (const dep of deps) {
-      const set = this.reverseDeps.get(dep);
-      if (set) {
-        set.add(fullTask.id);
-      } else {
-        this.reverseDeps.set(dep, new Set([fullTask.id]));
-      }
+      this.addReverseDep(dep, fullTask.id);
     }
 
     try {
@@ -49,16 +51,29 @@ export class TaskTracker extends EventEmitter {
       this.tasks.delete(fullTask.id);
       // Roll back reverse dependency entries
       for (const dep of deps) {
-        const set = this.reverseDeps.get(dep);
-        if (set) {
-          set.delete(fullTask.id);
-          if (set.size === 0) this.reverseDeps.delete(dep);
-        }
+        this.removeReverseDep(dep, fullTask.id);
       }
       throw new Error(`Dependency cycle detected involving task "${fullTask.id}"`, { cause: err });
     }
 
     this.recalculateStatuses(fullTask.id);
+  }
+
+  private addReverseDep(parentId: string, childId: string): void {
+    const set = this.reverseDeps.get(parentId);
+    if (set) {
+      set.add(childId);
+    } else {
+      this.reverseDeps.set(parentId, new Set([childId]));
+    }
+  }
+
+  private removeReverseDep(parentId: string, childId: string): void {
+    const set = this.reverseDeps.get(parentId);
+    if (set) {
+      set.delete(childId);
+      if (set.size === 0) this.reverseDeps.delete(parentId);
+    }
   }
 
   getTask(id: string): Task | undefined {
@@ -75,6 +90,22 @@ export class TaskTracker extends EventEmitter {
       .sort((a, b) => a.dependencies.length - b.dependencies.length || a.id.localeCompare(b.id));
   }
 
+  /**
+   * Returns up to `count` ready tasks whose status is set to `claimed`.
+   *
+   * **Mutable reference aliasing:** The returned array contains direct
+   * references to the internal `Task` objects stored in this tracker — not
+   * copies. Callers may safely mutate the following fields on the returned
+   * objects without going through a tracker method:
+   *
+   * - `reviewFeedback` — set by the lane pool after a rejected review to
+   *   persist feedback across retries.
+   *
+   * All other task mutations (status transitions, `result`, `assignedAgent`)
+   * **must** go through the corresponding tracker methods (`startTask`,
+   * `submitForReview`, `completeTask`, `failTask`, `rejectTask`) to ensure
+   * correct state transitions, dependency recalculation, and event emission.
+   */
   claimTasks(count: number): Task[] {
     const ready = this.getReadyTasks();
     const toClaim = ready.slice(0, count);
@@ -117,6 +148,7 @@ export class TaskTracker extends EventEmitter {
 
     task.status = 'done';
     this.recalculateStatuses(id);
+    this.emit(TaskTracker.Events.TaskSettled);
   }
 
   failTask(id: string, result?: unknown): void {
@@ -130,6 +162,7 @@ export class TaskTracker extends EventEmitter {
     task.result = result;
     task.assignedAgent = undefined;
     this.recalculateStatuses(id);
+    this.emit(TaskTracker.Events.TaskSettled);
   }
 
   rejectTask(id: string, reason: string): void {
@@ -142,6 +175,7 @@ export class TaskTracker extends EventEmitter {
     task.status = 'ready';
     task.reviewFeedback = reason;
     this.recalculateStatuses(id);
+    this.emit(TaskTracker.Events.TaskReady);
   }
 
   resetFailedTasks(): void {
@@ -165,7 +199,7 @@ export class TaskTracker extends EventEmitter {
 
   recalculateStatuses(hintTaskId?: string): void {
     let transitioned = false;
-    const candidates = hintTaskId ? (this.reverseDeps.get(hintTaskId) ?? new Set()) : this.tasks.keys();
+    const candidates = hintTaskId ? (this.reverseDeps.get(hintTaskId) ?? TaskTracker.EMPTY_SET) : this.tasks.keys();
 
     for (const id of candidates) {
       const task = this.tasks.get(id);
@@ -181,7 +215,7 @@ export class TaskTracker extends EventEmitter {
     }
 
     if (transitioned) {
-      this.emit('taskReady');
+      this.emit(TaskTracker.Events.TaskReady);
     }
   }
 
@@ -194,7 +228,7 @@ export class TaskTracker extends EventEmitter {
     this.resetStuckTasks();
   }
 
-  static fromJSON(data: { tasks: Task[] }): TaskTracker {
+  static fromJSON(data: { tasks: Task[] }, options?: { preserveState?: boolean }): TaskTracker {
     const tracker = new TaskTracker();
     for (const task of data.tasks) {
       tracker.tasks.set(task.id, structuredClone(task));
@@ -202,23 +236,21 @@ export class TaskTracker extends EventEmitter {
     // Build reverse dependency index
     for (const task of tracker.tasks.values()) {
       for (const dep of task.dependencies) {
-        const set = tracker.reverseDeps.get(dep);
-        if (set) {
-          set.add(task.id);
-        } else {
-          tracker.reverseDeps.set(dep, new Set([task.id]));
-        }
+        tracker.addReverseDep(dep, task.id);
       }
     }
     // Validate no cycles in deserialized data
     for (const id of tracker.tasks.keys()) {
       tracker.detectCycle(id);
     }
-    tracker.resetForRetry();
+    if (!options?.preserveState) {
+      tracker.resetForRetry();
+    }
     tracker.recalculateStatuses();
     return tracker;
   }
 
+  /** @deprecated Use {@link isPoolDone} instead. */
   areAllSettled(): boolean {
     const all = this.getAllTasks();
     return all.length > 0 && all.every((t) => TaskTracker.isSettled(t.status));
@@ -239,6 +271,7 @@ export class TaskTracker extends EventEmitter {
     return results;
   }
 
+  /** @deprecated Use {@link isPoolDone} instead. */
   areAllDoneOrBlocked(): boolean {
     const all = this.getAllTasks();
     if (all.length === 0) return false;

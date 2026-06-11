@@ -80,6 +80,12 @@ export interface AppGlobalState {
   runStates: Map<string, WorkflowRunState>;
 }
 
+export interface WorkflowEntry {
+  name: string;
+  source: 'local' | 'global';
+  path: string;
+}
+
 // ─── Type guard ─────────────────────────────────────────────────────────────
 
 export function isServerMessage(data: unknown): data is ServerMessage {

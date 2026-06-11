@@ -49,7 +49,7 @@ export default ts.config(
 
   // Global ignores (node_modules is auto-ignored in flat config)
   {
-    ignores: ['dist/', 'coverage/'],
+    ignores: ['dist/', 'coverage/', 'web/'],
   },
 
   // Prettier compatibility — MUST be last to disable conflicting rules

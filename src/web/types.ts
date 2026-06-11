@@ -8,7 +8,7 @@
  */
 
 import type { PastRunEntry } from '../core/config.js';
-import type { WorkflowModule } from '../core/types.js';
+import type { WorkflowEntry, WorkflowModule } from '../core/types.js';
 
 // ─── Shared value types ─────────────────────────────────────────────────────
 
@@ -87,4 +87,5 @@ export interface WebServerDependencies {
   loadWorkflow: (name: string, cwd: string) => Promise<WorkflowModule>;
   getDefaultWorkDir: (cwd: string, workflowName: string) => string;
   scanPastRuns: (cwd: string) => Promise<PastRunEntry[]>;
+  listWorkflows: (cwd: string) => Promise<WorkflowEntry[]>;
 }

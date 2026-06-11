@@ -32,11 +32,34 @@ export class WorkflowStatusTracker {
   private _taskTracker: TaskTracker;
   private _auditLog: AuditLog;
   private readonly workDir: string;
+  private _savePromise: Promise<void> = Promise.resolve();
+  private _pendingSave = false;
 
   constructor(workDir: string) {
     this.workDir = workDir;
     this._taskTracker = new TaskTracker();
     this._auditLog = new AuditLog(join(workDir, 'audit'));
+    this.attachAutoPersist();
+  }
+
+  private persistState(): void {
+    if (!this._pendingSave) {
+      this._pendingSave = true;
+      this._savePromise = this._savePromise
+        .then(() => this.save())
+        .catch((err) => {
+          console.warn('[WorkflowStatusTracker] Auto-persist save failed:', (err as Error).message);
+        })
+        .finally(() => {
+          this._pendingSave = false;
+        });
+    }
+  }
+
+  private attachAutoPersist(): void {
+    this._taskTracker.on(TaskTracker.Events.TaskSettled, () => {
+      this.persistState();
+    });
   }
 
   // ── Getters ────────────────────────────────────────────────────────
@@ -196,7 +219,8 @@ export class WorkflowStatusTracker {
 
     // Rebuild TaskTracker from saved tasks
     if (data.tasks && data.tasks.length > 0) {
-      tracker._taskTracker = TaskTracker.fromJSON({ tasks: data.tasks });
+      tracker._taskTracker = TaskTracker.fromJSON({ tasks: data.tasks }, { preserveState: true });
+      tracker.attachAutoPersist();
     }
 
     return tracker;

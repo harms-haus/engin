@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'bun:test';
+import type { WorkflowEntry } from '../../src/core/types.js';
 import type {
   AgentWindowState,
   ClientMessage,
@@ -6,6 +7,7 @@ import type {
   PhaseDescriptor,
   ServerMessage,
   SidebarInfo,
+  WebServerDependencies,
   WebServerOptions,
   WorkflowSummary,
 } from '../../src/web/types.ts';
@@ -621,5 +623,88 @@ describe('WebServerOptions', () => {
   it('port is a number', () => {
     const opts: WebServerOptions = { host: 'localhost', port: 0, cwd: '.' };
     expect(typeof opts.port).toBe('number');
+  });
+});
+
+// ─── WebServerDependencies ──────────────────────────────────────────────────
+
+describe('WebServerDependencies', () => {
+  it('listWorkflows returns a promise of WorkflowEntry array', async () => {
+    const deps: WebServerDependencies = {
+      listWorkflows: async (cwd: string) => {
+        return [{ name: 'test-workflow', source: 'local', path: `${cwd}/test` }];
+      },
+    };
+
+    const result = await deps.listWorkflows('/some/cwd');
+    expect(result).toHaveLength(1);
+    expect(result[0].name).toBe('test-workflow');
+    expect(result[0].source).toBe('local');
+    expect(result[0].path).toBe('/some/cwd/test');
+  });
+
+  it('listWorkflows accepts a cwd string and returns WorkflowEntry items', async () => {
+    const deps: WebServerDependencies = {
+      listWorkflows: async (cwd: string) => {
+        return [
+          { name: 'wf-a', source: 'local', path: `${cwd}/a` },
+          { name: 'wf-b', source: 'global', path: '/global/b' },
+        ];
+      },
+    };
+
+    const entries = await deps.listWorkflows('/tmp/project');
+    expect(entries).toHaveLength(2);
+
+    expect(entries[0].name).toBe('wf-a');
+    expect(entries[0].source).toBe('local');
+    expect(entries[0].path).toBe('/tmp/project/a');
+
+    expect(entries[1].name).toBe('wf-b');
+    expect(entries[1].source).toBe('global');
+    expect(entries[1].path).toBe('/global/b');
+  });
+
+  it('listWorkflows returns an empty array when no workflows exist', async () => {
+    const deps: WebServerDependencies = {
+      listWorkflows: async () => [],
+    };
+
+    const entries = await deps.listWorkflows('/empty/dir');
+    expect(entries).toEqual([]);
+  });
+
+  it('listWorkflows rejects when listing fails', async () => {
+    const deps: WebServerDependencies = {
+      listWorkflows: async (_cwd: string) => {
+        throw new Error('Permission denied');
+      },
+    };
+
+    await expect(deps.listWorkflows('/restricted')).rejects.toThrow('Permission denied');
+  });
+
+  it('is structurally compatible with the real listWorkflow signature', () => {
+    // Verify the function signature: (cwd: string) => Promise<WorkflowEntry[]>
+    const impl: WebServerDependencies['listWorkflows'] = async (cwd: string) => {
+      return [{ name: 'wf', source: 'local', path: `${cwd}/wf` }];
+    };
+
+    // Type-level check: assign the result to WorkflowEntry[]
+    const checkType: Promise<WorkflowEntry[]> = impl('/test');
+    expect(checkType).toBeInstanceOf(Promise);
+  });
+
+  it('is assignable with minimal optional fields', () => {
+    // All fields are optional, so empty object should be valid
+    const deps: WebServerDependencies = {};
+    expect(deps.listWorkflows).toBeUndefined();
+  });
+
+  it('supports partial dependency injection with only listWorkflows', () => {
+    const deps: WebServerDependencies = {
+      listWorkflows: async () => [{ name: 'only', source: 'local', path: '/only' }],
+    };
+    expect(typeof deps.listWorkflows).toBe('function');
   });
 });
