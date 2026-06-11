@@ -1,7 +1,7 @@
 /**
  * Frontend types for the engin web interface.
  *
- * Mirrors the backend protocol types from src/web/types.ts (T02) but
+ * Mirrors the backend protocol types from src/web/types.ts.
  * does NOT import from the backend.  The additional frontend-specific
  * types (WorkflowRunState, AppGlobalState) manage UI state client-side.
  */

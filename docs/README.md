@@ -27,7 +27,7 @@ Key properties:
 ### Prerequisites
 
 - **Bun** >= 1.2.0 (used as both runtime and package manager)
-- **API keys** for your configured provider(s); see [Configuration](#9-configuration) for details
+- **API keys** for your configured provider(s); see [Configuration](#13-configuration) for details
 
 ### Install
 
@@ -197,8 +197,10 @@ engin discovers profiles and workflows from two locations, with **local overridi
 .engin/           # Local (per-project)
 ├── workflows/               # Workflow directories (each containing main.ts)
 │   └── develop/             # One subdirectory per workflow
-│       ├── main.ts
-│       └── profiles/        # Workflow-scoped agent profile .md files
+│       ├── main.ts          # Workflow orchestrator
+│       ├── profiles/        # Agent profiles
+│       ├── package.json
+│       └── bunfig.toml
 ├── work/                    # Runtime state (auto-created)
 │   └── 1718012345678-develop/  # One subdirectory per run: {timestamp}-{workflow-name}
 │       └── .engin-state.json
@@ -208,8 +210,14 @@ engin discovers profiles and workflows from two locations, with **local overridi
 ~/.config/engin/  # Global (user-wide)
 ├── workflows/
 │   └── develop/
-│       ├── main.ts
-│       └── profiles/        # Workflow-scoped agent profile .md files
+│       ├── main.ts          # Workflow orchestrator
+│       ├── profiles/        # Agent profiles
+│       ├── web/             # Web UI renderer
+│       │   ├── DevelopRenderer.tsx
+│       │   ├── types.ts
+│       │   └── __tests__/
+│       ├── package.json
+│       └── bunfig.toml
 └── .env                     # User-level environment variables
 ```
 
@@ -888,7 +896,97 @@ See [Custom Workflows](#7-custom-workflows) for examples and [Programmatic API](
 
 ---
 
-## 11. Types Reference
+## 11. Web Frontend & Workflow Renderers
+
+### Architecture Overview
+
+engin ships a **React 19 + Vite 6** single-page application in the `web/` directory that renders workflow state in real-time via WebSocket. Each workflow type can define its own custom renderer component, giving every workflow a tailored UI.
+
+Key architectural points:
+
+- The web app lives at `web/` and is a separate package (`@harms-haus/engin-web`).
+- Renderers live in the **workflow's** `web/` directory, not in the web app source — this keeps workflow UI concerns co-located with workflow logic.
+- A custom Vite plugin (`externalRenderers`) discovers renderer files at build time and bundles them into the web app.
+- At runtime, `getRenderer(workflowName)` looks up the registered component for a given workflow.
+
+### Renderer Discovery
+
+The `externalRenderers` Vite plugin (defined in `web/vite-plugins/external-renderers.ts`) scans `~/.config/engin/workflows/*/web/` for files matching `*Renderer.tsx`. These files are imported as side-effects via a **virtual module** called `virtual:engin-renderers`. The Vite plugin resolves this virtual module to a set of real import statements pointing at the discovered renderer files.
+
+> **Note:** The Vite plugin only discovers renderers from the global config directory (`~/.config/engin/workflows/*/web/`). Local `.engin/workflows/*/web/` directories are not scanned. This is because the web frontend is built once and serves all projects.
+
+At runtime, each renderer file calls `registerRenderer(workflowName, Component)` at module scope. The web app then calls `getRenderer(workflowName)` to look up the component for the active workflow.
+
+### Creating a Workflow Renderer
+
+Follow these steps to add a custom renderer for your workflow:
+
+1. **Create the directory** — add a `web/` directory inside your workflow (e.g. `~/.config/engin/workflows/myflow/web/`).
+
+2. **Create the renderer file** — name it `*Renderer.tsx` (e.g. `MyFlowRenderer.tsx`). The glob pattern is important — only files ending in `Renderer.tsx` are discovered.
+
+3. **Implement the component** — the renderer must:
+   - Import `registerRenderer` from `@app/renderers/registry`
+   - Import `WorkflowRendererProps` from `@app/renderers/types`
+   - Call `registerRenderer('myflow', MyFlowRenderer)` at module scope (outside the component function)
+
+4. **Use shared types** — the `@app` alias resolves to `web/src/`, giving access to:
+   - `@app/types` — shared types like `WorkflowRunState`, `LogEntry`, etc.
+   - `@app/renderers/registry` — `registerRenderer` and `getRenderer` functions
+   - `@app/renderers/types` — `WorkflowRendererProps` interface
+   - `@app/utils/agent-key` — `agentKey` helper for constructing unique agent identifiers
+
+5. **Style with CSS custom properties** — CSS files can use `--engin-*` custom properties defined in the parent app's `index.css` for consistent theming.
+
+6. **Rebuild the web app** — run `cd web && bun run build` to pick up the new renderer.
+
+#### Minimal Example
+
+```tsx
+// ~/.config/engin/workflows/myflow/web/MyFlowRenderer.tsx
+import { useState } from 'react';
+import { registerRenderer } from '@app/renderers/registry';
+import type { WorkflowRendererProps } from '@app/renderers/types';
+import './MyFlowRenderer.css';
+
+function MyFlowRenderer({ runState }: WorkflowRendererProps) {
+  return (
+    <div className="myflow-renderer">
+      <h2>{runState.summary.sidebar.title}</h2>
+      <p>Phase: {runState.currentPhase}</p>
+    </div>
+  );
+}
+
+registerRenderer('myflow', MyFlowRenderer);
+```
+
+### Testing External Renderers
+
+Renderer tests live alongside the source in the workflow's `web/__tests__/` directory:
+
+- Test files use the same `@app/*` import aliases as source files.
+- The Vitest configuration includes an `external` test project that discovers and runs tests from `~/.config/engin/workflows/*/web/__tests__/`.
+- Run all tests (both in-tree and external) with:
+
+```bash
+cd web && bun run test
+```
+
+### Key Files
+
+| File                                            | Purpose                                          |
+| ----------------------------------------------- | ------------------------------------------------ |
+| `web/vite-plugins/external-renderers.ts`        | Vite plugin for renderer discovery & bundling    |
+| `web/src/renderers/registry.ts`                 | `registerRenderer` / `getRenderer` functions     |
+| `web/src/renderers/types.ts`                    | `WorkflowRendererProps` interface                |
+| `web/src/vite-env.d.ts`                         | Type declaration for `virtual:engin-renderers`   |
+| `web/src/types.ts`                              | Shared frontend types (`WorkflowRunState`, etc.) |
+| `~/.config/engin/workflows/*/web/*Renderer.tsx` | External renderer files (user-created)           |
+
+---
+
+## 12. Types Reference
 
 All types listed below are exported from the top-level `@harms-haus/engin` entry point.
 
@@ -1256,7 +1354,7 @@ A discriminated union representing the content of an assistant's turn:
 
 ---
 
-## 12. Configuration
+## 13. Configuration
 
 ### .env File Loading
 
@@ -1325,7 +1423,7 @@ If `.engin-state.json` exists in `workDir`, the `run()` function loads it and re
 
 ---
 
-## 13. Development
+## 14. Development
 
 ### Scripts
 
@@ -1404,6 +1502,10 @@ engin/
 │   ├── pool/           # Pool layer (concurrent task processing)
 │   └── tracking/       # Tracking layer (audit, tasks, workflow state)
 ├── tests/              # Test files mirroring src/ structure
+├── web/                # React web frontend (separate package)
+│   ├── src/            # Frontend source
+│   ├── vite-plugins/  # Custom Vite plugins
+│   └── package.json   # @harms-haus/engin-web
 ├── docs/               # Documentation
 ├── package.json
 ├── tsconfig.json
@@ -1437,6 +1539,25 @@ tests/
 ├── cli.test.ts
 └── setup.test.ts
 ```
+
+### Web Frontend
+
+```bash
+# Build the web frontend
+cd web && bun run build
+
+# Run web tests (Vitest)
+cd web && bun run test
+
+# Start Vite dev server (proxies API/WS to backend at localhost:3619)
+cd web && bun run dev
+
+# Full stack: start backend + dev server
+cd web && bun run dev &  # Vite dev server
+bun dist/cli.js web  # Backend server
+```
+
+> **Note:** The web frontend must be built (`bun run build`) before starting the backend web server, as the backend serves static files from `web/dist/`.
 
 ### Adding New Profiles
 

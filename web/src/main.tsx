@@ -2,7 +2,7 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { App } from './App';
 import './index.css';
-import './renderers/develop/DevelopRenderer'; // triggers registration side effect
+import 'virtual:engin-renderers'; // auto-discovers workflow renderers via Vite plugin
 
 const root = document.getElementById('root');
 if (root) {
