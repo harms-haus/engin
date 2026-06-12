@@ -1,3 +1,4 @@
+import * as readline from 'node:readline';
 import type { PastRunEntry } from '../core/config.js';
 import { scanPastRuns } from '../core/config.js';
 
@@ -22,21 +23,36 @@ export function formatRelativeTime(timestamp: number): string {
 
 /**
  * Read a single line from stdin (for interactive selection).
+ * Uses Node's readline module for TTY to handle terminal mode
+ * restoration and CR/LF translation correctly.
+ * Falls back to manual stream reading for non-TTY (piped input).
  * Returns the trimmed input, or undefined on EOF.
  */
 export async function readLineFromStdin(): Promise<string | undefined> {
+  if (process.stdin.isTTY) {
+    // Use readline for real terminals — it properly handles
+    // setRawMode restoration and CR/LF translation
+    const rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stdout,
+    });
+    return new Promise((resolve) => {
+      rl.question('', (answer) => {
+        rl.close();
+        resolve(answer.trim() || undefined);
+      });
+    });
+  }
+
+  // Non-TTY fallback (piped input, tests)
   return new Promise((resolve) => {
     const { stdin } = process;
-    if (stdin.isTTY) {
-      stdin.setRawMode?.(false);
-    }
     stdin.setEncoding('utf-8');
     stdin.resume();
 
     let data = '';
     const onData = (chunk: string) => {
       data += chunk;
-      // Check for Enter key — terminals send \r (CR) or \r\n (CRLF)
       const newlineIdx = data.search(/[\r\n]/);
       if (newlineIdx >= 0) {
         const line = data.slice(0, newlineIdx);
