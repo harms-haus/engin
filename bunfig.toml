@@ -2,4 +2,3 @@
 [test]
 root = "."
 pathIgnorePatterns = ["web/**"]
-coverage = true
