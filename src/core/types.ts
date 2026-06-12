@@ -109,14 +109,16 @@ export interface WorkflowStatusCallbacks {
   onPhaseComplete?: (info: { phase: string; durationMs: number }) => void;
   onAgentSpawn?: (info: { agentId: string; profile: string; phase: string; taskId?: string }) => void;
   onAgentComplete?: (info: { agentId: string; profile: string; phase: string; taskId?: string }) => void;
-  onTaskStart?: (info: { taskId: string; title: string; agentId: string }) => void;
+  onTaskStart?: (info: { taskId: string; title: string; agentId: string; phase?: string; startedAt?: number }) => void;
   onTaskComplete?: (info: { taskId: string; title: string }) => void;
   onTaskRejected?: (info: { taskId: string; title: string; reason: string }) => void;
   onDecision?: (info: { agentId: string; decision: string; reasoning: string; taskId?: string }) => void;
   onError?: (info: { agentId: string; error: string; phase: string; taskId?: string }) => void;
   onWorkflowComplete?: (info: { totalDurationMs: number; agentCount: number }) => void;
   onWorkflowFailed?: (info: { error: Error; phase: string }) => void;
-  onTasksAdded?: (info: { tasks: { id: string; title: string; status: TaskStatus; dependencies: string[] }[] }) => void;
+  onTasksAdded?: (info: {
+    tasks: { id: string; title: string; status: TaskStatus; dependencies: string[]; phase?: string }[];
+  }) => void;
   onSidebarUpdate?: (info: {
     title?: string;
     indicator?: string;

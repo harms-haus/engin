@@ -32,6 +32,7 @@ describe('runComposer', () => {
   let setFocusSpy: ReturnType<typeof spyOn>;
   let addInputListenerSpy: ReturnType<typeof spyOn>;
   let requestRenderSpy: ReturnType<typeof spyOn>;
+  let tuiStartSpy: ReturnType<typeof spyOn>;
   let tuiStopSpy: ReturnType<typeof spyOn>;
   let setAutocompleteSpy: ReturnType<typeof spyOn>;
   let _setKeybindingsSpy: ReturnType<typeof spyOn>;
@@ -49,12 +50,11 @@ describe('runComposer', () => {
     allSpies.push(spyOn(ProcessTerminal.prototype, 'stop').mockImplementation(() => {}));
 
     // TUI prototype spies
-    allSpies.push(
-      spyOn(TUI.prototype, 'start').mockImplementation(function (this: TUI) {
-        // eslint-disable-next-line @typescript-eslint/no-this-alias
-        if (!tuiInstance) tuiInstance = this;
-      }),
-    );
+    tuiStartSpy = spyOn(TUI.prototype, 'start').mockImplementation(function (this: TUI) {
+      // eslint-disable-next-line @typescript-eslint/no-this-alias
+      if (!tuiInstance) tuiInstance = this;
+    });
+    allSpies.push(tuiStartSpy);
 
     tuiStopSpy = spyOn(TUI.prototype, 'stop').mockImplementation(() => {});
     allSpies.push(tuiStopSpy);
@@ -171,6 +171,12 @@ describe('runComposer', () => {
       const { promise: pending } = await startComposer();
       expect(editorInstance.onChange).toBeDefined();
       expect(typeof editorInstance.onChange).toBe('function');
+      await cancelComposer(pending);
+    });
+
+    it('calls tui.start() after layout setup', async () => {
+      const { promise: pending } = await startComposer();
+      expect(tuiStartSpy).toHaveBeenCalledTimes(1);
       await cancelComposer(pending);
     });
   });

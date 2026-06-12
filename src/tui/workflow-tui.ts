@@ -117,6 +117,30 @@ export class WorkflowTUI {
         return { consume: true };
       }
 
+      // Spacebar: expand/collapse agent log widget
+      if (matchesKey(data, Key.space)) {
+        this.dashboard.agentLog.toggleExpand();
+        const terminalRows = this.terminal?.rows ?? 24;
+        const computedMaxLines = Math.max(3, terminalRows - this.dashboard.getComputedHeight() - 1);
+        this.eventLog.setMaxLines(computedMaxLines);
+        this.tui?.requestRender();
+        return { consume: true };
+      }
+
+      // Ctrl+Left/Ctrl+Right: switch phase in dashboard
+      if (matchesKey(data, Key.ctrl('left')) || matchesKey(data, Key.ctrl('right'))) {
+        this.dashboard.handleInput(data);
+        this.tui?.requestRender();
+        return { consume: true };
+      }
+
+      // Up/Down when expanded: scroll the expanded agent log
+      if ((matchesKey(data, 'up') || matchesKey(data, 'down')) && this.dashboard.agentLog.isExpanded()) {
+        this.dashboard.handleInput(data);
+        this.tui?.requestRender();
+        return { consume: true };
+      }
+
       // Left/Right: navigate agents in agent log
       if (matchesKey(data, 'left') || matchesKey(data, 'right')) {
         this.dashboard.handleInput(data);

@@ -30,7 +30,7 @@ export async function runComposer(cwd: string): Promise<SlashCommandResult | nul
     const theme: EditorTheme = {
       borderColor: cyan,
       selectList: {
-        selectedPrefix: (text: string) => `\x1b[44m\x1b[37m${text}`,
+        selectedPrefix: (text: string) => `\x1b[44m\x1b[37m${text}\x1b[0m`,
         selectedText: (text: string) => `\x1b[44m\x1b[37m${text}\x1b[0m`,
         description: (text: string) => `\x1b[90m${text}\x1b[0m`,
         scrollInfo: (text: string) => `\x1b[90m${text}\x1b[0m`,
@@ -70,8 +70,9 @@ export async function runComposer(cwd: string): Promise<SlashCommandResult | nul
     tui.addChild(banner);
     tui.addChild(editor);
     tui.setFocus(editor);
+    tui.start();
 
-    // Step 7 - Submission and cancellation with AbortController
+    // Step 7 - Submission and cancellation via settled flag
     let settled = false;
 
     const result = await new Promise<SlashCommandResult | null>((resolve) => {

@@ -285,7 +285,7 @@ describe('setupWorktree', () => {
     expect(mockCreateWorktree).toHaveBeenCalledWith(
       '/fake/repo/root',
       'my-feature',
-      join('/fake/repo/root', '.git', 'worktrees', 'my-feature'),
+      join('/fake/repo/root', '..', '.engin-worktree-my-feature'),
     );
   });
 
@@ -300,7 +300,7 @@ describe('setupWorktree', () => {
 
     expect(mockCopyFilesToWorktree).toHaveBeenCalledWith(
       '/my/project',
-      join('/fake/repo/root', '.git', 'worktrees', 'my-feature'),
+      join('/fake/repo/root', '..', '.engin-worktree-my-feature'),
       ['.env', 'config.json'],
     );
   });
@@ -341,7 +341,7 @@ describe('setupWorktree', () => {
     const result = await setupWorktree('/my/project', ['/profiles'], 'test task');
 
     expect(result.worktreeInfo.branchName).toBe('test-branch');
-    expect(result.worktreeInfo.worktreePath).toBe(join('/fake/repo/root', '.git', 'worktrees', 'test-branch'));
+    expect(result.worktreeInfo.worktreePath).toBe(join('/fake/repo/root', '..', '.engin-worktree-test-branch'));
   });
 
   it('cleanup function calls removeWorktree', async () => {
@@ -355,7 +355,7 @@ describe('setupWorktree', () => {
 
     expect(mockRemoveWorktree).toHaveBeenCalledWith(
       '/fake/repo/root',
-      join('/fake/repo/root', '.git', 'worktrees', 'cleanup-test'),
+      join('/fake/repo/root', '..', '.engin-worktree-cleanup-test'),
     );
   });
 

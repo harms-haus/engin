@@ -41,6 +41,7 @@ export function createTuiStatusCallbacks(deps: {
     onPhaseStart(info) {
       eventLog.addLine('📦 Phase: ' + info.phase + ' (round ' + info.round + ')');
       dashboard.phaseBar.setCurrentPhase(info.phase);
+      dashboard.agentLog.setCurrentPhase(info.phase);
       // Clear lanes from previous phase so the new pool starts fresh
       lanes.clear();
       taskToAgent.clear();
@@ -69,7 +70,7 @@ export function createTuiStatusCallbacks(deps: {
         }
       }
 
-      dashboard.agentLog.selectAgent(info.agentId, info.profile);
+      dashboard.agentLog.selectAgentInPhase(info.agentId, info.phase, info.profile);
       dashboard.agentLog.updateStats(info.agentId, { profile: info.profile });
       if (info.taskId) {
         taskToAgent.set(info.taskId, info.agentId);
@@ -90,6 +91,7 @@ export function createTuiStatusCallbacks(deps: {
           id: task.id,
           title: stripAnsi(task.title),
           status: task.status,
+          phase: task.phase,
         });
       }
       dashboard.lanePool.updateLanes(Array.from(lanes.values()));
@@ -104,6 +106,8 @@ export function createTuiStatusCallbacks(deps: {
         title: safeTitle,
         status: 'implementing' as TaskStatus,
         agentId: info.agentId,
+        phase: info.phase,
+        startedAt: info.startedAt,
       });
       dashboard.lanePool.updateLanes(Array.from(lanes.values()));
       // Update task title on the associated agent
@@ -182,6 +186,7 @@ export function createTuiStatusCallbacks(deps: {
     onSidebarUpdate(info) {
       if (info.phases) {
         dashboard.phaseBar.setPhases(info.phases);
+        dashboard.agentLog.setAvailablePhases(info.phases.map((p) => p.id));
       }
       if (info.indicator) {
         dashboard.phaseBar.setIndicator(info.indicator);

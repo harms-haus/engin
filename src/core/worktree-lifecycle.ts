@@ -68,7 +68,7 @@ export async function setupWorktree(
       branchName = `engin-worktree-${Date.now()}`;
     }
 
-    const worktreePath = join(repoRoot, '.git', 'worktrees', branchName);
+    const worktreePath = join(repoRoot, '..', '.engin-worktree-' + branchName);
     createWorktree(repoRoot, branchName, worktreePath);
 
     // Copy files from .worktreecopy if list is non-empty

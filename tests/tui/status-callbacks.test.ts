@@ -60,6 +60,39 @@ function createMockAgentLog() {
     selectAgent(agentId: string, profile: string) {
       calls.push({ method: 'selectAgent', args: [agentId, profile] });
     },
+    selectAgentInPhase(agentId: string, phase: string, profile: string) {
+      calls.push({ method: 'selectAgentInPhase', args: [agentId, phase, profile] });
+    },
+    setCurrentPhase(phase: string) {
+      calls.push({ method: 'setCurrentPhase', args: [phase] });
+    },
+    setAvailablePhases(phases: string[]) {
+      calls.push({ method: 'setAvailablePhases', args: [phases] });
+    },
+    addStartedPhase(phase: string) {
+      calls.push({ method: 'addStartedPhase', args: [phase] });
+    },
+    getStartedPhases(): string[] {
+      return [];
+    },
+    getAvailablePhases(): string[] {
+      return [];
+    },
+    getCurrentPhase(): string | null {
+      return null;
+    },
+    getAgentsForPhase(_phase: string): string[] {
+      return [];
+    },
+    isExpanded(): boolean {
+      return false;
+    },
+    toggleExpand() {
+      calls.push({ method: 'toggleExpand', args: [] });
+    },
+    getExpandedLineCount(): number {
+      return 20;
+    },
     clearAgent() {
       calls.push({ method: 'clearAgent', args: [] });
     },
@@ -187,6 +220,12 @@ describe('createTuiStatusCallbacks', () => {
       expect(ctx.phaseBar.calls).toEqual([{ method: 'setCurrentPhase', args: ['scouting'] }]);
     });
 
+    it('calls setCurrentPhase on agentLog', () => {
+      const ctx = createTestDeps();
+      ctx.callbacks.onPhaseStart!({ phase: 'scouting', round: 2 });
+      expect(ctx.agentLog.calls).toContainEqual({ method: 'setCurrentPhase', args: ['scouting'] });
+    });
+
     it('calls requestRender', () => {
       const ctx = createTestDeps();
       ctx.callbacks.onPhaseStart!({ phase: 'x', round: 1 });
@@ -224,7 +263,7 @@ describe('createTuiStatusCallbacks', () => {
       ctx.callbacks.onAgentSpawn!({ agentId: 'a1', profile: 'scout', phase: 'scouting' });
       expect(ctx.eventLog.lines).toEqual(['⏳ Agent a1 spawned (scout)']);
       expect(ctx.agentLog.calls).toEqual([
-        { method: 'selectAgent', args: ['a1', 'scout'] },
+        { method: 'selectAgentInPhase', args: ['a1', 'scouting', 'scout'] },
         { method: 'updateStats', args: ['a1', { profile: 'scout' }] },
       ]);
     });
@@ -308,6 +347,30 @@ describe('createTuiStatusCallbacks', () => {
       const ctx = createTestDeps();
       ctx.callbacks.onTaskStart!({ taskId: 't1', title: 'Standalone task', agentId: 'a1' });
       expect(ctx.agentLog.calls).toEqual([{ method: 'updateStats', args: ['a1', { taskTitle: 'Standalone task' }] }]);
+    });
+
+    it('passes phase and startedAt to lane when provided', () => {
+      const ctx = createTestDeps();
+      ctx.callbacks.onTaskStart!({
+        taskId: 't1',
+        title: 'Task with phase',
+        agentId: 'a1',
+        phase: 'scouting',
+        startedAt: 123456789,
+      });
+      const lastCall = ctx.lanePool.calls[ctx.lanePool.calls.length - 1];
+      const lane = (lastCall.args[0] as TaskLane[])[0];
+      expect(lane.phase).toBe('scouting');
+      expect(lane.startedAt).toBe(123456789);
+    });
+
+    it('omits phase and startedAt when not provided', () => {
+      const ctx = createTestDeps();
+      ctx.callbacks.onTaskStart!({ taskId: 't1', title: 'Task without phase', agentId: 'a1' });
+      const lastCall = ctx.lanePool.calls[ctx.lanePool.calls.length - 1];
+      const lane = (lastCall.args[0] as TaskLane[])[0];
+      expect(lane.phase).toBeUndefined();
+      expect(lane.startedAt).toBeUndefined();
     });
   });
 
@@ -576,6 +639,19 @@ describe('createTuiStatusCallbacks', () => {
       expect(ctx.phaseBar.calls).toEqual([{ method: 'setPhases', args: [phases] }]);
     });
 
+    it('sets available phases on agentLog', () => {
+      const ctx = createTestDeps();
+      const phases = [
+        { id: 'scout', label: 'Scouting', icon: '🔍' },
+        { id: 'plan', label: 'Planning', icon: '📋' },
+      ];
+      ctx.callbacks.onSidebarUpdate!({ phases });
+      expect(ctx.agentLog.calls).toContainEqual({
+        method: 'setAvailablePhases',
+        args: [['scout', 'plan']],
+      });
+    });
+
     it('updates indicator in phaseBar', () => {
       const ctx = createTestDeps();
       ctx.callbacks.onSidebarUpdate!({ indicator: '🟢' });
@@ -690,6 +766,16 @@ describe('createTuiStatusCallbacks', () => {
         tasks: [{ id: 't1', title: 'Task', status: 'ready', dependencies: [] }],
       });
       expect(ctx.eventLog.lines).toEqual([]);
+    });
+
+    it('passes phase to lanes when provided', () => {
+      const ctx = createTestDeps();
+      ctx.callbacks.onTasksAdded!({
+        tasks: [{ id: 't1', title: 'Phase task', status: 'ready', dependencies: [], phase: 'scouting' }],
+      });
+      const lastCall = ctx.lanePool.calls[ctx.lanePool.calls.length - 1];
+      const lane = (lastCall.args[0] as TaskLane[])[0];
+      expect(lane.phase).toBe('scouting');
     });
   });
 

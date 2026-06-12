@@ -285,6 +285,53 @@ describe('LanePoolWidget', () => {
     });
   });
 
+  describe('phase and timer rendering', () => {
+    it('renders dimmed phase badge when phase is set', () => {
+      const widget = new LanePoolWidget();
+      widget.updateLanes([{ id: 't1', title: 'Task', status: 'implementing', phase: 'test-writing' }]);
+      const lines = widget.render(WIDTH);
+      expect(lines).toHaveLength(1);
+      // Should contain the dim escape wrapping '[test-writing]'
+      expect(lines[0]).toContain('\x1b[2m[test-writing]\x1b[0m');
+    });
+
+    it('renders timer when startedAt is set', () => {
+      const widget = new LanePoolWidget();
+      widget.updateLanes([{ id: 't1', title: 'Task', status: 'implementing', startedAt: Date.now() - 5000 }]);
+      const lines = widget.render(WIDTH);
+      expect(lines).toHaveLength(1);
+      // 5 seconds should produce '5s'
+      expect(lines[0]).toContain('5s');
+    });
+
+    it('renders both phase and timer', () => {
+      const widget = new LanePoolWidget();
+      widget.updateLanes([
+        { id: 't1', title: 'Task', status: 'implementing', phase: 'test-writing', startedAt: Date.now() - 5000 },
+      ]);
+      const lines = widget.render(WIDTH);
+      expect(lines).toHaveLength(1);
+      // Phase badge should appear before timer
+      const phaseIndex = lines[0].indexOf('\x1b[2m[test-writing]\x1b[0m');
+      const timerIndex = lines[0].indexOf('5s');
+      expect(phaseIndex).toBeGreaterThan(-1);
+      expect(timerIndex).toBeGreaterThan(-1);
+      expect(phaseIndex).toBeLessThan(timerIndex);
+    });
+
+    it('omits phase and timer when not set', () => {
+      const widget = new LanePoolWidget();
+      widget.updateLanes([{ id: 't1', title: 'Task', status: 'implementing' }]);
+      const lines = widget.render(WIDTH);
+      expect(lines).toHaveLength(1);
+      // Should not contain '[' or elapsed pattern beyond the title
+      // The title doesn't have brackets, so no '[' should appear
+      expect(lines[0]).not.toMatch(/\[.*\]/);
+      // Should not contain digits followed by 's' (elapsed pattern)
+      expect(lines[0]).not.toMatch(/\d+s/);
+    });
+  });
+
   describe('stale focus cleanup', () => {
     it('focused lane ID cleared when lane is removed', () => {
       const widget = new LanePoolWidget();

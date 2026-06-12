@@ -1,6 +1,5 @@
 import { readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { resolveWorkflowsDirs } from './config.js';
 import type { WorkflowEntry, WorkflowModule } from './types.js';
 import { isEnoentError, validateWorkflowName } from './utils.js';
@@ -49,10 +48,14 @@ export async function loadWorkflow(name: string, cwd: string): Promise<WorkflowM
       throw err;
     }
 
-    // Bust Bun's module cache so re-imports after eviction pick up disk changes
+    // Bust Bun's module cache so re-imports after eviction pick up disk changes.
+    // Bun supports require() in ESM context and respects require.cache,
+    // unlike import() which uses a separate internal ESM module cache.
+    const resolved = require.resolve(filePath);
     // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
-    delete require.cache[filePath];
-    const mod = await import(pathToFileURL(filePath).href);
+    delete require.cache[resolved];
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const mod = require(filePath);
     const workflow: WorkflowModule = mod.default ?? mod;
 
     if (typeof workflow.run !== 'function') {

@@ -644,11 +644,13 @@ describe('LanePool', () => {
       await pool.run();
 
       expect(onTaskStart).toHaveBeenCalledTimes(1);
-      expect(onTaskStart).toHaveBeenCalledWith({
-        taskId: 'task-1',
-        title: 'Test task',
-        agentId: 'lane-0',
-      });
+      expect(onTaskStart).toHaveBeenCalledWith(
+        expect.objectContaining({
+          taskId: 'task-1',
+          title: 'Test task',
+          agentId: 'lane-0',
+        }),
+      );
 
       expect(onTaskComplete).toHaveBeenCalledTimes(1);
       expect(onTaskComplete).toHaveBeenCalledWith({

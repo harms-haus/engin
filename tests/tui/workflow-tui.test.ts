@@ -388,6 +388,11 @@ describe('WorkflowTUI', () => {
     const TAB = '\t';
     const LEFT_ARROW = '\x1b[D';
     const RIGHT_ARROW = '\x1b[C';
+    const SPACE = ' ';
+    const CTRL_LEFT = '\x1bOd';
+    const CTRL_RIGHT = '\x1bOc';
+    const UP_ARROW = '\x1b[A';
+    const DOWN_ARROW = '\x1b[B';
 
     /**
      * Set up a WorkflowTUI with a mocked TUI that captures the input callback
@@ -482,6 +487,149 @@ describe('WorkflowTUI', () => {
         // Ctrl+C handler already calls requestRender. This is a regression test
         // to ensure it continues to work after the fix is applied.
         capturedCallback!(CTRL_C);
+        expect(requestRenderMock).toHaveBeenCalled();
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('calls requestRender when Space key toggles expand', () => {
+      const { capturedCallback, requestRenderMock, cleanup } = setupTest();
+      try {
+        expect(capturedCallback).not.toBeNull();
+
+        capturedCallback!(SPACE);
+        expect(requestRenderMock).toHaveBeenCalled();
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('calls requestRender when Ctrl+Left key is handled', () => {
+      const { capturedCallback, requestRenderMock, cleanup } = setupTest();
+      try {
+        expect(capturedCallback).not.toBeNull();
+
+        capturedCallback!(CTRL_LEFT);
+        expect(requestRenderMock).toHaveBeenCalled();
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('calls requestRender when Ctrl+Right key is handled', () => {
+      const { capturedCallback, requestRenderMock, cleanup } = setupTest();
+      try {
+        expect(capturedCallback).not.toBeNull();
+
+        capturedCallback!(CTRL_RIGHT);
+        expect(requestRenderMock).toHaveBeenCalled();
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('consumes Up arrow and calls requestRender when agent log is expanded', () => {
+      const { capturedCallback, requestRenderMock, wtui, cleanup } = setupTest();
+      try {
+        expect(capturedCallback).not.toBeNull();
+
+        // Expand the agent log first
+        wtui.dashboard.agentLog.toggleExpand();
+        expect(wtui.dashboard.agentLog.isExpanded()).toBe(true);
+
+        const result = capturedCallback!(UP_ARROW);
+        expect(result).toEqual({ consume: true });
+        expect(requestRenderMock).toHaveBeenCalled();
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('consumes Down arrow and calls requestRender when agent log is expanded', () => {
+      const { capturedCallback, requestRenderMock, wtui, cleanup } = setupTest();
+      try {
+        expect(capturedCallback).not.toBeNull();
+
+        // Expand the agent log first
+        wtui.dashboard.agentLog.toggleExpand();
+        expect(wtui.dashboard.agentLog.isExpanded()).toBe(true);
+
+        const result = capturedCallback!(DOWN_ARROW);
+        expect(result).toEqual({ consume: true });
+        expect(requestRenderMock).toHaveBeenCalled();
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('falls through when Up arrow is pressed and agent log is NOT expanded', () => {
+      const { capturedCallback, requestRenderMock, cleanup } = setupTest();
+      try {
+        expect(capturedCallback).not.toBeNull();
+
+        const result = capturedCallback!(UP_ARROW);
+        expect(result).toBeUndefined();
+        expect(requestRenderMock).not.toHaveBeenCalled();
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('falls through when Down arrow is pressed and agent log is NOT expanded', () => {
+      const { capturedCallback, requestRenderMock, cleanup } = setupTest();
+      try {
+        expect(capturedCallback).not.toBeNull();
+
+        const result = capturedCallback!(DOWN_ARROW);
+        expect(result).toBeUndefined();
+        expect(requestRenderMock).not.toHaveBeenCalled();
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('existing Left/Right handler still works after adding new handlers', () => {
+      const { capturedCallback, requestRenderMock, cleanup } = setupTest();
+      try {
+        expect(capturedCallback).not.toBeNull();
+
+        // Left arrow should still be consumed (not affected by new handlers)
+        const leftResult = capturedCallback!(LEFT_ARROW);
+        expect(leftResult).toEqual({ consume: true });
+        expect(requestRenderMock).toHaveBeenCalled();
+
+        requestRenderMock.mockClear();
+
+        // Right arrow should still be consumed
+        const rightResult = capturedCallback!(RIGHT_ARROW);
+        expect(rightResult).toEqual({ consume: true });
+        expect(requestRenderMock).toHaveBeenCalled();
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('existing Tab handler still works after adding new handlers', () => {
+      const { capturedCallback, requestRenderMock, cleanup } = setupTest();
+      try {
+        expect(capturedCallback).not.toBeNull();
+
+        const result = capturedCallback!(TAB);
+        expect(result).toEqual({ consume: true });
+        expect(requestRenderMock).toHaveBeenCalled();
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('existing Ctrl+C handler still works after adding new handlers', () => {
+      const { capturedCallback, requestRenderMock, cleanup } = setupTest();
+      try {
+        expect(capturedCallback).not.toBeNull();
+
+        const result = capturedCallback!(CTRL_C);
+        expect(result).toEqual({ consume: true });
         expect(requestRenderMock).toHaveBeenCalled();
       } finally {
         cleanup();

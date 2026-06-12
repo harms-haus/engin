@@ -1,4 +1,4 @@
-import { type Component, matchesKey, truncateToWidth } from '@earendil-works/pi-tui';
+import { type Component, Key, matchesKey, truncateToWidth } from '@earendil-works/pi-tui';
 import { borderLine } from '../theme.js';
 import { AgentLogWidget } from './agent-log-widget.js';
 import { LanePoolWidget } from './lane-pool-widget.js';
@@ -34,7 +34,7 @@ export class Dashboard implements Component {
   getComputedHeight(): number {
     // PhaseBar always renders exactly 1 line; no need to call render()
     const phaseBarLines = 1;
-    const contentLines = phaseBarLines + this._lanePool.getVisibleLaneCount() + this._agentLogLines;
+    const contentLines = phaseBarLines + this._lanePool.getVisibleLaneCount() + this._agentLog.getExpandedLineCount();
     // +4 border lines: top + 2 separators + bottom
     return contentLines + 4;
   }
@@ -80,7 +80,11 @@ export class Dashboard implements Component {
   }
 
   handleInput(data: string): void {
-    if (matchesKey(data, 'left') || matchesKey(data, 'right')) {
+    if (matchesKey(data, Key.ctrl('left')) || matchesKey(data, Key.ctrl('right'))) {
+      this._agentLog.handleInput(data);
+    } else if (matchesKey(data, 'left') || matchesKey(data, 'right')) {
+      this._agentLog.handleInput(data);
+    } else if ((matchesKey(data, 'up') || matchesKey(data, 'down')) && this._agentLog.isExpanded()) {
       this._agentLog.handleInput(data);
     } else {
       this._lanePool.handleInput(data);

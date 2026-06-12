@@ -29,6 +29,19 @@ describe('Dashboard', () => {
     expect(d.getComputedHeight()).toBe(1 + 0 + 20 + 4);
   });
 
+  it('getComputedHeight increases when agentLog is expanded', () => {
+    const d = new Dashboard(3, 4);
+    // Not expanded: agentLog.getExpandedLineCount() returns maxLines = 4
+    // PhaseBar=1, lanes=0, agentLog=4 => content=5, +4 borders=9
+    expect(d.getComputedHeight()).toBe(1 + 0 + 4 + 4);
+
+    // Expand: agentLog.getExpandedLineCount() returns _expandedLineCount = 40
+    d.agentLog.toggleExpand();
+    expect(d.agentLog.isExpanded()).toBe(true);
+    // PhaseBar=1, lanes=0, agentLog=40 => content=41, +4 borders=45
+    expect(d.getComputedHeight()).toBe(1 + 0 + 40 + 4);
+  });
+
   // ── Sub-component getters ──────────────────────────────────────────
   it('exposes phaseBar, lanePool, and agentLog via getters', () => {
     const d = new Dashboard(2, 3);
@@ -150,6 +163,70 @@ describe('Dashboard', () => {
 
     d.handleInput('\x1b[C'); // Right arrow
     expect(d.agentLog.getCurrentAgentId()).toBe('agent-2');
+  });
+
+  it('handleInput routes ctrl+left/ctrl+right to agentLog', () => {
+    const d = new Dashboard(3, 4);
+    d.agentLog.selectAgent('agent-1', 'coder');
+    d.agentLog.selectAgent('agent-2', 'scout');
+
+    const logSpy = spyOn(d.agentLog, 'handleInput');
+    const laneSpy = spyOn(d.lanePool, 'handleInput');
+
+    d.handleInput('\x1bOd'); // Ctrl+left
+    expect(logSpy).toHaveBeenCalledTimes(1);
+    expect(laneSpy).not.toHaveBeenCalled();
+
+    logSpy.mockClear();
+    laneSpy.mockClear();
+
+    d.handleInput('\x1bOc'); // Ctrl+right
+    expect(logSpy).toHaveBeenCalledTimes(1);
+    expect(laneSpy).not.toHaveBeenCalled();
+
+    logSpy.mockRestore();
+    laneSpy.mockRestore();
+  });
+
+  it('handleInput routes up/down to agentLog when expanded', () => {
+    const d = new Dashboard(3, 4);
+    d.agentLog.toggleExpand();
+    expect(d.agentLog.isExpanded()).toBe(true);
+
+    const logSpy = spyOn(d.agentLog, 'handleInput');
+    const laneSpy = spyOn(d.lanePool, 'handleInput');
+
+    d.handleInput('\x1b[A'); // Up arrow
+    expect(logSpy).toHaveBeenCalledTimes(1);
+    expect(laneSpy).not.toHaveBeenCalled();
+
+    logSpy.mockClear();
+    laneSpy.mockClear();
+
+    d.handleInput('\x1b[B'); // Down arrow
+    expect(logSpy).toHaveBeenCalledTimes(1);
+    expect(laneSpy).not.toHaveBeenCalled();
+
+    logSpy.mockRestore();
+    laneSpy.mockRestore();
+  });
+
+  it('handleInput routes up/down to lanePool when NOT expanded', () => {
+    const d = new Dashboard(3, 4);
+    d.lanePool.updateLanes([
+      { id: 't1', title: 'A', status: 'ready' },
+      { id: 't2', title: 'B', status: 'ready' },
+      { id: 't3', title: 'C', status: 'ready' },
+    ]);
+    d.lanePool.setFocusedLaneById('t1');
+    // Ensure agentLog is NOT expanded
+    expect(d.agentLog.isExpanded()).toBe(false);
+
+    d.handleInput('\x1b[A'); // Up arrow – should stay at t1 (no change)
+    expect(d.lanePool.getFocusedTaskId()).toBe('t1');
+
+    d.handleInput('\x1b[B'); // Down arrow – should move to t2
+    expect(d.lanePool.getFocusedTaskId()).toBe('t2');
   });
 });
 

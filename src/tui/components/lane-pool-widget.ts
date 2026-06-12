@@ -1,6 +1,6 @@
 import { type Component, matchesKey, truncateToWidth } from '@earendil-works/pi-tui';
 import type { TaskStatus } from '../../core/types.js';
-import { bold, dim, statusColor, statusIcon } from '../theme.js';
+import { bold, dim, formatElapsed, statusColor, statusIcon } from '../theme.js';
 
 // ─── Task Lane ──────────────────────────────────────────────────────────────
 
@@ -11,6 +11,8 @@ export interface TaskLane {
   agentId?: string;
   profile?: string;
   stepInfo?: string;
+  phase?: string;
+  startedAt?: number;
 }
 
 // ─── Status Priority ────────────────────────────────────────────────────────
@@ -110,6 +112,12 @@ export class LanePoolWidget implements Component {
       let text = statusIcon(lane.status) + ' ' + statusColor(lane.status)(lane.title);
       if (lane.stepInfo) {
         text += ' ' + dim(lane.stepInfo);
+      }
+      if (lane.phase) {
+        text += ' ' + dim('[' + lane.phase + ']');
+      }
+      if (lane.startedAt) {
+        text += ' ' + dim(formatElapsed(Date.now() - lane.startedAt));
       }
       if (lane.id === this.focusedLaneId) {
         text = bold(text);

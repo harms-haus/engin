@@ -8,6 +8,7 @@ import {
   cyan,
   darkRed,
   dim,
+  formatElapsed,
   green,
   magenta,
   red,
@@ -80,6 +81,25 @@ describe('statusColor', () => {
   it('returns a function', () => {
     const fn = statusColor('done');
     expect(typeof fn).toBe('function');
+  });
+});
+
+describe('formatElapsed', () => {
+  const cases: [number, string][] = [
+    [0, '<1s'],
+    [500, '<1s'],
+    [999, '<1s'],
+    [1000, '1s'],
+    [42000, '42s'],
+    [59999, '59s'],
+    [60000, '1m'],
+    [135000, '2m15s'],
+    [3600000, '1h'],
+    [5025000, '1h23m'],
+  ];
+
+  it.each(cases)('formatElapsed(%d) returns %s', (ms, expected) => {
+    expect(formatElapsed(ms)).toBe(expected);
   });
 });
 

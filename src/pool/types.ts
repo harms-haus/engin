@@ -48,6 +48,8 @@ export interface LanePoolOptions {
   maxStepRetries?: number;
   /** Abort signal for cooperative cancellation */
   signal?: AbortSignal;
+  /** Phase identifier set by the workflow orchestrator */
+  phase?: string;
 }
 
 /** Aggregate result from running the pool. */

@@ -1,13 +1,14 @@
-import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
+import * as composerModule from '../src/tui/composer.js';
 import { useEnvSandbox } from './helpers/env-sandbox.js';
 import { useTempDir } from './helpers/use-temp-dir.js';
 
 // ─── main() interactive mode integration ─────────────────────────────────────
 //
-// This file isolates mock.module calls for ../src/tui/composer.js so they
-// cannot leak into other test files. Bun hoists mock.module calls to module
-// scope regardless of where they appear in the source, so any file that
-// calls mock.module must be its own test file.
+// Uses spyOn on the composer module namespace instead of mock.module to
+// avoid global module pollution. mock.module replaces the module globally
+// and persists across test files, breaking other tests that import from
+// the same module.
 
 describe('main() interactive mode integration', () => {
   useEnvSandbox();
@@ -17,7 +18,7 @@ describe('main() interactive mode integration', () => {
   let exitSpy: ReturnType<typeof spyOn>;
   let logSpy: ReturnType<typeof spyOn>;
   let stderrSpy: ReturnType<typeof spyOn>;
-  let runComposerMock: ReturnType<typeof mock>;
+  let composerSpy: ReturnType<typeof spyOn>;
 
   beforeEach(() => {
     exitSpy = spyOn(process, 'exit').mockImplementation(((code: number) => {
@@ -31,15 +32,13 @@ describe('main() interactive mode integration', () => {
     exitSpy.mockRestore();
     logSpy.mockRestore();
     stderrSpy.mockRestore();
+    composerSpy?.mockRestore();
   });
 
   it('process.exit(0) when runComposer returns null (user cancelled)', async () => {
-    runComposerMock = mock(() => Promise.resolve(null));
-    mock.module('../src/tui/composer.js', () => ({
-      runComposer: runComposerMock,
-    }));
+    composerSpy = spyOn(composerModule, 'runComposer').mockImplementation(() => Promise.resolve(null));
 
-    // Re-import main to pick up the mock
+    // Re-import main to pick up the mocked module
     const { main: mainFresh } = await import('../src/cli.ts');
 
     const originalArgv = process.argv;

@@ -1,4 +1,11 @@
-import { type Component, matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi } from '@earendil-works/pi-tui';
+import {
+  type Component,
+  Key,
+  matchesKey,
+  truncateToWidth,
+  visibleWidth,
+  wrapTextWithAnsi,
+} from '@earendil-works/pi-tui';
 import { cyan, dim, green, red } from '../theme.js';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -15,6 +22,7 @@ export interface AgentData {
   outputTokens: number;
   taskTitle: string;
   profile: string;
+  phase?: string;
 }
 
 // ─── Type Icon Map ───────────────────────────────────────────────────────────
@@ -57,6 +65,23 @@ export class AgentLogWidget implements Component {
   private cachedWidth = -1;
   private cachedLines: string[] = [];
 
+  // ─── Phase data model ────────────────────────────────────────────
+
+  private _currentPhase: string | null = null;
+  private _availablePhases: string[] = [];
+  private _startedPhases = new Set<string>();
+  private _startedPhasesList: string[] = [];
+  private _agentsByPhase = new Map<string, string[]>();
+
+  // ─── Expand / collapse / scroll ──────────────────────────────────
+
+  private _expanded = false;
+  private _scrollOffset = 0;
+  private readonly _expandedLineCount: number = 40;
+
+  /** Track last computed total entry lines count for scroll clamping. */
+  private _lastTotalEntryLines = 0;
+
   constructor(maxLines = 20) {
     this.maxLines = maxLines;
   }
@@ -71,6 +96,11 @@ export class AgentLogWidget implements Component {
     const data = this.agents.get(agentId);
     if (data) {
       data.profile = profile;
+      // If _currentPhase is set and the agent data does not have a phase, auto-assign
+      if (this._currentPhase && !data.phase) {
+        data.phase = this._currentPhase;
+        this._addAgentToPhase(agentId, this._currentPhase);
+      }
     }
     this.dirty = true;
   }
@@ -133,7 +163,7 @@ export class AgentLogWidget implements Component {
     return data;
   }
 
-  private static createAgentData(profile = ''): AgentData {
+  private static createAgentData(profile = '', phase?: string): AgentData {
     return {
       entries: [],
       toolCallCount: 0,
@@ -141,6 +171,7 @@ export class AgentLogWidget implements Component {
       outputTokens: 0,
       taskTitle: '',
       profile,
+      phase,
     };
   }
 
@@ -154,6 +185,102 @@ export class AgentLogWidget implements Component {
         return;
       }
     }
+  }
+
+  // ─── Phase data model API ────────────────────────────────────────────
+
+  private _addAgentToPhase(agentId: string, phase: string): void {
+    let agents = this._agentsByPhase.get(phase);
+    if (!agents) {
+      agents = [];
+      this._agentsByPhase.set(phase, agents);
+    }
+    if (!agents.includes(agentId)) {
+      agents.push(agentId);
+    }
+    if (!this._startedPhases.has(phase)) {
+      this._startedPhases.add(phase);
+      this._startedPhasesList.push(phase);
+    }
+    this.dirty = true;
+  }
+
+  setCurrentPhase(phase: string): void {
+    if (phase === this._currentPhase) return;
+    this._currentPhase = phase;
+    const agents = this._agentsByPhase.get(phase);
+    if (agents && agents.length > 0) {
+      this.currentAgentId = agents[0];
+    }
+    this.dirty = true;
+  }
+
+  setAvailablePhases(phases: string[]): void {
+    this._availablePhases = [...phases];
+    const phaseSet = new Set(phases);
+    // Remove started phases not in the new set
+    for (const phase of this._startedPhasesList) {
+      if (!phaseSet.has(phase)) {
+        this._startedPhases.delete(phase);
+      }
+    }
+    this._startedPhasesList = this._startedPhasesList.filter((p) => phaseSet.has(p));
+    // Remove agentsByPhase entries not in the new set
+    for (const phase of this._agentsByPhase.keys()) {
+      if (!phaseSet.has(phase)) {
+        this._agentsByPhase.delete(phase);
+      }
+    }
+    this.dirty = true;
+  }
+
+  addStartedPhase(phase: string): void {
+    if (!this._startedPhases.has(phase)) {
+      this._startedPhases.add(phase);
+      this._startedPhasesList.push(phase);
+      this.dirty = true;
+    }
+  }
+
+  getStartedPhases(): string[] {
+    return [...this._startedPhasesList];
+  }
+
+  getAvailablePhases(): string[] {
+    return [...this._availablePhases];
+  }
+
+  getCurrentPhase(): string | null {
+    return this._currentPhase;
+  }
+
+  getAgentsForPhase(phase: string): string[] {
+    return [...(this._agentsByPhase.get(phase) ?? [])];
+  }
+
+  selectAgentInPhase(agentId: string, phase: string, profile: string): void {
+    const data = this.getOrCreateAgent(agentId);
+    this.currentAgentId = agentId;
+    data.profile = profile;
+    data.phase = phase;
+    this._addAgentToPhase(agentId, phase);
+    this.dirty = true;
+  }
+
+  // ─── Expand/collapse API ──────────────────────────────────────────
+
+  toggleExpand(): void {
+    this._expanded = !this._expanded;
+    this._scrollOffset = 0;
+    this.dirty = true;
+  }
+
+  isExpanded(): boolean {
+    return this._expanded;
+  }
+
+  getExpandedLineCount(): number {
+    return this._expanded ? this._expandedLineCount : this.maxLines;
   }
 
   markAgentComplete(agentId: string): void {
@@ -181,6 +308,7 @@ export class AgentLogWidget implements Component {
       outputTokens?: number;
       taskTitle?: string;
       profile?: string;
+      phase?: string;
     },
   ): void {
     let data = this.agents.get(agentId);
@@ -204,6 +332,10 @@ export class AgentLogWidget implements Component {
     if (partial.profile !== undefined) {
       data.profile = partial.profile;
     }
+    if (partial.phase !== undefined) {
+      data.phase = partial.phase;
+      this._addAgentToPhase(agentId, partial.phase);
+    }
     this.dirty = true;
   }
 
@@ -217,18 +349,19 @@ export class AgentLogWidget implements Component {
     }
 
     const lines: string[] = [];
+    const totalLines = this.getExpandedLineCount();
 
     if (!this.currentAgentId) {
       // No agent selected: header + empty lines
       lines.push(padToWidth(dim('  No agent selected'), width));
-      for (let i = 1; i < this.maxLines; i++) {
+      for (let i = 1; i < totalLines; i++) {
         lines.push(padToWidth('', width));
       }
     } else {
       const data = this.agents.get(this.currentAgentId);
       if (!data) {
         // Should not happen since currentAgentId is set only via selectAgent
-        for (let i = 0; i < this.maxLines; i++) {
+        for (let i = 0; i < totalLines; i++) {
           lines.push(padToWidth('', width));
         }
         this.cachedLines = lines;
@@ -242,18 +375,20 @@ export class AgentLogWidget implements Component {
       const header = `  ${title} (profile: ${data.profile}) • ${data.toolCallCount} tool calls • ↑${data.inputTokens} • ↓${data.outputTokens}`;
       lines.push(padToWidth(dim(header), width));
 
-      // Render all entries into actual terminal lines (splitting on \n)
-      const visibleCount = this.maxLines - 1;
-      // Reserve 1 line for footer if multiple agents
+      // Compute slot counts based on totalLines
+      const visibleCount = totalLines - 1;
       const totalAgents = this.agents.size;
       const hasFooter = totalAgents > 1;
       const entrySlots = hasFooter ? visibleCount - 1 : visibleCount;
 
-      // Reverse iteration: process entries from newest to oldest, stopping
-      // once enough visible lines are accumulated. This avoids processing all
-      // entries when only the last few are visible.
+      // Build rendered entry lines. When expanded and scrolled, we need
+      // to accumulate more lines than entrySlots to support scrolling.
+      const accumulationTarget =
+        this._expanded && this._scrollOffset > 0 ? entrySlots + this._scrollOffset : entrySlots;
+
       const renderedLines: string[] = [];
-      for (let ei = data.entries.length - 1; ei >= 0 && renderedLines.length < entrySlots; ei--) {
+      let totalEntryLineCount = 0;
+      for (let ei = data.entries.length - 1; ei >= 0; ei--) {
         const entry = data.entries[ei];
         const icon = typeIconMap[entry.type];
         const colorFn = typeColorMap[entry.type];
@@ -263,49 +398,97 @@ export class AgentLogWidget implements Component {
 
         const subLines = entry.content.split('\n');
 
-        // Process sub-lines in reverse to fill from bottom
+        // Count sub-lines in this entry for total tracking
+        let thisEntryLineCount = 0;
+
         const entryRenderedLines: string[] = [];
         for (let si = subLines.length - 1; si >= 0; si--) {
           const wrapped = wrapTextWithAnsi(subLines[si], remainingWidth);
-          // Process wrapped lines in reverse
-          for (let wi = wrapped.length - 1; wi >= 0; wi--) {
-            const linePrefix = si === 0 && wi === 0 ? prefix : ' '.repeat(prefixLen);
-            const raw = `${linePrefix}${wrapped[wi]}`;
-            const colored = colorFn ? colorFn(raw) : raw;
-            entryRenderedLines.push(padToWidth(colored, width));
+          thisEntryLineCount += wrapped.length;
+          // Only build the actual lines if we still need them for display
+          if (renderedLines.length < accumulationTarget) {
+            for (let wi = wrapped.length - 1; wi >= 0; wi--) {
+              const linePrefix = si === 0 && wi === 0 ? prefix : ' '.repeat(prefixLen);
+              const raw = `${linePrefix}${wrapped[wi]}`;
+              const colored = colorFn ? colorFn(raw) : raw;
+              entryRenderedLines.push(padToWidth(colored, width));
+            }
           }
         }
-        // Reverse the entry's lines to get correct order, then prepend
-        entryRenderedLines.reverse();
-        renderedLines.unshift(...entryRenderedLines);
-        // Trim if we collected more than needed
-        if (renderedLines.length > entrySlots) {
-          renderedLines.splice(0, renderedLines.length - entrySlots);
+        totalEntryLineCount += thisEntryLineCount;
+
+        // Only prepend lines if we built them (still within accumulation target)
+        if (entryRenderedLines.length > 0) {
+          entryRenderedLines.reverse();
+          renderedLines.unshift(...entryRenderedLines);
+          if (renderedLines.length > accumulationTarget) {
+            renderedLines.splice(0, renderedLines.length - accumulationTarget);
+          }
         }
       }
 
-      for (const line of renderedLines) {
+      // Store total entry lines for scroll clamping in handleInput
+      this._lastTotalEntryLines = totalEntryLineCount;
+
+      // Apply scroll offset when expanded and scrolled up
+      let visibleEntryLines = renderedLines;
+      if (this._expanded && this._scrollOffset > 0) {
+        // Clamp scroll offset to valid range
+        const maxScrollOffset = Math.max(0, renderedLines.length - entrySlots);
+        this._scrollOffset = Math.min(this._scrollOffset, maxScrollOffset);
+
+        if (this._scrollOffset >= renderedLines.length) {
+          // All entry lines scrolled away – show all empty
+          visibleEntryLines = [];
+        } else if (this._scrollOffset > 0) {
+          // Skip the last _scrollOffset lines (newest at bottom), keep the older ones
+          visibleEntryLines = renderedLines.slice(0, renderedLines.length - this._scrollOffset);
+        }
+      }
+
+      // Add visible entry lines to output
+      for (const line of visibleEntryLines) {
         lines.push(line);
       }
 
       // Pad remaining entry slots so footer ends up at the bottom
-      const targetBeforeFooter = hasFooter ? this.maxLines - 1 : this.maxLines;
+      const targetBeforeFooter = hasFooter ? totalLines - 1 : totalLines;
       while (lines.length < targetBeforeFooter) {
         lines.push(padToWidth('', width));
       }
 
-      // Footer for multi-agent navigation (always at the bottom)
+      // Scroll indicator (replaces the first content line after header)
+      if (this._expanded && this._scrollOffset > 0 && visibleEntryLines.length > 0 && lines.length > 1) {
+        const scrollLine = `  up arrow ${this._scrollOffset} more lines`;
+        // Replace the first content line (index 1, right after header)
+        lines[1] = padToWidth(dim(scrollLine), width);
+      }
+
+      // ─── Footer (only for multi-agent) ───────────────────────────
       if (hasFooter) {
         const agentIds = Array.from(this.agents.keys());
         const currentIdx = agentIds.indexOf(this.currentAgentId);
-        const completedCount = this.completedAgentIds.size;
-        const activeCount = totalAgents - completedCount;
-        let footer: string;
-        if (completedCount > 0) {
-          footer = `  ← → switch agent (${currentIdx + 1}/${totalAgents}) • ${activeCount} active, ${completedCount} done`;
-        } else {
-          footer = `  ← → switch agent (${currentIdx + 1}/${totalAgents})`;
+        const footerParts: string[] = [];
+
+        // Always: agent navigation hint
+        footerParts.push(`left/right switch agent (${currentIdx + 1}/${totalAgents})`);
+
+        // Phase navigation hint (if multiple started phases)
+        const startedPhases = this.getStartedPhases();
+        if (startedPhases.length > 1) {
+          const phaseIdx = startedPhases.indexOf(this._currentPhase ?? '');
+          const phaseName = this._currentPhase ?? '';
+          footerParts.push(`Ctrl+left/right switch phase [${phaseName}] (${phaseIdx + 1}/${startedPhases.length})`);
         }
+
+        // Expand/collapse hints
+        if (this._expanded) {
+          footerParts.push('up/down scroll, Space collapse');
+        } else if (totalAgents > 1) {
+          footerParts.push('Space expand');
+        }
+
+        const footer = `  ${footerParts.join(' ')}`;
         lines.push(padToWidth(dim(footer), width));
       }
     }
@@ -317,7 +500,55 @@ export class AgentLogWidget implements Component {
   }
 
   handleInput(data: string): void {
-    const agentIds = this.getAgentIds();
+    // ─── Scroll when expanded ────────────────────────────────────────
+    if (this._expanded) {
+      if (matchesKey(data, 'up')) {
+        // Compute max scroll offset using last known total entry lines
+        const visibleCount = this.getExpandedLineCount() - 1;
+        const totalAgents = this.agents.size;
+        const hasFooter = totalAgents > 1;
+        const entrySlots = hasFooter ? visibleCount - 1 : visibleCount;
+        const maxScrollOffset = Math.max(0, this._lastTotalEntryLines - entrySlots);
+        this._scrollOffset = Math.min(this._scrollOffset + 1, maxScrollOffset);
+        this.dirty = true;
+        return;
+      } else if (matchesKey(data, 'down')) {
+        this._scrollOffset = Math.max(0, this._scrollOffset - 1);
+        this.dirty = true;
+        return;
+      }
+    }
+
+    // ─── Phase navigation ────────────────────────────────────────────
+    if (matchesKey(data, Key.ctrl('left')) || matchesKey(data, Key.ctrl('right'))) {
+      const startedPhases = this.getStartedPhases();
+      if (startedPhases.length <= 1) return;
+
+      const currentIdx = startedPhases.indexOf(this._currentPhase ?? '');
+      let newIdx: number;
+      if (matchesKey(data, Key.ctrl('right'))) {
+        // Advance to next started phase (wrap from last to first)
+        newIdx = currentIdx >= startedPhases.length - 1 ? 0 : currentIdx + 1;
+      } else {
+        // Go to previous started phase (wrap from first to last)
+        newIdx = currentIdx <= 0 ? startedPhases.length - 1 : currentIdx - 1;
+      }
+      const newPhase = startedPhases[newIdx];
+      if (newPhase) {
+        this.setCurrentPhase(newPhase);
+        this.dirty = true;
+      }
+      return;
+    }
+
+    // ─── Agent navigation (scoped to current phase) ──────────────────
+    let agentIds: string[];
+    if (this._currentPhase && this._agentsByPhase.has(this._currentPhase)) {
+      agentIds = this.getAgentsForPhase(this._currentPhase);
+    } else {
+      agentIds = this.getAgentIds();
+    }
+
     if (agentIds.length <= 1) return;
 
     const currentIdx = agentIds.indexOf(this.currentAgentId ?? '');

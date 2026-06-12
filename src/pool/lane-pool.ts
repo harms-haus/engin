@@ -86,6 +86,7 @@ export class LanePool {
         title: t.title,
         status: t.status,
         dependencies: t.dependencies,
+        phase: this.options.phase,
       })),
     });
 
@@ -206,6 +207,8 @@ export class LanePool {
       taskId: task.id,
       title: task.title,
       agentId,
+      phase: this.options.phase,
+      startedAt: Date.now(),
     });
 
     let currentStepIndex = 0;
