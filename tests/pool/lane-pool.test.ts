@@ -1721,6 +1721,259 @@ describe('LanePool', () => {
       expect(tracker.getTask('task-1')!.status).toBe('done');
     });
   });
+
+  // ─── Session Reuse on Retry ─────────────────────────────────────────────
+
+  describe('session reuse on retry', () => {
+    const ReviewResultSchema = z.object({
+      approved: z.boolean(),
+      feedback: z.string(),
+      issues: z.array(
+        z.object({
+          file: z.string(),
+          description: z.string(),
+          severity: z.enum(['critical', 'minor']),
+        }),
+      ),
+    });
+
+    function twoStepPipeline() {
+      return [
+        { name: 'implement', profileId: 'coder', isReadOnly: false },
+        {
+          name: 'review',
+          profileId: 'reviewer',
+          isReadOnly: true,
+          schema: ReviewResultSchema,
+          isApproved: (result: z.infer<typeof ReviewResultSchema>) => result.approved === true,
+          getFeedback: (result: z.infer<typeof ReviewResultSchema>) => result.feedback,
+        },
+      ];
+    }
+
+    it('resumes session via resumeSessionPath when retrying implement step after rejection', async () => {
+      setupProfileMocks();
+
+      // Review rejects once, then approves
+      let reviewCount = 0;
+      mockPromptForStructured.mockImplementation(() => {
+        reviewCount++;
+        if (reviewCount === 1) {
+          return Promise.resolve({ approved: false, feedback: 'needs work', issues: [] });
+        }
+        return Promise.resolve({ approved: true, feedback: '', issues: [] });
+      });
+
+      setupHarnessMocks();
+
+      const { pool } = createPoolAndTracker({
+        maxStepRetries: 3,
+        getStepsForTask: () => twoStepPipeline(),
+      });
+
+      const result = await pool.run();
+
+      expect(result.completedTasks).toBe(1);
+
+      // The implement step is executed twice (original + retry after rejection)
+      // Find all createHarness calls for the implement step
+      const implementCalls = mockCreateHarness.mock.calls.filter((call) => {
+        const opts = call[0] as Record<string, unknown>;
+        const path = (opts.sessionDir ?? opts.resumeSessionPath) as string;
+        return path?.includes('implement');
+      });
+
+      expect(implementCalls.length).toBe(2);
+
+      // First call: has sessionDir, no resumeSessionPath
+      const firstCallOpts = implementCalls[0][0] as Record<string, unknown>;
+      expect(firstCallOpts.sessionDir).toContain('implement');
+      expect(firstCallOpts.resumeSessionPath).toBeFalsy();
+
+      // Second call: no sessionDir, resumeSessionPath points to implement's original session dir
+      const secondCallOpts = implementCalls[1][0] as Record<string, unknown>;
+      expect(secondCallOpts.sessionDir).toBeUndefined();
+      expect(secondCallOpts.resumeSessionPath).toBe(firstCallOpts.sessionDir);
+    });
+
+    it('creates new session for first execution, resumes on retry', async () => {
+      setupProfileMocks();
+
+      // Review rejects twice, then approves on the third attempt
+      let reviewCount = 0;
+      mockPromptForStructured.mockImplementation(() => {
+        reviewCount++;
+        if (reviewCount <= 2) {
+          return Promise.resolve({ approved: false, feedback: 'not good', issues: [] });
+        }
+        return Promise.resolve({ approved: true, feedback: '', issues: [] });
+      });
+
+      setupHarnessMocks();
+
+      const { pool } = createPoolAndTracker({
+        maxStepRetries: 3,
+        getStepsForTask: () => twoStepPipeline(),
+      });
+
+      const result = await pool.run();
+
+      expect(result.completedTasks).toBe(1);
+
+      // Capture all createHarness calls in order
+      const allCalls = mockCreateHarness.mock.calls.map((call) => {
+        const opts = call[0] as Record<string, unknown>;
+        return {
+          sessionDir: opts.sessionDir as string | undefined,
+          resumeSessionPath: opts.resumeSessionPath as string | undefined,
+        };
+      });
+
+      // Expected call pattern:
+      // Call 0: implement (first) — sessionDir with '0-0-implement', resumeSessionPath undefined
+      // Call 1: review (first)    — sessionDir with '0-1-review', resumeSessionPath undefined
+      // Call 2: implement (retry) — no sessionDir, resumeSessionPath → call 0 sessionDir
+      // Call 3: review (retry)    — no sessionDir, resumeSessionPath → call 1 sessionDir
+      // Call 4: implement (retry) — no sessionDir, resumeSessionPath → call 2's sessionPath (= call 0 sessionDir)
+      // Call 5: review (retry)    — no sessionDir, resumeSessionPath → call 3's sessionPath (= call 1 sessionDir)
+
+      expect(allCalls.length).toBe(6);
+
+      // Call 0: implement (first)
+      expect(allCalls[0].sessionDir).toContain('0-0-implement');
+      expect(allCalls[0].resumeSessionPath).toBeFalsy();
+
+      // Call 1: review (first)
+      expect(allCalls[1].sessionDir).toContain('0-1-review');
+      expect(allCalls[1].resumeSessionPath).toBeFalsy();
+
+      // Call 2: implement (retry) — no sessionDir, resumes from call 0
+      expect(allCalls[2].sessionDir).toBeUndefined();
+      expect(allCalls[2].resumeSessionPath).toBe(allCalls[0].sessionDir);
+
+      // Call 3: review (retry) — no sessionDir, resumes from call 1
+      expect(allCalls[3].sessionDir).toBeUndefined();
+      expect(allCalls[3].resumeSessionPath).toBe(allCalls[1].sessionDir);
+
+      // Call 4: implement (retry) — no sessionDir, resumes from call 2's sessionPath
+      expect(allCalls[4].sessionDir).toBeUndefined();
+      expect(allCalls[4].resumeSessionPath).toBe(allCalls[2].resumeSessionPath);
+
+      // Call 5: review (retry) — no sessionDir, resumes from call 3's sessionPath
+      expect(allCalls[5].sessionDir).toBeUndefined();
+      expect(allCalls[5].resumeSessionPath).toBe(allCalls[3].resumeSessionPath);
+    });
+
+    it('disposes all sessions only when task completes', async () => {
+      setupProfileMocks();
+
+      const disposes: ReturnType<typeof mock>[] = [];
+      let harnessCount = 0;
+
+      mockCreateHarness.mockImplementation(() => {
+        harnessCount++;
+        const disposeFn = mock(() => {});
+        disposes.push(disposeFn);
+        return {
+          session: makeSession(() => 'done'),
+          sessionId: `session-${harnessCount}`,
+          dispose: disposeFn,
+        };
+      });
+
+      const { pool } = createPoolAndTracker({
+        getStepsForTask: () => [
+          { name: 'implement', profileId: 'coder', isReadOnly: false },
+          { name: 'review', profileId: 'reviewer', isReadOnly: true },
+        ],
+      });
+
+      const result = await pool.run();
+
+      expect(result.completedTasks).toBe(1);
+
+      // After pool.run() completes, all sessions should have been disposed exactly once
+      expect(disposes.length).toBe(2);
+      for (const disposeFn of disposes) {
+        expect(disposeFn).toHaveBeenCalledTimes(1);
+      }
+    });
+
+    it('disposes all sessions when task fails', async () => {
+      setupProfileMocks();
+
+      const disposeFn = mock(() => {});
+
+      mockCreateHarness.mockResolvedValue({
+        session: makeSession(() => {
+          throw new Error('Step threw an error');
+        }),
+        sessionId: 'test-session',
+        dispose: disposeFn,
+      });
+
+      const { pool } = createPoolAndTracker();
+
+      const result = await pool.run();
+
+      expect(result.failedTasks).toBe(1);
+      expect(disposeFn).toHaveBeenCalledTimes(1);
+    });
+
+    it('resumes both implement and review sessions when backing up after rejection', async () => {
+      setupProfileMocks();
+
+      // Review rejects once, then approves
+      let reviewCount = 0;
+      mockPromptForStructured.mockImplementation(() => {
+        reviewCount++;
+        if (reviewCount === 1) {
+          return Promise.resolve({ approved: false, feedback: 'fix this', issues: [] });
+        }
+        return Promise.resolve({ approved: true, feedback: '', issues: [] });
+      });
+
+      setupHarnessMocks();
+
+      const { pool } = createPoolAndTracker({
+        maxStepRetries: 3,
+        getStepsForTask: () => twoStepPipeline(),
+      });
+
+      const result = await pool.run();
+
+      expect(result.completedTasks).toBe(1);
+
+      // After one rejection and one retry: implement(0), review(0), implement(retry), review(retry)
+      const allCalls = mockCreateHarness.mock.calls.map((call) => {
+        const opts = call[0] as Record<string, unknown>;
+        return {
+          sessionDir: opts.sessionDir as string,
+          resumeSessionPath: opts.resumeSessionPath as string | undefined,
+        };
+      });
+
+      expect(allCalls.length).toBe(4);
+
+      // Implement step (retry) uses resumeSessionPath pointing to original implement session dir
+      expect(allCalls[2].resumeSessionPath).toBe(allCalls[0].sessionDir);
+
+      // Review step (retry) uses resumeSessionPath pointing to original review session dir
+      expect(allCalls[3].resumeSessionPath).toBe(allCalls[1].sessionDir);
+    });
+
+    it('does not pass resumeSessionPath on first execution of any step', async () => {
+      setupProfileMocks();
+      setupHarnessMocks();
+
+      const { pool } = createPoolAndTracker();
+
+      await pool.run();
+
+      const callArgs = mockCreateHarness.mock.calls[0][0] as Record<string, unknown>;
+      expect(callArgs.resumeSessionPath).toBeFalsy();
+    });
+  });
 });
 
 // Restore the real modules so mocks don't leak into other test files.

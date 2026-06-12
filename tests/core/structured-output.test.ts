@@ -110,22 +110,25 @@ describe('promptForStructured', () => {
 
   it('returns parsed result on first valid try', async () => {
     const harness = makeHarness(['{"name": "Alice", "age": 30}']);
-    const result = await promptForStructured(harness, 'give me a person', schema);
+    const { result, attempts } = await promptForStructured(harness, 'give me a person', schema);
     expect(result).toEqual({ name: 'Alice', age: 30 });
+    expect(attempts).toBe(1);
     expect(harness.prompt).toHaveBeenCalledTimes(1);
   });
 
   it('succeeds on retry after invalid JSON first', async () => {
     const harness = makeHarness(['this is not json at all', '{"name": "Bob", "age": 25}']);
-    const result = await promptForStructured(harness, 'give me a person', schema);
+    const { result, attempts } = await promptForStructured(harness, 'give me a person', schema);
     expect(result).toEqual({ name: 'Bob', age: 25 });
+    expect(attempts).toBe(2);
     expect(harness.prompt).toHaveBeenCalledTimes(2);
   });
 
   it('succeeds on retry after valid JSON with wrong schema first', async () => {
     const harness = makeHarness(['{"name": "Charlie", "age": "not-a-number"}', '{"name": "Diana", "age": 42}']);
-    const result = await promptForStructured(harness, 'give me a person', schema);
+    const { result, attempts } = await promptForStructured(harness, 'give me a person', schema);
     expect(result).toEqual({ name: 'Diana', age: 42 });
+    expect(attempts).toBe(2);
     expect(harness.prompt).toHaveBeenCalledTimes(2);
   });
 
@@ -191,10 +194,11 @@ describe('promptForStructured', () => {
 
   it('retry prompt has readable validation error (not [object Object])', async () => {
     const harness = makeHarness(['{"name": "Charlie", "age": "not-a-number"}', '{"name": "Diana", "age": 42}']);
-    const result = await promptForStructured(harness, 'give me a person', schema, {
+    const { result, attempts } = await promptForStructured(harness, 'give me a person', schema, {
       maxRetries: 3,
     });
     expect(result).toEqual({ name: 'Diana', age: 42 });
+    expect(attempts).toBe(2);
     expect(harness.prompt).toHaveBeenCalledTimes(2);
 
     const retryPrompt = (harness.prompt as ReturnType<typeof mock>).mock.calls[1][0] as string;

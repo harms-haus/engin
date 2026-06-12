@@ -41,6 +41,20 @@ function assertSafeName(value: string, label: string): void {
 interface RunStepContext {
   stepIndex: number;
   attempt: number;
+  execCount: number;
+}
+
+interface TrackedSession {
+  session: {
+    abort(): Promise<void>;
+    dispose(): void;
+    subscribe(cb: (event: unknown) => void): () => void;
+    prompt(text: string): Promise<void>;
+    getLastAssistantText(): string;
+    sessionId: string;
+  };
+  dispose: () => void;
+  sessionPath: string;
 }
 
 // ─── LanePool ───────────────────────────────────────────────────────────────
@@ -237,69 +251,116 @@ export class LanePool {
     let currentStepIndex = 0;
     // Per-step retry counter: each step tracks its own rejection count
     const stepAttempts = new Map<number, number>();
+    // Per-step execution counter: increments each time a step is executed
+    const stepExecutions = new Map<number, number>();
+    // Track sessions for disposal at task completion
+    const taskSessions = new Map<number, TrackedSession>();
 
-    while (currentStepIndex < steps.length) {
-      const step = steps[currentStepIndex];
-      const currentAttempt = stepAttempts.get(currentStepIndex) ?? 0;
+    const disposeAllTaskSessions = () => {
+      for (const ts of taskSessions.values()) {
+        try {
+          ts.dispose();
+        } catch (err) {
+          console.error(`[${agentId}] Error disposing harness for task ${task.id}:`, safeErrorMessage(err));
+        }
+      }
+      taskSessions.clear();
+    };
 
-      const result = await this.runStep(
-        task,
-        step,
-        agentId,
-        { stepIndex: currentStepIndex, attempt: currentAttempt },
-        profiles,
-      );
+    try {
+      while (currentStepIndex < steps.length) {
+        const step = steps[currentStepIndex];
+        const currentAttempt = stepAttempts.get(currentStepIndex) ?? 0;
+        const execCount = stepExecutions.get(currentStepIndex) ?? 0;
+        stepExecutions.set(currentStepIndex, execCount + 1);
 
-      if (result.type === 'approved') {
-        currentStepIndex++;
-      } else {
-        // Rejected — record the retry attempt for this step, then back up
-        appendReviewFeedback(task, result.feedback);
-        const newAttempt = currentAttempt + 1;
-        stepAttempts.set(currentStepIndex, newAttempt);
-
-        // Log the retry decision
-        this.options.onStatus?.onDecision?.({
-          agentId,
-          decision: `Step "${step.name}" rejected (attempt ${newAttempt}/${maxStepRetries}), retrying`,
-          reasoning: result.feedback,
-          taskId: task.id,
-        });
-
-        if (newAttempt >= maxStepRetries) {
-          // Extract severity from the last structured rejection result
-          const severity = extractSeverity(result.output);
-
-          if (isFailingSeverity(severity)) {
-            // Critical/high → task failed
-            this.options.onStatus?.onTaskRejected?.({
-              taskId: task.id,
-              title: task.title,
-              reason: result.feedback,
-            });
-            this.safeFailTask(task.id, { completed: false, feedback: result.feedback, severity });
-          } else {
-            // Medium/low/missing → accept as completed with caveats
-            if (this.safeSubmitAndComplete(task.id, { completed: true, feedback: result.feedback, severity })) {
-              this.options.onStatus?.onTaskComplete?.({
-                taskId: task.id,
-                title: task.title,
-              });
-            }
-          }
-          return;
+        // Check for an existing session to resume
+        let existingSessionPath: string | undefined;
+        const existing = taskSessions.get(currentStepIndex);
+        if (existing) {
+          existingSessionPath = existing.sessionPath;
         }
 
-        currentStepIndex = Math.max(0, currentStepIndex - 1);
-      }
-    }
+        const { result, trackedSession } = await this.runStep(
+          task,
+          step,
+          agentId,
+          { stepIndex: currentStepIndex, attempt: currentAttempt, execCount },
+          profiles,
+          existingSessionPath,
+        );
 
-    // All steps approved — task complete
-    if (this.safeSubmitAndComplete(task.id, { completed: true })) {
-      this.options.onStatus?.onTaskComplete?.({
-        taskId: task.id,
-        title: task.title,
-      });
+        // Dispose old tracked session for this step (if any) now that we have the new one
+        const oldSession = taskSessions.get(currentStepIndex);
+        if (oldSession) {
+          try {
+            oldSession.dispose();
+          } catch (err) {
+            console.error(
+              `[${agentId}] Error disposing old session for step ${currentStepIndex} of task ${task.id}:`,
+              safeErrorMessage(err),
+            );
+          }
+        }
+        taskSessions.set(currentStepIndex, trackedSession);
+
+        if (result.type === 'approved') {
+          currentStepIndex++;
+        } else {
+          // Rejected — record the retry attempt for this step, then back up
+          appendReviewFeedback(task, result.feedback);
+          const newAttempt = currentAttempt + 1;
+          stepAttempts.set(currentStepIndex, newAttempt);
+
+          // Log the retry decision
+          this.options.onStatus?.onDecision?.({
+            agentId,
+            decision: `Step "${step.name}" rejected (attempt ${newAttempt}/${maxStepRetries}), retrying`,
+            reasoning: result.feedback,
+            taskId: task.id,
+          });
+
+          if (newAttempt >= maxStepRetries) {
+            // Extract severity from the last structured rejection result
+            const severity = extractSeverity(result.output);
+
+            if (isFailingSeverity(severity)) {
+              // Critical/high → task failed
+              this.options.onStatus?.onTaskRejected?.({
+                taskId: task.id,
+                title: task.title,
+                reason: result.feedback,
+              });
+              this.safeFailTask(task.id, { completed: false, feedback: result.feedback, severity });
+            } else {
+              // Medium/low/missing → accept as completed with caveats
+              if (this.safeSubmitAndComplete(task.id, { completed: true, feedback: result.feedback, severity })) {
+                this.options.onStatus?.onTaskComplete?.({
+                  taskId: task.id,
+                  title: task.title,
+                });
+              }
+            }
+            disposeAllTaskSessions();
+            return;
+          }
+
+          currentStepIndex = Math.max(0, currentStepIndex - 1);
+        }
+      }
+
+      // All steps approved — dispose sessions, then task complete
+      disposeAllTaskSessions();
+      if (this.safeSubmitAndComplete(task.id, { completed: true })) {
+        this.options.onStatus?.onTaskComplete?.({
+          taskId: task.id,
+          title: task.title,
+        });
+      }
+    } catch (err) {
+      // Unexpected error during while loop — clean up sessions
+      disposeAllTaskSessions();
+      throw err;
     }
   }
 
@@ -315,7 +376,8 @@ export class LanePool {
     agentId: string,
     ctx: RunStepContext,
     profiles: Map<string, AgentProfile>,
-  ): Promise<StepResult> {
+    existingSessionPath?: string,
+  ): Promise<{ result: StepResult; trackedSession: TrackedSession }> {
     // Use pre-loaded profile
     const profile = profiles.get(step.profileId);
     if (!profile) {
@@ -336,14 +398,14 @@ export class LanePool {
     assertSafeName(step.name, 'step name');
 
     // Compute session directory
-    const sessionDirPath = join(this.options.sessionBaseDir, task.id, `${ctx.attempt}-${ctx.stepIndex}-${step.name}`);
+    const sessionDirPath = join(this.options.sessionBaseDir, task.id, `${ctx.execCount}-${ctx.stepIndex}-${step.name}`);
 
     // Build harness options
     const harnessOpts: HarnessCreationOptions = {
       profile: adjustedProfile,
       cwd: this.options.cwd,
       apiKeys: this.options.apiKeys,
-      sessionDir: sessionDirPath,
+      ...(existingSessionPath ? { resumeSessionPath: existingSessionPath } : { sessionDir: sessionDirPath }),
       agentId,
       onAgentStatus: forwardAgentStatus(this.options.onStatus),
     };
@@ -367,6 +429,12 @@ export class LanePool {
 
     // Create harness
     const { session, dispose } = await createHarness(harnessOpts);
+
+    const trackedSession: TrackedSession = {
+      session,
+      dispose,
+      sessionPath: existingSessionPath ?? sessionDirPath,
+    };
 
     // Track the session so the abort listener can cancel in-progress prompts
     this.activeSessions.add(session);
@@ -392,7 +460,7 @@ export class LanePool {
             taskId: task.id,
           });
           // Treat as critical — the reviewer never produced valid output, so fail-safe
-          return { type: 'rejected', feedback: errorMsg, output: { severity: 'critical' } };
+          return { result: { type: 'rejected', feedback: errorMsg, output: { severity: 'critical' } }, trackedSession };
         }
 
         const approved = step.isApproved
@@ -400,30 +468,30 @@ export class LanePool {
           : (structuredResult as Record<string, unknown>)?.approved === true;
 
         if (approved) {
-          return { type: 'approved', output: structuredResult };
+          return { result: { type: 'approved', output: structuredResult }, trackedSession };
         }
 
         const feedback = step.getFeedback
           ? step.getFeedback(structuredResult)
           : (((structuredResult as Record<string, unknown>)?.feedback as string) ?? 'No feedback provided');
 
-        return { type: 'rejected', feedback, output: structuredResult };
+        return { result: { type: 'rejected', feedback, output: structuredResult }, trackedSession };
       }
 
       // Non-structured step — always approved
       await session.prompt(promptText);
       const output = session.getLastAssistantText();
-      return { type: 'approved', output };
-    } finally {
-      this.activeSessions.delete(session);
-
-      // Dispose the harness in its own try/catch so dispose errors don't
-      // suppress the onAgentComplete callback below.
+      return { result: { type: 'approved', output }, trackedSession };
+    } catch (err) {
+      // Exception path: dispose the session since processTask won't track it
       try {
         dispose();
-      } catch (err) {
-        console.error(`[${agentId}] Error disposing harness for task ${task.id}:`, safeErrorMessage(err));
+      } catch {
+        /* swallow */
       }
+      throw err;
+    } finally {
+      this.activeSessions.delete(session);
 
       // Fire completion callback — always runs even if dispose failed
       this.options.onStatus?.onAgentComplete?.({
