@@ -174,7 +174,7 @@ export function pushBranch(dir: string, branch: string, remote = 'origin'): void
  * If that is empty, returns the cached (staged) diff instead.
  */
 export function getDiff(dir: string): string {
-  const diff = execGit(['diff', 'HEAD'], dir);
+  const diff = execGit(['diff', 'HEAD', '--'], dir);
   if (diff.length > 0) {
     return diff;
   }

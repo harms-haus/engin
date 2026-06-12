@@ -431,6 +431,28 @@ describe('getDiff', () => {
     const diff = getDiff(dir);
     expect(diff).toContain('staged content');
   });
+
+  it('does not throw when a file literally named HEAD exists in the repo', () => {
+    const dir = getDir();
+    initRepo(dir);
+
+    // Create a file literally named "HEAD" and commit it
+    writeFileSync(join(dir, 'HEAD'), 'HEAD file content');
+    rawGit(['add', '-A'], dir);
+    rawGit(['commit', '-m', 'add HEAD file'], dir);
+
+    // Modify a tracked file to create unstaged changes
+    writeFileSync(join(dir, 'README.md'), 'modified content');
+
+    // getDiff must not throw — it currently does because
+    // execGit(['diff', 'HEAD']) is ambiguous when a file named HEAD exists
+    let diff: string;
+    expect(() => {
+      diff = getDiff(dir);
+    }).not.toThrow();
+
+    expect(diff!).toContain('modified content');
+  });
 });
 
 // ─── readWorktreeCopyList ───────────────────────────────────────────────────
