@@ -1,5 +1,9 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
 
+// ─── Capture real module before mocking ──────────────────────────────────────
+
+const realServer = Object.assign({}, await import('../../src/web/server.js'));
+
 // ─── Mock startWebServer to return a fake server ────────────────────────────
 
 const mockServerStop = mock<(force?: boolean) => void>();
@@ -20,9 +24,7 @@ import { webCommand } from '../../src/cli.ts';
 // ─── Restore original module ─────────────────────────────────────────────────
 
 afterAll(() => {
-  mock.module('../../src/web/server.js', () => ({
-    startWebServer: () => Promise.resolve({ stop: () => {} }),
-  }));
+  mock.module('../../src/web/server.js', () => realServer);
 });
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────

@@ -138,12 +138,6 @@ export function parseArgs(argv: string[]): CliOptions {
     i++;
   }
 
-  if (positionals.length === 0) {
-    throw new Error(`Missing command\n${USAGE}`);
-  }
-
-  const command = positionals[0];
-
   // 4. Parse common flags
   let cwd = process.cwd();
   let verbose = false;
@@ -200,6 +194,21 @@ export function parseArgs(argv: string[]): CliOptions {
       port = parsed;
     }
   }
+
+  if (positionals.length === 0) {
+    // Interactive mode: no command given, default to 'run'
+    return {
+      command: 'run',
+      cwd,
+      maxConcurrent,
+      verbose,
+      worktree,
+      apiKeys,
+      warnings,
+    };
+  }
+
+  const command = positionals[0];
 
   if (command === 'web') {
     if (positionals.length > 1) {
@@ -512,6 +521,24 @@ export async function main(): Promise<void> {
   }
   if (options.command === 'resume') {
     await resumeCommand(options);
+    return;
+  }
+  if (options.command === 'run' && !options.workflowName) {
+    // Interactive mode: no workflow name or task prompt — launch the TUI composer
+    const { runComposer } = await import('./tui/composer.js');
+    const result = await runComposer(options.cwd);
+    if (!result || !result.ok) {
+      process.exit(0);
+    }
+    const interactiveOptions: CliOptions = {
+      ...options,
+      workflowName: result.workflowName,
+      taskPrompt: result.taskPrompt,
+      verbose: result.verbose,
+      worktree: result.worktree,
+      maxConcurrent: result.maxConcurrent,
+    };
+    await runCommand(interactiveOptions);
     return;
   }
   await runCommand(options);

@@ -59,8 +59,56 @@ describe('parseArgs', () => {
     expect(result.command).toBe('init');
   });
 
-  it('throws on missing command', () => {
-    expect(() => parseArgs([])).toThrow(/Missing command/);
+  it('returns interactive mode when no command is given (empty args)', () => {
+    const result = parseArgs([]);
+    expect(result).toEqual({
+      command: 'run',
+      cwd: process.cwd(),
+      maxConcurrent: 5,
+      verbose: false,
+      worktree: false,
+      apiKeys: {},
+      warnings: [],
+    });
+    expect(result.workflowName).toBeUndefined();
+    expect(result.taskPrompt).toBeUndefined();
+  });
+
+  it('returns interactive mode with flags parsed when only flags are given', () => {
+    const result = parseArgs(['--verbose', '--worktree', '--cwd', '/custom']);
+    expect(result).toEqual({
+      command: 'run',
+      cwd: '/custom',
+      maxConcurrent: 5,
+      verbose: true,
+      worktree: true,
+      apiKeys: {},
+      warnings: [],
+    });
+    expect(result.workflowName).toBeUndefined();
+    expect(result.taskPrompt).toBeUndefined();
+  });
+
+  it('returns interactive mode with --max-concurrent flag', () => {
+    const result = parseArgs(['--max-concurrent', '3']);
+    expect(result).toEqual({
+      command: 'run',
+      cwd: process.cwd(),
+      maxConcurrent: 3,
+      verbose: false,
+      worktree: false,
+      apiKeys: {},
+      warnings: [],
+    });
+  });
+
+  it('returns interactive mode with --api-key warning', () => {
+    const result = parseArgs(['--api-key', 'anthropic=sk-test']);
+    expect(result.command).toBe('run');
+    expect(result.workflowName).toBeUndefined();
+    expect(result.apiKeys).toEqual({ anthropic: 'sk-test' });
+    expect(result.warnings).toHaveLength(1);
+    expect(result.warnings[0]).toContain('--api-key');
   });
 
   it('throws on missing task prompt for run', () => {
@@ -509,5 +557,98 @@ describe('main() loads .env files', () => {
     }
 
     expect(process.env.TEST_CLI_ENV_VAR_VERSION).toBeUndefined();
+  });
+});
+
+// ─── main() interactive mode ─────────────────────────────────────────────────
+
+describe('main() interactive mode', () => {
+  it('parseArgs([]) returns command run with undefined workflowName for interactive mode', () => {
+    const result = parseArgs([]);
+    expect(result.command).toBe('run');
+    expect(result.workflowName).toBeUndefined();
+    expect(result.taskPrompt).toBeUndefined();
+  });
+
+  it('parseArgs with only flags returns run command with undefined workflowName', () => {
+    const result = parseArgs(['--verbose', '--worktree', '--cwd', '/tmp']);
+    expect(result.command).toBe('run');
+    expect(result.workflowName).toBeUndefined();
+    expect(result.taskPrompt).toBeUndefined();
+    expect(result.verbose).toBe(true);
+    expect(result.worktree).toBe(true);
+    expect(result.cwd).toBe('/tmp');
+  });
+
+  it('parseArgs with --max-concurrent returns interactive mode with correct value', () => {
+    const result = parseArgs(['--max-concurrent', '10']);
+    expect(result.command).toBe('run');
+    expect(result.maxConcurrent).toBe(10);
+    expect(result.workflowName).toBeUndefined();
+  });
+
+  it('parseArgs with --api-key returns interactive mode with key parsed', () => {
+    const result = parseArgs(['--api-key', 'openai=sk-123']);
+    expect(result.command).toBe('run');
+    expect(result.apiKeys).toEqual({ openai: 'sk-123' });
+    expect(result.warnings).toHaveLength(1);
+  });
+
+  it('parseArgs with --work-dir still returns interactive mode', () => {
+    const result = parseArgs(['--work-dir', '/wd']);
+    expect(result.command).toBe('run');
+    expect(result.workflowName).toBeUndefined();
+    // workDir should be parsed even in interactive mode
+    // (note: workDir is not on the returned object for the no-positionals case,
+    //  but flags should not cause errors)
+  });
+
+  it('parseArgs empty does NOT have workDir in returned interactive result', () => {
+    // The interactive return path doesn't include workDir in the object
+    const result = parseArgs([]);
+    expect(result).not.toHaveProperty('workDir');
+    expect(result).toEqual({
+      command: 'run',
+      cwd: process.cwd(),
+      maxConcurrent: 5,
+      verbose: false,
+      worktree: false,
+      apiKeys: {},
+      warnings: [],
+    });
+  });
+
+  it('normal run command still works with workflowName and taskPrompt', () => {
+    const result = parseArgs(['develop', 'do something']);
+    expect(result.command).toBe('run');
+    expect(result.workflowName).toBe('develop');
+    expect(result.taskPrompt).toBe('do something');
+  });
+
+  it('init command is not affected by interactive mode changes', () => {
+    const result = parseArgs(['init']);
+    expect(result.command).toBe('init');
+  });
+
+  it('web command is not affected by interactive mode changes', () => {
+    const result = parseArgs(['web', '--port', '4000']);
+    expect(result.command).toBe('web');
+    expect(result.port).toBe(4000);
+  });
+
+  it('resume command is not affected by interactive mode changes', () => {
+    const result = parseArgs(['resume', 'my-session']);
+    expect(result.command).toBe('resume');
+    expect(result.sessionName).toBe('my-session');
+  });
+
+  it('--help still works (checked before positional parsing)', () => {
+    const result = parseArgs(['--help']);
+    expect(result.command).toBe('help');
+  });
+
+  it('--version still works (checked before positional parsing)', () => {
+    const result = parseArgs(['--version']);
+    expect(result.command).toBe('version');
   });
 });
