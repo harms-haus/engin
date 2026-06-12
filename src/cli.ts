@@ -4,11 +4,14 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createStatusCallbacks, formatTime, shouldUseTui } from './cli/console-status.js';
+import { promptPostWorktreeAction } from './cli/post-worktree.js';
 import { interactiveSelectRun, resolveSessionName } from './cli/session-selector.js';
 import type { PastRunEntry } from './core/config.js';
-import { getDefaultWorkDir, getGlobalConfigDir, loadEnvFiles } from './core/config.js';
+import { getDefaultWorkDir, getGlobalConfigDir, loadEnvFiles, resolveProfilesDirs } from './core/config.js';
+import type { WorktreeInfo } from './core/types.js';
 import { validateWorkflowName } from './core/utils.js';
 import { loadWorkflow } from './core/workflow-loader.js';
+import { setupWorktree } from './core/worktree-lifecycle.js';
 import { initDefaultConfig } from './setup.js';
 
 // ─── CLI Options ────────────────────────────────────────────────────────────
@@ -21,6 +24,7 @@ export interface CliOptions {
   workDir?: string;
   maxConcurrent: number;
   verbose: boolean;
+  worktree: boolean;
   apiKeys: Record<string, string>;
   warnings: string[];
   host?: string;
@@ -46,6 +50,7 @@ Options:
   --work-dir <path>       Workflow working directory (run only)
   --max-concurrent <n>    Max concurrent tasks (default: 5, run only)
   --verbose               Enable verbose logging
+  --worktree              Run workflow in a git worktree
   --api-key <provider=key>  API key (repeatable)
   --host <host>           Web server host (default: 127.0.0.1, web only)
   --port <port>           Web server port (default: 3619, web only)
@@ -60,6 +65,7 @@ export function parseArgs(argv: string[]): CliOptions {
       cwd: process.cwd(),
       maxConcurrent: 5,
       verbose: false,
+      worktree: false,
       apiKeys: {},
       warnings: [],
     };
@@ -72,6 +78,7 @@ export function parseArgs(argv: string[]): CliOptions {
       cwd: process.cwd(),
       maxConcurrent: 5,
       verbose: false,
+      worktree: false,
       apiKeys: {},
       warnings: [],
     };
@@ -102,6 +109,8 @@ export function parseArgs(argv: string[]): CliOptions {
       }
       flags.push(arg, val);
     } else if (arg === '--verbose') {
+      flags.push(arg);
+    } else if (arg === '--worktree') {
       flags.push(arg);
     } else if (arg === '--api-key') {
       const val = argv[++i];
@@ -138,6 +147,7 @@ export function parseArgs(argv: string[]): CliOptions {
   // 4. Parse common flags
   let cwd = process.cwd();
   let verbose = false;
+  let worktree = false;
   const apiKeys: Record<string, string> = {};
   const warnings: string[] = [];
   let apiKeyWarningIssued = false;
@@ -162,6 +172,8 @@ export function parseArgs(argv: string[]): CliOptions {
       maxConcurrent = parsed;
     } else if (flag === '--verbose') {
       verbose = true;
+    } else if (flag === '--worktree') {
+      worktree = true;
     } else if (flag === '--api-key') {
       const pair = flags[++j];
       const eqIdx = pair.indexOf('=');
@@ -193,14 +205,14 @@ export function parseArgs(argv: string[]): CliOptions {
     if (positionals.length > 1) {
       throw new Error(`Unexpected argument: "${positionals[1]}"\n${USAGE}`);
     }
-    return { command: 'web', cwd, verbose, maxConcurrent, apiKeys, warnings, host, port };
+    return { command: 'web', cwd, verbose, worktree, maxConcurrent, apiKeys, warnings, host, port };
   }
 
   if (command === 'init') {
     if (positionals.length > 1) {
       throw new Error(`Unexpected argument: "${positionals[1]}"\n${USAGE}`);
     }
-    return { command: 'init', cwd, verbose, maxConcurrent, apiKeys, warnings };
+    return { command: 'init', cwd, verbose, worktree, maxConcurrent, apiKeys, warnings };
   }
 
   if (command === 'resume') {
@@ -214,6 +226,7 @@ export function parseArgs(argv: string[]): CliOptions {
       workDir,
       maxConcurrent,
       verbose,
+      worktree,
       apiKeys,
       warnings,
       sessionName,
@@ -240,6 +253,7 @@ export function parseArgs(argv: string[]): CliOptions {
     workDir,
     maxConcurrent,
     verbose,
+    worktree,
     apiKeys,
     warnings,
   };
@@ -322,6 +336,23 @@ export async function runCommand(options: CliOptions): Promise<void> {
   const workflow = await loadWorkflow(workflowName, options.cwd);
   const useTui = shouldUseTui({ verbose: options.verbose, isTty: !!process.stdout.isTTY });
 
+  // Worktree setup
+  let worktreeInfo: WorktreeInfo | undefined;
+  let effectiveCwd = options.cwd;
+  if (options.worktree) {
+    const profilesDirs = resolveProfilesDirs(options.cwd, workflowName);
+    const setup = await setupWorktree(
+      options.cwd,
+      profilesDirs,
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+      options.taskPrompt!,
+      Object.keys(options.apiKeys).length > 0 ? options.apiKeys : undefined,
+    );
+    worktreeInfo = setup.worktreeInfo;
+    effectiveCwd = setup.worktreePath;
+    console.log('Worktree created at ' + setup.worktreePath + ' on branch ' + setup.branchName);
+  }
+
   // Set up SIGINT handler for cooperative cancellation
   const { handler, cleanup, controller } = setupSigintHandler(useTui);
 
@@ -329,13 +360,27 @@ export async function runCommand(options: CliOptions): Promise<void> {
   try {
     // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
     await workflow.run(options.taskPrompt!, {
-      cwd: options.cwd,
+      cwd: effectiveCwd,
       workDir,
       maxConcurrentTasks: options.maxConcurrent,
       apiKeys: Object.keys(options.apiKeys).length > 0 ? options.apiKeys : undefined,
       ...(useTui ? { verbose: false } : { verbose: true, onStatus: createStatusCallbacks(options.verbose) }),
       signal: controller.signal,
+      ...(worktreeInfo ? { worktree: worktreeInfo } : {}),
     });
+    if (worktreeInfo) {
+      const profilesDirs = resolveProfilesDirs(worktreeInfo.originalCwd, workflowName);
+      await promptPostWorktreeAction({
+        profilesDirs,
+        repoRoot: worktreeInfo.originalCwd,
+        worktreePath: worktreeInfo.worktreePath,
+        branchName: worktreeInfo.branchName,
+        originalCwd: worktreeInfo.originalCwd,
+        // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+        taskPrompt: options.taskPrompt!,
+        apiKeys: Object.keys(options.apiKeys).length > 0 ? options.apiKeys : undefined,
+      });
+    }
   } finally {
     cleanup();
   }
@@ -367,8 +412,12 @@ export async function resumeCommand(options: CliOptions): Promise<void> {
   // Read the state file to get the task prompt
   const statePath = join(run.fullPath, '.engin-state.json');
   const stateRaw = readFileSync(statePath, 'utf-8');
-  const state = JSON.parse(stateRaw) as { taskPrompt: string };
+  const state = JSON.parse(stateRaw) as {
+    taskPrompt: string;
+    worktree?: { worktreePath: string; branchName: string; originalCwd: string };
+  };
   const taskPrompt = state.taskPrompt;
+  const worktreeInfo = state.worktree;
 
   if (!taskPrompt) {
     throw new Error(`Run "${run.dirName}" has no task prompt in its state file. Cannot resume.`);
@@ -376,6 +425,11 @@ export async function resumeCommand(options: CliOptions): Promise<void> {
 
   const workDir = run.fullPath;
   const workflowName = run.workflowName;
+
+  if (worktreeInfo) {
+    options = { ...options, cwd: worktreeInfo.worktreePath };
+    console.log(`${formatTime()} Resuming in worktree: ${worktreeInfo.branchName}`);
+  }
 
   console.log(`${formatTime()} 🔄 Resuming run: ${run.dirName}`);
   console.log(`${formatTime()}    Workflow: ${workflowName}`);
@@ -398,7 +452,20 @@ export async function resumeCommand(options: CliOptions): Promise<void> {
       apiKeys: Object.keys(options.apiKeys).length > 0 ? options.apiKeys : undefined,
       ...(useTui ? { verbose: false } : { verbose: true, onStatus: createStatusCallbacks(options.verbose) }),
       signal: controller.signal,
+      ...(worktreeInfo ? { worktree: worktreeInfo } : {}),
     });
+    if (worktreeInfo) {
+      const profilesDirs = resolveProfilesDirs(worktreeInfo.originalCwd, workflowName);
+      await promptPostWorktreeAction({
+        profilesDirs,
+        repoRoot: worktreeInfo.originalCwd,
+        worktreePath: worktreeInfo.worktreePath,
+        branchName: worktreeInfo.branchName,
+        originalCwd: worktreeInfo.originalCwd,
+        taskPrompt,
+        apiKeys: Object.keys(options.apiKeys).length > 0 ? options.apiKeys : undefined,
+      });
+    }
   } finally {
     cleanup();
   }

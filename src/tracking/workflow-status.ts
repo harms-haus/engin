@@ -1,6 +1,6 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { PersistedAgentRecord, WorkflowState } from '../core/types.js';
+import type { PersistedAgentRecord, WorkflowState, WorktreeInfo } from '../core/types.js';
 import { isEnoentError } from '../core/utils.js';
 import { AuditLog } from './audit-log.js';
 import { TaskTracker } from './task-status.js';
@@ -29,6 +29,7 @@ export class WorkflowStatusTracker {
   private _needsSave = false;
   private _saveLock: Promise<void> = Promise.resolve();
   private _sidebar?: { title?: string; indicator?: string; phases?: { id: string; label: string; icon: string }[] };
+  private _worktree?: WorktreeInfo;
   private _spawnedAgents: PersistedAgentRecord[] = [];
 
   constructor(workDir: string) {
@@ -142,6 +143,10 @@ export class WorkflowStatusTracker {
       : undefined;
   }
 
+  get worktree(): WorktreeInfo | undefined {
+    return this._worktree ? { ...this._worktree } : undefined;
+  }
+
   get spawnedAgents(): PersistedAgentRecord[] {
     return this._spawnedAgents.map((a) => ({ ...a }));
   }
@@ -199,6 +204,10 @@ export class WorkflowStatusTracker {
 
   incrementAgentCount(): void {
     this._stats.agentCount += 1;
+  }
+
+  setWorktree(info: WorktreeInfo): void {
+    this._worktree = { ...info };
   }
 
   setSidebar(info: {
@@ -263,6 +272,7 @@ export class WorkflowStatusTracker {
       stats: { ...this._stats },
       spawnedAgents: this._spawnedAgents.length > 0 ? this._spawnedAgents.map((a) => ({ ...a })) : [],
       sidebar: this._sidebar ? { ...this._sidebar } : undefined,
+      worktree: this._worktree ? { ...this._worktree } : undefined,
     };
   }
 
@@ -311,6 +321,7 @@ export class WorkflowStatusTracker {
     tracker._stats = { ...data.stats };
     tracker._spawnedAgents = data.spawnedAgents ? data.spawnedAgents.map((a) => ({ ...a })) : [];
     tracker._sidebar = data.sidebar ? { ...data.sidebar } : undefined;
+    tracker._worktree = data.worktree ? { ...data.worktree } : undefined;
 
     // Rebuild TaskTracker from saved tasks
     if (data.tasks && data.tasks.length > 0) {

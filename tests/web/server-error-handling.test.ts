@@ -303,4 +303,174 @@ describe('server error handling (silent catch fixes)', () => {
       expect(lastCall[1]).toBe(fsError);
     });
   });
+
+  // ─── Worktree field passthrough ────────────────────────────────────
+
+  describe('POST /api/runs worktree field passthrough', () => {
+    it('accepts worktree: true without error and returns runId', async () => {
+      const baseUrl = await startServer();
+
+      const res = await fetch(`${baseUrl}/api/runs`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          workflowName: 'test-workflow',
+          taskPrompt: 'Do something',
+          worktree: true,
+        }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { runId: string };
+      expect(body.runId).toBeDefined();
+      expect(typeof body.runId).toBe('string');
+      expect(body.runId.length).toBeGreaterThan(0);
+    });
+
+    it('logs warning via console.warn when worktree is true', async () => {
+      const baseUrl = await startServer();
+
+      const originalWarn = console.warn;
+      const warnCalls: unknown[][] = [];
+      console.warn = (...args: unknown[]) => {
+        warnCalls.push(args);
+      };
+
+      await fetch(`${baseUrl}/api/runs`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          workflowName: 'test-workflow',
+          taskPrompt: 'Do something',
+          worktree: true,
+        }),
+      });
+
+      console.warn = originalWarn;
+
+      expect(warnCalls.length).toBeGreaterThanOrEqual(1);
+      const worktreeWarning = warnCalls.find((call) => typeof call[0] === 'string' && call[0].includes('worktree'));
+      expect(worktreeWarning).toBeDefined();
+      expect(worktreeWarning![0]).toBe('Warning: --worktree is not supported via the web API. Ignoring.');
+    });
+
+    it('does not log worktree warning when worktree is false', async () => {
+      const baseUrl = await startServer();
+
+      const originalWarn = console.warn;
+      const warnCalls: unknown[][] = [];
+      console.warn = (...args: unknown[]) => {
+        warnCalls.push(args);
+      };
+
+      const res = await fetch(`${baseUrl}/api/runs`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          workflowName: 'test-workflow',
+          taskPrompt: 'Do something',
+          worktree: false,
+        }),
+      });
+
+      console.warn = originalWarn;
+
+      // Should succeed without worktree warning
+      expect(res.status).toBe(200);
+      const worktreeWarning = warnCalls.find((call) => typeof call[0] === 'string' && call[0].includes('worktree'));
+      expect(worktreeWarning).toBeUndefined();
+    });
+
+    it('does not log worktree warning when worktree is absent', async () => {
+      const baseUrl = await startServer();
+
+      const originalWarn = console.warn;
+      const warnCalls: unknown[][] = [];
+      console.warn = (...args: unknown[]) => {
+        warnCalls.push(args);
+      };
+
+      const res = await fetch(`${baseUrl}/api/runs`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          workflowName: 'test-workflow',
+          taskPrompt: 'Do something',
+        }),
+      });
+
+      console.warn = originalWarn;
+
+      // Should succeed without worktree warning
+      expect(res.status).toBe(200);
+      const worktreeWarning = warnCalls.find((call) => typeof call[0] === 'string' && call[0].includes('worktree'));
+      expect(worktreeWarning).toBeUndefined();
+    });
+
+    it('accepts worktree with other optional fields (maxConcurrent) and returns runId', async () => {
+      const baseUrl = await startServer();
+
+      const res = await fetch(`${baseUrl}/api/runs`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          workflowName: 'test-workflow',
+          taskPrompt: 'Do something',
+          maxConcurrent: 5,
+          worktree: true,
+        }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { runId: string };
+      expect(body.runId).toBeDefined();
+    });
+
+    it('still returns 400 when worktree is provided but required fields are missing', async () => {
+      const baseUrl = await startServer();
+
+      const res = await fetch(`${baseUrl}/api/runs`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          worktree: true,
+        }),
+      });
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toContain('workflowName');
+    });
+
+    it('warning is logged before the response when worktree is true', async () => {
+      const baseUrl = await startServer();
+
+      const originalWarn = console.warn;
+      const warnCalls: unknown[][] = [];
+      console.warn = (...args: unknown[]) => {
+        warnCalls.push(args);
+      };
+
+      // Make the request and await the response
+      const res = await fetch(`${baseUrl}/api/runs`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          workflowName: 'test-workflow',
+          taskPrompt: 'Test ordering',
+          worktree: true,
+        }),
+      });
+
+      // The response should already be successful
+      expect(res.status).toBe(200);
+
+      // And the warning should already have been logged (synchronously before the response)
+      console.warn = originalWarn;
+
+      expect(warnCalls.length).toBeGreaterThanOrEqual(1);
+      const worktreeWarning = warnCalls.find((call) => typeof call[0] === 'string' && call[0].includes('worktree'));
+      expect(worktreeWarning).toBeDefined();
+    });
+  });
 });

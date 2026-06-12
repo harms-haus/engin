@@ -160,12 +160,20 @@ export async function startWebServer(
         if (req.method === 'POST' && url.pathname === '/api/runs') {
           return (async () => {
             try {
-              const body = (await req.json()) as { workflowName?: string; taskPrompt?: string; maxConcurrent?: number };
+              const body = (await req.json()) as {
+                workflowName?: string;
+                taskPrompt?: string;
+                maxConcurrent?: number;
+                worktree?: boolean;
+              };
               if (!body.workflowName || !body.taskPrompt) {
                 return new Response(JSON.stringify({ error: 'workflowName and taskPrompt are required' }), {
                   status: 400,
                   headers: { 'Content-Type': 'application/json' },
                 });
+              }
+              if (body.worktree) {
+                console.warn('Warning: --worktree is not supported via the web API. Ignoring.');
               }
               const runId = await startWorkflow(body.workflowName, body.taskPrompt, body.maxConcurrent);
               return Response.json({ runId });

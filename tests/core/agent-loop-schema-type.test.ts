@@ -8,7 +8,7 @@
  */
 import { afterAll, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { z, type ZodType } from 'zod';
-import type { HarnessCreationOptions } from '../../src/core/types.ts';
+import type { HarnessCreationOptions, WorkflowRunOptions, WorkflowState, WorktreeInfo } from '../../src/core/types.ts';
 import { makeMockSession } from '../helpers/make-session.js';
 
 // Capture real modules before mocking so we can restore them in afterAll.
@@ -387,6 +387,166 @@ describe('sequentialAgents with schema and agentIdPrefix together', () => {
 
     // Verify schema was used
     expect(mockPromptForStructured).toHaveBeenCalledTimes(2);
+  });
+});
+
+// ─── WorktreeInfo type tests ────────────────────────────────────────────────
+
+describe('WorktreeInfo', () => {
+  it('can be constructed with all required fields', () => {
+    const info: WorktreeInfo = {
+      worktreePath: '/repo/.git-trees/abc123',
+      branchName: 'feature-branch',
+      originalCwd: '/home/user/project',
+    };
+    expect(info.worktreePath).toBe('/repo/.git-trees/abc123');
+    expect(info.branchName).toBe('feature-branch');
+    expect(info.originalCwd).toBe('/home/user/project');
+  });
+
+  it('has exactly three fields: worktreePath, branchName, originalCwd', () => {
+    const info: WorktreeInfo = {
+      worktreePath: '/path/to/worktree',
+      branchName: 'main',
+      originalCwd: '/path/to/original',
+    };
+    const keys = Object.keys(info);
+    expect(keys).toHaveLength(3);
+    expect(keys).toContain('worktreePath');
+    expect(keys).toContain('branchName');
+    expect(keys).toContain('originalCwd');
+  });
+
+  it('worktreePath is a string', () => {
+    const info: WorktreeInfo = {
+      worktreePath: '/some/path',
+      branchName: 'branch',
+      originalCwd: '/cwd',
+    };
+    expect(typeof info.worktreePath).toBe('string');
+  });
+
+  it('branchName is a string', () => {
+    const info: WorktreeInfo = {
+      worktreePath: '/some/path',
+      branchName: 'branch',
+      originalCwd: '/cwd',
+    };
+    expect(typeof info.branchName).toBe('string');
+  });
+
+  it('originalCwd is a string', () => {
+    const info: WorktreeInfo = {
+      worktreePath: '/some/path',
+      branchName: 'branch',
+      originalCwd: '/cwd',
+    };
+    expect(typeof info.originalCwd).toBe('string');
+  });
+});
+
+// ─── WorkflowState.worktree field tests ──────────────────────────────────────
+
+describe('WorkflowState with worktree', () => {
+  it('accepts a worktree field of type WorktreeInfo', () => {
+    const state: WorkflowState = {
+      taskPrompt: 'do something',
+      currentPhase: 'scouting',
+      completedPhases: [],
+      tasks: [],
+      scoutingReports: [],
+      plan: null,
+      stats: { totalTokens: 0, totalCost: 0, agentCount: 0 },
+      worktree: {
+        worktreePath: '/repo/.worktrees/feature',
+        branchName: 'feature-x',
+        originalCwd: '/home/user/project',
+      },
+    };
+    expect(state.worktree).toBeDefined();
+    expect(state.worktree?.worktreePath).toBe('/repo/.worktrees/feature');
+    expect(state.worktree?.branchName).toBe('feature-x');
+    expect(state.worktree?.originalCwd).toBe('/home/user/project');
+  });
+
+  it('allows worktree to be undefined (optional)', () => {
+    const state: WorkflowState = {
+      taskPrompt: 'do something',
+      currentPhase: 'scouting',
+      completedPhases: [],
+      tasks: [],
+      scoutingReports: [],
+      plan: null,
+      stats: { totalTokens: 0, totalCost: 0, agentCount: 0 },
+    };
+    expect(state.worktree).toBeUndefined();
+  });
+
+  it('worktree can be set alongside other optional fields like spawnedAgents and sidebar', () => {
+    const state: WorkflowState = {
+      taskPrompt: 'complex task',
+      currentPhase: 'implementing',
+      completedPhases: ['scouting', 'planning'],
+      tasks: [],
+      scoutingReports: [{}],
+      plan: {},
+      stats: { totalTokens: 500, totalCost: 0.05, agentCount: 2 },
+      spawnedAgents: [{ agentId: 'a1', profile: 'dev', phase: 'impl', taskId: 't1' }],
+      sidebar: { title: 'Test', phases: [] },
+      worktree: {
+        worktreePath: '/worktree/path',
+        branchName: 'my-branch',
+        originalCwd: '/original/cwd',
+      },
+    };
+    expect(state.worktree?.branchName).toBe('my-branch');
+    expect(state.spawnedAgents).toHaveLength(1);
+    expect(state.sidebar?.title).toBe('Test');
+  });
+});
+
+// ─── WorkflowRunOptions.worktree field tests ────────────────────────────────
+
+describe('WorkflowRunOptions with worktree', () => {
+  it('accepts a worktree field of type WorktreeInfo', () => {
+    const options: WorkflowRunOptions = {
+      cwd: '/home/user/project',
+      workDir: '/home/user/.engin/workdirs/run-1',
+      worktree: {
+        worktreePath: '/repo/.worktrees/run-1',
+        branchName: 'engin-run-1',
+        originalCwd: '/home/user/project',
+      },
+    };
+    expect(options.worktree).toBeDefined();
+    expect(options.worktree?.worktreePath).toBe('/repo/.worktrees/run-1');
+    expect(options.worktree?.branchName).toBe('engin-run-1');
+    expect(options.worktree?.originalCwd).toBe('/home/user/project');
+  });
+
+  it('allows worktree to be undefined (optional)', () => {
+    const options: WorkflowRunOptions = {
+      cwd: '/home/user/project',
+      workDir: '/home/user/.engin/workdirs/run-1',
+    };
+    expect(options.worktree).toBeUndefined();
+  });
+
+  it('worktree can be set alongside other optional fields like maxConcurrentTasks and verbose', () => {
+    const options: WorkflowRunOptions = {
+      cwd: '/home/user/project',
+      workDir: '/home/user/.engin/workdirs/run-1',
+      maxConcurrentTasks: 4,
+      verbose: true,
+      worktree: {
+        worktreePath: '/worktree',
+        branchName: 'branch',
+        originalCwd: '/cwd',
+      },
+    };
+    expect(options.worktree?.branchName).toBe('branch');
+    expect(options.maxConcurrentTasks).toBe(4);
+    expect(options.verbose).toBe(true);
   });
 });
 

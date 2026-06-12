@@ -64,6 +64,8 @@ export interface WorkflowState {
     indicator?: string;
     phases?: { id: string; label: string; icon: string }[];
   };
+  /** Git worktree information for isolated execution */
+  worktree?: WorktreeInfo;
 }
 
 // ─── Audit Events ───────────────────────────────────────────────────────────
@@ -81,6 +83,17 @@ export interface PersistedAgentRecord {
   phase: string;
   taskId?: string;
   completedAt?: string;
+}
+
+// ─── Worktree Info ──────────────────────────────────────────────────────
+/** Describes a git worktree used for isolated workflow execution. */
+export interface WorktreeInfo {
+  /** Absolute path to the worktree directory on disk */
+  worktreePath: string;
+  /** Name of the branch checked out in the worktree */
+  branchName: string;
+  /** The original working directory before switching to the worktree */
+  originalCwd: string;
 }
 
 // ─── Structured Output ──────────────────────────────────────────────────────
@@ -155,6 +168,8 @@ export interface WorkflowRunOptions {
   tracker?: unknown;
   /** When true, use verbose console output instead of TUI dashboard */
   verbose?: boolean;
+  /** Git worktree information for isolated execution */
+  worktree?: WorktreeInfo;
 }
 
 // ─── Workflow Entry ───────────────────────────────────────────────────────

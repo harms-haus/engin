@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import type { CliOptions } from '../src/cli.ts';
 import { main, parseArgs } from '../src/cli.ts';
 import { useEnvSandbox } from './helpers/env-sandbox.js';
 import { useTempDir } from './helpers/use-temp-dir.js';
@@ -18,6 +19,7 @@ describe('parseArgs', () => {
       workDir: undefined,
       maxConcurrent: 5,
       verbose: false,
+      worktree: false,
       apiKeys: {},
       warnings: [],
     });
@@ -137,6 +139,7 @@ describe('parseArgs', () => {
         cwd: process.cwd(),
         maxConcurrent: 5,
         verbose: false,
+        worktree: false,
         apiKeys: {},
         warnings: [],
       });
@@ -154,6 +157,7 @@ describe('parseArgs', () => {
         cwd: process.cwd(),
         maxConcurrent: 5,
         verbose: false,
+        worktree: false,
         apiKeys: {},
         warnings: [],
       });
@@ -315,6 +319,116 @@ describe('parseArgs', () => {
       const result = parseArgs(['web', '--port', '65535']);
       expect(result.port).toBe(65535);
     });
+  });
+
+  describe('--worktree flag', () => {
+    it('defaults to false for run command', () => {
+      const result = parseArgs(['develop', 'task']);
+      expect(result.command).toBe('run');
+      expect(result.worktree).toBe(false);
+    });
+
+    it('sets worktree to true when --worktree is passed for run', () => {
+      const result = parseArgs(['develop', 'task', '--worktree']);
+      expect(result.command).toBe('run');
+      expect(result.worktree).toBe(true);
+    });
+
+    it('sets worktree to true when --worktree is passed with other flags for run', () => {
+      const result = parseArgs(['develop', 'task', '--worktree', '--verbose', '--cwd', '/tmp']);
+      expect(result.command).toBe('run');
+      expect(result.worktree).toBe(true);
+      expect(result.verbose).toBe(true);
+      expect(result.cwd).toBe('/tmp');
+    });
+
+    it('defaults to false for help command', () => {
+      const result = parseArgs(['--help']);
+      expect(result.command).toBe('help');
+      expect(result.worktree).toBe(false);
+    });
+
+    it('defaults to false for version command', () => {
+      const result = parseArgs(['--version']);
+      expect(result.command).toBe('version');
+      expect(result.worktree).toBe(false);
+    });
+
+    it('defaults to false for init command', () => {
+      const result = parseArgs(['init']);
+      expect(result.command).toBe('init');
+      expect(result.worktree).toBe(false);
+    });
+
+    it('defaults to false for web command', () => {
+      const result = parseArgs(['web']);
+      expect(result.command).toBe('web');
+      expect(result.worktree).toBe(false);
+    });
+
+    it('defaults to false for web command even with other flags', () => {
+      const result = parseArgs(['web', '--verbose', '--host', '0.0.0.0']);
+      expect(result.command).toBe('web');
+      expect(result.worktree).toBe(false);
+    });
+
+    it('sets worktree to true for resume command', () => {
+      const result = parseArgs(['resume', 'my-session', '--worktree']);
+      expect(result.command).toBe('resume');
+      expect(result.sessionName).toBe('my-session');
+      expect(result.worktree).toBe(true);
+    });
+
+    it('defaults to false for resume command without flag', () => {
+      const result = parseArgs(['resume', 'my-session']);
+      expect(result.command).toBe('resume');
+      expect(result.worktree).toBe(false);
+    });
+
+    it('is recognized as a valid flag (not rejected as unknown)', () => {
+      expect(() => parseArgs(['develop', 'task', '--worktree'])).not.toThrow();
+    });
+  });
+
+  describe('USAGE string', () => {
+    it('includes --worktree in the help text', async () => {
+      const originalArgv = process.argv;
+      const exitSpy = spyOn(process, 'exit').mockImplementation(((code: number) => {
+        throw new Error(`process.exit(${code})`);
+      }) as never);
+      const stdoutSpy = spyOn(process.stdout, 'write').mockImplementation(() => true);
+
+      process.argv = ['node', 'cli.ts', '--help'];
+      try {
+        await expect(main()).rejects.toThrow('process.exit(0)');
+      } finally {
+        process.argv = originalArgv;
+      }
+
+      const output = stdoutSpy.mock.calls[0][0] as string;
+      expect(output).toContain('--worktree');
+      expect(output).toMatch(/--worktree\s+Run workflow in a git worktree/);
+      exitSpy.mockRestore();
+      stdoutSpy.mockRestore();
+    });
+  });
+
+  it('CliOptions type includes worktree: boolean', () => {
+    // Compile-time check: if CliOptions doesn't have worktree, this won't compile.
+    // Runtime check: create a value and verify the property exists.
+    const opts: CliOptions = {
+      command: 'run',
+      workflowName: 'develop',
+      taskPrompt: 'task',
+      cwd: process.cwd(),
+      maxConcurrent: 5,
+      verbose: false,
+      worktree: true,
+      apiKeys: {},
+      warnings: [],
+    };
+    expect(opts.worktree).toBe(true);
+    expect(typeof opts.worktree).toBe('boolean');
   });
 });
 
