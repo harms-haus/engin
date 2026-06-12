@@ -169,6 +169,10 @@ export class AgentLogWidget implements Component {
     return Array.from(this.agents.keys());
   }
 
+  hasAgent(agentId: string): boolean {
+    return this.agents.has(agentId);
+  }
+
   updateStats(
     agentId: string,
     partial: {

@@ -84,6 +84,12 @@ function createMockAgentLog() {
     invalidate() {
       calls.push({ method: 'invalidate', args: [] });
     },
+    hasAgent(_agentId: string): boolean {
+      return false;
+    },
+    transferAgent(_fromId: string, _toId: string): void {
+      calls.push({ method: 'transferAgent', args: [_fromId, _toId] });
+    },
   } as unknown as AgentLogWidget & { calls: { method: string; args: unknown[] }[] };
 }
 

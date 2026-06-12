@@ -58,8 +58,8 @@ export function createTuiStatusCallbacks(deps: {
       // phase spawns "scout-topic" then LanePool spawns "lane-0" with taskId
       // "scout-topic"), merge the two entries to avoid duplicates.
       if (info.taskId && info.taskId !== info.agentId) {
-        const prevAgentId = taskToAgent.get(info.taskId);
-        if (prevAgentId && prevAgentId === info.taskId) {
+        const prevAgentId = taskToAgent.get(info.taskId) ?? info.taskId;
+        if (prevAgentId !== info.agentId && dashboard.agentLog.hasAgent(prevAgentId)) {
           // Transfer any data from the placeholder agent to the real one
           dashboard.agentLog.transferAgent(prevAgentId, info.agentId);
         }
