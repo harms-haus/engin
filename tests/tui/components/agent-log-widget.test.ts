@@ -86,20 +86,52 @@ describe('AgentLogWidget', () => {
     }
   });
 
-  it('truncates content to width', () => {
-    const widget = new AgentLogWidget(3);
+  it('wraps long content to width', () => {
+    const widget = new AgentLogWidget(5);
     widget.selectAgent('agent-1', 'coder');
     widget.addEntry({
       type: 'text',
-      content: 'This is a very long string that should be truncated',
+      content: 'This is a very long string that should wrap',
     });
 
+    // width=20, prefix '  💬 ' has visibleWidth=5, remainingWidth=15
+    // wrapTextWithAnsi splits at word boundaries: ['This is a very', 'long string', 'that should', 'wrap']
     const lines = widget.render(20);
-    expect(lines.length).toBe(3);
-    // Each line should have visible width of 20
-    // The content line should not exceed the width
-    // We check that the line contains the beginning of the content
-    expect(lines[1]).toContain('This is a');
+    expect(lines.length).toBe(5);
+    // Content should wrap across multiple lines, not be truncated with '…'
+    const allContent = lines.join('');
+    expect(allContent).not.toContain('…');
+    // The wrapped content should appear across multiple entry lines
+    const entryLines = lines.slice(1).filter((l) => l.trim().length > 0);
+    expect(entryLines.length).toBeGreaterThan(1);
+    // Verify specific wrapped segments are present
+    expect(allContent).toContain('This is a very');
+    expect(allContent).toContain('long string');
+    expect(allContent).toContain('that should');
+    expect(allContent).toContain('wrap');
+  });
+
+  it('wraps a very long single word', () => {
+    const widget = new AgentLogWidget(5);
+    widget.selectAgent('agent-1', 'coder');
+    widget.addEntry({
+      type: 'text',
+      content: 'supercalifragilisticexpialidocious',
+    });
+
+    // width=20, prefix visibleWidth=5, remainingWidth=15
+    // wrapTextWithAnsi splits mid-word: ['supercalifragil', 'isticexpialidoc', 'ious']
+    const lines = widget.render(20);
+    expect(lines.length).toBe(5);
+    // The word should be split across multiple lines (mid-word wrapping)
+    const allContent = lines.join('');
+    expect(allContent).toContain('supercalifragil');
+    expect(allContent).toContain('isticexpialidoc');
+    expect(allContent).toContain('ious');
+    // Only the first line should have the icon
+    expect(lines[1]).toContain('💬');
+    // Continuation lines should have spaces instead of icon
+    expect(lines[2]).not.toContain('💬');
   });
 
   it('always returns exactly maxLines lines', () => {
@@ -136,11 +168,11 @@ describe('AgentLogWidget', () => {
     expect(lines[2]).toContain('d');
   });
 
-  it('uses default maxLines of 10', () => {
+  it('uses default maxLines of 20', () => {
     const widget = new AgentLogWidget();
     widget.selectAgent('a', 'p');
     const lines = widget.render(WIDTH);
-    expect(lines.length).toBe(10);
+    expect(lines.length).toBe(20);
   });
 
   // ─── Per-agent state tests ──────────────────────────────────────────
@@ -400,5 +432,155 @@ describe('AgentLogWidget', () => {
     widget.selectAgent('agent-1', 'coder');
     const lines = widget.render(WIDTH);
     expect(lines[1]).toContain('hello');
+  });
+
+  // ─── Multi-line entry rendering ──────────────────────────────────────
+
+  it('splits multi-line entries into separate rendered lines', () => {
+    const widget = new AgentLogWidget(10);
+    widget.selectAgent('agent-1', 'coder');
+    widget.addEntry({ type: 'thinking', content: 'line1\nline2\nline3' });
+
+    const lines = widget.render(WIDTH);
+    expect(lines.length).toBe(10);
+    // lines[0] = header
+    expect(lines[1]).toContain('🧠');
+    expect(lines[1]).toContain('line1');
+    // Continuation lines should NOT have the icon
+    expect(lines[2]).toContain('line2');
+    expect(lines[2]).not.toContain('🧠');
+    expect(lines[3]).toContain('line3');
+    expect(lines[3]).not.toContain('🧠');
+  });
+
+  it('counts actual lines not entries for slot budget', () => {
+    // A 5-line widget: 1 header + 4 entry slots
+    // One multi-line entry with 6 sub-lines should only show the last 4
+    const widget = new AgentLogWidget(5);
+    widget.selectAgent('agent-1', 'coder');
+    widget.addEntry({ type: 'text', content: 'a\nb\nc\nd\ne\nf' });
+
+    const lines = widget.render(WIDTH);
+    expect(lines.length).toBe(5);
+    // Only last 4 sub-lines fit: c, d, e, f
+    expect(lines[1]).toContain('c');
+    expect(lines[2]).toContain('d');
+    expect(lines[3]).toContain('e');
+    expect(lines[4]).toContain('f');
+  });
+
+  it('continuation lines have aligned prefix with no icon', () => {
+    const widget = new AgentLogWidget(10);
+    widget.selectAgent('agent-1', 'coder');
+    widget.addEntry({ type: 'error', content: 'msg1\nmsg2' });
+
+    const lines = widget.render(WIDTH);
+    // First sub-line has the icon
+    expect(lines[1]).toContain('⚠️');
+    expect(lines[1]).toContain('msg1');
+    // Second sub-line is a continuation — spaces instead of icon
+    expect(lines[2]).toContain('msg2');
+    expect(lines[2]).not.toContain('⚠️');
+  });
+
+  it('multi-line entry with footer still returns exactly maxLines', () => {
+    const widget = new AgentLogWidget(5);
+    widget.selectAgent('agent-1', 'coder');
+    widget.selectAgent('agent-2', 'scout');
+    // agent-2 is current; footer takes 1 line → header(1) + entry slots(3) + footer(1) = 5
+    widget.addEntry({ type: 'text', content: 'a\nb\nc\nd\ne\nf' });
+
+    const lines = widget.render(80);
+    expect(lines.length).toBe(5);
+    // Header + 3 entry sub-lines + footer
+    // Last 3 sub-lines of 6: d, e, f
+    expect(lines[1]).toContain('d');
+    expect(lines[2]).toContain('e');
+    expect(lines[3]).toContain('f');
+    expect(lines[4]).toContain('← → switch agent');
+  });
+
+  it('multiple entries each with newlines render correctly', () => {
+    const widget = new AgentLogWidget(10);
+    widget.selectAgent('agent-1', 'coder');
+    widget.addEntry({ type: 'text', content: 'first\nsecond' });
+    widget.addEntry({ type: 'thinking', content: 'alpha\nbeta' });
+
+    const lines = widget.render(WIDTH);
+    expect(lines.length).toBe(10);
+    // header + 4 sub-lines + 5 padding = 10
+    expect(lines[1]).toContain('💬');
+    expect(lines[1]).toContain('first');
+    expect(lines[2]).toContain('second');
+    expect(lines[3]).toContain('🧠');
+    expect(lines[3]).toContain('alpha');
+    expect(lines[4]).toContain('beta');
+  });
+
+  // ─── markAgentComplete / footer counts ─────────────────────────────
+
+  it('footer shows active and completed counts', () => {
+    const widget = new AgentLogWidget(5);
+    widget.selectAgent('agent-1', 'coder');
+    widget.selectAgent('agent-2', 'scout');
+    widget.selectAgent('agent-3', 'planner');
+    widget.markAgentComplete('agent-1');
+
+    const lines = widget.render(80);
+    const footer = lines[lines.length - 1];
+    expect(footer).toContain('2 active, 1 done');
+    expect(footer).toContain('← → switch agent');
+  });
+
+  it('footer format when no agents completed', () => {
+    const widget = new AgentLogWidget(5);
+    widget.selectAgent('agent-1', 'coder');
+    widget.selectAgent('agent-2', 'scout');
+
+    const lines = widget.render(80);
+    const footer = lines[lines.length - 1];
+    expect(footer).toContain('← → switch agent (2/2)');
+    // Should NOT contain the active/done text
+    expect(footer).not.toContain('active');
+    expect(footer).not.toContain('done');
+  });
+
+  it('markAgentComplete tracks completed state', () => {
+    const widget = new AgentLogWidget(5);
+    widget.selectAgent('agent-1', 'coder');
+    widget.selectAgent('agent-2', 'scout');
+
+    // Before marking any complete
+    let lines = widget.render(80);
+    let footer = lines[lines.length - 1];
+    expect(footer).not.toContain('active');
+
+    widget.markAgentComplete('agent-1');
+
+    // After marking one complete
+    lines = widget.render(80);
+    footer = lines[lines.length - 1];
+    expect(footer).toContain('1 active, 1 done');
+
+    widget.markAgentComplete('agent-2');
+
+    // After marking both complete
+    lines = widget.render(80);
+    footer = lines[lines.length - 1];
+    expect(footer).toContain('0 active, 2 done');
+  });
+
+  it('cache eviction respects MAX_CACHED_AGENTS of 100', () => {
+    const widget = new AgentLogWidget(5);
+    // Add 101 agents
+    for (let i = 0; i < 101; i++) {
+      widget.selectAgent(`agent-${i}`, 'coder');
+    }
+    // After 101, one should have been evicted, leaving 100
+    expect(widget.getAgentIds().length).toBe(100);
+    // The first non-current agent should have been evicted (agent-0)
+    // Current agent is agent-100
+    expect(widget.getAgentIds()).not.toContain('agent-0');
+    expect(widget.getAgentIds()).toContain('agent-100');
   });
 });

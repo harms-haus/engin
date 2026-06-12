@@ -103,6 +103,7 @@ export interface WorkflowStatusCallbacks {
   onError?: (info: { agentId: string; error: string; phase: string; taskId?: string }) => void;
   onWorkflowComplete?: (info: { totalDurationMs: number; agentCount: number }) => void;
   onWorkflowFailed?: (info: { error: Error; phase: string }) => void;
+  onTasksAdded?: (info: { tasks: { id: string; title: string; status: TaskStatus; dependencies: string[] }[] }) => void;
   onSidebarUpdate?: (info: {
     title?: string;
     indicator?: string;
@@ -178,4 +179,6 @@ export interface HarnessCreationOptions {
   onAgentStatus?: AgentStatusCallbacks;
   sessionDir?: string;
   resumeSessionPath?: string;
+  /** Override agent ID used in status callbacks. Defaults to sessionId if not provided. */
+  agentId?: string;
 }

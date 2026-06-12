@@ -78,6 +78,9 @@ function createMockAgentLog() {
     ) {
       calls.push({ method: 'updateStats', args: [agentId, partial] });
     },
+    markAgentComplete(agentId: string) {
+      calls.push({ method: 'markAgentComplete', args: [agentId] });
+    },
     invalidate() {
       calls.push({ method: 'invalidate', args: [] });
     },
@@ -246,6 +249,7 @@ describe('createTuiStatusCallbacks', () => {
       expect(ctx.eventLog.lines).toEqual(['✅ Agent a1 complete']);
       expect(ctx.agentLog.calls).toEqual([
         { method: 'addEntry', args: [{ type: 'text', content: 'Agent session ended' }, 'a1'] },
+        { method: 'markAgentComplete', args: ['a1'] },
       ]);
     });
 
@@ -522,7 +526,7 @@ describe('createTuiStatusCallbacks', () => {
   });
 
   describe('onToolCallEnd', () => {
-    it('adds success entry to agentLog', () => {
+    it('does NOT add an entry to the agent log', () => {
       const ctx = createTestDeps();
       ctx.callbacks.onToolCallEnd!({
         agentId: 'a1',
@@ -530,12 +534,12 @@ describe('createTuiStatusCallbacks', () => {
         toolCallId: 'tc1',
         isError: false,
       });
-      expect(ctx.agentLog.calls).toEqual([
-        { method: 'addEntry', args: [{ type: 'tool_call_end', content: '📖 read → ? ✅' }, 'a1'] },
-      ]);
+      // No addEntry calls should have been made — tool_call_end entries are suppressed
+      const addEntryCalls = ctx.agentLog.calls.filter((c) => c.method === 'addEntry');
+      expect(addEntryCalls).toHaveLength(0);
     });
 
-    it('adds error entry to agentLog', () => {
+    it('adds an error entry when isError is true', () => {
       const ctx = createTestDeps();
       ctx.callbacks.onToolCallEnd!({
         agentId: 'a1',
@@ -544,11 +548,11 @@ describe('createTuiStatusCallbacks', () => {
         isError: true,
       });
       expect(ctx.agentLog.calls).toEqual([
-        { method: 'addEntry', args: [{ type: 'tool_call_end', content: '💻 bash →  ❌' }, 'a1'] },
+        { method: 'addEntry', args: [{ type: 'error', content: '❌ bash failed' }, 'a1'] },
       ]);
     });
 
-    it('calls requestRender', () => {
+    it('calls requestRender (regression)', () => {
       const ctx = createTestDeps();
       ctx.callbacks.onToolCallEnd!({ agentId: 'a1', toolName: 't', toolCallId: 'tc1', isError: false });
       expect(ctx.renderCount).toBe(1);
@@ -622,8 +626,64 @@ describe('createTuiStatusCallbacks', () => {
       ctx.callbacks.onToolCallEnd!({ agentId: 'a', toolName: 't', toolCallId: 'tc1', isError: false });
       ctx.callbacks.onSidebarUpdate!({});
 
-      // 16 callbacks total (onTurnStart removed – it was a no-op)
-      expect(ctx.renderCount).toBe(16);
+      ctx.callbacks.onTasksAdded!({ tasks: [] });
+
+      // 17 callbacks total (onTurnStart removed – it was a no-op)
+      expect(ctx.renderCount).toBe(17);
+    });
+  });
+
+  describe('onTasksAdded', () => {
+    it('creates lanes for blocked/ready tasks', () => {
+      const ctx = createTestDeps();
+      ctx.callbacks.onTasksAdded!({
+        tasks: [
+          { id: 't1', title: 'Task A', status: 'blocked', dependencies: ['t2'] },
+          { id: 't2', title: 'Task B', status: 'ready', dependencies: [] },
+        ],
+      });
+      expect(ctx.lanePool.calls).toEqual([
+        {
+          method: 'updateLanes',
+          args: [
+            [
+              { id: 't1', title: 'Task A', status: 'blocked' },
+              { id: 't2', title: 'Task B', status: 'ready' },
+            ],
+          ],
+        },
+      ]);
+    });
+
+    it('preserves existing lanes', () => {
+      const ctx = createTestDeps();
+      ctx.callbacks.onTaskStart!({ taskId: 't1', title: 'Implement feature', agentId: 'a1' });
+      ctx.callbacks.onTasksAdded!({
+        tasks: [{ id: 't2', title: 'Blocked task', status: 'blocked', dependencies: ['t1'] }],
+      });
+      const lastLaneUpdate = ctx.lanePool.calls[ctx.lanePool.calls.length - 1].args[0] as TaskLane[];
+      expect(lastLaneUpdate).toHaveLength(2);
+      expect(lastLaneUpdate).toContainEqual({
+        id: 't1',
+        title: 'Implement feature',
+        status: 'implementing',
+        agentId: 'a1',
+      });
+      expect(lastLaneUpdate).toContainEqual({ id: 't2', title: 'Blocked task', status: 'blocked' });
+    });
+
+    it('calls requestRender', () => {
+      const ctx = createTestDeps();
+      ctx.callbacks.onTasksAdded!({ tasks: [] });
+      expect(ctx.renderCount).toBe(1);
+    });
+
+    it('does not add to eventLog', () => {
+      const ctx = createTestDeps();
+      ctx.callbacks.onTasksAdded!({
+        tasks: [{ id: 't1', title: 'Task', status: 'ready', dependencies: [] }],
+      });
+      expect(ctx.eventLog.lines).toEqual([]);
     });
   });
 

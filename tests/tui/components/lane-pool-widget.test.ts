@@ -10,7 +10,7 @@ const WIDTH = 40;
 describe('LanePoolWidget', () => {
   describe('rendering empty lanes', () => {
     it('renders zero lanes when no lanes are set', () => {
-      const widget = new LanePoolWidget(3);
+      const widget = new LanePoolWidget();
       const lines = widget.render(WIDTH);
       expect(lines).toHaveLength(0);
     });
@@ -18,12 +18,12 @@ describe('LanePoolWidget', () => {
 
   describe('getVisibleLaneCount', () => {
     it('returns 0 when no lanes are set', () => {
-      const widget = new LanePoolWidget(3);
+      const widget = new LanePoolWidget();
       expect(widget.getVisibleLaneCount()).toBe(0);
     });
 
     it('returns the number of lanes set via updateLanes', () => {
-      const widget = new LanePoolWidget(5);
+      const widget = new LanePoolWidget();
       widget.updateLanes([
         { id: 't1', title: 'A', status: 'ready' },
         { id: 't2', title: 'B', status: 'done' },
@@ -32,7 +32,7 @@ describe('LanePoolWidget', () => {
     });
 
     it('updates when lanes change', () => {
-      const widget = new LanePoolWidget(5);
+      const widget = new LanePoolWidget();
       expect(widget.getVisibleLaneCount()).toBe(0);
       widget.updateLanes([{ id: 't1', title: 'A', status: 'ready' }]);
       expect(widget.getVisibleLaneCount()).toBe(1);
@@ -47,7 +47,7 @@ describe('LanePoolWidget', () => {
 
   describe('rendering lanes with status icons and titles', () => {
     it('renders each lane with its status icon and colored title', () => {
-      const widget = new LanePoolWidget(3);
+      const widget = new LanePoolWidget();
       const lanes: TaskLane[] = [
         { id: 't1', title: 'Task A', status: 'done' },
         { id: 't2', title: 'Task B', status: 'implementing' },
@@ -58,19 +58,19 @@ describe('LanePoolWidget', () => {
 
       expect(lines).toHaveLength(3);
 
-      // Line 0: icon + space + colored title
-      const expected0 = statusIcon('done') + ' ' + statusColor('done')('Task A');
+      // After sorting: implementing (t2) first, then blocked (t3), then done (t1)
+      const expected0 = statusIcon('implementing') + ' ' + statusColor('implementing')('Task B');
       expect(lines[0].startsWith(expected0)).toBe(true);
 
-      const expected1 = statusIcon('implementing') + ' ' + statusColor('implementing')('Task B');
+      const expected1 = statusIcon('blocked') + ' ' + statusColor('blocked')('Task C');
       expect(lines[1].startsWith(expected1)).toBe(true);
 
-      const expected2 = statusIcon('blocked') + ' ' + statusColor('blocked')('Task C');
+      const expected2 = statusIcon('done') + ' ' + statusColor('done')('Task A');
       expect(lines[2].startsWith(expected2)).toBe(true);
     });
 
     it('renders only actual lanes with no blank padding', () => {
-      const widget = new LanePoolWidget(4);
+      const widget = new LanePoolWidget();
       widget.updateLanes([{ id: 't1', title: 'Only', status: 'ready' }]);
       const lines = widget.render(WIDTH);
 
@@ -82,12 +82,13 @@ describe('LanePoolWidget', () => {
 
   describe('focused lane', () => {
     it('renders the focused lane in bold', () => {
-      const widget = new LanePoolWidget(2);
+      const widget = new LanePoolWidget();
       widget.updateLanes([
         { id: 't1', title: 'First', status: 'ready' },
         { id: 't2', title: 'Second', status: 'done' },
       ]);
-      widget.setFocusedLane(1);
+      // Sorted order: ready (t1) at index 0, done (t2) at index 1
+      widget.setFocusedLaneById('t2');
       const lines = widget.render(WIDTH);
 
       const unfocusedContent = statusIcon('ready') + ' ' + statusColor('ready')('First');
@@ -104,13 +105,13 @@ describe('LanePoolWidget', () => {
 
   describe('navigation', () => {
     it('Up arrow decrements focused lane index', () => {
-      const widget = new LanePoolWidget(3);
+      const widget = new LanePoolWidget();
       widget.updateLanes([
         { id: 't1', title: 'A', status: 'ready' },
         { id: 't2', title: 'B', status: 'ready' },
         { id: 't3', title: 'C', status: 'ready' },
       ]);
-      widget.setFocusedLane(2);
+      widget.setFocusedLaneById('t3');
       expect(widget.getFocusedTaskId()).toBe('t3');
 
       widget.handleInput(UP);
@@ -121,13 +122,13 @@ describe('LanePoolWidget', () => {
     });
 
     it('Down arrow increments focused lane index', () => {
-      const widget = new LanePoolWidget(3);
+      const widget = new LanePoolWidget();
       widget.updateLanes([
         { id: 't1', title: 'A', status: 'ready' },
         { id: 't2', title: 'B', status: 'ready' },
         { id: 't3', title: 'C', status: 'ready' },
       ]);
-      widget.setFocusedLane(0);
+      widget.setFocusedLaneById('t1');
       expect(widget.getFocusedTaskId()).toBe('t1');
 
       widget.handleInput(DOWN);
@@ -138,23 +139,23 @@ describe('LanePoolWidget', () => {
     });
 
     it('does not go above index 0', () => {
-      const widget = new LanePoolWidget(2);
+      const widget = new LanePoolWidget();
       widget.updateLanes([
         { id: 't1', title: 'A', status: 'ready' },
         { id: 't2', title: 'B', status: 'ready' },
       ]);
-      widget.setFocusedLane(0);
+      widget.setFocusedLaneById('t1');
       widget.handleInput(UP);
       expect(widget.getFocusedTaskId()).toBe('t1');
     });
 
     it('does not go below last lane', () => {
-      const widget = new LanePoolWidget(2);
+      const widget = new LanePoolWidget();
       widget.updateLanes([
         { id: 't1', title: 'A', status: 'ready' },
         { id: 't2', title: 'B', status: 'ready' },
       ]);
-      widget.setFocusedLane(1);
+      widget.setFocusedLaneById('t2');
       widget.handleInput(DOWN);
       expect(widget.getFocusedTaskId()).toBe('t2');
     });
@@ -162,26 +163,27 @@ describe('LanePoolWidget', () => {
 
   describe('getFocusedTaskId', () => {
     it('returns undefined when no lane is focused', () => {
-      const widget = new LanePoolWidget(2);
+      const widget = new LanePoolWidget();
       widget.updateLanes([{ id: 't1', title: 'A', status: 'ready' }]);
       expect(widget.getFocusedTaskId()).toBeUndefined();
     });
 
     it('returns the correct task id after setting focus', () => {
-      const widget = new LanePoolWidget(3);
+      const widget = new LanePoolWidget();
       widget.updateLanes([
         { id: 't1', title: 'A', status: 'ready' },
         { id: 't2', title: 'B', status: 'done' },
         { id: 't3', title: 'C', status: 'failed' },
       ]);
-      widget.setFocusedLane(1);
+      // Sorted: ready(t1)=0, done(t2)=1, failed(t3)=2
+      widget.setFocusedLaneById('t2');
       expect(widget.getFocusedTaskId()).toBe('t2');
     });
   });
 
   describe('truncation and padding', () => {
     it('truncates long titles to the given width', () => {
-      const widget = new LanePoolWidget(1);
+      const widget = new LanePoolWidget();
       const longTitle = 'A'.repeat(80);
       widget.updateLanes([{ id: 't1', title: longTitle, status: 'ready' }]);
       const lines = widget.render(WIDTH);
@@ -193,7 +195,7 @@ describe('LanePoolWidget', () => {
     });
 
     it('pads short titles to the given width', () => {
-      const widget = new LanePoolWidget(1);
+      const widget = new LanePoolWidget();
       widget.updateLanes([{ id: 't1', title: 'Hi', status: 'ready' }]);
       const lines = widget.render(WIDTH);
       expect(lines).toHaveLength(1);
@@ -204,7 +206,7 @@ describe('LanePoolWidget', () => {
 
   describe('stepInfo', () => {
     it('renders stepInfo when present, dimmed', () => {
-      const widget = new LanePoolWidget(1);
+      const widget = new LanePoolWidget();
       widget.updateLanes([{ id: 't1', title: 'Task', status: 'implementing', stepInfo: 'step 2/3' }]);
       const lines = widget.render(WIDTH);
       expect(lines).toHaveLength(1);
@@ -213,7 +215,7 @@ describe('LanePoolWidget', () => {
     });
 
     it('omits stepInfo when not present', () => {
-      const widget = new LanePoolWidget(1);
+      const widget = new LanePoolWidget();
       widget.updateLanes([{ id: 't1', title: 'Task', status: 'done' }]);
       const lines = widget.render(WIDTH);
       expect(lines).toHaveLength(1);
@@ -226,7 +228,7 @@ describe('LanePoolWidget', () => {
 
   describe('caching', () => {
     it('returns cached lines when not dirty and width unchanged', () => {
-      const widget = new LanePoolWidget(1);
+      const widget = new LanePoolWidget();
       widget.updateLanes([{ id: 't1', title: 'A', status: 'ready' }]);
       const first = widget.render(WIDTH);
       const second = widget.render(WIDTH);
@@ -236,7 +238,7 @@ describe('LanePoolWidget', () => {
     });
 
     it('re-renders after invalidate', () => {
-      const widget = new LanePoolWidget(1);
+      const widget = new LanePoolWidget();
       widget.updateLanes([{ id: 't1', title: 'A', status: 'ready' }]);
       const first = widget.render(WIDTH);
       widget.invalidate();
@@ -246,12 +248,179 @@ describe('LanePoolWidget', () => {
     });
 
     it('re-renders when width changes', () => {
-      const widget = new LanePoolWidget(1);
+      const widget = new LanePoolWidget();
       widget.updateLanes([{ id: 't1', title: 'A', status: 'ready' }]);
       const first = widget.render(WIDTH);
       const second = widget.render(WIDTH + 10);
       expect(second).toHaveLength(1);
       expect(first).not.toBe(second);
+    });
+  });
+
+  describe('sorting', () => {
+    it('lanes are sorted by status priority', () => {
+      const widget = new LanePoolWidget();
+      widget.updateLanes([
+        { id: 't1', title: 'Done Task', status: 'done' },
+        { id: 't2', title: 'Blocked Task', status: 'blocked' },
+        { id: 't3', title: 'Implementing Task', status: 'implementing' },
+        { id: 't4', title: 'Ready Task', status: 'ready' },
+      ]);
+      const lines = widget.render(WIDTH);
+
+      expect(lines).toHaveLength(4);
+
+      // Order: implementing (0), ready (2), blocked (3), done (4)
+      const expected0 = statusIcon('implementing') + ' ' + statusColor('implementing')('Implementing Task');
+      expect(lines[0].startsWith(expected0)).toBe(true);
+
+      const expected1 = statusIcon('ready') + ' ' + statusColor('ready')('Ready Task');
+      expect(lines[1].startsWith(expected1)).toBe(true);
+
+      const expected2 = statusIcon('blocked') + ' ' + statusColor('blocked')('Blocked Task');
+      expect(lines[2].startsWith(expected2)).toBe(true);
+
+      const expected3 = statusIcon('done') + ' ' + statusColor('done')('Done Task');
+      expect(lines[3].startsWith(expected3)).toBe(true);
+    });
+  });
+
+  describe('stale focus cleanup', () => {
+    it('focused lane ID cleared when lane is removed', () => {
+      const widget = new LanePoolWidget();
+      widget.updateLanes([
+        { id: 't1', title: 'A', status: 'ready' },
+        { id: 't2', title: 'B', status: 'done' },
+        { id: 't3', title: 'C', status: 'blocked' },
+      ]);
+      // Sorted order: ready(t1) idx 0, blocked(t3) idx 1, done(t2) idx 2
+      widget.setFocusedLaneById('t3'); // blocked
+      expect(widget.getFocusedTaskId()).toBe('t3');
+
+      // Remove t3 from the lane list
+      widget.updateLanes([
+        { id: 't1', title: 'A', status: 'ready' },
+        { id: 't2', title: 'B', status: 'done' },
+      ]);
+      expect(widget.getFocusedTaskId()).toBeUndefined();
+    });
+
+    it('keeps focus if lane still exists after update', () => {
+      const widget = new LanePoolWidget();
+      widget.updateLanes([
+        { id: 't1', title: 'A', status: 'ready' },
+        { id: 't2', title: 'B', status: 'done' },
+      ]);
+      widget.setFocusedLaneById('t1');
+      expect(widget.getFocusedTaskId()).toBe('t1');
+
+      widget.updateLanes([
+        { id: 't1', title: 'A (updated)', status: 'implementing' },
+        { id: 't2', title: 'B', status: 'done' },
+        { id: 't3', title: 'C', status: 'ready' },
+      ]);
+      expect(widget.getFocusedTaskId()).toBe('t1');
+    });
+  });
+
+  describe('getSortedLanes', () => {
+    it('returns lanes in priority order', () => {
+      const widget = new LanePoolWidget();
+      widget.updateLanes([
+        { id: 't1', title: 'Done', status: 'done' },
+        { id: 't2', title: 'Implementing', status: 'implementing' },
+        { id: 't3', title: 'Blocked', status: 'blocked' },
+        { id: 't4', title: 'Ready', status: 'ready' },
+      ]);
+      const sorted = widget.getSortedLanes();
+
+      expect(sorted.map((l) => l.id)).toEqual(['t2', 't4', 't3', 't1']);
+    });
+
+    it('returns empty array when no lanes are set', () => {
+      const widget = new LanePoolWidget();
+      expect(widget.getSortedLanes()).toEqual([]);
+    });
+  });
+
+  describe('getFocusedLane', () => {
+    it('returns the focused lane object', () => {
+      const widget = new LanePoolWidget();
+      widget.updateLanes([
+        { id: 't1', title: 'A', status: 'ready' },
+        { id: 't2', title: 'B', status: 'done' },
+        { id: 't3', title: 'C', status: 'implementing' },
+      ]);
+      // Sorted: t3 (implementing), t1 (ready), t2 (done)
+      widget.setFocusedLaneById('t1');
+      const lane = widget.getFocusedLane();
+      expect(lane).toBeDefined();
+      expect(lane!.id).toBe('t1');
+      expect(lane!.title).toBe('A');
+      expect(lane!.status).toBe('ready');
+    });
+
+    it('returns undefined when no lane is focused', () => {
+      const widget = new LanePoolWidget();
+      widget.updateLanes([{ id: 't1', title: 'A', status: 'ready' }]);
+      expect(widget.getFocusedLane()).toBeUndefined();
+    });
+  });
+
+  describe('setFocusedLaneById', () => {
+    it('focuses the lane with the given ID', () => {
+      const widget = new LanePoolWidget();
+      widget.updateLanes([
+        { id: 't1', title: 'A', status: 'ready' },
+        { id: 't2', title: 'B', status: 'done' },
+        { id: 't3', title: 'C', status: 'implementing' },
+      ]);
+      widget.setFocusedLaneById('t2');
+      expect(widget.getFocusedTaskId()).toBe('t2');
+      expect(widget.getFocusedLane()?.title).toBe('B');
+    });
+
+    it('is a no-op for non-existent ID', () => {
+      const widget = new LanePoolWidget();
+      widget.updateLanes([
+        { id: 't1', title: 'A', status: 'ready' },
+        { id: 't2', title: 'B', status: 'done' },
+      ]);
+      widget.setFocusedLaneById('t1');
+      expect(widget.getFocusedTaskId()).toBe('t1');
+      widget.setFocusedLaneById('nonexistent');
+      expect(widget.getFocusedTaskId()).toBe('t1');
+    });
+  });
+
+  describe('focus tracking by task ID', () => {
+    it('focused lane tracks by task ID after re-sort', () => {
+      const widget = new LanePoolWidget();
+      widget.updateLanes([
+        { id: 't1', title: 'Task A', status: 'ready' },
+        { id: 't2', title: 'Task B', status: 'done' },
+      ]);
+      // Sorted: ready(t1) index 0, done(t2) index 1
+      widget.setFocusedLaneById('t2');
+      expect(widget.getFocusedTaskId()).toBe('t2');
+
+      // Add an implementing task — it goes to sorted index 0, pushing others down
+      widget.updateLanes([
+        { id: 't1', title: 'Task A', status: 'ready' },
+        { id: 't2', title: 'Task B', status: 'done' },
+        { id: 't3', title: 'Task C', status: 'implementing' },
+      ]);
+
+      // Focus should still be on t2, now at sorted index 2
+      expect(widget.getFocusedTaskId()).toBe('t2');
+      const lines = widget.render(WIDTH);
+      // t2 (done) should be bold in the last position (sorted index 2)
+      const focusedContent = statusIcon('done') + ' ' + statusColor('done')('Task B');
+      expect(lines[2]).toContain('\x1b[1m');
+      expect(lines[2]).toContain(focusedContent);
+      // Other lines should not be bold
+      expect(lines[0]).not.toContain('\x1b[1m');
+      expect(lines[1]).not.toContain('\x1b[1m');
     });
   });
 });

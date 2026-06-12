@@ -2088,4 +2088,283 @@ describe('startWebServer', () => {
       baseUrl = `http://${server.hostname}:${server.port}`;
     });
   });
+
+  // ─── broadcast() per-client error handling ───────────────────────────
+
+  describe('broadcast() per-client error handling', () => {
+    /**
+     * Unit test for the broadcast pattern used in startWebServer.
+     *
+     * The broadcast function and clients set are internal to startWebServer
+     * and not exported. This test recreates the same pattern to verify the
+     * per-client try/catch behavior: when one client's send() throws,
+     * remaining clients still receive the message and the failing client
+     * is removed from the set.
+     */
+    it('continues broadcasting to remaining clients when one client throws on send', () => {
+      const clients = new Set<{ send: (data: string) => void }>();
+      const receivedMessages: string[] = [];
+
+      // Good client that successfully receives messages
+      const goodClient = {
+        send: (data: string) => {
+          receivedMessages.push(data);
+        },
+      };
+
+      // Bad client that throws on send (simulating a broken connection)
+      const badClient = {
+        send: () => {
+          throw new Error('Connection reset by peer');
+        },
+      };
+
+      // Add bad client first to verify iteration continues past the failure
+      clients.add(badClient);
+      clients.add(goodClient);
+
+      // Replicate the broadcast function from server.ts (with per-client try/catch)
+      const broadcast = (msg: Record<string, unknown>) => {
+        const d = JSON.stringify(msg);
+        for (const ws of clients) {
+          try {
+            ws.send(d);
+          } catch (err) {
+            console.warn('Failed to send to WebSocket client, removing:', err);
+            clients.delete(ws);
+          }
+        }
+      };
+
+      // Call broadcast
+      broadcast({ type: 'workflow_started', summary: { id: 'test-run', status: 'running' } });
+
+      // The good client should have received the message despite the bad client throwing
+      expect(receivedMessages).toHaveLength(1);
+      const parsed = JSON.parse(receivedMessages[0]);
+      expect(parsed.type).toBe('workflow_started');
+      expect(parsed.summary.id).toBe('test-run');
+
+      // The bad client should have been removed from the set
+      expect(clients.has(badClient)).toBe(false);
+
+      // The good client should still be in the set
+      expect(clients.has(goodClient)).toBe(true);
+    });
+
+    it('removes the failing client and allows subsequent broadcasts to succeed', () => {
+      const clients = new Set<{ send: (data: string) => void }>();
+      const receivedMessages: string[] = [];
+
+      const goodClient = {
+        send: (data: string) => {
+          receivedMessages.push(data);
+        },
+      };
+      const badClient = {
+        send: () => {
+          throw new Error('Socket closed');
+        },
+      };
+
+      clients.add(badClient);
+      clients.add(goodClient);
+
+      const broadcast = (msg: Record<string, unknown>) => {
+        const d = JSON.stringify(msg);
+        for (const ws of clients) {
+          try {
+            ws.send(d);
+          } catch (err) {
+            console.warn('Failed to send to WebSocket client, removing:', err);
+            clients.delete(ws);
+          }
+        }
+      };
+
+      // First broadcast – bad client throws, gets removed
+      broadcast({ type: 'workflow_started', summary: { id: 'r1' } });
+      expect(receivedMessages).toHaveLength(1);
+      expect(clients.size).toBe(1);
+      expect(clients.has(goodClient)).toBe(true);
+
+      // Second broadcast – only good client remains
+      receivedMessages.length = 0;
+      broadcast({ type: 'workflow_complete', summary: { id: 'r1', status: 'completed' } });
+      expect(receivedMessages).toHaveLength(1);
+      const parsed = JSON.parse(receivedMessages[0]);
+      expect(parsed.type).toBe('workflow_complete');
+    });
+
+    it('handles all clients throwing without crashing', () => {
+      const clients = new Set<{ send: (data: string) => void }>();
+
+      const badClient1 = {
+        send: () => {
+          throw new Error('Connection error 1');
+        },
+      };
+      const badClient2 = {
+        send: () => {
+          throw new Error('Connection error 2');
+        },
+      };
+
+      clients.add(badClient1);
+      clients.add(badClient2);
+
+      const broadcast = (msg: Record<string, unknown>) => {
+        const d = JSON.stringify(msg);
+        for (const ws of clients) {
+          try {
+            ws.send(d);
+          } catch (err) {
+            console.warn('Failed to send to WebSocket client, removing:', err);
+            clients.delete(ws);
+          }
+        }
+      };
+
+      // Should not throw – all clients are removed gracefully
+      expect(() => broadcast({ type: 'test' })).not.toThrow();
+      expect(clients.size).toBe(0);
+    });
+
+    it('does not remove clients that successfully receive messages', () => {
+      const clients = new Set<{ send: (data: string) => void }>();
+      const messages: string[][] = [[], []];
+
+      const client1 = {
+        send: (data: string) => {
+          messages[0].push(data);
+        },
+      };
+      const client2 = {
+        send: (data: string) => {
+          messages[1].push(data);
+        },
+      };
+
+      clients.add(client1);
+      clients.add(client2);
+
+      const broadcast = (msg: Record<string, unknown>) => {
+        const d = JSON.stringify(msg);
+        for (const ws of clients) {
+          try {
+            ws.send(d);
+          } catch (err) {
+            console.warn('Failed to send to WebSocket client, removing:', err);
+            clients.delete(ws);
+          }
+        }
+      };
+
+      // Both clients are healthy
+      broadcast({ type: 'ping' });
+
+      expect(clients.size).toBe(2);
+      expect(messages[0]).toHaveLength(1);
+      expect(messages[1]).toHaveLength(1);
+      expect(JSON.parse(messages[0][0]).type).toBe('ping');
+      expect(JSON.parse(messages[1][0]).type).toBe('ping');
+    });
+
+    it('handles a client throwing in the middle of iteration without skipping remaining clients', () => {
+      const clients = new Set<{ send: (data: string) => void }>();
+      const received = new Map<string, string>();
+
+      const clientA = {
+        send: (data: string) => {
+          received.set('A', data);
+        },
+      };
+      const clientB = {
+        send: () => {
+          throw new Error('Broken pipe');
+        },
+      };
+      const clientC = {
+        send: (data: string) => {
+          received.set('C', data);
+        },
+      };
+
+      clients.add(clientA);
+      clients.add(clientB);
+      clients.add(clientC);
+
+      const broadcast = (msg: Record<string, unknown>) => {
+        const d = JSON.stringify(msg);
+        for (const ws of clients) {
+          try {
+            ws.send(d);
+          } catch (err) {
+            console.warn('Failed to send to WebSocket client, removing:', err);
+            clients.delete(ws);
+          }
+        }
+      };
+
+      broadcast({ type: 'test_msg' });
+
+      // Both healthy clients should have received the message
+      expect(received.has('A')).toBe(true);
+      expect(received.has('C')).toBe(true);
+      expect(JSON.parse(received.get('A')!).type).toBe('test_msg');
+      expect(JSON.parse(received.get('C')!).type).toBe('test_msg');
+
+      // Only the bad client was removed
+      expect(clients.size).toBe(2);
+      expect(clients.has(clientA)).toBe(true);
+      expect(clients.has(clientB)).toBe(false);
+      expect(clients.has(clientC)).toBe(true);
+    });
+
+    it('server integration: broadcast does not crash when one WebSocket client disconnects ungracefully', async () => {
+      // Integration test: connect two clients, abruptly close one without
+      // waiting for the server's close handler, then trigger a broadcast.
+      // The remaining client should still receive the broadcast message.
+      const ws1 = new WebSocket(`ws://${server.hostname}:${server.port}/ws`);
+      const ws2 = new WebSocket(`ws://${server.hostname}:${server.port}/ws`);
+
+      // Wait for both to receive init
+      await Promise.all([
+        new Promise<void>((resolve) => ws1.addEventListener('message', () => resolve(), { once: true })),
+        new Promise<void>((resolve) => ws2.addEventListener('message', () => resolve(), { once: true })),
+      ]);
+
+      // Abruptly close ws1 without waiting for server-side cleanup
+      ws1.close();
+      // Don't await tick() — we want ws1 potentially still in the clients set
+      // when the broadcast fires
+
+      // Immediately trigger a broadcast by starting a workflow
+      ws2.send(
+        JSON.stringify({
+          type: 'start_workflow',
+          workflowName: 'test-workflow',
+          taskPrompt: 'Resilience test',
+        }),
+      );
+
+      // ws2 should still receive the workflow_started broadcast
+      const msg = await new Promise<any>((resolve, reject) => {
+        ws2.addEventListener('message', (event) => {
+          try {
+            const parsed = JSON.parse(event.data as string);
+            if (parsed.type === 'workflow_started') resolve(parsed);
+          } catch (e) {
+            reject(e);
+          }
+        });
+        setTimeout(() => reject(new Error('Timeout waiting for workflow_started')), 3000);
+      });
+
+      expect(msg.type).toBe('workflow_started');
+      expect(msg.summary.workflowName).toBe('test-workflow');
+
+      ws2.close();
+    });
+  });
 });

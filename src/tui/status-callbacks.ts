@@ -64,6 +64,19 @@ export function createTuiStatusCallbacks(deps: {
     onAgentComplete(info) {
       eventLog.addLine('✅ Agent ' + info.agentId + ' complete');
       dashboard.agentLog.addEntry({ type: 'text', content: 'Agent session ended' }, info.agentId);
+      dashboard.agentLog.markAgentComplete(info.agentId);
+      requestRender();
+    },
+
+    onTasksAdded(info) {
+      for (const task of info.tasks) {
+        lanes.set(task.id, {
+          id: task.id,
+          title: stripAnsi(task.title),
+          status: task.status,
+        });
+      }
+      dashboard.lanePool.updateLanes(Array.from(lanes.values()));
       requestRender();
     },
 
@@ -144,14 +157,9 @@ export function createTuiStatusCallbacks(deps: {
     },
 
     onToolCallEnd(info) {
-      const formatted = formatToolCall(info.toolName, {});
-      dashboard.agentLog.addEntry(
-        {
-          type: 'tool_call_end',
-          content: formatted + (info.isError ? ' ❌' : ' ✅'),
-        },
-        info.agentId,
-      );
+      if (info.isError) {
+        dashboard.agentLog.addEntry({ type: 'error', content: `❌ ${info.toolName} failed` }, info.agentId);
+      }
       requestRender();
     },
 

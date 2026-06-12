@@ -73,6 +73,10 @@ export function parseProfile(content: string, filename: string): AgentProfile {
  * Throws if the directory does not exist.
  */
 export async function loadProfiles(dirPath: string): Promise<Map<string, AgentProfile>> {
+  if (profileCache.size > 20) {
+    profileCache.clear();
+  }
+
   const cached = profileCache.get(dirPath);
   if (cached) {
     return cached;

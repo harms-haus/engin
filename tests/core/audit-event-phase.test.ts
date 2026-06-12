@@ -102,6 +102,7 @@ describe('AuditEvent phase field', () => {
         phase: 'implementing',
         timestamp: new Date().toISOString(),
       };
+      expect(_event.type).toBe('decision');
     });
   });
 
@@ -115,6 +116,7 @@ describe('AuditEvent phase field', () => {
         phase: 'implementing',
         timestamp: new Date().toISOString(),
       };
+      expect(_event.type).toBe('structured_output');
     });
   });
 
@@ -128,6 +130,7 @@ describe('AuditEvent phase field', () => {
         phase: 'implementing',
         timestamp: new Date().toISOString(),
       };
+      expect(_event.type).toBe('error');
     });
   });
 

@@ -1,0 +1,506 @@
+/**
+ * @fileoverview Tests for the dual-listener wait pattern in LanePool.runLane().
+ *
+ * The `await new Promise<void>` block in runLane() uses a dual-listener pattern
+ * that registers listeners for both TaskReady and TaskSettled events (plus an
+ * abort signal). These tests verify the correctness and edge cases of this
+ * concurrency pattern:
+ *
+ * 1. WHY both listeners: TaskReady fires when blocked tasks become ready via
+ *    recalculateStatuses; TaskSettled fires when a task completes or fails.
+ *    Each covers scenarios the other does not.
+ *
+ * 2. Race condition safety: between claimTasks() returning empty and once()
+ *    registration, an event could fire. This is safe because if isPoolDone()
+ *    returns true the lane exits on the next loop iteration, and if tasks
+ *    become ready after registration the listener fires.
+ *
+ * 3. Cleanup prevents double-wake by removing both listeners synchronously.
+ *
+ * 4. Abort signal listener enables cooperative cancellation while waiting.
+ */
+
+import { afterAll, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
+import type { Task } from '../../src/core/types.js';
+import { TaskTracker } from '../../src/tracking/task-status.js';
+import { makeMockSession } from '../helpers/make-session.js';
+import { makeTask } from '../helpers/make-task.js';
+
+// Capture real modules before mocking so we can restore them in afterAll.
+const realHarnessFactory = Object.assign({}, await import('../../src/core/harness-factory.ts'));
+const realProfile = Object.assign({}, await import('../../src/core/profile.ts'));
+const realStructuredOutput = Object.assign({}, await import('../../src/core/structured-output.ts'));
+
+// ─── Mocks ──────────────────────────────────────────────────────────────────
+
+const mockCreateHarness = mock() as ReturnType<typeof mock> & ((...args: unknown[]) => unknown);
+mock.module('../../src/core/harness-factory.ts', () => ({
+  createHarness: (...args: unknown[]) => mockCreateHarness(...args),
+}));
+
+const mockLoadProfilesFromDirs = mock() as ReturnType<typeof mock> & ((...args: unknown[]) => unknown);
+mock.module('../../src/core/profile.ts', () => ({
+  loadProfilesFromDirs: (...args: unknown[]) => mockLoadProfilesFromDirs(...args),
+}));
+
+const mockPromptForStructured = mock() as ReturnType<typeof mock> & ((...args: unknown[]) => unknown);
+mock.module('../../src/core/structured-output.ts', () => ({
+  promptForStructured: (...args: unknown[]) => mockPromptForStructured(...args),
+}));
+
+// ─── Imports (after mocks) ─────────────────────────────────────────────────
+
+import { LanePool } from '../../src/pool/lane-pool.ts';
+import type { StepDefinition } from '../../src/pool/types.js';
+
+// ─── Test Helpers ───────────────────────────────────────────────────────────
+
+const defaultProfile = {
+  id: 'coder',
+  name: 'Coder',
+  provider: 'openai',
+  model: 'gpt-4',
+  thinkingLevel: 'medium' as const,
+  systemPrompt: 'You are a coding agent.',
+  excludeTools: [] as string[],
+  includeTools: [] as string[],
+};
+
+function makeSession(textFn: (promptText: string) => string | undefined = () => 'done') {
+  return makeMockSession(textFn).session;
+}
+
+/** Mock session that includes an abort method for cooperative cancellation tests. */
+function makeSessionWithAbort(textFn?: (promptText: string) => string | undefined) {
+  const session = makeSession(textFn);
+  return { ...session, abort: mock(async () => {}) };
+}
+
+function setupProfileMocks() {
+  const profilesMap = new Map<string, typeof defaultProfile>();
+  profilesMap.set('coder', defaultProfile);
+  mockLoadProfilesFromDirs.mockResolvedValue(profilesMap);
+}
+
+function setupHarnessMocks(session?: ReturnType<typeof makeSession>) {
+  const sess = session ?? makeSession();
+  mockCreateHarness.mockResolvedValue({
+    session: sess,
+    sessionId: 'test-session',
+    dispose: mock(() => {}),
+  });
+  return sess;
+}
+
+/** Set up harness mock with a session that has an abort method. */
+function setupHarnessMocksWithAbort(session?: ReturnType<typeof makeSessionWithAbort>) {
+  const sess = session ?? makeSessionWithAbort();
+  mockCreateHarness.mockResolvedValue({
+    session: sess,
+    sessionId: 'test-session',
+    dispose: mock(() => {}),
+  });
+  return sess;
+}
+
+interface WaitPatternPoolOptions {
+  maxConcurrentLanes?: number;
+  getStepsForTask?: (task: Task) => StepDefinition[];
+  tasks?: Task[];
+  signal?: AbortSignal;
+}
+
+function createPoolAndTracker(overrides?: WaitPatternPoolOptions) {
+  const tracker = new TaskTracker();
+  const tasks = overrides?.tasks ?? [makeTask()];
+  for (const task of tasks) {
+    tracker.addTask(task);
+  }
+
+  const getStepsForTask =
+    overrides?.getStepsForTask ??
+    ((_task: Task): StepDefinition[] => [{ name: 'implement', profileId: 'coder', isReadOnly: false }]);
+
+  const pool = new LanePool({
+    maxConcurrentLanes: overrides?.maxConcurrentLanes ?? 1,
+    profilesDirs: ['/mock/profiles'],
+    sessionBaseDir: '/tmp/sessions',
+    cwd: '/tmp/project',
+    taskTracker: tracker,
+    getStepsForTask,
+    signal: overrides?.signal,
+  });
+
+  return { pool, tracker };
+}
+
+// ─── Setup ──────────────────────────────────────────────────────────────────
+
+beforeEach(() => {
+  mockCreateHarness.mockClear();
+  mockLoadProfilesFromDirs.mockClear();
+  mockPromptForStructured.mockClear();
+});
+
+// ─── Tests ──────────────────────────────────────────────────────────────────
+
+describe('LanePool dual-listener wait pattern', () => {
+  // ── Event-Driven Wake-Up ────────────────────────────────────────────────
+
+  describe('event-driven wake-up', () => {
+    it('wakes waiting lane when dependency task completes (2 lanes, 2 dependent tasks)', async () => {
+      setupProfileMocks();
+      setupHarnessMocks();
+
+      const task1 = makeTask({ id: 'task-1', title: 'First', dependencies: [] });
+      const task2 = {
+        ...makeTask({ id: 'task-2', title: 'Second', dependencies: ['task-1'] }),
+        status: undefined as const,
+      };
+
+      const { pool, tracker } = createPoolAndTracker({
+        tasks: [task1, task2],
+        maxConcurrentLanes: 2,
+      });
+
+      // task-2 should start as blocked since task-1 is not done
+      expect(tracker.getTask('task-2')!.status).toBe('blocked');
+
+      const result = await pool.run();
+
+      // One lane processes task-1; the other lane enters the wait block
+      // (claimTasks returns empty, isPoolDone is false). When task-1 completes,
+      // recalculateStatuses emits TaskReady and completeTask emits TaskSettled,
+      // either of which wakes the waiting lane to process task-2.
+      expect(result.completedTasks).toBe(2);
+      expect(result.failedTasks).toBe(0);
+      expect(tracker.getTask('task-1')!.status).toBe('done');
+      expect(tracker.getTask('task-2')!.status).toBe('done');
+    });
+
+    it('handles chain dependencies with multiple wake-ups (A→B→C, 2 lanes)', async () => {
+      setupProfileMocks();
+      setupHarnessMocks();
+
+      const taskA = makeTask({ id: 'task-A', title: 'A', dependencies: [] });
+      const taskB = {
+        ...makeTask({ id: 'task-B', title: 'B', dependencies: ['task-A'] }),
+        status: undefined as const,
+      };
+      const taskC = {
+        ...makeTask({ id: 'task-C', title: 'C', dependencies: ['task-B'] }),
+        status: undefined as const,
+      };
+
+      const { pool, tracker } = createPoolAndTracker({
+        tasks: [taskA, taskB, taskC],
+        maxConcurrentLanes: 2,
+      });
+
+      // task-B blocked on task-A, task-C blocked on task-B
+      expect(tracker.getTask('task-B')!.status).toBe('blocked');
+      expect(tracker.getTask('task-C')!.status).toBe('blocked');
+
+      const result = await pool.run();
+
+      // Each completion in the chain triggers a wake-up for the next:
+      // task-A completes → task-B becomes ready (wake) → task-B completes →
+      // task-C becomes ready (wake) → task-C completes
+      expect(result.completedTasks).toBe(3);
+      expect(result.failedTasks).toBe(0);
+      expect(tracker.getTask('task-A')!.status).toBe('done');
+      expect(tracker.getTask('task-B')!.status).toBe('done');
+      expect(tracker.getTask('task-C')!.status).toBe('done');
+    });
+
+    it('wakes waiting lane when dependency task fails', async () => {
+      setupProfileMocks();
+
+      // First createHarness call rejects (task-1 fails), subsequent calls succeed
+      mockCreateHarness.mockRejectedValueOnce(new Error('Agent creation failed'));
+      mockCreateHarness.mockResolvedValue({
+        session: makeSession(() => 'done'),
+        sessionId: 'test-session',
+        dispose: mock(() => {}),
+      });
+
+      const task1 = makeTask({ id: 'task-1', title: 'First', dependencies: [] });
+      const task2 = {
+        ...makeTask({ id: 'task-2', title: 'Second', dependencies: ['task-1'] }),
+        status: undefined as const,
+      };
+
+      const { pool, tracker } = createPoolAndTracker({
+        tasks: [task1, task2],
+        maxConcurrentLanes: 2,
+      });
+
+      const consoleSpy = spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        const result = await pool.run();
+
+        // task-1 fails. failTask calls recalculateStatuses, which sees task-1
+        // is settled ('failed' counts as settled), so task-2 becomes ready.
+        // TaskSettled fires, waking the waiting lane which then processes task-2.
+        expect(result.failedTasks).toBe(1);
+        expect(result.completedTasks).toBe(1);
+        expect(tracker.getTask('task-1')!.status).toBe('failed');
+        expect(tracker.getTask('task-2')!.status).toBe('done');
+      } finally {
+        consoleSpy.mockRestore();
+      }
+    });
+
+    it('handles diamond dependency with 3 lanes', async () => {
+      setupProfileMocks();
+      setupHarnessMocks();
+
+      //       A
+      //      / \
+      //     B   C
+      //      \ /
+      //       D
+      const taskA = makeTask({ id: 'task-A', title: 'A', dependencies: [] });
+      const taskB = {
+        ...makeTask({ id: 'task-B', title: 'B', dependencies: ['task-A'] }),
+        status: undefined as const,
+      };
+      const taskC = {
+        ...makeTask({ id: 'task-C', title: 'C', dependencies: ['task-A'] }),
+        status: undefined as const,
+      };
+      const taskD = {
+        ...makeTask({ id: 'task-D', title: 'D', dependencies: ['task-B', 'task-C'] }),
+        status: undefined as const,
+      };
+
+      const { pool, tracker } = createPoolAndTracker({
+        tasks: [taskA, taskB, taskC, taskD],
+        maxConcurrentLanes: 3,
+      });
+
+      const result = await pool.run();
+
+      // A completes first, unblocking B and C. B and C can run concurrently.
+      // D waits until both B and C are settled. The dual-listener pattern
+      // ensures D's lane wakes up when the second of B/C completes.
+      expect(result.completedTasks).toBe(4);
+      expect(result.failedTasks).toBe(0);
+      expect(tracker.getTask('task-D')!.status).toBe('done');
+    });
+  });
+
+  // ── Abort Signal ────────────────────────────────────────────────────────
+
+  describe('abort signal', () => {
+    it('resolves wait promise and lane exits on abort during idle wait', async () => {
+      setupProfileMocks();
+      setupHarnessMocksWithAbort();
+
+      const controller = new AbortController();
+
+      const task1 = makeTask({ id: 'task-1', dependencies: [] });
+      const task2 = {
+        ...makeTask({ id: 'task-2', dependencies: ['task-1'] }),
+        status: undefined as const,
+      };
+
+      const { pool, tracker } = createPoolAndTracker({
+        tasks: [task1, task2],
+        maxConcurrentLanes: 2,
+        signal: controller.signal,
+      });
+
+      // Pre-claim task-1 so both lanes find no ready tasks on their first iteration.
+      // The lanes enter the wait block because isPoolDone() is false
+      // (task-1 is 'claimed' — not settled, task-2 is 'blocked').
+      tracker.claimTasks(1);
+      expect(tracker.getTask('task-1')!.status).toBe('claimed');
+
+      const runPromise = pool.run();
+
+      // Give lanes time to start and enter the await new Promise wait block.
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      // Fire abort — the onAbort handler in the wait block should resolve
+      // the promise, causing lanes to loop back and check signal.aborted.
+      controller.abort();
+
+      const result = await runPromise;
+
+      // Pool exits cleanly via cooperative cancellation. task-1 was claimed
+      // but never processed (status remains 'claimed'), task-2 stays 'blocked'.
+      expect(result).toBeDefined();
+      expect(result.completedTasks).toBe(0);
+      expect(result.failedTasks).toBe(0);
+    });
+
+    it('skips execution when signal is already aborted before run()', async () => {
+      setupProfileMocks();
+      setupHarnessMocks();
+
+      const controller = new AbortController();
+      controller.abort();
+
+      const { pool } = createPoolAndTracker({
+        tasks: [makeTask()],
+        signal: controller.signal,
+      });
+
+      const result = await pool.run();
+
+      // Pool returns immediately from the early check at the top of run()
+      expect(result.completedTasks).toBe(0);
+      expect(result.failedTasks).toBe(0);
+      expect(mockCreateHarness).not.toHaveBeenCalled();
+    });
+
+    it('lane checks signal.aborted after waking from wait and exits', async () => {
+      setupProfileMocks();
+      setupHarnessMocksWithAbort();
+
+      const controller = new AbortController();
+
+      // Single lane with a task that is already claimed, so the lane enters wait
+      const tracker = new TaskTracker();
+      tracker.addTask(makeTask({ id: 'task-1' }));
+      tracker.claimTasks(1);
+
+      const pool = new LanePool({
+        maxConcurrentLanes: 1,
+        profilesDirs: ['/mock/profiles'],
+        sessionBaseDir: '/tmp/sessions',
+        cwd: '/tmp/project',
+        taskTracker: tracker,
+        getStepsForTask: () => [{ name: 'implement', profileId: 'coder', isReadOnly: false }],
+        signal: controller.signal,
+      });
+
+      const runPromise = pool.run();
+
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      // Abort while the single lane is in the wait block
+      controller.abort();
+
+      const result = await runPromise;
+
+      // The lane woke up, checked signal.aborted at the top of the while loop,
+      // and returned without processing any task.
+      expect(result.completedTasks).toBe(0);
+      expect(result.failedTasks).toBe(0);
+    });
+  });
+
+  // ── Listener Cleanup ───────────────────────────────────────────────────
+
+  describe('listener cleanup', () => {
+    it('removes all TaskReady and TaskSettled listeners after pool completes', async () => {
+      setupProfileMocks();
+      setupHarnessMocks();
+
+      const task1 = makeTask({ id: 'task-1', dependencies: [] });
+      const task2 = {
+        ...makeTask({ id: 'task-2', dependencies: ['task-1'] }),
+        status: undefined as const,
+      };
+
+      const { pool, tracker } = createPoolAndTracker({
+        tasks: [task1, task2],
+        maxConcurrentLanes: 2,
+      });
+
+      await pool.run();
+
+      // After pool completion, the cleanup function in the wait block should
+      // have removed all TaskReady and TaskSettled listeners. Both the once()
+      // auto-cleanup and the explicit removeListener in cleanup() contribute.
+      expect(tracker.listenerCount(TaskTracker.Events.TaskReady)).toBe(0);
+      expect(tracker.listenerCount(TaskTracker.Events.TaskSettled)).toBe(0);
+    });
+
+    it('removes all listeners even when wake comes from abort signal', async () => {
+      setupProfileMocks();
+      setupHarnessMocksWithAbort();
+
+      const controller = new AbortController();
+
+      const task1 = makeTask({ id: 'task-1', dependencies: [] });
+      const task2 = {
+        ...makeTask({ id: 'task-2', dependencies: ['task-1'] }),
+        status: undefined as const,
+      };
+
+      const { pool, tracker } = createPoolAndTracker({
+        tasks: [task1, task2],
+        maxConcurrentLanes: 2,
+        signal: controller.signal,
+      });
+
+      // Pre-claim to force lanes into the wait block
+      tracker.claimTasks(1);
+
+      const runPromise = pool.run();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      controller.abort();
+      await runPromise;
+
+      // The onAbort handler calls cleanup(), which synchronously removes both
+      // the TaskReady and TaskSettled listeners, preventing double-wake and
+      // avoiding listener leaks.
+      expect(tracker.listenerCount(TaskTracker.Events.TaskReady)).toBe(0);
+      expect(tracker.listenerCount(TaskTracker.Events.TaskSettled)).toBe(0);
+    });
+
+    it('cleanup prevents a second listener from firing after first wake', async () => {
+      setupProfileMocks();
+      setupHarnessMocks();
+
+      // Use 2 lanes with dependent tasks. When task-1 completes, both
+      // TaskReady (from recalculateStatuses) and TaskSettled (from
+      // completeTask) fire in quick succession. The cleanup function removes
+      // the second listener synchronously before it can fire, so only one
+      // wake occurs per lane.
+      const task1 = makeTask({ id: 'task-1', dependencies: [] });
+      const task2 = {
+        ...makeTask({ id: 'task-2', dependencies: ['task-1'] }),
+        status: undefined as const,
+      };
+
+      const { pool, tracker } = createPoolAndTracker({
+        tasks: [task1, task2],
+        maxConcurrentLanes: 2,
+      });
+
+      // Track how many times claimTasks is called to ensure no double-processing.
+      // With 2 lanes and 2 tasks (one dependent), there should be exactly 2
+      // successful claims (task-1 by one lane, task-2 by the other after wake).
+      let claimCount = 0;
+      const originalClaim = tracker.claimTasks.bind(tracker);
+      const spy = spyOn(tracker, 'claimTasks').mockImplementation((count: number) => {
+        const tasks = originalClaim(count);
+        if (tasks.length > 0) claimCount++;
+        return tasks;
+      });
+
+      try {
+        await pool.run();
+
+        // Exactly 2 successful claims — one per task. No double-wake caused
+        // a lane to claim the same task or attempt an extra claim.
+        expect(claimCount).toBe(2);
+        expect(tracker.getTask('task-1')!.status).toBe('done');
+        expect(tracker.getTask('task-2')!.status).toBe('done');
+      } finally {
+        spy.mockRestore();
+      }
+    });
+  });
+});
+
+// Restore the real modules so mocks don't leak into other test files.
+afterAll(() => {
+  mock.module('../../src/core/harness-factory.ts', () => realHarnessFactory);
+  mock.module('../../src/core/profile.ts', () => realProfile);
+  mock.module('../../src/core/structured-output.ts', () => realStructuredOutput);
+});

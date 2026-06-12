@@ -251,6 +251,131 @@ describe('clearProfileCache', () => {
   });
 });
 
+// ─── profileCache size-based eviction ───────────────────────────────────────
+
+describe('profileCache size-based eviction', () => {
+  /**
+   * Create a temporary subdirectory with a single .md profile inside.
+   * Returns the directory path.
+   */
+  async function makeProfileDir(parent: string, slug: string, prompt: string): Promise<string> {
+    const dir = join(parent, slug);
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, 'agent.md'), ['---', 'provider: openai', 'model: gpt-4o', '---', prompt].join('\n'));
+    return dir;
+  }
+
+  it('returns cached result when cache size is exactly 20', async () => {
+    // Populate cache with exactly 20 entries
+    const dirs: string[] = [];
+    for (let i = 0; i < 20; i++) {
+      const dir = await makeProfileDir(getDir(), `dir-${i}`, `Prompt ${i}`);
+      dirs.push(dir);
+      await loadProfiles(dir);
+    }
+
+    // Now modify the file in dir-0
+    await writeFile(
+      join(dirs[0], 'agent.md'),
+      ['---', 'provider: openai', 'model: gpt-4o', '---', 'Updated prompt'].join('\n'),
+    );
+
+    // Since cache size is 20 (not > 20), should return stale cached result
+    const profiles = await loadProfiles(dirs[0]);
+    expect(profiles.get('agent')!.systemPrompt).toBe('Prompt 0');
+  });
+
+  it('evicts cache when size exceeds 20 and re-reads from disk', async () => {
+    // Populate cache with 21 entries to exceed the threshold
+    const dirs: string[] = [];
+    for (let i = 0; i < 21; i++) {
+      const dir = await makeProfileDir(getDir(), `dir-${i}`, `Prompt ${i}`);
+      dirs.push(dir);
+      await loadProfiles(dir);
+    }
+
+    // Now modify the file in dir-0
+    await writeFile(
+      join(dirs[0], 'agent.md'),
+      ['---', 'provider: openai', 'model: gpt-4o', '---', 'Updated prompt'].join('\n'),
+    );
+
+    // Since cache size is 21 (> 20), cache should be cleared and re-read from disk
+    const profiles = await loadProfiles(dirs[0]);
+    expect(profiles.get('agent')!.systemPrompt).toBe('Updated prompt');
+  });
+
+  it('evicts cache before returning on the 21th unique directory call', async () => {
+    // Populate cache with 20 entries
+    const dirs: string[] = [];
+    for (let i = 0; i < 20; i++) {
+      const dir = await makeProfileDir(getDir(), `dir-${i}`, `Prompt ${i}`);
+      dirs.push(dir);
+      await loadProfiles(dir);
+    }
+
+    // Verify dir-0 is cached with original content
+    const before = await loadProfiles(dirs[0]);
+    expect(before.get('agent')!.systemPrompt).toBe('Prompt 0');
+
+    // Now modify dir-0 on disk
+    await writeFile(
+      join(dirs[0], 'agent.md'),
+      ['---', 'provider: openai', 'model: gpt-4o', '---', 'Modified prompt'].join('\n'),
+    );
+
+    // Add a 21st unique directory to push cache over the threshold
+    const dir21 = await makeProfileDir(getDir(), 'dir-21', 'Prompt 21');
+    await loadProfiles(dir21);
+
+    // Now accessing dir-0 should re-read because cache was cleared
+    const after = await loadProfiles(dirs[0]);
+    expect(after.get('agent')!.systemPrompt).toBe('Modified prompt');
+  });
+
+  it('does not evict when cache has fewer than 20 entries', async () => {
+    // Populate cache with 19 entries
+    const dirs: string[] = [];
+    for (let i = 0; i < 19; i++) {
+      const dir = await makeProfileDir(getDir(), `dir-${i}`, `Prompt ${i}`);
+      dirs.push(dir);
+      await loadProfiles(dir);
+    }
+
+    // Modify dir-0 on disk
+    await writeFile(
+      join(dirs[0], 'agent.md'),
+      ['---', 'provider: openai', 'model: gpt-4o', '---', 'New prompt'].join('\n'),
+    );
+
+    // Cache should NOT be cleared, so stale data is returned
+    const profiles = await loadProfiles(dirs[0]);
+    expect(profiles.get('agent')!.systemPrompt).toBe('Prompt 0');
+  });
+
+  it('allows cache to grow again after eviction', async () => {
+    // Fill cache to 21 entries to trigger eviction
+    const dirs: string[] = [];
+    for (let i = 0; i < 21; i++) {
+      const dir = await makeProfileDir(getDir(), `dir-${i}`, `Prompt ${i}`);
+      dirs.push(dir);
+      await loadProfiles(dir);
+    }
+
+    // Eviction happened on the 21st call; cache should now have 1 entry (dir-21)
+    // Add 5 more unique directories — should work fine
+    for (let i = 22; i < 27; i++) {
+      const dir = await makeProfileDir(getDir(), `dir-${i}`, `Prompt ${i}`);
+      await loadProfiles(dir);
+    }
+
+    // Verify we can still load from dir-22 (newly cached)
+    const dir22 = join(getDir(), 'dir-22');
+    const profiles = await loadProfiles(dir22);
+    expect(profiles.get('agent')!.systemPrompt).toBe('Prompt 22');
+  });
+});
+
 // ─── loadProfile ────────────────────────────────────────────────────────────
 
 describe('loadProfile', () => {

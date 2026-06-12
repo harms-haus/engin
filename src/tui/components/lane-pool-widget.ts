@@ -13,27 +13,62 @@ export interface TaskLane {
   stepInfo?: string;
 }
 
+// ─── Status Priority ────────────────────────────────────────────────────────
+
+const statusPriority: Record<TaskStatus, number> = {
+  implementing: 0,
+  reviewing: 0,
+  claimed: 1,
+  ready: 2,
+  blocked: 3,
+  done: 4,
+  failed: 4,
+};
+
 // ─── Lane Pool Widget ───────────────────────────────────────────────────────
 
 export class LanePoolWidget implements Component {
   private lanes: TaskLane[] = [];
-  private focusedLaneIndex = -1;
+  private focusedLaneId: string | null = null;
   private dirty = true;
   private cachedWidth = -1;
   private cachedLines: string[] = [];
+  private sortedCache: TaskLane[] | null = null;
+
+  /** Lazily computes and caches the sorted lane list. */
+  private ensureSorted(): TaskLane[] {
+    if (this.sortedCache === null) {
+      this.sortedCache = [...this.lanes].sort((a, b) => statusPriority[a.status] - statusPriority[b.status]);
+    }
+    return this.sortedCache;
+  }
+
+  /** Clears the sorted cache (call whenever lanes or focus change). */
+  private invalidateCache(): void {
+    this.sortedCache = null;
+    this.dirty = true;
+  }
 
   updateLanes(lanes: TaskLane[]): void {
     this.lanes = lanes;
-    this.dirty = true;
+    if (this.focusedLaneId !== null && !lanes.some((l) => l.id === this.focusedLaneId)) {
+      this.focusedLaneId = null;
+    }
+    this.invalidateCache();
   }
 
-  setFocusedLane(index: number): void {
-    this.focusedLaneIndex = index;
-    this.dirty = true;
+  /** Focuses the lane with the given task ID. No-op if the ID doesn't exist. */
+  setFocusedLaneById(id: string): void {
+    if (this.lanes.some((l) => l.id === id)) {
+      this.focusedLaneId = id;
+      this.dirty = true;
+    }
   }
 
   getFocusedLaneIndex(): number {
-    return this.focusedLaneIndex;
+    if (this.focusedLaneId === null) return -1;
+    const sorted = this.getSortedLanes();
+    return sorted.findIndex((lane) => lane.id === this.focusedLaneId);
   }
 
   getLanes(): TaskLane[] {
@@ -41,11 +76,22 @@ export class LanePoolWidget implements Component {
   }
 
   getFocusedTaskId(): string | undefined {
-    return this.lanes[this.focusedLaneIndex]?.id;
+    return this.focusedLaneId ?? undefined;
+  }
+
+  /** Returns a shallow copy of lanes sorted by status priority (ascending). */
+  getSortedLanes(): TaskLane[] {
+    return [...this.ensureSorted()];
+  }
+
+  /** Returns the currently focused lane from the sorted list, or undefined. */
+  getFocusedLane(): TaskLane | undefined {
+    if (this.focusedLaneId === null) return undefined;
+    return this.ensureSorted().find((l) => l.id === this.focusedLaneId);
   }
 
   invalidate(): void {
-    this.dirty = true;
+    this.invalidateCache();
   }
 
   getVisibleLaneCount(): number {
@@ -57,15 +103,15 @@ export class LanePoolWidget implements Component {
       return this.cachedLines;
     }
 
+    const sorted = this.ensureSorted();
     const lines: string[] = [];
 
-    for (let i = 0; i < this.lanes.length; i++) {
-      const lane = this.lanes[i];
+    for (const lane of sorted) {
       let text = statusIcon(lane.status) + ' ' + statusColor(lane.status)(lane.title);
       if (lane.stepInfo) {
         text += ' ' + dim(lane.stepInfo);
       }
-      if (i === this.focusedLaneIndex) {
+      if (lane.id === this.focusedLaneId) {
         text = bold(text);
       }
       lines.push(truncateToWidth(text, width, '…', true));
@@ -78,11 +124,14 @@ export class LanePoolWidget implements Component {
   }
 
   handleInput(data: string): void {
-    if (matchesKey(data, 'up') && this.focusedLaneIndex > 0) {
-      this.focusedLaneIndex--;
+    const sorted = this.ensureSorted();
+    const currentIndex = this.focusedLaneId !== null ? sorted.findIndex((lane) => lane.id === this.focusedLaneId) : -1;
+
+    if (matchesKey(data, 'up') && currentIndex > 0) {
+      this.focusedLaneId = sorted[currentIndex - 1].id;
       this.invalidate();
-    } else if (matchesKey(data, 'down') && this.focusedLaneIndex < this.lanes.length - 1) {
-      this.focusedLaneIndex++;
+    } else if (matchesKey(data, 'down') && currentIndex < sorted.length - 1) {
+      this.focusedLaneId = sorted[currentIndex + 1].id;
       this.invalidate();
     }
   }

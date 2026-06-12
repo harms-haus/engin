@@ -438,6 +438,107 @@ describe('harness subscribe forwarding', () => {
   });
 });
 
+describe('agentId override in callbacks', () => {
+  it('uses options.agentId for turn_start events', async () => {
+    const onTurnStart = mock();
+    await createHarness({
+      profile: makeProfile(),
+      cwd: '/tmp',
+      agentId: 'lane-0',
+      onAgentStatus: { onTurnStart },
+    });
+
+    capturedListener!({ type: 'turn_start' });
+
+    expect(onTurnStart).toHaveBeenCalledWith({
+      agentId: 'lane-0',
+      turn: 1,
+    });
+  });
+
+  it('uses options.agentId for turn_end events', async () => {
+    const onTurnEnd = mock();
+    await createHarness({
+      profile: makeProfile(),
+      cwd: '/tmp',
+      agentId: 'lane-0',
+      onAgentStatus: { onTurnEnd },
+    });
+
+    capturedListener!({
+      type: 'turn_end',
+      message: {
+        role: 'assistant',
+        usage: { input: 200, output: 100 },
+        content: [
+          { type: 'text', text: 'response' },
+          { type: 'thinking', thinking: 'step 1', redacted: undefined },
+          { type: 'toolCall', id: 'tc99', name: 'write', arguments: { path: '/out.ts', content: 'x' } },
+        ],
+      },
+    });
+
+    expect(onTurnEnd).toHaveBeenCalledWith({
+      agentId: 'lane-0',
+      turn: 0,
+      tokens: { input: 200, output: 100 },
+      contentBlocks: [
+        { type: 'text', text: 'response' },
+        { type: 'thinking', thinking: 'step 1', redacted: undefined },
+        { type: 'toolCall', id: 'tc99', name: 'write', arguments: { path: '/out.ts', content: 'x' } },
+      ],
+    });
+  });
+
+  it('uses options.agentId for tool_execution_start events', async () => {
+    const onToolCallStart = mock();
+    await createHarness({
+      profile: makeProfile(),
+      cwd: '/tmp',
+      agentId: 'lane-0',
+      onAgentStatus: { onToolCallStart },
+    });
+
+    capturedListener!({
+      type: 'tool_execution_start',
+      toolName: 'bash',
+      toolCallId: 'call_123',
+      args: { command: 'ls' },
+    });
+
+    expect(onToolCallStart).toHaveBeenCalledWith({
+      agentId: 'lane-0',
+      toolName: 'bash',
+      toolCallId: 'call_123',
+      arguments: { command: 'ls' },
+    });
+  });
+
+  it('uses options.agentId for tool_execution_end events', async () => {
+    const onToolCallEnd = mock();
+    await createHarness({
+      profile: makeProfile(),
+      cwd: '/tmp',
+      agentId: 'lane-0',
+      onAgentStatus: { onToolCallEnd },
+    });
+
+    capturedListener!({
+      type: 'tool_execution_end',
+      toolName: 'bash',
+      toolCallId: 'call_456',
+      isError: true,
+    });
+
+    expect(onToolCallEnd).toHaveBeenCalledWith({
+      agentId: 'lane-0',
+      toolName: 'bash',
+      toolCallId: 'call_456',
+      isError: true,
+    });
+  });
+});
+
 // Restore the real modules so mocks don't leak into other test files.
 afterAll(() => {
   mock.module('@earendil-works/pi-coding-agent', () => realPiCodingAgent);

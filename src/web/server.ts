@@ -2,6 +2,7 @@ import { readFile, readdir } from 'node:fs/promises';
 import { extname, join } from 'node:path';
 import { getDefaultWorkDir, scanPastRuns } from '../core/config.js';
 import type { PersistedAgentRecord } from '../core/types.js';
+import { isEnoentError } from '../core/utils.js';
 import { listWorkflows, loadWorkflow } from '../core/workflow-loader.js';
 import { WorkflowStatusTracker } from '../tracking/workflow-status.js';
 import { RunRegistry } from './run-registry.js';
@@ -32,7 +33,8 @@ async function loadSessionLogs(workDir: string, taskId: string): Promise<LogEntr
   let stepDirs: string[];
   try {
     stepDirs = (await readdir(sessionsDir)).sort();
-  } catch {
+  } catch (err) {
+    if (!isEnoentError(err)) throw err;
     return logs;
   }
 
@@ -208,6 +210,7 @@ export async function startWebServer(
       .then(() => {
         const summary = registry.completeRun(runId);
         broadcast({ type: 'workflow_complete', summary });
+        registry.pruneCompletedRuns(20);
       })
       .catch((err: unknown) => {
         const msg = err instanceof Error ? err.message : String(err);
@@ -218,6 +221,7 @@ export async function startWebServer(
           error: msg,
           phase: registry.getRun(runId)?.currentPhase ?? 'unknown',
         });
+        registry.pruneCompletedRuns(20);
       });
 
     return runId;
@@ -269,7 +273,8 @@ export async function startWebServer(
           try {
             const entries = await resolveListWorkflows(options.cwd);
             return Response.json(entries);
-          } catch {
+          } catch (err) {
+            console.error('Failed to list workflows:', err);
             return new Response(JSON.stringify({ error: 'Failed to list workflows' }), {
               status: 500,
               headers: { 'Content-Type': 'application/json' },
@@ -423,8 +428,8 @@ export async function startWebServer(
                     agents: spawnedAgents,
                   };
                   ws.send(JSON.stringify(msg));
-                } catch {
-                  // File doesn't exist or is corrupt — silently skip
+                } catch (err) {
+                  console.warn('Failed to load past run state for workflow', parsed.workflowId, ':', err);
                 }
               }
             }

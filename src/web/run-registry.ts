@@ -199,6 +199,52 @@ export class RunRegistry {
     }));
   }
 
+  // ─── Pruning ──────────────────────────────────────────────────────────
+
+  /**
+   * Remove the oldest non-running entries (completed / failed) so that at
+   * most `maxKeep` non-running entries remain.  Running entries are never
+   * pruned.
+   *
+   * @param maxKeep - Maximum number of non-running entries to keep.  Defaults
+   *                  to 20.
+   * @returns The number of pruned entries.
+   */
+  pruneCompletedRuns(maxKeep = 20): number {
+    // Count non-running entries.
+    let nonRunningCount = 0;
+    for (const id of this.order) {
+      const entry = this.runs.get(id);
+      if (entry && entry.status !== 'running') {
+        nonRunningCount++;
+      }
+    }
+
+    if (nonRunningCount <= maxKeep) {
+      return 0;
+    }
+
+    // Iterate from oldest to newest, removing non-running entries until we
+    // reach maxKeep.
+    const toRemove = new Set<string>();
+    for (const id of this.order) {
+      if (nonRunningCount <= maxKeep) {
+        break;
+      }
+      const entry = this.runs.get(id);
+      if (entry && entry.status !== 'running') {
+        this.runs.delete(id);
+        toRemove.add(id);
+        nonRunningCount--;
+      }
+    }
+
+    // Rebuild order array without the removed IDs.
+    this.order = this.order.filter((id) => !toRemove.has(id));
+
+    return toRemove.size;
+  }
+
   // ─── Queries ───────────────────────────────────────────────────────────
 
   /**

@@ -426,6 +426,67 @@ describe('WorkflowStatusTracker', () => {
     });
   });
 
+  // ── dispose() ──────────────────────────────────────────────────────
+
+  describe('dispose()', () => {
+    it('can be called multiple times without error', () => {
+      expect(() => {
+        tracker.dispose();
+        tracker.dispose();
+        tracker.dispose();
+      }).not.toThrow();
+    });
+  });
+
+  describe('dispose() with isolated dirs', () => {
+    const temp = useTempDir();
+    let isolatedDir: string;
+    let isolatedTracker: WorkflowStatusTracker;
+
+    beforeEach(() => {
+      isolatedDir = temp.getDir();
+      isolatedTracker = new WorkflowStatusTracker(isolatedDir);
+    });
+
+    it('removes event listeners so task changes no longer trigger auto-persist', async () => {
+      isolatedTracker.dispose();
+
+      // Adding a task should NOT trigger auto-persist after dispose
+      isolatedTracker.taskTracker.addTask({
+        id: 't1',
+        title: 'Test',
+        prompt: 'p',
+        profile: 'prof',
+        files: [],
+        dependencies: [],
+      });
+
+      // Wait one tick for any async save to settle
+      await new Promise((r) => setTimeout(r, 10));
+
+      await expect(fs.readFile(path.join(isolatedDir, '.engin-state.json'), 'utf-8')).rejects.toThrow();
+    });
+
+    it('removes listeners so settled tasks no longer trigger auto-persist', async () => {
+      isolatedTracker.taskTracker.addTask(makeTask({ id: 't1' }));
+      await isolatedTracker.save();
+
+      isolatedTracker.dispose();
+
+      // Completing a task after dispose should NOT write to disk
+      const _claimed = isolatedTracker.taskTracker.claimTasks(1);
+      isolatedTracker.taskTracker.startTask('t1', 'agent-1');
+      isolatedTracker.taskTracker.submitForReview('t1', { done: true });
+      isolatedTracker.taskTracker.completeTask('t1');
+
+      await new Promise((r) => setTimeout(r, 50));
+
+      // Load from disk — the task should still be 'ready' (pre-dispose state)
+      const restored = await WorkflowStatusTracker.load(isolatedDir);
+      expect(restored.taskTracker.getTask('t1')!.status).toBe('ready');
+    });
+  });
+
   // ── edge cases ─────────────────────────────────────────────────────
 
   describe('edge cases', () => {

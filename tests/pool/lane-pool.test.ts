@@ -88,7 +88,7 @@ function createMockTaskTracker(overrides: Record<string, unknown> = {}) {
     startTask: mock(() => {}),
     submitForReview: mock(() => {}),
     completeTask: mock(() => {}),
-    areAllSettled: mock(() => true),
+    isPoolDone: mock(() => true),
     getAllTasks: mock(() => []),
     getReadyTasks: mock(() => []),
     addTask: mock(() => {}),
@@ -156,7 +156,7 @@ describe('LanePool', () => {
 
       expect(result.completedTasks).toBe(1);
       expect(result.failedTasks).toBe(0);
-      expect(tracker.areAllSettled()).toBe(true);
+      expect(tracker.isPoolDone()).toBe(true);
     });
 
     it('calls createHarness with the correct profile and options', async () => {
@@ -171,6 +171,7 @@ describe('LanePool', () => {
       const callArgs = mockCreateHarness.mock.calls[0][0] as Record<string, unknown>;
       expect(callArgs.cwd).toBe('/tmp/project');
       expect(callArgs.profile).toMatchObject({ id: 'coder' });
+      expect(callArgs.agentId).toBe('lane-0');
     });
 
     it('creates a session directory with task id and step info', async () => {
@@ -484,6 +485,11 @@ describe('LanePool', () => {
 
       expect(result.completedTasks).toBe(2);
       expect(result.failedTasks).toBe(0);
+
+      // Each lane should pass its own agentId to the harness
+      const agentIds = mockCreateHarness.mock.calls.map((call) => (call[0] as Record<string, unknown>).agentId);
+      expect(agentIds).toContain('lane-0');
+      expect(agentIds).toContain('lane-1');
     });
   });
 
@@ -1039,7 +1045,7 @@ describe('LanePool', () => {
           }
           throw new Error('Simulated lane crash');
         }),
-        areAllSettled: mock(() => false),
+        isPoolDone: mock(() => false),
         getAllTasks: mock(() => [
           {
             id: 'task-1',
@@ -1346,6 +1352,68 @@ describe('LanePool', () => {
       expect(result.failedTasks).toBe(0);
     });
   });
+
+  // ─── onTasksAdded Callback ──────────────────────────────────────────────
+
+  describe('onTasksAdded callback', () => {
+    it('fires onTasksAdded with all initial task statuses', async () => {
+      setupProfileMocks();
+      setupHarnessMocks();
+
+      const onTasksAdded = mock(() => {});
+
+      const tasks = [
+        makeTask({ id: 'task-1', title: 'First', dependencies: [] }),
+        { ...makeTask({ id: 'task-2', title: 'Second', dependencies: ['task-1'] }), status: undefined as const },
+      ];
+
+      const { pool, tracker } = createPoolAndTracker({
+        tasks,
+        onStatus: { onTasksAdded },
+      });
+
+      // task-2 should start as blocked since task-1 is not done
+      expect(tracker.getTask('task-2')!.status).toBe('blocked');
+
+      await pool.run();
+
+      expect(onTasksAdded).toHaveBeenCalledTimes(1);
+      const callArg = onTasksAdded.mock.calls[0][0] as {
+        tasks: { id: string; title: string; status: string; dependencies: string[] }[];
+      };
+
+      expect(callArg.tasks).toHaveLength(2);
+      expect(callArg.tasks[0]).toEqual({
+        id: 'task-1',
+        title: 'First',
+        status: 'ready',
+        dependencies: [],
+      });
+      expect(callArg.tasks[1]).toEqual({
+        id: 'task-2',
+        title: 'Second',
+        status: 'blocked',
+        dependencies: ['task-1'],
+      });
+    });
+
+    it('does not fire onTasksAdded when no tasks', async () => {
+      setupProfileMocks();
+      setupHarnessMocks();
+
+      const onTasksAdded = mock(() => {});
+
+      const { pool } = createPoolAndTracker({
+        tasks: [],
+        onStatus: { onTasksAdded },
+      });
+
+      await pool.run();
+
+      expect(onTasksAdded).not.toHaveBeenCalled();
+    });
+  });
+
   // ─── Event-Driven Waiting ──────────────────────────────────────────────
 
   describe('event-driven waiting', () => {

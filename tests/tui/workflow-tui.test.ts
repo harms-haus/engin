@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'bun:test';
+import { TUI } from '@earendil-works/pi-tui';
+import { describe, expect, it, mock, spyOn } from 'bun:test';
 import { WorkflowTUI } from '../../src/tui/workflow-tui.js';
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
@@ -192,6 +193,178 @@ describe('WorkflowTUI', () => {
     });
   });
 
+  describe('arrow key routing to agent log', () => {
+    // These tests verify the full integration pipeline:
+    // WorkflowTUI → Dashboard.handleInput → AgentLogWidget state change
+    // The fix in workflow-tui.ts adds left/right arrow handling in the
+    // global input listener, routing to dashboard.handleInput(data).
+
+    const LEFT_ARROW = '\x1b[D';
+    const RIGHT_ARROW = '\x1b[C';
+
+    it('dashboard.handleInput routes left arrow to agentLog, switching agents', () => {
+      const tui = new WorkflowTUI();
+      const dashboard = tui.getDashboard();
+
+      dashboard.agentLog.selectAgent('agent-1', 'coder');
+      dashboard.agentLog.selectAgent('agent-2', 'scout');
+      expect(dashboard.agentLog.getCurrentAgentId()).toBe('agent-2');
+
+      dashboard.handleInput(LEFT_ARROW);
+      expect(dashboard.agentLog.getCurrentAgentId()).toBe('agent-1');
+    });
+
+    it('dashboard.handleInput routes right arrow to agentLog, switching agents', () => {
+      const tui = new WorkflowTUI();
+      const dashboard = tui.getDashboard();
+
+      dashboard.agentLog.selectAgent('agent-1', 'coder');
+      dashboard.agentLog.selectAgent('agent-2', 'scout');
+      expect(dashboard.agentLog.getCurrentAgentId()).toBe('agent-2');
+
+      dashboard.handleInput(RIGHT_ARROW);
+      // Right from agent-2 wraps to agent-1
+      expect(dashboard.agentLog.getCurrentAgentId()).toBe('agent-1');
+    });
+
+    it('dashboard.handleInput wraps left arrow from first to last agent', () => {
+      const tui = new WorkflowTUI();
+      const dashboard = tui.getDashboard();
+
+      dashboard.agentLog.selectAgent('agent-1', 'coder');
+      dashboard.agentLog.selectAgent('agent-2', 'scout');
+      dashboard.agentLog.selectAgent('agent-3', 'planner');
+      // Navigate back to first
+      dashboard.agentLog.selectAgent('agent-1', 'coder');
+
+      dashboard.handleInput(LEFT_ARROW);
+      // Left from agent-1 wraps to agent-3
+      expect(dashboard.agentLog.getCurrentAgentId()).toBe('agent-3');
+    });
+
+    it('dashboard.handleInput wraps right arrow from last to first agent', () => {
+      const tui = new WorkflowTUI();
+      const dashboard = tui.getDashboard();
+
+      dashboard.agentLog.selectAgent('agent-1', 'coder');
+      dashboard.agentLog.selectAgent('agent-2', 'scout');
+      dashboard.agentLog.selectAgent('agent-3', 'planner');
+      // Currently on agent-3 (last)
+
+      dashboard.handleInput(RIGHT_ARROW);
+      // Right from agent-3 wraps to agent-1
+      expect(dashboard.agentLog.getCurrentAgentId()).toBe('agent-1');
+    });
+
+    it('arrow key navigation preserves per-agent log entries', () => {
+      const tui = new WorkflowTUI();
+      const dashboard = tui.getDashboard();
+
+      dashboard.agentLog.selectAgent('agent-1', 'coder');
+      dashboard.agentLog.addEntry({ type: 'text', content: 'agent-1 message' });
+
+      dashboard.agentLog.selectAgent('agent-2', 'scout');
+      dashboard.agentLog.addEntry({ type: 'text', content: 'agent-2 message' });
+
+      // Navigate left to agent-1
+      dashboard.handleInput(LEFT_ARROW);
+      expect(dashboard.agentLog.getCurrentAgentId()).toBe('agent-1');
+
+      // Navigate right to agent-2
+      dashboard.handleInput(RIGHT_ARROW);
+      expect(dashboard.agentLog.getCurrentAgentId()).toBe('agent-2');
+    });
+
+    it('dashboard.handleInput with spy verifies left arrow is forwarded to agentLog', () => {
+      const tui = new WorkflowTUI();
+      const dashboard = tui.getDashboard();
+      const agentSpy = spyOn(dashboard.agentLog, 'handleInput');
+
+      dashboard.agentLog.selectAgent('agent-1', 'coder');
+      dashboard.agentLog.selectAgent('agent-2', 'scout');
+
+      dashboard.handleInput(LEFT_ARROW);
+      expect(agentSpy).toHaveBeenCalledTimes(1);
+      expect(agentSpy).toHaveBeenCalledWith(LEFT_ARROW);
+
+      agentSpy.mockRestore();
+    });
+
+    it('dashboard.handleInput with spy verifies right arrow is forwarded to agentLog', () => {
+      const tui = new WorkflowTUI();
+      const dashboard = tui.getDashboard();
+      const agentSpy = spyOn(dashboard.agentLog, 'handleInput');
+
+      dashboard.agentLog.selectAgent('agent-1', 'coder');
+      dashboard.agentLog.selectAgent('agent-2', 'scout');
+
+      dashboard.handleInput(RIGHT_ARROW);
+      expect(agentSpy).toHaveBeenCalledTimes(1);
+      expect(agentSpy).toHaveBeenCalledWith(RIGHT_ARROW);
+
+      agentSpy.mockRestore();
+    });
+
+    it('non-arrow keys are NOT routed to agentLog by dashboard.handleInput', () => {
+      const tui = new WorkflowTUI();
+      const dashboard = tui.getDashboard();
+      const agentSpy = spyOn(dashboard.agentLog, 'handleInput');
+
+      dashboard.agentLog.selectAgent('agent-1', 'coder');
+      dashboard.agentLog.selectAgent('agent-2', 'scout');
+
+      dashboard.handleInput('\x1b[B'); // Down arrow — should go to lanePool, not agentLog
+      expect(agentSpy).not.toHaveBeenCalled();
+
+      agentSpy.mockRestore();
+    });
+
+    it('agentLog shows footer with agent count after arrow key navigation via dashboard', () => {
+      const tui = new WorkflowTUI();
+      const dashboard = tui.getDashboard();
+
+      dashboard.agentLog.selectAgent('agent-1', 'coder');
+      dashboard.agentLog.selectAgent('agent-2', 'scout');
+
+      dashboard.handleInput(LEFT_ARROW); // switch to agent-1
+      const lines = dashboard.agentLog.render(80);
+      const lastLine = lines[lines.length - 1];
+      expect(lastLine).toContain('switch agent');
+      expect(lastLine).toContain('1/2');
+    });
+
+    it('input listener fix expectation: arrow keys must be consumed by the global listener', () => {
+      // This test documents the contract that the fix must satisfy:
+      // When left/right arrow keys are received by the global input listener
+      // in workflow-tui.ts, they must be routed to dashboard.handleInput
+      // and returned as { consume: true } to prevent the TUI framework
+      // from routing them to the focused component (EventLog).
+      //
+      // Before the fix, left/right arrows fell through to EventLog (focused)
+      // which doesn't handle them, so they were silently dropped.
+      //
+      // This test verifies the preconditions: the dashboard pipeline works.
+      // The actual fix is in the input listener inside start().
+      const tui = new WorkflowTUI();
+      const dashboard = tui.getDashboard();
+
+      // Set up state that would only change if arrows reach dashboard
+      dashboard.agentLog.selectAgent('alpha', 'coder');
+      dashboard.agentLog.selectAgent('beta', 'scout');
+      expect(dashboard.agentLog.getCurrentAgentId()).toBe('beta');
+
+      // Simulate what the fixed input listener does:
+      // if (matchesKey(data, 'left') || matchesKey(data, 'right')) {
+      //   this.dashboard.handleInput(data);
+      //   return { consume: true };
+      // }
+      dashboard.handleInput(LEFT_ARROW);
+
+      // Verify agent switched — proving the pipeline works end-to-end
+      expect(dashboard.agentLog.getCurrentAgentId()).toBe('alpha');
+    });
+  });
+
   describe('dashboard integration', () => {
     it('uses custom maxConcurrentLanes and agentLogLines', () => {
       const tui = new WorkflowTUI({ maxConcurrentLanes: 5, agentLogLines: 8 });
@@ -200,11 +373,119 @@ describe('WorkflowTUI', () => {
       expect(dashboard.getComputedHeight()).toBe(1 + 0 + 8 + 4);
     });
 
-    it('uses default maxConcurrentLanes (3) and agentLogLines (10)', () => {
+    it('uses default maxConcurrentLanes (5) and agentLogLines (20)', () => {
       const tui = new WorkflowTUI();
       const dashboard = tui.getDashboard();
-      // getComputedHeight = 1 (phaseBar) + 0 (no lanes) + 10 (agentLog) + 4 (borders)
-      expect(dashboard.getComputedHeight()).toBe(1 + 0 + 10 + 4);
+      // getComputedHeight = 1 (phaseBar) + 0 (no lanes) + 20 (agentLog) + 4 (borders)
+      expect(dashboard.getComputedHeight()).toBe(1 + 0 + 20 + 4);
+    });
+  });
+
+  describe('requestRender on key handling', () => {
+    // Raw terminal input sequences that matchesKey() recognizes.
+    // These simulate what a real terminal sends for each key.
+    const CTRL_C = '\x03';
+    const TAB = '\t';
+    const LEFT_ARROW = '\x1b[D';
+    const RIGHT_ARROW = '\x1b[C';
+
+    /**
+     * Set up a WorkflowTUI with a mocked TUI that captures the input callback
+     * registered by start() and provides a spy for requestRender.
+     *
+     * Strategy: intercept TUI.prototype.addInputListener to capture the callback
+     * that start() registers, and replace requestRender on the TUI instance with
+     * a mock. TUI.prototype.start is also mocked to prevent real terminal I/O.
+     */
+    function setupTest() {
+      let capturedCallback: ((data: string) => any) | null = null;
+      const requestRenderMock = mock(() => {});
+
+      // Spy on addInputListener: capture the callback and replace requestRender
+      // on the TUI instance with our mock.
+      const addListenerSpy = spyOn(TUI.prototype, 'addInputListener').mockImplementation(function (
+        this: any,
+        cb: (data: string) => any,
+      ) {
+        capturedCallback = cb;
+        this.requestRender = requestRenderMock;
+        return () => {};
+      });
+
+      // Prevent real terminal initialization (stdin raw mode, etc.)
+      const tuiStartSpy = spyOn(TUI.prototype, 'start').mockImplementation(() => {});
+      const tuiStopSpy = spyOn(TUI.prototype, 'stop').mockImplementation(() => {});
+
+      const wtui = new WorkflowTUI({ abort: () => {} });
+      wtui.start();
+
+      return {
+        wtui,
+        capturedCallback,
+        requestRenderMock,
+        cleanup: () => {
+          wtui.stop();
+          addListenerSpy.mockRestore();
+          tuiStartSpy.mockRestore();
+          tuiStopSpy.mockRestore();
+        },
+      };
+    }
+
+    it('calls requestRender when Tab key is handled', () => {
+      const { capturedCallback, requestRenderMock, cleanup } = setupTest();
+      try {
+        expect(capturedCallback).not.toBeNull();
+
+        // Tab handler returns { consume: true } but currently does NOT call
+        // requestRender before returning. Without the fix, this assertion fails.
+        capturedCallback!(TAB);
+        expect(requestRenderMock).toHaveBeenCalled();
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('calls requestRender when Left arrow key is handled', () => {
+      const { capturedCallback, requestRenderMock, cleanup } = setupTest();
+      try {
+        expect(capturedCallback).not.toBeNull();
+
+        // Left arrow handler returns { consume: true } but currently does NOT
+        // call requestRender before returning. Without the fix, this assertion fails.
+        capturedCallback!(LEFT_ARROW);
+        expect(requestRenderMock).toHaveBeenCalled();
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('calls requestRender when Right arrow key is handled', () => {
+      const { capturedCallback, requestRenderMock, cleanup } = setupTest();
+      try {
+        expect(capturedCallback).not.toBeNull();
+
+        // Right arrow handler returns { consume: true } but currently does NOT
+        // call requestRender before returning. Without the fix, this assertion fails.
+        capturedCallback!(RIGHT_ARROW);
+        expect(requestRenderMock).toHaveBeenCalled();
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('calls requestRender when Ctrl+C is handled (regression)', () => {
+      const { capturedCallback, requestRenderMock, cleanup } = setupTest();
+      try {
+        expect(capturedCallback).not.toBeNull();
+
+        // Ctrl+C handler already calls requestRender. This is a regression test
+        // to ensure it continues to work after the fix is applied.
+        capturedCallback!(CTRL_C);
+        expect(requestRenderMock).toHaveBeenCalled();
+      } finally {
+        cleanup();
+      }
     });
   });
 });

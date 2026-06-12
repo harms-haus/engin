@@ -85,6 +85,17 @@ export class LanePool {
       return { completedTasks: 0, failedTasks: 0 };
     }
 
+    // Fire onTasksAdded so the TUI gets the initial task layout immediately,
+    // before any profile loading or agent spawning.
+    this.options.onStatus?.onTasksAdded?.({
+      tasks: taskTracker.getAllTasks().map((t) => ({
+        id: t.id,
+        title: t.title,
+        status: t.status,
+        dependencies: t.dependencies,
+      })),
+    });
+
     // Clear stale cached profiles before loading fresh ones
     clearProfileCache();
     const profiles = await loadProfilesFromDirs(this.options.profilesDirs);
@@ -316,6 +327,7 @@ export class LanePool {
       cwd: this.options.cwd,
       apiKeys: this.options.apiKeys,
       sessionDir: sessionDirPath,
+      agentId,
       onAgentStatus: forwardAgentStatus(this.options.onStatus),
     };
 

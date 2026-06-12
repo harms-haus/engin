@@ -8,6 +8,14 @@ import type { AgentLoopResult, HarnessCreationOptions } from './types.js';
 // ─── Internal Helpers ─────────────────────────────────────────────────────
 
 /**
+ * Inject an `agentId` of the form `{prefix}-{index}` into a config when a
+ * prefix is provided; otherwise return the config unchanged.
+ */
+function resolveConfig(cfg: HarnessCreationOptions, prefix: string | undefined, index: number): HarnessCreationOptions {
+  return prefix ? { ...cfg, agentId: `${prefix}-${index}` } : cfg;
+}
+
+/**
  * Create sessions for every config sequentially, rolling back any
  * already-created sessions if one fails.
  */
@@ -95,13 +103,16 @@ export async function retryAgentUntil<T>(
   };
 }
 
-// ─── parallelAgents ────────────────────────────────────────────────────────
+// ─── parallelAgents / sequentialAgents shared options ─────────────────────
 
-export interface ParallelAgentOptions {
+export interface MultiAgentOptions {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   schema?: ZodType<any>;
   maxRetries?: number;
+  agentIdPrefix?: string;
 }
+
+// ─── parallelAgents ────────────────────────────────────────────────────────
 
 /**
  * Create sessions for every config in parallel, then run prompts in parallel
@@ -113,10 +124,13 @@ export interface ParallelAgentOptions {
 export async function parallelAgents<T = string | undefined>(
   configs: HarnessCreationOptions[],
   promptFn: (session: AgentSession, index: number) => string,
-  options?: ParallelAgentOptions,
+  options?: MultiAgentOptions,
 ): Promise<PromiseSettledResult<T>[]> {
+  // 0. Inject agentId prefix into configs if provided
+  const resolvedConfigs = configs.map((cfg, i) => resolveConfig(cfg, options?.agentIdPrefix, i));
+
   // 1. Create sessions sequentially so partial failures dispose already-created sessions
-  const sessionResults = await createSessionsWithCleanup(configs);
+  const sessionResults = await createSessionsWithCleanup(resolvedConfigs);
 
   // 2. Run prompts
   try {
@@ -146,12 +160,6 @@ export async function parallelAgents<T = string | undefined>(
 
 // ─── sequentialAgents ──────────────────────────────────────────────────────
 
-export interface SequentialAgentOptions {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  schema?: ZodType<any>;
-  maxRetries?: number;
-}
-
 /**
  * Create sessions one at a time, run prompts sequentially, and dispose
  * each session after use. Throws on the first failure.
@@ -159,11 +167,12 @@ export interface SequentialAgentOptions {
 export async function sequentialAgents<T = string | undefined>(
   configs: HarnessCreationOptions[],
   promptFn: (session: AgentSession, index: number) => string,
-  options?: SequentialAgentOptions,
+  options?: MultiAgentOptions,
 ): Promise<T[]> {
   const results: T[] = [];
   for (let i = 0; i < configs.length; i++) {
-    const { session, dispose } = await createHarness(configs[i]);
+    const config = resolveConfig(configs[i], options?.agentIdPrefix, i);
+    const { session, dispose } = await createHarness(config);
     try {
       const promptText = promptFn(session, i);
       if (options?.schema) {

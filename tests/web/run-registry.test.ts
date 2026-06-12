@@ -920,6 +920,329 @@ describe('getAgentRecords', () => {
   });
 });
 
+// ─── pruneCompletedRuns ────────────────────────────────────────────────────
+
+describe('pruneCompletedRuns', () => {
+  /** Helper: create and immediately complete a run, returning the ID. */
+  function createCompletedRun(registry: RunRegistry, name: string): string {
+    const id = registry.createRun(name);
+    registry.completeRun(id);
+    return id;
+  }
+
+  /** Helper: create and immediately fail a run, returning the ID. */
+  function createFailedRun(registry: RunRegistry, name: string): string {
+    const id = registry.createRun(name);
+    registry.failRun(id, 'error');
+    return id;
+  }
+
+  it('returns 0 when there are no runs', () => {
+    const registry = new RunRegistry();
+    const pruned = registry.pruneCompletedRuns();
+    expect(pruned).toBe(0);
+  });
+
+  it('returns 0 when non-running count is at most maxKeep', () => {
+    const registry = new RunRegistry();
+    const ids: string[] = [];
+    for (let i = 0; i < 20; i++) {
+      ids.push(createCompletedRun(registry, `Run ${i}`));
+    }
+    const pruned = registry.pruneCompletedRuns(20);
+    expect(pruned).toBe(0);
+    // All 20 should still be present
+    expect(registry.getAllSummaries()).toHaveLength(20);
+  });
+
+  it('returns 0 when non-running count is less than maxKeep', () => {
+    const registry = new RunRegistry();
+    for (let i = 0; i < 10; i++) {
+      createCompletedRun(registry, `Run ${i}`);
+    }
+    const pruned = registry.pruneCompletedRuns(20);
+    expect(pruned).toBe(0);
+    expect(registry.getAllSummaries()).toHaveLength(10);
+  });
+
+  it('prunes oldest completed runs to keep exactly maxKeep non-running entries', () => {
+    const registry = new RunRegistry();
+    const ids: string[] = [];
+    for (let i = 0; i < 30; i++) {
+      ids.push(createCompletedRun(registry, `Run ${i}`));
+    }
+    expect(registry.getAllSummaries()).toHaveLength(30);
+
+    const pruned = registry.pruneCompletedRuns(20);
+    expect(pruned).toBe(10);
+    expect(registry.getAllSummaries()).toHaveLength(20);
+  });
+
+  it('removes the oldest entries and keeps the newest ones', () => {
+    const registry = new RunRegistry();
+    const ids: string[] = [];
+    for (let i = 0; i < 30; i++) {
+      ids.push(createCompletedRun(registry, `Run ${i}`));
+    }
+    registry.pruneCompletedRuns(20);
+
+    const remaining = registry.getAllSummaries();
+    expect(remaining).toHaveLength(20);
+    // The newest 20 should remain (indices 10..29)
+    const remainingNames = remaining.map((s) => s.workflowName);
+    for (let i = 10; i < 30; i++) {
+      expect(remainingNames).toContain(`Run ${i}`);
+    }
+    // The oldest 10 should be gone (indices 0..9)
+    for (let i = 0; i < 10; i++) {
+      expect(remainingNames).not.toContain(`Run ${i}`);
+    }
+  });
+
+  it('deletes pruned entries from the runs map', () => {
+    const registry = new RunRegistry();
+    const ids: string[] = [];
+    for (let i = 0; i < 30; i++) {
+      ids.push(createCompletedRun(registry, `Run ${i}`));
+    }
+    registry.pruneCompletedRuns(20);
+
+    // Oldest 10 should be gone from the map
+    for (let i = 0; i < 10; i++) {
+      expect(registry.getRun(ids[i])).toBeUndefined();
+      expect(() => registry.getSummary(ids[i])).toThrow();
+    }
+    // Newest 20 should still be accessible
+    for (let i = 10; i < 30; i++) {
+      expect(registry.getRun(ids[i])).toBeDefined();
+    }
+  });
+
+  it('defaults maxKeep to 20 when no argument is provided', () => {
+    const registry = new RunRegistry();
+    const ids: string[] = [];
+    for (let i = 0; i < 30; i++) {
+      ids.push(createCompletedRun(registry, `Run ${i}`));
+    }
+    // Call without argument – should behave like pruneCompletedRuns(20)
+    const pruned = registry.pruneCompletedRuns();
+    expect(pruned).toBe(10);
+    expect(registry.getAllSummaries()).toHaveLength(20);
+  });
+
+  it('never prunes a running run', () => {
+    const registry = new RunRegistry();
+    const ids: string[] = [];
+
+    // Create 10 completed runs
+    for (let i = 0; i < 10; i++) {
+      ids.push(createCompletedRun(registry, `Completed ${i}`));
+    }
+
+    // Create a running run (leave it as running, don't complete it)
+    const runningId = registry.createRun('Running Run');
+
+    // Create 10 more completed runs
+    for (let i = 10; i < 20; i++) {
+      ids.push(createCompletedRun(registry, `Completed ${i}`));
+    }
+
+    // 20 completed + 1 running = 21 total, prune to maxKeep=10 non-running
+    const pruned = registry.pruneCompletedRuns(10);
+    expect(pruned).toBe(10);
+
+    const summaries = registry.getAllSummaries();
+    expect(summaries).toHaveLength(11); // 10 remaining completed + 1 running
+
+    // The running run must survive
+    expect(registry.getRun(runningId)).toBeDefined();
+    expect(registry.getRun(runningId)!.status).toBe('running');
+    const runningSummary = summaries.find((s) => s.id === runningId);
+    expect(runningSummary).toBeDefined();
+    expect(runningSummary!.status).toBe('running');
+    expect(runningSummary!.workflowName).toBe('Running Run');
+  });
+
+  it('running run at the beginning is not pruned', () => {
+    const registry = new RunRegistry();
+
+    // Running run first (oldest)
+    const runningId = registry.createRun('Oldest Running');
+
+    // Then 30 completed runs
+    for (let i = 0; i < 30; i++) {
+      createCompletedRun(registry, `Completed ${i}`);
+    }
+
+    // 30 non-running, prune to 20
+    const pruned = registry.pruneCompletedRuns(20);
+    expect(pruned).toBe(10);
+
+    const summaries = registry.getAllSummaries();
+    expect(summaries).toHaveLength(21); // 20 completed + 1 running
+
+    // The running run at the beginning survives
+    expect(registry.getRun(runningId)).toBeDefined();
+    expect(registry.getRun(runningId)!.status).toBe('running');
+  });
+
+  it('running run at the end is not pruned', () => {
+    const registry = new RunRegistry();
+
+    // 30 completed runs first
+    for (let i = 0; i < 30; i++) {
+      createCompletedRun(registry, `Completed ${i}`);
+    }
+
+    // Running run last (newest)
+    const runningId = registry.createRun('Newest Running');
+
+    const pruned = registry.pruneCompletedRuns(20);
+    expect(pruned).toBe(10);
+
+    const summaries = registry.getAllSummaries();
+    expect(summaries).toHaveLength(21); // 20 completed + 1 running
+
+    // The running run at the end survives
+    expect(registry.getRun(runningId)).toBeDefined();
+    expect(registry.getRun(runningId)!.status).toBe('running');
+  });
+
+  it('multiple running runs are all preserved', () => {
+    const registry = new RunRegistry();
+    const runningIds: string[] = [];
+
+    for (let i = 0; i < 5; i++) {
+      runningIds.push(registry.createRun(`Running ${i}`));
+      // Add some completed runs between running ones
+      for (let j = 0; j < 5; j++) {
+        createCompletedRun(registry, `Completed ${i}-${j}`);
+      }
+    }
+
+    // 25 completed + 5 running = 30 total, prune to maxKeep=10 non-running
+    const pruned = registry.pruneCompletedRuns(10);
+    expect(pruned).toBe(15); // 25 - 10 = 15 pruned
+
+    const summaries = registry.getAllSummaries();
+    expect(summaries).toHaveLength(15); // 10 completed + 5 running
+
+    // All running runs survive
+    for (const rid of runningIds) {
+      expect(registry.getRun(rid)).toBeDefined();
+      expect(registry.getRun(rid)!.status).toBe('running');
+    }
+  });
+
+  it('preserves insertion order after pruning', () => {
+    const registry = new RunRegistry();
+    const ids: string[] = [];
+    for (let i = 0; i < 30; i++) {
+      ids.push(createCompletedRun(registry, `Run ${i}`));
+    }
+    registry.pruneCompletedRuns(20);
+
+    const summaries = registry.getAllSummaries();
+    // The remaining IDs should be in the same relative order
+    const remainingIds = summaries.map((s) => s.id);
+    expect(remainingIds).toEqual(ids.slice(10));
+  });
+
+  it('handles failed runs the same as completed runs (both are non-running)', () => {
+    const registry = new RunRegistry();
+    const ids: string[] = [];
+
+    // Mix of completed and failed runs
+    for (let i = 0; i < 15; i++) {
+      ids.push(createCompletedRun(registry, `Completed ${i}`));
+    }
+    for (let i = 0; i < 15; i++) {
+      ids.push(createFailedRun(registry, `Failed ${i}`));
+    }
+
+    // 30 non-running, prune to 20
+    const pruned = registry.pruneCompletedRuns(20);
+    expect(pruned).toBe(10);
+    expect(registry.getAllSummaries()).toHaveLength(20);
+
+    // Oldest 10 should be gone
+    for (let i = 0; i < 10; i++) {
+      expect(registry.getRun(ids[i])).toBeUndefined();
+    }
+    // Newest 20 should remain
+    for (let i = 10; i < 30; i++) {
+      expect(registry.getRun(ids[i])).toBeDefined();
+    }
+  });
+
+  it('works with maxKeep=0, pruning all non-running entries', () => {
+    const registry = new RunRegistry();
+    const completedIds: string[] = [];
+    for (let i = 0; i < 5; i++) {
+      completedIds.push(createCompletedRun(registry, `Completed ${i}`));
+    }
+    const runningId = registry.createRun('Still Running');
+
+    const pruned = registry.pruneCompletedRuns(0);
+    expect(pruned).toBe(5);
+
+    const summaries = registry.getAllSummaries();
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0].id).toBe(runningId);
+    expect(summaries[0].status).toBe('running');
+  });
+
+  it('works with maxKeep=0 when all runs are running (nothing to prune)', () => {
+    const registry = new RunRegistry();
+    for (let i = 0; i < 5; i++) {
+      registry.createRun(`Running ${i}`);
+    }
+    const pruned = registry.pruneCompletedRuns(0);
+    expect(pruned).toBe(0);
+    expect(registry.getAllSummaries()).toHaveLength(5);
+  });
+
+  it('can be called multiple times idempotently', () => {
+    const registry = new RunRegistry();
+    for (let i = 0; i < 30; i++) {
+      createCompletedRun(registry, `Run ${i}`);
+    }
+
+    const pruned1 = registry.pruneCompletedRuns(20);
+    expect(pruned1).toBe(10);
+    expect(registry.getAllSummaries()).toHaveLength(20);
+
+    const pruned2 = registry.pruneCompletedRuns(20);
+    expect(pruned2).toBe(0);
+    expect(registry.getAllSummaries()).toHaveLength(20);
+  });
+
+  it('prunes correctly after new runs are added post-prune', () => {
+    const registry = new RunRegistry();
+    for (let i = 0; i < 25; i++) {
+      createCompletedRun(registry, `Run ${i}`);
+    }
+    registry.pruneCompletedRuns(20);
+    expect(registry.getAllSummaries()).toHaveLength(20);
+
+    // Add 10 more completed runs
+    for (let i = 25; i < 35; i++) {
+      createCompletedRun(registry, `Run ${i}`);
+    }
+    expect(registry.getAllSummaries()).toHaveLength(30);
+
+    const pruned = registry.pruneCompletedRuns(20);
+    expect(pruned).toBe(10);
+    expect(registry.getAllSummaries()).toHaveLength(20);
+
+    // The remaining should be the newest 20 (Run 15..34)
+    const names = registry.getAllSummaries().map((s) => s.workflowName);
+    for (let i = 15; i < 35; i++) {
+      expect(names).toContain(`Run ${i}`);
+    }
+  });
+});
+
 // ─── Composite Map key for agent deduplication ───────────────────────────
 
 describe('composite key – same agentId different taskIds', () => {

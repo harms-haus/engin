@@ -1,4 +1,4 @@
-import { type Component, matchesKey, truncateToWidth } from '@earendil-works/pi-tui';
+import { type Component, matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi } from '@earendil-works/pi-tui';
 import { cyan, dim, green, red } from '../theme.js';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -47,8 +47,9 @@ const padToWidth = (line: string, width: number): string => {
 // ─── AgentLogWidget ──────────────────────────────────────────────────────────
 
 export class AgentLogWidget implements Component {
-  private static readonly MAX_CACHED_AGENTS = 20;
+  private static readonly MAX_CACHED_AGENTS = 100;
   private agents = new Map<string, AgentData>();
+  private completedAgentIds = new Set<string>();
   private currentAgentId: string | null = null;
   private maxLines: number;
   private maxEntries = 200;
@@ -56,20 +57,13 @@ export class AgentLogWidget implements Component {
   private cachedWidth = -1;
   private cachedLines: string[] = [];
 
-  constructor(maxLines = 10) {
+  constructor(maxLines = 20) {
     this.maxLines = maxLines;
   }
 
   selectAgent(agentId: string, profile: string): void {
     if (!this.agents.has(agentId)) {
-      this.agents.set(agentId, {
-        entries: [],
-        toolCallCount: 0,
-        inputTokens: 0,
-        outputTokens: 0,
-        taskTitle: '',
-        profile,
-      });
+      this.agents.set(agentId, AgentLogWidget.createAgentData(profile));
       this.evictIfNeeded();
     }
     this.currentAgentId = agentId;
@@ -103,18 +97,22 @@ export class AgentLogWidget implements Component {
   private getOrCreateAgent(agentId: string): AgentData {
     let data = this.agents.get(agentId);
     if (!data) {
-      data = {
-        entries: [],
-        toolCallCount: 0,
-        inputTokens: 0,
-        outputTokens: 0,
-        taskTitle: '',
-        profile: '',
-      };
+      data = AgentLogWidget.createAgentData();
       this.agents.set(agentId, data);
       this.evictIfNeeded();
     }
     return data;
+  }
+
+  private static createAgentData(profile = ''): AgentData {
+    return {
+      entries: [],
+      toolCallCount: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      taskTitle: '',
+      profile,
+    };
   }
 
   /** Evict the oldest non-current agent when the cache exceeds the limit. */
@@ -123,13 +121,15 @@ export class AgentLogWidget implements Component {
     for (const [id] of this.agents) {
       if (id !== this.currentAgentId) {
         this.agents.delete(id);
+        this.completedAgentIds.delete(id);
         return;
       }
     }
   }
 
-  getAgentId(): string | null {
-    return this.currentAgentId;
+  markAgentComplete(agentId: string): void {
+    this.completedAgentIds.add(agentId);
+    this.dirty = true;
   }
 
   getCurrentAgentId(): string | null {
@@ -152,14 +152,7 @@ export class AgentLogWidget implements Component {
   ): void {
     let data = this.agents.get(agentId);
     if (!data) {
-      data = {
-        entries: [],
-        toolCallCount: 0,
-        inputTokens: 0,
-        outputTokens: 0,
-        taskTitle: '',
-        profile: '',
-      };
+      data = AgentLogWidget.createAgentData();
       this.agents.set(agentId, data);
       this.evictIfNeeded();
     }
@@ -216,25 +209,50 @@ export class AgentLogWidget implements Component {
       const header = `  ${title} (profile: ${data.profile}) • ${data.toolCallCount} tool calls • ↑${data.inputTokens} • ↓${data.outputTokens}`;
       lines.push(padToWidth(dim(header), width));
 
-      // Render the last (maxLines - 1) entries, newest at bottom
+      // Render all entries into actual terminal lines (splitting on \n)
       const visibleCount = this.maxLines - 1;
       // Reserve 1 line for footer if multiple agents
       const totalAgents = this.agents.size;
       const hasFooter = totalAgents > 1;
       const entrySlots = hasFooter ? visibleCount - 1 : visibleCount;
-      const startIdx = Math.max(0, data.entries.length - entrySlots);
-      const visibleEntries = data.entries.slice(startIdx);
 
-      for (const entry of visibleEntries) {
+      // Reverse iteration: process entries from newest to oldest, stopping
+      // once enough visible lines are accumulated. This avoids processing all
+      // entries when only the last few are visible.
+      const renderedLines: string[] = [];
+      for (let ei = data.entries.length - 1; ei >= 0 && renderedLines.length < entrySlots; ei--) {
+        const entry = data.entries[ei];
         const icon = typeIconMap[entry.type];
         const colorFn = typeColorMap[entry.type];
         const prefix = `  ${icon} `;
-        const prefixLen = 4; // 2 spaces + emoji (typically 2 columns) — but emoji width varies
+        const prefixLen = visibleWidth(prefix);
         const remainingWidth = Math.max(0, width - prefixLen);
-        const truncated = truncateToWidth(entry.content, remainingWidth);
-        const raw = `${prefix}${truncated}`;
-        const colored = colorFn ? colorFn(raw) : raw;
-        lines.push(padToWidth(colored, width));
+
+        const subLines = entry.content.split('\n');
+
+        // Process sub-lines in reverse to fill from bottom
+        const entryRenderedLines: string[] = [];
+        for (let si = subLines.length - 1; si >= 0; si--) {
+          const wrapped = wrapTextWithAnsi(subLines[si], remainingWidth);
+          // Process wrapped lines in reverse
+          for (let wi = wrapped.length - 1; wi >= 0; wi--) {
+            const linePrefix = si === 0 && wi === 0 ? prefix : ' '.repeat(prefixLen);
+            const raw = `${linePrefix}${wrapped[wi]}`;
+            const colored = colorFn ? colorFn(raw) : raw;
+            entryRenderedLines.push(padToWidth(colored, width));
+          }
+        }
+        // Reverse the entry's lines to get correct order, then prepend
+        entryRenderedLines.reverse();
+        renderedLines.unshift(...entryRenderedLines);
+        // Trim if we collected more than needed
+        if (renderedLines.length > entrySlots) {
+          renderedLines.splice(0, renderedLines.length - entrySlots);
+        }
+      }
+
+      for (const line of renderedLines) {
+        lines.push(line);
       }
 
       // Pad remaining entry slots so footer ends up at the bottom
@@ -247,7 +265,14 @@ export class AgentLogWidget implements Component {
       if (hasFooter) {
         const agentIds = Array.from(this.agents.keys());
         const currentIdx = agentIds.indexOf(this.currentAgentId);
-        const footer = `  ← → switch agent (${currentIdx + 1}/${totalAgents})`;
+        const completedCount = this.completedAgentIds.size;
+        const activeCount = totalAgents - completedCount;
+        let footer: string;
+        if (completedCount > 0) {
+          footer = `  ← → switch agent (${currentIdx + 1}/${totalAgents}) • ${activeCount} active, ${completedCount} done`;
+        } else {
+          footer = `  ← → switch agent (${currentIdx + 1}/${totalAgents})`;
+        }
         lines.push(padToWidth(dim(footer), width));
       }
     }

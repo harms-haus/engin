@@ -1,4 +1,3 @@
-import { mkdirSync, writeFileSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { PersistedAgentRecord, WorkflowState } from '../core/types.js';
@@ -23,6 +22,8 @@ export class WorkflowStatusTracker {
   private _taskTracker: TaskTracker;
   private _auditLog: AuditLog;
   private readonly workDir: string;
+  private _onTaskSettled: (() => void) | undefined;
+  private _onTaskReady: (() => void) | undefined;
   private _savePromise: Promise<void> = Promise.resolve();
   private _pendingSave = false;
   private _needsSave = false;
@@ -57,22 +58,27 @@ export class WorkflowStatusTracker {
   }
 
   private attachAutoPersist(): void {
-    this._taskTracker.on(TaskTracker.Events.TaskSettled, () => {
+    this._onTaskSettled = () => {
       this.persistState();
-    });
-    this._taskTracker.on(TaskTracker.Events.TaskReady, () => {
+    };
+    this._onTaskReady = () => {
       this.persistState();
-    });
+    };
+    this._taskTracker.on(TaskTracker.Events.TaskSettled, this._onTaskSettled);
+    this._taskTracker.on(TaskTracker.Events.TaskReady, this._onTaskReady);
   }
 
-  private persistStateSync(): void {
-    try {
-      mkdirSync(this.workDir, { recursive: true });
-      const filePath = join(this.workDir, '.engin-state.json');
-      writeFileSync(filePath, JSON.stringify(this.toJSON(), null, 2), 'utf-8');
-    } catch (err) {
-      console.warn('[WorkflowStatusTracker] Sync persist failed:', (err as Error).message);
+  dispose(): void {
+    if (this._onTaskSettled) {
+      this._taskTracker.removeListener(TaskTracker.Events.TaskSettled, this._onTaskSettled);
+      this._onTaskSettled = undefined;
     }
+    if (this._onTaskReady) {
+      this._taskTracker.removeListener(TaskTracker.Events.TaskReady, this._onTaskReady);
+      this._onTaskReady = undefined;
+    }
+    this._pendingSave = false;
+    this._needsSave = false;
   }
 
   // ── Getters ────────────────────────────────────────────────────────
@@ -229,7 +235,7 @@ export class WorkflowStatusTracker {
       record = { ...agentIdOrInfo };
     }
     this._spawnedAgents.push(record);
-    this.persistStateSync();
+    this.persistState();
   }
 
   recordAgentComplete(agentId: string): void {
@@ -237,7 +243,7 @@ export class WorkflowStatusTracker {
     if (agent) {
       agent.completedAt = new Date().toISOString();
     }
-    this.persistStateSync();
+    this.persistState();
   }
 
   // ── Serialization ──────────────────────────────────────────────────

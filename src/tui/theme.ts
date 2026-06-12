@@ -10,6 +10,7 @@ export const red = (str: string): string => `\x1b[31m${str}\x1b[0m`;
 export const yellow = (str: string): string => `\x1b[33m${str}\x1b[0m`;
 export const blue = (str: string): string => `\x1b[34m${str}\x1b[0m`;
 export const magenta = (str: string): string => `\x1b[35m${str}\x1b[0m`;
+export const darkRed = (str: string): string => `\x1b[38;5;131m${str}\x1b[0m`;
 
 // ─── Background Styles ───────────────────────────────────────────────────────
 
@@ -25,7 +26,7 @@ const statusColorMap: Record<TaskStatus, (s: string) => string> = {
   reviewing: magenta,
   claimed: blue,
   ready: cyan,
-  blocked: dim,
+  blocked: darkRed,
 };
 
 export const statusColor = (status: TaskStatus): ((s: string) => string) => statusColorMap[status];
@@ -37,7 +38,7 @@ const statusIconMap: Record<TaskStatus, string> = {
   reviewing: '◎',
   claimed: '→',
   ready: '○',
-  blocked: '·',
+  blocked: '⊘',
 };
 
 export const statusIcon = (status: TaskStatus): string => statusIconMap[status];
@@ -48,6 +49,7 @@ export const borderLine = (left: string, fill: string, right: string, innerWidth
   return left + fill.repeat(innerWidth) + right;
 };
 export function stripAnsi(str: string): string {
+  if (!str.includes('\x1b')) return str;
   // eslint-disable-next-line no-control-regex
   return str.replace(/\x1b\[[^a-zA-Z]*[a-zA-Z]/g, '').replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, '');
 }

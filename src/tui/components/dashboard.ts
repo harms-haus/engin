@@ -1,4 +1,4 @@
-import { type Component, matchesKey } from '@earendil-works/pi-tui';
+import { type Component, matchesKey, truncateToWidth } from '@earendil-works/pi-tui';
 import { borderLine } from '../theme.js';
 import { AgentLogWidget } from './agent-log-widget.js';
 import { LanePoolWidget } from './lane-pool-widget.js';
@@ -12,7 +12,7 @@ export class Dashboard implements Component {
   private readonly _agentLog: AgentLogWidget;
   private readonly _agentLogLines: number;
 
-  constructor(maxConcurrentLanes: number, agentLogLines = 10) {
+  constructor(maxConcurrentLanes: number, agentLogLines = 20) {
     this._agentLogLines = agentLogLines;
     this._phaseBar = new PhaseBar();
     this._lanePool = new LanePoolWidget();
@@ -54,7 +54,7 @@ export class Dashboard implements Component {
 
     // Phase bar content
     for (const line of this._phaseBar.render(innerWidth)) {
-      lines.push('│' + line.padEnd(innerWidth).slice(0, innerWidth) + '│');
+      lines.push('│' + truncateToWidth(line, innerWidth, undefined, true) + '│');
     }
 
     // Separator
@@ -62,7 +62,7 @@ export class Dashboard implements Component {
 
     // Lane pool content
     for (const line of this._lanePool.render(innerWidth)) {
-      lines.push('│' + line.padEnd(innerWidth).slice(0, innerWidth) + '│');
+      lines.push('│' + truncateToWidth(line, innerWidth, undefined, true) + '│');
     }
 
     // Separator
@@ -70,7 +70,7 @@ export class Dashboard implements Component {
 
     // Agent log content
     for (const line of this._agentLog.render(innerWidth)) {
-      lines.push('│' + line.padEnd(innerWidth).slice(0, innerWidth) + '│');
+      lines.push('│' + truncateToWidth(line, innerWidth, undefined, true) + '│');
     }
 
     // Bottom border

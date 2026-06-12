@@ -92,36 +92,6 @@ describe('AuditLog', () => {
     expect(events).toEqual([]);
   });
 
-  // ── getStats ────────────────────────────────────────────────────────
-
-  it('getStats aggregates cost and tokens from agent_end events', async () => {
-    await log.append({
-      type: 'agent_end',
-      agentId: 'a1',
-      result: { cost: 0.1, tokens: 100 },
-    });
-    await log.append({
-      type: 'agent_end',
-      agentId: 'a2',
-      result: { cost: 0.25, tokens: 250 },
-    });
-    await log.append({
-      type: 'agent_start',
-      agentId: 'a3',
-      profile: {} as never,
-    });
-
-    const stats = await log.getStats();
-    expect(stats.totalEvents).toBe(3);
-    expect(stats.totalCost).toBeCloseTo(0.35);
-    expect(stats.totalTokens).toBe(350);
-  });
-
-  it('getStats returns zeros when no events', async () => {
-    const stats = await log.getStats();
-    expect(stats).toEqual({ totalEvents: 0, totalCost: 0, totalTokens: 0 });
-  });
-
   // ── getEventsByTask ──────────────────────────────────────────────
 
   it('getEventsByTask returns only events for the given task', async () => {
@@ -158,6 +128,16 @@ describe('AuditLog', () => {
 
   it('clear is safe when file does not exist', async () => {
     await expect(log.clear()).resolves.toBeUndefined();
+  });
+
+  // ── regression guard: getStats removed ────────────────────────────
+
+  it('should not have getStats on the prototype (removed as unused)', () => {
+    // getStats() was removed because it was unused in production code and
+    // made redundant full-scan calls. This test prevents re-introduction.
+    // NOTE: This test will fail until getStats() is deleted from src/tracking/audit-log.ts
+    expect('getStats' in AuditLog.prototype).toBe(false);
+    expect(typeof (AuditLog.prototype as Record<string, unknown>).getStats).toBe('undefined');
   });
 
   // ── malformed JSON ──────────────────────────────────────────────────

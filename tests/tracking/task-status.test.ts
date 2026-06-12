@@ -252,38 +252,6 @@ describe('TaskTracker', () => {
     });
   });
 
-  // ── areAllSettled ──────────────────────────────────────────────────
-
-  describe('areAllSettled', () => {
-    it('returns false when tasks are not all done', () => {
-      const tracker = new TaskTracker();
-      tracker.addTask(makeTask({ id: 'a' }));
-      tracker.addTask(makeTask({ id: 'b' }));
-
-      expect(tracker.areAllSettled()).toBe(false);
-    });
-
-    it('returns true when all tasks are done', () => {
-      const tracker = new TaskTracker();
-      tracker.addTask(makeTask({ id: 'a' }));
-      tracker.addTask(makeTask({ id: 'b' }));
-
-      for (const id of ['a', 'b']) {
-        tracker.claimTasks(1);
-        tracker.startTask(id, 'agent');
-        tracker.submitForReview(id, null);
-        tracker.completeTask(id);
-      }
-
-      expect(tracker.areAllSettled()).toBe(true);
-    });
-
-    it('returns false when there are no tasks', () => {
-      const tracker = new TaskTracker();
-      expect(tracker.areAllSettled()).toBe(false);
-    });
-  });
-
   // ── preserve isCode through lifecycle ─────────────────────────────
 
   describe('preserve isCode through lifecycle', () => {
@@ -528,81 +496,6 @@ describe('TaskTracker', () => {
     it('returns empty array when there are no tasks', () => {
       const tracker = new TaskTracker();
       expect(tracker.getBlockedWithMissingDeps()).toEqual([]);
-    });
-  });
-
-  // ── areAllDoneOrBlocked ────────────────────────────────────────────
-
-  describe('areAllDoneOrBlocked', () => {
-    it('returns false when there are no tasks', () => {
-      const tracker = new TaskTracker();
-      expect(tracker.areAllDoneOrBlocked()).toBe(false);
-    });
-
-    it('returns true when all tasks are done', () => {
-      const tracker = new TaskTracker();
-      tracker.addTask(makeTask({ id: 'a' }));
-
-      tracker.claimTasks(1);
-      tracker.startTask('a', 'agent');
-      tracker.submitForReview('a', null);
-      tracker.completeTask('a');
-
-      expect(tracker.areAllDoneOrBlocked()).toBe(true);
-    });
-
-    it('returns true when task is blocked with missing deps (deadlocked)', () => {
-      const tracker = new TaskTracker();
-      tracker.addTask({ ...makeTask({ id: 'a', dependencies: ['ghost'] }), status: undefined });
-
-      expect(tracker.getTask('a')!.status).toBe('blocked');
-      expect(tracker.areAllDoneOrBlocked()).toBe(true);
-    });
-
-    it('returns false when a task is blocked but deps exist (not deadlocked)', () => {
-      const tracker = new TaskTracker();
-      tracker.addTask(makeTask({ id: 'a' }));
-      tracker.addTask({ ...makeTask({ id: 'b', dependencies: ['a'] }), status: undefined });
-
-      expect(tracker.getTask('b')!.status).toBe('blocked');
-      expect(tracker.areAllDoneOrBlocked()).toBe(false);
-    });
-
-    it('returns false when any task is in a non-done/non-blocked state', () => {
-      const tracker = new TaskTracker();
-      tracker.addTask(makeTask({ id: 'a' }));
-      // a is 'ready'
-      expect(tracker.areAllDoneOrBlocked()).toBe(false);
-    });
-
-    it('returns true for a mix of done tasks and deadlocked tasks', () => {
-      const tracker = new TaskTracker();
-      tracker.addTask(makeTask({ id: 'a' }));
-      tracker.addTask({ ...makeTask({ id: 'b', dependencies: ['ghost'] }), status: undefined });
-
-      // Complete a
-      tracker.claimTasks(1);
-      tracker.startTask('a', 'agent');
-      tracker.submitForReview('a', null);
-      tracker.completeTask('a');
-
-      expect(tracker.getTask('a')!.status).toBe('done');
-      expect(tracker.getTask('b')!.status).toBe('blocked');
-      expect(tracker.areAllDoneOrBlocked()).toBe(true);
-    });
-
-    it('returns false for a mix of done tasks and ready tasks', () => {
-      const tracker = new TaskTracker();
-      tracker.addTask(makeTask({ id: 'a' }));
-      tracker.addTask(makeTask({ id: 'b' }));
-
-      // Complete a only
-      tracker.claimTasks(1);
-      tracker.startTask('a', 'agent');
-      tracker.submitForReview('a', null);
-      tracker.completeTask('a');
-
-      expect(tracker.areAllDoneOrBlocked()).toBe(false); // b is still 'ready'
     });
   });
 

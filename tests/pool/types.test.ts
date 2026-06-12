@@ -559,7 +559,7 @@ describe('TaskTracker failed status and reset', () => {
     expect(restored.getTask('fail1')!.result).toBeUndefined();
   });
 
-  it('areAllSettled returns true when all are done or failed', () => {
+  it('isPoolDone returns true when all are done or failed', () => {
     const tracker = new TaskTracker();
     tracker.addTask({ id: 't1', title: 'T1', prompt: '...', profile: 'coder', files: [], dependencies: [] });
     tracker.addTask({ id: 't2', title: 'T2', prompt: '...', profile: 'coder', files: [], dependencies: [] });
@@ -578,10 +578,10 @@ describe('TaskTracker failed status and reset', () => {
       tracker.failTask('t2', 'oops');
     }
 
-    expect(tracker.areAllSettled()).toBe(true);
+    expect(tracker.isPoolDone()).toBe(true);
   });
 
-  it('areAllDoneOrBlocked handles failed as terminal', () => {
+  it('isPoolDone handles failed as terminal', () => {
     const tracker = new TaskTracker();
     tracker.addTask({ id: 't1', title: 'T1', prompt: '...', profile: 'coder', files: [], dependencies: [] });
     tracker.addTask({ id: 't2', title: 'T2', prompt: '...', profile: 'coder', files: [], dependencies: [] });
@@ -600,7 +600,7 @@ describe('TaskTracker failed status and reset', () => {
       tracker.failTask('t2', 'oops');
     }
 
-    expect(tracker.areAllDoneOrBlocked()).toBe(true);
+    expect(tracker.isPoolDone()).toBe(true);
   });
 
   it('recalculateStatuses unblocks when deps are failed', () => {

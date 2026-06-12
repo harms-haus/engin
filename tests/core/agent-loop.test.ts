@@ -436,6 +436,62 @@ describe('sequentialAgents edge cases', () => {
   });
 });
 
+// ─── agentIdPrefix passthrough ─────────────────────────────────────────────
+
+describe('parallelAgents agentIdPrefix', () => {
+  it('passes agentId as {prefix}-{index} to each createHarness call', async () => {
+    const configs = [makeConfig(), makeConfig(), makeConfig()];
+    mockCreateHarness.mockImplementation(async () => makeSession(() => 'ok'));
+
+    await parallelAgents(configs, () => 'test', { agentIdPrefix: 'worker' });
+
+    const calls = mockCreateHarness.mock.calls;
+    expect(calls).toHaveLength(3);
+    expect(calls[0][0]).toMatchObject({ agentId: 'worker-0' });
+    expect(calls[1][0]).toMatchObject({ agentId: 'worker-1' });
+    expect(calls[2][0]).toMatchObject({ agentId: 'worker-2' });
+  });
+
+  it('does not modify configs when agentIdPrefix is absent', async () => {
+    const configs = [makeConfig(), makeConfig()];
+    mockCreateHarness.mockImplementation(async () => makeSession(() => 'ok'));
+
+    await parallelAgents(configs, () => 'test');
+
+    const calls = mockCreateHarness.mock.calls;
+    expect(calls).toHaveLength(2);
+    expect(calls[0][0]).not.toHaveProperty('agentId');
+    expect(calls[1][0]).not.toHaveProperty('agentId');
+  });
+});
+
+describe('sequentialAgents agentIdPrefix', () => {
+  it('passes agentId as {prefix}-{index} to each createHarness call', async () => {
+    const configs = [makeConfig(), makeConfig(), makeConfig()];
+    mockCreateHarness.mockImplementation(async () => makeSession(() => 'ok'));
+
+    await sequentialAgents(configs, () => 'test', { agentIdPrefix: 'step' });
+
+    const calls = mockCreateHarness.mock.calls;
+    expect(calls).toHaveLength(3);
+    expect(calls[0][0]).toMatchObject({ agentId: 'step-0' });
+    expect(calls[1][0]).toMatchObject({ agentId: 'step-1' });
+    expect(calls[2][0]).toMatchObject({ agentId: 'step-2' });
+  });
+
+  it('does not modify configs when agentIdPrefix is absent', async () => {
+    const configs = [makeConfig(), makeConfig()];
+    mockCreateHarness.mockImplementation(async () => makeSession(() => 'ok'));
+
+    await sequentialAgents(configs, () => 'test');
+
+    const calls = mockCreateHarness.mock.calls;
+    expect(calls).toHaveLength(2);
+    expect(calls[0][0]).not.toHaveProperty('agentId');
+    expect(calls[1][0]).not.toHaveProperty('agentId');
+  });
+});
+
 // Restore the real modules so mocks don't leak into other test files.
 afterAll(() => {
   mock.module('../../src/core/harness-factory.ts', () => realHarnessFactory);

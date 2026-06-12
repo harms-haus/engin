@@ -113,11 +113,12 @@ export async function createHarness(
       onAgentStatus.onToolCallEnd)
   ) {
     let turnCount = 0;
+    const effectiveAgentId = options.agentId ?? sessionId;
     unsubscribe = session.subscribe((event: AgentSessionEvent) => {
       const e = event as AgentLevelEvent;
       if (e.type === 'turn_start') {
         onAgentStatus.onTurnStart?.({
-          agentId: sessionId,
+          agentId: effectiveAgentId,
           turn: ++turnCount,
         });
       } else if (e.type === 'turn_end') {
@@ -139,21 +140,21 @@ export async function createHarness(
           }
         }
         onAgentStatus.onTurnEnd?.({
-          agentId: sessionId,
+          agentId: effectiveAgentId,
           turn: turnCount,
           tokens: usage ? { input: usage.input, output: usage.output } : undefined,
           contentBlocks,
         });
       } else if (e.type === 'tool_execution_start') {
         onAgentStatus.onToolCallStart?.({
-          agentId: sessionId,
+          agentId: effectiveAgentId,
           toolName: e.toolName,
           toolCallId: e.toolCallId,
           arguments: e.args ?? {},
         });
       } else if (e.type === 'tool_execution_end') {
         onAgentStatus.onToolCallEnd?.({
-          agentId: sessionId,
+          agentId: effectiveAgentId,
           toolName: e.toolName,
           toolCallId: e.toolCallId,
           isError: e.isError ?? false,

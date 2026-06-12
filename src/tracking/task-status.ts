@@ -254,12 +254,6 @@ export class TaskTracker extends EventEmitter {
     return tracker;
   }
 
-  /** @deprecated Use {@link isPoolDone} instead. */
-  areAllSettled(): boolean {
-    const all = this.getAllTasks();
-    return all.length > 0 && all.every((t) => TaskTracker.isSettled(t.status));
-  }
-
   getBlockedWithMissingDeps(): { taskId: string; missingDepIds: string[] }[] {
     const results: { taskId: string; missingDepIds: string[] }[] = [];
 
@@ -275,23 +269,12 @@ export class TaskTracker extends EventEmitter {
     return results;
   }
 
-  /** @deprecated Use {@link isPoolDone} instead. */
-  areAllDoneOrBlocked(): boolean {
-    const all = this.getAllTasks();
-    if (all.length === 0) return false;
-    return all.every((t) => {
-      if (TaskTracker.isSettled(t.status)) return true;
-      if (t.status === 'blocked') {
-        return t.dependencies.some((dep) => !this.tasks.has(dep));
-      }
-      return false;
-    });
-  }
-
   /**
-   * Single-pass, zero-allocation check that combines the logic of
-   * `areAllSettled()`, `areAllDoneOrBlocked()`, and
-   * `getAllTasks().length === 0` for the lane loop hot path.
+   * Single-pass, zero-allocation check for the lane loop hot path.
+   *
+   * Returns `true` when every task is settled (`done` / `failed`) or
+   * blocked with at least one missing dependency (deadlocked). An empty
+   * tracker is considered done.
    */
   isPoolDone(): boolean {
     if (this.tasks.size === 0) return true;

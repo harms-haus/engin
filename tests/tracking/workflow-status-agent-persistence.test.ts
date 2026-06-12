@@ -233,12 +233,16 @@ describe('WorkflowStatusTracker – agent persistence', () => {
       restored.recordAgentSpawn('agent-2', 'reviewer', 'planning');
       restored.recordAgentComplete('agent-2');
 
+      // In-memory state is immediately available
       const agents = restored.spawnedAgents;
       expect(agents).toHaveLength(2);
       expect(agents[0].agentId).toBe('agent-1');
       expect(agents[0].completedAt).toBeDefined();
       expect(agents[1].agentId).toBe('agent-2');
       expect(agents[1].completedAt).toBeDefined();
+
+      // Wait for debounced persist to settle before reading from disk
+      await new Promise((r) => setTimeout(r, 50));
 
       // Verify persisted
       const reloaded = await WorkflowStatusTracker.load(dir);
@@ -333,6 +337,152 @@ describe('WorkflowStatusTracker – agent persistence', () => {
           expect(typeof record.completedAt).toBe('string');
         }
       }
+    });
+  });
+
+  // ── recordAgentSpawn object overload ──────────────────────────────
+
+  describe('recordAgentSpawn – object overload', () => {
+    it('accepts an object with all fields', () => {
+      tracker.recordAgentSpawn({ agentId: 'agent-obj-1', profile: 'coder', phase: 'scouting', taskId: 'task-99' });
+
+      const agents = tracker.spawnedAgents;
+      expect(agents).toHaveLength(1);
+      expect(agents[0].agentId).toBe('agent-obj-1');
+      expect(agents[0].profile).toBe('coder');
+      expect(agents[0].phase).toBe('scouting');
+      expect(agents[0].taskId).toBe('task-99');
+      expect(agents[0].completedAt).toBeUndefined();
+    });
+
+    it('accepts an object without optional taskId', () => {
+      tracker.recordAgentSpawn({ agentId: 'agent-obj-2', profile: 'reviewer', phase: 'planning' });
+
+      const agents = tracker.spawnedAgents;
+      expect(agents).toHaveLength(1);
+      expect(agents[0].taskId).toBeUndefined();
+    });
+
+    it('persists via debounced auto-persist', async () => {
+      tracker.recordAgentSpawn({ agentId: 'agent-obj-3', profile: 'coder', phase: 'implementing' });
+
+      // Wait for debounced persist
+      await new Promise((r) => setTimeout(r, 50));
+
+      const raw = await fs.readFile(join(dir, '.engin-state.json'), 'utf-8');
+      const data = JSON.parse(raw);
+      expect(data.spawnedAgents).toHaveLength(1);
+      expect(data.spawnedAgents[0].agentId).toBe('agent-obj-3');
+    });
+  });
+
+  // ── debounced persist behavior ────────────────────────────────────
+
+  describe('debounced persist behavior', () => {
+    it('recordAgentSpawn returns synchronously without blocking for I/O', () => {
+      // Call should return immediately — not block on file write
+      const start = performance.now();
+      tracker.recordAgentSpawn('agent-1', 'coder', 'scouting');
+      const elapsed = performance.now() - start;
+
+      // A sync file write would typically take >1ms; a synchronous in-memory op
+      // should be sub-millisecond. We use a generous threshold to avoid flakiness.
+      expect(elapsed).toBeLessThan(5);
+
+      // In-memory state is immediately available
+      expect(tracker.spawnedAgents).toHaveLength(1);
+    });
+
+    it('recordAgentComplete returns synchronously without blocking for I/O', () => {
+      tracker.recordAgentSpawn('agent-1', 'coder', 'scouting');
+
+      const start = performance.now();
+      tracker.recordAgentComplete('agent-1');
+      const elapsed = performance.now() - start;
+
+      expect(elapsed).toBeLessThan(5);
+
+      // In-memory state is immediately available
+      expect(tracker.spawnedAgents[0].completedAt).toBeDefined();
+    });
+
+    it('multiple rapid spawn calls are coalesced into fewer disk writes', async () => {
+      // Rapidly spawn multiple agents
+      for (let i = 0; i < 5; i++) {
+        tracker.recordAgentSpawn(`agent-${i}`, 'coder', 'implementing', `task-${i}`);
+      }
+
+      // All 5 should be in memory immediately
+      expect(tracker.spawnedAgents).toHaveLength(5);
+
+      // Wait for debounced persist to settle
+      await new Promise((r) => setTimeout(r, 50));
+
+      // All 5 should be persisted in a single file
+      const raw = await fs.readFile(join(dir, '.engin-state.json'), 'utf-8');
+      const data = JSON.parse(raw);
+      expect(data.spawnedAgents).toHaveLength(5);
+      for (let i = 0; i < 5; i++) {
+        expect(data.spawnedAgents[i].agentId).toBe(`agent-${i}`);
+      }
+    });
+
+    it('spawn immediately followed by complete persists both', async () => {
+      tracker.recordAgentSpawn('agent-1', 'coder', 'scouting');
+      tracker.recordAgentComplete('agent-1');
+
+      // In-memory state reflects both operations
+      expect(tracker.spawnedAgents).toHaveLength(1);
+      expect(tracker.spawnedAgents[0].completedAt).toBeDefined();
+
+      // Wait for debounced persist
+      await new Promise((r) => setTimeout(r, 50));
+
+      const raw = await fs.readFile(join(dir, '.engin-state.json'), 'utf-8');
+      const data = JSON.parse(raw);
+      expect(data.spawnedAgents).toHaveLength(1);
+      expect(data.spawnedAgents[0].completedAt).toBeDefined();
+    });
+
+    it('debounced persist writes to disk after microtick', async () => {
+      // Ensure no state file exists yet
+      await expect(fs.access(join(dir, '.engin-state.json'))).rejects.toThrow();
+
+      tracker.recordAgentSpawn('agent-1', 'coder', 'scouting');
+
+      // The debounced persist schedules a save on the next microtask.
+      // After a short delay, the file should exist on disk.
+      await new Promise((r) => setTimeout(r, 50));
+
+      const raw = await fs.readFile(join(dir, '.engin-state.json'), 'utf-8');
+      const data = JSON.parse(raw);
+      expect(data.spawnedAgents).toHaveLength(1);
+    });
+
+    it('source does not import sync fs functions or contain persistStateSync', async () => {
+      // Structural test: verify the source was refactored to remove sync I/O.
+      const sourcePath = join(import.meta.dir, '..', '..', 'src', 'tracking', 'workflow-status.ts');
+      const source = await fs.readFile(sourcePath, 'utf-8');
+
+      // Should NOT import from 'node:fs' (the sync module)
+      expect(source).not.toMatch(/from\s+['"]node:fs['"]/);
+
+      // Should NOT contain sync function names
+      expect(source).not.toContain('writeFileSync');
+      expect(source).not.toContain('mkdirSync');
+
+      // Should NOT contain persistStateSync method
+      expect(source).not.toContain('persistStateSync');
+
+      // recordAgentSpawn body should call this.persistState()
+      const spawnBody = source.slice(source.indexOf('recordAgentSpawn('), source.indexOf('recordAgentComplete('));
+      expect(spawnBody).toContain('this.persistState()');
+      expect(spawnBody).not.toContain('this.persistStateSync()');
+
+      // recordAgentComplete body should call this.persistState()
+      const completeBody = source.slice(source.indexOf('recordAgentComplete('), source.indexOf('// ── Serialization'));
+      expect(completeBody).toContain('this.persistState()');
+      expect(completeBody).not.toContain('this.persistStateSync()');
     });
   });
 });

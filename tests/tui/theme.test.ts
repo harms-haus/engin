@@ -6,6 +6,7 @@ import {
   blue,
   bold,
   cyan,
+  darkRed,
   dim,
   green,
   magenta,
@@ -55,6 +56,10 @@ describe('ANSI style functions', () => {
   it('bgStatusBar wraps with 48;5;237m and resets', () => {
     expect(bgStatusBar('hi')).toBe('\x1b[48;5;237mhi\x1b[0m');
   });
+
+  it('darkRed wraps with 38;5;131m and resets', () => {
+    expect(darkRed('hi')).toBe('\x1b[38;5;131mhi\x1b[0m');
+  });
 });
 
 describe('statusColor', () => {
@@ -65,7 +70,7 @@ describe('statusColor', () => {
     ['reviewing', '\x1b[35mX\x1b[0m'],
     ['claimed', '\x1b[34mX\x1b[0m'],
     ['ready', '\x1b[36mX\x1b[0m'],
-    ['blocked', '\x1b[2mX\x1b[0m'],
+    ['blocked', '\x1b[38;5;131mX\x1b[0m'],
   ];
 
   it.each(cases)('statusColor(%s) applies the correct color', (status, expected) => {
@@ -86,7 +91,7 @@ describe('statusIcon', () => {
     ['reviewing', '◎'],
     ['claimed', '→'],
     ['ready', '○'],
-    ['blocked', '·'],
+    ['blocked', '⊘'],
   ];
 
   it.each(cases)('statusIcon(%s) returns %s', (status, expected) => {

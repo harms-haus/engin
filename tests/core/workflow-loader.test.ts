@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { clearWorkflowCache, listWorkflows, loadWorkflow } from '../../src/core/workflow-loader.js';
 import { useTempDir } from '../helpers/use-temp-dir.js';
@@ -272,5 +272,110 @@ describe('clearWorkflowCache', () => {
     expect(typeof mod2.run).toBe('function');
     const result = await mod2.run('', { cwd: '', workDir: '' });
     expect(result).toBe(42);
+  });
+});
+
+// ─── Size-based cache eviction ──────────────────────────────────────────────
+
+describe('size-based cache eviction', () => {
+  /**
+   * Creates N unique workflow directories under the global workflows dir.
+   * Each exports a unique tag so we can verify identity.
+   */
+  async function createNWorkflows(n: number): Promise<void> {
+    for (let i = 0; i < n; i++) {
+      await createDirWorkflow(
+        globalWorkflowDir,
+        `wf-${String(i).padStart(3, '0')}`,
+        `export async function run() { return ${i}; }`,
+      );
+    }
+  }
+
+  it('does not evict when cache has exactly 50 entries', async () => {
+    const cwd = makeCwd();
+    // Create exactly 50 workflows
+    await createNWorkflows(50);
+
+    // Load all 50 unique workflows (cache size = 50)
+    for (let i = 0; i < 50; i++) {
+      await loadWorkflow(`wf-${String(i).padStart(3, '0')}`, cwd);
+    }
+
+    // Delete wf-000 from disk
+    await rm(join(globalWorkflowDir, 'wf-000', 'main.ts'));
+
+    // Load wf-000 again: cache size is 50 (not > 50), so no eviction.
+    // wf-000 is still in the cache, so it returns the cached version
+    // without needing the file on disk.
+    const mod = await loadWorkflow('wf-000', cwd);
+    expect(typeof mod.run).toBe('function');
+    const result = await mod.run('', { cwd: '', workDir: '' });
+    expect(result).toBe(0);
+  });
+
+  it('evicts cache when size exceeds 50, proving re-resolution from disk', async () => {
+    const cwd = makeCwd();
+    // Create 51 workflows
+    await createNWorkflows(51);
+
+    // Load all 51 unique workflows (cache size = 51)
+    for (let i = 0; i < 51; i++) {
+      await loadWorkflow(`wf-${String(i).padStart(3, '0')}`, cwd);
+    }
+
+    // Delete wf-000 from disk
+    await rm(join(globalWorkflowDir, 'wf-000', 'main.ts'));
+
+    // Load wf-000 again: cache size is 51 (> 50), so eviction guard triggers,
+    // clearing the entire cache. Now wf-000 must be re-resolved from disk,
+    // but the file is gone, so it should throw "not found".
+    await expect(loadWorkflow('wf-000', cwd)).rejects.toThrow("Workflow 'wf-000' not found.");
+  });
+
+  it('after eviction, previously cached entries are cleared and must be re-resolved from disk', async () => {
+    const cwd = makeCwd();
+    // Create 53 workflows
+    await createNWorkflows(53);
+
+    // Load 51 unique workflows (cache size = 51)
+    for (let i = 0; i < 51; i++) {
+      await loadWorkflow(`wf-${String(i).padStart(3, '0')}`, cwd);
+    }
+
+    // Load wf-051: triggers eviction (51 > 50), clears cache, loads wf-051
+    const mod51 = await loadWorkflow('wf-051', cwd);
+    expect(typeof mod51.run).toBe('function');
+
+    // wf-051 was loaded post-eviction and is in the cache (cache size = 1).
+    // Delete it from disk to prove it is cached — loading again should still work.
+    await rm(join(globalWorkflowDir, 'wf-051', 'main.ts'));
+    const mod51Again = await loadWorkflow('wf-051', cwd);
+    expect(typeof mod51Again.run).toBe('function');
+
+    // wf-000 was evicted from the cache. Delete it from disk.
+    // Loading again must re-resolve from disk (not in cache), file is gone → throws.
+    // This proves eviction actually cleared the old cache entry.
+    await rm(join(globalWorkflowDir, 'wf-000', 'main.ts'));
+    await expect(loadWorkflow('wf-000', cwd)).rejects.toThrow("Workflow 'wf-000' not found.");
+  });
+
+  it('clearWorkflowCache still works independently of size-based eviction', async () => {
+    const cwd = makeCwd();
+    await createNWorkflows(3);
+
+    // Load just 3 workflows — well below the eviction threshold
+    for (let i = 0; i < 3; i++) {
+      await loadWorkflow(`wf-${String(i).padStart(3, '0')}`, cwd);
+    }
+
+    // Delete wf-000 from disk
+    await rm(join(globalWorkflowDir, 'wf-000', 'main.ts'));
+
+    // Explicitly clear via the exported function
+    clearWorkflowCache();
+
+    // Load wf-000: cache is empty (size 0, no auto-eviction), tries disk, file gone
+    await expect(loadWorkflow('wf-000', cwd)).rejects.toThrow("Workflow 'wf-000' not found.");
   });
 });
