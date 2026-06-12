@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'bun:test';
+import { describe, expect, it, spyOn } from 'bun:test';
 import { TaskTracker } from '../../src/tracking/task-status.js';
 import { makeTask } from '../helpers/make-task.js';
 
@@ -929,6 +929,87 @@ describe('TaskTracker', () => {
       await Promise.race([eventPromise, timeout]);
 
       expect(restored.getTask('b')!.status).toBe('ready');
+    });
+  });
+
+  // ── validateAllDependencies ─────────────────────────────────────────
+
+  describe('validateAllDependencies', () => {
+    it('throws when a task references a dependency not in the tracker', () => {
+      const tracker = new TaskTracker();
+      tracker.addTask(makeTask({ id: 'a' }));
+      tracker.addTask({ ...makeTask({ id: 'b', dependencies: ['a', 'ghost-x'] }), status: undefined });
+
+      expect(() => tracker.validateAllDependencies()).toThrow('missing dependencies');
+    });
+
+    it('does not throw when all dependencies exist in the tracker', () => {
+      const tracker = new TaskTracker();
+      tracker.addTask(makeTask({ id: 'a' }));
+      tracker.addTask(makeTask({ id: 'b' }));
+      tracker.addTask({ ...makeTask({ id: 'c', dependencies: ['a', 'b'] }), status: undefined });
+
+      expect(() => tracker.validateAllDependencies()).not.toThrow();
+    });
+
+    it('does not throw when deps reference tasks added in the same batch', () => {
+      const tracker = new TaskTracker();
+      tracker.addTask(makeTask({ id: 'a' }));
+      tracker.addTask(makeTask({ id: 'b' }));
+      tracker.addTask(makeTask({ id: 'c' }));
+      tracker.addTask({ ...makeTask({ id: 'd', dependencies: ['a', 'b', 'c'] }), status: undefined });
+
+      expect(() => tracker.validateAllDependencies()).not.toThrow();
+    });
+  });
+
+  // ── isPoolDone console.warn ─────────────────────────────────────────
+
+  describe('isPoolDone console.warn', () => {
+    it('emits console.warn for blocked task with missing dependencies', () => {
+      const tracker = new TaskTracker();
+      tracker.addTask({ ...makeTask({ id: 'a', dependencies: ['ghost-x', 'ghost-y'] }), status: undefined });
+
+      expect(tracker.getTask('a')!.status).toBe('blocked');
+
+      const warnCalls: unknown[][] = [];
+      const spy = spyOn(console, 'warn').mockImplementation((...args: unknown[]) => {
+        warnCalls.push(args);
+      });
+
+      try {
+        const result = tracker.isPoolDone();
+
+        expect(result).toBe(true);
+        expect(warnCalls.length).toBe(1);
+        expect(String(warnCalls[0])).toContain('ghost-x');
+        expect(String(warnCalls[0])).toContain('ghost-y');
+        expect(String(warnCalls[0])).toContain('a');
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it('does not warn when blocked task has dependencies that exist', () => {
+      const tracker = new TaskTracker();
+      tracker.addTask(makeTask({ id: 'a' }));
+      tracker.addTask({ ...makeTask({ id: 'b', dependencies: ['a'] }), status: undefined });
+
+      expect(tracker.getTask('b')!.status).toBe('blocked');
+
+      const warnCalls: unknown[][] = [];
+      const spy = spyOn(console, 'warn').mockImplementation((...args: unknown[]) => {
+        warnCalls.push(args);
+      });
+
+      try {
+        const result = tracker.isPoolDone();
+
+        expect(result).toBe(false);
+        expect(warnCalls).toHaveLength(0);
+      } finally {
+        spy.mockRestore();
+      }
     });
   });
 });

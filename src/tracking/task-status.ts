@@ -12,6 +12,7 @@ export class TaskTracker extends EventEmitter {
 
   private tasks: Map<string, Task>;
   private reverseDeps: Map<string, Set<string>>;
+  private warnedDeadlocked = new Set<string>();
 
   constructor() {
     super();
@@ -269,8 +270,17 @@ export class TaskTracker extends EventEmitter {
     return results;
   }
 
+  validateAllDependencies(): void {
+    for (const task of this.tasks.values()) {
+      const missing = task.dependencies.filter((dep) => !this.tasks.has(dep));
+      if (missing.length > 0) {
+        throw new Error(`Task "${task.id}" references missing dependencies: ${JSON.stringify(missing)}`);
+      }
+    }
+  }
+
   /**
-   * Single-pass, zero-allocation check for the lane loop hot path.
+   * Single-pass check for the lane loop hot path.
    *
    * Returns `true` when every task is settled (`done` / `failed`) or
    * blocked with at least one missing dependency (deadlocked). An empty
@@ -281,7 +291,18 @@ export class TaskTracker extends EventEmitter {
     for (const task of this.tasks.values()) {
       const s = task.status;
       if (TaskTracker.isSettled(s)) continue;
-      if (s === 'blocked' && task.dependencies.some((d) => !this.tasks.has(d))) continue;
+      if (s === 'blocked') {
+        const missing = task.dependencies.filter((d) => !this.tasks.has(d));
+        if (missing.length > 0) {
+          if (!this.warnedDeadlocked.has(task.id)) {
+            this.warnedDeadlocked.add(task.id);
+            console.warn(
+              `[TaskTracker] Task "${task.id}" is blocked with missing dependencies: ${missing.join(', ')} — treating as deadlocked`,
+            );
+          }
+          continue;
+        }
+      }
       return false;
     }
     return true;
