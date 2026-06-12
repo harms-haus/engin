@@ -17,7 +17,7 @@ import { initDefaultConfig } from './setup.js';
 // ─── CLI Options ────────────────────────────────────────────────────────────
 
 export interface CliOptions {
-  command: 'run' | 'init' | 'help' | 'version' | 'web' | 'resume';
+  command: 'run' | 'init' | 'help' | 'version' | 'resume';
   workflowName?: string;
   taskPrompt?: string;
   cwd: string;
@@ -27,8 +27,6 @@ export interface CliOptions {
   worktree: boolean;
   apiKeys: Record<string, string>;
   warnings: string[];
-  host?: string;
-  port?: number;
   /** Session name for the resume command (the directory name under .engin/work/) */
   sessionName?: string;
 }
@@ -43,7 +41,6 @@ Commands:
   run    <workflow-name> <task-prompt> [options]   Run a workflow
   resume [session-name] [options]                  Resume a past workflow run
   init                                              Create config directory structure
-  web    [options]                                   Start web UI server
 
 Options:
   --cwd <path>            Working directory (default: process.cwd())
@@ -52,8 +49,6 @@ Options:
   --verbose               Enable verbose logging
   --worktree              Run workflow in a git worktree
   --api-key <provider=key>  API key (repeatable)
-  --host <host>           Web server host (default: 127.0.0.1, web only)
-  --port <port>           Web server port (default: 3619, web only)
   --help, -h              Show this help message
   --version, -v           Show version`;
 
@@ -118,18 +113,6 @@ export function parseArgs(argv: string[]): CliOptions {
         throw new Error(`Missing value for ${arg}\n${USAGE}`);
       }
       flags.push(arg, val);
-    } else if (arg === '--host') {
-      const val = argv[++i];
-      if (val === undefined || val.startsWith('--')) {
-        throw new Error(`Missing value for ${arg}\n${USAGE}`);
-      }
-      flags.push(arg, val);
-    } else if (arg === '--port') {
-      const val = argv[++i];
-      if (val === undefined || val.startsWith('--')) {
-        throw new Error(`Missing value for ${arg}\n${USAGE}`);
-      }
-      flags.push(arg, val);
     } else if (arg.startsWith('--')) {
       throw new Error(`Unknown flag: "${arg}"\n${USAGE}`);
     } else {
@@ -147,9 +130,6 @@ export function parseArgs(argv: string[]): CliOptions {
   let apiKeyWarningIssued = false;
   let workDir: string | undefined;
   let maxConcurrent = 5;
-
-  let host: string | undefined;
-  let port: number | undefined;
 
   for (let j = 0; j < flags.length; j++) {
     const flag = flags[j];
@@ -183,15 +163,6 @@ export function parseArgs(argv: string[]): CliOptions {
         );
         apiKeyWarningIssued = true;
       }
-    } else if (flag === '--host') {
-      host = flags[++j];
-    } else if (flag === '--port') {
-      const raw = flags[++j];
-      const parsed = Number(raw);
-      if (!Number.isFinite(parsed) || parsed < 1 || parsed > 65535 || !Number.isInteger(parsed)) {
-        throw new Error(`--port must be an integer between 1 and 65535, got "${raw}"\n${USAGE}`);
-      }
-      port = parsed;
     }
   }
 
@@ -209,13 +180,6 @@ export function parseArgs(argv: string[]): CliOptions {
   }
 
   const command = positionals[0];
-
-  if (command === 'web') {
-    if (positionals.length > 1) {
-      throw new Error(`Unexpected argument: "${positionals[1]}"\n${USAGE}`);
-    }
-    return { command: 'web', cwd, verbose, worktree, maxConcurrent, apiKeys, warnings, host, port };
-  }
 
   if (command === 'init') {
     if (positionals.length > 1) {
@@ -248,10 +212,6 @@ export function parseArgs(argv: string[]): CliOptions {
 
   if (!taskPrompt) {
     throw new Error(`Missing required <task-prompt> for run command\n${USAGE}`);
-  }
-
-  if (positionals.length > 2) {
-    throw new Error(`Unexpected argument: "${positionals[2]}"\n${USAGE}`);
   }
 
   return {
@@ -320,18 +280,6 @@ export async function initCommand(_options: CliOptions): Promise<void> {
   await initDefaultConfig();
   const globalDir = getGlobalConfigDir();
   console.log('Initialized engin directory structure at ' + globalDir);
-}
-
-export async function webCommand(options: CliOptions): Promise<void> {
-  const { startWebServer } = await import('./web/server.js');
-  const _server = await startWebServer({
-    host: options.host ?? '127.0.0.1',
-    port: options.port ?? 3619,
-    cwd: options.cwd,
-  });
-
-  const { handler } = setupSigintHandler(false);
-  process.on('SIGINT', handler);
 }
 
 export async function runCommand(options: CliOptions): Promise<void> {
@@ -513,10 +461,6 @@ export async function main(): Promise<void> {
   }
   if (options.command === 'init') {
     await initCommand(options);
-    return;
-  }
-  if (options.command === 'web') {
-    await webCommand(options);
     return;
   }
   if (options.command === 'resume') {

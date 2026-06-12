@@ -1,8 +1,6 @@
 // Design note: This parser intentionally only supports workflow commands (e.g. /develop).
-// It does NOT support CLI meta-commands like init, web, resume - those must be
-// invoked directly from the shell, not from the interactive composer. If a user
-// types /web it will be treated as a workflow name lookup, which will fail with
-// "workflow not found" at run time.
+// It does NOT support CLI meta-commands like init, resume - those must be
+// invoked directly from the shell, not from the interactive composer.
 
 import { validateWorkflowName } from '../core/utils.js';
 

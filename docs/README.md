@@ -107,7 +107,6 @@ engin <command> [options]
 | `run` (default)    | Run a named workflow with a task prompt                          |
 | `init`             | Create config directory structure in the global config directory |
 | `resume`           | Resume a past workflow run                                       |
-| `web`              | Start web UI server                                              |
 | `--help` / `-h`    | Show usage information                                           |
 | `--version` / `-v` | Show version                                                     |
 
@@ -214,10 +213,6 @@ engin discovers profiles and workflows from two locations, with **local overridi
 │   └── develop/
 │       ├── main.ts          # Workflow orchestrator
 │       ├── profiles/        # Agent profiles
-│       ├── web/             # Web UI renderer
-│       │   ├── DevelopRenderer.tsx
-│       │   ├── types.ts
-│       │   └── __tests__/
 │       ├── package.json
 │       └── bunfig.toml
 └── .env                     # User-level environment variables
@@ -599,28 +594,6 @@ Sessions are created sequentially (with rollback on failure via `createSessionsW
 
 Creates sessions and runs prompts sequentially, one at a time. Each session is created, used, and disposed immediately within the same loop iteration. Throws on the first failure.
 
-### Session Management
-
-#### `SessionHistory`
-
-```typescript
-class SessionHistory {
-  constructor(session: SessionWithMessages);
-  getMessageCount(): number;
-  getStats(): SessionStats;
-}
-```
-
-Wraps any object with a `messages` array (compatible with `AgentSession`). Methods are synchronous.
-
-#### `createResumableSession(cwd?): { sessionManager, sessionId }`
-
-Create a session manager backed by in-memory storage via `SessionManager.inMemory()`. Returns `{ sessionManager: SessionManager, sessionId: string }`. Always synchronous.
-
-#### `resumeSession(source, target): Promise<void>`
-
-Copy all message entries from a source session into a target session. Uses `appendMessage` when available, or pushes directly into the `messages` array.
-
 ### API Key Resolution
 
 #### `resolveApiKey(provider, customKeys?): string | undefined`
@@ -679,7 +652,7 @@ class TaskTracker {
   rejectTask(id: string, reason: string): void;
   areAllDone(): boolean;
   getBlockedWithMissingDeps(): Array<{ taskId: string; missingDepIds: string[] }>;
-  areAllDoneOrBlocked(): boolean;
+  isPoolDone(): boolean;
   recalculateStatuses(): void;
   toJSON(): { tasks: Task[] };
   static fromJSON(data: { tasks: Task[] }): TaskTracker;
@@ -704,27 +677,9 @@ blocked → ready → claimed → implementing → reviewing → done
 
 Returns tasks that are currently blocked and reference at least one dependency ID not present in the tracker. Useful for detecting configuration errors (e.g., typos in dependency IDs).
 
-#### `areAllDoneOrBlocked(): boolean`
+#### `isPoolDone(): boolean`
 
-Returns `true` when every task is either `'done'` or blocked with at least one missing dependency (a deadlocked state). Returns `false` for empty trackers or when any task is in a runnable state. Useful for detecting when no further progress is possible.
-
-#### `PHASE_ORDER`
-
-The standard phase execution order as a constant array of `WorkflowPhase` values:
-
-```typescript
-const PHASE_ORDER: WorkflowPhase[] = [
-  'scouting',
-  'scouting_review',
-  'planning',
-  'plan_review',
-  'implementing',
-  'final_review',
-  'done',
-];
-```
-
-Use this constant when iterating over phases in order. `WorkflowStatusTracker.advancePhase()` uses this internally to determine the next phase.
+Single-pass check for the lane loop hot path. Returns `true` when every task is settled (`done` / `failed`) or blocked with at least one missing dependency (deadlocked). An empty tracker is considered done.
 
 #### `WorkflowStatusTracker`
 
@@ -733,8 +688,8 @@ class WorkflowStatusTracker {
   constructor(workDir: string);
   // Getters
   get taskPrompt(): string;
-  get currentPhase(): WorkflowPhase;
-  get completedPhases(): WorkflowPhase[];
+  get currentPhase(): string;
+  get completedPhases(): string[];
   get scoutingReports(): unknown[];
   get plan(): unknown;
   get research(): string | undefined;
@@ -743,8 +698,7 @@ class WorkflowStatusTracker {
   get auditLog(): AuditLog;
   // Mutators
   setTaskPrompt(prompt: string): void;
-  advancePhase(): void;
-  setPhase(phase: WorkflowPhase): void;
+  setPhase(phase: string): void;
   setScoutingReports(reports: unknown[]): void;
   setPlan(plan: unknown): void;
   setResearch(research: string): void;
@@ -1062,9 +1016,7 @@ src/
 │   ├── workflow-loader.ts       # Dynamic workflow module loading and listing
 │   ├── harness-factory.ts       # AgentSession construction from profiles
 │   ├── structured-output.ts     # JSON extraction, Zod-validated prompting
-│   ├── session-history.ts       # Session statistics and resumption helpers
 │   ├── agent-loop.ts            # Looping, parallel, and sequential agent patterns
-│   ├── auth.ts                  # API key resolution (env vars and overrides)
 │   └── utils.ts                 # Shared utilities (path traversal prevention, ENOENT detection, error-to-string, DEFAULT_TOOLS)
 ├── pool/
 │   ├── index.ts                 # Pool module re-exports
@@ -1098,9 +1050,7 @@ src/
 | `workflow-loader.ts`   | Dynamically loads workflow modules by name from config directories; discovers `main.ts` inside workflow subdirectories; caches loaded modules                                                     |
 | `harness-factory.ts`   | Creates a fully-wired `AgentSession` from a profile: model resolution, `AuthStorage`, tool filtering, `DefaultResourceLoader`, and `createAgentSession` from `@earendil-works/pi-coding-agent`    |
 | `structured-output.ts` | Extracts JSON from free-text model responses; prompts a session and validates output against a Zod schema with automatic retries                                                                  |
-| `session-history.ts`   | Tracks token usage and cost across a session; provides session resumption by copying message history                                                                                              |
 | `agent-loop.ts`        | Higher-level patterns: `agentLoopUntil`, `parallelAgents`, `sequentialAgents`. Uses `AgentSession` and `dispose()` for cleanup                                                                    |
-| `auth.ts`              | Resolves API keys from caller-supplied overrides or environment variables via `@earendil-works/pi-ai`                                                                                             |
 | `utils.ts`             | Shared utilities: `validateWorkflowName` (path traversal prevention), `isEnoentError` (ENOENT detection), `safeErrorMessage` (safe error-to-string), `DEFAULT_TOOLS` (default tool list constant) |
 
 ### Pool Layer (`src/pool/`)
@@ -1186,97 +1136,7 @@ export async function run(taskPrompt: string, options: WorkflowRunOptions) {
 
 ---
 
-## 11. Web Frontend & Workflow Renderers
-
-### Architecture Overview
-
-engin ships a **React 19 + Vite 6** single-page application in the `web/` directory that renders workflow state in real-time via WebSocket. Each workflow type can define its own custom renderer component, giving every workflow a tailored UI.
-
-Key architectural points:
-
-- The web app lives at `web/` and is a separate package (`@harms-haus/engin-web`).
-- Renderers live in the **workflow's** `web/` directory, not in the web app source — this keeps workflow UI concerns co-located with workflow logic.
-- A custom Vite plugin (`externalRenderers`) discovers renderer files at build time and bundles them into the web app.
-- At runtime, `getRenderer(workflowName)` looks up the registered component for a given workflow.
-
-### Renderer Discovery
-
-The `externalRenderers` Vite plugin (defined in `web/vite-plugins/external-renderers.ts`) scans `~/.config/engin/workflows/*/web/` for files matching `*Renderer.tsx`. These files are imported as side-effects via a **virtual module** called `virtual:engin-renderers`. The Vite plugin resolves this virtual module to a set of real import statements pointing at the discovered renderer files.
-
-> **Note:** The Vite plugin only discovers renderers from the global config directory (`~/.config/engin/workflows/*/web/`). Local `.engin/workflows/*/web/` directories are not scanned. This is because the web frontend is built once and serves all projects.
-
-At runtime, each renderer file calls `registerRenderer(workflowName, Component)` at module scope. The web app then calls `getRenderer(workflowName)` to look up the component for the active workflow.
-
-### Creating a Workflow Renderer
-
-Follow these steps to add a custom renderer for your workflow:
-
-1. **Create the directory** — add a `web/` directory inside your workflow (e.g. `~/.config/engin/workflows/myflow/web/`).
-
-2. **Create the renderer file** — name it `*Renderer.tsx` (e.g. `MyFlowRenderer.tsx`). The glob pattern is important — only files ending in `Renderer.tsx` are discovered.
-
-3. **Implement the component** — the renderer must:
-   - Import `registerRenderer` from `@app/renderers/registry`
-   - Import `WorkflowRendererProps` from `@app/renderers/types`
-   - Call `registerRenderer('myflow', MyFlowRenderer)` at module scope (outside the component function)
-
-4. **Use shared types** — the `@app` alias resolves to `web/src/`, giving access to:
-   - `@app/types` — shared types like `WorkflowRunState`, `LogEntry`, etc.
-   - `@app/renderers/registry` — `registerRenderer` and `getRenderer` functions
-   - `@app/renderers/types` — `WorkflowRendererProps` interface
-   - `@app/utils/agent-key` — `agentKey` helper for constructing unique agent identifiers
-
-5. **Style with CSS custom properties** — CSS files can use `--engin-*` custom properties defined in the parent app's `index.css` for consistent theming.
-
-6. **Rebuild the web app** — run `cd web && bun run build` to pick up the new renderer.
-
-#### Minimal Example
-
-```tsx
-// ~/.config/engin/workflows/myflow/web/MyFlowRenderer.tsx
-import { useState } from 'react';
-import { registerRenderer } from '@app/renderers/registry';
-import type { WorkflowRendererProps } from '@app/renderers/types';
-import './MyFlowRenderer.css';
-
-function MyFlowRenderer({ runState }: WorkflowRendererProps) {
-  return (
-    <div className="myflow-renderer">
-      <h2>{runState.summary.sidebar.title}</h2>
-      <p>Phase: {runState.currentPhase}</p>
-    </div>
-  );
-}
-
-registerRenderer('myflow', MyFlowRenderer);
-```
-
-### Testing External Renderers
-
-Renderer tests live alongside the source in the workflow's `web/__tests__/` directory:
-
-- Test files use the same `@app/*` import aliases as source files.
-- The Vitest configuration includes an `external` test project that discovers and runs tests from `~/.config/engin/workflows/*/web/__tests__/`.
-- Run all tests (both in-tree and external) with:
-
-```bash
-cd web && bun run test
-```
-
-### Key Files
-
-| File                                            | Purpose                                          |
-| ----------------------------------------------- | ------------------------------------------------ |
-| `web/vite-plugins/external-renderers.ts`        | Vite plugin for renderer discovery & bundling    |
-| `web/src/renderers/registry.ts`                 | `registerRenderer` / `getRenderer` functions     |
-| `web/src/renderers/types.ts`                    | `WorkflowRendererProps` interface                |
-| `web/src/vite-env.d.ts`                         | Type declaration for `virtual:engin-renderers`   |
-| `web/src/types.ts`                              | Shared frontend types (`WorkflowRunState`, etc.) |
-| `~/.config/engin/workflows/*/web/*Renderer.tsx` | External renderer files (user-created)           |
-
----
-
-## 12. Types Reference
+## 11. Types Reference
 
 All types listed below are exported from the top-level `@harms-haus/engin` entry point.
 
@@ -1289,21 +1149,6 @@ type ThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
 ```
 
 Re-exported from `@earendil-works/pi-agent-core`.
-
-#### `WorkflowPhase`
-
-```typescript
-type WorkflowPhase =
-  | 'scouting'
-  | 'scouting_review'
-  | 'planning'
-  | 'plan_review'
-  | 'implementing'
-  | 'final_review'
-  | 'done';
-```
-
-`advancePhase()` moves strictly forward; `setPhase()` can jump to any valid phase.
 
 #### `TaskStatus`
 
@@ -1407,8 +1252,8 @@ Serialized form of `WorkflowStatusTracker`. Written to `.engin-state.json` on `s
 | Field             | Type                                                             | Description                                       |
 | ----------------- | ---------------------------------------------------------------- | ------------------------------------------------- |
 | `taskPrompt`      | `string`                                                         | The original task prompt                          |
-| `currentPhase`    | `WorkflowPhase`                                                  | Phase the workflow is currently in                |
-| `completedPhases` | `WorkflowPhase[]`                                                | Phases that have finished                         |
+| `currentPhase`    | `string`                                                         | Phase the workflow is currently in                |
+| `completedPhases` | `string[]`                                                       | Phases that have finished                         |
 | `tasks`           | `Task[]`                                                         | All tasks in the plan                             |
 | `scoutingReports` | `unknown[]`                                                      | Collected scouting reports                        |
 | `plan`            | `unknown`                                                        | The validated implementation plan                 |
@@ -1573,7 +1418,7 @@ Both `AgentSession` instances and mock objects satisfy this interface. The `prom
 
 ### `SessionStats`
 
-Token usage and cost aggregation returned by `SessionHistory.getStats()`.
+Token usage and cost aggregation returned by `TaskTracker` statistics.
 
 | Field               | Type     | Description                                    |
 | ------------------- | -------- | ---------------------------------------------- |
@@ -1607,8 +1452,8 @@ type StatusCallbacks = WorkflowStatusCallbacks & AgentStatusCallbacks;
 | Method               | Parameter Shape                                                             | Fired when                             |
 | -------------------- | --------------------------------------------------------------------------- | -------------------------------------- |
 | `onWorkflowStart`    | `{ taskPrompt: string; resumed: boolean; workDir: string }`                 | The `run()` orchestrator starts        |
-| `onPhaseStart`       | `{ phase: WorkflowPhase; round: number }`                                   | A phase begins execution               |
-| `onPhaseComplete`    | `{ phase: WorkflowPhase; durationMs: number }`                              | A phase finishes                       |
+| `onPhaseStart`       | `{ phase: string; round: number }`                                          | A phase begins execution               |
+| `onPhaseComplete`    | `{ phase: string; durationMs: number }`                                     | A phase finishes                       |
 | `onAgentSpawn`       | `{ agentId: string; profile: string; phase: string; taskId?: string }`      | An agent session is created            |
 | `onAgentComplete`    | `{ agentId: string; profile: string; phase: string; taskId?: string }`      | An agent finishes its prompt           |
 | `onTaskStart`        | `{ taskId: string; title: string; agentId: string }`                        | A task is claimed and dispatched       |
@@ -1646,7 +1491,7 @@ A discriminated union representing the content of an assistant's turn:
 
 ---
 
-## 13. Configuration
+## 12. Configuration
 
 ### .env File Loading
 
@@ -1715,7 +1560,7 @@ If `.engin-state.json` exists in `workDir`, the `run()` function loads it and re
 
 ---
 
-## 14. Development
+## 13. Development
 
 ### Scripts
 
@@ -1794,10 +1639,6 @@ engin/
 │   ├── pool/           # Pool layer (concurrent task processing)
 │   └── tracking/       # Tracking layer (audit, tasks, workflow state)
 ├── tests/              # Test files mirroring src/ structure
-├── web/                # React web frontend (separate package)
-│   ├── src/            # Frontend source
-│   ├── vite-plugins/  # Custom Vite plugins
-│   └── package.json   # @harms-haus/engin-web
 ├── docs/               # Documentation
 ├── package.json
 ├── tsconfig.json
@@ -1813,12 +1654,10 @@ Tests are co-located in `tests/` and mirror the `src/` structure:
 tests/
 ├── core/
 │   ├── agent-loop.test.ts
-│   ├── auth.test.ts
 │   ├── config.test.ts
 │   ├── harness-factory.test.ts
 │   ├── harness-factory.subscribe.test.ts
 │   ├── profile.test.ts
-│   ├── session-history.test.ts
 │   ├── structured-output.test.ts
 │   └── workflow-loader.test.ts
 ├── pool/
@@ -1831,25 +1670,6 @@ tests/
 ├── cli.test.ts
 └── setup.test.ts
 ```
-
-### Web Frontend
-
-```bash
-# Build the web frontend
-cd web && bun run build
-
-# Run web tests (Vitest)
-cd web && bun run test
-
-# Start Vite dev server (proxies API/WS to backend at localhost:3619)
-cd web && bun run dev
-
-# Full stack: start backend + dev server
-cd web && bun run dev &  # Vite dev server
-bun dist/cli.js web  # Backend server
-```
-
-> **Note:** The web frontend must be built (`bun run build`) before starting the backend web server, as the backend serves static files from `web/dist/`.
 
 ### Adding New Profiles
 

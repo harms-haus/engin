@@ -32,13 +32,11 @@
     "test": "bun test tests/",
     "test:coverage": "bun test --coverage",
     "test:watch": "bun test tests/ --watch",
-    "test:web": "cd web && bun run test",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "build:web": "cd web && bun install && bun run build",
     "prepare": "simple-git-hooks"
   },
   "files": [

@@ -274,98 +274,51 @@ describe('parseArgs', () => {
     expect(result.taskPrompt).toBe('do something');
   });
 
-  describe('web command', () => {
-    it('parses web command with defaults', () => {
-      const result = parseArgs(['web']);
-      expect(result.command).toBe('web');
-      expect(result.host).toBeUndefined();
-      expect(result.port).toBeUndefined();
-      expect(result.cwd).toBe(process.cwd());
-      expect(result.verbose).toBe(false);
-      expect(result.maxConcurrent).toBe(5);
-      expect(result.apiKeys).toEqual({});
-      expect(result.warnings).toEqual([]);
+  describe('web command (removed)', () => {
+    it('throws on web alone because it is treated as a workflow name with no task prompt', () => {
+      expect(() => parseArgs(['web'])).toThrow(/Missing required <task-prompt>/);
     });
 
-    it('parses web command with --host and --port', () => {
-      const result = parseArgs(['web', '--host', '0.0.0.0', '--port', '3619']);
-      expect(result.command).toBe('web');
-      expect(result.host).toBe('0.0.0.0');
-      expect(result.port).toBe(3619);
+    it('throws on web with --host (--host is now unknown)', () => {
+      expect(() => parseArgs(['web', '--host', '0.0.0.0'])).toThrow(/Unknown flag: "--host"/);
     });
 
-    it('parses web with --cwd', () => {
-      const result = parseArgs(['web', '--cwd', '/some/path']);
-      expect(result.command).toBe('web');
-      expect(result.cwd).toBe('/some/path');
+    it('throws on web with --port (--port is now unknown)', () => {
+      expect(() => parseArgs(['web', '--port', '3619'])).toThrow(/Unknown flag: "--port"/);
     });
 
-    it('parses web with --verbose', () => {
-      const result = parseArgs(['web', '--verbose']);
-      expect(result.command).toBe('web');
-      expect(result.verbose).toBe(true);
+    it('throws on web with --cwd and no task prompt', () => {
+      expect(() => parseArgs(['web', '--cwd', '/some/path'])).toThrow(/Missing required <task-prompt>/);
     });
 
-    it('parses web with --api-key', () => {
-      const result = parseArgs(['web', '--api-key', 'anthropic=sk-xxx']);
-      expect(result.command).toBe('web');
-      expect(result.apiKeys).toEqual({ anthropic: 'sk-xxx' });
+    it('throws on web with --verbose and no task prompt', () => {
+      expect(() => parseArgs(['web', '--verbose'])).toThrow(/Missing required <task-prompt>/);
     });
 
-    it('throws on --port with non-numeric string', () => {
-      expect(() => parseArgs(['web', '--port', 'abc'])).toThrow(/--port must be an integer/);
+    it('throws on web with --api-key and no task prompt', () => {
+      expect(() => parseArgs(['web', '--api-key', 'anthropic=sk-xxx'])).toThrow(/Missing required <task-prompt>/);
     });
 
-    it('throws on --port with zero', () => {
-      expect(() => parseArgs(['web', '--port', '0'])).toThrow(/--port must be an integer between 1 and 65535/);
+    it('throws on --port anywhere (unknown flag)', () => {
+      expect(() => parseArgs(['run', 'task', '--port', '3619'])).toThrow(/Unknown flag: "--port"/);
     });
 
-    it('throws on --port with value > 65535', () => {
-      expect(() => parseArgs(['web', '--port', '65536'])).toThrow(/--port must be an integer between 1 and 65535/);
+    it('throws on --host anywhere (unknown flag)', () => {
+      expect(() => parseArgs(['run', 'task', '--host', 'localhost'])).toThrow(/Unknown flag: "--host"/);
     });
 
-    it('throws on --port with negative value', () => {
-      expect(() => parseArgs(['web', '--port', '-1'])).toThrow(/--port must be an integer between 1 and 65535/);
+    it('treats web as a workflow name when followed by a task prompt', () => {
+      const result = parseArgs(['web', 'deploy the app']);
+      expect(result.command).toBe('run');
+      expect(result.workflowName).toBe('web');
+      expect(result.taskPrompt).toBe('deploy the app');
     });
 
-    it('throws on --port with float value', () => {
-      expect(() => parseArgs(['web', '--port', '3619.5'])).toThrow(/--port must be an integer/);
-    });
-
-    it('throws on --host without value', () => {
-      expect(() => parseArgs(['web', '--host'])).toThrow(/Missing value/);
-    });
-
-    it('throws on --port without value', () => {
-      expect(() => parseArgs(['web', '--port'])).toThrow(/Missing value/);
-    });
-
-    it('throws on extra positional argument after web', () => {
-      expect(() => parseArgs(['web', 'extra'])).toThrow(/Unexpected argument/);
-    });
-
-    it('throws on multiple extra positional arguments after web', () => {
-      expect(() => parseArgs(['web', 'extra1', 'extra2'])).toThrow(/Unexpected argument/);
-    });
-
-    it('--host can be a valid hostname like 127.0.0.1', () => {
-      const result = parseArgs(['web', '--host', '127.0.0.1']);
-      expect(result.host).toBe('127.0.0.1');
-    });
-
-    it('--host can be a hostname like localhost', () => {
-      const result = parseArgs(['web', '--host', 'localhost']);
-      expect(result.host).toBe('localhost');
-    });
-
-    it('--port accepts valid port 1', () => {
-      const result = parseArgs(['web', '--port', '1']);
-      expect(result.port).toBe(1);
-    });
-
-    it('--port accepts valid port 65535', () => {
-      const result = parseArgs(['web', '--port', '65535']);
-      expect(result.port).toBe(65535);
+    it('treats web as workflow name with extra positional args', () => {
+      const result = parseArgs(['web', 'task1', 'task2', 'task3']);
+      expect(result.command).toBe('run');
+      expect(result.workflowName).toBe('web');
+      expect(result.taskPrompt).toBe('task1');
     });
   });
 
@@ -408,16 +361,12 @@ describe('parseArgs', () => {
       expect(result.worktree).toBe(false);
     });
 
-    it('defaults to false for web command', () => {
-      const result = parseArgs(['web']);
-      expect(result.command).toBe('web');
-      expect(result.worktree).toBe(false);
+    it('throws for web command (no longer a valid command)', () => {
+      expect(() => parseArgs(['web'])).toThrow();
     });
 
-    it('defaults to false for web command even with other flags', () => {
-      const result = parseArgs(['web', '--verbose', '--host', '0.0.0.0']);
-      expect(result.command).toBe('web');
-      expect(result.worktree).toBe(false);
+    it('throws for web command even with other flags', () => {
+      expect(() => parseArgs(['web', '--verbose'])).toThrow();
     });
 
     it('sets worktree to true for resume command', () => {
@@ -439,7 +388,7 @@ describe('parseArgs', () => {
   });
 
   describe('USAGE string', () => {
-    it('includes --worktree in the help text', async () => {
+    it('includes --worktree and does NOT include web or --host/--port in the help text', async () => {
       const originalArgv = process.argv;
       const exitSpy = spyOn(process, 'exit').mockImplementation(((code: number) => {
         throw new Error(`process.exit(${code})`);
@@ -456,6 +405,9 @@ describe('parseArgs', () => {
       const output = stdoutSpy.mock.calls[0][0] as string;
       expect(output).toContain('--worktree');
       expect(output).toMatch(/--worktree\s+Run workflow in a git worktree/);
+      expect(output).not.toContain('web');
+      expect(output).not.toContain('--host');
+      expect(output).not.toContain('--port');
       exitSpy.mockRestore();
       stdoutSpy.mockRestore();
     });
@@ -477,6 +429,28 @@ describe('parseArgs', () => {
     };
     expect(opts.worktree).toBe(true);
     expect(typeof opts.worktree).toBe('boolean');
+  });
+
+  it('CliOptions type no longer has host or port properties', () => {
+    const opts: CliOptions = {
+      command: 'run',
+      workflowName: 'develop',
+      taskPrompt: 'task',
+      cwd: process.cwd(),
+      maxConcurrent: 5,
+      verbose: false,
+      worktree: true,
+      apiKeys: {},
+      warnings: [],
+    };
+    // After web command removal, host and port should not exist on the type
+    expect((opts as Record<string, unknown>).host).toBeUndefined();
+    expect((opts as Record<string, unknown>).port).toBeUndefined();
+  });
+
+  it('webCommand is no longer exported from cli.ts', async () => {
+    const cliModule = await import('../src/cli.ts');
+    expect((cliModule as Record<string, unknown>).webCommand).toBeUndefined();
   });
 });
 
@@ -630,10 +604,8 @@ describe('main() interactive mode', () => {
     expect(result.command).toBe('init');
   });
 
-  it('web command is not affected by interactive mode changes', () => {
-    const result = parseArgs(['web', '--port', '4000']);
-    expect(result.command).toBe('web');
-    expect(result.port).toBe(4000);
+  it('web command is no longer a valid command', () => {
+    expect(() => parseArgs(['web', '--port', '4000'])).toThrow(/Unknown flag: "--port"/);
   });
 
   it('resume command is not affected by interactive mode changes', () => {

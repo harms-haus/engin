@@ -1,10 +1,13 @@
 import { type Component, truncateToWidth } from '@earendil-works/pi-tui';
-import type { PhaseDescriptor } from '../../web/protocol-types.js';
 import { bold, cyan, dim, green } from '../theme.js';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
-export type { PhaseDescriptor } from '../../web/protocol-types.js';
+export interface PhaseDescriptor {
+  id: string;
+  label: string;
+  icon: string;
+}
 
 // ─── PhaseBar Component ─────────────────────────────────────────────────────
 

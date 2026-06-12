@@ -70,9 +70,9 @@ interface RunSummary {
 }
 
 // ─── Composite key helper ──────────────────────────────────────────────────
-// Canonical definition: web/src/utils/agent-key.ts
-// Backend copy: src/web/run-registry.ts
-// This script is standalone and cannot import from either, so the logic
+// Note: The agentKey helper was previously defined in web/src/utils/agent-key.ts
+// and src/web/run-registry.ts (both removed). This script is standalone and
+// cannot import from either, so the logic
 // is duplicated here to avoid a cross-package dependency.
 
 function agentKey(agentId: string, taskId?: string): string {
