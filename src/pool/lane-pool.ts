@@ -50,7 +50,7 @@ interface TrackedSession {
     dispose(): void;
     subscribe(cb: (event: unknown) => void): () => void;
     prompt(text: string): Promise<void>;
-    getLastAssistantText(): string;
+    getLastAssistantText(): string | undefined;
     sessionId: string;
   };
   dispose: () => void;
