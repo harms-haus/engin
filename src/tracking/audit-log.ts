@@ -6,6 +6,7 @@ import { isEnoentError } from '../core/utils.js';
 export class AuditLog {
   private readonly logPath: string;
   private cache: AuditEvent[] | null = null;
+  private cacheBuildPromise: Promise<AuditEvent[]> | null = null;
   private dirEnsured = false;
 
   constructor(private readonly logDir: string) {
@@ -25,37 +26,43 @@ export class AuditLog {
 
     await appendFile(this.logPath, JSON.stringify(record) + '\n', 'utf-8');
     this.cache = null;
+    this.cacheBuildPromise = null;
   }
 
   async getEvents(filter?: { taskId?: string; type?: string }): Promise<AuditEvent[]> {
     if (this.cache === null) {
-      let content: string;
-      try {
-        content = await readFile(this.logPath, 'utf-8');
-      } catch (err: unknown) {
-        if (isEnoentError(err)) {
-          this.cache = [];
-        } else {
-          throw err;
-        }
-      }
-
-      if (this.cache === null) {
-        const events: AuditEvent[] = [];
-        // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-        for (const line of content!.split('\n')) {
-          if (line.trim() === '') continue;
+      if (this.cacheBuildPromise === null) {
+        this.cacheBuildPromise = (async () => {
+          let content: string;
           try {
-            events.push(JSON.parse(line) as AuditEvent);
-          } catch {
-            console.warn(`Skipping malformed JSONL line: ${line.slice(0, 100)}`);
+            content = await readFile(this.logPath, 'utf-8');
+          } catch (err: unknown) {
+            if (isEnoentError(err)) {
+              this.cache = [];
+              return this.cache;
+            } else {
+              throw err;
+            }
           }
-        }
-        this.cache = events;
+
+          const events: AuditEvent[] = [];
+          for (const line of content.split('\n')) {
+            if (line.trim() === '') continue;
+            try {
+              events.push(JSON.parse(line) as AuditEvent);
+            } catch {
+              console.warn(`Skipping malformed JSONL line: ${line.slice(0, 100)}`);
+            }
+          }
+          this.cache = events;
+          return this.cache;
+        })();
       }
+      await this.cacheBuildPromise;
+      this.cacheBuildPromise = null;
     }
 
-    let filtered = this.cache;
+    let filtered = this.cache as AuditEvent[];
 
     if (filter?.type) {
       filtered = filtered.filter((e) => e.type === filter.type);
@@ -112,6 +119,7 @@ export class AuditLog {
       if (!isEnoentError(err)) throw err;
     }
     this.cache = null;
+    this.cacheBuildPromise = null;
     this.dirEnsured = false;
   }
 }

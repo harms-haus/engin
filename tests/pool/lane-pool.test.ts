@@ -298,7 +298,7 @@ describe('LanePool', () => {
       setupProfileMocks();
       setupHarnessMocks();
 
-      mockPromptForStructured.mockResolvedValue({ approved: true, feedback: undefined });
+      mockPromptForStructured.mockResolvedValue({ result: { approved: true, feedback: undefined }, attempts: 1 });
 
       const { pool } = createPoolAndTracker({
         getStepsForTask: () => [
@@ -320,7 +320,7 @@ describe('LanePool', () => {
       setupProfileMocks();
       setupHarnessMocks();
 
-      mockPromptForStructured.mockResolvedValue({ approved: true, feedback: undefined });
+      mockPromptForStructured.mockResolvedValue({ result: { approved: true, feedback: undefined }, attempts: 1 });
 
       const { pool } = createPoolAndTracker({
         getStepsForTask: () => [
@@ -343,7 +343,7 @@ describe('LanePool', () => {
       setupHarnessMocks();
 
       const reviewResult = { approved: false, feedback: 'Missing tests', severity: 'critical' };
-      mockPromptForStructured.mockResolvedValue(reviewResult);
+      mockPromptForStructured.mockResolvedValue({ result: reviewResult, attempts: 1 });
 
       let rejectReason: string | undefined;
       const { pool } = createPoolAndTracker({
@@ -377,7 +377,7 @@ describe('LanePool', () => {
       setupProfileMocks();
       setupHarnessMocks();
 
-      mockPromptForStructured.mockResolvedValue({ approved: true });
+      mockPromptForStructured.mockResolvedValue({ result: { approved: true }, attempts: 1 });
 
       const { pool } = createPoolAndTracker({
         getStepsForTask: () => [
@@ -398,7 +398,10 @@ describe('LanePool', () => {
       setupProfileMocks();
       setupHarnessMocks();
 
-      mockPromptForStructured.mockResolvedValue({ approved: false, feedback: 'Custom feedback', severity: 'critical' });
+      mockPromptForStructured.mockResolvedValue({
+        result: { approved: false, feedback: 'Custom feedback', severity: 'critical' },
+        attempts: 1,
+      });
 
       let rejectReason: string | undefined;
       const { pool } = createPoolAndTracker({
@@ -426,7 +429,7 @@ describe('LanePool', () => {
       setupProfileMocks();
       setupHarnessMocks();
 
-      mockPromptForStructured.mockResolvedValue({ approved: false, severity: 'critical' });
+      mockPromptForStructured.mockResolvedValue({ result: { approved: false, severity: 'critical' }, attempts: 1 });
 
       let rejectReason: string | undefined;
       const { pool } = createPoolAndTracker({
@@ -686,7 +689,10 @@ describe('LanePool', () => {
       setupProfileMocks();
       setupHarnessMocks();
 
-      mockPromptForStructured.mockResolvedValue({ approved: false, feedback: 'Bad code', severity: 'critical' });
+      mockPromptForStructured.mockResolvedValue({
+        result: { approved: false, feedback: 'Bad code', severity: 'critical' },
+        attempts: 1,
+      });
 
       const onTaskRejected = mock(() => {});
 
@@ -725,7 +731,10 @@ describe('LanePool', () => {
       let structuredCallCount = 0;
       mockPromptForStructured.mockImplementation(() => {
         structuredCallCount++;
-        return Promise.resolve({ approved: false, feedback: `Rejection ${structuredCallCount}`, severity: 'critical' });
+        return Promise.resolve({
+          result: { approved: false, feedback: `Rejection ${structuredCallCount}`, severity: 'critical' },
+          attempts: 1,
+        });
       });
 
       const { pool } = createPoolAndTracker({
@@ -756,9 +765,9 @@ describe('LanePool', () => {
       mockPromptForStructured.mockImplementation(() => {
         structuredCallCount++;
         if (structuredCallCount <= 1) {
-          return Promise.resolve({ approved: false, feedback: 'Try harder' });
+          return Promise.resolve({ result: { approved: false, feedback: 'Try harder' }, attempts: 1 });
         }
-        return Promise.resolve({ approved: true, feedback: undefined });
+        return Promise.resolve({ result: { approved: true, feedback: undefined }, attempts: 1 });
       });
 
       const { pool } = createPoolAndTracker({
@@ -851,9 +860,12 @@ describe('LanePool', () => {
       mockPromptForStructured.mockImplementation(() => {
         reviewCallCount++;
         if (reviewCallCount === 1) {
-          return Promise.resolve({ approved: false, feedback: 'Fix the null check', severity: 'medium' });
+          return Promise.resolve({
+            result: { approved: false, feedback: 'Fix the null check', severity: 'medium' },
+            attempts: 1,
+          });
         }
-        return Promise.resolve({ approved: true, feedback: undefined });
+        return Promise.resolve({ result: { approved: true, feedback: undefined }, attempts: 1 });
       });
 
       const { pool } = createPoolAndTracker({
@@ -909,12 +921,18 @@ describe('LanePool', () => {
       mockPromptForStructured.mockImplementation(() => {
         reviewCallCount++;
         if (reviewCallCount === 1) {
-          return Promise.resolve({ approved: false, feedback: 'Missing error handling', severity: 'medium' });
+          return Promise.resolve({
+            result: { approved: false, feedback: 'Missing error handling', severity: 'medium' },
+            attempts: 1,
+          });
         }
         if (reviewCallCount === 2) {
-          return Promise.resolve({ approved: false, feedback: 'Needs input validation', severity: 'medium' });
+          return Promise.resolve({
+            result: { approved: false, feedback: 'Needs input validation', severity: 'medium' },
+            attempts: 1,
+          });
         }
-        return Promise.resolve({ approved: true, feedback: undefined });
+        return Promise.resolve({ result: { approved: true, feedback: undefined }, attempts: 1 });
       });
 
       const { pool } = createPoolAndTracker({
@@ -1282,7 +1300,10 @@ describe('LanePool', () => {
       setupProfileMocks();
       setupHarnessMocks();
 
-      mockPromptForStructured.mockResolvedValue({ approved: false, feedback: 'Not good enough', severity: 'critical' });
+      mockPromptForStructured.mockResolvedValue({
+        result: { approved: false, feedback: 'Not good enough', severity: 'critical' },
+        attempts: 1,
+      });
 
       const { pool, tracker } = createPoolAndTracker({
         maxStepRetries: 0,
@@ -1519,7 +1540,10 @@ describe('LanePool', () => {
       setupProfileMocks();
       setupHarnessMocks();
 
-      mockPromptForStructured.mockResolvedValue({ approved: false, feedback: 'bad', severity: 'critical' });
+      mockPromptForStructured.mockResolvedValue({
+        result: { approved: false, feedback: 'bad', severity: 'critical' },
+        attempts: 1,
+      });
 
       const { pool, tracker } = createPoolAndTracker({
         maxStepRetries: 2,
@@ -1537,7 +1561,10 @@ describe('LanePool', () => {
       setupProfileMocks();
       setupHarnessMocks();
 
-      mockPromptForStructured.mockResolvedValue({ approved: false, feedback: 'minor issues', severity: 'medium' });
+      mockPromptForStructured.mockResolvedValue({
+        result: { approved: false, feedback: 'minor issues', severity: 'medium' },
+        attempts: 1,
+      });
 
       const { pool, tracker } = createPoolAndTracker({
         maxStepRetries: 2,
@@ -1555,7 +1582,10 @@ describe('LanePool', () => {
       setupProfileMocks();
       setupHarnessMocks();
 
-      mockPromptForStructured.mockResolvedValue({ approved: false, feedback: 'nitpick', severity: 'low' });
+      mockPromptForStructured.mockResolvedValue({
+        result: { approved: false, feedback: 'nitpick', severity: 'low' },
+        attempts: 1,
+      });
 
       const { pool, tracker } = createPoolAndTracker({
         maxStepRetries: 2,
@@ -1573,7 +1603,10 @@ describe('LanePool', () => {
       setupProfileMocks();
       setupHarnessMocks();
 
-      mockPromptForStructured.mockResolvedValue({ approved: false, feedback: 'major issue', severity: 'high' });
+      mockPromptForStructured.mockResolvedValue({
+        result: { approved: false, feedback: 'major issue', severity: 'high' },
+        attempts: 1,
+      });
 
       const { pool, tracker } = createPoolAndTracker({
         maxStepRetries: 2,
@@ -1591,7 +1624,7 @@ describe('LanePool', () => {
       setupProfileMocks();
       setupHarnessMocks();
 
-      mockPromptForStructured.mockResolvedValue({ approved: false, feedback: 'meh' });
+      mockPromptForStructured.mockResolvedValue({ result: { approved: false, feedback: 'meh' }, attempts: 1 });
 
       const { pool, tracker } = createPoolAndTracker({
         maxStepRetries: 2,
@@ -1622,9 +1655,12 @@ describe('LanePool', () => {
       mockPromptForStructured.mockImplementation(() => {
         structuredCallCount++;
         if (structuredCallCount <= 4) {
-          return Promise.resolve({ approved: false, feedback: `Rejection ${structuredCallCount}` });
+          return Promise.resolve({
+            result: { approved: false, feedback: `Rejection ${structuredCallCount}` },
+            attempts: 1,
+          });
         }
-        return Promise.resolve({ approved: true, feedback: undefined });
+        return Promise.resolve({ result: { approved: true, feedback: undefined }, attempts: 1 });
       });
 
       const { pool, tracker } = createPoolAndTracker({
@@ -1696,7 +1732,7 @@ describe('LanePool', () => {
         if (structuredCallCount <= 2) {
           return Promise.reject(new Error('Temporary structured output failure'));
         }
-        return Promise.resolve({ approved: true });
+        return Promise.resolve({ result: { approved: true }, attempts: 1 });
       });
 
       const { pool, tracker } = createPoolAndTracker({
@@ -1759,9 +1795,9 @@ describe('LanePool', () => {
       mockPromptForStructured.mockImplementation(() => {
         reviewCount++;
         if (reviewCount === 1) {
-          return Promise.resolve({ approved: false, feedback: 'needs work', issues: [] });
+          return Promise.resolve({ result: { approved: false, feedback: 'needs work', issues: [] }, attempts: 1 });
         }
-        return Promise.resolve({ approved: true, feedback: '', issues: [] });
+        return Promise.resolve({ result: { approved: true, feedback: '', issues: [] }, attempts: 1 });
       });
 
       setupHarnessMocks();
@@ -1804,9 +1840,9 @@ describe('LanePool', () => {
       mockPromptForStructured.mockImplementation(() => {
         reviewCount++;
         if (reviewCount <= 2) {
-          return Promise.resolve({ approved: false, feedback: 'not good', issues: [] });
+          return Promise.resolve({ result: { approved: false, feedback: 'not good', issues: [] }, attempts: 1 });
         }
-        return Promise.resolve({ approved: true, feedback: '', issues: [] });
+        return Promise.resolve({ result: { approved: true, feedback: '', issues: [] }, attempts: 1 });
       });
 
       setupHarnessMocks();
@@ -1928,9 +1964,9 @@ describe('LanePool', () => {
       mockPromptForStructured.mockImplementation(() => {
         reviewCount++;
         if (reviewCount === 1) {
-          return Promise.resolve({ approved: false, feedback: 'fix this', issues: [] });
+          return Promise.resolve({ result: { approved: false, feedback: 'fix this', issues: [] }, attempts: 1 });
         }
-        return Promise.resolve({ approved: true, feedback: '', issues: [] });
+        return Promise.resolve({ result: { approved: true, feedback: '', issues: [] }, attempts: 1 });
       });
 
       setupHarnessMocks();

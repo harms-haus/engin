@@ -301,18 +301,14 @@ export async function initCommand(_options: CliOptions): Promise<void> {
 
 export async function webCommand(options: CliOptions): Promise<void> {
   const { startWebServer } = await import('./web/server.js');
-  const server = await startWebServer({
+  const _server = await startWebServer({
     host: options.host ?? '127.0.0.1',
     port: options.port ?? 3619,
     cwd: options.cwd,
   });
 
-  // Graceful SIGINT handling — stop the server and exit
-  process.on('SIGINT', () => {
-    console.log(`\n${formatTime()} ⏹️  Shutting down web server...`);
-    server.stop(true);
-    process.exit(0);
-  });
+  const { handler } = setupSigintHandler(false);
+  process.on('SIGINT', handler);
 }
 
 export async function runCommand(options: CliOptions): Promise<void> {

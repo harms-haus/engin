@@ -48,7 +48,12 @@ export async function startWebServer(
   const broadcast = (msg: ServerMessage) => {
     const d = JSON.stringify(msg);
     for (const ws of clients) {
-      ws.send(d);
+      try {
+        ws.send(d);
+      } catch (err) {
+        console.warn('Failed to send to WebSocket client, removing:', err);
+        clients.delete(ws);
+      }
     }
   };
 

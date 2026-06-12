@@ -74,7 +74,10 @@ export function parseProfile(content: string, filename: string): AgentProfile {
  */
 export async function loadProfiles(dirPath: string): Promise<Map<string, AgentProfile>> {
   if (profileCache.size > 20) {
-    profileCache.clear();
+    const oldestKey = profileCache.keys().next().value;
+    if (oldestKey !== undefined) {
+      profileCache.delete(oldestKey);
+    }
   }
 
   const cached = profileCache.get(dirPath);

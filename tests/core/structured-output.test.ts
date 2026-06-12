@@ -110,22 +110,22 @@ describe('promptForStructured', () => {
 
   it('returns parsed result on first valid try', async () => {
     const harness = makeHarness(['{"name": "Alice", "age": 30}']);
-    const result = await promptForStructured(harness, 'give me a person', schema);
-    expect(result).toEqual({ name: 'Alice', age: 30 });
+    const output = await promptForStructured(harness, 'give me a person', schema);
+    expect(output).toEqual({ result: { name: 'Alice', age: 30 }, attempts: 1 });
     expect(harness.prompt).toHaveBeenCalledTimes(1);
   });
 
   it('succeeds on retry after invalid JSON first', async () => {
     const harness = makeHarness(['this is not json at all', '{"name": "Bob", "age": 25}']);
-    const result = await promptForStructured(harness, 'give me a person', schema);
-    expect(result).toEqual({ name: 'Bob', age: 25 });
+    const output = await promptForStructured(harness, 'give me a person', schema);
+    expect(output).toEqual({ result: { name: 'Bob', age: 25 }, attempts: 2 });
     expect(harness.prompt).toHaveBeenCalledTimes(2);
   });
 
   it('succeeds on retry after valid JSON with wrong schema first', async () => {
     const harness = makeHarness(['{"name": "Charlie", "age": "not-a-number"}', '{"name": "Diana", "age": 42}']);
-    const result = await promptForStructured(harness, 'give me a person', schema);
-    expect(result).toEqual({ name: 'Diana', age: 42 });
+    const output = await promptForStructured(harness, 'give me a person', schema);
+    expect(output).toEqual({ result: { name: 'Diana', age: 42 }, attempts: 2 });
     expect(harness.prompt).toHaveBeenCalledTimes(2);
   });
 
@@ -191,10 +191,11 @@ describe('promptForStructured', () => {
 
   it('retry prompt has readable validation error (not [object Object])', async () => {
     const harness = makeHarness(['{"name": "Charlie", "age": "not-a-number"}', '{"name": "Diana", "age": 42}']);
-    const result = await promptForStructured(harness, 'give me a person', schema, {
+    const output = await promptForStructured(harness, 'give me a person', schema, {
       maxRetries: 3,
     });
-    expect(result).toEqual({ name: 'Diana', age: 42 });
+    expect(output.result).toEqual({ name: 'Diana', age: 42 });
+    expect(output.attempts).toBe(2);
     expect(harness.prompt).toHaveBeenCalledTimes(2);
 
     const retryPrompt = (harness.prompt as ReturnType<typeof mock>).mock.calls[1][0] as string;
@@ -203,6 +204,59 @@ describe('promptForStructured', () => {
     // Must contain a readable validation error message
     expect(retryPrompt).toContain('Schema validation error');
     expect(retryPrompt).toContain('Previous attempt failed');
+  });
+});
+
+// ─── promptForStructured – attempts count tracking ──────────────────────────
+
+describe('promptForStructured – attempts count', () => {
+  const schema = z.object({ value: z.number() });
+
+  function makeHarness(responses: string[]): PromptableHarness {
+    let callIndex = 0;
+    let lastText: string | undefined;
+    return {
+      prompt: mock(async (_text: string) => {
+        lastText = responses[callIndex] ?? responses[responses.length - 1];
+        callIndex++;
+      }),
+      getLastAssistantText: () => lastText,
+    };
+  }
+
+  it('returns attempts: 1 for first-attempt success', async () => {
+    const harness = makeHarness(['{"value": 42}']);
+    const output = await promptForStructured(harness, 'give me a number', schema);
+    expect(output.result).toEqual({ value: 42 });
+    expect(output.attempts).toBe(1);
+  });
+
+  it('returns attempts: 2 when second attempt succeeds', async () => {
+    const harness = makeHarness(['not json', '{"value": 7}']);
+    const output = await promptForStructured(harness, 'give me a number', schema);
+    expect(output.result).toEqual({ value: 7 });
+    expect(output.attempts).toBe(2);
+  });
+
+  it('returns attempts: 3 when third attempt succeeds', async () => {
+    const harness = makeHarness(['bad', 'still bad', '{"value": 99}']);
+    const output = await promptForStructured(harness, 'give me a number', schema, { maxRetries: 5 });
+    expect(output.result).toEqual({ value: 99 });
+    expect(output.attempts).toBe(3);
+  });
+
+  it('attempts is 1-based, not 0-based', async () => {
+    const harness = makeHarness(['{"value": 1}']);
+    const output = await promptForStructured(harness, 'prompt', schema);
+    // The very first successful attempt should be 1, never 0
+    expect(output.attempts).toBeGreaterThanOrEqual(1);
+  });
+
+  it('attempts matches the number of prompt calls made', async () => {
+    const harness = makeHarness(['nope', 'nope again', '{"value": 5}']);
+    const output = await promptForStructured(harness, 'prompt', schema, { maxRetries: 5 });
+    expect(output.attempts).toBe(3);
+    expect(harness.prompt).toHaveBeenCalledTimes(3);
   });
 });
 

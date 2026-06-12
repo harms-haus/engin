@@ -9,7 +9,7 @@ import type { AgentWindowState, LogEntry, PhaseDescriptor, SidebarInfo, Workflow
  * When taskId is present the key is `agentId::taskId` so that agents with
  * the same agentId but different tasks are stored as separate entries.
  */
-function agentKey(agentId: string, taskId?: string): string {
+export function agentKey(agentId: string, taskId?: string): string {
   return taskId ? `${agentId}::${taskId}` : agentId;
 }
 

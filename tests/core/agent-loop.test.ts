@@ -171,7 +171,7 @@ describe('retryAgentUntil', () => {
   it('delegates to promptForStructured and wraps result in AgentLoopResult', async () => {
     const session = { prompt: mock(), getLastAssistantText: mock() };
     const expectedResult = { name: 'Alice', score: 95 };
-    mockPromptForStructured.mockResolvedValue(expectedResult);
+    mockPromptForStructured.mockResolvedValue({ result: expectedResult, attempts: 1 });
 
     const result = await retryAgentUntil(session, 'get a result', schema);
 
@@ -179,29 +179,31 @@ describe('retryAgentUntil', () => {
     expect(mockPromptForStructured).toHaveBeenCalledWith(session, 'get a result', schema, undefined);
     expect(result).toEqual({
       result: expectedResult,
-      attempts: 3,
+      attempts: 1,
       totalTokens: { input: 0, output: 0 },
     });
   });
 
   it('passes maxRetries to promptForStructured', async () => {
     const session = { prompt: mock(), getLastAssistantText: mock() };
-    mockPromptForStructured.mockResolvedValue({ name: 'Bob', score: 80 });
+    mockPromptForStructured.mockResolvedValue({ result: { name: 'Bob', score: 80 }, attempts: 1 });
 
     await retryAgentUntil(session, 'prompt', schema, { maxRetries: 5 });
 
     expect(mockPromptForStructured).toHaveBeenCalledWith(session, 'prompt', schema, { maxRetries: 5 });
   });
 
-  it('passes maxRetries value as attempts count', async () => {
+  it('uses actual attempts from promptForStructured, not maxRetries config value', async () => {
     const session = { prompt: mock(), getLastAssistantText: mock() };
-    mockPromptForStructured.mockResolvedValue({ name: 'C', score: 1 });
+    // promptForStructured made 3 attempts before succeeding
+    mockPromptForStructured.mockResolvedValue({ result: { name: 'C', score: 1 }, attempts: 3 });
 
     const result = await retryAgentUntil(session, 'p', schema, {
       maxRetries: 7,
     });
 
-    expect(result.attempts).toBe(7);
+    // attempts should be 3 (actual attempts), NOT 7 (the maxRetries config)
+    expect(result.attempts).toBe(3);
   });
 
   it('propagates errors from promptForStructured', async () => {
@@ -209,6 +211,32 @@ describe('retryAgentUntil', () => {
     mockPromptForStructured.mockRejectedValue(new Error('Failed to produce structured output after 3 attempts'));
 
     await expect(retryAgentUntil(session, 'bad prompt', schema)).rejects.toThrow('Failed to produce structured output');
+  });
+
+  it('reports attempts=2 when promptForStructured retries once', async () => {
+    const session = { prompt: mock(), getLastAssistantText: mock() };
+    mockPromptForStructured.mockResolvedValue({ result: { name: 'D', score: 50 }, attempts: 2 });
+
+    const result = await retryAgentUntil(session, 'p', schema);
+    expect(result.attempts).toBe(2);
+  });
+
+  it('reports attempts=1 for first-try success regardless of maxRetries', async () => {
+    const session = { prompt: mock(), getLastAssistantText: mock() };
+    mockPromptForStructured.mockResolvedValue({ result: { name: 'E', score: 100 }, attempts: 1 });
+
+    const result = await retryAgentUntil(session, 'p', schema, { maxRetries: 10 });
+    // Even though maxRetries is 10, it only took 1 attempt
+    expect(result.attempts).toBe(1);
+  });
+
+  it('reports attempts from promptForStructured when maxRetries is not provided', async () => {
+    const session = { prompt: mock(), getLastAssistantText: mock() };
+    mockPromptForStructured.mockResolvedValue({ result: { name: 'F', score: 75 }, attempts: 2 });
+
+    const result = await retryAgentUntil(session, 'p', schema);
+    // No maxRetries provided — attempts comes from promptForStructured, not the default 3
+    expect(result.attempts).toBe(2);
   });
 });
 
@@ -250,7 +278,7 @@ describe('parallelAgents', () => {
 
   it('uses promptForStructured when schema is provided', async () => {
     const schema = z.object({ value: z.number() });
-    mockPromptForStructured.mockResolvedValue({ value: 42 });
+    mockPromptForStructured.mockResolvedValue({ result: { value: 42 }, attempts: 1 });
 
     const results = await parallelAgents([makeConfig()], () => 'get value', { schema });
 
@@ -258,7 +286,7 @@ describe('parallelAgents', () => {
     expect(mockPromptForStructured).toHaveBeenCalledTimes(1);
     expect(results[0].status).toBe('fulfilled');
     if (results[0].status === 'fulfilled') {
-      expect(results[0].value).toEqual({ value: 42 });
+      expect(results[0].value).toEqual({ result: { value: 42 }, attempts: 1 });
     }
   });
 
@@ -346,7 +374,9 @@ describe('sequentialAgents', () => {
 
   it('uses promptForStructured when schema is provided', async () => {
     const schema = z.object({ answer: z.string() });
-    mockPromptForStructured.mockResolvedValueOnce({ answer: 'first' }).mockResolvedValueOnce({ answer: 'second' });
+    mockPromptForStructured
+      .mockResolvedValueOnce({ result: { answer: 'first' }, attempts: 1 })
+      .mockResolvedValueOnce({ result: { answer: 'second' }, attempts: 1 });
 
     mockCreateHarness.mockImplementation(async () => {
       return makeSession(() => 'ignored');
@@ -354,7 +384,10 @@ describe('sequentialAgents', () => {
 
     const results = await sequentialAgents([makeConfig(), makeConfig()], (_s, i) => `question-${i}`, { schema });
 
-    expect(results).toEqual([{ answer: 'first' }, { answer: 'second' }]);
+    expect(results).toEqual([
+      { result: { answer: 'first' }, attempts: 1 },
+      { result: { answer: 'second' }, attempts: 1 },
+    ]);
     expect(mockPromptForStructured).toHaveBeenCalledTimes(2);
   });
 

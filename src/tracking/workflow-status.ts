@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { PersistedAgentRecord, WorkflowState } from '../core/types.js';
 import { isEnoentError } from '../core/utils.js';
@@ -27,6 +27,7 @@ export class WorkflowStatusTracker {
   private _savePromise: Promise<void> = Promise.resolve();
   private _pendingSave = false;
   private _needsSave = false;
+  private _saveLock: Promise<void> = Promise.resolve();
   private _sidebar?: { title?: string; indicator?: string; phases?: { id: string; label: string; icon: string }[] };
   private _spawnedAgents: PersistedAgentRecord[] = [];
 
@@ -266,9 +267,22 @@ export class WorkflowStatusTracker {
   }
 
   async save(): Promise<void> {
-    await mkdir(this.workDir, { recursive: true });
-    const filePath = join(this.workDir, '.engin-state.json');
-    await writeFile(filePath, JSON.stringify(this.toJSON(), null, 2), 'utf-8');
+    // Serialize concurrent save() calls so they don't race on the same temp file.
+    const prev = this._saveLock;
+    let resolve!: () => void;
+    this._saveLock = new Promise<void>((r) => {
+      resolve = r;
+    });
+    await prev;
+    try {
+      await mkdir(this.workDir, { recursive: true });
+      const filePath = join(this.workDir, '.engin-state.json');
+      const tmpPath = join(this.workDir, '.engin-state.json.tmp');
+      await writeFile(tmpPath, JSON.stringify(this.toJSON(), null, 2), 'utf-8');
+      await rename(tmpPath, filePath);
+    } finally {
+      resolve();
+    }
   }
 
   static async load(workDir: string): Promise<WorkflowStatusTracker> {

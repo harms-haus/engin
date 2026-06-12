@@ -1,44 +1,23 @@
 // ─── Lane Pool ──────────────────────────────────────────────────────────────
-import { join } from 'node:path';
-import { createHarness } from '../core/harness-factory.js';
 import { clearProfileCache, loadProfilesFromDirs } from '../core/profile.js';
-import { promptForStructured } from '../core/structured-output.js';
-import type { AgentProfile, AuditEvent, HarnessCreationOptions, Task } from '../core/types.js';
-import { appendReviewFeedback, forwardAgentStatus, safeErrorMessage } from '../core/utils.js';
+import type { AgentProfile, AuditEvent, Task } from '../core/types.js';
+import { appendReviewFeedback, safeErrorMessage } from '../core/utils.js';
 import { TaskTracker } from '../tracking/task-status.js';
-import type { LanePoolOptions, LanePoolResult, StepDefinition, StepResult } from './types.js';
+// buildPrompt is used via prompt-builder module directly
+import { extractSeverity, isFailingSeverity } from './severity.js';
+import type { StepExecutionContext } from './step-execution.js';
+import { runStep } from './step-execution.js';
+import type { LanePoolOptions, LanePoolResult } from './types.js';
+
+// Re-export for backward compatibility (T07 tests import from lane-pool.js)
+export { assertSafeName } from './validation.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────
 
 /** Distributive Omit that preserves discriminated union structure. */
 type WithoutTimestamp<T> = T extends infer U ? (U extends T ? Omit<U, 'timestamp'> : never) : never;
 
-type Severity = 'critical' | 'high' | 'medium' | 'low';
-
-function isFailingSeverity(severity: Severity | string): boolean {
-  return severity === 'critical' || severity === 'high';
-}
-
-function extractSeverity(output: unknown): string {
-  if (typeof output === 'object' && output !== null && 'severity' in output) {
-    const sev = (output as Record<string, unknown>).severity;
-    return typeof sev === 'string' ? sev : 'medium';
-  }
-  return 'medium';
-}
-
-// ─── Path safety ─────────────────────────────────────────────────────────
-
-/** Reject values that could escape the session directory via path traversal. */
-function assertSafeName(value: string, label: string): void {
-  if (!/^[a-zA-Z0-9_-]+$/.test(value)) {
-    throw new Error(`Invalid ${label}: "${value}" contains unsafe characters`);
-  }
-}
-
-// ─── RunStepContext ───────────────────────────────────────────────────────
-
-interface RunStepContext {
+interface _RunStepContext {
   stepIndex: number;
   attempt: number;
   execCount: number;
@@ -172,25 +151,6 @@ export class LanePool {
           return;
         }
         // ── Dual-listener wait ──────────────────────────────────────────
-        // Both TaskReady and TaskSettled are needed because they cover
-        // complementary wake-up scenarios: TaskReady fires when blocked tasks
-        // become unblocked (e.g. after a dependency completes), while
-        // TaskSettled fires when a task finishes or fails, which triggers
-        // recalculateStatuses that may in turn emit TaskReady.
-        //
-        // Race condition: an event could fire between claimTasks() returning
-        // empty and this once() registration. This is safe because if
-        // isPoolDone() returns true the lane exits on the next loop
-        // iteration, and if tasks become ready after registration the
-        // listener fires normally.
-        //
-        // The cleanup function removes both listeners synchronously, which
-        // prevents a double-wake when recalculateStatuses emits TaskReady
-        // while the TaskSettled handler is still registered.
-        //
-        // The abort signal listener enables cooperative cancellation while
-        // this lane is idle waiting for work.
-        // ──────────────────────────────────────────────────────────────────
         await new Promise<void>((resolve) => {
           const onReady = () => {
             cleanup();
@@ -267,6 +227,15 @@ export class LanePool {
       taskSessions.clear();
     };
 
+    const execCtx: StepExecutionContext = {
+      sessionBaseDir: this.options.sessionBaseDir,
+      cwd: this.options.cwd,
+      apiKeys: this.options.apiKeys,
+      onStatus: this.options.onStatus,
+      activeSessions: this.activeSessions,
+      appendAuditEvent: (event) => this.appendAuditEvent(event),
+    };
+
     try {
       while (currentStepIndex < steps.length) {
         const step = steps[currentStepIndex];
@@ -281,12 +250,13 @@ export class LanePool {
           existingSessionPath = existing.sessionPath;
         }
 
-        const { result, trackedSession } = await this.runStep(
+        const { result, trackedSession } = await runStep(
           task,
           step,
           agentId,
           { stepIndex: currentStepIndex, attempt: currentAttempt, execCount },
           profiles,
+          execCtx,
           existingSessionPath,
         );
 
@@ -362,183 +332,6 @@ export class LanePool {
       disposeAllTaskSessions();
       throw err;
     }
-  }
-
-  // ── Step Execution ──────────────────────────────────────────────────────
-
-  /**
-   * Run a single step: load the profile, create a harness session, prompt
-   * the agent, and determine approval.
-   */
-  private async runStep(
-    task: Task,
-    step: StepDefinition,
-    agentId: string,
-    ctx: RunStepContext,
-    profiles: Map<string, AgentProfile>,
-    existingSessionPath?: string,
-  ): Promise<{ result: StepResult; trackedSession: TrackedSession }> {
-    // Use pre-loaded profile
-    const profile = profiles.get(step.profileId);
-    if (!profile) {
-      throw new Error(`Profile "${step.profileId}" not found in directories: ${this.options.profilesDirs.join(', ')}`);
-    }
-
-    // Adjust profile for read-only steps — strip write and edit tools
-    let adjustedProfile: AgentProfile = profile;
-    if (step.isReadOnly) {
-      adjustedProfile = {
-        ...profile,
-        excludeTools: [...new Set([...profile.excludeTools, 'write', 'edit'])],
-      };
-    }
-
-    // Validate task id and step name against path traversal
-    assertSafeName(task.id, 'task id');
-    assertSafeName(step.name, 'step name');
-
-    // Compute session directory
-    const sessionDirPath = join(this.options.sessionBaseDir, task.id, `${ctx.execCount}-${ctx.stepIndex}-${step.name}`);
-
-    // Build harness options
-    const harnessOpts: HarnessCreationOptions = {
-      profile: adjustedProfile,
-      cwd: this.options.cwd,
-      apiKeys: this.options.apiKeys,
-      ...(existingSessionPath ? { resumeSessionPath: existingSessionPath } : { sessionDir: sessionDirPath }),
-      agentId,
-      onAgentStatus: forwardAgentStatus(this.options.onStatus),
-    };
-
-    // Fire status callbacks
-    this.options.onStatus?.onAgentSpawn?.({
-      agentId,
-      profile: step.profileId,
-      phase: 'implementing',
-      taskId: task.id,
-    });
-
-    // Audit log
-    this.appendAuditEvent({
-      type: 'agent_start',
-      agentId: step.profileId,
-      profile: adjustedProfile,
-      phase: 'implementing',
-      taskId: task.id,
-    });
-
-    // Create harness
-    const { session, dispose } = await createHarness(harnessOpts);
-
-    const trackedSession: TrackedSession = {
-      session,
-      dispose,
-      sessionPath: existingSessionPath ?? sessionDirPath,
-    };
-
-    // Track the session so the abort listener can cancel in-progress prompts
-    this.activeSessions.add(session);
-
-    try {
-      // Build prompt
-      const promptText = this.buildPrompt(task, step);
-
-      if (step.schema) {
-        // Structured output step (review)
-        let structuredResult: unknown;
-        try {
-          structuredResult = await promptForStructured(session, promptText, step.schema, {
-            maxRetries: ctx.attempt === 0 ? 3 : 1,
-          });
-        } catch (err) {
-          const errorMsg = safeErrorMessage(err);
-          // Log the structured output failure for observability
-          this.appendAuditEvent({
-            type: 'error',
-            agentId,
-            error: `promptForStructured failed: ${errorMsg}`,
-            taskId: task.id,
-          });
-          // Treat as critical — the reviewer never produced valid output, so fail-safe
-          return { result: { type: 'rejected', feedback: errorMsg, output: { severity: 'critical' } }, trackedSession };
-        }
-
-        const approved = step.isApproved
-          ? step.isApproved(structuredResult)
-          : (structuredResult as Record<string, unknown>)?.approved === true;
-
-        if (approved) {
-          return { result: { type: 'approved', output: structuredResult }, trackedSession };
-        }
-
-        const feedback = step.getFeedback
-          ? step.getFeedback(structuredResult)
-          : (((structuredResult as Record<string, unknown>)?.feedback as string) ?? 'No feedback provided');
-
-        return { result: { type: 'rejected', feedback, output: structuredResult }, trackedSession };
-      }
-
-      // Non-structured step — always approved
-      await session.prompt(promptText);
-      const output = session.getLastAssistantText();
-      return { result: { type: 'approved', output }, trackedSession };
-    } catch (err) {
-      // Exception path: dispose the session since processTask won't track it
-      try {
-        dispose();
-      } catch {
-        /* swallow */
-      }
-      throw err;
-    } finally {
-      this.activeSessions.delete(session);
-
-      // Fire completion callback — always runs even if dispose failed
-      this.options.onStatus?.onAgentComplete?.({
-        agentId,
-        profile: step.profileId,
-        phase: 'implementing',
-        taskId: task.id,
-      });
-
-      // Audit log — agent_end event
-      this.appendAuditEvent({
-        type: 'agent_end',
-        agentId: step.profileId,
-        result: {},
-        phase: 'implementing',
-        taskId: task.id,
-      });
-    }
-  }
-
-  // ── Prompt Building ─────────────────────────────────────────────────────
-
-  /**
-   * Build the prompt text for a step. On retry, appends review feedback.
-   */
-  private buildPrompt(task: Task, step: StepDefinition): string {
-    const parts: string[] = [];
-
-    parts.push(`## Task: ${task.title}`);
-    parts.push(`## Step: ${step.name}`);
-    parts.push('');
-    parts.push(task.prompt);
-
-    if (task.files && task.files.length > 0) {
-      parts.push('');
-      parts.push(`## Relevant Files\n${task.files.join('\n')}`);
-    }
-
-    if (task.reviewFeedback && task.reviewFeedback.length > 0) {
-      parts.push('');
-      parts.push('## Review Feedback History (please address all items)');
-      task.reviewFeedback.forEach((fb, i) => {
-        parts.push(`Attempt ${i + 1}: ${fb}`);
-      });
-    }
-
-    return parts.join('\n');
   }
 
   // ── Helpers ─────────────────────────────────────────────────────────────

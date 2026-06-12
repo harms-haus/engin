@@ -24,9 +24,12 @@ export async function loadWorkflow(name: string, cwd: string): Promise<WorkflowM
   // Validate workflow name to prevent path traversal
   validateWorkflowName(name);
 
-  // Size-based eviction: when cache exceeds 50 entries, clear it entirely
+  // Size-based FIFO eviction: when cache exceeds 50 entries, evict the oldest entry
   if (workflowCache.size > 50) {
-    workflowCache.clear();
+    const oldest = workflowCache.keys().next().value;
+    if (oldest !== undefined) {
+      workflowCache.delete(oldest);
+    }
   }
 
   const dirs = resolveWorkflowsDirs(cwd);

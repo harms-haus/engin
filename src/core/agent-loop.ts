@@ -88,7 +88,7 @@ export async function retryAgentUntil<T>(
   schema: ZodType<T>,
   options?: { maxRetries?: number },
 ): Promise<AgentLoopResult<T>> {
-  const result = await promptForStructured(
+  const { result, attempts } = await promptForStructured(
     session,
     prompt,
     schema,
@@ -97,8 +97,8 @@ export async function retryAgentUntil<T>(
 
   return {
     result,
-    attempts: options?.maxRetries ?? 3,
-    // TODO: Pass actual token counts from the session instead of hardcoding zeros
+    attempts,
+    // Token tracking not available via PromptableHarness interface
     totalTokens: { input: 0, output: 0 },
   };
 }
