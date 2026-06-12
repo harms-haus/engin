@@ -6,6 +6,7 @@ import { makeProfile } from '../helpers/make-profile.js';
 const realProfile = Object.assign({}, await import('../../src/core/profile.ts'));
 const realHarnessFactory = Object.assign({}, await import('../../src/core/harness-factory.ts'));
 const realGit = Object.assign({}, await import('../../src/core/git.ts'));
+const realStructuredOutput = Object.assign({}, await import('../../src/core/structured-output.ts'));
 
 // ─── Mock state ─────────────────────────────────────────────────────────────
 
@@ -177,6 +178,7 @@ afterAll(() => {
   mock.module('../../src/core/profile.ts', () => realProfile);
   mock.module('../../src/core/harness-factory.ts', () => realHarnessFactory);
   mock.module('../../src/core/git.ts', () => realGit);
+  mock.module('../../src/core/structured-output.ts', () => realStructuredOutput);
 });
 
 // ─── setupWorktree ──────────────────────────────────────────────────────────
