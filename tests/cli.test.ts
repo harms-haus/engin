@@ -16,7 +16,7 @@ describe('parseArgs', () => {
       taskPrompt: 'build a feature',
       cwd: '/c',
       workDir: undefined,
-      maxConcurrent: 3,
+      maxConcurrent: 5,
       verbose: false,
       apiKeys: {},
       warnings: [],
@@ -83,9 +83,9 @@ describe('parseArgs', () => {
     expect(result.command).toBe('init');
   });
 
-  it('--max-concurrent defaults to 3', () => {
+  it('--max-concurrent defaults to 5', () => {
     const result = parseArgs(['develop', 'task']);
-    expect(result.maxConcurrent).toBe(3);
+    expect(result.maxConcurrent).toBe(5);
   });
 
   it('--verbose defaults to false', () => {
@@ -135,7 +135,7 @@ describe('parseArgs', () => {
       expect(result).toEqual({
         command: 'help',
         cwd: process.cwd(),
-        maxConcurrent: 3,
+        maxConcurrent: 5,
         verbose: false,
         apiKeys: {},
         warnings: [],
@@ -152,7 +152,7 @@ describe('parseArgs', () => {
       expect(result).toEqual({
         command: 'version',
         cwd: process.cwd(),
-        maxConcurrent: 3,
+        maxConcurrent: 5,
         verbose: false,
         apiKeys: {},
         warnings: [],
@@ -230,7 +230,7 @@ describe('parseArgs', () => {
       expect(result.port).toBeUndefined();
       expect(result.cwd).toBe(process.cwd());
       expect(result.verbose).toBe(false);
-      expect(result.maxConcurrent).toBe(3);
+      expect(result.maxConcurrent).toBe(5);
       expect(result.apiKeys).toEqual({});
       expect(result.warnings).toEqual([]);
     });
