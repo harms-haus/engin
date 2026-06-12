@@ -212,6 +212,7 @@ describe('server error handling (silent catch fixes)', () => {
 
         await tick();
         await tick();
+        await tick();
 
         console.warn = originalWarn;
 
@@ -254,6 +255,7 @@ describe('server error handling (silent catch fixes)', () => {
         const { ws } = await connectWs();
         ws.send(JSON.stringify({ type: 'select_workflow', workflowId: 'corrupt-state' }));
 
+        await tick();
         await tick();
         await tick();
 
