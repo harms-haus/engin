@@ -53,6 +53,18 @@ export function createTuiStatusCallbacks(deps: {
 
     onAgentSpawn(info) {
       eventLog.addLine('⏳ Agent ' + info.agentId + ' spawned (' + info.profile + ')');
+
+      // If a previous manual spawn used the taskId as the agentId (e.g. scouting
+      // phase spawns "scout-topic" then LanePool spawns "lane-0" with taskId
+      // "scout-topic"), merge the two entries to avoid duplicates.
+      if (info.taskId && info.taskId !== info.agentId) {
+        const prevAgentId = taskToAgent.get(info.taskId);
+        if (prevAgentId && prevAgentId === info.taskId) {
+          // Transfer any data from the placeholder agent to the real one
+          dashboard.agentLog.transferAgent(prevAgentId, info.agentId);
+        }
+      }
+
       dashboard.agentLog.selectAgent(info.agentId, info.profile);
       dashboard.agentLog.updateStats(info.agentId, { profile: info.profile });
       if (info.taskId) {

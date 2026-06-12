@@ -94,6 +94,35 @@ export class AgentLogWidget implements Component {
     this.invalidate();
   }
 
+  /**
+   * Transfer all data (entries, stats) from one agent to another,
+   * then remove the source agent. Used to merge a placeholder agent
+   * (e.g. manually spawned with taskId as agentId) into the real
+   * lane-based agent when the LanePool takes over.
+   */
+  transferAgent(fromId: string, toId: string): void {
+    const from = this.agents.get(fromId);
+    if (!from) return;
+    const to = this.getOrCreateAgent(toId);
+    // Prepend source entries to destination
+    to.entries = [...from.entries, ...to.entries];
+    // Accumulate stats
+    to.toolCallCount += from.toolCallCount;
+    to.inputTokens += from.inputTokens;
+    to.outputTokens += from.outputTokens;
+    // Keep the title/profile if the destination doesn't have one yet
+    if (!to.taskTitle && from.taskTitle) to.taskTitle = from.taskTitle;
+    if (!to.profile && from.profile) to.profile = from.profile;
+    // Remove source
+    this.agents.delete(fromId);
+    this.completedAgentIds.delete(fromId);
+    // Fix current selection if it was pointing at the source
+    if (this.currentAgentId === fromId) {
+      this.currentAgentId = toId;
+    }
+    this.dirty = true;
+  }
+
   private getOrCreateAgent(agentId: string): AgentData {
     let data = this.agents.get(agentId);
     if (!data) {
