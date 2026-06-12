@@ -22,7 +22,7 @@ export function describeSchema(def: any): string {
         const fieldDesc = describeSchema(fieldDef);
         return `${key}: ${fieldDesc}`;
       });
-      const objStr = `{ ${fields.join(', ')} }`;
+      const objStr = fields.length > 0 ? `{ ${fields.join(', ')} }` : '{}';
       return desc ? `${objStr} /* ${desc} */` : objStr;
     }
 

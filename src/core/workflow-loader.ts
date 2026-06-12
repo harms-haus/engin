@@ -49,6 +49,9 @@ export async function loadWorkflow(name: string, cwd: string): Promise<WorkflowM
       throw err;
     }
 
+    // Bust Bun's module cache so re-imports after eviction pick up disk changes
+    // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
+    delete require.cache[filePath];
     const mod = await import(pathToFileURL(filePath).href);
     const workflow: WorkflowModule = mod.default ?? mod;
 
