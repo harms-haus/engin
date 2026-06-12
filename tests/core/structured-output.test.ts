@@ -346,3 +346,43 @@ describe('schemaToString – additional Zod types', () => {
     expect(result).toContain('pair');
   });
 });
+
+// ─── schemaToString – priority Zod type cases ───────────────────────────────
+
+describe('schemaToString – priority Zod type cases', () => {
+  it('describes ZodIntersection with left and right sub-schemas', () => {
+    const s = z.intersection(z.string(), z.literal('hello'));
+    const result = schemaToString(s);
+    expect(result).toContain('string');
+    expect(result).toContain('"hello"');
+    expect(result).not.toContain('ZodIntersection');
+  });
+
+  it('describes ZodDate as "Date"', () => {
+    const s = z.date();
+    const result = schemaToString(s);
+    expect(result).toBe('Date');
+    expect(result).not.toContain('ZodDate');
+  });
+
+  it('describes ZodReadonly wrapping inner type', () => {
+    const s = z.string().readonly();
+    const result = schemaToString(s);
+    expect(result).toBe('Readonly<string>');
+    expect(result).not.toContain('ZodReadonly');
+  });
+
+  it('describes ZodPipeline with inner schema', () => {
+    const s = z.pipeline(z.string(), z.string());
+    const result = schemaToString(s);
+    expect(result).toContain('string');
+    expect(result).not.toContain('ZodPipeline');
+  });
+
+  it('describes ZodCatch with inner type', () => {
+    const s = z.string().catch('fallback');
+    const result = schemaToString(s);
+    expect(result).toContain('string');
+    expect(result).not.toContain('ZodCatch');
+  });
+});

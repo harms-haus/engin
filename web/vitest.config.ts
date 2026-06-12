@@ -20,6 +20,10 @@ export default defineConfig({
     globals: true,
     environment: 'jsdom',
     setupFiles: [],
+    coverage: {
+      provider: 'v8',
+      reporter: ['text'],
+    },
     projects: [
       // Main project — in-tree tests under src/
       {

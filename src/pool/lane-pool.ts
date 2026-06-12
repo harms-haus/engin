@@ -157,9 +157,26 @@ export class LanePool {
         if (taskTracker.isPoolDone()) {
           return;
         }
-        // Note: taskReady handlers run cleanup synchronously, which removes the
-        // taskSettled listener. This prevents a double-wake when
-        // recalculateStatuses emits taskReady before taskSettled fires.
+        // ── Dual-listener wait ──────────────────────────────────────────
+        // Both TaskReady and TaskSettled are needed because they cover
+        // complementary wake-up scenarios: TaskReady fires when blocked tasks
+        // become unblocked (e.g. after a dependency completes), while
+        // TaskSettled fires when a task finishes or fails, which triggers
+        // recalculateStatuses that may in turn emit TaskReady.
+        //
+        // Race condition: an event could fire between claimTasks() returning
+        // empty and this once() registration. This is safe because if
+        // isPoolDone() returns true the lane exits on the next loop
+        // iteration, and if tasks become ready after registration the
+        // listener fires normally.
+        //
+        // The cleanup function removes both listeners synchronously, which
+        // prevents a double-wake when recalculateStatuses emits TaskReady
+        // while the TaskSettled handler is still registered.
+        //
+        // The abort signal listener enables cooperative cancellation while
+        // this lane is idle waiting for work.
+        // ──────────────────────────────────────────────────────────────────
         await new Promise<void>((resolve) => {
           const onReady = () => {
             cleanup();

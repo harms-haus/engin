@@ -30,6 +30,7 @@
     "build": "tsc",
     "setup": "bun run build && bun dist/cli.js init",
     "test": "bun test tests/",
+    "test:coverage": "bun test --coverage",
     "test:watch": "bun test tests/ --watch",
     "test:web": "cd web && bun run test",
     "typecheck": "tsc --noEmit",

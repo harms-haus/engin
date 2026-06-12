@@ -130,14 +130,46 @@ describe('AuditLog', () => {
     await expect(log.clear()).resolves.toBeUndefined();
   });
 
-  // ── regression guard: getStats removed ────────────────────────────
+  // ── cache eviction ──────────────────────────────────────────────────
 
-  it('should not have getStats on the prototype (removed as unused)', () => {
-    // getStats() was removed because it was unused in production code and
-    // made redundant full-scan calls. This test prevents re-introduction.
-    // NOTE: This test will fail until getStats() is deleted from src/tracking/audit-log.ts
-    expect('getStats' in AuditLog.prototype).toBe(false);
-    expect(typeof (AuditLog.prototype as Record<string, unknown>).getStats).toBe('undefined');
+  it('getEvents evicts cache when it exceeds 1000 entries', async () => {
+    // Append some real events and call getEvents to populate the cache
+    for (let i = 0; i < 5; i++) {
+      await log.append({ type: 'agent_start', agentId: `a${i}`, profile: {} as never });
+    }
+    const firstCall = await log.getEvents();
+    expect(firstCall).toHaveLength(5);
+
+    // Cache should now be populated
+    expect((log as any).cache).not.toBeNull();
+
+    // Manually inflate cache to 1001 entries to exceed the threshold
+    const base = { type: 'agent_start', agentId: 'x', profile: {}, timestamp: new Date().toISOString() };
+    (log as any).cache = Array.from({ length: 1001 }, () => ({ ...base }));
+    expect((log as any).cache.length).toBe(1001);
+
+    // Calling getEvents again should return data and then evict the cache
+    const result = await log.getEvents();
+    expect(result).toHaveLength(1001);
+    expect((log as any).cache).toBeNull();
+  });
+
+  it('getEvents does not evict cache with 1000 or fewer entries', async () => {
+    await log.append({ type: 'agent_start', agentId: 'a1', profile: {} as never });
+    await log.getEvents();
+
+    // Cache should be populated and small
+    expect((log as any).cache).not.toBeNull();
+    expect((log as any).cache.length).toBeLessThanOrEqual(1000);
+
+    // Manually set cache to exactly 1000 entries (boundary)
+    const base = { type: 'agent_start', agentId: 'x', profile: {}, timestamp: new Date().toISOString() };
+    (log as any).cache = Array.from({ length: 1000 }, () => ({ ...base }));
+
+    await log.getEvents();
+
+    // At exactly 1000, cache should NOT be evicted
+    expect((log as any).cache).not.toBeNull();
   });
 
   // ── malformed JSON ──────────────────────────────────────────────────

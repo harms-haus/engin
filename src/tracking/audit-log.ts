@@ -65,6 +65,10 @@ export class AuditLog {
       filtered = filtered.filter((e) => e.taskId === filter.taskId);
     }
 
+    if (this.cache && this.cache.length > 1000) {
+      this.cache = null;
+    }
+
     return filtered;
   }
 

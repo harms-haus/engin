@@ -315,6 +315,30 @@ function describeSchema(def: any): string {
       }
     }
 
+    case 'ZodIntersection': {
+      const left = def.left?._def ? describeSchema(def.left._def) : 'unknown';
+      const right = def.right?._def ? describeSchema(def.right._def) : 'unknown';
+      return `${left} & ${right}`;
+    }
+
+    case 'ZodDate':
+      return desc ?? 'Date';
+
+    case 'ZodReadonly': {
+      const inner = def.innerType?._def ? describeSchema(def.innerType._def) : 'unknown';
+      return `Readonly<${inner}>`;
+    }
+
+    case 'ZodPipeline': {
+      const input = def.in?._def ? describeSchema(def.in._def) : 'unknown';
+      return `${input} /* pipeline */`;
+    }
+
+    case 'ZodCatch': {
+      const inner = def.innerType?._def ? describeSchema(def.innerType._def) : 'unknown';
+      return `${inner} /* with catch */`;
+    }
+
     default:
       return desc ?? typeName ?? 'unknown';
   }
