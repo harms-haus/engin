@@ -41,6 +41,10 @@ export function createTuiStatusCallbacks(deps: {
     onPhaseStart(info) {
       eventLog.addLine('📦 Phase: ' + info.phase + ' (round ' + info.round + ')');
       dashboard.phaseBar.setCurrentPhase(info.phase);
+      // Clear lanes from previous phase so the new pool starts fresh
+      lanes.clear();
+      taskToAgent.clear();
+      dashboard.lanePool.updateLanes([]);
       requestRender();
     },
 

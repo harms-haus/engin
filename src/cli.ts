@@ -44,7 +44,7 @@ Commands:
 Options:
   --cwd <path>            Working directory (default: process.cwd())
   --work-dir <path>       Workflow working directory (run only)
-  --max-concurrent <n>    Max concurrent tasks (default: 3, run only)
+  --max-concurrent <n>    Max concurrent tasks (default: 5, run only)
   --verbose               Enable verbose logging
   --api-key <provider=key>  API key (repeatable)
   --host <host>           Web server host (default: 127.0.0.1, web only)
@@ -58,7 +58,7 @@ export function parseArgs(argv: string[]): CliOptions {
     return {
       command: 'help' as const,
       cwd: process.cwd(),
-      maxConcurrent: 3,
+      maxConcurrent: 5,
       verbose: false,
       apiKeys: {},
       warnings: [],
@@ -70,7 +70,7 @@ export function parseArgs(argv: string[]): CliOptions {
     return {
       command: 'version' as const,
       cwd: process.cwd(),
-      maxConcurrent: 3,
+      maxConcurrent: 5,
       verbose: false,
       apiKeys: {},
       warnings: [],
@@ -142,7 +142,7 @@ export function parseArgs(argv: string[]): CliOptions {
   const warnings: string[] = [];
   let apiKeyWarningIssued = false;
   let workDir: string | undefined;
-  let maxConcurrent = 3;
+  let maxConcurrent = 5;
 
   let host: string | undefined;
   let port: number | undefined;
