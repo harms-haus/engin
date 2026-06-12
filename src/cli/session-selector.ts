@@ -36,10 +36,10 @@ export async function readLineFromStdin(): Promise<string | undefined> {
     let data = '';
     const onData = (chunk: string) => {
       data += chunk;
-      // Check for newline (Enter key)
-      const newlineIdx = data.indexOf('\n');
+      // Check for Enter key — terminals send \r (CR) or \r\n (CRLF)
+      const newlineIdx = data.search(/[\r\n]/);
       if (newlineIdx >= 0) {
-        const line = data.slice(0, newlineIdx).replace(/\r$/, '');
+        const line = data.slice(0, newlineIdx);
         stdin.removeListener('data', onData);
         stdin.pause();
         resolve(line.trim() || undefined);
