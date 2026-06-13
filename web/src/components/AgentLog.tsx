@@ -43,8 +43,7 @@ export function AgentLog({ agents, onTerminate, status }: AgentLogProps) {
       {/* Header stats */}
       {agent && (
         <div className="agent-log__header">
-          {agent.taskId || agent.agentId} (profile: {agent.profile}) -{' '}
-          {agent.toolCallCount} tool calls - \u2191
+          {agent.taskId || agent.agentId} (profile: {agent.profile}) - {agent.toolCallCount} tool calls - \u2191
           {agent.inputTokens} - \u2193
           {agent.outputTokens}
         </div>

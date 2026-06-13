@@ -1,10 +1,10 @@
 import { useCallback } from 'react';
-import { useWebSocket } from './hooks/useWebSocket';
-import { EventLog } from './components/EventLog';
-import { PhaseBar } from './components/PhaseBar';
-import { LanePool } from './components/LanePool';
-import { AgentLog } from './components/AgentLog';
 import './App.css';
+import { AgentLog } from './components/AgentLog';
+import { EventLog } from './components/EventLog';
+import { LanePool } from './components/LanePool';
+import { PhaseBar } from './components/PhaseBar';
+import { useWebSocket } from './hooks/useWebSocket';
 
 export function App() {
   const { state, send, events } = useWebSocket();
@@ -18,17 +18,9 @@ export function App() {
   return (
     <div className="app">
       <EventLog entries={events} />
-      <PhaseBar
-        phases={phases}
-        currentPhase={state.currentPhase}
-        completedPhases={state.completedPhases}
-      />
+      <PhaseBar phases={phases} currentPhase={state.currentPhase} completedPhases={state.completedPhases} />
       <LanePool tasks={state.tasks} />
-      <AgentLog
-        agents={state.agents}
-        onTerminate={handleTerminate}
-        status={state.status}
-      />
+      <AgentLog agents={state.agents} onTerminate={handleTerminate} status={state.status} />
     </div>
   );
 }
