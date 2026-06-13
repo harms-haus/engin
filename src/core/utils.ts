@@ -47,7 +47,11 @@ export function composeStatusCallbacks(callbacks: StatusCallbacks[]): StatusCall
       name,
       (info: unknown) => {
         for (const cb of callbacks) {
-          (cb as Record<string, (info: unknown) => void>)[name]?.(info);
+          try {
+            (cb as Record<string, (info: unknown) => void>)[name]?.(info);
+          } catch (err) {
+            console.error('[composeStatusCallbacks] Error in ' + name + ':', err);
+          }
         }
       },
     ]),

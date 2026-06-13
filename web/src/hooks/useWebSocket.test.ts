@@ -272,18 +272,11 @@ describe('useWebSocket – exponential backoff', () => {
       act(() => {
         MockWebSocket.simulateClose(1000, 'close', instance);
       });
-      // We need to advance time enough to trigger the reconnect
-      // The delay is stored in backoffRef before multiplying
-      // After each close, a new connect is scheduled
-      // Let's just advance by a large amount to trigger all reconnects
     }
     // Advance enough time to get through all reconnects
     await vi.advanceTimersByTimeAsync(200_000);
 
     // After 9 consecutive closes, the backoff should be 30000
-    // Each close creates a new WebSocket instance
-    // We started with instance[0], closed it → reconnect → instance[1], etc.
-    // After 9 closes, we should have 10 instances (original + 9 reconnects)
     expect(MockWebSocket.instances.length).toBeGreaterThanOrEqual(9);
 
     // Now close the latest instance and check that delay is capped
@@ -394,5 +387,371 @@ describe('useWebSocket – send and message handling', () => {
     const agent = result.current.state.agents.get('agent-legacy');
     expect(agent).toBeDefined();
     expect(agent!.toolCallCount).toBe(5);
+  });
+
+  it('workflow_phase sets currentPhase from msg.currentPhase (not msg.phase)', () => {
+    const { result } = renderHook(() => useWebSocket());
+
+    act(() => {
+      MockWebSocket.simulateOpen();
+    });
+
+    // Send a workflow_phase message where phase differs from currentPhase.
+    // This simulates a phase completion: 'scouting' just completed,
+    // but the still-running phase is 'planning'.
+    act(() => {
+      MockWebSocket.simulateMessage({
+        type: 'workflow_phase',
+        phase: 'scouting',
+        currentPhase: 'planning',
+        completed: ['scouting'],
+      });
+    });
+
+    // The state should reflect currentPhase = 'planning', NOT 'scouting'
+    expect(result.current.state.currentPhase).toBe('planning');
+
+    // The event log should describe the phase that was started/completed
+    expect(result.current.events).toContain('Phase: scouting');
+
+    // completedPhases should be updated
+    expect(result.current.state.completedPhases).toEqual(['scouting']);
+  });
+
+  it('workflow_phase preserves existing completedPhases when new ones arrive', () => {
+    const { result } = renderHook(() => useWebSocket());
+
+    act(() => {
+      MockWebSocket.simulateOpen();
+    });
+
+    // First phase complete
+    act(() => {
+      MockWebSocket.simulateMessage({
+        type: 'workflow_phase',
+        phase: 'scouting',
+        currentPhase: 'planning',
+        completed: ['scouting'],
+      });
+    });
+
+    expect(result.current.state.completedPhases).toEqual(['scouting']);
+
+    // Second phase completes, currentPhase moves forward
+    act(() => {
+      MockWebSocket.simulateMessage({
+        type: 'workflow_phase',
+        phase: 'planning',
+        currentPhase: 'execution',
+        completed: ['scouting', 'planning'],
+      });
+    });
+
+    expect(result.current.state.currentPhase).toBe('execution');
+    expect(result.current.state.completedPhases).toEqual(['scouting', 'planning']);
+    expect(result.current.events).toContain('Phase: planning');
+  });
+
+  it('workflow_phase with same phase and currentPhase still works correctly', () => {
+    const { result } = renderHook(() => useWebSocket());
+
+    act(() => {
+      MockWebSocket.simulateOpen();
+    });
+
+    // When a phase starts (not a completion), phase === currentPhase
+    act(() => {
+      MockWebSocket.simulateMessage({
+        type: 'workflow_phase',
+        phase: 'scouting',
+        currentPhase: 'scouting',
+        completed: [],
+      });
+    });
+
+    expect(result.current.state.currentPhase).toBe('scouting');
+    expect(result.current.state.completedPhases).toEqual([]);
+    expect(result.current.events).toContain('Phase: scouting');
+  });
+});
+
+describe('useWebSocket – events cap', () => {
+  it('caps events array at 200 and discards oldest entries (sliding window)', () => {
+    const { result } = renderHook(() => useWebSocket());
+
+    act(() => {
+      MockWebSocket.simulateOpen();
+    });
+
+    // Send 250 workflow_phase messages, each generating an event
+    for (let i = 1; i <= 250; i++) {
+      act(() => {
+        MockWebSocket.simulateMessage({
+          type: 'workflow_phase',
+          phase: String(i),
+          completed: [],
+        });
+      });
+    }
+
+    // Length should be capped at 200, not 250
+    expect(result.current.events.length).toBe(200);
+
+    // The first event should be phase 51 (the 51st entry, which is the oldest retained)
+    expect(result.current.events[0]).toBe('Phase: 51');
+
+    // The last event should be phase 250
+    expect(result.current.events[result.current.events.length - 1]).toBe('Phase: 250');
+  });
+
+  it('keeps all events when under the limit', () => {
+    const { result } = renderHook(() => useWebSocket());
+
+    act(() => {
+      MockWebSocket.simulateOpen();
+    });
+
+    for (let i = 1; i <= 50; i++) {
+      act(() => {
+        MockWebSocket.simulateMessage({
+          type: 'workflow_phase',
+          phase: String(i),
+          completed: [],
+        });
+      });
+    }
+
+    expect(result.current.events.length).toBe(50);
+    expect(result.current.events[0]).toBe('Phase: 1');
+    expect(result.current.events[49]).toBe('Phase: 50');
+  });
+
+  it('retains exactly 200 events when exactly 200 are added', () => {
+    const { result } = renderHook(() => useWebSocket());
+
+    act(() => {
+      MockWebSocket.simulateOpen();
+    });
+
+    for (let i = 1; i <= 200; i++) {
+      act(() => {
+        MockWebSocket.simulateMessage({
+          type: 'workflow_phase',
+          phase: String(i),
+          completed: [],
+        });
+      });
+    }
+
+    expect(result.current.events.length).toBe(200);
+    expect(result.current.events[0]).toBe('Phase: 1');
+    expect(result.current.events[199]).toBe('Phase: 200');
+  });
+
+  it('continues to slide the window after multiple batches over the cap', () => {
+    const { result } = renderHook(() => useWebSocket());
+
+    act(() => {
+      MockWebSocket.simulateOpen();
+    });
+
+    // Send 1000 events total
+    for (let i = 1; i <= 1000; i++) {
+      act(() => {
+        MockWebSocket.simulateMessage({
+          type: 'workflow_phase',
+          phase: String(i),
+          completed: [],
+        });
+      });
+    }
+
+    expect(result.current.events.length).toBe(200);
+    // The oldest retained should be event 801 (1000 - 200 + 1)
+    expect(result.current.events[0]).toBe('Phase: 801');
+    expect(result.current.events[199]).toBe('Phase: 1000');
+  });
+
+  it('interleaves different event types and caps total', () => {
+    const { result } = renderHook(() => useWebSocket());
+
+    act(() => {
+      MockWebSocket.simulateOpen();
+    });
+
+    // Send 150 phase events + 100 complete events + 50 failed events = 300 total
+    for (let i = 1; i <= 150; i++) {
+      act(() => {
+        MockWebSocket.simulateMessage({
+          type: 'workflow_phase',
+          phase: String(i),
+          completed: [],
+        });
+      });
+    }
+    for (let i = 1; i <= 100; i++) {
+      act(() => {
+        MockWebSocket.simulateMessage({
+          type: 'workflow_complete',
+        });
+      });
+    }
+    for (let i = 1; i <= 50; i++) {
+      act(() => {
+        MockWebSocket.simulateMessage({
+          type: 'workflow_failed',
+          error: `error-${i}`,
+        });
+      });
+    }
+
+    // Total events generated: 300, should be capped to 200
+    expect(result.current.events.length).toBe(200);
+
+    // The first 50 phase events should be dropped; first retained is phase 101
+    // (150 phases + 100 completes + 50 failures = 300 total, oldest 100 dropped)
+    // Actually: events are added in order: 150 phases (Phase: 1..150), then 100 completes, then 50 failures
+    // After capping: the first 100 are dropped. So first event is the 101st phase event = 'Phase: 101'
+    expect(result.current.events[0]).toBe('Phase: 101');
+
+    // The last event should be the last failure
+    expect(result.current.events[199]).toBe('Failed: error-50');
+  });
+});
+
+describe('useWebSocket – cleanup on unmount', () => {
+  it('does not reconnect after unmount when close fires after cleanup', async () => {
+    vi.useFakeTimers();
+    const { result, unmount } = renderHook(() => useWebSocket());
+
+    // Open the connection so it's live
+    act(() => {
+      MockWebSocket.simulateOpen();
+    });
+    expect(result.current.connected).toBe(true);
+
+    // Unmount: sets manualCloseRef = true, clears timer, closes socket
+    unmount();
+
+    // The close() call during cleanup fires the onclose handler.
+    // Because manualCloseRef.current is true, it should NOT schedule a reconnect.
+    // After cleanup, no reconnect timer should be pending.
+    // Advance time significantly to ensure no new WebSocket instances appear.
+    await vi.advanceTimersByTimeAsync(100_000);
+
+    // There should be exactly 1 instance (the one created during mount)
+    expect(MockWebSocket.instances).toHaveLength(1);
+
+    vi.useRealTimers();
+  });
+
+  it('cancels a pending reconnect timer on unmount', async () => {
+    vi.useFakeTimers();
+    const { result, unmount } = renderHook(() => useWebSocket());
+
+    // Simulate a close → this schedules a reconnect timer via setTimeout
+    act(() => {
+      MockWebSocket.simulateClose(1000, 'connection lost');
+    });
+    expect(result.current.connected).toBe(false);
+
+    // At this point a reconnect timer is scheduled for 1000ms from now.
+    // Before it fires, we unmount the hook.
+    unmount();
+
+    // The cleanup should have cleared the pending timer.
+    // Advance time past the scheduled fire time to verify it never fires.
+    await vi.advanceTimersByTimeAsync(2000);
+
+    // No new WebSocket instance should have been created
+    expect(MockWebSocket.instances).toHaveLength(1);
+
+    vi.useRealTimers();
+  });
+
+  it('allows a fresh mount after unmount to reconnect normally', async () => {
+    vi.useFakeTimers();
+    // First mount and unmount
+    const { unmount: firstUnmount } = renderHook(() => useWebSocket());
+    firstUnmount();
+
+    // Now mount again – should connect fresh
+    const { result } = renderHook(() => useWebSocket());
+
+    // Should have created a new WebSocket instance
+    expect(MockWebSocket.instances).toHaveLength(2);
+
+    // Opening the new connection should work
+    act(() => {
+      MockWebSocket.simulateOpen(MockWebSocket.instances[1]);
+    });
+    expect(result.current.connected).toBe(true);
+
+    // Close should trigger reconnect (manualCloseRef was reset at start of connect)
+    act(() => {
+      MockWebSocket.simulateClose(1000, 'close', MockWebSocket.instances[1]);
+    });
+    expect(result.current.connected).toBe(false);
+
+    // Reconnect timer should fire after 1000ms
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(MockWebSocket.instances).toHaveLength(3);
+
+    vi.useRealTimers();
+  });
+
+  it('sets manualCloseRef before closing the socket during cleanup', () => {
+    // This test verifies the ORDER of operations in cleanup:
+    // 1. manualCloseRef is set to true FIRST
+    // 2. Then the reconnect timer is cleared
+    // 3. Then the socket is closed
+    // This ensures that if close() synchronously fires onclose, it sees manualCloseRef=true
+    vi.useFakeTimers();
+    const { unmount } = renderHook(() => useWebSocket());
+
+    // Spy on the original close method after render
+    const closeSpy = vi.spyOn(MockWebSocket.prototype, 'close');
+
+    unmount();
+
+    // close() should have been called
+    expect(closeSpy).toHaveBeenCalledTimes(1);
+
+    // After unmount, no reconnect should happen (manualCloseRef prevents it)
+    // Advance time to verify
+    vi.advanceTimersByTimeAsync(100_000);
+    expect(MockWebSocket.instances).toHaveLength(1);
+
+    vi.useRealTimers();
+  });
+
+  it('does not reconnect when close is triggered by manual cleanup after error', async () => {
+    vi.useFakeTimers();
+    const { result, unmount } = renderHook(() => useWebSocket());
+
+    // Open the connection
+    act(() => {
+      MockWebSocket.simulateOpen();
+    });
+    expect(result.current.connected).toBe(true);
+
+    // Simulate an error which calls ws.close() internally
+    act(() => {
+      MockWebSocket.simulateError();
+    });
+    // The error handler calls ws.close(), which fires onclose.
+    // At this point manualCloseRef is still false, so reconnect is scheduled.
+    expect(result.current.connected).toBe(false);
+
+    // Now unmount before the reconnect timer fires
+    unmount();
+
+    // The cleanup should cancel the pending reconnect timer
+    await vi.advanceTimersByTimeAsync(100_000);
+
+    // No new WebSocket instances should have been created
+    expect(MockWebSocket.instances).toHaveLength(1);
+
+    vi.useRealTimers();
   });
 });

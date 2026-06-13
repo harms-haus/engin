@@ -3,8 +3,9 @@
   flex-direction: column;
   height: 100vh;
   height: 100dvh;
-  width: 100vw;
+  width: 100%;
   overflow: hidden;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
 }
 
 .connection-status {

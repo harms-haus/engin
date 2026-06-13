@@ -13,3 +13,9 @@
   word-break: break-all;
   color: var(--text-secondary);
 }
+
+@media (max-width: 768px) {
+  .event-log__entry {
+    font-size: 13px;
+  }
+}

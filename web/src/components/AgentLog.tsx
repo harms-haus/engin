@@ -6,11 +6,13 @@ export interface AgentLogProps {
   agents: Map<string, AgentState>;
   onTerminate: () => void;
   status: 'running' | 'complete' | 'failed';
+  connected: boolean;
 }
 
-export function AgentLog({ agents, onTerminate, status }: AgentLogProps) {
+export function AgentLog({ agents, onTerminate, status, connected }: AgentLogProps) {
   const keys = Array.from(agents.keys());
   const [selectedIndex, setSelectedIndex] = useState(0);
+  const [autoScroll, setAutoScroll] = useState(true);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   // Reset selection when agents change
@@ -20,15 +22,24 @@ export function AgentLog({ agents, onTerminate, status }: AgentLogProps) {
     }
   }, [keys.length, selectedIndex]);
 
-  // Auto-scroll on new log entries
-  useEffect(() => {
+  const selectedKey = keys[selectedIndex] ?? null;
+  const agent = selectedKey ? agents.get(selectedKey) : undefined;
+
+  // Auto-scroll on new log entries – only when the user is already at/near
+  // the bottom so we don't yank them away from content they're reading.
+  const handleScroll = () => {
     if (scrollRef.current) {
+      const { scrollTop, scrollHeight, clientHeight } = scrollRef.current;
+      const isNearBottom = scrollHeight - scrollTop - clientHeight < 30;
+      setAutoScroll(isNearBottom);
+    }
+  };
+
+  useEffect(() => {
+    if (autoScroll && scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   });
-
-  const selectedKey = keys[selectedIndex] ?? null;
-  const agent = selectedKey ? agents.get(selectedKey) : undefined;
 
   const handlePrev = () => {
     setSelectedIndex((prev) => (prev > 0 ? prev - 1 : keys.length - 1));
@@ -50,7 +61,7 @@ export function AgentLog({ agents, onTerminate, status }: AgentLogProps) {
       )}
 
       {/* Log entries */}
-      <div className="agent-log__entries" ref={scrollRef}>
+      <div className="agent-log__entries" ref={scrollRef} onScroll={handleScroll}>
         {agent ? (
           agent.log.map((entry) => (
             <div key={entry.id} className={`agent-log__entry agent-log__entry--${entry.type}`}>
@@ -79,8 +90,12 @@ export function AgentLog({ agents, onTerminate, status }: AgentLogProps) {
 
       {/* Terminate button */}
       {status === 'running' && (
-        <button className="agent-log__terminate" onClick={onTerminate}>
-          Terminate Workflow
+        <button
+          className="agent-log__terminate"
+          onClick={onTerminate}
+          disabled={!connected}
+        >
+          {connected ? 'Terminate Workflow' : 'Disconnected - Reconnecting...'}
         </button>
       )}
     </div>

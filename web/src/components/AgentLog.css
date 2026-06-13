@@ -96,3 +96,14 @@
 .agent-log__terminate:hover {
   opacity: 0.9;
 }
+
+.agent-log__terminate:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+@media (max-width: 768px) {
+  .agent-log__entries {
+    font-size: 13px;
+  }
+}

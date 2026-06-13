@@ -439,28 +439,57 @@ describe('StatusBridge', () => {
       expect(logMsg.taskId).toBeUndefined();
     });
 
-    it('handles multiple agents with same agentId but different taskIds', () => {
+    it('routes log to the most recently spawned agent when multiple are active', () => {
       const { callbacks, bridge } = createBridge();
       // Spawn two agents with same agentId but different taskIds
       callbacks.onAgentSpawn!({ agentId: 'a1', profile: 'coder', phase: 'implement', taskId: 't1' });
       callbacks.onAgentSpawn!({ agentId: 'a1', profile: 'reviewer', phase: 'review', taskId: 't2' });
 
-      // Call onTurnEnd for the first agent (t1) — findTaskIdForAgent returns the first match
+      // Both are still active — findTaskIdForAgent should prefer the most recently spawned (t2)
       callbacks.onTurnEnd!({
         agentId: 'a1',
         turn: 1,
-        contentBlocks: [{ type: 'text', text: 'msg for t1' }],
+        contentBlocks: [{ type: 'text', text: 'msg for latest active' }],
       });
 
-      // Since findTaskIdForAgent returns the first match ('t1'), the log goes to agent 'a1::t1'
       const agentT1 = bridge.getSnapshot().agents.find((a) => a.taskId === 't1');
       expect(agentT1).toBeDefined();
-      expect(agentT1!.log).toHaveLength(1);
-      expect(agentT1!.log[0].content).toBe('msg for t1');
+      // t1 is the earlier agent, so log should NOT go to t1
+      expect(agentT1!.log).toHaveLength(0);
 
       const agentT2 = bridge.getSnapshot().agents.find((a) => a.taskId === 't2');
       expect(agentT2).toBeDefined();
-      expect(agentT2!.log).toHaveLength(0);
+      // t2 is the most recently spawned active agent, so log should go to t2
+      expect(agentT2!.log).toHaveLength(1);
+      expect(agentT2!.log[0].content).toBe('msg for latest active');
+    });
+
+    it('prefers active agent over inactive one when both exist', () => {
+      const { callbacks, bridge } = createBridge();
+      // Spawn first agent with task t1
+      callbacks.onAgentSpawn!({ agentId: 'a1', profile: 'coder', phase: 'implement', taskId: 't1' });
+      // Mark t1 as complete (becomes inactive)
+      callbacks.onAgentComplete!({ agentId: 'a1', profile: 'coder', phase: 'implement', taskId: 't1' });
+      // Spawn second agent with same agentId but task t2 (stays active)
+      callbacks.onAgentSpawn!({ agentId: 'a1', profile: 'reviewer', phase: 'review', taskId: 't2' });
+
+      // onTurnEnd for agentId a1 — should resolve to t2 because t1 is inactive
+      callbacks.onTurnEnd!({
+        agentId: 'a1',
+        turn: 1,
+        contentBlocks: [{ type: 'text', text: 'msg for active agent' }],
+      });
+
+      const agentT1 = bridge.getSnapshot().agents.find((a) => a.taskId === 't1');
+      expect(agentT1).toBeDefined();
+      expect(agentT1!.active).toBe(false);
+      expect(agentT1!.log).toHaveLength(0);
+
+      const agentT2 = bridge.getSnapshot().agents.find((a) => a.taskId === 't2');
+      expect(agentT2).toBeDefined();
+      expect(agentT2!.active).toBe(true);
+      expect(agentT2!.log).toHaveLength(1);
+      expect(agentT2!.log[0].content).toBe('msg for active agent');
     });
   });
 

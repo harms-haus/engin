@@ -137,6 +137,12 @@ export async function startObserverServer(options: {
   const server = Bun.serve({
     hostname: options.host,
     port: options.port,
+    // Disable the server-level HTTP idle timeout (Bun default: 10s).
+    // Without this, slow mobile WebSocket upgrades can be silently killed
+    // before the connection is fully established. Post-upgrade, WebSocket
+    // connections are governed by the websocket.idleTimeout (default 120s),
+    // which Bun manages with automatic ping/pong keepalive.
+    idleTimeout: 0,
     websocket: {
       open(ws) {
         clients.add(ws);

@@ -8,6 +8,7 @@ export default defineConfig({
     alias: { '@app': path.resolve(__dirname, 'src') },
   },
   server: {
+    host: true,
     proxy: {
       '/ws': {
         target: 'ws://localhost:3619',

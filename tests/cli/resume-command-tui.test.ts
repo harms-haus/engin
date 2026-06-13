@@ -6,6 +6,7 @@ import { useTempDir } from '../helpers/use-temp-dir.js';
 // ─── Capture real modules before mocking ──────────────────────────────────
 
 const realWorkflowLoader = Object.assign({}, await import('../../src/core/workflow-loader.js'));
+const realFs = Object.assign({}, await import('node:fs'));
 const realUtils = Object.assign({}, await import('../../src/core/utils.js'));
 const realNetwork = Object.assign({}, await import('../../src/core/network.js'));
 const realConsoleStatus = Object.assign({}, await import('../../src/cli/console-status.js'));
@@ -42,6 +43,9 @@ const mockComposeStatusCallbacks = mock<(callbacks: unknown[]) => unknown>();
 // Network spy
 const mockGetLocalNetworkIP = mock<() => string | null>();
 
+// existsSync mock for build check tests
+const mockExistsSync = mock<(path: string) => boolean>();
+
 // Post-worktree action mock
 const mockPromptPostWorktreeAction = mock<(options: Record<string, unknown>) => Promise<void>>();
 
@@ -74,6 +78,13 @@ mock.module('../../src/cli/console-status.js', () => ({
   formatTime: () => '[00:00:00]',
   createStatusCallbacks: () => ({}),
   shouldUseTui: () => true,
+}));
+
+// Mock node:fs so we can control existsSync for build-check tests.
+// Preserve the real readFileSync so state file reading still works.
+mock.module('node:fs', () => ({
+  ...realFs,
+  existsSync: mockExistsSync,
 }));
 
 mock.module('../../src/core/network.js', () => ({
@@ -149,6 +160,7 @@ afterAll(() => {
   mock.module('../../src/web/observer-server.js', () => realObserverServer);
   mock.module('../../src/web/status-bridge.js', () => realStatusBridge);
   mock.module('../../src/tui/workflow-tui.js', () => realWorkflowTUI);
+  mock.module('node:fs', () => realFs);
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -159,6 +171,7 @@ describe('resumeCommand — TUI/web/QR/pause integration', () => {
   const { getDir } = useTempDir();
 
   let logSpy: ReturnType<typeof spyOn>;
+  let warnSpy: ReturnType<typeof spyOn>;
   let onSpy: ReturnType<typeof spyOn>;
   let removeListenerSpy: ReturnType<typeof spyOn>;
 
@@ -189,6 +202,7 @@ describe('resumeCommand — TUI/web/QR/pause integration', () => {
 
   beforeEach(() => {
     logSpy = spyOn(console, 'log').mockImplementation(() => {});
+    warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
     onSpy = spyOn(process, 'on');
     removeListenerSpy = spyOn(process, 'removeListener');
 
@@ -207,6 +221,7 @@ describe('resumeCommand — TUI/web/QR/pause integration', () => {
     mockBridgeGetSnapshot.mockReset();
     mockComposeStatusCallbacks.mockReset();
     mockGetLocalNetworkIP.mockReset();
+    mockExistsSync.mockReset();
     mockPromptPostWorktreeAction.mockReset();
     mockResolveProfilesDirs.mockReset();
     capturedTuiOptions = null;
@@ -215,6 +230,9 @@ describe('resumeCommand — TUI/web/QR/pause integration', () => {
 
     // Default: getLocalNetworkIP returns a LAN IP
     mockGetLocalNetworkIP.mockReturnValue('192.168.1.42');
+
+    // Default: web/dist exists (no warning expected)
+    mockExistsSync.mockReturnValue(true);
 
     // Default mock behaviors
     mockWorkflowRun.mockResolvedValue(undefined);
@@ -262,6 +280,7 @@ describe('resumeCommand — TUI/web/QR/pause integration', () => {
     for (const l of listeners) process.removeListener('SIGINT', l as any);
 
     logSpy.mockRestore();
+    warnSpy.mockRestore();
     onSpy.mockRestore();
     removeListenerSpy.mockRestore();
   });
@@ -450,6 +469,37 @@ describe('resumeCommand — TUI/web/QR/pause integration', () => {
 
       const runOpts = mockWorkflowRun.mock.calls[0][1] as Record<string, unknown>;
       expect(runOpts.verbose).toBe(false);
+    });
+
+    // ─── Build check warning ─────────────────────────────────────────--
+
+    it('warns when web/dist does not exist', async () => {
+      mockExistsSync.mockReturnValue(false);
+
+      const ts = Date.now();
+      const dirName = `${ts}-my-workflow`;
+      const tempDir = getDir();
+      createPastRunDir(tempDir, dirName, { taskPrompt: 'resumed task' });
+
+      await resumeCommand(makeResumeOptions({ cwd: tempDir, sessionName: dirName }));
+
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      const msg = warnSpy.mock.calls[0][0] as string;
+      expect(msg).toContain('web/dist not found');
+      expect(msg).toContain('npm run build');
+    });
+
+    it('does not warn when web/dist exists', async () => {
+      mockExistsSync.mockReturnValue(true);
+
+      const ts = Date.now();
+      const dirName = `${ts}-my-workflow`;
+      const tempDir = getDir();
+      createPastRunDir(tempDir, dirName, { taskPrompt: 'resumed task' });
+
+      await resumeCommand(makeResumeOptions({ cwd: tempDir, sessionName: dirName }));
+
+      expect(warnSpy).not.toHaveBeenCalled();
     });
   });
 

@@ -41,26 +41,24 @@ body {
   line-height: 1.5;
   color: var(--text-primary);
   background: var(--bg-primary);
+  overscroll-behavior: none;
+  -webkit-text-size-adjust: 100%;
 }
 
 @media (max-width: 768px) {
-  body {
-    font-size: 13px;
-  }
-
-  .phase-bar__tab {
-    padding: 4px 8px;
-  }
-
   .lane-pool__lane {
-    padding: 4px 8px;
+    padding: 8px 12px;
   }
 
   .agent-log__entries {
-    font-size: 11px;
+    font-size: 13px;
   }
 
   .event-log {
-    font-size: 11px;
+    font-size: 13px;
+  }
+
+  button, .lane-pool__lane, .phase-bar__tab {
+    touch-action: manipulation;
   }
 }

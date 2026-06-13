@@ -309,14 +309,24 @@ export class StatusBridge {
   /**
    * Search the agents map for an entry with matching agentId (ignoring taskId in the key)
    * and return its taskId, or undefined if not found.
+   *
+   * Prefers the most recently spawned agent that is still active; if none are active,
+   * falls back to the most recently spawned matching agent overall. This ensures that
+   * in a pool/lane system where the same agentId is reused across tasks, log entries
+   * are routed to the currently active agent rather than the earliest-spawned one.
    */
   private findTaskIdForAgent(agentId: string): string | undefined {
-    for (const agent of this.agents.values()) {
-      if (agent.agentId === agentId) {
-        return agent.taskId;
+    const matching = Array.from(this.agents.values()).filter((a) => a.agentId === agentId);
+    if (matching.length === 0) return undefined;
+
+    // Prefer the most recently spawned active agent
+    for (let i = matching.length - 1; i >= 0; i--) {
+      if (matching[i].active) {
+        return matching[i].taskId;
       }
     }
-    return undefined;
+    // Fall back to the most recently spawned matching agent
+    return matching[matching.length - 1].taskId;
   }
 
   private appendAgentLog(agentId: string, taskId: string | undefined, entry: LogEntry): void {

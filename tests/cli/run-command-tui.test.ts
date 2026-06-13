@@ -3,6 +3,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, mock, spyOn } fr
 // ─── Capture real modules before mocking ──────────────────────────────────
 
 const realWorkflowLoader = Object.assign({}, await import('../../src/core/workflow-loader.js'));
+const realNodeFs = Object.assign({}, await import('node:fs'));
 const realUtils = Object.assign({}, await import('../../src/core/utils.js'));
 const realNetwork = Object.assign({}, await import('../../src/core/network.js'));
 const realConsoleStatus = Object.assign({}, await import('../../src/cli/console-status.js'));
@@ -37,6 +38,9 @@ const mockComposeStatusCallbacks = mock<(callbacks: unknown[]) => unknown>();
 // Network spy
 const mockGetLocalNetworkIP = mock<() => string | null>();
 
+// existsSync mock for build check tests
+const mockExistsSync = mock<(path: string) => boolean>();
+
 // Capture constructor arguments
 let capturedTuiOptions: { abort?: () => void } | null = null;
 let capturedBridgeBroadcast: ((msg: unknown) => void) | null = null;
@@ -54,6 +58,11 @@ mock.module('../../src/core/utils.js', () => ({
   composeStatusCallbacks: mockComposeStatusCallbacks,
   isEnoentError: () => false,
   safeErrorMessage: (err: unknown) => String(err),
+}));
+
+mock.module('node:fs', () => ({
+  existsSync: mockExistsSync,
+  readFileSync: () => '',
 }));
 
 mock.module('../../src/core/network.js', () => ({
@@ -129,6 +138,7 @@ afterAll(() => {
   mock.module('../../src/web/observer-server.js', () => realObserverServer);
   mock.module('../../src/web/status-bridge.js', () => realStatusBridge);
   mock.module('../../src/tui/workflow-tui.js', () => realWorkflowTUI);
+  mock.module('node:fs', () => realNodeFs);
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -137,6 +147,7 @@ afterAll(() => {
 
 describe('runCommand — TUI/web/QR/pause integration', () => {
   let logSpy: ReturnType<typeof spyOn>;
+  let warnSpy: ReturnType<typeof spyOn>;
   let onSpy: ReturnType<typeof spyOn>;
   let removeListenerSpy: ReturnType<typeof spyOn>;
 
@@ -159,6 +170,7 @@ describe('runCommand — TUI/web/QR/pause integration', () => {
 
   beforeEach(() => {
     logSpy = spyOn(console, 'log').mockImplementation(() => {});
+    warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
     onSpy = spyOn(process, 'on');
     removeListenerSpy = spyOn(process, 'removeListener');
 
@@ -177,12 +189,16 @@ describe('runCommand — TUI/web/QR/pause integration', () => {
     mockBridgeGetSnapshot.mockReset();
     mockComposeStatusCallbacks.mockReset();
     mockGetLocalNetworkIP.mockReset();
+    mockExistsSync.mockReset();
     capturedTuiOptions = null;
     capturedBridgeBroadcast = null;
     capturedObserverServerOptions = null;
 
     // Default: getLocalNetworkIP returns a LAN IP
     mockGetLocalNetworkIP.mockReturnValue('192.168.1.42');
+
+    // Default: web/dist exists (no warning expected)
+    mockExistsSync.mockReturnValue(true);
 
     // Default mock behaviors
     mockWorkflowRun.mockResolvedValue(undefined);
@@ -224,6 +240,7 @@ describe('runCommand — TUI/web/QR/pause integration', () => {
     for (const l of listeners) process.removeListener('SIGINT', l as any);
 
     logSpy.mockRestore();
+    warnSpy.mockRestore();
     onSpy.mockRestore();
     removeListenerSpy.mockRestore();
   });
@@ -295,6 +312,27 @@ describe('runCommand — TUI/web/QR/pause integration', () => {
         agents: [],
         sidebar: { title: '', indicator: '' },
       });
+    });
+
+    // ─── Build check warning ─────────────────────────────────────────--
+
+    it('warns when web/dist does not exist', async () => {
+      mockExistsSync.mockReturnValue(false);
+
+      await runCommand(makeOptions());
+
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      const msg = warnSpy.mock.calls[0][0] as string;
+      expect(msg).toContain('web/dist not found');
+      expect(msg).toContain('npm run build');
+    });
+
+    it('does not warn when web/dist exists', async () => {
+      mockExistsSync.mockReturnValue(true);
+
+      await runCommand(makeOptions());
+
+      expect(warnSpy).not.toHaveBeenCalled();
     });
   });
 

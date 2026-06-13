@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'bun:test';
+import { describe, expect, it, mock } from 'bun:test';
 import type { StatusCallbacks } from '../../src/core/types.js';
 import { STATUS_CALLBACK_METHODS } from '../../src/core/types.js';
 import {
@@ -348,6 +348,39 @@ describe('composeStatusCallbacks', () => {
     };
     const result = composeStatusCallbacks([cb]);
     expect(result).toBe(cb);
+  });
+
+  it('continues to invoke remaining callbacks when a prior callback throws (error isolation)', () => {
+    const calls: unknown[] = [];
+    const cb1: StatusCallbacks = {
+      onWorkflowStart: () => {
+        throw new Error('cb1 failure');
+      },
+    };
+    const cb2: StatusCallbacks = {
+      onWorkflowStart: (info) => calls.push(info),
+    };
+    const composed = composeStatusCallbacks([cb1, cb2]);
+    const info = { taskPrompt: 'test', resumed: false, workDir: '/tmp' };
+
+    const originalError = console.error;
+    const consoleSpy = mock(() => {});
+    console.error = consoleSpy;
+    try {
+      composed.onWorkflowStart?.(info);
+    } finally {
+      console.error = originalError;
+    }
+
+    // cb2 must have been called despite cb1 throwing
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toBe(info);
+
+    // console.error must have been called with the descriptive message
+    expect(consoleSpy).toHaveBeenCalledTimes(1);
+    expect(consoleSpy.mock.calls[0][0]).toBe('[composeStatusCallbacks] Error in onWorkflowStart:');
+    expect(consoleSpy.mock.calls[0][1]).toBeInstanceOf(Error);
+    expect(consoleSpy.mock.calls[0][1].message).toBe('cb1 failure');
   });
 });
 

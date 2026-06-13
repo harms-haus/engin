@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { PastRunEntry } from '../core/config.js';
 import { getDefaultWorkDir, getGlobalConfigDir, resolveProfilesDirs } from '../core/config.js';
@@ -98,6 +98,15 @@ export async function runCommand(options: CliOptions): Promise<void> {
       getSnapshot: snapshotFn,
     });
     const serverUrl = observerServer.url;
+
+    // Warn if the frontend is not built
+    const distDir = join(import.meta.dir, '..', '..', 'web', 'dist');
+    if (!existsSync(distDir)) {
+      console.warn(
+        'Warning: web/dist not found. The mobile UI will show a placeholder page. ' +
+          'Run "cd web && npm run build" to build the frontend.',
+      );
+    }
 
     // Create TUI. Pre-generate the QR overlay BEFORE start() so it is attached
     // during the first (scrollback-safe) render; attaching it later can cause it
@@ -270,6 +279,15 @@ export async function resumeCommand(options: CliOptions): Promise<void> {
       getSnapshot: snapshotFn,
     });
     const serverUrl = observerServer.url;
+
+    // Warn if the frontend is not built
+    const distDir = join(import.meta.dir, '..', '..', 'web', 'dist');
+    if (!existsSync(distDir)) {
+      console.warn(
+        'Warning: web/dist not found. The mobile UI will show a placeholder page. ' +
+          'Run "cd web && npm run build" to build the frontend.',
+      );
+    }
 
     // Create TUI. Pre-generate the QR overlay BEFORE start() so it is attached
     // during the first (scrollback-safe) render; attaching it later can cause it

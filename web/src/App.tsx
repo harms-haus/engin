@@ -23,7 +23,7 @@ export function App() {
       <EventLog entries={events} />
       <PhaseBar phases={phases} currentPhase={state.currentPhase} completedPhases={state.completedPhases} />
       <LanePool tasks={state.tasks} />
-      <AgentLog agents={state.agents} onTerminate={handleTerminate} status={state.status} />
+      <AgentLog agents={state.agents} onTerminate={handleTerminate} status={state.status} connected={connected} />
     </div>
   );
 }
