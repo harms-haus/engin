@@ -316,20 +316,21 @@ describe('size-based cache eviction', () => {
 
   it('evicts cache when size exceeds 50, proving re-resolution from disk', async () => {
     const cwd = makeCwd();
-    // Create 51 workflows
-    await createNWorkflows(51);
+    // Create 52 workflows
+    await createNWorkflows(52);
 
-    // Load all 51 unique workflows (cache size = 51)
-    for (let i = 0; i < 51; i++) {
+    // Load all 52 unique workflows.
+    // The 52nd load (wf-051) triggers eviction of wf-000 (oldest) since cache
+    // was 51 (> 50) before adding the new entry.
+    for (let i = 0; i < 52; i++) {
       await loadWorkflow(`wf-${String(i).padStart(3, '0')}`, cwd);
     }
 
     // Delete wf-000 from disk
     await rm(join(globalWorkflowDir, 'wf-000', 'main.ts'));
 
-    // Load wf-000 again: cache size is 51 (> 50), so eviction guard triggers,
-    // clearing the entire cache. Now wf-000 must be re-resolved from disk,
-    // but the file is gone, so it should throw "not found".
+    // Load wf-000 again: it was evicted by the 52nd load, so it must be
+    // re-resolved from disk. Since the file is gone, it should throw "not found".
     await expect(loadWorkflow('wf-000', cwd)).rejects.toThrow("Workflow 'wf-000' not found.");
   });
 
@@ -338,24 +339,25 @@ describe('size-based cache eviction', () => {
     // Create 53 workflows
     await createNWorkflows(53);
 
-    // Load 51 unique workflows (cache size = 51)
-    for (let i = 0; i < 51; i++) {
+    // Load 52 unique workflows.
+    // Loading wf-051 (the 52nd) triggers eviction of wf-000 (oldest) before adding wf-051.
+    for (let i = 0; i < 52; i++) {
       await loadWorkflow(`wf-${String(i).padStart(3, '0')}`, cwd);
     }
 
-    // Load wf-051: triggers eviction (51 > 50), clears cache, loads wf-051
-    const mod51 = await loadWorkflow('wf-051', cwd);
-    expect(typeof mod51.run).toBe('function');
+    // Load wf-052 (53rd unique, cache miss). This triggers eviction of wf-001.
+    const mod52 = await loadWorkflow('wf-052', cwd);
+    expect(typeof mod52.run).toBe('function');
 
-    // wf-051 was loaded post-eviction and is in the cache (cache size = 1).
-    // Delete it from disk to prove it is cached — loading again should still work.
-    await rm(join(globalWorkflowDir, 'wf-051', 'main.ts'));
-    const mod51Again = await loadWorkflow('wf-051', cwd);
-    expect(typeof mod51Again.run).toBe('function');
+    // wf-052 was just cached. Delete it from disk to prove it is cached —
+    // loading again should still work (cache hit).
+    await rm(join(globalWorkflowDir, 'wf-052', 'main.ts'));
+    const mod52Again = await loadWorkflow('wf-052', cwd);
+    expect(typeof mod52Again.run).toBe('function');
 
-    // wf-000 was evicted from the cache. Delete it from disk.
-    // Loading again must re-resolve from disk (not in cache), file is gone → throws.
-    // This proves eviction actually cleared the old cache entry.
+    // wf-000 was evicted from the cache when wf-051 was loaded.
+    // Delete it from disk and verify that loading it re-resolves from disk
+    // (file is gone → throws).
     await rm(join(globalWorkflowDir, 'wf-000', 'main.ts'));
     await expect(loadWorkflow('wf-000', cwd)).rejects.toThrow("Workflow 'wf-000' not found.");
   });

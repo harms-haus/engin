@@ -4,31 +4,15 @@ import { promptForStructured } from '../core/structured-output.js';
 import type { AgentProfile, AuditEvent, Task } from '../core/types.js';
 import { forwardAgentStatus, safeErrorMessage } from '../core/utils.js';
 import { buildPrompt } from './prompt-builder.js';
-import type { LanePoolOptions, StepDefinition, StepResult } from './types.js';
+import type { LanePoolOptions, StepDefinition, StepResult, TrackedSession, WithoutTimestamp } from './types.js';
 import { assertSafeName } from './validation.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────
-
-/** Distributive Omit that preserves discriminated union structure. */
-type WithoutTimestamp<T> = T extends infer U ? (U extends T ? Omit<U, 'timestamp'> : never) : never;
 
 interface RunStepContext {
   stepIndex: number;
   attempt: number;
   execCount: number;
-}
-
-interface TrackedSession {
-  session: {
-    abort(): Promise<void>;
-    dispose(): void;
-    subscribe(cb: (event: unknown) => void): () => void;
-    prompt(text: string): Promise<void>;
-    getLastAssistantText(): string | undefined;
-    sessionId: string;
-  };
-  dispose: () => void;
-  sessionPath: string;
 }
 
 /** Context passed from LanePool to decouple runStep from class internals. */

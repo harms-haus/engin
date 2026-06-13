@@ -7,33 +7,14 @@ import { TaskTracker } from '../tracking/task-status.js';
 import { extractSeverity, isFailingSeverity } from './severity.js';
 import type { StepExecutionContext } from './step-execution.js';
 import { runStep } from './step-execution.js';
-import type { LanePoolOptions, LanePoolResult } from './types.js';
-
-// Re-export for backward compatibility (T07 tests import from lane-pool.js)
-export { assertSafeName } from './validation.js';
+import type { LanePoolOptions, LanePoolResult, TrackedSession, WithoutTimestamp } from './types.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────
-
-/** Distributive Omit that preserves discriminated union structure. */
-type WithoutTimestamp<T> = T extends infer U ? (U extends T ? Omit<U, 'timestamp'> : never) : never;
 
 interface _RunStepContext {
   stepIndex: number;
   attempt: number;
   execCount: number;
-}
-
-interface TrackedSession {
-  session: {
-    abort(): Promise<void>;
-    dispose(): void;
-    subscribe(cb: (event: unknown) => void): () => void;
-    prompt(text: string): Promise<void>;
-    getLastAssistantText(): string | undefined;
-    sessionId: string;
-  };
-  dispose: () => void;
-  sessionPath: string;
 }
 
 // ─── LanePool ───────────────────────────────────────────────────────────────

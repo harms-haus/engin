@@ -1,5 +1,5 @@
 import { join } from 'node:path';
-import { ensureDir, getGlobalConfigDir } from './core/config.js';
+import { ensureDir, getGlobalConfigDir } from './config.js';
 
 // ─── Installation ───────────────────────────────────────────────────────────
 

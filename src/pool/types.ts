@@ -52,6 +52,23 @@ export interface LanePoolOptions {
   phase?: string;
 }
 
+/** Distributive Omit that preserves discriminated union structure. */
+export type WithoutTimestamp<T> = T extends infer U ? (U extends T ? Omit<U, 'timestamp'> : never) : never;
+
+/** A tracked session wrapper returned by runStep. */
+export interface TrackedSession {
+  session: {
+    abort(): Promise<void>;
+    dispose(): void;
+    subscribe(cb: (event: unknown) => void): () => void;
+    prompt(text: string): Promise<void>;
+    getLastAssistantText(): string | undefined;
+    sessionId: string;
+  };
+  dispose: () => void;
+  sessionPath: string;
+}
+
 /** Aggregate result from running the pool. */
 export interface LanePoolResult {
   completedTasks: number;

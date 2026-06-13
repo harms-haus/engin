@@ -33,6 +33,112 @@ async function modifyProfilePrompt(dir: string, prompt: string): Promise<void> {
 // ─── Oldest-entry eviction tests ────────────────────────────────────────────
 
 describe('profileCache oldest-entry eviction', () => {
+  // ─── Bug-fix verification: eviction must NOT happen on cache hit ───────
+
+  it('does NOT evict on cache hit even when cache exceeds threshold (bug fix)', async () => {
+    // This test verifies the fix for a bug where eviction ran BEFORE the cache
+    // lookup. If the requested key was already cached, the eviction was still
+    // triggered, unnecessarily removing the oldest entry.
+    //
+    // After the fix, eviction only happens when about to ADD a new entry
+    // (i.e. on a cache miss, just before profileCache.set()).
+
+    // Load 22 directories → cache exceeds threshold of 20
+    const dirs: string[] = [];
+    for (let i = 0; i < 22; i++) {
+      dirs.push(await makeProfileDir(getDir(), `dir-${i}`, `Prompt ${i}`));
+    }
+    for (const dir of dirs) {
+      await loadProfiles(dir);
+    }
+
+    // Cache state after loading all 22:
+    //   dir-0 was evicted when dir-21 was loaded (size was 21 > 20)
+    //   Current cache: {dir-1, dir-2, …, dir-21}  (21 entries)
+
+    // Modify dir-1 on disk — if it stays cached, loading it returns stale data.
+    // If it was evicted, loading it returns fresh data from disk.
+    await modifyProfilePrompt(dirs[1], 'Should NOT be read from disk');
+
+    // Load dir-10 — this is a CACHE HIT (dir-10 is in the cache).
+    // With the bug: eviction would fire (21 > 20), evicting dir-1, then dir-10 found cached.
+    // With the fix: no eviction on cache hit, dir-1 stays in cache.
+    await loadProfiles(dirs[10]);
+
+    // Now load dir-1 — it should still be cached (stale read) because
+    // the cache hit on dir-10 did NOT trigger eviction.
+    const p1 = await loadProfiles(dirs[1]);
+    expect(p1.get('agent')!.systemPrompt).toBe('Prompt 1');
+  });
+
+  it('cache hit preserves all entries including the oldest when over threshold (bug fix)', async () => {
+    // Another angle: after a cache hit on an over-threshold cache, verify
+    // that even the absolute oldest entry survives.
+
+    const dirs: string[] = [];
+    for (let i = 0; i < 22; i++) {
+      dirs.push(await makeProfileDir(getDir(), `dir-${i}`, `Prompt ${i}`));
+    }
+    for (const dir of dirs) {
+      await loadProfiles(dir);
+    }
+
+    // dir-0 was evicted. Current oldest is dir-1.
+    // Modify dir-1 on disk.
+    await modifyProfilePrompt(dirs[1], 'Should be stale');
+
+    // Load every cached directory (cache hits) — none should trigger eviction.
+    for (let i = 1; i < 22; i++) {
+      await loadProfiles(dirs[i]);
+    }
+
+    // The oldest entry dir-1 should still be cached (stale read).
+    const p1 = await loadProfiles(dirs[1]);
+    expect(p1.get('agent')!.systemPrompt).toBe('Prompt 1');
+
+    // dir-10 should also still be cached.
+    await modifyProfilePrompt(dirs[10], 'Should also be stale');
+    const p10 = await loadProfiles(dirs[10]);
+    expect(p10.get('agent')!.systemPrompt).toBe('Prompt 10');
+  });
+
+  it('eviction only fires on cache miss, not on every call (bug fix)', async () => {
+    // This test verifies that the eviction block only runs when a new entry
+    // is about to be added. Previously it ran unconditionally at the top of
+    // the function, even for cache hits.
+
+    // Load 21 directories (one over threshold)
+    const dirs: string[] = [];
+    for (let i = 0; i < 21; i++) {
+      dirs.push(await makeProfileDir(getDir(), `dir-${i}`, `Prompt ${i}`));
+    }
+    for (const dir of dirs) {
+      await loadProfiles(dir);
+    }
+    // Cache = {dir-0, dir-1, …, dir-20} (21 entries).
+    // No eviction happened because size was 20 when loading dir-20 (not > 20).
+    // Now load dir-0 (cache hit).
+
+    await modifyProfilePrompt(dirs[0], 'Should remain cached');
+    await loadProfiles(dirs[0]);
+
+    // Everything still cached — verify by loading dir-0 again.
+    const p0 = await loadProfiles(dirs[0]);
+    expect(p0.get('agent')!.systemPrompt).toBe('Prompt 0');
+
+    // Now load a new directory (dir-21, cache miss). This SHOULD trigger eviction.
+    const newDir = await makeProfileDir(getDir(), `dir-21`, `Prompt 21`);
+    await loadProfiles(newDir);
+
+    // After the cache miss load of dir-21: cache was 21 > 20 → evict dir-0 → add dir-21.
+    // dir-0 is now evicted. Modify and reload — should get fresh data.
+    await modifyProfilePrompt(dirs[0], 'Fresh data after eviction');
+    const p0evicted = await loadProfiles(dirs[0]);
+    expect(p0evicted.get('agent')!.systemPrompt).toBe('Fresh data after eviction');
+  });
+
+  // ─── Original tests below ─────────────────────────────────────────────
+
   it('evicts only the oldest entry when threshold is exceeded, preserving newer entries', async () => {
     // Create and load 22 unique directories to trigger one eviction
     const dirs: string[] = [];

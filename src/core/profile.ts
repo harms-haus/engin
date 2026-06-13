@@ -73,13 +73,6 @@ export function parseProfile(content: string, filename: string): AgentProfile {
  * Throws if the directory does not exist.
  */
 export async function loadProfiles(dirPath: string): Promise<Map<string, AgentProfile>> {
-  if (profileCache.size > 20) {
-    const oldestKey = profileCache.keys().next().value;
-    if (oldestKey !== undefined) {
-      profileCache.delete(oldestKey);
-    }
-  }
-
   const cached = profileCache.get(dirPath);
   if (cached) {
     return cached;
@@ -106,6 +99,13 @@ export async function loadProfiles(dirPath: string): Promise<Map<string, AgentPr
     const content = await readFile(filePath, 'utf-8');
     const profile = parseProfile(content, file);
     profiles.set(profile.id, profile);
+  }
+
+  if (profileCache.size > 20) {
+    const oldestKey = profileCache.keys().next().value;
+    if (oldestKey !== undefined) {
+      profileCache.delete(oldestKey);
+    }
   }
 
   profileCache.set(dirPath, profiles);

@@ -39,6 +39,7 @@ export class AuditLog {
           } catch (err: unknown) {
             if (isEnoentError(err)) {
               this.cache = [];
+              this.cacheBuildPromise = null;
               return this.cache;
             } else {
               throw err;
@@ -55,11 +56,11 @@ export class AuditLog {
             }
           }
           this.cache = events;
+          this.cacheBuildPromise = null;
           return this.cache;
         })();
       }
       await this.cacheBuildPromise;
-      this.cacheBuildPromise = null;
     }
 
     let filtered = this.cache as AuditEvent[];
@@ -70,10 +71,6 @@ export class AuditLog {
 
     if (filter?.taskId) {
       filtered = filtered.filter((e) => e.taskId === filter.taskId);
-    }
-
-    if (this.cache && this.cache.length > 1000) {
-      this.cache = null;
     }
 
     return filtered;

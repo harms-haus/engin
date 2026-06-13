@@ -47,6 +47,102 @@ function wfName(i: number): string {
 // ─── Oldest-entry eviction tests ────────────────────────────────────────────
 
 describe('workflowCache oldest-entry eviction', () => {
+  // ─── Bug-fix verification: eviction must NOT happen on cache hit ───────
+
+  it('does NOT evict on cache hit even when cache exceeds threshold (bug fix)', async () => {
+    const cwd = makeCwd();
+
+    // Load 52 workflows → cache exceeds threshold of 50
+    for (let i = 0; i < 52; i++) {
+      await createWorkflow(wfName(i), i);
+    }
+    for (let i = 0; i < 52; i++) {
+      await loadWorkflow(wfName(i), cwd);
+    }
+
+    // Cache state after loading all 52:
+    //   wf-000 was evicted when wf-051 was loaded (size was 51 > 50)
+    //   Current cache: {wf-001, wf-002, …, wf-051}  (51 entries)
+
+    // Delete wf-001 from disk. If it stays cached, loading it succeeds.
+    // If it was evicted, loading it throws "not found".
+    await rm(join(globalWorkflowDir, wfName(1), 'main.ts'));
+
+    // Load wf-030 — this is a CACHE HIT (wf-030 is in the cache).
+    // With the bug: eviction would fire (51 > 50), evicting wf-001.
+    // With the fix: no eviction on cache hit, wf-001 stays in cache.
+    await loadWorkflow(wfName(30), cwd);
+
+    // Now load wf-001 — it should still be cached (succeed despite disk deletion)
+    const mod1 = await loadWorkflow(wfName(1), cwd);
+    const result1 = await mod1.run('', { cwd: '', workDir: '' });
+    expect(result1).toBe(1);
+  });
+
+  it('cache hit preserves all entries including the oldest when over threshold (bug fix)', async () => {
+    const cwd = makeCwd();
+
+    // Load 52 workflows → wf-000 evicted, wf-001 is oldest
+    for (let i = 0; i < 52; i++) {
+      await createWorkflow(wfName(i), i);
+    }
+    for (let i = 0; i < 52; i++) {
+      await loadWorkflow(wfName(i), cwd);
+    }
+
+    // Delete wf-001 from disk to detect if it gets evicted.
+    await rm(join(globalWorkflowDir, wfName(1), 'main.ts'));
+
+    // Load every cached workflow (cache hits) — none should trigger eviction.
+    for (let i = 1; i < 52; i++) {
+      await loadWorkflow(wfName(i), cwd);
+    }
+
+    // The oldest entry wf-001 should still be cached (succeeds despite disk deletion).
+    const mod1 = await loadWorkflow(wfName(1), cwd);
+    const result1 = await mod1.run('', { cwd: '', workDir: '' });
+    expect(result1).toBe(1);
+
+    // wf-030 should also still be cached.
+    await rm(join(globalWorkflowDir, wfName(30), 'main.ts'));
+    const mod30 = await loadWorkflow(wfName(30), cwd);
+    const result30 = await mod30.run('', { cwd: '', workDir: '' });
+    expect(result30).toBe(30);
+  });
+
+  it('eviction only fires on cache miss, not on every call (bug fix)', async () => {
+    const cwd = makeCwd();
+
+    // Load 51 workflows (one over threshold)
+    for (let i = 0; i < 51; i++) {
+      await createWorkflow(wfName(i), i);
+    }
+    for (let i = 0; i < 51; i++) {
+      await loadWorkflow(wfName(i), cwd);
+    }
+    // Cache = {wf-000, wf-001, …, wf-050} (51 entries).
+    // No eviction happened because size was 50 when loading wf-050 (not > 50).
+
+    // Load wf-000 (cache hit) — should NOT trigger eviction.
+    await loadWorkflow(wfName(0), cwd);
+
+    // Everything still cached — delete wf-000 from disk and verify it still works.
+    await rm(join(globalWorkflowDir, wfName(0), 'main.ts'));
+    const mod0 = await loadWorkflow(wfName(0), cwd);
+    const result0 = await mod0.run('', { cwd: '', workDir: '' });
+    expect(result0).toBe(0);
+
+    // Now load a new workflow (wf-051, cache miss). This SHOULD trigger eviction.
+    await createWorkflow(wfName(51), 51);
+    await loadWorkflow(wfName(51), cwd);
+
+    // wf-000 was evicted when wf-051 was loaded (cache was 51 > 50 → evict wf-000).
+    // Verify wf-000 is gone: delete from disk (already deleted) → load → throw
+    await expect(loadWorkflow(wfName(0), cwd)).rejects.toThrow("Workflow 'wf-000' not found.");
+  });
+
+  // ─── Original tests below ─────────────────────────────────────────────
+
   it('evicts only the oldest entry when threshold is exceeded, preserving newer entries', async () => {
     const cwd = makeCwd();
 

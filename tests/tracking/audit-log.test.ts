@@ -130,10 +130,10 @@ describe('AuditLog', () => {
     await expect(log.clear()).resolves.toBeUndefined();
   });
 
-  // ── cache eviction ──────────────────────────────────────────────────
+  // ── cache persistence (no auto-invalidation) ────────────────────────
 
-  it('getEvents evicts cache when it exceeds 1000 entries', async () => {
-    // Append some real events and call getEvents to populate the cache
+  it('getEvents does not auto-evict cache even with many entries', async () => {
+    // The cache is only invalidated on append/clear, never automatically by getEvents.
     for (let i = 0; i < 5; i++) {
       await log.append({ type: 'agent_start', agentId: `a${i}`, profile: {} as never });
     }
@@ -143,32 +143,53 @@ describe('AuditLog', () => {
     // Cache should now be populated
     expect((log as any).cache).not.toBeNull();
 
-    // Manually inflate cache to 1001 entries to exceed the threshold
+    // Manually inflate cache to >1000 entries
     const base = { type: 'agent_start', agentId: 'x', profile: {}, timestamp: new Date().toISOString() };
     (log as any).cache = Array.from({ length: 1001 }, () => ({ ...base }));
     expect((log as any).cache.length).toBe(1001);
 
-    // Calling getEvents again should return data and then evict the cache
+    // getEvents must NOT evict the cache. The cache should persist.
     const result = await log.getEvents();
     expect(result).toHaveLength(1001);
-    expect((log as any).cache).toBeNull();
+    // Cache is still present after getEvents (no auto-invalidation)
+    expect((log as any).cache).not.toBeNull();
+    expect((log as any).cache!.length).toBe(1001);
   });
 
-  it('getEvents does not evict cache with 1000 or fewer entries', async () => {
+  it('getEvents keeps cache populated after read regardless of size', async () => {
     await log.append({ type: 'agent_start', agentId: 'a1', profile: {} as never });
     await log.getEvents();
 
-    // Cache should be populated and small
+    // Cache should be populated
     expect((log as any).cache).not.toBeNull();
-    expect((log as any).cache.length).toBeLessThanOrEqual(1000);
 
-    // Manually set cache to exactly 1000 entries (boundary)
+    // Manually set cache to exactly 1000 entries
     const base = { type: 'agent_start', agentId: 'x', profile: {}, timestamp: new Date().toISOString() };
     (log as any).cache = Array.from({ length: 1000 }, () => ({ ...base }));
 
     await log.getEvents();
 
-    // At exactly 1000, cache should NOT be evicted
+    // Cache should NOT be evicted (no auto-invalidation at any size)
+    expect((log as any).cache).not.toBeNull();
+    expect((log as any).cache!.length).toBe(1000);
+  });
+
+  it('getEvents cache persists across sequential calls without append', async () => {
+    await log.append({ type: 'agent_start', agentId: 'a1', profile: {} as never });
+    await log.getEvents();
+
+    // Populate a large cache
+    const base = { type: 'agent_start', agentId: 'x', profile: {}, timestamp: new Date().toISOString() };
+    (log as any).cache = Array.from({ length: 2000 }, () => ({ ...base }));
+
+    // First getEvents should return data and keep cache
+    const r1 = await log.getEvents();
+    expect(r1).toHaveLength(2000);
+    expect((log as any).cache).not.toBeNull();
+
+    // Second getEvents should use cached data (no re-read)
+    const r2 = await log.getEvents();
+    expect(r2).toHaveLength(2000);
     expect((log as any).cache).not.toBeNull();
   });
 

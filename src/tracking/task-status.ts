@@ -87,9 +87,13 @@ export class TaskTracker extends EventEmitter {
   }
 
   getReadyTasks(): Task[] {
-    return Array.from(this.tasks.values())
-      .filter((t) => t.status === 'ready')
-      .sort((a, b) => a.dependencies.length - b.dependencies.length || a.id.localeCompare(b.id));
+    const ready: Task[] = [];
+    for (const task of this.tasks.values()) {
+      if (task.status === 'ready') {
+        ready.push(task);
+      }
+    }
+    return ready.sort((a, b) => a.dependencies.length - b.dependencies.length || a.id.localeCompare(b.id));
   }
 
   /**

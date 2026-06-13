@@ -61,7 +61,7 @@ describe('AuditLog cache serialization', () => {
     // After all resolve, cache should be populated and build promise cleared
     expect((log as any).cache).not.toBeNull();
     // cacheBuildPromise should be null (not undefined) after the fix
-    expect((log as any).cacheBuildPromise).toBeFalsy();
+    expect((log as any).cacheBuildPromise).toBeNull();
   });
 
   // ── append invalidates cacheBuildPromise ───────────────────────────
@@ -77,8 +77,8 @@ describe('AuditLog cache serialization', () => {
     await log.append({ type: 'agent_end', agentId: 'a1', result: { cost: 1.0 } });
     expect((log as any).cache).toBeNull();
 
-    // The build promise field should also be cleared (falsy)
-    expect((log as any).cacheBuildPromise).toBeFalsy();
+    // The build promise field should also be cleared (null)
+    expect((log as any).cacheBuildPromise).toBeNull();
   });
 
   // ── append during rebuild invalidates the rebuild result ───────────
@@ -94,8 +94,8 @@ describe('AuditLog cache serialization', () => {
     await log.append({ type: 'agent_end', agentId: 'a1', result: {} });
     expect((log as any).cache).toBeNull();
 
-    // The build promise field should also be cleared (falsy)
-    expect((log as any).cacheBuildPromise).toBeFalsy();
+    // The build promise field should also be cleared (null)
+    expect((log as any).cacheBuildPromise).toBeNull();
 
     // getEvents must now rebuild from disk and see both events
     const events = await log.getEvents();
@@ -124,18 +124,72 @@ describe('AuditLog cache serialization', () => {
 
   // ── cacheBuildPromise is null when cache is populated ──────────────
 
-  it('cacheBuildPromise is falsy after cache is populated from disk', async () => {
+  it('cacheBuildPromise is null after cache is populated from disk', async () => {
     await log.append({ type: 'agent_start', agentId: 'a1', profile: {} as never });
     (log as any).cache = null;
 
-    // Before getEvents, cacheBuildPromise should be falsy (no build in-flight yet)
-    expect((log as any).cacheBuildPromise).toBeFalsy();
+    // Before getEvents, cacheBuildPromise should be null (no build in-flight yet)
+    expect((log as any).cacheBuildPromise).toBeNull();
 
     await log.getEvents();
 
-    // After rebuilding, cache is populated and no build promise is in-flight
+    // After rebuilding, cache is populated and build promise is cleared by builder
     expect((log as any).cache).not.toBeNull();
-    expect((log as any).cacheBuildPromise).toBeFalsy();
+    // Bug 1 fix: cacheBuildPromise is set to null inside the builder, exactly once
+    expect((log as any).cacheBuildPromise).toBeNull();
+  });
+
+  // ── Bug 1: cacheBuildPromise cleared by builder, not by all callers ──
+
+  it('cacheBuildPromise is cleared by the builder exactly once (Bug 1 fix)', async () => {
+    await log.append({ type: 'agent_start', agentId: 'a1', profile: {} as never });
+    (log as any).cache = null;
+
+    // Start first getEvents — triggers a rebuild
+    const promise1 = log.getEvents();
+
+    // While rebuild is in-flight, cacheBuildPromise should be a Promise
+    const duringBuild = (log as any).cacheBuildPromise;
+    expect(duringBuild).not.toBeNull();
+    expect(duringBuild).toBeInstanceOf(Promise);
+
+    // Start second getEvents — shares the same promise
+    const promise2 = log.getEvents();
+
+    // Both share the same promise reference
+    expect((log as any).cacheBuildPromise).toBe(duringBuild);
+
+    // Wait for both to complete
+    await Promise.all([promise1, promise2]);
+
+    // After both resolve, cacheBuildPromise must be null.
+    // With the bug, both callers would set cacheBuildPromise = null sequentially,
+    // which is wasteful but not harmful in this simple case. The real danger is
+    // a third caller arriving after both null assignments see cacheBuildPromise
+    // as null, cache as null (due to the old auto-invalidation), and start a
+    // redundant read. With the fix, the builder clears cacheBuildPromise once.
+    expect((log as any).cacheBuildPromise).toBeNull();
+
+    // Cache is populated
+    expect((log as any).cache).not.toBeNull();
+    expect((log as any).cache!.length).toBe(1);
+
+    // A third getEvents should use cache (no rebuild, no redundant disk read)
+    const promise3 = log.getEvents();
+    // cacheBuildPromise should remain null because cache is already populated
+    expect((log as any).cacheBuildPromise).toBeNull();
+    const r3 = await promise3;
+    expect(r3).toHaveLength(1);
+  });
+
+  it('cacheBuildPromise is null after ENOENT rebuild (missing file)', async () => {
+    // No file exists, no events appended
+    const events = await log.getEvents();
+
+    expect(events).toEqual([]);
+    expect((log as any).cache).toEqual([]);
+    // Builder sets cacheBuildPromise = null after populating cache
+    expect((log as any).cacheBuildPromise).toBeNull();
   });
 
   // ── Clear also resets cacheBuildPromise ────────────────────────────
@@ -149,7 +203,7 @@ describe('AuditLog cache serialization', () => {
     await log.clear();
 
     expect((log as any).cache).toBeNull();
-    expect((log as any).cacheBuildPromise).toBeFalsy();
+    expect((log as any).cacheBuildPromise).toBeNull();
   });
 
   // ── Multiple appends interleaved with getEvents see consistent data
@@ -194,34 +248,24 @@ describe('AuditLog cache serialization', () => {
     // Start first getEvents — it will initiate a rebuild
     const promise1 = log.getEvents();
 
-    // While the rebuild is in-flight, cacheBuildPromise should be set (truthy)
+    // While the rebuild is in-flight, cacheBuildPromise must be a Promise
     const buildPromise = (log as any).cacheBuildPromise;
+    expect(buildPromise).not.toBeNull();
+    expect(buildPromise).toBeInstanceOf(Promise);
 
-    // If cacheBuildPromise is implemented, it should be a Promise and not null
-    if (buildPromise !== undefined) {
-      expect(buildPromise).not.toBeNull();
-      expect(buildPromise).toBeInstanceOf(Promise);
+    // Start second getEvents — should attach to the same promise
+    const promise2 = log.getEvents();
 
-      // Start second getEvents — should attach to the same promise
-      const promise2 = log.getEvents();
+    // Both should share the same cacheBuildPromise
+    expect((log as any).cacheBuildPromise).toBe(buildPromise);
 
-      // Both should share the same cacheBuildPromise
-      expect((log as any).cacheBuildPromise).toBe(buildPromise);
+    const [r1, r2] = await Promise.all([promise1, promise2]);
 
-      const [r1, r2] = await Promise.all([promise1, promise2]);
+    expect(r1).toHaveLength(1);
+    expect(r2).toHaveLength(1);
 
-      expect(r1).toHaveLength(1);
-      expect(r2).toHaveLength(1);
-    } else {
-      // Pre-fix: both calls should still return correct data even without serialization
-      const promise2 = log.getEvents();
-      const [r1, r2] = await Promise.all([promise1, promise2]);
-      expect(r1).toHaveLength(1);
-      expect(r2).toHaveLength(1);
-    }
-
-    // After completion, the build promise should be cleared (falsy)
-    expect((log as any).cacheBuildPromise).toBeFalsy();
+    // After completion, the build promise should be null (set by builder)
+    expect((log as any).cacheBuildPromise).toBeNull();
   });
 
   // ── getEvents on empty file returns [] and populates cache ─────────
@@ -232,7 +276,7 @@ describe('AuditLog cache serialization', () => {
 
     expect(events).toEqual([]);
     expect((log as any).cache).toEqual([]);
-    expect((log as any).cacheBuildPromise).toBeFalsy();
+    expect((log as any).cacheBuildPromise).toBeNull();
   });
 
   // ── getEvents with filter still uses cache properly ────────────────
@@ -253,9 +297,9 @@ describe('AuditLog cache serialization', () => {
     expect(ends).toHaveLength(1);
   });
 
-  // ── Cache eviction still works after serialization fix ──────────────
+  // ── Cache is NOT auto-evicted after serialization fix ───────────────
 
-  it('getEvents evicts cache when it exceeds 1000 entries (with build promise cleared)', async () => {
+  it('getEvents does not auto-evict cache even with >1000 entries (Bug 2 fix)', async () => {
     for (let i = 0; i < 5; i++) {
       await log.append({ type: 'agent_start', agentId: `a${i}`, profile: {} as never });
     }
@@ -264,17 +308,19 @@ describe('AuditLog cache serialization', () => {
 
     // Cache should be populated and no build promise in-flight
     expect((log as any).cache).not.toBeNull();
-    expect((log as any).cacheBuildPromise).toBeFalsy();
+    expect((log as any).cacheBuildPromise).toBeNull();
 
-    // Manually inflate cache to 1001 entries to exceed the threshold
+    // Manually inflate cache to >1000 entries
     const base = { type: 'agent_start', agentId: 'x', profile: {}, timestamp: new Date().toISOString() };
-    (log as any).cache = Array.from({ length: 1001 }, () => ({ ...base }));
+    (log as any).cache = Array.from({ length: 2000 }, () => ({ ...base }));
 
-    // Calling getEvents should return data and then evict the cache
+    // getEvents must NOT evict the cache (auto-invalidation removed)
     const result = await log.getEvents();
-    expect(result).toHaveLength(1001);
-    expect((log as any).cache).toBeNull();
-    expect((log as any).cacheBuildPromise).toBeFalsy();
+    expect(result).toHaveLength(2000);
+    // Cache persists after getEvents
+    expect((log as any).cache).not.toBeNull();
+    expect((log as any).cache!.length).toBe(2000);
+    expect((log as any).cacheBuildPromise).toBeNull();
   });
 
   // ── Concurrent getEvents with different filters share the same rebuild
@@ -301,7 +347,7 @@ describe('AuditLog cache serialization', () => {
 
     // Only one rebuild should have happened
     expect((log as any).cache).not.toBeNull();
-    expect((log as any).cacheBuildPromise).toBeFalsy();
+    expect((log as any).cacheBuildPromise).toBeNull();
   });
 
   // ── Race: append between two getEvents calls ───────────────────────
@@ -425,7 +471,8 @@ describe('AuditLog cache serialization', () => {
 
     // Cache should now be populated
     expect((log as any).cache).not.toBeNull();
-    expect((log as any).cacheBuildPromise).toBeFalsy();
+    // After fix: cacheBuildPromise is null (not falsy/undefined)
+    expect((log as any).cacheBuildPromise).toBeNull();
   });
 
   // ── Error during rebuild propagates to all waiters ─────────────────
@@ -476,7 +523,7 @@ describe('AuditLog cache serialization', () => {
     expect(r1).toHaveLength(5);
     expect(r2).toHaveLength(5);
     expect((log as any).cache).not.toBeNull();
-    expect((log as any).cacheBuildPromise).toBeFalsy();
+    expect((log as any).cacheBuildPromise).toBeNull();
   });
 
   // ── Clear resets both cache and cacheBuildPromise ──────────────────
@@ -491,7 +538,7 @@ describe('AuditLog cache serialization', () => {
     await log.clear();
 
     expect((log as any).cache).toBeNull();
-    expect((log as any).cacheBuildPromise).toBeFalsy();
+    expect((log as any).cacheBuildPromise).toBeNull();
 
     // Subsequent getEvents should return empty
     const events = await log.getEvents();
