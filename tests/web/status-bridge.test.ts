@@ -282,6 +282,188 @@ describe('StatusBridge', () => {
     });
   });
 
+  // ─── taskId propagation tests ──────────────────────────────────────────────
+
+  describe('taskId propagation via findTaskIdForAgent', () => {
+    describe('onTurnEnd', () => {
+      it('broadcasts agent_log with taskId when agent was spawned with taskId', () => {
+        const { callbacks, messages } = createBridge();
+        callbacks.onAgentSpawn!({ agentId: 'a1', profile: 'coder', phase: 'implement', taskId: 't-42' });
+        callbacks.onTurnEnd!({
+          agentId: 'a1',
+          turn: 1,
+          contentBlocks: [{ type: 'text', text: 'progress report' }],
+        });
+
+        const logMsg = messages.find((m) => m.type === 'agent_log') as any;
+        expect(logMsg).toBeDefined();
+        expect(logMsg.agentId).toBe('a1');
+        expect(logMsg.taskId).toBe('t-42');
+        expect(logMsg.entry.content).toBe('progress report');
+      });
+
+      it('broadcasts agent_stats with taskId when tokens are present', () => {
+        const { callbacks, messages } = createBridge();
+        callbacks.onAgentSpawn!({ agentId: 'a1', profile: 'coder', phase: 'implement', taskId: 't-42' });
+        callbacks.onTurnEnd!({
+          agentId: 'a1',
+          turn: 1,
+          tokens: { input: 200, output: 75 },
+        });
+
+        const statsMsg = messages.find((m) => m.type === 'agent_stats') as any;
+        expect(statsMsg).toBeDefined();
+        expect(statsMsg.agentId).toBe('a1');
+        expect(statsMsg.taskId).toBe('t-42');
+        expect(statsMsg.inputTokens).toBe(200);
+        expect(statsMsg.outputTokens).toBe(75);
+      });
+
+      it('appends log entries to the correct agent when agent has taskId', () => {
+        const { callbacks, bridge } = createBridge();
+        callbacks.onAgentSpawn!({ agentId: 'a1', profile: 'coder', phase: 'implement', taskId: 't-42' });
+        callbacks.onTurnEnd!({
+          agentId: 'a1',
+          turn: 1,
+          contentBlocks: [{ type: 'text', text: 'msg with task' }],
+        });
+
+        const snapshot = bridge.getSnapshot();
+        expect(snapshot.agents).toHaveLength(1);
+        expect(snapshot.agents[0].log).toHaveLength(1);
+        expect(snapshot.agents[0].log[0].content).toBe('msg with task');
+        expect(snapshot.agents[0].taskId).toBe('t-42');
+      });
+    });
+
+    describe('onToolCallStart', () => {
+      it('broadcasts agent_log with taskId when agent was spawned with taskId', () => {
+        const { callbacks, messages } = createBridge();
+        callbacks.onAgentSpawn!({ agentId: 'a1', profile: 'coder', phase: 'implement', taskId: 't-42' });
+        callbacks.onToolCallStart!({
+          agentId: 'a1',
+          toolName: 'edit',
+          toolCallId: 'call_2',
+          arguments: { path: 'file.ts' },
+        });
+
+        const logMsg = messages.find((m) => m.type === 'agent_log') as any;
+        expect(logMsg).toBeDefined();
+        expect(logMsg.agentId).toBe('a1');
+        expect(logMsg.taskId).toBe('t-42');
+        expect(logMsg.entry.type).toBe('tool_call_start');
+        expect(logMsg.entry.content).toBe('edit');
+      });
+
+      it('broadcasts agent_stats with taskId on tool call start', () => {
+        const { callbacks, messages } = createBridge();
+        callbacks.onAgentSpawn!({ agentId: 'a1', profile: 'coder', phase: 'implement', taskId: 't-42' });
+        callbacks.onToolCallStart!({
+          agentId: 'a1',
+          toolName: 'edit',
+          toolCallId: 'call_2',
+          arguments: { path: 'file.ts' },
+        });
+
+        const statsMsg = messages.find((m) => m.type === 'agent_stats') as any;
+        expect(statsMsg).toBeDefined();
+        expect(statsMsg.agentId).toBe('a1');
+        expect(statsMsg.taskId).toBe('t-42');
+        expect(statsMsg.toolCallCount).toBe(1);
+      });
+
+      it('appends log entry to agent with composite key', () => {
+        const { callbacks, bridge } = createBridge();
+        callbacks.onAgentSpawn!({ agentId: 'a1', profile: 'coder', phase: 'implement', taskId: 't-42' });
+        callbacks.onToolCallStart!({
+          agentId: 'a1',
+          toolName: 'edit',
+          toolCallId: 'call_2',
+          arguments: { path: 'file.ts' },
+        });
+
+        const snapshot = bridge.getSnapshot();
+        expect(snapshot.agents).toHaveLength(1);
+        expect(snapshot.agents[0].log).toHaveLength(1);
+        expect(snapshot.agents[0].log[0].type).toBe('tool_call_start');
+      });
+    });
+
+    describe('onToolCallEnd', () => {
+      it('broadcasts agent_log with taskId when agent was spawned with taskId', () => {
+        const { callbacks, messages } = createBridge();
+        callbacks.onAgentSpawn!({ agentId: 'a1', profile: 'coder', phase: 'implement', taskId: 't-42' });
+        callbacks.onToolCallEnd!({
+          agentId: 'a1',
+          toolName: 'edit',
+          toolCallId: 'call_2',
+          isError: false,
+        });
+
+        const logMsg = messages.find((m) => m.type === 'agent_log') as any;
+        expect(logMsg).toBeDefined();
+        expect(logMsg.agentId).toBe('a1');
+        expect(logMsg.taskId).toBe('t-42');
+        expect(logMsg.entry.type).toBe('tool_call_end');
+        expect(logMsg.entry.content).toBe('edit');
+      });
+
+      it('appends log entry to agent with composite key', () => {
+        const { callbacks, bridge } = createBridge();
+        callbacks.onAgentSpawn!({ agentId: 'a1', profile: 'coder', phase: 'implement', taskId: 't-42' });
+        callbacks.onToolCallEnd!({
+          agentId: 'a1',
+          toolName: 'edit',
+          toolCallId: 'call_2',
+          isError: false,
+        });
+
+        const snapshot = bridge.getSnapshot();
+        expect(snapshot.agents).toHaveLength(1);
+        expect(snapshot.agents[0].log).toHaveLength(1);
+        expect(snapshot.agents[0].log[0].type).toBe('tool_call_end');
+      });
+    });
+
+    it('does not include taskId when agent was spawned without taskId', () => {
+      const { callbacks, messages } = createBridge();
+      callbacks.onAgentSpawn!({ agentId: 'a1', profile: 'scout', phase: 'scouting' });
+      callbacks.onTurnEnd!({
+        agentId: 'a1',
+        turn: 1,
+        contentBlocks: [{ type: 'text', text: 'no task' }],
+      });
+
+      const logMsg = messages.find((m) => m.type === 'agent_log') as any;
+      expect(logMsg).toBeDefined();
+      expect(logMsg.taskId).toBeUndefined();
+    });
+
+    it('handles multiple agents with same agentId but different taskIds', () => {
+      const { callbacks, bridge } = createBridge();
+      // Spawn two agents with same agentId but different taskIds
+      callbacks.onAgentSpawn!({ agentId: 'a1', profile: 'coder', phase: 'implement', taskId: 't1' });
+      callbacks.onAgentSpawn!({ agentId: 'a1', profile: 'reviewer', phase: 'review', taskId: 't2' });
+
+      // Call onTurnEnd for the first agent (t1) — findTaskIdForAgent returns the first match
+      callbacks.onTurnEnd!({
+        agentId: 'a1',
+        turn: 1,
+        contentBlocks: [{ type: 'text', text: 'msg for t1' }],
+      });
+
+      // Since findTaskIdForAgent returns the first match ('t1'), the log goes to agent 'a1::t1'
+      const agentT1 = bridge.getSnapshot().agents.find((a) => a.taskId === 't1');
+      expect(agentT1).toBeDefined();
+      expect(agentT1!.log).toHaveLength(1);
+      expect(agentT1!.log[0].content).toBe('msg for t1');
+
+      const agentT2 = bridge.getSnapshot().agents.find((a) => a.taskId === 't2');
+      expect(agentT2).toBeDefined();
+      expect(agentT2!.log).toHaveLength(0);
+    });
+  });
+
   describe('onError', () => {
     it('broadcasts agent_log with error entry', () => {
       const { callbacks, messages } = createBridge();
@@ -568,6 +750,57 @@ describe('StatusBridge', () => {
         // But the callbacks object has it
         expect(callbacks.onSidebarUpdate).toBeDefined();
       });
+    });
+  });
+
+  describe('broadcasting agent_stats with taskId', () => {
+    it('can broadcast agent_stats with taskId field set', () => {
+      const { broadcast, messages } = createBridge();
+      const msg: ServerMessage = {
+        type: 'agent_stats',
+        agentId: 'a1',
+        toolCallCount: 3,
+        inputTokens: 200,
+        outputTokens: 75,
+        taskId: 't-42',
+      };
+      broadcast(msg);
+      expect(messages).toHaveLength(1);
+      const sent = messages[0] as any;
+      expect(sent.type).toBe('agent_stats');
+      expect(sent.agentId).toBe('a1');
+      expect(sent.toolCallCount).toBe(3);
+      expect(sent.inputTokens).toBe(200);
+      expect(sent.outputTokens).toBe(75);
+      expect(sent.taskId).toBe('t-42');
+    });
+
+    it('can broadcast agent_stats without taskId (backward compat)', () => {
+      const { broadcast, messages } = createBridge();
+      const msg: ServerMessage = {
+        type: 'agent_stats',
+        agentId: 'a1',
+        toolCallCount: 1,
+      };
+      broadcast(msg);
+      expect(messages).toHaveLength(1);
+      expect((messages[0] as any).taskId).toBeUndefined();
+    });
+
+    it('broadcasting agent_stats with taskId does not break existing token stats', () => {
+      const { broadcast, messages } = createBridge();
+      const msg: ServerMessage = {
+        type: 'agent_stats',
+        agentId: 'a1',
+        inputTokens: 150,
+        outputTokens: 60,
+        taskId: 't-99',
+      };
+      broadcast(msg);
+      expect(messages).toHaveLength(1);
+      expect((messages[0] as any).inputTokens).toBe(150);
+      expect((messages[0] as any).outputTokens).toBe(60);
+      expect((messages[0] as any).taskId).toBe('t-99');
     });
   });
 });

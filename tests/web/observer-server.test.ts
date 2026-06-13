@@ -309,6 +309,92 @@ describe('observer-server', () => {
       expect(res.status).not.toBe(403);
     });
 
+    // ── Non-HTTP scheme Origins (Bug 1) ──────────────────────────────────
+
+    it('allows capacitor://localhost origin on non-localhost', async () => {
+      const port = randomPort();
+      server = await startObserverServer({ host: '0.0.0.0', port });
+
+      const res = await hitWs(`http://0.0.0.0:${port}`, 'capacitor://localhost');
+      expect(res.status).not.toBe(403);
+    });
+
+    it('allows file:// origin on non-localhost', async () => {
+      const port = randomPort();
+      server = await startObserverServer({ host: '0.0.0.0', port });
+
+      const res = await hitWs(`http://0.0.0.0:${port}`, 'file://');
+      expect(res.status).not.toBe(403);
+    });
+
+    // ── Port omission (Bug 2) ──────────────────────────────────────────────
+
+    it('allows Origin with omitted port (default scheme port)', async () => {
+      const port = randomPort();
+      server = await startObserverServer({ host: '0.0.0.0', port });
+
+      // Origin without explicit port, host header includes the port
+      const res = await hitWs(`http://0.0.0.0:${port}`, `http://0.0.0.0`);
+      expect(res.status).not.toBe(403);
+    });
+
+    // ── Hostname mismatch ───────────────────────────────────────────────────
+
+    it('rejects genuinely mismatched hostname', async () => {
+      const port = randomPort();
+      server = await startObserverServer({ host: '0.0.0.0', port });
+
+      const res = await hitWs(`http://0.0.0.0:${port}`, 'http://evil.com');
+      expect(res.status).toBe(403);
+    });
+
+    // ── Case-insensitive hostname (Bug 3) ───────────────────────────────────
+
+    it('uses case-insensitive hostname comparison', async () => {
+      const port = randomPort();
+      server = await startObserverServer({ host: '0.0.0.0', port });
+
+      // The URL constructor lowercases hostnames in the origin,
+      // but the Host header (or X-Forwarded-Host) may retain
+      // uppercase.  We use X-Forwarded-Host with an uppercase
+      // hostname to verify case-insensitive comparison.
+      const headers: Record<string, string> = {
+        Origin: `http://example.com:${port}`,
+        'X-Forwarded-Host': `EXAMPLE.COM:${port}`,
+      };
+      const res = await fetch(`http://0.0.0.0:${port}/ws`, { headers });
+      expect(res.status).not.toBe(403);
+    });
+
+    // ── X-Forwarded-Host ────────────────────────────────────────────────────
+
+    it('honors x-forwarded-host header over host header', async () => {
+      const port = randomPort();
+      server = await startObserverServer({ host: '0.0.0.0', port });
+
+      // The actual Host header will be 0.0.0.0:${port} (from fetch),
+      // but we set X-Forwarded-Host to a different address. The origin
+      // matches the X-Forwarded-Host value.
+      const headers: Record<string, string> = {
+        Origin: `http://1.2.3.4:${port}`,
+        'X-Forwarded-Host': `1.2.3.4:${port}`,
+      };
+      const res = await fetch(`http://0.0.0.0:${port}/ws`, { headers });
+      expect(res.status).not.toBe(403);
+    });
+
+    it('rejects when x-forwarded-host origin does not match', async () => {
+      const port = randomPort();
+      server = await startObserverServer({ host: '0.0.0.0', port });
+
+      const headers: Record<string, string> = {
+        Origin: `http://1.2.3.4:${port}`,
+        'X-Forwarded-Host': `5.6.7.8:${port}`,
+      };
+      const res = await fetch(`http://0.0.0.0:${port}/ws`, { headers });
+      expect(res.status).toBe(403);
+    });
+
     it('still allows real WebSocket connections from browser on localhost', async () => {
       const getSnapshot = mock(() => ({
         type: 'init' as const,
@@ -407,5 +493,55 @@ describe('observer-server', () => {
     const html = await response.text();
     expect(html).toContain('<title>engin');
     expect(html).toContain(`ws://127.0.0.1:${port}/ws`);
+  });
+
+  // ─── WS scheme detection tests ───────────────────────────────────────────
+
+  describe('WS scheme detection', () => {
+    it('uses ws:// scheme when serving over plain HTTP (no x-forwarded-proto)', async () => {
+      const port = randomPort();
+      server = await startObserverServer({
+        host: '127.0.0.1',
+        port,
+      });
+
+      const response = await fetch(`http://127.0.0.1:${port}/`);
+      expect(response.status).toBe(200);
+      const html = await response.text();
+      expect(html).toContain(`ws://127.0.0.1:${port}/ws`);
+      expect(html).not.toContain(`wss://127.0.0.1:${port}/ws`);
+    });
+
+    it('uses wss:// scheme when x-forwarded-proto is https', async () => {
+      const port = randomPort();
+      server = await startObserverServer({
+        host: '127.0.0.1',
+        port,
+      });
+
+      const response = await fetch(`http://127.0.0.1:${port}/`, {
+        headers: { 'X-Forwarded-Proto': 'https' },
+      });
+      expect(response.status).toBe(200);
+      const html = await response.text();
+      expect(html).toContain(`wss://127.0.0.1:${port}/ws`);
+      expect(html).not.toContain(`ws://127.0.0.1:${port}/ws`);
+    });
+
+    it('uses wss:// scheme for SPA fallback path when x-forwarded-proto is https', async () => {
+      const port = randomPort();
+      server = await startObserverServer({
+        host: '127.0.0.1',
+        port,
+      });
+
+      const response = await fetch(`http://127.0.0.1:${port}/some/random/path`, {
+        headers: { 'X-Forwarded-Proto': 'https' },
+      });
+      expect(response.status).toBe(200);
+      const html = await response.text();
+      expect(html).toContain(`wss://127.0.0.1:${port}/ws`);
+      expect(html).not.toContain(`ws://127.0.0.1:${port}/ws`);
+    });
   });
 });

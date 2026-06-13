@@ -17,6 +17,8 @@
   color: var(--text-muted);
   opacity: 0.5;
   white-space: nowrap;
+  min-width: 44px;
+  min-height: 44px;
 }
 
 .phase-bar__tab--completed {

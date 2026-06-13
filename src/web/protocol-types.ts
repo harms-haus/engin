@@ -55,7 +55,14 @@ export type ServerMessage =
   | { type: 'agent_spawned'; agent: AgentWindowState }
   | { type: 'agent_log'; agentId: string; entry: LogEntry; taskId?: string }
   | { type: 'agent_complete'; agentId: string; phase?: string; taskId?: string }
-  | { type: 'agent_stats'; agentId: string; toolCallCount?: number; inputTokens?: number; outputTokens?: number }
+  | {
+      type: 'agent_stats';
+      agentId: string;
+      toolCallCount?: number;
+      inputTokens?: number;
+      outputTokens?: number;
+      taskId?: string;
+    }
   | { type: 'tasks_updated'; tasks: TaskInfo[] }
   | { type: 'workflow_sidebar'; sidebar: SidebarInfo };
 

@@ -78,15 +78,17 @@ export async function runCommand(options: CliOptions): Promise<void> {
       displayHost = getLocalNetworkIP() ?? '127.0.0.1';
     }
 
-    const snapshotFn = (): ServerMessage =>
-      statusBridge?.getSnapshot() ?? {
-        type: 'init',
-        currentPhase: '',
-        completedPhases: [],
-        tasks: [],
-        agents: [],
-        sidebar: { title: '', indicator: '' },
-      };
+    // Create a mutable broadcast holder so StatusBridge can be instantiated
+    // before the observer server starts (avoiding snapshot race).
+    const broadcastHolder = {
+      fn: (_msg: ServerMessage) => {
+        void 0;
+      },
+    };
+    statusBridge = new StatusBridge((msg: ServerMessage) => broadcastHolder.fn(msg));
+
+    const bridge = statusBridge;
+    const snapshotFn = (): ServerMessage => bridge.getSnapshot();
     const { startObserverServer } = await import('../web/observer-server.js');
     observerServer = await startObserverServer({
       host: bindHost,
@@ -104,8 +106,8 @@ export async function runCommand(options: CliOptions): Promise<void> {
     await tuiInstance.prepareQrCode(serverUrl);
     tuiInstance.start();
 
-    // Create status bridge and wire snapshot
-    statusBridge = new StatusBridge(observerServer.broadcast);
+    // Wire the real broadcast now that the server is running.
+    broadcastHolder.fn = observerServer.broadcast;
   }
 
   process.on('SIGINT', handler);
@@ -248,15 +250,17 @@ export async function resumeCommand(options: CliOptions): Promise<void> {
       displayHost = getLocalNetworkIP() ?? '127.0.0.1';
     }
 
-    const snapshotFn = (): ServerMessage =>
-      statusBridge?.getSnapshot() ?? {
-        type: 'init',
-        currentPhase: '',
-        completedPhases: [],
-        tasks: [],
-        agents: [],
-        sidebar: { title: '', indicator: '' },
-      };
+    // Create a mutable broadcast holder so StatusBridge can be instantiated
+    // before the observer server starts (avoiding snapshot race).
+    const broadcastHolder = {
+      fn: (_msg: ServerMessage) => {
+        void 0;
+      },
+    };
+    statusBridge = new StatusBridge((msg: ServerMessage) => broadcastHolder.fn(msg));
+
+    const bridge = statusBridge;
+    const snapshotFn = (): ServerMessage => bridge.getSnapshot();
     const { startObserverServer } = await import('../web/observer-server.js');
     observerServer = await startObserverServer({
       host: bindHost,
@@ -277,8 +281,8 @@ export async function resumeCommand(options: CliOptions): Promise<void> {
     await tuiInstance.prepareQrCode(serverUrl);
     tuiInstance.start();
 
-    // Create status bridge and wire snapshot
-    statusBridge = new StatusBridge(observerServer.broadcast);
+    // Wire the real broadcast now that the server is running.
+    broadcastHolder.fn = observerServer.broadcast;
   }
 
   process.on('SIGINT', handler);

@@ -354,11 +354,13 @@ describe('runCommand — TUI/web/QR/pause integration', () => {
   // ─── StatusBridge ──────────────────────────────────────────────────────
 
   describe('StatusBridge wiring', () => {
-    it('creates StatusBridge with the observer broadcast function', async () => {
+    it('creates StatusBridge with a wrapper that delegates to the observer broadcast', async () => {
       await runCommand(makeOptions());
 
       expect(capturedBridgeBroadcast).not.toBeNull();
-      expect(capturedBridgeBroadcast).toBe(mockObserverBroadcast);
+      // The captured function is a wrapper that delegates to the real broadcast
+      capturedBridgeBroadcast!({ type: 'test' });
+      expect(mockObserverBroadcast).toHaveBeenCalledWith({ type: 'test' });
     });
 
     it('gets callbacks from both TUI and StatusBridge', async () => {

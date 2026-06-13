@@ -78,14 +78,43 @@ function validateWebSocketOrigin(req: Request): boolean {
     host.startsWith('localhost') || host.startsWith('127.0.0.1') || host.startsWith('::1') || host.startsWith('[::1]');
 
   // If an Origin header is present AND the connection is NOT from localhost,
-  // parse the Origin URL and compare its host property to the Host header.
+  // parse the Origin URL and validate it.
   if (origin && !isLocalhost) {
     try {
       const originUrl = new URL(origin);
-      // Compare the host (hostname + port) from Origin to the Host header value.
-      if (originUrl.host !== host) {
+
+      // Bug 1 — Non-HTTP scheme Origins (e.g. capacitor://, file://, ionic://)
+      // Mobile browsers and Capacitor apps send origins with app-specific
+      // schemes. These are safe same-app connections that should be allowed.
+      if (originUrl.protocol !== 'http:' && originUrl.protocol !== 'https:') {
+        return true;
+      }
+
+      // Determine the comparison target hostname.
+      // If X-Forwarded-Host is present, use it instead of the Host header.
+      const xForwardedHost = req.headers.get('x-forwarded-host') || '';
+      const targetHost = xForwardedHost || host;
+
+      // Extract hostname and port from the target host string.
+      const targetParts = targetHost.split(':');
+      const targetHostname = targetParts[0]?.toLowerCase() || '';
+      const targetPort = targetParts.length > 1 ? targetParts.slice(1).join(':') : '';
+
+      // Bug 3 — Compare hostnames case-insensitively (RFC 3986).
+      // originUrl.hostname is already lowercased by the URL constructor.
+      if (originUrl.hostname.toLowerCase() !== targetHostname) {
         return false;
       }
+
+      // Bug 2 — Port omission: only compare ports when both are present
+      // and non-empty. If one side omits the port (default scheme port),
+      // treat it as a match.
+      const originPort = originUrl.port;
+      if (originPort && targetPort && originPort !== targetPort) {
+        return false;
+      }
+
+      return true;
     } catch {
       return false;
     }
@@ -175,6 +204,28 @@ export async function startObserverServer(options: {
   };
 }
 
+// ─── WebSocket scheme helper ───────────────────────────────────────────────
+
+/**
+ * Determine the appropriate WebSocket scheme (ws or wss) based on the
+ * incoming request and the URL being served.
+ *
+ * Priority:
+ * 1. If the X-Forwarded-Proto header is 'https', return 'wss'.
+ * 2. If the URL protocol is 'https:', return 'wss'.
+ * 3. Otherwise return 'ws'.
+ */
+function getWsScheme(req: Request, url: URL): string {
+  const xForwardedProto = req.headers.get('x-forwarded-proto');
+  if (xForwardedProto === 'https') {
+    return 'wss';
+  }
+  if (url.protocol === 'https:') {
+    return 'wss';
+  }
+  return 'ws';
+}
+
 // ─── Static file serving ────────────────────────────────────────────────────
 
 function serveStatic(req: Request, url: URL): Response {
@@ -198,7 +249,7 @@ function serveStatic(req: Request, url: URL): Response {
     // For index.html, replace WS_ENDPOINT placeholder
     if (pathname === '/index.html') {
       let html = content.toString('utf-8');
-      html = html.replace('{{WS_ENDPOINT}}', `ws://${url.host}/ws`);
+      html = html.replace('{{WS_ENDPOINT}}', `${getWsScheme(req, url)}://${url.host}/ws`);
       return new Response(html, {
         headers: { 'Content-Type': contentType },
       });
@@ -213,14 +264,14 @@ function serveStatic(req: Request, url: URL): Response {
   const indexPath = join(distDir, 'index.html');
   if (existsSync(indexPath)) {
     let html = readFileSync(indexPath, 'utf-8');
-    html = html.replace('{{WS_ENDPOINT}}', `ws://${url.host}/ws`);
+    html = html.replace('{{WS_ENDPOINT}}', `${getWsScheme(req, url)}://${url.host}/ws`);
     return new Response(html, {
       headers: { 'Content-Type': 'text/html; charset=utf-8' },
     });
   }
 
   // No frontend built — serve placeholder
-  const placeholder = PLACEHOLDER_HTML.replace('{{WS_ENDPOINT}}', `ws://${url.host}/ws`);
+  const placeholder = PLACEHOLDER_HTML.replace('{{WS_ENDPOINT}}', `${getWsScheme(req, url)}://${url.host}/ws`);
   return new Response(placeholder, {
     headers: { 'Content-Type': 'text/html; charset=utf-8' },
   });

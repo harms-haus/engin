@@ -15,6 +15,25 @@ const INITIAL_STATE: AppState = {
   status: 'running',
 };
 
+// ─── Backoff defaults ──────────────────────────────────────────────────────
+
+const BACKOFF_INITIAL = 1000;
+const BACKOFF_MULTIPLIER = 1.5;
+const BACKOFF_MAX = 30_000;
+
+// ─── Helper: derive WS URL from the environment ───────────────────────────
+
+function deriveWsUrl(): string {
+  const configured = (window as any).__WS_ENDPOINT__;
+  // Production case: server replaced the placeholder with a real ws/wss URL.
+  if (configured && configured !== '{{WS_ENDPOINT}}') {
+    return configured;
+  }
+  // Derive from window.location (works for dev Vite and production observer).
+  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  return proto + '//' + window.location.host + '/ws';
+}
+
 // ─── Hook ──────────────────────────────────────────────────────────────────
 
 export function useWebSocket(): {
@@ -27,9 +46,7 @@ export function useWebSocket(): {
   const [connected, setConnected] = useState(false);
   const [events, setEvents] = useState<string[]>([]);
   const wsRef = useRef<WebSocket | null>(null);
-
-  // Determine WebSocket URL
-  const wsEndpoint = (window as any).__WS_ENDPOINT__ || 'ws://localhost:3619/ws';
+  const backoffRef = useRef<number>(BACKOFF_INITIAL);
 
   // ─── Helper: append event ──────────────────────────────────────────────
   const addEvent = useCallback((entry: string) => {
@@ -112,7 +129,7 @@ export function useWebSocket(): {
           break;
         }
         case 'agent_stats': {
-          const key = agentKey(msg.agentId);
+          const key = agentKey(msg.agentId, msg.taskId);
           setState((prev) => {
             const agent = prev.agents.get(key);
             if (!agent) return prev;
@@ -140,10 +157,14 @@ export function useWebSocket(): {
 
   // ─── connect ───────────────────────────────────────────────────────────
   const connect = useCallback(() => {
-    const ws = new WebSocket(wsEndpoint);
+    const url = deriveWsUrl();
+    const ws = new WebSocket(url);
 
     ws.onopen = () => {
       setConnected(true);
+      console.log('[WebSocket] Connected to', url);
+      // Reset backoff on successful connection
+      backoffRef.current = BACKOFF_INITIAL;
     };
 
     ws.onmessage = (event: MessageEvent) => {
@@ -157,20 +178,24 @@ export function useWebSocket(): {
       }
     };
 
-    ws.onclose = () => {
+    ws.onclose = (event: CloseEvent) => {
       setConnected(false);
-      // Auto-reconnect after 3 seconds
+      console.warn('[WebSocket] Connection closed (code=%s reason=%s)', event.code, event.reason);
+      // Exponential backoff reconnect
+      const delay = backoffRef.current;
+      backoffRef.current = Math.min(delay * BACKOFF_MULTIPLIER, BACKOFF_MAX);
       setTimeout(() => {
         connect();
-      }, 3000);
+      }, delay);
     };
 
-    ws.onerror = () => {
+    ws.onerror = (event: Event) => {
+      console.error('[WebSocket] Error', event);
       ws.close();
     };
 
     wsRef.current = ws;
-  }, [wsEndpoint, handleServerMessage]);
+  }, [handleServerMessage]);
 
   // ─── Connect on mount, clean up on unmount ─────────────────────────────
   useEffect(() => {

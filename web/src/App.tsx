@@ -7,7 +7,7 @@ import { PhaseBar } from './components/PhaseBar';
 import { useWebSocket } from './hooks/useWebSocket';
 
 export function App() {
-  const { state, send, events } = useWebSocket();
+  const { state, send, events, connected } = useWebSocket();
 
   const handleTerminate = useCallback(() => {
     send({ type: 'terminate_server' });
@@ -17,6 +17,9 @@ export function App() {
 
   return (
     <div className="app">
+      <div className={`connection-status connection-status--${connected ? 'connected' : 'disconnected'}`}>
+        {connected ? 'Connected' : 'Disconnected — Reconnecting...'}
+      </div>
       <EventLog entries={events} />
       <PhaseBar phases={phases} currentPhase={state.currentPhase} completedPhases={state.completedPhases} />
       <LanePool tasks={state.tasks} />

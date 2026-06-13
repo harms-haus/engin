@@ -343,7 +343,7 @@ describe('resumeCommand — TUI/web/QR/pause integration', () => {
       expect(mockTuiPrepareQrCode.mock.calls[0][0]).toBe('http://127.0.0.1:3619');
     });
 
-    it('creates StatusBridge with broadcast function', async () => {
+    it('creates StatusBridge with a wrapper that delegates to the observer broadcast', async () => {
       const ts = Date.now();
       const dirName = `${ts}-my-workflow`;
       const tempDir = getDir();
@@ -351,7 +351,10 @@ describe('resumeCommand — TUI/web/QR/pause integration', () => {
 
       await resumeCommand(makeResumeOptions({ cwd: tempDir, sessionName: dirName }));
 
-      expect(capturedBridgeBroadcast).toBe(mockObserverBroadcast);
+      expect(capturedBridgeBroadcast).not.toBeNull();
+      // The captured function is a wrapper that delegates to the real broadcast
+      capturedBridgeBroadcast!({ type: 'test' });
+      expect(mockObserverBroadcast).toHaveBeenCalledWith({ type: 'test' });
     });
 
     it('composes callbacks from TUI and StatusBridge', async () => {

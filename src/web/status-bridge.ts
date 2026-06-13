@@ -128,15 +128,17 @@ export class StatusBridge {
       },
 
       onTurnEnd: (info) => {
+        const taskId = this.findTaskIdForAgent(info.agentId);
         if (info.contentBlocks) {
           for (const block of info.contentBlocks) {
             const entry = this.blockToEntry(block);
             if (entry) {
-              this.appendAgentLog(info.agentId, undefined, entry);
+              this.appendAgentLog(info.agentId, taskId, entry);
               this.broadcast({
                 type: 'agent_log',
                 agentId: info.agentId,
                 entry,
+                ...(taskId !== undefined ? { taskId } : {}),
               });
             }
           }
@@ -147,27 +149,36 @@ export class StatusBridge {
             agentId: info.agentId,
             inputTokens: info.tokens.input,
             outputTokens: info.tokens.output,
+            ...(taskId !== undefined ? { taskId } : {}),
           });
         }
       },
 
       onToolCallStart: (info) => {
+        const taskId = this.findTaskIdForAgent(info.agentId);
         const entry: LogEntry = {
           id: info.toolCallId,
           timestamp: new Date().toISOString(),
           type: 'tool_call_start',
           content: info.toolName,
         };
-        this.appendAgentLog(info.agentId, undefined, entry);
-        this.broadcast({ type: 'agent_log', agentId: info.agentId, entry });
+        this.appendAgentLog(info.agentId, taskId, entry);
+        this.broadcast({
+          type: 'agent_log',
+          agentId: info.agentId,
+          entry,
+          ...(taskId !== undefined ? { taskId } : {}),
+        });
         this.broadcast({
           type: 'agent_stats',
           agentId: info.agentId,
           toolCallCount: 1,
+          ...(taskId !== undefined ? { taskId } : {}),
         });
       },
 
       onToolCallEnd: (info) => {
+        const taskId = this.findTaskIdForAgent(info.agentId);
         const entry: LogEntry = {
           id: info.toolCallId + '-end',
           timestamp: new Date().toISOString(),
@@ -175,8 +186,13 @@ export class StatusBridge {
           content: info.toolName,
           metadata: { isError: info.isError },
         };
-        this.appendAgentLog(info.agentId, undefined, entry);
-        this.broadcast({ type: 'agent_log', agentId: info.agentId, entry });
+        this.appendAgentLog(info.agentId, taskId, entry);
+        this.broadcast({
+          type: 'agent_log',
+          agentId: info.agentId,
+          entry,
+          ...(taskId !== undefined ? { taskId } : {}),
+        });
       },
 
       onError: (info) => {
@@ -289,6 +305,19 @@ export class StatusBridge {
   }
 
   // ─── Private helpers ──────────────────────────────────────────────────────
+
+  /**
+   * Search the agents map for an entry with matching agentId (ignoring taskId in the key)
+   * and return its taskId, or undefined if not found.
+   */
+  private findTaskIdForAgent(agentId: string): string | undefined {
+    for (const agent of this.agents.values()) {
+      if (agent.agentId === agentId) {
+        return agent.taskId;
+      }
+    }
+    return undefined;
+  }
 
   private appendAgentLog(agentId: string, taskId: string | undefined, entry: LogEntry): void {
     const key = agentKey(agentId, taskId);

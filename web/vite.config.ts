@@ -7,6 +7,14 @@ export default defineConfig({
   resolve: {
     alias: { '@app': path.resolve(__dirname, 'src') },
   },
+  server: {
+    proxy: {
+      '/ws': {
+        target: 'ws://localhost:3619',
+        ws: true,
+      },
+    },
+  },
   root: '.',
   build: {
     outDir: 'dist',

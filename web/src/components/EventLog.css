@@ -1,5 +1,6 @@
 .event-log {
   flex: 1;
+  min-height: 0;
   background: var(--bg-primary);
   padding: 8px;
   overflow-y: auto;
