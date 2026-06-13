@@ -4,6 +4,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, mock, spyOn } fr
 
 const realWorkflowLoader = Object.assign({}, await import('../../src/core/workflow-loader.js'));
 const realUtils = Object.assign({}, await import('../../src/core/utils.js'));
+const realConsoleStatus = Object.assign({}, await import('../../src/cli/console-status.js'));
 const realObserverServer = Object.assign({}, await import('../../src/web/observer-server.js'));
 const realStatusBridge = Object.assign({}, await import('../../src/web/status-bridge.js'));
 const realWorkflowTUI = Object.assign({}, await import('../../src/tui/workflow-tui.js'));
@@ -111,7 +112,7 @@ import { runCommand } from '../../src/cli.ts';
 afterAll(() => {
   mock.module('../../src/core/workflow-loader.js', () => realWorkflowLoader);
   mock.module('../../src/core/utils.js', () => realUtils);
-  mock.module('../../src/cli/console-status.js', () => ({}) as never);
+  mock.module('../../src/cli/console-status.js', () => realConsoleStatus);
   mock.module('../../src/web/observer-server.js', () => realObserverServer);
   mock.module('../../src/web/status-bridge.js', () => realStatusBridge);
   mock.module('../../src/tui/workflow-tui.js', () => realWorkflowTUI);

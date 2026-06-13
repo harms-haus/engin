@@ -7,6 +7,7 @@ import { useTempDir } from '../helpers/use-temp-dir.js';
 
 const realWorkflowLoader = Object.assign({}, await import('../../src/core/workflow-loader.js'));
 const realUtils = Object.assign({}, await import('../../src/core/utils.js'));
+const realConsoleStatus = Object.assign({}, await import('../../src/cli/console-status.js'));
 const realConfig = Object.assign({}, await import('../../src/core/config.js'));
 const realPostWorktree = Object.assign({}, await import('../../src/cli/post-worktree.js'));
 const realObserverServer = Object.assign({}, await import('../../src/web/observer-server.js'));
@@ -129,7 +130,7 @@ import { resumeCommand } from '../../src/cli.ts';
 afterAll(() => {
   mock.module('../../src/core/workflow-loader.js', () => realWorkflowLoader);
   mock.module('../../src/core/utils.js', () => realUtils);
-  mock.module('../../src/cli/console-status.js', () => ({}) as never);
+  mock.module('../../src/cli/console-status.js', () => realConsoleStatus);
   mock.module('../../src/core/config.js', () => realConfig);
   mock.module('../../src/cli/post-worktree.js', () => realPostWorktree);
   mock.module('../../src/web/observer-server.js', () => realObserverServer);
