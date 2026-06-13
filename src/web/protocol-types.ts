@@ -1,0 +1,64 @@
+// ─── Value Types ────────────────────────────────────────────────────────────
+
+export interface PhaseDescriptor {
+  id: string;
+  label: string;
+  icon: string;
+}
+
+export interface LogEntry {
+  id: string;
+  timestamp: string;
+  type: 'text' | 'thinking' | 'tool_call' | 'tool_call_start' | 'tool_call_end' | 'decision' | 'error';
+  content: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface AgentWindowState {
+  agentId: string;
+  profile: string;
+  taskId?: string;
+  phase?: string;
+  active: boolean;
+  log: LogEntry[];
+}
+
+export interface TaskInfo {
+  id: string;
+  title: string;
+  status: string;
+  phase?: string;
+  agentId?: string;
+  startedAt?: number;
+}
+
+export interface SidebarInfo {
+  title: string;
+  indicator: string;
+  phases?: PhaseDescriptor[];
+}
+
+// ─── Server to Client Messages ──────────────────────────────────────────────
+
+export type ServerMessage =
+  | {
+      type: 'init';
+      currentPhase: string;
+      completedPhases: string[];
+      tasks: TaskInfo[];
+      agents: AgentWindowState[];
+      sidebar: SidebarInfo;
+    }
+  | { type: 'workflow_phase'; phase: string; completed: string[]; currentPhase: string }
+  | { type: 'workflow_complete' }
+  | { type: 'workflow_failed'; error: string; phase: string }
+  | { type: 'agent_spawned'; agent: AgentWindowState }
+  | { type: 'agent_log'; agentId: string; entry: LogEntry; taskId?: string }
+  | { type: 'agent_complete'; agentId: string; phase?: string; taskId?: string }
+  | { type: 'agent_stats'; agentId: string; toolCallCount?: number; inputTokens?: number; outputTokens?: number }
+  | { type: 'tasks_updated'; tasks: TaskInfo[] }
+  | { type: 'workflow_sidebar'; sidebar: SidebarInfo };
+
+// ─── Client to Server Messages ──────────────────────────────────────────────
+
+export type ClientMessage = { type: 'terminate_server' };
