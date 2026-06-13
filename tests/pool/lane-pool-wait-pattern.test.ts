@@ -10,10 +10,9 @@
  *    recalculateStatuses; TaskSettled fires when a task completes or fails.
  *    Each covers scenarios the other does not.
  *
- * 2. Race condition safety: between claimTasks() returning empty and once()
- *    registration, an event could fire. This is safe because if isPoolDone()
- *    returns true the lane exits on the next loop iteration, and if tasks
- *    become ready after registration the listener fires.
+ * 2. Race condition safety: the race window is now ELIMINATED — listeners
+ *    are registered BEFORE claimTasks/isPoolDone checks so no event emitted
+ *    during that gap can be missed.
  *
  * 3. Cleanup prevents double-wake by removing both listeners synchronously.
  *
@@ -108,6 +107,7 @@ interface WaitPatternPoolOptions {
   getStepsForTask?: (task: Task) => StepDefinition[];
   tasks?: Task[];
   signal?: AbortSignal;
+  laneWaitTimeoutMs?: number;
 }
 
 function createPoolAndTracker(overrides?: WaitPatternPoolOptions) {
@@ -126,9 +126,11 @@ function createPoolAndTracker(overrides?: WaitPatternPoolOptions) {
     profilesDirs: ['/mock/profiles'],
     sessionBaseDir: '/tmp/sessions',
     cwd: '/tmp/project',
+    phase: 'implementing',
     taskTracker: tracker,
     getStepsForTask,
     signal: overrides?.signal,
+    laneWaitTimeoutMs: overrides?.laneWaitTimeoutMs,
   });
 
   return { pool, tracker };
@@ -498,6 +500,257 @@ describe('LanePool dual-listener wait pattern', () => {
         expect(tracker.getTask('task-2')!.status).toBe('done');
       } finally {
         spy.mockRestore();
+      }
+    });
+  });
+
+  // ── Configurable Lane Wait Timeout ──────────────────────────────────
+
+  describe('configurable lane wait timeout', () => {
+    it('passes laneWaitTimeoutMs to setTimeout for the wait', async () => {
+      setupProfileMocks();
+      setupHarnessMocks();
+
+      const realSetTimeout = globalThis.setTimeout;
+      const task = makeTask({ id: 'task-1', dependencies: [] });
+      // Manually set status to 'implementing' so it's not claimable and not settled
+      // → lane enters the wait block
+      task.status = 'implementing';
+
+      const controller = new AbortController();
+      const { pool } = createPoolAndTracker({
+        tasks: [task],
+        maxConcurrentLanes: 1,
+        laneWaitTimeoutMs: 1234,
+        signal: controller.signal,
+      });
+
+      const setTimeoutSpy = spyOn(globalThis, 'setTimeout').mockImplementation(((cb: any, delay?: number) =>
+        realSetTimeout(cb, delay)) as any);
+
+      const t = setTimeout(() => controller.abort(), 200);
+
+      try {
+        await pool.run();
+
+        const hasCorrectDelay = setTimeoutSpy.mock.calls.some((call) => call[1] === 1234);
+        expect(hasCorrectDelay).toBe(true);
+      } finally {
+        clearTimeout(t);
+        setTimeoutSpy.mockRestore();
+      }
+    });
+
+    it('defaults to 60000 when laneWaitTimeoutMs is not provided', async () => {
+      setupProfileMocks();
+      setupHarnessMocks();
+
+      const realSetTimeout = globalThis.setTimeout;
+      const task = makeTask({ id: 'task-1', dependencies: [] });
+      task.status = 'implementing';
+
+      const controller = new AbortController();
+      const { pool } = createPoolAndTracker({
+        tasks: [task],
+        maxConcurrentLanes: 1,
+        signal: controller.signal,
+      });
+
+      const setTimeoutSpy = spyOn(globalThis, 'setTimeout').mockImplementation(((cb: any, delay?: number) =>
+        realSetTimeout(cb, delay)) as any);
+
+      const t = setTimeout(() => controller.abort(), 200);
+
+      try {
+        await pool.run();
+
+        // POST-FIX default is 60000; current source uses 30000 → fails RED
+        const hasCorrectDelay = setTimeoutSpy.mock.calls.some((call) => call[1] === 60000);
+        expect(hasCorrectDelay).toBe(true);
+      } finally {
+        clearTimeout(t);
+        setTimeoutSpy.mockRestore();
+      }
+    });
+  });
+
+  // ── TOCTOU Missed-Wakeup Fix ────────────────────────────────────────
+
+  describe('TOCTOU missed-wakeup fix', () => {
+    it('catches TaskReady emitted during claimTasks without waiting for timeout', async () => {
+      setupProfileMocks();
+      setupHarnessMocks();
+
+      const realSetTimeout = globalThis.setTimeout;
+      const task = makeTask({ id: 'task-1', dependencies: [] });
+      task.status = 'implementing';
+
+      const { pool, tracker } = createPoolAndTracker({
+        tasks: [task],
+        maxConcurrentLanes: 1,
+        laneWaitTimeoutMs: 60000,
+      });
+
+      // Block long timeouts (pool's 60000 ms) so the test doesn't hang
+      const setTimeoutSpy = spyOn(globalThis, 'setTimeout').mockImplementation(((cb: any, delay?: number) => {
+        if (typeof delay === 'number' && delay >= 1000) return 0 as any;
+        return realSetTimeout(cb, delay);
+      }) as any);
+
+      // Simulate TOCTOU race: emit TaskReady synchronously *during* claimTasks
+      // before the return. In the current code, listeners are registered
+      // AFTER claimTasks, so this event is missed → lane hangs → RED.
+      let raceTriggered = false;
+      const originalClaim = tracker.claimTasks.bind(tracker);
+      const claimSpy = spyOn(tracker, 'claimTasks').mockImplementation((count: number) => {
+        const tasks = originalClaim(count);
+        if (tasks.length === 0 && !raceTriggered) {
+          raceTriggered = true;
+          tracker.getTask('task-1')!.status = 'ready';
+          tracker.emit(TaskTracker.Events.TaskReady);
+        }
+        return tasks;
+      });
+
+      try {
+        const result = await pool.run();
+
+        // If the TOCTOU fix works, the pool catches the TaskReady during
+        // claimTasks and the lane finds the task on the next iteration.
+        expect(result.completedTasks).toBe(1);
+        expect(tracker.getTask('task-1')!.status).toBe('done');
+      } finally {
+        claimSpy.mockRestore();
+        setTimeoutSpy.mockRestore();
+      }
+    });
+  });
+
+  // ── Log Noise Reduction ─────────────────────────────────────────────
+
+  describe('log noise reduction', () => {
+    it('logs routine timeout poll at debug level, not warn', async () => {
+      setupProfileMocks();
+      setupHarnessMocks();
+
+      const task = makeTask({ id: 'task-1', dependencies: [] });
+      task.status = 'implementing';
+
+      const { pool, tracker } = createPoolAndTracker({
+        tasks: [task],
+        maxConcurrentLanes: 1,
+        laneWaitTimeoutMs: 10,
+      });
+
+      let counter = 0;
+      const originalClaim = tracker.claimTasks.bind(tracker);
+      const claimSpy = spyOn(tracker, 'claimTasks').mockImplementation((count: number) => {
+        counter++;
+        if (counter > 2) {
+          tracker.getTask('task-1')!.status = 'ready';
+        }
+        return originalClaim(count);
+      });
+
+      const debugSpy = spyOn(console, 'debug').mockImplementation(() => {});
+      const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
+
+      try {
+        await pool.run();
+
+        // POST-FIX: routine timeouts logged at debug level
+        expect(debugSpy.mock.calls.length).toBeGreaterThanOrEqual(1);
+
+        // Below stall threshold (5), no stall warning expected
+        const stallWarnings = warnSpy.mock.calls.filter((call) =>
+          call.some((arg) => typeof arg === 'string' && arg.includes('stall')),
+        );
+        expect(stallWarnings.length).toBe(0);
+      } finally {
+        claimSpy.mockRestore();
+        debugSpy.mockRestore();
+        warnSpy.mockRestore();
+      }
+    });
+
+    it('escalates to console.warn once after STALL_WARN_THRESHOLD consecutive timeouts', async () => {
+      setupProfileMocks();
+      setupHarnessMocks();
+
+      const task = makeTask({ id: 'task-1', dependencies: [] });
+      task.status = 'implementing';
+
+      const { pool, tracker } = createPoolAndTracker({
+        tasks: [task],
+        maxConcurrentLanes: 1,
+        laneWaitTimeoutMs: 10,
+      });
+
+      let counter = 0;
+      const originalClaim = tracker.claimTasks.bind(tracker);
+      const claimSpy = spyOn(tracker, 'claimTasks').mockImplementation((count: number) => {
+        counter++;
+        if (counter > 8) {
+          tracker.getTask('task-1')!.status = 'ready';
+        }
+        return originalClaim(count);
+      });
+
+      const debugSpy = spyOn(console, 'debug').mockImplementation(() => {});
+      const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
+
+      try {
+        await pool.run();
+
+        // POST-FIX: EXACTLY ONE stall warning after crossing threshold
+        const stallWarnings = warnSpy.mock.calls.filter((call) =>
+          call.some((arg) => typeof arg === 'string' && arg.includes('stall')),
+        );
+        expect(stallWarnings.length).toBe(1);
+
+        // Multiple debug-level timeout polls
+        expect(debugSpy.mock.calls.length).toBeGreaterThan(1);
+      } finally {
+        claimSpy.mockRestore();
+        debugSpy.mockRestore();
+        warnSpy.mockRestore();
+      }
+    });
+  });
+
+  // ── Stranded-Task Hardening ─────────────────────────────────────────
+
+  describe('stranded-task hardening', () => {
+    it('fails task when submitForReview throws instead of stranding it', async () => {
+      setupProfileMocks();
+      setupHarnessMocks();
+
+      const controller = new AbortController();
+      const { pool, tracker } = createPoolAndTracker({
+        tasks: [makeTask()],
+        maxConcurrentLanes: 1,
+        laneWaitTimeoutMs: 100,
+        signal: controller.signal,
+      });
+
+      const submitSpy = spyOn(tracker, 'submitForReview').mockImplementation(() => {
+        throw new Error('Tracker state error');
+      });
+      const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
+
+      const t = setTimeout(() => controller.abort(), 500);
+
+      try {
+        const result = await pool.run();
+
+        // POST-FIX: when submitForReview throws, pool marks task as failed
+        // instead of leaving it stranded in 'implementing' status
+        expect(result.failedTasks).toBe(1);
+        expect(tracker.getTask('task-1')!.status).toBe('failed');
+      } finally {
+        clearTimeout(t);
+        submitSpy.mockRestore();
+        errorSpy.mockRestore();
       }
     });
   });

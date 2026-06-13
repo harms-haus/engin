@@ -101,6 +101,7 @@ function createPoolAndTracker(overrides?: {
     profilesDirs: ['/mock/profiles'],
     sessionBaseDir: '/tmp/sessions',
     cwd: '/tmp/project',
+    phase: 'implementing',
     taskTracker: tracker,
     getStepsForTask,
     onStatus: undefined,

@@ -913,6 +913,77 @@ describe('WorkflowTUI', () => {
     });
   });
 
+  describe('prepareQrCode', () => {
+    /**
+     * Spy on TUI prototype methods that touch real terminal I/O so start()
+     * runs without entering raw mode, while still exercising the real WorkflowTUI
+     * start() path that attaches a prepared QR overlay. Captures showOverlay so
+     * we can assert the prepared component is attached during start().
+     */
+    function setupStartWithShowOverlaySpy() {
+      const overlayHandle = {
+        hide: mock(() => {}),
+        setHidden: mock(() => {}),
+        isHidden: mock(() => false),
+        focus: mock(() => {}),
+        unfocus: mock(() => {}),
+        isFocused: mock(() => false),
+      };
+      const mockShowOverlay = mock(() => overlayHandle);
+      const addListenerSpy = spyOn(TUI.prototype, 'addInputListener').mockImplementation(function (this: any) {
+        this.requestRender = () => {};
+        this.showOverlay = mockShowOverlay;
+        return () => {};
+      });
+      const tuiStartSpy = spyOn(TUI.prototype, 'start').mockImplementation(() => {});
+      const tuiStopSpy = spyOn(TUI.prototype, 'stop').mockImplementation(() => {});
+      return {
+        overlayHandle,
+        mockShowOverlay,
+        cleanup: () => {
+          addListenerSpy.mockRestore();
+          tuiStartSpy.mockRestore();
+          tuiStopSpy.mockRestore();
+        },
+      };
+    }
+
+    it('attaches the prepared QR overlay during start() (so it paints on the first render)', async () => {
+      const { mockShowOverlay, cleanup } = setupStartWithShowOverlaySpy();
+      try {
+        const wtui = new WorkflowTUI({ abort: () => {} });
+        await wtui.prepareQrCode('https://example.com');
+        wtui.start();
+
+        // The QR overlay must be attached during start(), not deferred to a
+        // later render — that is what keeps it out of the incremental-render
+        // edge case where its rows never get painted.
+        expect(mockShowOverlay).toHaveBeenCalledTimes(1);
+        const [component, options] = mockShowOverlay.mock.calls[0];
+        expect(component).toBeDefined();
+        expect(typeof component.render).toBe('function');
+        expect(options).toEqual({
+          anchor: 'top-right',
+          nonCapturing: true,
+          margin: { top: 1, right: 1 },
+        });
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('does not attach anything during start() when no QR was prepared', () => {
+      const { mockShowOverlay, cleanup } = setupStartWithShowOverlaySpy();
+      try {
+        const wtui = new WorkflowTUI({ abort: () => {} });
+        wtui.start();
+        expect(mockShowOverlay).not.toHaveBeenCalled();
+      } finally {
+        cleanup();
+      }
+    });
+  });
+
   describe('pauseForInspection', () => {
     function setupPauseTest() {
       const addInputMock = mock(() => () => {});

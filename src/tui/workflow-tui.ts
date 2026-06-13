@@ -20,6 +20,13 @@ export interface WorkflowTUIOptions {
   maxConcurrentLanes?: number;
   agentLogLines?: number;
   abort?: () => void;
+  initialAgents?: {
+    agentId: string;
+    profile: string;
+    phase: string;
+    taskId?: string;
+    completedAt?: string;
+  }[];
 }
 
 // ─── Separator Component ─────────────────────────────────────────────────────
@@ -59,14 +66,17 @@ export class WorkflowTUI {
   private interruptCount = 0;
   private inputUnsubscribe: (() => void) | null = null;
   private qrHandle: OverlayHandle | null = null;
+  private pendingQrComponent: Component | null = null;
   private readonly originalConsoleLog: typeof console.log;
   private readonly originalConsoleWarn: typeof console.warn;
   private readonly originalConsoleError: typeof console.error;
+  private readonly initialAgents: WorkflowTUIOptions['initialAgents'];
 
   constructor(options: WorkflowTUIOptions = {}) {
     this.maxConcurrentLanes = options.maxConcurrentLanes ?? 5;
     this.agentLogLines = options.agentLogLines ?? 20;
     this.abortFn = options.abort;
+    this.initialAgents = options.initialAgents;
 
     this.eventLog = new EventLog();
     this.dashboard = new Dashboard(this.maxConcurrentLanes, this.agentLogLines);
@@ -77,6 +87,7 @@ export class WorkflowTUI {
       requestRender: () => {
         this.tui?.requestRender();
       },
+      initialAgents: this.initialAgents,
     });
 
     this.originalConsoleLog = console.log;
@@ -206,6 +217,15 @@ export class WorkflowTUI {
 
     tui.start();
     this.running = true;
+
+    // Attach a QR overlay prepared via prepareQrCode() so it is part of the
+    // first render. requestRender() is debounced, so this showOverlay() lands in
+    // the same first render that tui.start() scheduled — painting the QR via the
+    // initial full repaint rather than a later incremental one that may skip it.
+    if (this.pendingQrComponent) {
+      this.qrHandle = tui.showOverlay(this.pendingQrComponent, QR_OVERLAY_OPTIONS);
+      this.pendingQrComponent = null;
+    }
   }
 
   stop(): void {
@@ -228,6 +248,22 @@ export class WorkflowTUI {
   }
 
   // ─── QR Code Overlay ────────────────────────────────────────────
+
+  /**
+   * Pre-generate the QR overlay component so start() can attach it BEFORE the
+   * first render fires. The initial render is the only scrollback-safe full
+   * repaint; any later (incremental) render can fail to paint newly-added
+   * overlay rows (a pi-tui differential-rendering edge case where the rows land
+   * in the diff baseline without being drawn), causing the QR to flash and
+   * vanish. Call this before start(); the component is attached in start().
+   */
+  async prepareQrCode(url: string): Promise<void> {
+    try {
+      this.pendingQrComponent = (await createQrOverlayComponent(url)).component;
+    } catch (err) {
+      this.originalConsoleError('Failed to generate QR code overlay:', err);
+    }
+  }
 
   async showQrCode(url: string): Promise<void> {
     if (this.qrHandle) {

@@ -122,6 +122,7 @@ function createPoolAndTracker(overrides?: PoolOptionsOverrides) {
     profilesDirs: ['/mock/profiles'],
     sessionBaseDir: '/tmp/sessions',
     cwd: '/tmp/project',
+    phase: 'implementing',
     taskTracker: tracker,
     getStepsForTask,
     maxStepRetries: overrides?.maxStepRetries,
@@ -679,12 +680,14 @@ describe('LanePool', () => {
       expect(onAgentSpawn).toHaveBeenCalledTimes(2);
       expect(onAgentComplete).toHaveBeenCalledTimes(2);
 
-      expect(onAgentSpawn).toHaveBeenCalledWith({
-        agentId: 'lane-0',
-        profile: 'coder',
-        phase: 'implementing',
-        taskId: 'task-1',
-      });
+      expect(onAgentSpawn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          agentId: 'lane-0',
+          profile: 'coder',
+          phase: 'implementing',
+          taskId: 'task-1',
+        }),
+      );
     });
 
     it('fires onTaskRejected when a review step rejects and max retries is hit', async () => {
@@ -1085,6 +1088,7 @@ describe('LanePool', () => {
         profilesDirs: ['/mock/profiles'],
         sessionBaseDir: '/tmp/sessions',
         cwd: '/tmp/project',
+        phase: 'implementing',
         taskTracker: mockTracker,
         getStepsForTask: () => [{ name: 'implement', profileId: 'coder', isReadOnly: false }],
         onStatus: { onWorkflowFailed, onError },

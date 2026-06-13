@@ -526,7 +526,7 @@ describe('parseArgs', () => {
       expect(output).toContain('--worktree');
       expect(output).toMatch(/--worktree\s+Run workflow in a git worktree/);
       expect(output).toContain('--host');
-      expect(output).toMatch(/--host\s+<host>\s+Web server host/);
+      expect(output).toMatch(/--host\s+<host>\s+Web server bind host/);
       expect(output).toContain('--port');
       expect(output).toMatch(/--port\s+<port>\s+Web server port/);
       expect(output).not.toContain('web');

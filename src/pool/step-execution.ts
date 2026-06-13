@@ -23,6 +23,8 @@ export interface StepExecutionContext {
   onStatus: LanePoolOptions['onStatus'];
   activeSessions: Set<{ abort(): Promise<void> }>;
   appendAuditEvent: (event: WithoutTimestamp<AuditEvent>) => void;
+  /** Phase identifier propagated from the LanePool options. */
+  phase?: string;
 }
 
 /**
@@ -70,20 +72,12 @@ export async function runStep(
     onAgentStatus: forwardAgentStatus(execCtx.onStatus),
   };
 
-  // Fire status callbacks
-  execCtx.onStatus?.onAgentSpawn?.({
-    agentId,
-    profile: step.profileId,
-    phase: 'implementing',
-    taskId: task.id,
-  });
-
-  // Audit log
+  // Audit log — fires before harness creation (no sessionId needed)
   execCtx.appendAuditEvent({
     type: 'agent_start',
     agentId: step.profileId,
     profile: adjustedProfile,
-    phase: 'implementing',
+    phase: execCtx.phase ?? 'implementing',
     taskId: task.id,
   });
 
@@ -98,6 +92,19 @@ export async function runStep(
 
   // Track the session so the abort listener can cancel in-progress prompts
   execCtx.activeSessions.add(session);
+
+  // NOTE: onAgentSpawn is fired AFTER activeSessions.add to provide sessionId/sessionPath.
+  // Edge case: if an abort signal fires between activeSessions.add and this callback,
+  // the finally block will fire onAgentComplete without a matching onAgentSpawn for this
+  // agent. Consumers should treat onAgentComplete for an unregistered agent as a no-op.
+  execCtx.onStatus?.onAgentSpawn?.({
+    agentId,
+    profile: step.profileId,
+    phase: execCtx.phase ?? 'implementing',
+    taskId: task.id,
+    sessionId: session.sessionId,
+    sessionPath: trackedSession.sessionPath,
+  });
 
   try {
     // Build prompt
@@ -158,8 +165,9 @@ export async function runStep(
     execCtx.onStatus?.onAgentComplete?.({
       agentId,
       profile: step.profileId,
-      phase: 'implementing',
+      phase: execCtx.phase ?? 'implementing',
       taskId: task.id,
+      sessionId: session.sessionId,
     });
 
     // Audit log — agent_end event
@@ -167,7 +175,7 @@ export async function runStep(
       type: 'agent_end',
       agentId: step.profileId,
       result: {},
-      phase: 'implementing',
+      phase: execCtx.phase ?? 'implementing',
       taskId: task.id,
     });
   }

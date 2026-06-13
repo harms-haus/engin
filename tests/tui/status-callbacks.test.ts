@@ -167,6 +167,37 @@ function createTestDeps() {
   };
 }
 
+function createTestDepsWithInitialAgents(
+  initialAgents: NonNullable<Parameters<typeof createTuiStatusCallbacks>[0]['initialAgents']>,
+) {
+  const eventLog = createMockEventLog();
+  const phaseBar = createMockPhaseBar();
+  const lanePool = createMockLanePool();
+  const agentLog = createMockAgentLog();
+  const dashboard = createMockDashboard(phaseBar, lanePool, agentLog);
+  let renderCount = 0;
+  const requestRender = () => {
+    renderCount++;
+  };
+
+  const callbacks = createTuiStatusCallbacks({ eventLog, dashboard, requestRender, initialAgents });
+
+  return {
+    eventLog,
+    phaseBar,
+    lanePool,
+    agentLog,
+    dashboard,
+    get renderCount() {
+      return renderCount;
+    },
+    resetRenderCount() {
+      renderCount = 0;
+    },
+    callbacks,
+  };
+}
+
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 describe('createTuiStatusCallbacks', () => {
@@ -805,6 +836,78 @@ describe('createTuiStatusCallbacks', () => {
         arguments: {},
       });
       expect(ctx.eventLog.lines).toEqual([]);
+    });
+  });
+
+  // ─── initialAgents seeding ─────────────────────────────────────────
+
+  describe('initialAgents', () => {
+    it('seeds agent log with selectAgentInPhase and updateStats for each initial agent', () => {
+      const ctx = createTestDepsWithInitialAgents([
+        { agentId: 'a1', profile: 'coder', phase: 'implementing' },
+        { agentId: 'a2', profile: 'scout', phase: 'scouting' },
+      ]);
+
+      const selectCalls = ctx.agentLog.calls.filter((c) => c.method === 'selectAgentInPhase');
+      expect(selectCalls).toEqual([
+        { method: 'selectAgentInPhase', args: ['a1', 'implementing', 'coder'] },
+        { method: 'selectAgentInPhase', args: ['a2', 'scouting', 'scout'] },
+      ]);
+
+      const statsCalls = ctx.agentLog.calls.filter((c) => c.method === 'updateStats');
+      expect(statsCalls).toEqual([
+        { method: 'updateStats', args: ['a1', { profile: 'coder' }] },
+        { method: 'updateStats', args: ['a2', { profile: 'scout' }] },
+      ]);
+    });
+
+    it('marks agents as completed when completedAt is present', () => {
+      const ctx = createTestDepsWithInitialAgents([
+        { agentId: 'a1', profile: 'coder', phase: 'implementing', completedAt: '2026-06-13T12:00:00.000Z' },
+        { agentId: 'a2', profile: 'scout', phase: 'scouting' },
+      ]);
+
+      const completeCalls = ctx.agentLog.calls.filter((c) => c.method === 'markAgentComplete');
+      expect(completeCalls).toEqual([{ method: 'markAgentComplete', args: ['a1'] }]);
+    });
+
+    it('does not add lines to eventLog', () => {
+      const ctx = createTestDepsWithInitialAgents([{ agentId: 'a1', profile: 'coder', phase: 'implementing' }]);
+
+      expect(ctx.eventLog.lines).toEqual([]);
+    });
+
+    it('does not affect lanes in lanePool', () => {
+      const ctx = createTestDepsWithInitialAgents([{ agentId: 'a1', profile: 'coder', phase: 'implementing' }]);
+
+      expect(ctx.lanePool.calls.length).toBe(0);
+    });
+
+    it('handles empty initialAgents array', () => {
+      const ctx = createTestDepsWithInitialAgents([]);
+
+      expect(ctx.agentLog.calls.length).toBe(0);
+    });
+
+    it('handles initialAgents with taskId', () => {
+      const ctx = createTestDepsWithInitialAgents([
+        { agentId: 'a1', profile: 'coder', phase: 'implementing', taskId: 'task-1' },
+      ]);
+
+      const selectCalls = ctx.agentLog.calls.filter((c) => c.method === 'selectAgentInPhase');
+      expect(selectCalls).toEqual([{ method: 'selectAgentInPhase', args: ['a1', 'implementing', 'coder'] }]);
+    });
+
+    it('does not pollute subsequent onAgentSpawn calls', () => {
+      const ctx = createTestDepsWithInitialAgents([{ agentId: 'a1', profile: 'coder', phase: 'implementing' }]);
+
+      // Reset call count to measure only the onAgentSpawn call
+      ctx.agentLog.calls.length = 0;
+
+      ctx.callbacks.onAgentSpawn!({ agentId: 'a2', profile: 'scout', phase: 'scouting' });
+
+      const selectCalls = ctx.agentLog.calls.filter((c) => c.method === 'selectAgentInPhase');
+      expect(selectCalls).toEqual([{ method: 'selectAgentInPhase', args: ['a2', 'scouting', 'scout'] }]);
     });
   });
 });

@@ -67,7 +67,6 @@ export class LanePool {
         title: t.title,
         status: t.status,
         dependencies: t.dependencies,
-        phase: this.options.phase,
       })),
     });
 
@@ -120,64 +119,95 @@ export class LanePool {
   private async runLane(laneIndex: number, profiles: Map<string, AgentProfile>): Promise<void> {
     const { taskTracker } = this.options;
     const agentId = `lane-${laneIndex}`;
-    const WAIT_TIMEOUT_MS = 30000;
+    const waitTimeoutMs = this.options.laneWaitTimeoutMs ?? 60000;
+    const STALL_WARN_THRESHOLD = 5;
+    let consecutiveTimeouts = 0;
 
     while (true) {
-      // Check for cancellation
       if (this.options.signal?.aborted) {
         return;
       }
 
-      const claimed = taskTracker.claimTasks(1);
-      if (claimed.length === 0) {
-        if (taskTracker.isPoolDone()) {
-          return;
+      // ── Register wait listeners FIRST to close the TOCTOU gap ──────────
+      // Any TaskReady/TaskSettled event that fires during the subsequent
+      // claimTasks/isPoolDone check is guaranteed to be caught.
+      let resolveWait!: () => void;
+      const wakePromise = new Promise<void>((resolve) => {
+        resolveWait = resolve;
+      });
+
+      let cleanedUp = false;
+      const onWake = () => {
+        cleanup();
+        resolveWait();
+      };
+      const onAbort = () => {
+        cleanup();
+        resolveWait();
+      };
+      const timer = setTimeout(() => {
+        cleanup();
+        console.debug(`[${agentId}] Lane wait timeout after ${waitTimeoutMs}ms, retrying`);
+        consecutiveTimeouts++;
+        if (consecutiveTimeouts >= STALL_WARN_THRESHOLD) {
+          console.warn(
+            `[${agentId}] Lane appears stalled — no task progress for ` +
+              `${consecutiveTimeouts * waitTimeoutMs}ms. Tasks may be stuck.`,
+          );
+          consecutiveTimeouts = 0; // Re-arm so warn doesn't spam every poll
         }
-        // ── Dual-listener wait with safety timeout ────────────────────────
-        await new Promise<void>((resolve) => {
-          const timer = setTimeout(() => {
-            cleanup();
-            console.warn(`[${agentId}] Lane wait timeout after ${WAIT_TIMEOUT_MS}ms, retrying`);
-            resolve();
-          }, WAIT_TIMEOUT_MS);
-          const onReady = () => {
-            cleanup();
-            resolve();
-          };
-          const onAbort = () => {
-            cleanup();
-            resolve();
-          };
-          const cleanup = () => {
-            clearTimeout(timer);
-            taskTracker.removeListener(TaskTracker.Events.TaskReady, onReady);
-            taskTracker.removeListener(TaskTracker.Events.TaskSettled, onReady);
-            this.options.signal?.removeEventListener('abort', onAbort);
-          };
-          taskTracker.once(TaskTracker.Events.TaskReady, onReady);
-          taskTracker.once(TaskTracker.Events.TaskSettled, onReady);
-          this.options.signal?.addEventListener('abort', onAbort, { once: true });
-        });
+        resolveWait();
+      }, waitTimeoutMs);
+      const cleanup = () => {
+        if (cleanedUp) return;
+        cleanedUp = true;
+        clearTimeout(timer);
+        taskTracker.removeListener(TaskTracker.Events.TaskReady, onWake);
+        taskTracker.removeListener(TaskTracker.Events.TaskSettled, onWake);
+        this.options.signal?.removeEventListener('abort', onAbort);
+      };
+
+      taskTracker.once(TaskTracker.Events.TaskReady, onWake);
+      taskTracker.once(TaskTracker.Events.TaskSettled, onWake);
+      this.options.signal?.addEventListener('abort', onAbort, { once: true });
+
+      // ── Check for pool completion BEFORE claiming ──────────────────────
+      // This must precede claimTasks so a completed task is never re-armed
+      // (e.g. by a spy in tests). isPoolDone returns true only when every
+      // task is settled (done/failed) or deadlocked — never when any task
+      // is ready, claimed, or in-flight.
+      if (taskTracker.isPoolDone()) {
+        cleanup();
+        return;
+      }
+
+      const claimed = taskTracker.claimTasks(1);
+
+      if (claimed.length > 0) {
+        cleanup();
+        consecutiveTimeouts = 0; // Reset stall counter on successful claim
+        const task = claimed[0];
+
+        try {
+          // startTask lives inside the try block so a tracker error is caught
+          taskTracker.startTask(task.id, agentId);
+          await this.processTask(task, agentId, profiles);
+        } catch (err) {
+          // Fire onError callback on task processing error
+          const error = safeErrorMessage(err);
+          this.reportError(agentId, error, undefined, task.id);
+          // Error during task processing — mark as failed to prevent the lane
+          // from getting stuck.
+          this.safeFailTask(task.id, { completed: false, error: true });
+
+          // Audit log — error event
+          this.appendAuditEvent({ type: 'error', agentId, error, taskId: task.id });
+        }
         continue;
       }
 
-      const task = claimed[0];
-
-      try {
-        // startTask lives inside the try block so a tracker error is caught
-        taskTracker.startTask(task.id, agentId);
-        await this.processTask(task, agentId, profiles);
-      } catch (err) {
-        // Fire onError callback on task processing error
-        const error = safeErrorMessage(err);
-        this.reportError(agentId, error, 'implementing', task.id);
-        // Error during task processing — mark as failed to prevent the lane
-        // from getting stuck.
-        this.safeFailTask(task.id, { completed: false, error: true });
-
-        // Audit log — error event
-        this.appendAuditEvent({ type: 'error', agentId, error, taskId: task.id });
-      }
+      // No task available — wait for an event, timeout, or abort
+      await wakePromise;
     }
   }
 
@@ -232,6 +262,7 @@ export class LanePool {
       onStatus: this.options.onStatus,
       activeSessions: this.activeSessions,
       appendAuditEvent: (event) => this.appendAuditEvent(event),
+      phase: this.options.phase,
     };
 
     try {
@@ -315,6 +346,11 @@ export class LanePool {
                   taskId: task.id,
                   title: task.title,
                 });
+              } else {
+                this.safeFailTask(task.id, {
+                  completed: false,
+                  error: 'Failed to submit task for review after max retries exceeded',
+                });
               }
             }
             disposeAllTaskSessions();
@@ -331,6 +367,11 @@ export class LanePool {
         this.options.onStatus?.onTaskComplete?.({
           taskId: task.id,
           title: task.title,
+        });
+      } else {
+        this.safeFailTask(task.id, {
+          completed: false,
+          error: 'Failed to submit completed task for review',
         });
       }
     } catch (err) {
@@ -353,7 +394,7 @@ export class LanePool {
       return true;
     } catch (err) {
       const errorMsg = `safeSubmitAndComplete failed for ${taskId}: ${safeErrorMessage(err)}`;
-      this.reportError('pool', errorMsg, 'implementing', taskId);
+      this.reportError('pool', errorMsg, undefined, taskId);
       return false;
     }
   }
@@ -367,7 +408,7 @@ export class LanePool {
       this.options.taskTracker.failTask(taskId, result);
     } catch (err) {
       const errorMsg = `safeFailTask failed for ${taskId}: ${safeErrorMessage(err)}`;
-      this.reportError('pool', errorMsg, 'implementing', taskId);
+      this.reportError('pool', errorMsg, undefined, taskId);
     }
   }
 
@@ -376,9 +417,10 @@ export class LanePool {
   /**
    * Report an error via the onStatus callback or console.error fallback.
    */
-  private reportError(agentId: string, error: string, phase = 'implementing', taskId?: string): void {
+  private reportError(agentId: string, error: string, phase?: string, taskId?: string): void {
+    const effectivePhase = phase ?? this.options.phase ?? 'implementing';
     if (this.options.onStatus?.onError) {
-      this.options.onStatus.onError({ agentId, error, phase, taskId });
+      this.options.onStatus.onError({ agentId, error, phase: effectivePhase, taskId });
     } else {
       console.error(`[${agentId}] ${error}`);
     }

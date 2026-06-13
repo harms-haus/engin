@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { PastRunEntry } from '../core/config.js';
 import { getDefaultWorkDir, getGlobalConfigDir, resolveProfilesDirs } from '../core/config.js';
+import { getLocalNetworkIP } from '../core/network.js';
 import { initDefaultConfig } from '../core/setup.js';
 import type { WorktreeInfo } from '../core/types.js';
 import { composeStatusCallbacks, validateWorkflowName } from '../core/utils.js';
@@ -63,8 +64,20 @@ export async function runCommand(options: CliOptions): Promise<void> {
 
   if (useTui) {
     // Start observer web server with snapshot callback
-    const host = options.host ?? '127.0.0.1';
     const port = options.port ?? 3619;
+    let bindHost: string;
+    let displayHost: string | undefined;
+
+    if (options.host) {
+      // User specified a host — use it for both bind and display
+      bindHost = options.host;
+      displayHost = undefined; // startObserverServer will use server.hostname
+    } else {
+      // Auto-detect: bind to all interfaces, display the LAN IP
+      bindHost = '0.0.0.0';
+      displayHost = getLocalNetworkIP() ?? '127.0.0.1';
+    }
+
     const snapshotFn = (): ServerMessage =>
       statusBridge?.getSnapshot() ?? {
         type: 'init',
@@ -76,19 +89,20 @@ export async function runCommand(options: CliOptions): Promise<void> {
       };
     const { startObserverServer } = await import('../web/observer-server.js');
     observerServer = await startObserverServer({
-      host,
+      host: bindHost,
       port,
+      ...(displayHost ? { displayHost } : {}),
       onTerminate: () => controller.abort(),
       getSnapshot: snapshotFn,
     });
     const serverUrl = observerServer.url;
 
-    // Create and start TUI
+    // Create TUI. Pre-generate the QR overlay BEFORE start() so it is attached
+    // during the first (scrollback-safe) render; attaching it later can cause it
+    // to flash and vanish due to a pi-tui incremental-render edge case.
     tuiInstance = new WorkflowTUI({ abort: () => controller.abort() });
+    await tuiInstance.prepareQrCode(serverUrl);
     tuiInstance.start();
-
-    // Show QR code with server URL
-    await tuiInstance.showQrCode(serverUrl);
 
     // Create status bridge and wire snapshot
     statusBridge = new StatusBridge(observerServer.broadcast);
@@ -179,6 +193,13 @@ export async function resumeCommand(options: CliOptions): Promise<void> {
   const state = JSON.parse(stateRaw) as {
     taskPrompt: string;
     worktree?: { worktreePath: string; branchName: string; originalCwd: string };
+    spawnedAgents?: {
+      agentId: string;
+      profile: string;
+      phase: string;
+      taskId?: string;
+      completedAt?: string;
+    }[];
   };
   const taskPrompt = state.taskPrompt;
   const worktreeInfo = state.worktree;
@@ -213,8 +234,20 @@ export async function resumeCommand(options: CliOptions): Promise<void> {
 
   if (useTui) {
     // Start observer web server with snapshot callback
-    const host = options.host ?? '127.0.0.1';
     const port = options.port ?? 3619;
+    let bindHost: string;
+    let displayHost: string | undefined;
+
+    if (options.host) {
+      // User specified a host — use it for both bind and display
+      bindHost = options.host;
+      displayHost = undefined; // startObserverServer will use server.hostname
+    } else {
+      // Auto-detect: bind to all interfaces, display the LAN IP
+      bindHost = '0.0.0.0';
+      displayHost = getLocalNetworkIP() ?? '127.0.0.1';
+    }
+
     const snapshotFn = (): ServerMessage =>
       statusBridge?.getSnapshot() ?? {
         type: 'init',
@@ -226,19 +259,23 @@ export async function resumeCommand(options: CliOptions): Promise<void> {
       };
     const { startObserverServer } = await import('../web/observer-server.js');
     observerServer = await startObserverServer({
-      host,
+      host: bindHost,
       port,
+      ...(displayHost ? { displayHost } : {}),
       onTerminate: () => controller.abort(),
       getSnapshot: snapshotFn,
     });
     const serverUrl = observerServer.url;
 
-    // Create and start TUI
-    tuiInstance = new WorkflowTUI({ abort: () => controller.abort() });
+    // Create TUI. Pre-generate the QR overlay BEFORE start() so it is attached
+    // during the first (scrollback-safe) render; attaching it later can cause it
+    // to flash and vanish due to a pi-tui incremental-render edge case.
+    tuiInstance = new WorkflowTUI({
+      abort: () => controller.abort(),
+      ...(state.spawnedAgents ? { initialAgents: state.spawnedAgents } : {}),
+    });
+    await tuiInstance.prepareQrCode(serverUrl);
     tuiInstance.start();
-
-    // Show QR code with server URL
-    await tuiInstance.showQrCode(serverUrl);
 
     // Create status bridge and wire snapshot
     statusBridge = new StatusBridge(observerServer.broadcast);

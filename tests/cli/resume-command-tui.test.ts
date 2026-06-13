@@ -7,6 +7,7 @@ import { useTempDir } from '../helpers/use-temp-dir.js';
 
 const realWorkflowLoader = Object.assign({}, await import('../../src/core/workflow-loader.js'));
 const realUtils = Object.assign({}, await import('../../src/core/utils.js'));
+const realNetwork = Object.assign({}, await import('../../src/core/network.js'));
 const realConsoleStatus = Object.assign({}, await import('../../src/cli/console-status.js'));
 const realConfig = Object.assign({}, await import('../../src/core/config.js'));
 const realPostWorktree = Object.assign({}, await import('../../src/cli/post-worktree.js'));
@@ -27,6 +28,7 @@ const mockStartObserverServer = mock<(opts: unknown) => Promise<unknown>>();
 const mockTuiStart = mock<() => void>();
 const mockTuiStop = mock<() => void>();
 const mockTuiShowQrCode = mock<(url: string) => Promise<void>>();
+const mockTuiPrepareQrCode = mock<(url: string) => Promise<void>>();
 const mockTuiPauseForInspection = mock<(signal?: AbortSignal) => Promise<void>>();
 const mockTuiGetStatusCallbacks = mock<() => Record<string, unknown>>();
 
@@ -36,6 +38,9 @@ const mockBridgeGetSnapshot = mock<() => Record<string, unknown>>();
 
 // composeStatusCallbacks spy
 const mockComposeStatusCallbacks = mock<(callbacks: unknown[]) => unknown>();
+
+// Network spy
+const mockGetLocalNetworkIP = mock<() => string | null>();
 
 // Post-worktree action mock
 const mockPromptPostWorktreeAction = mock<(options: Record<string, unknown>) => Promise<void>>();
@@ -69,6 +74,10 @@ mock.module('../../src/cli/console-status.js', () => ({
   formatTime: () => '[00:00:00]',
   createStatusCallbacks: () => ({}),
   shouldUseTui: () => true,
+}));
+
+mock.module('../../src/core/network.js', () => ({
+  getLocalNetworkIP: mockGetLocalNetworkIP,
 }));
 
 mock.module('../../src/core/config.js', () => ({
@@ -112,6 +121,9 @@ mock.module('../../src/tui/workflow-tui.js', () => ({
     showQrCode(url: string) {
       return mockTuiShowQrCode(url);
     }
+    prepareQrCode(url: string) {
+      return mockTuiPrepareQrCode(url);
+    }
     pauseForInspection(signal?: AbortSignal) {
       return mockTuiPauseForInspection(signal);
     }
@@ -130,6 +142,7 @@ import { resumeCommand } from '../../src/cli.ts';
 afterAll(() => {
   mock.module('../../src/core/workflow-loader.js', () => realWorkflowLoader);
   mock.module('../../src/core/utils.js', () => realUtils);
+  mock.module('../../src/core/network.js', () => realNetwork);
   mock.module('../../src/cli/console-status.js', () => realConsoleStatus);
   mock.module('../../src/core/config.js', () => realConfig);
   mock.module('../../src/cli/post-worktree.js', () => realPostWorktree);
@@ -187,16 +200,21 @@ describe('resumeCommand — TUI/web/QR/pause integration', () => {
     mockTuiStart.mockReset();
     mockTuiStop.mockReset();
     mockTuiShowQrCode.mockReset();
+    mockTuiPrepareQrCode.mockReset();
     mockTuiPauseForInspection.mockReset();
     mockTuiGetStatusCallbacks.mockReset();
     mockBridgeGetCallbacks.mockReset();
     mockBridgeGetSnapshot.mockReset();
     mockComposeStatusCallbacks.mockReset();
+    mockGetLocalNetworkIP.mockReset();
     mockPromptPostWorktreeAction.mockReset();
     mockResolveProfilesDirs.mockReset();
     capturedTuiOptions = null;
     capturedBridgeBroadcast = null;
     capturedObserverServerOptions = null;
+
+    // Default: getLocalNetworkIP returns a LAN IP
+    mockGetLocalNetworkIP.mockReturnValue('192.168.1.42');
 
     // Default mock behaviors
     mockWorkflowRun.mockResolvedValue(undefined);
@@ -214,6 +232,7 @@ describe('resumeCommand — TUI/web/QR/pause integration', () => {
     mockTuiStart.mockImplementation(() => {});
     mockTuiStop.mockImplementation(() => {});
     mockTuiShowQrCode.mockResolvedValue(undefined);
+    mockTuiPrepareQrCode.mockResolvedValue(undefined);
     mockTuiPauseForInspection.mockResolvedValue(undefined);
     mockTuiGetStatusCallbacks.mockReturnValue({ isTuiCallbacks: true });
     mockBridgeGetCallbacks.mockReturnValue({ isBridgeCallbacks: true });
@@ -250,7 +269,7 @@ describe('resumeCommand — TUI/web/QR/pause integration', () => {
   // ─── Non-worktree resume with TUI ─────────────────────────────────────
 
   describe('non-worktree resume with TUI', () => {
-    it('starts observer server with default host and port', async () => {
+    it('starts observer server with default auto-detected LAN host', async () => {
       const ts = Date.now();
       const dirName = `${ts}-my-workflow`;
       const tempDir = getDir();
@@ -261,8 +280,42 @@ describe('resumeCommand — TUI/web/QR/pause integration', () => {
       expect(mockStartObserverServer).toHaveBeenCalledTimes(1);
       const opts = capturedObserverServerOptions as Record<string, unknown> | null;
       expect(opts).not.toBeNull();
-      expect(opts!.host).toBe('127.0.0.1');
+      // When no --host given, bind to 0.0.0.0 and pass the LAN IP as displayHost
+      expect(opts!.host).toBe('0.0.0.0');
       expect(opts!.port).toBe(3619);
+      expect(opts!.displayHost).toBe('192.168.1.42');
+    });
+
+    it('uses host and port from options when provided, without displayHost', async () => {
+      const ts = Date.now();
+      const dirName = `${ts}-my-workflow`;
+      const tempDir = getDir();
+      createPastRunDir(tempDir, dirName, { taskPrompt: 'resumed task' });
+
+      const opts = makeResumeOptions({ cwd: tempDir, sessionName: dirName });
+      opts.host = '127.0.0.1';
+      opts.port = 8080;
+      await resumeCommand(opts);
+
+      const serverOpts = capturedObserverServerOptions as Record<string, unknown> | null;
+      expect(serverOpts!.host).toBe('127.0.0.1');
+      expect(serverOpts!.port).toBe(8080);
+      expect(serverOpts!.displayHost).toBeUndefined();
+    });
+
+    it('falls back to 127.0.0.1 for display when getLocalNetworkIP returns null', async () => {
+      mockGetLocalNetworkIP.mockReturnValue(null);
+
+      const ts = Date.now();
+      const dirName = `${ts}-my-workflow`;
+      const tempDir = getDir();
+      createPastRunDir(tempDir, dirName, { taskPrompt: 'resumed task' });
+
+      await resumeCommand(makeResumeOptions({ cwd: tempDir, sessionName: dirName }));
+
+      const opts = capturedObserverServerOptions as Record<string, unknown> | null;
+      expect(opts!.host).toBe('0.0.0.0');
+      expect(opts!.displayHost).toBe('127.0.0.1');
     });
 
     it('creates and starts WorkflowTUI', async () => {
@@ -278,7 +331,7 @@ describe('resumeCommand — TUI/web/QR/pause integration', () => {
       expect(mockTuiStart).toHaveBeenCalledTimes(1);
     });
 
-    it('shows QR code with server URL', async () => {
+    it('prepares QR code with server URL before start', async () => {
       const ts = Date.now();
       const dirName = `${ts}-my-workflow`;
       const tempDir = getDir();
@@ -286,8 +339,8 @@ describe('resumeCommand — TUI/web/QR/pause integration', () => {
 
       await resumeCommand(makeResumeOptions({ cwd: tempDir, sessionName: dirName }));
 
-      expect(mockTuiShowQrCode).toHaveBeenCalledTimes(1);
-      expect(mockTuiShowQrCode.mock.calls[0][0]).toBe('http://127.0.0.1:3619');
+      expect(mockTuiPrepareQrCode).toHaveBeenCalledTimes(1);
+      expect(mockTuiPrepareQrCode.mock.calls[0][0]).toBe('http://127.0.0.1:3619');
     });
 
     it('creates StatusBridge with broadcast function', async () => {
@@ -419,7 +472,7 @@ describe('resumeCommand — TUI/web/QR/pause integration', () => {
 
       expect(mockStartObserverServer).toHaveBeenCalledTimes(1);
       expect(mockTuiStart).toHaveBeenCalledTimes(1);
-      expect(mockTuiShowQrCode).toHaveBeenCalledTimes(1);
+      expect(mockTuiPrepareQrCode).toHaveBeenCalledTimes(1);
     });
 
     it('composes callbacks and passes them to workflow.run', async () => {

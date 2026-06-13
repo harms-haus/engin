@@ -107,8 +107,21 @@ export interface WorkflowStatusCallbacks {
   onWorkflowStart?: (info: { taskPrompt: string; resumed: boolean; workDir: string }) => void;
   onPhaseStart?: (info: { phase: string; round: number }) => void;
   onPhaseComplete?: (info: { phase: string; durationMs: number }) => void;
-  onAgentSpawn?: (info: { agentId: string; profile: string; phase: string; taskId?: string }) => void;
-  onAgentComplete?: (info: { agentId: string; profile: string; phase: string; taskId?: string }) => void;
+  onAgentSpawn?: (info: {
+    agentId: string;
+    profile: string;
+    phase: string;
+    taskId?: string;
+    sessionId?: string;
+    sessionPath?: string;
+  }) => void;
+  onAgentComplete?: (info: {
+    agentId: string;
+    profile: string;
+    phase: string;
+    taskId?: string;
+    sessionId?: string;
+  }) => void;
   onTaskStart?: (info: { taskId: string; title: string; agentId: string; phase?: string; startedAt?: number }) => void;
   onTaskComplete?: (info: { taskId: string; title: string }) => void;
   onTaskRejected?: (info: { taskId: string; title: string; reason: string }) => void;

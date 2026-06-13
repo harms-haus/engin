@@ -336,6 +336,65 @@ describe('observer-server', () => {
     });
   });
 
+  // ─── displayHost tests ─────────────────────────────────────────────────
+
+  it('uses server.hostname in URL when displayHost is not provided (backward compat)', async () => {
+    server = await startObserverServer({
+      host: '127.0.0.1',
+      port: 0,
+    });
+    expect(server.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+    await server.stop();
+    server = undefined;
+  });
+
+  it('uses displayHost in URL when provided, replacing server.hostname', async () => {
+    server = await startObserverServer({
+      host: '0.0.0.0',
+      port: 0,
+      displayHost: '192.168.1.50',
+    });
+    expect(server.url).toMatch(/^http:\/\/192\.168\.1\.50:\d+$/);
+    expect(server.url).not.toContain('0.0.0.0');
+    await server.stop();
+    server = undefined;
+  });
+
+  it('displayHost works with localhost host', async () => {
+    server = await startObserverServer({
+      host: '127.0.0.1',
+      port: 0,
+      displayHost: 'myhost.local',
+    });
+    expect(server.url).toMatch(/^http:\/\/myhost\.local:\d+$/);
+    await server.stop();
+    server = undefined;
+  });
+
+  it('displayHost preserves port in URL', async () => {
+    server = await startObserverServer({
+      host: '0.0.0.0',
+      port: 0,
+      displayHost: 'example.com',
+    });
+    expect(server.url).toBe(`http://example.com:${server.server.port}`);
+    await server.stop();
+    server = undefined;
+  });
+
+  it('startObserverServer with host 0.0.0.0, port 0, and displayHost 192.168.1.50 returns a URL containing 192.168.1.50 not 0.0.0.0', async () => {
+    server = await startObserverServer({
+      host: '0.0.0.0',
+      port: 0,
+      displayHost: '192.168.1.50',
+    });
+    expect(server.url).toContain('192.168.1.50');
+    expect(server.url).not.toContain('0.0.0.0');
+    expect(server.url).toMatch(/^http:\/\/192\.168\.1\.50:\d+$/);
+    await server.stop();
+    server = undefined;
+  });
+
   it('SPA fallback serves index.html for unknown paths', async () => {
     const port = randomPort();
     server = await startObserverServer({

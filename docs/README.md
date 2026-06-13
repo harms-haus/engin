@@ -757,6 +757,7 @@ const pool = new LanePool({
   profilesDirs: resolveProfilesDirs(cwd, 'my-workflow'),
   sessionBaseDir: `${workDir}/sessions`,
   cwd,
+  phase: 'implementing',
   taskTracker,
   getStepsForTask: (task) => [
     { name: 'implement', profileId: 'implementer', isReadOnly: false },
@@ -1393,6 +1394,21 @@ Configuration for creating a `LanePool`.
 | `onStatus?`          | `StatusCallbacks`                  | No       | Status callback handlers                                                                                             |
 | `auditLog?`          | `AuditLog`                         | No       | Audit log for recording events                                                                                       |
 | `maxStepRetries?`    | `number`                           | No       | Maximum retries per step on rejection (default: `3`)                                                                 |
+| `phase?`             | `string`                           | No       | Phase identifier for the TUI lane pool widget badge (default: `"implementing"`). See note below.                     |
+
+> **Phase badge for TUI lane pool**  
+> To show the current phase badge (e.g. `📦 scouting`) next to active tasks in the TUI lane pool widget, pass the `phase` option to the `LanePool` constructor. Common values are: `"scouting"`, `"planning"`, `"implementing"`, `"review"`. The phase value is propagated to all agent spawn/complete callbacks, audit events, and error reports.
+>
+> ```typescript
+> const pool = new LanePool({
+>   // ... other options ...
+>   phase: 'implementing',
+> });
+> ```
+>
+> **Without this parameter**, the phase defaults to `"implementing"` and the TUI phase badge will not render — the phase bar shows only the workflow indicator icon, no phase segments.
+>
+> **Workflow authors:** Workflow files are loaded from external config directories at runtime and are not part of the engin source tree. If your workflow creates a `LanePool`, you must add (or update) the `phase` option in your workflow's `main.ts` to see the phase badge in the TUI.
 
 ---
 

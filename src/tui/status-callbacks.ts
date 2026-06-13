@@ -11,14 +11,33 @@ export function createTuiStatusCallbacks(deps: {
   eventLog: EventLog;
   dashboard: Dashboard;
   requestRender: () => void;
+  initialAgents?: {
+    agentId: string;
+    profile: string;
+    phase: string;
+    taskId?: string;
+    completedAt?: string;
+  }[];
 }): StatusCallbacks {
-  const { eventLog, dashboard, requestRender } = deps;
+  const { eventLog, dashboard, requestRender, initialAgents } = deps;
 
   const lanes = new Map<string, TaskLane>();
   // Lanes accumulate for the lifetime of the workflow; completed lanes remain visible.
   const completedPhases: string[] = [];
   // Reverse map for task → agent lookups
   const taskToAgent = new Map<string, string>();
+
+  // ─── Seed initial agents from persisted state ───────────────────────────
+
+  if (initialAgents) {
+    for (const agent of initialAgents) {
+      dashboard.agentLog.selectAgentInPhase(agent.agentId, agent.phase, agent.profile);
+      dashboard.agentLog.updateStats(agent.agentId, { profile: agent.profile });
+      if (agent.completedAt) {
+        dashboard.agentLog.markAgentComplete(agent.agentId);
+      }
+    }
+  }
 
   // ─── Builder helpers ─────────────────────────────────────────────────────
 

@@ -599,7 +599,7 @@ describe('runStep (step-execution module)', () => {
   // ─── Status Callbacks ────────────────────────────────────────────────
 
   describe('status callbacks', () => {
-    it('fires onAgentSpawn before execution', async () => {
+    it('fires onAgentSpawn with sessionId after harness creation', async () => {
       setupHarnessMocks();
 
       const onAgentSpawn = mock(() => {});
@@ -610,15 +610,21 @@ describe('runStep (step-execution module)', () => {
 
       await runStep(makeTask({ id: 'task-1' }), baseStep, 'lane-0', defaultCtx, profiles, execCtx);
 
-      expect(onAgentSpawn).toHaveBeenCalledWith({
-        agentId: 'lane-0',
-        profile: 'coder',
-        phase: 'implementing',
-        taskId: 'task-1',
-      });
+      expect(onAgentSpawn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          agentId: 'lane-0',
+          profile: 'coder',
+          phase: 'implementing',
+          taskId: 'task-1',
+        }),
+      );
+      // Verify sessionId is present (from mocked harness)
+      const callArg = onAgentSpawn.mock.calls[0][0] as Record<string, unknown>;
+      expect(callArg.sessionId).toBe('test-session');
+      expect(typeof callArg.sessionPath).toBe('string');
     });
 
-    it('fires onAgentComplete after execution', async () => {
+    it('fires onAgentComplete with sessionId after execution', async () => {
       setupHarnessMocks();
 
       const onAgentComplete = mock(() => {});
@@ -629,12 +635,17 @@ describe('runStep (step-execution module)', () => {
 
       await runStep(makeTask({ id: 'task-1' }), baseStep, 'lane-0', defaultCtx, profiles, execCtx);
 
-      expect(onAgentComplete).toHaveBeenCalledWith({
-        agentId: 'lane-0',
-        profile: 'coder',
-        phase: 'implementing',
-        taskId: 'task-1',
-      });
+      expect(onAgentComplete).toHaveBeenCalledWith(
+        expect.objectContaining({
+          agentId: 'lane-0',
+          profile: 'coder',
+          phase: 'implementing',
+          taskId: 'task-1',
+        }),
+      );
+      // Verify sessionId is present (from mocked harness)
+      const callArg = onAgentComplete.mock.calls[0][0] as Record<string, unknown>;
+      expect(callArg.sessionId).toBe('test-session');
     });
 
     it('fires onAgentComplete even when prompt throws', async () => {

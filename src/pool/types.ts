@@ -46,6 +46,8 @@ export interface LanePoolOptions {
   getStepsForTask: (task: Task) => StepDefinition[];
   /** Maximum retries per step on agent crash. Default: 5 */
   maxStepRetries?: number;
+  /** Maximum time (ms) a lane waits for new work before polling again. Default: 60000 */
+  laneWaitTimeoutMs?: number;
   /** Abort signal for cooperative cancellation */
   signal?: AbortSignal;
   /** Phase identifier set by the workflow orchestrator */

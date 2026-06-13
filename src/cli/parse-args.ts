@@ -13,7 +13,7 @@ export interface CliOptions {
   warnings: string[];
   /** Session name for the resume command (the directory name under .engin/work/) */
   sessionName?: string;
-  /** Web server host (default: 127.0.0.1) */
+  /** Web server bind host. When omitted, binds to 0.0.0.0 and auto-detects LAN IP for QR code display. */
   host?: string;
   /** Web server port (default: 3619) */
   port?: number;
@@ -37,7 +37,7 @@ Options:
   --verbose               Enable verbose logging
   --worktree              Run workflow in a git worktree
   --api-key <provider=key>  API key (repeatable)
-  --host <host>           Web server host (default: 127.0.0.1)
+  --host <host>           Web server bind host (default: auto-detect LAN IP)
   --port <port>           Web server port (default: 3619)
   --help, -h              Show this help message
   --version, -v           Show version`;

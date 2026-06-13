@@ -99,6 +99,7 @@ function validateWebSocketOrigin(req: Request): boolean {
 export async function startObserverServer(options: {
   host: string;
   port: number;
+  displayHost?: string;
   onTerminate?: () => void;
   getSnapshot?: () => ServerMessage;
 }): Promise<ObserverServer> {
@@ -163,7 +164,8 @@ export async function startObserverServer(options: {
     }
   }
 
-  const url = `http://${server.hostname}:${server.port}`;
+  const displayHost = options.displayHost ?? server.hostname;
+  const url = `http://${displayHost}:${server.port}`;
 
   return {
     server,
