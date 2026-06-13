@@ -1,4 +1,12 @@
-import { Key, matchesKey, ProcessTerminal, TUI, type Component, type Terminal } from '@earendil-works/pi-tui';
+import {
+  Key,
+  matchesKey,
+  ProcessTerminal,
+  TUI,
+  type Component,
+  type OverlayHandle,
+  type Terminal,
+} from '@earendil-works/pi-tui';
 import type { StatusCallbacks } from '../core/types.js';
 import { Dashboard } from './components/dashboard.js';
 import { EventLog } from './components/event-log.js';
@@ -42,7 +50,7 @@ export class WorkflowTUI {
   private running = false;
   private interruptCount = 0;
   private inputUnsubscribe: (() => void) | null = null;
-  private qrHandle: Component | null = null;
+  private qrHandle: OverlayHandle | null = null;
   private readonly originalConsoleLog: typeof console.log;
   private readonly originalConsoleWarn: typeof console.warn;
   private readonly originalConsoleError: typeof console.error;

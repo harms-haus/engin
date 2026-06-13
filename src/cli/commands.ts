@@ -8,6 +8,7 @@ import { composeStatusCallbacks, validateWorkflowName } from '../core/utils.js';
 import { loadWorkflow } from '../core/workflow-loader.js';
 import { setupWorktree } from '../core/worktree-lifecycle.js';
 import { WorkflowTUI } from '../tui/workflow-tui.js';
+import type { ServerMessage } from '../web/protocol-types.js';
 import { StatusBridge } from '../web/status-bridge.js';
 import { createStatusCallbacks, formatTime, shouldUseTui } from './console-status.js';
 import type { CliOptions } from './parse-args.js';
