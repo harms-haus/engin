@@ -129,7 +129,7 @@ export class WorkflowTUI {
         return { consume: true };
       }
 
-      // Tab: cycle focused lane
+      // Tab: cycle focused lane (no agent log sync)
       if (matchesKey(data, 'tab')) {
         const pool = this.dashboard.lanePool;
         const sorted = pool.getSortedLanes();
@@ -137,10 +137,6 @@ export class WorkflowTUI {
           const current = pool.getFocusedLaneIndex();
           const next = current < sorted.length - 1 ? current + 1 : 0;
           pool.setFocusedLaneById(sorted[next].id);
-          const lane = sorted[next];
-          if (lane) {
-            this.dashboard.agentLog.selectAgent(lane.agentId ?? lane.id, lane.profile ?? '');
-          }
         }
         this.tui?.requestRender();
         return { consume: true };
@@ -156,32 +152,26 @@ export class WorkflowTUI {
         return { consume: true };
       }
 
-      // Ctrl+Left/Ctrl+Right: switch phase in dashboard
-      if (matchesKey(data, Key.ctrl('left')) || matchesKey(data, Key.ctrl('right'))) {
+      // Shift+Up/Shift+Down: scroll by 10 when expanded, fall through when not
+      if (matchesKey(data, Key.shift('up')) || matchesKey(data, Key.shift('down'))) {
+        if (this.dashboard.agentLog.isExpanded()) {
+          this.dashboard.handleInput(data);
+          this.tui?.requestRender();
+          return { consume: true };
+        }
+        // Fall through when not expanded
+      }
+
+      // Up/Down: always consumed — phase nav when collapsed, scroll when expanded
+      if (matchesKey(data, 'up') || matchesKey(data, 'down')) {
         this.dashboard.handleInput(data);
         this.tui?.requestRender();
         return { consume: true };
       }
 
-      // Up/Down when expanded: scroll the expanded agent log
-      if ((matchesKey(data, 'up') || matchesKey(data, 'down')) && this.dashboard.agentLog.isExpanded()) {
-        this.dashboard.handleInput(data);
-        this.tui?.requestRender();
-        return { consume: true };
-      }
-
-      // Left/Right: navigate agents in agent log
+      // Left/Right: navigate agents in agent log (no lane pool sync)
       if (matchesKey(data, 'left') || matchesKey(data, 'right')) {
         this.dashboard.handleInput(data);
-        // Sync lane pool focus with agent log selection
-        const currentAgentId = this.dashboard.agentLog.getCurrentAgentId();
-        if (currentAgentId) {
-          const sorted = this.dashboard.lanePool.getSortedLanes();
-          const lane = sorted.find((l) => l.agentId === currentAgentId);
-          if (lane) {
-            this.dashboard.lanePool.setFocusedLaneById(lane.id);
-          }
-        }
         this.tui?.requestRender();
         return { consume: true };
       }

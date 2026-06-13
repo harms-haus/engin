@@ -196,92 +196,120 @@ describe('WorkflowTUI', () => {
   describe('arrow key routing to agent log', () => {
     // These tests verify the full integration pipeline:
     // WorkflowTUI → Dashboard.handleInput → AgentLogWidget state change
-    // The fix in workflow-tui.ts adds left/right arrow handling in the
-    // global input listener, routing to dashboard.handleInput(data).
+    // The fix in workflow-tui.ts routes left/right arrows to dashboard.handleInput.
 
     const LEFT_ARROW = '\x1b[D';
     const RIGHT_ARROW = '\x1b[C';
 
+    /** Register helper: registers two agents in the 'test' phase and sets up the agent log. */
+    function setupTwoAgents(tui: WorkflowTUI) {
+      const dashboard = tui.getDashboard();
+      dashboard.registry.register({ agentId: 'agent-1', profile: 'coder', phase: 'test' });
+      dashboard.registry.register({ agentId: 'agent-2', profile: 'scout', phase: 'test' });
+      dashboard.agentLog.setPhases(['test']);
+      dashboard.agentLog.setCurrentPhase('test');
+      return dashboard;
+    }
+
     it('dashboard.handleInput routes left arrow to agentLog, switching agents', () => {
       const tui = new WorkflowTUI();
-      const dashboard = tui.getDashboard();
+      const dashboard = setupTwoAgents(tui);
 
-      dashboard.agentLog.selectAgent('agent-1', 'coder');
-      dashboard.agentLog.selectAgent('agent-2', 'scout');
-      expect(dashboard.agentLog.getCurrentAgentId()).toBe('agent-2');
+      // Initially selected is the first registered agent (agent-1)
+      expect(dashboard.agentLog.getSelectedAgentUid()).toBe('agent-1');
+
+      // Navigate right then left
+      dashboard.handleInput(RIGHT_ARROW);
+      expect(dashboard.agentLog.getSelectedAgentUid()).toBe('agent-2');
 
       dashboard.handleInput(LEFT_ARROW);
-      expect(dashboard.agentLog.getCurrentAgentId()).toBe('agent-1');
+      expect(dashboard.agentLog.getSelectedAgentUid()).toBe('agent-1');
     });
 
     it('dashboard.handleInput routes right arrow to agentLog, switching agents', () => {
       const tui = new WorkflowTUI();
-      const dashboard = tui.getDashboard();
+      const dashboard = setupTwoAgents(tui);
 
-      dashboard.agentLog.selectAgent('agent-1', 'coder');
-      dashboard.agentLog.selectAgent('agent-2', 'scout');
-      expect(dashboard.agentLog.getCurrentAgentId()).toBe('agent-2');
+      // Initially agent-1 is selected
+      expect(dashboard.agentLog.getSelectedAgentUid()).toBe('agent-1');
 
       dashboard.handleInput(RIGHT_ARROW);
+      expect(dashboard.agentLog.getSelectedAgentUid()).toBe('agent-2');
+
       // Right from agent-2 wraps to agent-1
-      expect(dashboard.agentLog.getCurrentAgentId()).toBe('agent-1');
+      dashboard.handleInput(RIGHT_ARROW);
+      expect(dashboard.agentLog.getSelectedAgentUid()).toBe('agent-1');
     });
 
     it('dashboard.handleInput wraps left arrow from first to last agent', () => {
       const tui = new WorkflowTUI();
       const dashboard = tui.getDashboard();
 
-      dashboard.agentLog.selectAgent('agent-1', 'coder');
-      dashboard.agentLog.selectAgent('agent-2', 'scout');
-      dashboard.agentLog.selectAgent('agent-3', 'planner');
-      // Navigate back to first
-      dashboard.agentLog.selectAgent('agent-1', 'coder');
+      dashboard.registry.register({ agentId: 'agent-1', profile: 'coder', phase: 'test' });
+      dashboard.registry.register({ agentId: 'agent-2', profile: 'scout', phase: 'test' });
+      dashboard.registry.register({ agentId: 'agent-3', profile: 'planner', phase: 'test' });
+      dashboard.agentLog.setPhases(['test']);
+      dashboard.agentLog.setCurrentPhase('test');
+
+      // Initially agent-1 is selected
+      expect(dashboard.agentLog.getSelectedAgentUid()).toBe('agent-1');
 
       dashboard.handleInput(LEFT_ARROW);
       // Left from agent-1 wraps to agent-3
-      expect(dashboard.agentLog.getCurrentAgentId()).toBe('agent-3');
+      expect(dashboard.agentLog.getSelectedAgentUid()).toBe('agent-3');
     });
 
     it('dashboard.handleInput wraps right arrow from last to first agent', () => {
       const tui = new WorkflowTUI();
       const dashboard = tui.getDashboard();
 
-      dashboard.agentLog.selectAgent('agent-1', 'coder');
-      dashboard.agentLog.selectAgent('agent-2', 'scout');
-      dashboard.agentLog.selectAgent('agent-3', 'planner');
-      // Currently on agent-3 (last)
+      dashboard.registry.register({ agentId: 'agent-1', profile: 'coder', phase: 'test' });
+      dashboard.registry.register({ agentId: 'agent-2', profile: 'scout', phase: 'test' });
+      dashboard.registry.register({ agentId: 'agent-3', profile: 'planner', phase: 'test' });
+      dashboard.agentLog.setPhases(['test']);
+      dashboard.agentLog.setCurrentPhase('test');
+
+      // Navigate to agent-3 (last)
+      dashboard.handleInput(RIGHT_ARROW);
+      dashboard.handleInput(RIGHT_ARROW);
+      expect(dashboard.agentLog.getSelectedAgentUid()).toBe('agent-3');
 
       dashboard.handleInput(RIGHT_ARROW);
       // Right from agent-3 wraps to agent-1
-      expect(dashboard.agentLog.getCurrentAgentId()).toBe('agent-1');
+      expect(dashboard.agentLog.getSelectedAgentUid()).toBe('agent-1');
     });
 
     it('arrow key navigation preserves per-agent log entries', () => {
       const tui = new WorkflowTUI();
       const dashboard = tui.getDashboard();
 
-      dashboard.agentLog.selectAgent('agent-1', 'coder');
-      dashboard.agentLog.addEntry({ type: 'text', content: 'agent-1 message' });
+      dashboard.registry.register({ agentId: 'agent-1', profile: 'coder', phase: 'test' });
+      dashboard.registry.register({ agentId: 'agent-2', profile: 'scout', phase: 'test' });
+      dashboard.agentLog.setPhases(['test']);
+      dashboard.agentLog.setCurrentPhase('test');
 
-      dashboard.agentLog.selectAgent('agent-2', 'scout');
-      dashboard.agentLog.addEntry({ type: 'text', content: 'agent-2 message' });
+      // Add entry to agent-1
+      const uid1 = dashboard.registry.getActiveUid('agent-1')!;
+      dashboard.registry.addEntry(uid1, { type: 'text', content: 'agent-1 message' });
 
-      // Navigate left to agent-1
-      dashboard.handleInput(LEFT_ARROW);
-      expect(dashboard.agentLog.getCurrentAgentId()).toBe('agent-1');
-
-      // Navigate right to agent-2
+      // Navigate to agent-2 and add entry
       dashboard.handleInput(RIGHT_ARROW);
-      expect(dashboard.agentLog.getCurrentAgentId()).toBe('agent-2');
+      const uid2 = dashboard.registry.getActiveUid('agent-2')!;
+      dashboard.registry.addEntry(uid2, { type: 'text', content: 'agent-2 message' });
+
+      // Navigate back to agent-1
+      dashboard.handleInput(LEFT_ARROW);
+      expect(dashboard.agentLog.getSelectedAgentUid()).toBe(uid1);
+
+      // Navigate to agent-2
+      dashboard.handleInput(RIGHT_ARROW);
+      expect(dashboard.agentLog.getSelectedAgentUid()).toBe(uid2);
     });
 
     it('dashboard.handleInput with spy verifies left arrow is forwarded to agentLog', () => {
       const tui = new WorkflowTUI();
-      const dashboard = tui.getDashboard();
+      const dashboard = setupTwoAgents(tui);
       const agentSpy = spyOn(dashboard.agentLog, 'handleInput');
-
-      dashboard.agentLog.selectAgent('agent-1', 'coder');
-      dashboard.agentLog.selectAgent('agent-2', 'scout');
 
       dashboard.handleInput(LEFT_ARROW);
       expect(agentSpy).toHaveBeenCalledTimes(1);
@@ -292,11 +320,8 @@ describe('WorkflowTUI', () => {
 
     it('dashboard.handleInput with spy verifies right arrow is forwarded to agentLog', () => {
       const tui = new WorkflowTUI();
-      const dashboard = tui.getDashboard();
+      const dashboard = setupTwoAgents(tui);
       const agentSpy = spyOn(dashboard.agentLog, 'handleInput');
-
-      dashboard.agentLog.selectAgent('agent-1', 'coder');
-      dashboard.agentLog.selectAgent('agent-2', 'scout');
 
       dashboard.handleInput(RIGHT_ARROW);
       expect(agentSpy).toHaveBeenCalledTimes(1);
@@ -307,30 +332,14 @@ describe('WorkflowTUI', () => {
 
     it('non-arrow keys are NOT routed to agentLog by dashboard.handleInput', () => {
       const tui = new WorkflowTUI();
-      const dashboard = tui.getDashboard();
+      const dashboard = setupTwoAgents(tui);
       const agentSpy = spyOn(dashboard.agentLog, 'handleInput');
 
-      dashboard.agentLog.selectAgent('agent-1', 'coder');
-      dashboard.agentLog.selectAgent('agent-2', 'scout');
-
-      dashboard.handleInput('\x1b[B'); // Down arrow — should go to lanePool, not agentLog
+      // 'x' is a non-arrow key — should not be forwarded
+      dashboard.handleInput('x');
       expect(agentSpy).not.toHaveBeenCalled();
 
       agentSpy.mockRestore();
-    });
-
-    it('agentLog shows footer with agent count after arrow key navigation via dashboard', () => {
-      const tui = new WorkflowTUI();
-      const dashboard = tui.getDashboard();
-
-      dashboard.agentLog.selectAgent('agent-1', 'coder');
-      dashboard.agentLog.selectAgent('agent-2', 'scout');
-
-      dashboard.handleInput(LEFT_ARROW); // switch to agent-1
-      const lines = dashboard.agentLog.render(80);
-      const lastLine = lines[lines.length - 1];
-      expect(lastLine).toContain('switch agent');
-      expect(lastLine).toContain('1/2');
     });
 
     it('input listener fix expectation: arrow keys must be consumed by the global listener', () => {
@@ -340,28 +349,23 @@ describe('WorkflowTUI', () => {
       // and returned as { consume: true } to prevent the TUI framework
       // from routing them to the focused component (EventLog).
       //
-      // Before the fix, left/right arrows fell through to EventLog (focused)
-      // which doesn't handle them, so they were silently dropped.
-      //
       // This test verifies the preconditions: the dashboard pipeline works.
       // The actual fix is in the input listener inside start().
       const tui = new WorkflowTUI();
-      const dashboard = tui.getDashboard();
+      const dashboard = setupTwoAgents(tui);
 
       // Set up state that would only change if arrows reach dashboard
-      dashboard.agentLog.selectAgent('alpha', 'coder');
-      dashboard.agentLog.selectAgent('beta', 'scout');
-      expect(dashboard.agentLog.getCurrentAgentId()).toBe('beta');
+      expect(dashboard.agentLog.getSelectedAgentUid()).toBe('agent-1');
 
       // Simulate what the fixed input listener does:
       // if (matchesKey(data, 'left') || matchesKey(data, 'right')) {
       //   this.dashboard.handleInput(data);
       //   return { consume: true };
       // }
-      dashboard.handleInput(LEFT_ARROW);
+      dashboard.handleInput(RIGHT_ARROW);
 
       // Verify agent switched — proving the pipeline works end-to-end
-      expect(dashboard.agentLog.getCurrentAgentId()).toBe('alpha');
+      expect(dashboard.agentLog.getSelectedAgentUid()).toBe('agent-2');
     });
   });
 
@@ -389,10 +393,10 @@ describe('WorkflowTUI', () => {
     const LEFT_ARROW = '\x1b[D';
     const RIGHT_ARROW = '\x1b[C';
     const SPACE = ' ';
-    const CTRL_LEFT = '\x1bOd';
-    const CTRL_RIGHT = '\x1bOc';
     const UP_ARROW = '\x1b[A';
     const DOWN_ARROW = '\x1b[B';
+    const SHIFT_UP = '\x1b[a';
+    const SHIFT_DOWN = '\x1b[b';
 
     /**
      * Set up a WorkflowTUI with a mocked TUI that captures the input callback
@@ -505,30 +509,6 @@ describe('WorkflowTUI', () => {
       }
     });
 
-    it('calls requestRender when Ctrl+Left key is handled', () => {
-      const { capturedCallback, requestRenderMock, cleanup } = setupTest();
-      try {
-        expect(capturedCallback).not.toBeNull();
-
-        capturedCallback!(CTRL_LEFT);
-        expect(requestRenderMock).toHaveBeenCalled();
-      } finally {
-        cleanup();
-      }
-    });
-
-    it('calls requestRender when Ctrl+Right key is handled', () => {
-      const { capturedCallback, requestRenderMock, cleanup } = setupTest();
-      try {
-        expect(capturedCallback).not.toBeNull();
-
-        capturedCallback!(CTRL_RIGHT);
-        expect(requestRenderMock).toHaveBeenCalled();
-      } finally {
-        cleanup();
-      }
-    });
-
     it('consumes Up arrow and calls requestRender when agent log is expanded', () => {
       const { capturedCallback, requestRenderMock, wtui, cleanup } = setupTest();
       try {
@@ -563,27 +543,27 @@ describe('WorkflowTUI', () => {
       }
     });
 
-    it('falls through when Up arrow is pressed and agent log is NOT expanded', () => {
+    it('consumes Up arrow even when agent log is NOT expanded (up/down always consumed)', () => {
       const { capturedCallback, requestRenderMock, cleanup } = setupTest();
       try {
         expect(capturedCallback).not.toBeNull();
 
         const result = capturedCallback!(UP_ARROW);
-        expect(result).toBeUndefined();
-        expect(requestRenderMock).not.toHaveBeenCalled();
+        expect(result).toEqual({ consume: true });
+        expect(requestRenderMock).toHaveBeenCalled();
       } finally {
         cleanup();
       }
     });
 
-    it('falls through when Down arrow is pressed and agent log is NOT expanded', () => {
+    it('consumes Down arrow even when agent log is NOT expanded (up/down always consumed)', () => {
       const { capturedCallback, requestRenderMock, cleanup } = setupTest();
       try {
         expect(capturedCallback).not.toBeNull();
 
         const result = capturedCallback!(DOWN_ARROW);
-        expect(result).toBeUndefined();
-        expect(requestRenderMock).not.toHaveBeenCalled();
+        expect(result).toEqual({ consume: true });
+        expect(requestRenderMock).toHaveBeenCalled();
       } finally {
         cleanup();
       }
@@ -822,6 +802,174 @@ describe('WorkflowTUI', () => {
       } finally {
         cleanup();
       }
+    });
+
+    // ─── Shift+Up/Shift+Down scroll by 10 ───────────────────────────
+
+    it('shift+up scrolls by 10 when expanded', () => {
+      const { capturedCallback, requestRenderMock, wtui, cleanup } = setupTest();
+      try {
+        expect(capturedCallback).not.toBeNull();
+
+        const dashboard = wtui.dashboard;
+
+        // Expand and register an agent with 60 entries
+        dashboard.agentLog.toggleExpand();
+        expect(dashboard.agentLog.isExpanded()).toBe(true);
+
+        dashboard.registry.register({ agentId: 'agent-1', profile: 'coder', phase: 'test' });
+        dashboard.agentLog.setPhases(['test']);
+        dashboard.agentLog.setCurrentPhase('test');
+        const uid = dashboard.registry.getActiveUid('agent-1')!;
+        for (let i = 1; i <= 60; i++) {
+          dashboard.registry.addEntry(uid, { type: 'text', content: `entry ${i}` });
+        }
+
+        // Force an initial render to populate _lastTotalEntryLines
+        dashboard.agentLog.render(80);
+
+        // Send multiple shift+up to scroll
+        for (let i = 0; i < 3; i++) {
+          capturedCallback!(SHIFT_UP);
+        }
+
+        // Render and check the scroll indicator
+        const lines = dashboard.agentLog.render(80);
+        const joined = lines.join('\n');
+        // The scroll indicator shows 'up arrow X more lines' when scrolled up
+        expect(joined).toMatch(/up arrow \d+ more/);
+        expect(requestRenderMock).toHaveBeenCalled();
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('shift+down scrolls by 10 when expanded', () => {
+      const { capturedCallback, requestRenderMock, wtui, cleanup } = setupTest();
+      try {
+        expect(capturedCallback).not.toBeNull();
+
+        const dashboard = wtui.dashboard;
+
+        // Expand and register an agent with 60 entries
+        dashboard.agentLog.toggleExpand();
+        expect(dashboard.agentLog.isExpanded()).toBe(true);
+
+        dashboard.registry.register({ agentId: 'agent-1', profile: 'coder', phase: 'test' });
+        dashboard.agentLog.setPhases(['test']);
+        dashboard.agentLog.setCurrentPhase('test');
+        const uid = dashboard.registry.getActiveUid('agent-1')!;
+        for (let i = 1; i <= 60; i++) {
+          dashboard.registry.addEntry(uid, { type: 'text', content: `entry ${i}` });
+        }
+
+        // Force an initial render to populate _lastTotalEntryLines
+        dashboard.agentLog.render(80);
+
+        // Scroll up first (multiple shift+up)
+        for (let i = 0; i < 5; i++) {
+          capturedCallback!(SHIFT_UP);
+        }
+        requestRenderMock.mockClear();
+
+        // Now scroll down by 10 via shift+down
+        capturedCallback!(SHIFT_DOWN);
+
+        // Should still be scrolled up
+        const lines = dashboard.agentLog.render(80);
+        const joined = lines.join('\n');
+        expect(joined).toMatch(/up arrow \d+ more/);
+        expect(requestRenderMock).toHaveBeenCalled();
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('shift+up falls through when NOT expanded', () => {
+      const { capturedCallback, requestRenderMock, wtui, cleanup } = setupTest();
+      try {
+        expect(capturedCallback).not.toBeNull();
+
+        // Agent log is NOT expanded by default
+        expect(wtui.dashboard.agentLog.isExpanded()).toBe(false);
+
+        const result = capturedCallback!(SHIFT_UP);
+        // Should NOT be consumed (falls through)
+        expect(result).toBeUndefined();
+        expect(requestRenderMock).not.toHaveBeenCalled();
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('shift+down falls through when NOT expanded', () => {
+      const { capturedCallback, requestRenderMock, wtui, cleanup } = setupTest();
+      try {
+        expect(capturedCallback).not.toBeNull();
+
+        // Agent log is NOT expanded by default
+        expect(wtui.dashboard.agentLog.isExpanded()).toBe(false);
+
+        const result = capturedCallback!(SHIFT_DOWN);
+        // Should NOT be consumed (falls through)
+        expect(result).toBeUndefined();
+        expect(requestRenderMock).not.toHaveBeenCalled();
+      } finally {
+        cleanup();
+      }
+    });
+  });
+
+  describe('dashboard.registry getter', () => {
+    it('is accessible via getDashboard().registry', () => {
+      const tui = new WorkflowTUI();
+      const dashboard = tui.getDashboard();
+      const registry = dashboard.registry;
+      expect(registry).toBeDefined();
+      expect(typeof registry.register).toBe('function');
+      expect(typeof registry.getAgents).toBe('function');
+      expect(typeof registry.addEntry).toBe('function');
+    });
+
+    it('register stores agents and getAgents returns them', () => {
+      const tui = new WorkflowTUI();
+      const dashboard = tui.getDashboard();
+      dashboard.registry.register({ agentId: 'test-agent', profile: 'coder', phase: 'test' });
+      const agents = dashboard.registry.getAgents();
+      expect(agents.length).toBe(1);
+      expect(agents[0].agentId).toBe('test-agent');
+      expect(agents[0].profile).toBe('coder');
+    });
+  });
+
+  describe('left/right does not sync lane pool focus', () => {
+    const RIGHT_ARROW = '\x1b[C';
+
+    it('left/right arrow navigation does not change lane pool focus', () => {
+      const tui = new WorkflowTUI();
+      const dashboard = tui.getDashboard();
+
+      // Register agents in the same phase
+      dashboard.registry.register({ agentId: 'agent-1', profile: 'coder', phase: 'test' });
+      dashboard.registry.register({ agentId: 'agent-2', profile: 'scout', phase: 'test' });
+      dashboard.agentLog.setPhases(['test']);
+      dashboard.agentLog.setCurrentPhase('test');
+
+      // Initially no lane pool focus
+      expect(dashboard.lanePool.getFocusedTaskId()).toBeUndefined();
+
+      // Use left/right to navigate agents
+      dashboard.handleInput(RIGHT_ARROW);
+      expect(dashboard.agentLog.getSelectedAgentUid()).toBe('agent-2');
+
+      // Lane pool focus should remain unchanged
+      expect(dashboard.lanePool.getFocusedTaskId()).toBeUndefined();
+
+      dashboard.handleInput(RIGHT_ARROW);
+      expect(dashboard.agentLog.getSelectedAgentUid()).toBe('agent-1');
+
+      // Still no lane pool sync
+      expect(dashboard.lanePool.getFocusedTaskId()).toBeUndefined();
     });
   });
 

@@ -48,6 +48,7 @@ export type ServerMessage =
       tasks: TaskInfo[];
       agents: AgentWindowState[];
       sidebar: SidebarInfo;
+      taskPrompt?: string;
     }
   | { type: 'workflow_phase'; phase: string; completed: string[]; currentPhase: string }
   | { type: 'workflow_complete' }

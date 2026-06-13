@@ -79,7 +79,12 @@ export function useWebSocket(): {
             agents,
             sidebar: msg.sidebar,
             status: 'running',
+            taskPrompt: msg.taskPrompt,
           });
+          setEvents([]);
+          console.log(
+            `[WebSocket] init snapshot: phase=${msg.currentPhase ?? '<none>'}, completedPhases=${msg.completedPhases?.length ?? 0}, tasks=${msg.tasks?.length ?? 0}, agents=${msg.agents?.length ?? 0}`,
+          );
           break;
         }
         case 'workflow_phase':
@@ -89,14 +94,17 @@ export function useWebSocket(): {
             completedPhases: msg.completed,
           }));
           addEvent(`Phase: ${msg.phase}`);
+          console.log('[WebSocket] phase:', msg.phase, 'current:', msg.currentPhase);
           break;
         case 'workflow_complete':
           setState((prev) => ({ ...prev, status: 'complete' }));
           addEvent('Complete');
+          console.log('[WebSocket] workflow complete');
           break;
         case 'workflow_failed':
-          setState((prev) => ({ ...prev, status: 'failed', error: msg.error }));
+          setState((prev) => ({ ...prev, status: 'failed', error: msg.error, failedPhase: msg.phase }));
           addEvent(`Failed: ${msg.error}`);
+          console.warn('[WebSocket] workflow failed:', msg.error);
           break;
         case 'agent_spawned': {
           const agent = msg.agent;
@@ -112,6 +120,7 @@ export function useWebSocket(): {
             return { ...prev, agents: next };
           });
           addEvent(`Agent ${agent.agentId} spawned`);
+          console.log('[WebSocket] agent spawned:', msg.agent.agentId);
           break;
         }
         case 'agent_log': {
@@ -184,9 +193,13 @@ export function useWebSocket(): {
         const data = JSON.parse(event.data);
         if (isServerMessage(data)) {
           handleServerMessage(data);
+        } else {
+          console.warn(
+            `[WebSocket] Received unknown message type: ${data?.type} | data: ${JSON.stringify(data).slice(0, 200)}`,
+          );
         }
-      } catch {
-        // ignore malformed messages
+      } catch (err) {
+        console.warn(`[WebSocket] Failed to parse/handle message: ${err} | raw: ${String(event.data).slice(0, 200)}`);
       }
     };
 

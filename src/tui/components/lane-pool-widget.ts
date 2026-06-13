@@ -13,6 +13,7 @@ export interface TaskLane {
   stepInfo?: string;
   phase?: string;
   startedAt?: number;
+  completedAt?: number;
 }
 
 // ─── Status Priority ────────────────────────────────────────────────────────
@@ -109,16 +110,37 @@ export class LanePoolWidget implements Component {
     const lines: string[] = [];
 
     for (const lane of sorted) {
-      let text = statusIcon(lane.status) + ' ' + statusColor(lane.status)(lane.title);
-      if (lane.stepInfo) {
-        text += ' ' + dim(lane.stepInfo);
+      // Compute elapsed time string if startedAt exists.
+      // NOTE: This uses wall-clock time (Date.now() - startedAt for active tasks,
+      // completedAt - startedAt for done/failed tasks) as an INTENTIONAL SIMPLIFICATION.
+      // True summed-per-agent-duration tracking would require additional timer
+      // fields in the registry, which is out of scope for this rewrite.
+      let elapsed: string | undefined;
+      if (lane.startedAt !== undefined) {
+        const endTime = lane.completedAt ?? Date.now();
+        elapsed = dim(formatElapsed(endTime - lane.startedAt));
       }
-      if (lane.phase) {
-        text += ' ' + dim('[' + lane.phase + ']');
+
+      let text: string;
+      const iconTitle = statusIcon(lane.status) + ' ' + statusColor(lane.status)(lane.title);
+
+      if (lane.status === 'implementing' || lane.status === 'reviewing' || lane.status === 'claimed') {
+        // Branch A (active): {icon} {colored title} - {dim status text} - {dim elapsed}
+        text = iconTitle + ' - ' + dim(lane.status);
+        if (elapsed !== undefined) {
+          text += ' - ' + elapsed;
+        }
+      } else if (lane.status === 'blocked' || lane.status === 'ready') {
+        // Branch B (blocked, ready): {icon} {colored title} only
+        text = iconTitle;
+      } else {
+        // Branch C (done, failed): {icon} {colored title} - {dim elapsed}
+        text = iconTitle;
+        if (elapsed !== undefined) {
+          text += ' - ' + elapsed;
+        }
       }
-      if (lane.startedAt) {
-        text += ' ' + dim(formatElapsed(Date.now() - lane.startedAt));
-      }
+
       if (lane.id === this.focusedLaneId) {
         text = bold(text);
       }

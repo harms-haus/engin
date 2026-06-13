@@ -1,3 +1,10 @@
+// ─── AgentLogEntry ───────────────────────────────────────────────────────────
+/** A single log entry for an agent session (text, thinking, tool calls, errors, decisions). */
+export interface AgentLogEntry {
+  type: 'text' | 'thinking' | 'tool_call_start' | 'tool_call_end' | 'error' | 'decision';
+  content: string;
+}
+
 // ─── AgentRecord ──────────────────────────────────────────────────────────────
 /** Represents a single agent spawn with a unique UID. */
 export interface AgentRecord {
@@ -15,6 +22,16 @@ export interface AgentRecord {
   sessionId?: string;
   /** Optional session path for history lookup. */
   sessionPath?: string;
+  /** Log entries for this agent session. */
+  entries: AgentLogEntry[];
+  /** Cumulative number of tool calls made by this agent. */
+  toolCallCount: number;
+  /** Cumulative input tokens consumed. */
+  inputTokens: number;
+  /** Cumulative output tokens produced. */
+  outputTokens: number;
+  /** Task title associated with this agent. */
+  taskTitle: string;
   /** Current status: active or completed. */
   status: 'active' | 'completed';
   /** ISO timestamp of when the agent completed, if applicable. */
@@ -63,6 +80,11 @@ export class AgentRegistry {
       taskId: info.taskId,
       sessionId: info.sessionId,
       sessionPath: info.sessionPath,
+      entries: [],
+      toolCallCount: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      taskTitle: '',
       status: 'active',
     };
 
@@ -79,12 +101,18 @@ export class AgentRegistry {
   /**
    * Mark an agent as completed by its unique UID.
    * No-op if the UID is not found.
+   * Also cleans up the active-by-agentId mapping so getActiveUid returns undefined
+   * for this agentId after completion.
    */
   complete(uid: string): void {
     const record = this._agents.find((a) => a.uid === uid);
     if (!record) return;
     record.status = 'completed';
     record.completedAt = new Date().toISOString();
+    // Clean up the active mapping so getActiveUid no longer returns this UID
+    if (this._activeByAgentId.get(record.agentId) === uid) {
+      this._activeByAgentId.delete(record.agentId);
+    }
   }
 
   /**
@@ -130,6 +158,58 @@ export class AgentRegistry {
    */
   getAgent(uid: string): AgentRecord | undefined {
     return this._agents.find((a) => a.uid === uid);
+  }
+
+  /**
+   * Append a log entry to the agent's entries array.
+   * If the agent is not found, this is a no-op.
+   * Entries are capped at 200; the oldest entry is evicted via FIFO when exceeded.
+   */
+  addEntry(uid: string, entry: AgentLogEntry): void {
+    const record = this._agents.find((a) => a.uid === uid);
+    if (!record) return;
+    record.entries.push(entry);
+    if (record.entries.length > 200) {
+      record.entries.shift();
+    }
+  }
+
+  /**
+   * Update stats for an agent identified by uid.
+   * No-op if the UID is not found.
+   *
+   * Numeric fields (toolCallCount, inputTokens, outputTokens) are ACCUMULATED
+   * via +=, allowing incremental updates. String fields (taskTitle, profile) are
+   * SET (overwritten).
+   */
+  updateStats(
+    uid: string,
+    partial: {
+      toolCallCount?: number;
+      inputTokens?: number;
+      outputTokens?: number;
+      taskTitle?: string;
+      profile?: string;
+    },
+  ): void {
+    const record = this._agents.find((a) => a.uid === uid);
+    if (!record) return;
+
+    if (partial.toolCallCount !== undefined) {
+      record.toolCallCount += partial.toolCallCount;
+    }
+    if (partial.inputTokens !== undefined) {
+      record.inputTokens += partial.inputTokens;
+    }
+    if (partial.outputTokens !== undefined) {
+      record.outputTokens += partial.outputTokens;
+    }
+    if (partial.taskTitle !== undefined) {
+      record.taskTitle = partial.taskTitle;
+    }
+    if (partial.profile !== undefined) {
+      record.profile = partial.profile;
+    }
   }
 
   /**

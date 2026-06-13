@@ -27,6 +27,20 @@ describe('StatusBridge', () => {
       expect(snapshot.tasks).toEqual([]);
       expect(snapshot.agents).toEqual([]);
       expect(snapshot.sidebar).toEqual({ title: '', indicator: '' });
+      expect(snapshot.taskPrompt).toBe('');
+    });
+
+    it('includes taskPrompt when set via onWorkflowStart', () => {
+      const { bridge, callbacks } = createBridge();
+      callbacks.onWorkflowStart!({ taskPrompt: 'Implement login page', resumed: false, workDir: '/tmp/test' });
+      const snapshot = bridge.getSnapshot();
+      expect(snapshot.taskPrompt).toBe('Implement login page');
+    });
+
+    it('includes empty taskPrompt when onWorkflowStart was never called', () => {
+      const { bridge } = createBridge();
+      const snapshot = bridge.getSnapshot();
+      expect(snapshot.taskPrompt).toBe('');
     });
   });
 
@@ -88,6 +102,47 @@ describe('StatusBridge', () => {
       expect(snapshot.currentPhase).toBe('planning');
       expect(snapshot.completedPhases).toEqual(['scouting']);
     });
+
+    it('does not duplicate phase in completed when transitioning after onPhaseComplete', () => {
+      const { callbacks, messages, bridge } = createBridge();
+
+      // Phase A: start scouting
+      callbacks.onPhaseStart!({ phase: 'scouting', round: 1 });
+      expect(messages).toHaveLength(1);
+      expect(messages[0]).toEqual({
+        type: 'workflow_phase',
+        phase: 'scouting',
+        completed: [],
+        currentPhase: 'scouting',
+      });
+
+      // Complete scouting — adds 'scouting' to completedPhases
+      callbacks.onPhaseComplete!({ phase: 'scouting', durationMs: 500 });
+      expect(messages).toHaveLength(2);
+      expect(messages[1]).toEqual({
+        type: 'workflow_phase',
+        phase: 'scouting',
+        completed: ['scouting'],
+        currentPhase: 'scouting',
+      });
+
+      // Start planning — onPhaseStart should push currentPhase ('scouting')
+      // into completedPhases but it must NOT duplicate the entry since
+      // onPhaseComplete already added it.
+      callbacks.onPhaseStart!({ phase: 'planning', round: 1 });
+      expect(messages).toHaveLength(3);
+      expect(messages[2]).toEqual({
+        type: 'workflow_phase',
+        phase: 'planning',
+        completed: ['scouting'],
+        currentPhase: 'planning',
+      });
+
+      // Snapshot must show no duplicate 'scouting' entry
+      const snapshot = bridge.getSnapshot();
+      expect(snapshot.completedPhases).toEqual(['scouting']);
+      expect(snapshot.currentPhase).toBe('planning');
+    });
   });
 
   describe('onPhaseComplete', () => {
@@ -108,13 +163,24 @@ describe('StatusBridge', () => {
     });
 
     it('does not duplicate completed phases', () => {
-      const { callbacks } = createBridge();
+      const { callbacks, messages, bridge } = createBridge();
       callbacks.onPhaseComplete!({ phase: 'scouting', durationMs: 500 });
       callbacks.onPhaseComplete!({ phase: 'scouting', durationMs: 500 });
 
+      // Both calls should have produced messages
+      expect(messages).toHaveLength(2);
+
       // The second broadcast should still only have one entry in completed
-      expect((callbacks.onPhaseComplete as any).mock?.calls?.length || 2).toBe(2);
-      // Check messages directly
+      expect(messages[1]).toEqual({
+        type: 'workflow_phase',
+        phase: 'scouting',
+        completed: ['scouting'],
+        currentPhase: '',
+      });
+
+      // Snapshot should confirm no duplicates
+      const snapshot = bridge.getSnapshot();
+      expect(snapshot.completedPhases).toEqual(['scouting']);
     });
   });
 
@@ -645,11 +711,34 @@ describe('StatusBridge', () => {
         expect(Object.keys(handlers)).toHaveLength(3);
       });
 
-      it('onWorkflowStart is a no-op (does not broadcast)', () => {
+      it('onWorkflowStart stores taskPrompt and does not broadcast', () => {
         const { bridge, messages } = createBridge();
         const handlers = (bridge as any).createWorkflowHandlers();
-        handlers.onWorkflowStart!({ taskPrompt: 'test', resumed: false, workDir: '/tmp' });
+        handlers.onWorkflowStart!({ taskPrompt: 'Implement login', resumed: false, workDir: '/tmp' });
+        // No broadcast on workflow start
         expect(messages).toHaveLength(0);
+        // But snapshot now includes the prompt
+        const snapshot = bridge.getSnapshot();
+        expect(snapshot.taskPrompt).toBe('Implement login');
+      });
+
+      it('onWorkflowStart stores non-empty taskPrompt from resumed workflow', () => {
+        const { bridge, messages } = createBridge();
+        const handlers = (bridge as any).createWorkflowHandlers();
+        handlers.onWorkflowStart!({ taskPrompt: 'Resumed task', resumed: true, workDir: '/tmp' });
+        expect(messages).toHaveLength(0);
+        const snapshot = bridge.getSnapshot();
+        expect(snapshot.taskPrompt).toBe('Resumed task');
+      });
+
+      it('onWorkflowStart overwrites previous taskPrompt on subsequent calls', () => {
+        const { bridge } = createBridge();
+        const handlers = (bridge as any).createWorkflowHandlers();
+        handlers.onWorkflowStart!({ taskPrompt: 'First prompt', resumed: false, workDir: '/tmp' });
+        expect(bridge.getSnapshot().taskPrompt).toBe('First prompt');
+
+        handlers.onWorkflowStart!({ taskPrompt: 'Second prompt', resumed: false, workDir: '/tmp' });
+        expect(bridge.getSnapshot().taskPrompt).toBe('Second prompt');
       });
 
       it('onWorkflowComplete broadcasts workflow_complete', () => {
@@ -779,6 +868,198 @@ describe('StatusBridge', () => {
         // But the callbacks object has it
         expect(callbacks.onSidebarUpdate).toBeDefined();
       });
+    });
+  });
+
+  describe('seed', () => {
+    it('populates snapshot with currentPhase when seeded', () => {
+      const { bridge } = createBridge();
+      bridge.seed({ currentPhase: 'planning' });
+      const snapshot = bridge.getSnapshot();
+      expect(snapshot.currentPhase).toBe('planning');
+      expect(snapshot.completedPhases).toEqual([]);
+      expect(snapshot.tasks).toEqual([]);
+      expect(snapshot.sidebar.title).toBe('');
+    });
+
+    it('populates snapshot with completedPhases when seeded', () => {
+      const { bridge } = createBridge();
+      bridge.seed({ completedPhases: ['scouting', 'planning'] });
+      const snapshot = bridge.getSnapshot();
+      expect(snapshot.completedPhases).toEqual(['scouting', 'planning']);
+      expect(snapshot.currentPhase).toBe('');
+    });
+
+    it('populates snapshot with tasks when seeded', () => {
+      const { bridge } = createBridge();
+      bridge.seed({
+        tasks: [
+          { id: 't1', title: 'Task 1', status: 'ready', agentId: 'a1', phase: 'scouting' },
+          { id: 't2', title: 'Task 2', status: 'done' },
+        ],
+      });
+      const snapshot = bridge.getSnapshot();
+      expect(snapshot.tasks).toHaveLength(2);
+      expect(snapshot.tasks[0]).toMatchObject({
+        id: 't1',
+        title: 'Task 1',
+        status: 'ready',
+        agentId: 'a1',
+        phase: 'scouting',
+      });
+      expect(snapshot.tasks[1]).toMatchObject({ id: 't2', title: 'Task 2', status: 'done' });
+    });
+
+    it('populates snapshot with sidebar when seeded', () => {
+      const { bridge } = createBridge();
+      bridge.seed({
+        sidebar: { title: 'Resumed Run', indicator: '🔄', phases: [{ id: 'scout', label: 'Scouting', icon: '🔍' }] },
+      });
+      const snapshot = bridge.getSnapshot();
+      expect(snapshot.sidebar.title).toBe('Resumed Run');
+      expect(snapshot.sidebar.indicator).toBe('🔄');
+      expect(snapshot.sidebar.phases).toEqual([{ id: 'scout', label: 'Scouting', icon: '🔍' }]);
+    });
+
+    it('populates snapshot with taskPrompt when seeded', () => {
+      const { bridge } = createBridge();
+      bridge.seed({ taskPrompt: 'Implement login page' });
+      const snapshot = bridge.getSnapshot();
+      expect(snapshot.taskPrompt).toBe('Implement login page');
+    });
+
+    it('populates snapshot with all fields when seeded with complete data', () => {
+      const { bridge } = createBridge();
+      bridge.seed({
+        currentPhase: 'implementing',
+        completedPhases: ['scouting', 'planning'],
+        tasks: [
+          { id: 't1', title: 'Task 1', status: 'implementing', agentId: 'a1' },
+          { id: 't2', title: 'Task 2', status: 'done' },
+        ],
+        sidebar: { title: 'My Workflow', indicator: '🟢' },
+        taskPrompt: 'Build the feature',
+      });
+      const snapshot = bridge.getSnapshot();
+      expect(snapshot.currentPhase).toBe('implementing');
+      expect(snapshot.completedPhases).toEqual(['scouting', 'planning']);
+      expect(snapshot.tasks).toHaveLength(2);
+      expect(snapshot.sidebar.title).toBe('My Workflow');
+      expect(snapshot.sidebar.indicator).toBe('🟢');
+      expect(snapshot.taskPrompt).toBe('Build the feature');
+    });
+
+    it('does not clobber existing fields when seeding with partial data', () => {
+      const { bridge } = createBridge();
+      // Set some initial values via callbacks
+      const callbacks = bridge.getCallbacks();
+      // Start a phase, then complete it, to build up completedPhases
+      callbacks.onPhaseStart!({ phase: 'scouting', round: 1 });
+      callbacks.onPhaseComplete!({ phase: 'scouting', durationMs: 300 });
+      callbacks.onPhaseStart!({ phase: 'planning', round: 1 });
+      callbacks.onSidebarUpdate!({ title: 'My Workflow' });
+      callbacks.onWorkflowStart!({ taskPrompt: 'Original prompt', resumed: false, workDir: '/tmp' });
+
+      // Now bridge has: currentPhase='planning', completedPhases=['scouting'],
+      // sidebar.title='My Workflow', taskPrompt='Original prompt'
+
+      // Seed only currentPhase, leaving other fields intact
+      bridge.seed({ currentPhase: 'implementing' });
+
+      const snapshot = bridge.getSnapshot();
+      // currentPhase was updated by seed
+      expect(snapshot.currentPhase).toBe('implementing');
+      // Other fields survive
+      expect(snapshot.completedPhases).toEqual(['scouting']);
+      expect(snapshot.sidebar.title).toBe('My Workflow');
+      expect(snapshot.taskPrompt).toBe('Original prompt');
+    });
+
+    it('seeded tasks survive and can be updated by subsequent callbacks', () => {
+      const { bridge, callbacks } = createBridge();
+
+      // Seed with initial tasks
+      bridge.seed({
+        tasks: [{ id: 't1', title: 'Task 1', status: 'ready' }],
+      });
+
+      // Simulate task started via callback
+      callbacks.onTaskStart!({ taskId: 't1', title: 'Task 1', agentId: 'a1', phase: 'implement', startedAt: 2000 });
+
+      const snapshot = bridge.getSnapshot();
+      expect(snapshot.tasks).toHaveLength(1);
+      expect(snapshot.tasks[0]).toMatchObject({
+        id: 't1',
+        title: 'Task 1',
+        status: 'implementing',
+        agentId: 'a1',
+        startedAt: 2000,
+      });
+    });
+
+    it('seeded currentPhase is properly tracked by onPhaseStart transitions', () => {
+      const { bridge, callbacks, messages } = createBridge();
+
+      // Seed that scouting is already complete and we're in planning
+      bridge.seed({
+        currentPhase: 'planning',
+        completedPhases: ['scouting'],
+      });
+
+      // Now start a new phase - 'planning' should move to completed
+      callbacks.onPhaseStart!({ phase: 'implementing', round: 1 });
+
+      expect(messages).toHaveLength(1);
+      expect(messages[0]).toEqual({
+        type: 'workflow_phase',
+        phase: 'implementing',
+        completed: ['scouting', 'planning'],
+        currentPhase: 'implementing',
+      });
+
+      const snapshot = bridge.getSnapshot();
+      expect(snapshot.completedPhases).toEqual(['scouting', 'planning']);
+      expect(snapshot.currentPhase).toBe('implementing');
+    });
+
+    it('seeded completedPhases are not duplicated by onPhaseStart', () => {
+      const { bridge, callbacks } = createBridge();
+
+      // Seed that scouting has already been completed
+      bridge.seed({
+        currentPhase: 'planning',
+        completedPhases: ['scouting'],
+      });
+
+      // Complete planning via onPhaseComplete
+      callbacks.onPhaseComplete!({ phase: 'planning', durationMs: 500 });
+
+      // 'planning' should not be duplicated in completedPhases
+      const snapshot = bridge.getSnapshot();
+      expect(snapshot.completedPhases).toEqual(['scouting', 'planning']);
+    });
+
+    it('seeding with empty arrays overwrites previous values', () => {
+      const { bridge } = createBridge();
+
+      // First seed with some data
+      bridge.seed({
+        currentPhase: 'planning',
+        completedPhases: ['scouting'],
+        tasks: [{ id: 't1', title: 'Task 1', status: 'ready' }],
+      });
+
+      // Then seed with empty arrays
+      bridge.seed({
+        currentPhase: '',
+        completedPhases: [],
+        tasks: [],
+      });
+
+      const snapshot = bridge.getSnapshot();
+      expect(snapshot.currentPhase).toBe('');
+      expect(snapshot.completedPhases).toEqual([]);
+      expect(snapshot.tasks).toEqual([]);
     });
   });
 

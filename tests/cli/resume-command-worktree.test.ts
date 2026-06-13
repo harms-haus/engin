@@ -72,17 +72,118 @@ function createPastRunDir(
 /**
  * Build CliOptions for the resume command.
  */
-function makeResumeOptions(overrides: { cwd: string; sessionName: string; apiKeys?: Record<string, string> }) {
+function makeResumeOptions(overrides: {
+  cwd: string;
+  sessionName: string;
+  apiKeys?: Record<string, string>;
+  verbose?: boolean;
+}) {
   return {
     command: 'resume' as const,
     sessionName: overrides.sessionName,
     cwd: overrides.cwd,
     maxConcurrent: 3,
-    verbose: true, // ensures shouldUseTui() returns false → console.log is emitted
+    verbose: overrides.verbose ?? true, // default true ensures shouldUseTui() returns false → console.log is emitted
     apiKeys: overrides.apiKeys ?? {},
     warnings: [],
   };
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// resumeCommand — verbose flag pass-through (non-TUI path)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+describe('resumeCommand — verbose flag pass-through (non-TUI)', () => {
+  const { getDir } = useTempDir();
+
+  let logSpy: ReturnType<typeof spyOn>;
+  let onSpy: ReturnType<typeof spyOn>;
+  let removeListenerSpy: ReturnType<typeof spyOn>;
+
+  beforeEach(() => {
+    logSpy = spyOn(console, 'log').mockImplementation(() => {});
+    onSpy = spyOn(process, 'on');
+    removeListenerSpy = spyOn(process, 'removeListener');
+
+    mockWorkflowRun.mockReset();
+    mockPromptPostWorktreeAction.mockReset();
+    mockResolveProfilesDirs.mockReset();
+
+    mockWorkflowRun.mockResolvedValue(undefined);
+    mockPromptPostWorktreeAction.mockResolvedValue(undefined);
+    mockResolveProfilesDirs.mockImplementation((_cwd: string, _workflowName?: string) => [
+      '/local/profiles',
+      '/global/profiles',
+    ]);
+  });
+
+  afterEach(() => {
+    const listeners = process.listeners('SIGINT');
+    for (const l of listeners) process.removeListener('SIGINT', l as any);
+
+    logSpy.mockRestore();
+    onSpy.mockRestore();
+    removeListenerSpy.mockRestore();
+  });
+
+  it('passes verbose:true to workflow.run when options.verbose is true', async () => {
+    const ts = Date.now();
+    const dirName = `${ts}-my-workflow`;
+    createPastRunDir(getDir(), dirName, { taskPrompt: 'resumed test prompt' });
+
+    const options = makeResumeOptions({ cwd: getDir(), sessionName: dirName, verbose: true });
+    await resumeCommand(options);
+
+    const runOpts = mockWorkflowRun.mock.calls[0][1] as Record<string, unknown>;
+    expect(runOpts.verbose).toBe(true);
+  });
+
+  it('passes verbose:false to workflow.run when options.verbose is false', async () => {
+    const ts = Date.now();
+    const dirName = `${ts}-my-workflow`;
+    createPastRunDir(getDir(), dirName, { taskPrompt: 'resumed test prompt' });
+
+    const options = makeResumeOptions({ cwd: getDir(), sessionName: dirName, verbose: false });
+    await resumeCommand(options);
+
+    const runOpts = mockWorkflowRun.mock.calls[0][1] as Record<string, unknown>;
+    expect(runOpts.verbose).toBe(false);
+  });
+
+  it('passes onStatus with verbose callbacks when options.verbose is true', async () => {
+    const ts = Date.now();
+    const dirName = `${ts}-my-workflow`;
+    createPastRunDir(getDir(), dirName, { taskPrompt: 'resumed test prompt' });
+
+    const options = makeResumeOptions({ cwd: getDir(), sessionName: dirName, verbose: true });
+    await resumeCommand(options);
+
+    const runOpts = mockWorkflowRun.mock.calls[0][1] as Record<string, unknown>;
+    expect(runOpts.onStatus).toBeDefined();
+    const status = runOpts.onStatus as Record<string, unknown>;
+    expect(typeof status.onTurnStart).toBe('function');
+    expect(typeof status.onTurnEnd).toBe('function');
+    expect(typeof status.onToolCallStart).toBe('function');
+    expect(typeof status.onToolCallEnd).toBe('function');
+  });
+
+  it('passes onStatus with non-verbose callbacks when options.verbose is false', async () => {
+    const ts = Date.now();
+    const dirName = `${ts}-my-workflow`;
+    createPastRunDir(getDir(), dirName, { taskPrompt: 'resumed test prompt' });
+
+    const options = makeResumeOptions({ cwd: getDir(), sessionName: dirName, verbose: false });
+    await resumeCommand(options);
+
+    const runOpts = mockWorkflowRun.mock.calls[0][1] as Record<string, unknown>;
+    expect(runOpts.onStatus).toBeDefined();
+    const status = runOpts.onStatus as Record<string, unknown>;
+    expect(status.onTurnStart).toBeUndefined();
+    expect(status.onTurnEnd).toBeUndefined();
+    expect(status.onToolCallStart).toBeUndefined();
+    expect(status.onToolCallEnd).toBeUndefined();
+  });
+});
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // resumeCommand — non-worktree resume (worktreeInfo is undefined)

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import type { AgentLogEntry } from '../../src/tracking/agent-registry.js';
 import { AgentRegistry } from '../../src/tracking/agent-registry.js';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -72,6 +73,26 @@ describe('AgentRegistry', () => {
       expect(agent.status).toBe('active');
     });
 
+    it('initializes entries to empty array', () => {
+      const uid = registry.register(makeRegistration());
+      const agent = registry.getAgent(uid)!;
+      expect(agent.entries).toEqual([]);
+    });
+
+    it('initializes toolCallCount, inputTokens, outputTokens to 0', () => {
+      const uid = registry.register(makeRegistration());
+      const agent = registry.getAgent(uid)!;
+      expect(agent.toolCallCount).toBe(0);
+      expect(agent.inputTokens).toBe(0);
+      expect(agent.outputTokens).toBe(0);
+    });
+
+    it('initializes taskTitle to empty string', () => {
+      const uid = registry.register(makeRegistration());
+      const agent = registry.getAgent(uid)!;
+      expect(agent.taskTitle).toBe('');
+    });
+
     it('updates activeByAgentId map, overwriting previous mapping for same agentId', () => {
       const uid1 = registry.register(makeRegistration({ agentId: 'lane-0', phase: 'scouting' }));
       const uid2 = registry.register(makeRegistration({ agentId: 'lane-0', phase: 'implementing' }));
@@ -110,6 +131,28 @@ describe('AgentRegistry', () => {
     it('is a no-op when uid does not exist', () => {
       // Should not throw
       registry.complete('non-existent-uid');
+    });
+
+    it('removes the agent from activeByAgentId mapping', () => {
+      const uid = registry.register(makeRegistration({ agentId: 'lane-0' }));
+      expect(registry.getActiveUid('lane-0')).toBe(uid);
+
+      registry.complete(uid);
+
+      expect(registry.getActiveUid('lane-0')).toBeUndefined();
+    });
+
+    it('only cleans up activeByAgentId if the completed uid matches the active mapping', () => {
+      // Register agent-1 with lane-0
+      const uid1 = registry.register(makeRegistration({ agentId: 'lane-0', phase: 'scouting' }));
+      // Register agent-2 with same lane-0 (becomes active)
+      registry.register(makeRegistration({ agentId: 'lane-0', phase: 'implementing' }));
+
+      // Completing agent-1 (no longer active) should NOT remove the active mapping
+      registry.complete(uid1);
+
+      // The active mapping should still point to agent-2
+      expect(registry.getActiveUid('lane-0')).toBe('agent-2');
     });
   });
 
@@ -240,6 +283,139 @@ describe('AgentRegistry', () => {
       expect(agent!.agentId).toBe('lane-0');
       expect(agent!.profile).toBe('scout');
       expect(agent!.phase).toBe('scouting');
+    });
+  });
+
+  // ── addEntry ──────────────────────────────────────────────────────────
+
+  describe('addEntry', () => {
+    it('pushes a log entry to the correct agent entries array', () => {
+      const uid = registry.register(makeRegistration({ agentId: 'lane-0' }));
+      const entry: AgentLogEntry = {
+        type: 'text',
+        content: 'Hello from agent',
+      };
+
+      registry.addEntry(uid, entry);
+
+      const agent = registry.getAgent(uid)!;
+      expect(agent.entries).toHaveLength(1);
+      expect(agent.entries[0].type).toBe('text');
+      expect(agent.entries[0].content).toBe('Hello from agent');
+    });
+
+    it("does not affect other agents' entries", () => {
+      const uid1 = registry.register(makeRegistration({ agentId: 'lane-0' }));
+      const uid2 = registry.register(makeRegistration({ agentId: 'lane-1' }));
+
+      registry.addEntry(uid1, { type: 'text', content: 'entry for lane-0' });
+
+      const agent1 = registry.getAgent(uid1)!;
+      const agent2 = registry.getAgent(uid2)!;
+      expect(agent1.entries).toHaveLength(1);
+      expect(agent2.entries).toHaveLength(0);
+    });
+
+    it('caps entries at 200, evicting oldest via FIFO', () => {
+      const uid = registry.register(makeRegistration({ agentId: 'lane-0' }));
+
+      // Add 201 entries
+      for (let i = 0; i < 201; i++) {
+        registry.addEntry(uid, { type: 'text', content: `entry-${i}` });
+      }
+
+      const agent = registry.getAgent(uid)!;
+      expect(agent.entries).toHaveLength(200);
+      // The first entry (entry-0) should have been evicted
+      expect(agent.entries[0].content).toBe('entry-1');
+      // The last entry should be entry-200
+      expect(agent.entries[199].content).toBe('entry-200');
+    });
+
+    it('is a no-op for unknown uid', () => {
+      // Should not throw
+      registry.addEntry('unknown-uid', { type: 'text', content: 'test' });
+      expect(registry.size).toBe(0);
+    });
+  });
+
+  // ── updateStats ───────────────────────────────────────────────────────
+
+  describe('updateStats', () => {
+    it('accumulates toolCallCount', () => {
+      const uid = registry.register(makeRegistration());
+      registry.updateStats(uid, { toolCallCount: 1 });
+      registry.updateStats(uid, { toolCallCount: 1 });
+      expect(registry.getAgent(uid)!.toolCallCount).toBe(2);
+    });
+
+    it('accumulates inputTokens', () => {
+      const uid = registry.register(makeRegistration());
+      registry.updateStats(uid, { inputTokens: 150 });
+      registry.updateStats(uid, { inputTokens: 50 });
+      expect(registry.getAgent(uid)!.inputTokens).toBe(200);
+    });
+
+    it('accumulates outputTokens', () => {
+      const uid = registry.register(makeRegistration());
+      registry.updateStats(uid, { outputTokens: 100 });
+      registry.updateStats(uid, { outputTokens: 75 });
+      expect(registry.getAgent(uid)!.outputTokens).toBe(175);
+    });
+
+    it('sets taskTitle (overwrites)', () => {
+      const uid = registry.register(makeRegistration());
+      registry.updateStats(uid, { taskTitle: 'Initial title' });
+      expect(registry.getAgent(uid)!.taskTitle).toBe('Initial title');
+
+      registry.updateStats(uid, { taskTitle: 'Updated title' });
+      expect(registry.getAgent(uid)!.taskTitle).toBe('Updated title');
+    });
+
+    it('sets profile (overwrites)', () => {
+      const uid = registry.register(makeRegistration({ profile: 'scout' }));
+      expect(registry.getAgent(uid)!.profile).toBe('scout');
+
+      registry.updateStats(uid, { profile: 'coder' });
+      expect(registry.getAgent(uid)!.profile).toBe('coder');
+    });
+
+    it('handles multiple fields in a single call', () => {
+      const uid = registry.register(makeRegistration());
+      registry.updateStats(uid, {
+        toolCallCount: 3,
+        inputTokens: 500,
+        outputTokens: 200,
+        taskTitle: 'Complex task',
+        profile: 'expert',
+      });
+
+      const agent = registry.getAgent(uid)!;
+      expect(agent.toolCallCount).toBe(3);
+      expect(agent.inputTokens).toBe(500);
+      expect(agent.outputTokens).toBe(200);
+      expect(agent.taskTitle).toBe('Complex task');
+      expect(agent.profile).toBe('expert');
+    });
+
+    it('only updates provided fields, leaving others unchanged', () => {
+      const uid = registry.register(makeRegistration({ profile: 'scout' }));
+      // Set some initial values
+      registry.updateStats(uid, { toolCallCount: 5, taskTitle: 'Initial task' });
+
+      // Now update only taskTitle
+      registry.updateStats(uid, { taskTitle: 'Updated task' });
+
+      const agent = registry.getAgent(uid)!;
+      expect(agent.toolCallCount).toBe(5); // unchanged
+      expect(agent.taskTitle).toBe('Updated task');
+      expect(agent.profile).toBe('scout'); // unchanged
+      expect(agent.inputTokens).toBe(0); // never set, still default
+    });
+
+    it('is a no-op for unknown uid', () => {
+      // Should not throw
+      registry.updateStats('unknown-uid', { toolCallCount: 1, taskTitle: 'test' });
     });
   });
 

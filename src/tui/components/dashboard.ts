@@ -1,4 +1,5 @@
 import { type Component, Key, matchesKey, truncateToWidth } from '@earendil-works/pi-tui';
+import { AgentRegistry } from '../../tracking/agent-registry.js';
 import { borderLine } from '../theme.js';
 import { AgentLogWidget } from './agent-log-widget.js';
 import { LanePoolWidget } from './lane-pool-widget.js';
@@ -11,12 +12,15 @@ export class Dashboard implements Component {
   private readonly _lanePool: LanePoolWidget;
   private readonly _agentLog: AgentLogWidget;
   private readonly _agentLogLines: number;
+  private readonly _registry: AgentRegistry;
 
   constructor(maxConcurrentLanes: number, agentLogLines = 20) {
     this._agentLogLines = agentLogLines;
     this._phaseBar = new PhaseBar();
     this._lanePool = new LanePoolWidget();
     this._agentLog = new AgentLogWidget(agentLogLines);
+    this._registry = new AgentRegistry();
+    this._agentLog.setRegistry(this._registry);
   }
 
   get phaseBar(): PhaseBar {
@@ -29,6 +33,10 @@ export class Dashboard implements Component {
 
   get agentLog(): AgentLogWidget {
     return this._agentLog;
+  }
+
+  get registry(): AgentRegistry {
+    return this._registry;
   }
 
   getComputedHeight(): number {
@@ -80,14 +88,16 @@ export class Dashboard implements Component {
   }
 
   handleInput(data: string): void {
-    if (matchesKey(data, Key.ctrl('left')) || matchesKey(data, Key.ctrl('right'))) {
+    if (
+      matchesKey(data, 'up') ||
+      matchesKey(data, 'down') ||
+      matchesKey(data, 'left') ||
+      matchesKey(data, 'right') ||
+      matchesKey(data, Key.shift('up')) ||
+      matchesKey(data, Key.shift('down'))
+    ) {
       this._agentLog.handleInput(data);
-    } else if (matchesKey(data, 'left') || matchesKey(data, 'right')) {
-      this._agentLog.handleInput(data);
-    } else if ((matchesKey(data, 'up') || matchesKey(data, 'down')) && this._agentLog.isExpanded()) {
-      this._agentLog.handleInput(data);
-    } else {
-      this._lanePool.handleInput(data);
     }
+    // All other input is ignored (lane pool is display-only)
   }
 }

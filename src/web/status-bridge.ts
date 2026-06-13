@@ -24,8 +24,39 @@ export class StatusBridge {
   private tasks = new Map<string, TaskInfo>();
   private agents = new Map<string, AgentWindowState>();
   private sidebar: SidebarInfo = { title: '', indicator: '' };
+  private taskPrompt = '';
 
   constructor(private broadcast: (msg: ServerMessage) => void) {}
+
+  /**
+   * Seed the bridge with persisted state so that late-connecting clients
+   * (e.g., during a resumed run) receive the full picture rather than
+   * starting from an empty snapshot.
+   *
+   * Only the fields that are provided are updated; omitted fields are
+   * left unchanged.
+   */
+  seed(data: {
+    currentPhase?: string;
+    completedPhases?: string[];
+    tasks?: TaskInfo[];
+    sidebar?: SidebarInfo;
+    taskPrompt?: string;
+  }): void {
+    if (data.currentPhase !== undefined) this.currentPhase = data.currentPhase;
+    if (data.completedPhases !== undefined) this.completedPhases = [...data.completedPhases];
+    if (data.tasks !== undefined) {
+      this.tasks.clear();
+      for (const task of data.tasks) {
+        this.tasks.set(task.id, { ...task });
+      }
+    }
+    if (data.sidebar !== undefined) {
+      // Merge into existing sidebar so previously set fields survive
+      this.sidebar = { ...this.sidebar, ...data.sidebar };
+    }
+    if (data.taskPrompt !== undefined) this.taskPrompt = data.taskPrompt;
+  }
 
   /**
    * Return a StatusCallbacks object wired to this bridge.
@@ -52,8 +83,9 @@ export class StatusBridge {
     'onWorkflowStart' | 'onWorkflowComplete' | 'onWorkflowFailed'
   > {
     return {
-      onWorkflowStart: () => {
-        // no-op: workflow start is not broadcast
+      onWorkflowStart: (info) => {
+        this.taskPrompt = info.taskPrompt;
+        // no broadcast: workflow start is only stored for late-connecting clients
       },
 
       onWorkflowComplete: () => {
@@ -69,7 +101,7 @@ export class StatusBridge {
   private createPhaseHandlers(): Pick<StatusCallbacks, 'onPhaseStart' | 'onPhaseComplete'> {
     return {
       onPhaseStart: (info) => {
-        if (this.currentPhase) {
+        if (this.currentPhase && !this.completedPhases.includes(this.currentPhase)) {
           this.completedPhases.push(this.currentPhase);
         }
         this.currentPhase = info.phase;
@@ -301,6 +333,7 @@ export class StatusBridge {
       tasks: Array.from(this.tasks.values()),
       agents: Array.from(this.agents.values()),
       sidebar: { ...this.sidebar },
+      taskPrompt: this.taskPrompt,
     };
   }
 

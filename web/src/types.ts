@@ -22,6 +22,8 @@ export interface AppState {
   };
   status: 'running' | 'complete' | 'failed';
   error?: string;
+  failedPhase?: string;
+  taskPrompt?: string;
 }
 
 // ─── Type guard ─────────────────────────────────────────────────────────────

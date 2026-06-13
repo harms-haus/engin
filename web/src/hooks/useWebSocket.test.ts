@@ -473,6 +473,201 @@ describe('useWebSocket – send and message handling', () => {
     expect(result.current.state.completedPhases).toEqual([]);
     expect(result.current.events).toContain('Phase: scouting');
   });
+
+  it('workflow_failed stores both error and failedPhase', () => {
+    const { result } = renderHook(() => useWebSocket());
+
+    act(() => {
+      MockWebSocket.simulateOpen();
+    });
+
+    act(() => {
+      MockWebSocket.simulateMessage({
+        type: 'workflow_failed',
+        error: 'something broke',
+        phase: 'planning',
+      });
+    });
+
+    expect(result.current.state.failedPhase).toBe('planning');
+    expect(result.current.state.error).toBe('something broke');
+    expect(result.current.state.status).toBe('failed');
+    expect(result.current.events).toContain('Failed: something broke');
+  });
+
+  it('stores taskPrompt when init message includes it', () => {
+    const { result } = renderHook(() => useWebSocket());
+
+    act(() => {
+      MockWebSocket.simulateOpen();
+    });
+
+    act(() => {
+      MockWebSocket.simulateMessage({
+        type: 'init',
+        currentPhase: 'planning',
+        completedPhases: ['scouting'],
+        tasks: [],
+        agents: [],
+        sidebar: { title: 'Test', indicator: 'green' },
+        taskPrompt: 'Implement login page',
+      });
+    });
+
+    expect(result.current.state.taskPrompt).toBe('Implement login page');
+  });
+
+  it('stores taskPrompt as empty string when init message omits it', () => {
+    const { result } = renderHook(() => useWebSocket());
+
+    act(() => {
+      MockWebSocket.simulateOpen();
+    });
+
+    act(() => {
+      MockWebSocket.simulateMessage({
+        type: 'init',
+        currentPhase: '',
+        completedPhases: [],
+        tasks: [],
+        agents: [],
+        sidebar: { title: '', indicator: '' },
+      });
+    });
+
+    expect(result.current.state.taskPrompt).toBeUndefined();
+  });
+
+  it('retains taskPrompt across subsequent messages after init', () => {
+    const { result } = renderHook(() => useWebSocket());
+
+    act(() => {
+      MockWebSocket.simulateOpen();
+    });
+
+    // Init sets the taskPrompt
+    act(() => {
+      MockWebSocket.simulateMessage({
+        type: 'init',
+        currentPhase: 'scouting',
+        completedPhases: [],
+        tasks: [],
+        agents: [],
+        sidebar: { title: '', indicator: '' },
+        taskPrompt: 'Build feature X',
+      });
+    });
+
+    expect(result.current.state.taskPrompt).toBe('Build feature X');
+
+    // Subsequent non-init messages should not clear taskPrompt
+    act(() => {
+      MockWebSocket.simulateMessage({
+        type: 'workflow_phase',
+        phase: 'scouting',
+        completed: [],
+        currentPhase: 'scouting',
+      });
+    });
+
+    expect(result.current.state.taskPrompt).toBe('Build feature X');
+  });
+
+  it('clears events array when init message is received after reconnection', async () => {
+    vi.useFakeTimers();
+    const { result } = renderHook(() => useWebSocket());
+
+    // Open the initial connection
+    act(() => {
+      MockWebSocket.simulateOpen();
+    });
+
+    // Send several workflow_phase messages to accumulate events
+    act(() => {
+      MockWebSocket.simulateMessage({
+        type: 'workflow_phase',
+        phase: 'scouting',
+        currentPhase: 'scouting',
+        completed: [],
+      });
+    });
+    act(() => {
+      MockWebSocket.simulateMessage({
+        type: 'workflow_phase',
+        phase: 'planning',
+        currentPhase: 'planning',
+        completed: ['scouting'],
+      });
+    });
+    act(() => {
+      MockWebSocket.simulateMessage({
+        type: 'workflow_phase',
+        phase: 'execution',
+        currentPhase: 'execution',
+        completed: ['scouting', 'planning'],
+      });
+    });
+    act(() => {
+      MockWebSocket.simulateMessage({
+        type: 'agent_spawned',
+        agent: {
+          agentId: 'agent-1',
+          taskId: 'task-1',
+          profile: 'test',
+          active: true,
+          log: [],
+        },
+      });
+    });
+
+    // Verify events have accumulated
+    expect(result.current.events.length).toBe(4);
+    expect(result.current.events).toEqual([
+      'Phase: scouting',
+      'Phase: planning',
+      'Phase: execution',
+      'Agent agent-1 spawned',
+    ]);
+
+    // Simulate connection close → triggers reconnect
+    act(() => {
+      MockWebSocket.simulateClose(1000, 'connection lost');
+    });
+    expect(result.current.connected).toBe(false);
+
+    // Advance timers past the backoff delay (1000ms) to create new connection
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(MockWebSocket.instances).toHaveLength(2);
+
+    // Open the new connection
+    act(() => {
+      MockWebSocket.simulateOpen(MockWebSocket.instances[1]);
+    });
+    expect(result.current.connected).toBe(true);
+
+    // Events should still be present before init (reconnection hasn't sent init yet)
+    expect(result.current.events.length).toBe(4);
+
+    // Send init message on the new connection
+    act(() => {
+      MockWebSocket.simulateMessage(
+        {
+          type: 'init',
+          agents: [],
+          currentPhase: 'planning',
+          completedPhases: ['scouting'],
+          tasks: [],
+          sidebar: { title: 'Reconnected', indicator: 'green' },
+        },
+        MockWebSocket.instances[1],
+      );
+    });
+
+    // Events array should be cleared after init
+    expect(result.current.events).toEqual([]);
+
+    vi.useRealTimers();
+  });
 });
 
 describe('useWebSocket – events cap', () => {
@@ -753,5 +948,90 @@ describe('useWebSocket – cleanup on unmount', () => {
     expect(MockWebSocket.instances).toHaveLength(1);
 
     vi.useRealTimers();
+  });
+});
+
+// ─── Diagnostic logging tests (kb-2) ─────────────────────────────────────
+// Diagnostics live in useWebSocket.ts (onmessage + handleServerMessage).
+// These tests guard against regressions in diagnostic logging.
+
+describe('useWebSocket – diagnostic logging', () => {
+  it('logs a warning when a malformed JSON payload is received', () => {
+    renderHook(() => useWebSocket());
+
+    act(() => {
+      MockWebSocket.simulateOpen();
+    });
+
+    // Directly invoke onmessage with raw invalid JSON (bypass simulateMessage
+    // which always JSON.stringify's, producing valid JSON).
+    const ws = MockWebSocket.instances[0];
+    act(() => {
+      ws.onmessage?.(new MessageEvent('message', { data: '{not valid json' }));
+    });
+
+    // The hook should log a warning that includes 'Failed to parse'
+    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('Failed to parse'));
+  });
+
+  it('logs a warning when a valid JSON object has an unrecognized message type', () => {
+    renderHook(() => useWebSocket());
+
+    act(() => {
+      MockWebSocket.simulateOpen();
+    });
+
+    // Send a valid JSON object with a type that isServerMessage does not recognize.
+    // Include extra fields so we can verify the full payload is surfaced in the warning.
+    act(() => {
+      MockWebSocket.simulateMessage({ type: 'bogus_type', foo: 'bar-BODY' });
+    });
+
+    // The hook should log a single-string warning that includes BOTH the
+    // 'unknown message type' label AND the stringified data payload.
+    // This guards against the regression where only the type was logged and the
+    // rest of the message body was silently discarded.
+    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('unknown message type'));
+    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('bar-BODY'));
+  });
+
+  it('logs an init snapshot with correct counts on init message', () => {
+    renderHook(() => useWebSocket());
+
+    act(() => {
+      MockWebSocket.simulateOpen();
+    });
+
+    act(() => {
+      MockWebSocket.simulateMessage({
+        type: 'init',
+        currentPhase: 'planning',
+        completedPhases: ['scouting', 'recon'],
+        tasks: [
+          { id: 't1', name: 'task 1' },
+          { id: 't2', name: 'task 2' },
+          { id: 't3', name: 'task 3' },
+        ],
+        agents: [
+          { agentId: 'a1', taskId: 't1', profile: 'p1', active: true, log: [] },
+          { agentId: 'a2', taskId: 't2', profile: 'p2', active: true, log: [] },
+        ],
+        sidebar: { title: 'S', indicator: 'green' },
+      });
+    });
+
+    // The hook should log a message containing 'init snapshot'
+    expect(console.log).toHaveBeenCalledWith(expect.stringContaining('init snapshot'));
+
+    // Verify the snapshot includes the correct counts.
+    // Find the call that contains 'init snapshot' and check for the counts.
+    const initCalls = (console.log as ReturnType<typeof vi.spyOn>).mock.calls.filter(
+      (args: unknown[]) => typeof args[0] === 'string' && args[0].includes('init snapshot'),
+    );
+    expect(initCalls.length).toBeGreaterThanOrEqual(1);
+    const snapshotMsg = initCalls[0][0] as string;
+    expect(snapshotMsg).toContain('3'); // 3 tasks
+    expect(snapshotMsg).toContain('2'); // 2 agents
+    expect(snapshotMsg).toContain('2'); // 2 completedPhases
   });
 });

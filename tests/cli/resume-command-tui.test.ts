@@ -115,6 +115,9 @@ mock.module('../../src/web/status-bridge.js', () => ({
     getSnapshot() {
       return mockBridgeGetSnapshot();
     }
+    seed(_data: Record<string, unknown>) {
+      // Mock: no-op for testing
+    }
   },
 }));
 

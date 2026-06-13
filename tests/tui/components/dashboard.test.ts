@@ -4,7 +4,56 @@ import { stripAnsi } from '../../../src/tui/theme.js';
 
 const WIDTH = 80;
 
+/** Helper to set up dashboard with two agents in the same phase for navigation tests. */
+function setupDashboardWithAgents(maxLanes = 3, logLines = 4): Dashboard {
+  const d = new Dashboard(maxLanes, logLines);
+  d.registry.register({
+    agentId: 'agent-1',
+    profile: 'coder',
+    phase: 'test',
+  });
+  d.registry.register({
+    agentId: 'agent-2',
+    profile: 'scout',
+    phase: 'test',
+  });
+  d.agentLog.setPhases(['test']);
+  d.agentLog.setCurrentPhase('test');
+  return d;
+}
+
 describe('Dashboard', () => {
+  // ── registry getter ──────────────────────────────────────────────────
+  it('dashboard.registry getter returns the AgentRegistry instance', () => {
+    const d = new Dashboard(3, 4);
+    expect(d.registry).toBeDefined();
+    expect(typeof d.registry.register).toBe('function');
+    expect(typeof d.registry.getAgents).toBe('function');
+  });
+
+  it('dashboard.registry is shared with agentLog', () => {
+    const d = new Dashboard(3, 4);
+
+    // Register an agent via dashboard.registry
+    const uid = d.registry.register({
+      agentId: 'test-agent',
+      profile: 'tester',
+      phase: 'work',
+    });
+
+    // Set up the agentLog to view this agent
+    d.agentLog.setPhases(['work']);
+    d.agentLog.setCurrentPhase('work');
+
+    // Add an entry via registry
+    d.registry.addEntry(uid, { type: 'text', content: 'hello from test' });
+
+    // Render and verify the agent data appears in the rendered output
+    const lines = d.agentLog.render(40);
+    expect(lines[0]).toContain('tester');
+    expect(lines[1]).toContain('hello from test');
+  });
+
   // ── getComputedHeight ───────────────────────────────────────────────
   it('returns correct total height including border lines', () => {
     const d = new Dashboard(3, 4);
@@ -93,12 +142,6 @@ describe('Dashboard', () => {
     const d = new Dashboard(2, 3);
     const lines = d.render(WIDTH);
     const sep = '├' + '─'.repeat(WIDTH - 2) + '┤';
-    // Separator positions: after phaseBar (index 1), after lanePool content
-    // With 0 lanes: lines = [top, phaseContent, sep, sep, agentLog..., bottom]
-    // line[0]=top, line[1]=phase, line[2]=sep(phase/lanes), line[3]=sep(lanes/log) ... wait
-    // PhaseBar=1, lanes=0 => after phaseBar separator, then immediately lanes separator (0 lanes),
-    // then agentLog content, then bottom
-    // Structure: top(0), phase(1), sep(2), sep(3), log(4-6), bottom(7)
     const sepCount = lines.filter((l) => l === sep).length;
     expect(sepCount).toBe(2);
   });
@@ -135,61 +178,114 @@ describe('Dashboard', () => {
   });
 
   // ── handleInput delegation ─────────────────────────────────────────
-  it('handleInput delegates to lanePool for non-arrow keys', () => {
-    const d = new Dashboard(3, 4);
-    d.lanePool.updateLanes([
-      { id: 't1', title: 'A', status: 'ready' },
-      { id: 't2', title: 'B', status: 'ready' },
-      { id: 't3', title: 'C', status: 'ready' },
-    ]);
-    d.lanePool.setFocusedLaneById('t1');
-
-    expect(d.lanePool.getFocusedTaskId()).toBe('t1');
-
-    d.handleInput('\x1b[B'); // Down arrow
-    expect(d.lanePool.getFocusedTaskId()).toBe('t2');
-  });
-
   it('handleInput routes left/right arrows to agentLog', () => {
-    const d = new Dashboard(3, 4);
-    // Set up two agents so navigation works
-    d.agentLog.selectAgent('agent-1', 'coder');
-    d.agentLog.selectAgent('agent-2', 'scout');
-    // Current agent is agent-2
-    expect(d.agentLog.getCurrentAgentId()).toBe('agent-2');
+    const d = setupDashboardWithAgents();
 
-    d.handleInput('\x1b[D'); // Left arrow
-    expect(d.agentLog.getCurrentAgentId()).toBe('agent-1');
+    // Get the UIDs
+    const agent1Uid = d.registry.getActiveUid('agent-1');
+    const agent2Uid = d.registry.getActiveUid('agent-2');
 
-    d.handleInput('\x1b[C'); // Right arrow
-    expect(d.agentLog.getCurrentAgentId()).toBe('agent-2');
+    // Initially agent-1 is selected (index 0)
+    expect(d.agentLog.getSelectedAgentUid()).toBe(agent1Uid);
+
+    // Left arrow should go to agent-2 (wrapping)
+    d.handleInput('\x1b[D');
+    expect(d.agentLog.getSelectedAgentUid()).toBe(agent2Uid);
+
+    // Right arrow should go back to agent-1
+    d.handleInput('\x1b[C');
+    expect(d.agentLog.getSelectedAgentUid()).toBe(agent1Uid);
   });
 
-  it('handleInput routes ctrl+left/ctrl+right to agentLog', () => {
-    const d = new Dashboard(3, 4);
-    d.agentLog.selectAgent('agent-1', 'coder');
-    d.agentLog.selectAgent('agent-2', 'scout');
+  it('handleInput routes up/down to agentLog (phase cycling)', () => {
+    const d = setupDashboardWithAgents();
+
+    // Set up multiple phases for cycling
+    d.registry.register({
+      agentId: 'phase-b-agent',
+      profile: 'tester',
+      phase: 'phase-b',
+    });
+    d.agentLog.setPhases(['test', 'phase-b']);
+    d.agentLog.setCurrentPhase('test');
+    expect(d.agentLog.getCurrentPhase()).toBe('test');
+
+    // Down arrow should cycle to next phase
+    d.handleInput('\x1b[B');
+    expect(d.agentLog.getCurrentPhase()).toBe('phase-b');
+
+    // Up arrow should cycle back to test
+    d.handleInput('\x1b[A');
+    expect(d.agentLog.getCurrentPhase()).toBe('test');
+  });
+
+  it('handleInput routes shift+up/shift+down to agentLog', () => {
+    const d = setupDashboardWithAgents();
+
+    const logSpy = spyOn(d.agentLog, 'handleInput');
+
+    d.handleInput('\x1b[1;2A'); // shift+up
+    expect(logSpy).toHaveBeenCalledTimes(1);
+
+    logSpy.mockClear();
+
+    d.handleInput('\x1b[1;2B'); // shift+down
+    expect(logSpy).toHaveBeenCalledTimes(1);
+
+    logSpy.mockRestore();
+  });
+
+  it('handleInput does NOT route ctrl+left/ctrl+right to agentLog', () => {
+    const d = setupDashboardWithAgents();
+
+    const logSpy = spyOn(d.agentLog, 'handleInput');
+
+    // Ctrl+left and Ctrl+right should no longer be handled
+    d.handleInput('\x1bOd'); // Ctrl+left (legacy)
+    expect(logSpy).not.toHaveBeenCalled();
+
+    logSpy.mockClear();
+
+    d.handleInput('\x1bOc'); // Ctrl+right (legacy)
+    expect(logSpy).not.toHaveBeenCalled();
+
+    logSpy.mockRestore();
+  });
+
+  it('handleInput does NOT route non-arrow keys to any subcomponent', () => {
+    const d = setupDashboardWithAgents();
 
     const logSpy = spyOn(d.agentLog, 'handleInput');
     const laneSpy = spyOn(d.lanePool, 'handleInput');
 
-    d.handleInput('\x1bOd'); // Ctrl+left
-    expect(logSpy).toHaveBeenCalledTimes(1);
-    expect(laneSpy).not.toHaveBeenCalled();
-
-    logSpy.mockClear();
-    laneSpy.mockClear();
-
-    d.handleInput('\x1bOc'); // Ctrl+right
-    expect(logSpy).toHaveBeenCalledTimes(1);
+    // 'enter' key should not be routed to either
+    d.handleInput('\r');
+    expect(logSpy).not.toHaveBeenCalled();
     expect(laneSpy).not.toHaveBeenCalled();
 
     logSpy.mockRestore();
     laneSpy.mockRestore();
   });
 
-  it('handleInput routes up/down to agentLog when expanded', () => {
-    const d = new Dashboard(3, 4);
+  it('handleInput does NOT change lanePool focus when down arrow is pressed', () => {
+    const d = setupDashboardWithAgents();
+    d.lanePool.updateLanes([
+      { id: 't1', title: 'A', status: 'ready' },
+      { id: 't2', title: 'B', status: 'ready' },
+      { id: 't3', title: 'C', status: 'ready' },
+    ]);
+    d.lanePool.setFocusedLaneById('t1');
+    expect(d.lanePool.getFocusedTaskId()).toBe('t1');
+
+    // Down arrow now goes to agentLog (phase cycling), not lanePool
+    d.handleInput('\x1b[B');
+
+    // LanePool focus should be unchanged
+    expect(d.lanePool.getFocusedTaskId()).toBe('t1');
+  });
+
+  it('handleInput routes up/down to agentLog when expanded (for scrolling)', () => {
+    const d = setupDashboardWithAgents();
     d.agentLog.toggleExpand();
     expect(d.agentLog.isExpanded()).toBe(true);
 
@@ -211,22 +307,20 @@ describe('Dashboard', () => {
     laneSpy.mockRestore();
   });
 
-  it('handleInput routes up/down to lanePool when NOT expanded', () => {
-    const d = new Dashboard(3, 4);
-    d.lanePool.updateLanes([
-      { id: 't1', title: 'A', status: 'ready' },
-      { id: 't2', title: 'B', status: 'ready' },
-      { id: 't3', title: 'C', status: 'ready' },
-    ]);
-    d.lanePool.setFocusedLaneById('t1');
+  it('handleInput routes up/down to agentLog even when NOT expanded', () => {
+    const d = setupDashboardWithAgents();
     // Ensure agentLog is NOT expanded
     expect(d.agentLog.isExpanded()).toBe(false);
 
-    d.handleInput('\x1b[A'); // Up arrow – should stay at t1 (no change)
-    expect(d.lanePool.getFocusedTaskId()).toBe('t1');
+    const logSpy = spyOn(d.agentLog, 'handleInput');
+    const laneSpy = spyOn(d.lanePool, 'handleInput');
 
-    d.handleInput('\x1b[B'); // Down arrow – should move to t2
-    expect(d.lanePool.getFocusedTaskId()).toBe('t2');
+    d.handleInput('\x1b[A'); // Up arrow
+    expect(logSpy).toHaveBeenCalledTimes(1);
+    expect(laneSpy).not.toHaveBeenCalled();
+
+    logSpy.mockRestore();
+    laneSpy.mockRestore();
   });
 });
 
@@ -263,8 +357,16 @@ describe('Dashboard ANSI-aware border padding', () => {
 
   it('AgentLog content lines have correct visible width when colored', () => {
     const d = new Dashboard(2, 4);
-    d.agentLog.selectAgent('agent-1', 'coder');
-    d.agentLog.addEntry({ type: 'error', content: 'something failed' });
+    // Register an agent via registry
+    const uid = d.registry.register({
+      agentId: 'agent-1',
+      profile: 'coder',
+      phase: 'test',
+    });
+    d.agentLog.setPhases(['test']);
+    d.agentLog.setCurrentPhase('test');
+    d.registry.addEntry(uid, { type: 'error', content: 'something failed' });
+    d.agentLog.invalidate();
 
     const lines = d.render(WIDTH);
 
@@ -301,8 +403,17 @@ describe('Dashboard ANSI-aware border padding', () => {
       { id: 'build', label: 'Build', icon: '🔨' },
     ]);
     d.phaseBar.setCurrentPhase('plan');
-    d.agentLog.selectAgent('a1', 'coder');
-    d.agentLog.addEntry({ type: 'text', content: 'hi' });
+
+    // Register an agent via registry
+    const uid = d.registry.register({
+      agentId: 'a1',
+      profile: 'coder',
+      phase: 'test',
+    });
+    d.agentLog.setPhases(['test']);
+    d.agentLog.setCurrentPhase('test');
+    d.registry.addEntry(uid, { type: 'text', content: 'hi' });
+    d.agentLog.invalidate();
 
     const lines = d.render(WIDTH);
 
@@ -356,11 +467,19 @@ describe('Dashboard ANSI-aware border padding', () => {
 
   it('agent log with multiple colored entries maintains correct visible width per line', () => {
     const d = new Dashboard(2, 5);
-    d.agentLog.selectAgent('a1', 'coder');
-    d.agentLog.addEntry({ type: 'text', content: 'hello' });
-    d.agentLog.addEntry({ type: 'thinking', content: 'thinking...' });
-    d.agentLog.addEntry({ type: 'error', content: 'oops' });
-    d.agentLog.addEntry({ type: 'tool_call_start', content: 'running tool' });
+    // Register an agent via registry
+    const uid = d.registry.register({
+      agentId: 'a1',
+      profile: 'coder',
+      phase: 'test',
+    });
+    d.agentLog.setPhases(['test']);
+    d.agentLog.setCurrentPhase('test');
+    d.registry.addEntry(uid, { type: 'text', content: 'hello' });
+    d.registry.addEntry(uid, { type: 'thinking', content: 'thinking...' });
+    d.registry.addEntry(uid, { type: 'error', content: 'oops' });
+    d.registry.addEntry(uid, { type: 'tool_call_start', content: 'running tool' });
+    d.agentLog.invalidate();
 
     const lines = d.render(WIDTH);
 

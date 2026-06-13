@@ -1,3 +1,4 @@
+/* eslint-disable no-control-regex -- tests intentionally match ANSI escape codes */
 import { describe, expect, it } from 'bun:test';
 import { LanePoolWidget, type TaskLane } from '../../../src/tui/components/lane-pool-widget.js';
 import { dim, statusColor, statusIcon } from '../../../src/tui/theme.js';
@@ -204,28 +205,6 @@ describe('LanePoolWidget', () => {
     });
   });
 
-  describe('stepInfo', () => {
-    it('renders stepInfo when present, dimmed', () => {
-      const widget = new LanePoolWidget();
-      widget.updateLanes([{ id: 't1', title: 'Task', status: 'implementing', stepInfo: 'step 2/3' }]);
-      const lines = widget.render(WIDTH);
-      expect(lines).toHaveLength(1);
-      const expectedStepInfo = dim('step 2/3');
-      expect(lines[0]).toContain(expectedStepInfo);
-    });
-
-    it('omits stepInfo when not present', () => {
-      const widget = new LanePoolWidget();
-      widget.updateLanes([{ id: 't1', title: 'Task', status: 'done' }]);
-      const lines = widget.render(WIDTH);
-      expect(lines).toHaveLength(1);
-      // The dim escape code \x1b[2m should not appear (title uses green, not dim)
-      // Actually, statusColor('done') uses green \x1b[32m, not dim \x1b[2m
-      // But blocked uses dim... let's just check no "step" text appears
-      expect(lines[0]).not.toContain('step');
-    });
-  });
-
   describe('caching', () => {
     it('returns cached lines when not dirty and width unchanged', () => {
       const widget = new LanePoolWidget();
@@ -282,53 +261,6 @@ describe('LanePoolWidget', () => {
 
       const expected3 = statusIcon('done') + ' ' + statusColor('done')('Done Task');
       expect(lines[3].startsWith(expected3)).toBe(true);
-    });
-  });
-
-  describe('phase and timer rendering', () => {
-    it('renders dimmed phase badge when phase is set', () => {
-      const widget = new LanePoolWidget();
-      widget.updateLanes([{ id: 't1', title: 'Task', status: 'implementing', phase: 'test-writing' }]);
-      const lines = widget.render(WIDTH);
-      expect(lines).toHaveLength(1);
-      // Should contain the dim escape wrapping '[test-writing]'
-      expect(lines[0]).toContain('\x1b[2m[test-writing]\x1b[0m');
-    });
-
-    it('renders timer when startedAt is set', () => {
-      const widget = new LanePoolWidget();
-      widget.updateLanes([{ id: 't1', title: 'Task', status: 'implementing', startedAt: Date.now() - 5000 }]);
-      const lines = widget.render(WIDTH);
-      expect(lines).toHaveLength(1);
-      // 5 seconds should produce '5s'
-      expect(lines[0]).toContain('5s');
-    });
-
-    it('renders both phase and timer', () => {
-      const widget = new LanePoolWidget();
-      widget.updateLanes([
-        { id: 't1', title: 'Task', status: 'implementing', phase: 'test-writing', startedAt: Date.now() - 5000 },
-      ]);
-      const lines = widget.render(WIDTH);
-      expect(lines).toHaveLength(1);
-      // Phase badge should appear before timer
-      const phaseIndex = lines[0].indexOf('\x1b[2m[test-writing]\x1b[0m');
-      const timerIndex = lines[0].indexOf('5s');
-      expect(phaseIndex).toBeGreaterThan(-1);
-      expect(timerIndex).toBeGreaterThan(-1);
-      expect(phaseIndex).toBeLessThan(timerIndex);
-    });
-
-    it('omits phase and timer when not set', () => {
-      const widget = new LanePoolWidget();
-      widget.updateLanes([{ id: 't1', title: 'Task', status: 'implementing' }]);
-      const lines = widget.render(WIDTH);
-      expect(lines).toHaveLength(1);
-      // Should not contain '[' or elapsed pattern beyond the title
-      // The title doesn't have brackets, so no '[' should appear
-      expect(lines[0]).not.toMatch(/\[.*\]/);
-      // Should not contain digits followed by 's' (elapsed pattern)
-      expect(lines[0]).not.toMatch(/\d+s/);
     });
   });
 
@@ -468,6 +400,262 @@ describe('LanePoolWidget', () => {
       // Other lines should not be bold
       expect(lines[0]).not.toContain('\x1b[1m');
       expect(lines[1]).not.toContain('\x1b[1m');
+    });
+  });
+
+  describe('status-dependent row formats', () => {
+    describe('active tasks (implementing, reviewing, claimed)', () => {
+      it('active task implementing shows status text and elapsed', () => {
+        const widget = new LanePoolWidget();
+        widget.updateLanes([
+          {
+            id: 't1',
+            title: 'My Task',
+            status: 'implementing',
+            startedAt: Date.now() - 5000,
+          },
+        ]);
+        const lines = widget.render(WIDTH);
+        expect(lines).toHaveLength(1);
+        const line = lines[0];
+        // Should contain the dim status text
+        expect(line).toContain(dim('implementing'));
+        // Should contain the elapsed time
+        expect(line).toContain('5s');
+        // Should contain the title
+        expect(line).toContain('My Task');
+        // Format: {icon} {colored title} - {dim status} - {dim elapsed}
+        // Count the dash separators (there should be exactly 2)
+        const stripped = line.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '');
+        const dashCount = (stripped.match(/ - /g) || []).length;
+        expect(dashCount).toBe(2);
+      });
+
+      it('active task reviewing shows status text and elapsed', () => {
+        const widget = new LanePoolWidget();
+        widget.updateLanes([
+          {
+            id: 't1',
+            title: 'Review Task',
+            status: 'reviewing',
+            startedAt: Date.now() - 3000,
+          },
+        ]);
+        const lines = widget.render(WIDTH);
+        expect(lines).toHaveLength(1);
+        const line = lines[0];
+        expect(line).toContain(dim('reviewing'));
+        expect(line).toContain('3s');
+        expect(line).toContain('Review Task');
+        const stripped = line.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '');
+        expect((stripped.match(/ - /g) || []).length).toBe(2);
+      });
+
+      it('active task claimed shows status text and elapsed', () => {
+        const widget = new LanePoolWidget();
+        widget.updateLanes([
+          {
+            id: 't1',
+            title: 'Claimed Task',
+            status: 'claimed',
+            startedAt: Date.now() - 7000,
+          },
+        ]);
+        const lines = widget.render(WIDTH);
+        expect(lines).toHaveLength(1);
+        const line = lines[0];
+        expect(line).toContain(dim('claimed'));
+        expect(line).toContain('7s');
+        expect(line).toContain('Claimed Task');
+        const stripped = line.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '');
+        expect((stripped.match(/ - /g) || []).length).toBe(2);
+      });
+
+      it('active task without startedAt shows icon, title, and status text but no elapsed', () => {
+        const widget = new LanePoolWidget();
+        widget.updateLanes([
+          {
+            id: 't1',
+            title: 'No Elapsed',
+            status: 'implementing',
+          },
+        ]);
+        const lines = widget.render(WIDTH);
+        expect(lines).toHaveLength(1);
+        const line = lines[0];
+        // Should show dim status text
+        expect(line).toContain(dim('implementing'));
+        // Should contain the title
+        expect(line).toContain('No Elapsed');
+        // Should have exactly one dash separator (title - status) with no elapsed
+        const stripped = line.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '');
+        expect((stripped.match(/ - /g) || []).length).toBe(1);
+        // Should NOT show elapsed time pattern in stripped content
+        expect(stripped).not.toMatch(/\d+[smh]/);
+      });
+    });
+
+    describe('ready/blocked tasks (no status text or elapsed)', () => {
+      it('ready task shows ONLY icon and title', () => {
+        const widget = new LanePoolWidget();
+        widget.updateLanes([
+          {
+            id: 't1',
+            title: 'Ready Task',
+            status: 'ready',
+            startedAt: Date.now() - 5000,
+          },
+        ]);
+        const lines = widget.render(WIDTH);
+        expect(lines).toHaveLength(1);
+        const line = lines[0];
+        // Should contain the title
+        expect(line).toContain('Ready Task');
+        // Should NOT contain dash separators (check stripped to avoid ANSI)
+        const stripped = line.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '');
+        expect(stripped).not.toMatch(/ - /);
+        // Should NOT contain elapsed pattern in stripped content
+        expect(stripped).not.toMatch(/\d+[smh]/);
+        // The stripped content should be just icon + space + title (plus padding)
+        const icon = statusIcon('ready');
+        expect(stripped.startsWith(icon + ' ' + 'Ready Task')).toBe(true);
+      });
+
+      it('blocked task shows ONLY icon and title', () => {
+        const widget = new LanePoolWidget();
+        widget.updateLanes([
+          {
+            id: 't1',
+            title: 'Blocked Task',
+            status: 'blocked',
+            startedAt: Date.now() - 10000,
+          },
+        ]);
+        const lines = widget.render(WIDTH);
+        expect(lines).toHaveLength(1);
+        const line = lines[0];
+        expect(line).toContain('Blocked Task');
+        const stripped = line.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '');
+        expect(stripped).not.toMatch(/ - /);
+        expect(stripped).not.toMatch(/\d+[smh]/);
+        const icon = statusIcon('blocked');
+        expect(stripped.startsWith(icon + ' ' + 'Blocked Task')).toBe(true);
+      });
+    });
+
+    describe('done/failed tasks (icon, title, and elapsed but no status text)', () => {
+      it('done task shows icon, title, and elapsed but NOT status text', () => {
+        const widget = new LanePoolWidget();
+        widget.updateLanes([
+          {
+            id: 't1',
+            title: 'Done Task',
+            status: 'done',
+            startedAt: 1000,
+            completedAt: 6000,
+          },
+        ]);
+        const lines = widget.render(WIDTH);
+        expect(lines).toHaveLength(1);
+        const line = lines[0];
+        // Should contain the title
+        expect(line).toContain('Done Task');
+        // Should contain elapsed (5s from 1000ms to 6000ms)
+        expect(line).toContain('5s');
+        // Should NOT contain the status word "done" (dimmed or not)
+        // The title contains "Done" but not "done" in lower case as status text
+        // The line should not match a dash followed by "done" (status text would be "done")
+        const stripped = line.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '');
+        expect(stripped).not.toMatch(/ - done( -|$)/);
+        // Should have exactly ONE dash separator (title - elapsed)
+        expect((stripped.match(/ - /g) || []).length).toBe(1);
+      });
+
+      it('failed task shows icon, title, and elapsed but NOT status text', () => {
+        const widget = new LanePoolWidget();
+        widget.updateLanes([
+          {
+            id: 't1',
+            title: 'Failed Task',
+            status: 'failed',
+            startedAt: 2000,
+            completedAt: 7000,
+          },
+        ]);
+        const lines = widget.render(WIDTH);
+        expect(lines).toHaveLength(1);
+        const line = lines[0];
+        expect(line).toContain('Failed Task');
+        expect(line).toContain('5s');
+        // Should NOT contain the dim status word "failed"
+        expect(line).not.toContain(dim('failed'));
+        const stripped = line.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '');
+        expect((stripped.match(/ - /g) || []).length).toBe(1);
+      });
+
+      it('done task without startedAt shows only icon and title', () => {
+        const widget = new LanePoolWidget();
+        widget.updateLanes([
+          {
+            id: 't1',
+            title: 'Done No Time',
+            status: 'done',
+          },
+        ]);
+        const lines = widget.render(WIDTH);
+        expect(lines).toHaveLength(1);
+        const line = lines[0];
+        expect(line).toContain('Done No Time');
+        // No dash separators (check stripped to avoid ANSI)
+        const stripped = line.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '');
+        expect(stripped).not.toMatch(/ - /);
+        // No elapsed pattern in stripped content
+        expect(stripped).not.toMatch(/\d+[smh]/);
+        const icon = statusIcon('done');
+        expect(stripped.startsWith(icon + ' ' + 'Done No Time')).toBe(true);
+      });
+    });
+
+    describe('completedAt freezes elapsed', () => {
+      it('completedAt freezes elapsed for done tasks', () => {
+        const widget = new LanePoolWidget();
+        // A done task with completedAt should show frozen elapsed until completedAt
+        widget.updateLanes([
+          {
+            id: 't1',
+            title: 'Frozen',
+            status: 'done',
+            startedAt: 1000,
+            completedAt: 6000,
+          },
+        ]);
+        const lines = widget.render(WIDTH);
+        expect(lines).toHaveLength(1);
+        const line = lines[0];
+        // Should show 5s (6000 - 1000 = 5000ms)
+        expect(line).toContain('5s');
+        // Should NOT show a larger value based on Date.now()
+        // This is verified by checking that the elapsed is exactly 5s
+      });
+
+      it('done task without completedAt shows wall-clock elapsed', () => {
+        const widget = new LanePoolWidget();
+        const startTime = Date.now() - 10000; // 10 seconds ago
+        widget.updateLanes([
+          {
+            id: 't1',
+            title: 'Wall Clock',
+            status: 'done',
+            startedAt: startTime,
+            // no completedAt — uses Date.now()
+          },
+        ]);
+        const lines = widget.render(WIDTH);
+        expect(lines).toHaveLength(1);
+        const line = lines[0];
+        // Should show elapsed based on Date.now() - startedAt, which is ~10s
+        expect(line).toContain('10s');
+      });
     });
   });
 });

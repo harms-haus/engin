@@ -142,7 +142,7 @@ export async function runCommand(options: CliOptions): Promise<void> {
         workDir,
         maxConcurrentTasks: options.maxConcurrent,
         apiKeys: Object.keys(options.apiKeys).length > 0 ? options.apiKeys : undefined,
-        verbose: true,
+        verbose: options.verbose,
         onStatus: createStatusCallbacks(options.verbose),
         signal: controller.signal,
         ...(worktreeInfo ? { worktree: worktreeInfo } : {}),
@@ -203,6 +203,16 @@ export async function resumeCommand(options: CliOptions): Promise<void> {
   const stateRaw = readFileSync(statePath, 'utf-8');
   const state = JSON.parse(stateRaw) as {
     taskPrompt: string;
+    currentPhase?: string;
+    completedPhases?: string[];
+    tasks?: {
+      id: string;
+      title: string;
+      status: string;
+      assignedAgent?: string;
+      phase?: string;
+    }[];
+    sidebar?: { title?: string; indicator?: string; phases?: { id: string; label: string; icon: string }[] };
     worktree?: { worktreePath: string; branchName: string; originalCwd: string };
     spawnedAgents?: {
       agentId: string;
@@ -268,6 +278,28 @@ export async function resumeCommand(options: CliOptions): Promise<void> {
     };
     statusBridge = new StatusBridge((msg: ServerMessage) => broadcastHolder.fn(msg));
 
+    // Seed the bridge with persisted state so late-connecting clients
+    // receive the full picture (phases, tasks, sidebar, etc.).
+    statusBridge.seed({
+      currentPhase: state.currentPhase,
+      completedPhases: state.completedPhases,
+      tasks: state.tasks?.map((t) => ({
+        id: t.id,
+        title: t.title,
+        status: t.status,
+        agentId: t.assignedAgent,
+        phase: t.phase,
+      })),
+      sidebar: state.sidebar
+        ? {
+            title: state.sidebar.title ?? '',
+            indicator: state.sidebar.indicator ?? '',
+            ...(state.sidebar.phases ? { phases: state.sidebar.phases } : {}),
+          }
+        : undefined,
+      taskPrompt: state.taskPrompt,
+    });
+
     const bridge = statusBridge;
     const snapshotFn = (): ServerMessage => bridge.getSnapshot();
     const { startObserverServer } = await import('../web/observer-server.js');
@@ -326,7 +358,7 @@ export async function resumeCommand(options: CliOptions): Promise<void> {
         workDir,
         maxConcurrentTasks: options.maxConcurrent,
         apiKeys: Object.keys(options.apiKeys).length > 0 ? options.apiKeys : undefined,
-        verbose: true,
+        verbose: options.verbose,
         onStatus: createStatusCallbacks(options.verbose),
         signal: controller.signal,
         ...(worktreeInfo ? { worktree: worktreeInfo } : {}),

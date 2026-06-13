@@ -198,6 +198,98 @@ describe('runCommand — input validation guards', () => {
     });
   });
 
+  // ─── verbose flag pass-through (non-TUI path) ────────────────────────────
+
+  describe('verbose flag pass-through (non-TUI)', () => {
+    it('passes verbose:true to workflow.run when options.verbose is true', async () => {
+      const options = {
+        command: 'run' as const,
+        workflowName: 'test-workflow',
+        taskPrompt: 'some task',
+        cwd: '/tmp',
+        maxConcurrent: 3,
+        verbose: true,
+        worktree: false,
+        apiKeys: {},
+        warnings: [],
+      };
+
+      await runCommand(options);
+
+      const runOpts = mockWorkflowRun.mock.calls[0][1] as Record<string, unknown>;
+      expect(runOpts.verbose).toBe(true);
+    });
+
+    it('passes verbose:false to workflow.run when options.verbose is false (non-TUI)', async () => {
+      const options = {
+        command: 'run' as const,
+        workflowName: 'test-workflow',
+        taskPrompt: 'some task',
+        cwd: '/tmp',
+        maxConcurrent: 3,
+        verbose: false,
+        worktree: false,
+        apiKeys: {},
+        warnings: [],
+      };
+
+      await runCommand(options);
+
+      const runOpts = mockWorkflowRun.mock.calls[0][1] as Record<string, unknown>;
+      expect(runOpts.verbose).toBe(false);
+    });
+
+    it('passes onStatus with verbose callbacks when options.verbose is true', async () => {
+      const options = {
+        command: 'run' as const,
+        workflowName: 'test-workflow',
+        taskPrompt: 'some task',
+        cwd: '/tmp',
+        maxConcurrent: 3,
+        verbose: true,
+        worktree: false,
+        apiKeys: {},
+        warnings: [],
+      };
+
+      await runCommand(options);
+
+      const runOpts = mockWorkflowRun.mock.calls[0][1] as Record<string, unknown>;
+      expect(runOpts.onStatus).toBeDefined();
+      // createStatusCallbacks(true) returns verbose callbacks with turn/tool methods
+      const status = runOpts.onStatus as Record<string, unknown>;
+      expect(typeof status.onTurnStart).toBe('function');
+      expect(typeof status.onTurnEnd).toBe('function');
+      expect(typeof status.onToolCallStart).toBe('function');
+      expect(typeof status.onToolCallEnd).toBe('function');
+    });
+
+    it('passes onStatus with non-verbose callbacks when options.verbose is false', async () => {
+      const options = {
+        command: 'run' as const,
+        workflowName: 'test-workflow',
+        taskPrompt: 'some task',
+        cwd: '/tmp',
+        maxConcurrent: 3,
+        verbose: false,
+        worktree: false,
+        apiKeys: {},
+        warnings: [],
+      };
+
+      await runCommand(options);
+
+      const runOpts = mockWorkflowRun.mock.calls[0][1] as Record<string, unknown>;
+      expect(runOpts.onStatus).toBeDefined();
+      // createStatusCallbacks(false) returns non-verbose callbacks without turn/tool methods
+      const status = runOpts.onStatus as Record<string, unknown>;
+      expect(status.onTurnStart).toBeUndefined();
+      expect(status.onTurnEnd).toBeUndefined();
+      expect(status.onToolCallStart).toBeUndefined();
+      expect(status.onToolCallEnd).toBeUndefined();
+    });
+  });
+
   // ─── Happy path ───────────────────────────────────────────────────────────
 
   describe('when both workflowName and taskPrompt are provided', () => {

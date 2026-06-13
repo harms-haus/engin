@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test';
-import type { AgentLogEntry, AgentLogWidget } from '../../src/tui/components/agent-log-widget.js';
+import { AgentRegistry } from '../../src/tracking/agent-registry.js';
+import type { AgentLogWidget } from '../../src/tui/components/agent-log-widget.js';
 import type { Dashboard } from '../../src/tui/components/dashboard.js';
 import type { EventLog } from '../../src/tui/components/event-log.js';
 import type { LanePoolWidget, TaskLane } from '../../src/tui/components/lane-pool-widget.js';
@@ -53,75 +54,33 @@ function createMockLanePool() {
   } as unknown as LanePoolWidget & { calls: { method: string; args: unknown[] }[] };
 }
 
+/**
+ * Minimal mock for AgentLogWidget that only exposes methods actually called by
+ * status-callbacks.ts after the registry rewrite.
+ */
 function createMockAgentLog() {
   const calls: { method: string; args: unknown[] }[] = [];
+  let expanded = false;
   return {
     calls,
-    selectAgent(agentId: string, profile: string) {
-      calls.push({ method: 'selectAgent', args: [agentId, profile] });
-    },
-    selectAgentInPhase(agentId: string, phase: string, profile: string) {
-      calls.push({ method: 'selectAgentInPhase', args: [agentId, phase, profile] });
-    },
     setCurrentPhase(phase: string) {
       calls.push({ method: 'setCurrentPhase', args: [phase] });
     },
-    setAvailablePhases(phases: string[]) {
-      calls.push({ method: 'setAvailablePhases', args: [phases] });
-    },
-    addStartedPhase(phase: string) {
-      calls.push({ method: 'addStartedPhase', args: [phase] });
-    },
-    getStartedPhases(): string[] {
-      return [];
-    },
-    getAvailablePhases(): string[] {
-      return [];
-    },
-    getCurrentPhase(): string | null {
-      return null;
-    },
-    getAgentsForPhase(_phase: string): string[] {
-      return [];
+    setPhases(phases: string[]) {
+      calls.push({ method: 'setPhases', args: [phases] });
     },
     isExpanded(): boolean {
-      return false;
+      return expanded;
     },
     toggleExpand() {
+      expanded = !expanded;
       calls.push({ method: 'toggleExpand', args: [] });
     },
     getExpandedLineCount(): number {
-      return 20;
-    },
-    clearAgent() {
-      calls.push({ method: 'clearAgent', args: [] });
-    },
-    addEntry(entry: AgentLogEntry, agentId?: string) {
-      calls.push({ method: 'addEntry', args: [entry, agentId] });
-    },
-    updateStats(
-      agentId: string,
-      partial: {
-        toolCallCount?: number;
-        inputTokens?: number;
-        outputTokens?: number;
-        taskTitle?: string;
-        profile?: string;
-      },
-    ) {
-      calls.push({ method: 'updateStats', args: [agentId, partial] });
-    },
-    markAgentComplete(agentId: string) {
-      calls.push({ method: 'markAgentComplete', args: [agentId] });
+      return 40;
     },
     invalidate() {
       calls.push({ method: 'invalidate', args: [] });
-    },
-    hasAgent(_agentId: string): boolean {
-      return false;
-    },
-    transferAgent(_fromId: string, _toId: string): void {
-      calls.push({ method: 'transferAgent', args: [_fromId, _toId] });
     },
   } as unknown as AgentLogWidget & { calls: { method: string; args: unknown[] }[] };
 }
@@ -135,6 +94,7 @@ function createMockDashboard(
     phaseBar,
     lanePool,
     agentLog,
+    registry: new AgentRegistry(),
   } as unknown as Dashboard;
 }
 
@@ -289,14 +249,18 @@ describe('createTuiStatusCallbacks', () => {
   });
 
   describe('onAgentSpawn', () => {
-    it('adds expected line to eventLog and selects agent in agentLog', () => {
+    it('adds expected line to eventLog and registers agent in registry', () => {
       const ctx = createTestDeps();
       ctx.callbacks.onAgentSpawn!({ agentId: 'a1', profile: 'scout', phase: 'scouting' });
       expect(ctx.eventLog.lines).toEqual(['⏳ Agent a1 spawned (scout)']);
-      expect(ctx.agentLog.calls).toEqual([
-        { method: 'selectAgentInPhase', args: ['a1', 'scouting', 'scout'] },
-        { method: 'updateStats', args: ['a1', { profile: 'scout' }] },
-      ]);
+
+      const agents = ctx.dashboard.registry.getAgents();
+      expect(agents).toHaveLength(1);
+      expect(agents[0].agentId).toBe('a1');
+      expect(agents[0].profile).toBe('scout');
+      expect(agents[0].phase).toBe('scouting');
+      expect(agents[0].status).toBe('active');
+      expect(agents[0].uid).toMatch(/^agent-\d+$/);
     });
 
     it('calls requestRender', () => {
@@ -308,31 +272,55 @@ describe('createTuiStatusCallbacks', () => {
     it('builds reverse maps when taskId is provided', () => {
       const ctx = createTestDeps();
       ctx.callbacks.onAgentSpawn!({ agentId: 'a1', profile: 'coder', phase: 'implement', taskId: 't1' });
+      // Spawn a second agent without taskId to have a clean baseline
       // Verify the reverse map works by triggering onTaskStart with the same taskId
       ctx.callbacks.onTaskStart!({ taskId: 't1', title: 'My task', agentId: 'a1' });
-      // The taskTitle updateStats call should use agentId 'a1' from the reverse map
-      expect(ctx.agentLog.calls).toContainEqual({
-        method: 'updateStats',
-        args: ['a1', { taskTitle: 'My task' }],
+      const agents = ctx.dashboard.registry.getAgents();
+      expect(agents).toHaveLength(1);
+      expect(agents[0].taskTitle).toBe('My task');
+    });
+
+    it('passes sessionId and sessionPath to registry', () => {
+      const ctx = createTestDeps();
+      ctx.callbacks.onAgentSpawn!({
+        agentId: 'a1',
+        profile: 'coder',
+        phase: 'implement',
+        sessionId: 'sess-1',
+        sessionPath: '/sessions/sess-1',
       });
+      const agents = ctx.dashboard.registry.getAgents();
+      expect(agents[0].sessionId).toBe('sess-1');
+      expect(agents[0].sessionPath).toBe('/sessions/sess-1');
     });
   });
 
   describe('onAgentComplete', () => {
-    it('adds expected line to eventLog and entry to agentLog', () => {
+    it('adds expected line to eventLog and completes agent in registry', () => {
       const ctx = createTestDeps();
+      // Must spawn first so the agent exists in the registry
+      ctx.callbacks.onAgentSpawn!({ agentId: 'a1', profile: 'scout', phase: 'scouting' });
       ctx.callbacks.onAgentComplete!({ agentId: 'a1', profile: 'scout', phase: 'scouting' });
-      expect(ctx.eventLog.lines).toEqual(['✅ Agent a1 complete']);
-      expect(ctx.agentLog.calls).toEqual([
-        { method: 'addEntry', args: [{ type: 'text', content: 'Agent session ended' }, 'a1'] },
-        { method: 'markAgentComplete', args: ['a1'] },
-      ]);
+      expect(ctx.eventLog.lines).toEqual(['⏳ Agent a1 spawned (scout)', '✅ Agent a1 complete']);
+
+      const agents = ctx.dashboard.registry.getAgents();
+      expect(agents).toHaveLength(1);
+      expect(agents[0].status).toBe('completed');
+      expect(agents[0].completedAt).toBeDefined();
+      expect(agents[0].entries).toEqual([{ type: 'text', content: 'Agent session ended' }]);
     });
 
     it('calls requestRender', () => {
       const ctx = createTestDeps();
       ctx.callbacks.onAgentComplete!({ agentId: 'a1', profile: 'p', phase: 'x' });
       expect(ctx.renderCount).toBe(1);
+    });
+
+    it('handles unknown agentId gracefully (no crash, no registry entry)', () => {
+      const ctx = createTestDeps();
+      ctx.callbacks.onAgentComplete!({ agentId: 'unknown', profile: 'p', phase: 'x' });
+      const agents = ctx.dashboard.registry.getAgents();
+      expect(agents).toHaveLength(0);
     });
   });
 
@@ -368,16 +356,17 @@ describe('createTuiStatusCallbacks', () => {
       const ctx = createTestDeps();
       ctx.callbacks.onAgentSpawn!({ agentId: 'a1', profile: 'coder', phase: 'implement', taskId: 't1' });
       ctx.callbacks.onTaskStart!({ taskId: 't1', title: 'Implement feature', agentId: 'a1' });
-      expect(ctx.agentLog.calls).toContainEqual({
-        method: 'updateStats',
-        args: ['a1', { taskTitle: 'Implement feature' }],
-      });
+      const agents = ctx.dashboard.registry.getAgents();
+      expect(agents[0].taskTitle).toBe('Implement feature');
     });
 
     it('uses info.agentId as fallback for taskTitle when no reverse map entry', () => {
       const ctx = createTestDeps();
+      ctx.callbacks.onAgentSpawn!({ agentId: 'a1', profile: 'coder', phase: 'implement' });
       ctx.callbacks.onTaskStart!({ taskId: 't1', title: 'Standalone task', agentId: 'a1' });
-      expect(ctx.agentLog.calls).toEqual([{ method: 'updateStats', args: ['a1', { taskTitle: 'Standalone task' }] }]);
+      const agents = ctx.dashboard.registry.getAgents();
+      expect(agents).toHaveLength(1);
+      expect(agents[0].taskTitle).toBe('Standalone task');
     });
 
     it('passes phase and startedAt to lane when provided', () => {
@@ -406,13 +395,14 @@ describe('createTuiStatusCallbacks', () => {
   });
 
   describe('onTaskComplete', () => {
-    it('updates lane status to done', () => {
+    it('updates lane status to done and sets completedAt', () => {
       const ctx = createTestDeps();
       ctx.callbacks.onTaskStart!({ taskId: 't1', title: 'Task 1', agentId: 'a1' });
       ctx.callbacks.onTaskComplete!({ taskId: 't1', title: 'Task 1' });
       expect(ctx.eventLog.lines).toContain('✅ Task t1 complete');
       const lastLaneUpdate = ctx.lanePool.calls[ctx.lanePool.calls.length - 1].args[0] as TaskLane[];
       expect(lastLaneUpdate[0].status).toBe('done');
+      expect(lastLaneUpdate[0].completedAt).toEqual(expect.any(Number));
     });
 
     it('calls requestRender', () => {
@@ -433,13 +423,14 @@ describe('createTuiStatusCallbacks', () => {
   });
 
   describe('onTaskRejected', () => {
-    it('updates lane status to failed', () => {
+    it('updates lane status to failed and sets completedAt', () => {
       const ctx = createTestDeps();
       ctx.callbacks.onTaskStart!({ taskId: 't1', title: 'Task 1', agentId: 'a1' });
       ctx.callbacks.onTaskRejected!({ taskId: 't1', title: 'Task 1', reason: 'bad code' });
       expect(ctx.eventLog.lines).toContain('❌ Task t1 rejected: bad code');
       const lastLaneUpdate = ctx.lanePool.calls[ctx.lanePool.calls.length - 1].args[0] as TaskLane[];
       expect(lastLaneUpdate[0].status).toBe('failed');
+      expect(lastLaneUpdate[0].completedAt).toEqual(expect.any(Number));
     });
 
     it('calls requestRender', () => {
@@ -472,11 +463,16 @@ describe('createTuiStatusCallbacks', () => {
   });
 
   describe('onError', () => {
-    it('adds expected line to eventLog and error entry to agentLog', () => {
+    it('adds expected line to eventLog and error entry to registry', () => {
       const ctx = createTestDeps();
+      // Must spawn first so the agent exists in the registry
+      ctx.callbacks.onAgentSpawn!({ agentId: 'a1', profile: 'scout', phase: 'scouting' });
       ctx.callbacks.onError!({ agentId: 'a1', error: 'crash', phase: 'planning' });
-      expect(ctx.eventLog.lines).toEqual(['⚠️ Error in a1: crash (planning)']);
-      expect(ctx.agentLog.calls).toEqual([{ method: 'addEntry', args: [{ type: 'error', content: 'crash' }, 'a1'] }]);
+      expect(ctx.eventLog.lines).toContain('⚠️ Error in a1: crash (planning)');
+
+      const agents = ctx.dashboard.registry.getAgents();
+      expect(agents).toHaveLength(1);
+      expect(agents[0].entries).toEqual([{ type: 'error', content: 'crash' }]);
     });
 
     it('calls requestRender', () => {
@@ -484,49 +480,58 @@ describe('createTuiStatusCallbacks', () => {
       ctx.callbacks.onError!({ agentId: 'a1', error: 'e', phase: 'p' });
       expect(ctx.renderCount).toBe(1);
     });
+
+    it('still logs to eventLog even when agent is not registered', () => {
+      const ctx = createTestDeps();
+      ctx.callbacks.onError!({ agentId: 'unknown', error: 'crash', phase: 'planning' });
+      expect(ctx.eventLog.lines).toEqual(['⚠️ Error in unknown: crash (planning)']);
+      // No agent was spawned, so registry should be empty
+      expect(ctx.dashboard.registry.getAgents()).toHaveLength(0);
+    });
   });
 
   describe('onTurnEnd', () => {
     it('processes text content blocks', () => {
       const ctx = createTestDeps();
+      ctx.callbacks.onAgentSpawn!({ agentId: 'a1', profile: 'coder', phase: 'implement' });
       ctx.callbacks.onTurnEnd!({
         agentId: 'a1',
         turn: 1,
         contentBlocks: [{ type: 'text', text: 'Hello world' }],
       });
-      expect(ctx.agentLog.calls).toEqual([
-        { method: 'addEntry', args: [{ type: 'text', content: 'Hello world' }, 'a1'] },
-      ]);
-      expect(ctx.eventLog.lines).toEqual([]);
+      const agents = ctx.dashboard.registry.getAgents();
+      expect(agents).toHaveLength(1);
+      expect(agents[0].entries).toEqual([{ type: 'text', content: 'Hello world' }]);
+      expect(ctx.eventLog.lines).toEqual(['⏳ Agent a1 spawned (coder)']);
     });
 
     it('ignores empty text blocks', () => {
       const ctx = createTestDeps();
+      ctx.callbacks.onAgentSpawn!({ agentId: 'a1', profile: 'coder', phase: 'implement' });
       ctx.callbacks.onTurnEnd!({
         agentId: 'a1',
         turn: 1,
         contentBlocks: [{ type: 'text', text: '' }],
       });
-      expect(ctx.agentLog.calls.length).toBe(0);
-      expect(ctx.eventLog.lines.length).toBe(0);
+      const agents = ctx.dashboard.registry.getAgents();
+      expect(agents[0].entries).toHaveLength(0);
     });
 
     it('processes thinking content blocks', () => {
       const ctx = createTestDeps();
+      ctx.callbacks.onAgentSpawn!({ agentId: 'a1', profile: 'coder', phase: 'implement' });
       ctx.callbacks.onTurnEnd!({
         agentId: 'a1',
         turn: 1,
         contentBlocks: [{ type: 'thinking', thinking: 'deep thoughts' }],
       });
-      expect(ctx.agentLog.calls).toEqual([
-        { method: 'addEntry', args: [{ type: 'thinking', content: 'deep thoughts' }, 'a1'] },
-      ]);
-      // Thinking blocks should not be added to eventLog
-      expect(ctx.eventLog.lines.length).toBe(0);
+      const agents = ctx.dashboard.registry.getAgents();
+      expect(agents[0].entries).toEqual([{ type: 'thinking', content: 'deep thoughts' }]);
     });
 
     it('processes multiple content blocks in order', () => {
       const ctx = createTestDeps();
+      ctx.callbacks.onAgentSpawn!({ agentId: 'a1', profile: 'coder', phase: 'implement' });
       ctx.callbacks.onTurnEnd!({
         agentId: 'a1',
         turn: 1,
@@ -535,37 +540,44 @@ describe('createTuiStatusCallbacks', () => {
           { type: 'text', text: 'doing stuff' },
         ],
       });
-      expect(ctx.agentLog.calls.length).toBe(2);
-      expect(ctx.eventLog.lines).toEqual([]);
+      const agents = ctx.dashboard.registry.getAgents();
+      expect(agents[0].entries).toEqual([
+        { type: 'thinking', content: 'hmm' },
+        { type: 'text', content: 'doing stuff' },
+      ]);
     });
 
     it('calls requestRender', () => {
       const ctx = createTestDeps();
+      ctx.callbacks.onAgentSpawn!({ agentId: 'a1', profile: 'coder', phase: 'implement' });
       ctx.callbacks.onTurnEnd!({ agentId: 'a1', turn: 1 });
-      expect(ctx.renderCount).toBe(1);
+      expect(ctx.renderCount).toBe(2); // spawn + turnEnd
     });
 
     it('handles missing contentBlocks', () => {
       const ctx = createTestDeps();
+      ctx.callbacks.onAgentSpawn!({ agentId: 'a1', profile: 'coder', phase: 'implement' });
       ctx.callbacks.onTurnEnd!({ agentId: 'a1', turn: 1 });
-      expect(ctx.agentLog.calls.length).toBe(0);
-      expect(ctx.eventLog.lines.length).toBe(0);
+      const agents = ctx.dashboard.registry.getAgents();
+      expect(agents[0].entries).toHaveLength(0);
     });
 
     it('updates token stats when tokens are present', () => {
       const ctx = createTestDeps();
+      ctx.callbacks.onAgentSpawn!({ agentId: 'a1', profile: 'coder', phase: 'implement' });
       ctx.callbacks.onTurnEnd!({
         agentId: 'a1',
         turn: 1,
         tokens: { input: 100, output: 50 },
       });
-      expect(ctx.agentLog.calls).toEqual([
-        { method: 'updateStats', args: ['a1', { inputTokens: 100, outputTokens: 50 }] },
-      ]);
+      const agents = ctx.dashboard.registry.getAgents();
+      expect(agents[0].inputTokens).toBe(100);
+      expect(agents[0].outputTokens).toBe(50);
     });
 
     it('accumulates tokens across multiple turns', () => {
       const ctx = createTestDeps();
+      ctx.callbacks.onAgentSpawn!({ agentId: 'a1', profile: 'coder', phase: 'implement' });
       ctx.callbacks.onTurnEnd!({
         agentId: 'a1',
         turn: 1,
@@ -576,46 +588,56 @@ describe('createTuiStatusCallbacks', () => {
         turn: 2,
         tokens: { input: 200, output: 75 },
       });
-      expect(ctx.agentLog.calls.length).toBe(2);
-      expect(ctx.agentLog.calls[0]).toEqual({
-        method: 'updateStats',
-        args: ['a1', { inputTokens: 100, outputTokens: 50 }],
-      });
-      expect(ctx.agentLog.calls[1]).toEqual({
-        method: 'updateStats',
-        args: ['a1', { inputTokens: 200, outputTokens: 75 }],
-      });
+      const agents = ctx.dashboard.registry.getAgents();
+      expect(agents[0].inputTokens).toBe(300);
+      expect(agents[0].outputTokens).toBe(125);
     });
 
     it('processes content blocks and tokens together', () => {
       const ctx = createTestDeps();
+      ctx.callbacks.onAgentSpawn!({ agentId: 'a1', profile: 'coder', phase: 'implement' });
       ctx.callbacks.onTurnEnd!({
         agentId: 'a1',
         turn: 1,
         tokens: { input: 500, output: 200 },
         contentBlocks: [{ type: 'text', text: 'output text' }],
       });
-      expect(ctx.agentLog.calls).toEqual([
-        { method: 'addEntry', args: [{ type: 'text', content: 'output text' }, 'a1'] },
-        { method: 'updateStats', args: ['a1', { inputTokens: 500, outputTokens: 200 }] },
-      ]);
+      const agents = ctx.dashboard.registry.getAgents();
+      expect(agents[0].entries).toEqual([{ type: 'text', content: 'output text' }]);
+      expect(agents[0].inputTokens).toBe(500);
+      expect(agents[0].outputTokens).toBe(200);
+    });
+
+    it('skips all processing when agent is not registered', () => {
+      const ctx = createTestDeps();
+      // No onAgentSpawn call — uid lookup fails
+      ctx.callbacks.onTurnEnd!({
+        agentId: 'a1',
+        turn: 1,
+        tokens: { input: 100, output: 50 },
+        contentBlocks: [{ type: 'text', text: 'should not appear' }],
+      });
+      expect(ctx.dashboard.registry.getAgents()).toHaveLength(0);
+      expect(ctx.eventLog.lines).toEqual([]);
     });
   });
 
   describe('onToolCallStart', () => {
-    it('does not add to eventLog but adds entry and increments toolCallCount in agentLog', () => {
+    it('adds tool_call_start entry and increments toolCallCount in registry', () => {
       const ctx = createTestDeps();
+      ctx.callbacks.onAgentSpawn!({ agentId: 'a1', profile: 'scout', phase: 'scouting' });
       ctx.callbacks.onToolCallStart!({
         agentId: 'a1',
         toolName: 'read',
         toolCallId: 'tc1',
         arguments: { path: 'test.ts' },
       });
-      expect(ctx.eventLog.lines).toEqual([]);
-      expect(ctx.agentLog.calls).toEqual([
-        { method: 'addEntry', args: [{ type: 'tool_call_start', content: '📖 read → test.ts' }, 'a1'] },
-        { method: 'updateStats', args: ['a1', { toolCallCount: 1 }] },
-      ]);
+      expect(ctx.eventLog.lines).toEqual(['⏳ Agent a1 spawned (scout)']);
+
+      const agents = ctx.dashboard.registry.getAgents();
+      expect(agents).toHaveLength(1);
+      expect(agents[0].entries).toEqual([{ type: 'tool_call_start', content: '📖 read → test.ts' }]);
+      expect(agents[0].toolCallCount).toBe(1);
     });
 
     it('calls requestRender', () => {
@@ -623,36 +645,56 @@ describe('createTuiStatusCallbacks', () => {
       ctx.callbacks.onToolCallStart!({ agentId: 'a1', toolName: 't', toolCallId: 'tc1', arguments: {} });
       expect(ctx.renderCount).toBe(1);
     });
+
+    it('accumulates toolCallCount across multiple calls', () => {
+      const ctx = createTestDeps();
+      ctx.callbacks.onAgentSpawn!({ agentId: 'a1', profile: 'scout', phase: 'scouting' });
+      ctx.callbacks.onToolCallStart!({
+        agentId: 'a1',
+        toolName: 'read',
+        toolCallId: 'tc1',
+        arguments: { path: 'a.ts' },
+      });
+      ctx.callbacks.onToolCallStart!({
+        agentId: 'a1',
+        toolName: 'write',
+        toolCallId: 'tc2',
+        arguments: { path: 'b.ts', content: 'hi' },
+      });
+      const agents = ctx.dashboard.registry.getAgents();
+      expect(agents[0].toolCallCount).toBe(2);
+    });
   });
 
   describe('onToolCallEnd', () => {
-    it('does NOT add an entry to the agent log', () => {
+    it('does NOT add an entry when isError is false', () => {
       const ctx = createTestDeps();
+      ctx.callbacks.onAgentSpawn!({ agentId: 'a1', profile: 'scout', phase: 'scouting' });
       ctx.callbacks.onToolCallEnd!({
         agentId: 'a1',
         toolName: 'read',
         toolCallId: 'tc1',
         isError: false,
       });
-      // No addEntry calls should have been made — tool_call_end entries are suppressed
-      const addEntryCalls = ctx.agentLog.calls.filter((c) => c.method === 'addEntry');
-      expect(addEntryCalls).toHaveLength(0);
+      const agents = ctx.dashboard.registry.getAgents();
+      expect(agents[0].entries).toHaveLength(0);
     });
 
     it('adds an error entry when isError is true', () => {
       const ctx = createTestDeps();
+      ctx.callbacks.onAgentSpawn!({ agentId: 'a1', profile: 'scout', phase: 'scouting' });
       ctx.callbacks.onToolCallEnd!({
         agentId: 'a1',
         toolName: 'bash',
         toolCallId: 'tc2',
         isError: true,
       });
-      expect(ctx.agentLog.calls).toEqual([
-        { method: 'addEntry', args: [{ type: 'error', content: '❌ bash failed' }, 'a1'] },
-      ]);
+      const agents = ctx.dashboard.registry.getAgents();
+      expect(agents).toHaveLength(1);
+      expect(agents[0].entries).toEqual([{ type: 'error', content: '❌ bash failed' }]);
     });
 
-    it('calls requestRender (regression)', () => {
+    it('calls requestRender', () => {
       const ctx = createTestDeps();
       ctx.callbacks.onToolCallEnd!({ agentId: 'a1', toolName: 't', toolCallId: 'tc1', isError: false });
       expect(ctx.renderCount).toBe(1);
@@ -670,7 +712,7 @@ describe('createTuiStatusCallbacks', () => {
       expect(ctx.phaseBar.calls).toEqual([{ method: 'setPhases', args: [phases] }]);
     });
 
-    it('sets available phases on agentLog', () => {
+    it('sets phases on agentLog (replacing old setAvailablePhases)', () => {
       const ctx = createTestDeps();
       const phases = [
         { id: 'scout', label: 'Scouting', icon: '🔍' },
@@ -678,7 +720,7 @@ describe('createTuiStatusCallbacks', () => {
       ];
       ctx.callbacks.onSidebarUpdate!({ phases });
       expect(ctx.agentLog.calls).toContainEqual({
-        method: 'setAvailablePhases',
+        method: 'setPhases',
         args: [['scout', 'plan']],
       });
     });
@@ -741,8 +783,10 @@ describe('createTuiStatusCallbacks', () => {
 
       ctx.callbacks.onTasksAdded!({ tasks: [] });
 
-      // 17 callbacks total (onTurnStart removed – it was a no-op)
-      expect(ctx.renderCount).toBe(17);
+      // 16 callbacks total (onTurnStart removed – it was a no-op;
+      // onTurnEnd also returns early here because agent 'a' was completed
+      // by onAgentComplete, so getActiveUid returns undefined)
+      expect(ctx.renderCount).toBe(16);
     });
   });
 
@@ -819,12 +863,14 @@ describe('createTuiStatusCallbacks', () => {
 
     it('onTurnEnd text blocks do not add to eventLog', () => {
       const ctx = createTestDeps();
+      ctx.callbacks.onAgentSpawn!({ agentId: 'a1', profile: 'coder', phase: 'implement' });
       ctx.callbacks.onTurnEnd!({
         agentId: 'a1',
         turn: 1,
         contentBlocks: [{ type: 'text', text: 'some output' }],
       });
-      expect(ctx.eventLog.lines).toEqual([]);
+      // The onAgentSpawn call added one line; onTurnEnd should not add any
+      expect(ctx.eventLog.lines).toEqual(['⏳ Agent a1 spawned (coder)']);
     });
 
     it('onToolCallStart does not add to eventLog', () => {
@@ -842,23 +888,22 @@ describe('createTuiStatusCallbacks', () => {
   // ─── initialAgents seeding ─────────────────────────────────────────
 
   describe('initialAgents', () => {
-    it('seeds agent log with selectAgentInPhase and updateStats for each initial agent', () => {
+    it('registers each initial agent in the registry', () => {
       const ctx = createTestDepsWithInitialAgents([
         { agentId: 'a1', profile: 'coder', phase: 'implementing' },
         { agentId: 'a2', profile: 'scout', phase: 'scouting' },
       ]);
 
-      const selectCalls = ctx.agentLog.calls.filter((c) => c.method === 'selectAgentInPhase');
-      expect(selectCalls).toEqual([
-        { method: 'selectAgentInPhase', args: ['a1', 'implementing', 'coder'] },
-        { method: 'selectAgentInPhase', args: ['a2', 'scouting', 'scout'] },
-      ]);
-
-      const statsCalls = ctx.agentLog.calls.filter((c) => c.method === 'updateStats');
-      expect(statsCalls).toEqual([
-        { method: 'updateStats', args: ['a1', { profile: 'coder' }] },
-        { method: 'updateStats', args: ['a2', { profile: 'scout' }] },
-      ]);
+      const agents = ctx.dashboard.registry.getAgents();
+      expect(agents).toHaveLength(2);
+      expect(agents[0].agentId).toBe('a1');
+      expect(agents[0].profile).toBe('coder');
+      expect(agents[0].phase).toBe('implementing');
+      expect(agents[0].status).toBe('active');
+      expect(agents[1].agentId).toBe('a2');
+      expect(agents[1].profile).toBe('scout');
+      expect(agents[1].phase).toBe('scouting');
+      expect(agents[1].status).toBe('active');
     });
 
     it('marks agents as completed when completedAt is present', () => {
@@ -867,8 +912,13 @@ describe('createTuiStatusCallbacks', () => {
         { agentId: 'a2', profile: 'scout', phase: 'scouting' },
       ]);
 
-      const completeCalls = ctx.agentLog.calls.filter((c) => c.method === 'markAgentComplete');
-      expect(completeCalls).toEqual([{ method: 'markAgentComplete', args: ['a1'] }]);
+      const agents = ctx.dashboard.registry.getAgents();
+      expect(agents).toHaveLength(2);
+      const a1 = agents.find((a) => a.agentId === 'a1')!;
+      expect(a1.status).toBe('completed');
+      expect(a1.completedAt).toBeDefined();
+      const a2 = agents.find((a) => a.agentId === 'a2')!;
+      expect(a2.status).toBe('active');
     });
 
     it('does not add lines to eventLog', () => {
@@ -886,7 +936,7 @@ describe('createTuiStatusCallbacks', () => {
     it('handles empty initialAgents array', () => {
       const ctx = createTestDepsWithInitialAgents([]);
 
-      expect(ctx.agentLog.calls.length).toBe(0);
+      expect(ctx.dashboard.registry.getAgents()).toHaveLength(0);
     });
 
     it('handles initialAgents with taskId', () => {
@@ -894,20 +944,9 @@ describe('createTuiStatusCallbacks', () => {
         { agentId: 'a1', profile: 'coder', phase: 'implementing', taskId: 'task-1' },
       ]);
 
-      const selectCalls = ctx.agentLog.calls.filter((c) => c.method === 'selectAgentInPhase');
-      expect(selectCalls).toEqual([{ method: 'selectAgentInPhase', args: ['a1', 'implementing', 'coder'] }]);
-    });
-
-    it('does not pollute subsequent onAgentSpawn calls', () => {
-      const ctx = createTestDepsWithInitialAgents([{ agentId: 'a1', profile: 'coder', phase: 'implementing' }]);
-
-      // Reset call count to measure only the onAgentSpawn call
-      ctx.agentLog.calls.length = 0;
-
-      ctx.callbacks.onAgentSpawn!({ agentId: 'a2', profile: 'scout', phase: 'scouting' });
-
-      const selectCalls = ctx.agentLog.calls.filter((c) => c.method === 'selectAgentInPhase');
-      expect(selectCalls).toEqual([{ method: 'selectAgentInPhase', args: ['a2', 'scouting', 'scout'] }]);
+      const agents = ctx.dashboard.registry.getAgents();
+      expect(agents).toHaveLength(1);
+      expect(agents[0].taskId).toBe('task-1');
     });
   });
 });
