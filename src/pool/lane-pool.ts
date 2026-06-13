@@ -182,6 +182,12 @@ export class LanePool {
    */
   private async processTask(task: Task, agentId: string, profiles: Map<string, AgentProfile>): Promise<void> {
     const steps = this.options.getStepsForTask(task);
+
+    if (steps.length === 0) {
+      this.safeFailTask(task.id, { completed: false, error: 'No steps defined for task' });
+      return;
+    }
+
     const maxStepRetries = this.options.maxStepRetries ?? 5;
 
     this.options.onStatus?.onTaskStart?.({
@@ -193,6 +199,7 @@ export class LanePool {
     });
 
     let currentStepIndex = 0;
+    let lastOutput: unknown = undefined;
     // Per-step retry counter: each step tracks its own rejection count
     const stepAttempts = new Map<number, number>();
     // Per-step execution counter: increments each time a step is executed
@@ -259,6 +266,7 @@ export class LanePool {
         taskSessions.set(currentStepIndex, trackedSession);
 
         if (result.type === 'approved') {
+          lastOutput = result.output;
           currentStepIndex++;
         } else {
           // Rejected — record the retry attempt for this step, then back up
@@ -288,7 +296,14 @@ export class LanePool {
               this.safeFailTask(task.id, { completed: false, feedback: result.feedback, severity });
             } else {
               // Medium/low/missing → accept as completed with caveats
-              if (this.safeSubmitAndComplete(task.id, { completed: true, feedback: result.feedback, severity })) {
+              if (
+                this.safeSubmitAndComplete(task.id, {
+                  completed: true,
+                  feedback: result.feedback,
+                  severity,
+                  output: result.output,
+                })
+              ) {
                 this.options.onStatus?.onTaskComplete?.({
                   taskId: task.id,
                   title: task.title,
@@ -305,7 +320,7 @@ export class LanePool {
 
       // All steps approved — dispose sessions, then task complete
       disposeAllTaskSessions();
-      if (this.safeSubmitAndComplete(task.id, { completed: true })) {
+      if (this.safeSubmitAndComplete(task.id, { completed: true, output: lastOutput })) {
         this.options.onStatus?.onTaskComplete?.({
           taskId: task.id,
           title: task.title,

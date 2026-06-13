@@ -2,6 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import type { StatusCallbacks } from '../../src/core/types.js';
 import {
   appendReviewFeedback,
+  composeStatusCallbacks,
   DEFAULT_TOOLS,
   forwardAgentStatus,
   isEnoentError,
@@ -164,6 +165,88 @@ describe('forwardAgentStatus', () => {
     result!.onToolCallEnd!(info);
     expect(calls).toHaveLength(1);
     expect(calls[0]).toEqual(['onToolCallEnd', info]);
+  });
+});
+
+// ─── composeStatusCallbacks ───────────────────────────────────────────────
+
+describe('composeStatusCallbacks', () => {
+  it('calls both callbacks in order for onWorkflowStart', () => {
+    const calls1: unknown[] = [];
+    const calls2: unknown[] = [];
+    const cb1: StatusCallbacks = {
+      onWorkflowStart: (info) => calls1.push(info),
+    };
+    const cb2: StatusCallbacks = {
+      onWorkflowStart: (info) => calls2.push(info),
+    };
+    const composed = composeStatusCallbacks([cb1, cb2]);
+    const info = { taskPrompt: 'test', resumed: false, workDir: '/tmp' };
+    composed.onWorkflowStart?.(info);
+    expect(calls1).toHaveLength(1);
+    expect(calls1[0]).toBe(info);
+    expect(calls2).toHaveLength(1);
+    expect(calls2[0]).toBe(info);
+  });
+
+  it('calls both callbacks in order for onPhaseStart', () => {
+    const order: number[] = [];
+    const cb1: StatusCallbacks = {
+      onPhaseStart: () => order.push(1),
+    };
+    const cb2: StatusCallbacks = {
+      onPhaseStart: () => order.push(2),
+    };
+    const composed = composeStatusCallbacks([cb1, cb2]);
+    composed.onPhaseStart?.({ phase: 'test', round: 1 });
+    expect(order).toEqual([1, 2]);
+  });
+
+  it('calls a method only on cb1 when cb2 does not define it', () => {
+    const calls1: unknown[] = [];
+    const cb1: StatusCallbacks = {
+      onWorkflowStart: (info) => calls1.push(info),
+    };
+    // cb2 has no onWorkflowStart
+    const cb2: StatusCallbacks = {};
+    const composed = composeStatusCallbacks([cb1, cb2]);
+    const info = { taskPrompt: 'test', resumed: false, workDir: '/tmp' };
+    composed.onWorkflowStart?.(info);
+    expect(calls1).toHaveLength(1);
+    expect(calls1[0]).toBe(info);
+  });
+
+  it('returns a no-op object when the array is empty', () => {
+    const composed = composeStatusCallbacks([]);
+    // All methods should exist and be callable without throwing
+    expect(() => {
+      composed.onWorkflowStart?.({ taskPrompt: '', resumed: false, workDir: '' });
+      composed.onPhaseStart?.({ phase: '', round: 0 });
+      composed.onPhaseComplete?.({ phase: '', durationMs: 0 });
+      composed.onAgentSpawn?.({ agentId: '', profile: '', phase: '' });
+      composed.onAgentComplete?.({ agentId: '', profile: '', phase: '' });
+      composed.onTaskStart?.({ taskId: '', title: '', agentId: '' });
+      composed.onTaskComplete?.({ taskId: '', title: '' });
+      composed.onTaskRejected?.({ taskId: '', title: '', reason: '' });
+      composed.onDecision?.({ agentId: '', decision: '', reasoning: '' });
+      composed.onError?.({ agentId: '', error: '', phase: '' });
+      composed.onWorkflowComplete?.({ totalDurationMs: 0, agentCount: 0 });
+      composed.onWorkflowFailed?.({ error: new Error(), phase: '' });
+      composed.onTurnStart?.({ agentId: '', turn: 0 });
+      composed.onTurnEnd?.({ agentId: '', turn: 0 });
+      composed.onToolCallStart?.({ agentId: '', toolName: '', toolCallId: '', arguments: {} });
+      composed.onToolCallEnd?.({ agentId: '', toolName: '', toolCallId: '', isError: false });
+      composed.onTasksAdded?.({ tasks: [] });
+      composed.onSidebarUpdate?.({});
+    }).not.toThrow();
+  });
+
+  it('returns the same object reference when the array has exactly one element', () => {
+    const cb: StatusCallbacks = {
+      onWorkflowStart: () => {},
+    };
+    const result = composeStatusCallbacks([cb]);
+    expect(result).toBe(cb);
   });
 });
 

@@ -101,7 +101,7 @@ export async function runStep(
 
   try {
     // Build prompt
-    const promptText = buildPrompt(task, step);
+    const promptText = await buildPrompt(task, step, execCtx.cwd);
 
     if (step.schema) {
       // Structured output step (review)
@@ -147,8 +147,8 @@ export async function runStep(
     // Exception path: dispose the session since processTask won't track it
     try {
       dispose();
-    } catch {
-      /* swallow */
+    } catch (disposeErr) {
+      console.error(`[step-execution] Error disposing session for task ${task.id}:`, safeErrorMessage(disposeErr));
     }
     throw err;
   } finally {

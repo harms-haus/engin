@@ -2,6 +2,7 @@ import { Key, matchesKey, ProcessTerminal, TUI, type Component, type Terminal } 
 import type { StatusCallbacks } from '../core/types.js';
 import { Dashboard } from './components/dashboard.js';
 import { EventLog } from './components/event-log.js';
+import { createQrOverlayComponent } from './components/qr-overlay.js';
 import { createTuiStatusCallbacks } from './status-callbacks.js';
 import { dim } from './theme.js';
 
@@ -41,6 +42,7 @@ export class WorkflowTUI {
   private running = false;
   private interruptCount = 0;
   private inputUnsubscribe: (() => void) | null = null;
+  private qrHandle: Component | null = null;
   private readonly originalConsoleLog: typeof console.log;
   private readonly originalConsoleWarn: typeof console.warn;
   private readonly originalConsoleError: typeof console.error;
@@ -185,6 +187,7 @@ export class WorkflowTUI {
     try {
       this.inputUnsubscribe?.();
       this.inputUnsubscribe = null;
+      this.qrHandle = null;
       console.log = this.originalConsoleLog;
       console.warn = this.originalConsoleWarn;
       console.error = this.originalConsoleError;
@@ -193,6 +196,62 @@ export class WorkflowTUI {
     } catch (err) {
       this.originalConsoleError('Error during TUI cleanup:', err);
     }
+  }
+
+  // ─── QR Code Overlay ────────────────────────────────────────────
+
+  async showQrCode(url: string): Promise<void> {
+    if (this.qrHandle) {
+      this.qrHandle.hide();
+      this.qrHandle = null;
+    }
+
+    const { component } = await createQrOverlayComponent(url);
+    this.qrHandle = this.tui?.showOverlay(component, { anchor: 'bottom-right', nonCapturing: true }) ?? null;
+    this.tui?.requestRender();
+  }
+
+  // ─── Pause for Inspection ───────────────────────────────────────
+
+  async pauseForInspection(signal?: AbortSignal): Promise<void> {
+    if (!this.tui || !this.running) return;
+
+    return new Promise<void>((resolve) => {
+      // If already aborted, resolve immediately
+      if (signal?.aborted) {
+        resolve();
+        return;
+      }
+
+      // Show message
+      this.eventLog.addLine('');
+      this.eventLog.addLine('Workflow complete. Press Ctrl+C or Escape to quit.');
+      this.tui?.requestRender();
+
+      // Unsubscribe main input handler to prevent its Ctrl+C abort logic
+      const mainUnsub = this.inputUnsubscribe;
+      mainUnsub?.();
+
+      let resolved = false;
+      const done = () => {
+        if (resolved) return;
+        resolved = true;
+        pauseUnsub?.();
+        resolve();
+      };
+
+      // Add pause-specific input listener
+      const pauseUnsub = this.tui?.addInputListener((data: string) => {
+        if (matchesKey(data, Key.ctrl('c')) || matchesKey(data, 'escape')) {
+          done();
+          return { consume: true };
+        }
+        return undefined;
+      });
+
+      // Listen for AbortSignal so web terminate button can resolve the pause
+      signal?.addEventListener('abort', done, { once: true });
+    });
   }
 
   // ─── Accessors ───────────────────────────────────────────────────────

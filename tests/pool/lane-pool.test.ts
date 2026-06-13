@@ -817,8 +817,6 @@ describe('LanePool', () => {
       expect(promptedText).toContain('## Task: Build feature');
       expect(promptedText).toContain('## Step: implement');
       expect(promptedText).toContain('Create a login page');
-      expect(promptedText).toContain('src/login.ts');
-      expect(promptedText).toContain('src/auth.ts');
     });
 
     it('does not include relevant files section when files array is empty', async () => {
@@ -832,7 +830,7 @@ describe('LanePool', () => {
       await pool.run();
 
       const promptedText = session.prompt.mock.calls[0][0] as string;
-      expect(promptedText).not.toContain('## Relevant Files');
+      expect(promptedText).not.toContain('### ');
     });
 
     it('includes review feedback in backed-up implement step prompt', async () => {
@@ -2010,6 +2008,93 @@ describe('LanePool', () => {
 
       const callArgs = mockCreateHarness.mock.calls[0][0] as Record<string, unknown>;
       expect(callArgs.resumeSessionPath).toBeFalsy();
+    });
+  });
+
+  // ─── Task Result Output ────────────────────────────────────────────────
+
+  describe('task result output', () => {
+    it('includes last step output in task result for single non-structured step', async () => {
+      const scoutProfile = {
+        ...defaultProfile,
+        id: 'scout',
+        name: 'Scout',
+      };
+      const profilesMap = new Map<string, typeof defaultProfile>();
+      profilesMap.set('scout', scoutProfile);
+      mockLoadProfilesFromDirs.mockResolvedValue(profilesMap);
+
+      const session = makeSession(() => 'scout report: all clear');
+      setupHarnessMocks(session);
+
+      const { pool, tracker } = createPoolAndTracker({
+        getStepsForTask: () => [{ name: 'scouting', profileId: 'scout', isReadOnly: true }],
+      });
+
+      await pool.run();
+
+      const task = tracker.getTask('task-1');
+      expect(task?.result).toEqual({ completed: true, output: 'scout report: all clear' });
+    });
+
+    it('includes only last step output for multi-step pipeline', async () => {
+      setupProfileMocks();
+
+      let callCount = 0;
+      mockCreateHarness.mockImplementation(() => {
+        callCount++;
+        const isFirst = callCount % 2 === 1;
+        const session = makeSession(() => (isFirst ? 'implement-result' : 'review-result'));
+        return {
+          session,
+          sessionId: `session-${callCount}`,
+          dispose: mock(() => {}),
+        };
+      });
+
+      const { pool, tracker } = createPoolAndTracker({
+        getStepsForTask: () => [
+          { name: 'implement', profileId: 'coder', isReadOnly: false },
+          { name: 'review', profileId: 'reviewer', isReadOnly: true },
+        ],
+      });
+
+      await pool.run();
+
+      const task = tracker.getTask('task-1');
+      expect(task?.result).toMatchObject({ completed: true, output: 'review-result' });
+    });
+
+    it('includes output when max retries hit with non-critical severity', async () => {
+      setupProfileMocks();
+      setupHarnessMocks();
+
+      mockPromptForStructured.mockResolvedValue({
+        result: { approved: false, feedback: 'minor issues', severity: 'medium' },
+        attempts: 1,
+      });
+
+      const { pool, tracker } = createPoolAndTracker({
+        maxStepRetries: 2,
+        getStepsForTask: () => [
+          { name: 'implement', profileId: 'coder', isReadOnly: false },
+          {
+            name: 'review',
+            profileId: 'reviewer',
+            isReadOnly: true,
+            schema: z.object({ approved: z.boolean(), feedback: z.string().optional() }),
+          },
+        ],
+      });
+
+      const result = await pool.run();
+
+      expect(result.completedTasks).toBe(1);
+      const task = tracker.getTask('task-1');
+      expect(task?.result).toMatchObject({
+        completed: true,
+        output: { approved: false, feedback: 'minor issues', severity: 'medium' },
+      });
     });
   });
 });

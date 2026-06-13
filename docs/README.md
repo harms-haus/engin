@@ -1055,10 +1055,12 @@ src/
 
 ### Pool Layer (`src/pool/`)
 
-| Module         | Responsibility                                                                                                                                |
-| -------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| `types.ts`     | Defines `StepDefinition`, `StepResult`, `LanePoolOptions`, and `LanePoolResult` types for configuring the task processing pipeline            |
-| `lane-pool.ts` | Concurrent task processing pool (`LanePool` class); N lanes claim tasks from a shared `TaskTracker` and execute configurable sequential steps |
+| Module              | Responsibility                                                                                                                                |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `types.ts`          | Defines `StepDefinition`, `StepResult`, `LanePoolOptions`, and `LanePoolResult` types for configuring the task processing pipeline            |
+| `lane-pool.ts`      | Concurrent task processing pool (`LanePool` class); N lanes claim tasks from a shared `TaskTracker` and execute configurable sequential steps |
+| `prompt-builder.ts` | Builds the prompt text for each step, including pre-loading file contents from `task.files` as fenced code blocks with syntax highlighting    |
+| `step-execution.ts` | Executes individual steps by loading the profile, creating a harness session, sending the prompt, and determining approval/rejection          |
 
 ### Tracking Layer (`src/tracking/`)
 
@@ -1096,6 +1098,10 @@ Workflows are user-managed scripts that use the library's building blocks to def
 5. Tracks tasks via `TaskTracker` and logs events via `AuditLog`.
 
 See [Custom Workflows](#7-custom-workflows) for examples and [Programmatic API](#8-programmatic-api) for the full set of available building blocks.
+
+### File Pre-Loading
+
+When a [`Task`](#task) has `files` entries, `buildPrompt()` reads each file and injects its contents into the prompt as markdown code blocks _before_ the task prompt text. Each file is rendered as a `### filepath` heading followed by a fenced code block with language-tagged syntax highlighting (e.g. ` ```typescript `). Binary files (images, fonts, archives, etc.) are automatically skipped. Files exceeding 10 KB are truncated with a `... (truncated)` marker, splitting safely at UTF-8 character boundaries. Files that don't exist or can't be read are silently skipped with a `console.warn`.
 
 ### TUI Integration
 
@@ -1177,19 +1183,19 @@ See [Task lifecycle](#tasktracker) for valid transitions.
 
 ### `Task`
 
-| Field             | Type         | Description                                                                    |
-| ----------------- | ------------ | ------------------------------------------------------------------------------ |
-| `id`              | `string`     | Unique task identifier                                                         |
-| `title`           | `string`     | Short description                                                              |
-| `prompt`          | `string`     | Detailed prompt for the implementing agent                                     |
-| `profile`         | `string`     | Agent profile ID to use                                                        |
-| `files`           | `string[]`   | Files this task is expected to modify                                          |
-| `dependencies`    | `string[]`   | Task IDs that must complete before this task                                   |
-| `status`          | `TaskStatus` | Current lifecycle state                                                        |
-| `assignedAgent?`  | `string`     | ID of the agent currently working on this task                                 |
-| `result?`         | `unknown`    | Implementation result submitted for review                                     |
-| `reviewFeedback?` | `string[]`   | Accumulated feedback entries from reviewer rejections                          |
-| `isCode?`         | `boolean`    | Whether this task involves writing/modifying code (vs. docs/config). Optional. |
+| Field             | Type         | Description                                                                                                                                                                                      |
+| ----------------- | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `id`              | `string`     | Unique task identifier                                                                                                                                                                           |
+| `title`           | `string`     | Short description                                                                                                                                                                                |
+| `prompt`          | `string`     | Detailed prompt for the implementing agent                                                                                                                                                       |
+| `profile`         | `string`     | Agent profile ID to use                                                                                                                                                                          |
+| `files`           | `string[]`   | File paths whose contents are pre-loaded and injected as code blocks before the task prompt. Paths are resolved relative to `cwd`. Binary files are skipped. Large files are truncated at 10 KB. |
+| `dependencies`    | `string[]`   | Task IDs that must complete before this task                                                                                                                                                     |
+| `status`          | `TaskStatus` | Current lifecycle state                                                                                                                                                                          |
+| `assignedAgent?`  | `string`     | ID of the agent currently working on this task                                                                                                                                                   |
+| `result?`         | `unknown`    | Implementation result submitted for review                                                                                                                                                       |
+| `reviewFeedback?` | `string[]`   | Accumulated feedback entries from reviewer rejections                                                                                                                                            |
+| `isCode?`         | `boolean`    | Whether this task involves writing/modifying code (vs. docs/config). Optional.                                                                                                                   |
 
 ---
 

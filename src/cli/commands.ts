@@ -4,9 +4,11 @@ import type { PastRunEntry } from '../core/config.js';
 import { getDefaultWorkDir, getGlobalConfigDir, resolveProfilesDirs } from '../core/config.js';
 import { initDefaultConfig } from '../core/setup.js';
 import type { WorktreeInfo } from '../core/types.js';
-import { validateWorkflowName } from '../core/utils.js';
+import { composeStatusCallbacks, validateWorkflowName } from '../core/utils.js';
 import { loadWorkflow } from '../core/workflow-loader.js';
 import { setupWorktree } from '../core/worktree-lifecycle.js';
+import { WorkflowTUI } from '../tui/workflow-tui.js';
+import { StatusBridge } from '../web/status-bridge.js';
 import { createStatusCallbacks, formatTime, shouldUseTui } from './console-status.js';
 import type { CliOptions } from './parse-args.js';
 import { promptPostWorktreeAction } from './post-worktree.js';
@@ -54,17 +56,82 @@ export async function runCommand(options: CliOptions): Promise<void> {
   // Set up SIGINT handler for cooperative cancellation
   const { handler, cleanup, controller } = setupSigintHandler(useTui);
 
+  let tuiInstance: WorkflowTUI | undefined;
+  let observerServer: { broadcast: (msg: ServerMessage) => void; stop: () => Promise<void>; url: string } | undefined;
+  let statusBridge: StatusBridge | undefined;
+
+  if (useTui) {
+    // Start observer web server with snapshot callback
+    const host = options.host ?? '127.0.0.1';
+    const port = options.port ?? 3619;
+    const snapshotFn = (): ServerMessage =>
+      statusBridge?.getSnapshot() ?? {
+        type: 'init',
+        currentPhase: '',
+        completedPhases: [],
+        tasks: [],
+        agents: [],
+        sidebar: { title: '', indicator: '' },
+      };
+    const { startObserverServer } = await import('../web/observer-server.js');
+    observerServer = await startObserverServer({
+      host,
+      port,
+      onTerminate: () => controller.abort(),
+      getSnapshot: snapshotFn,
+    });
+    const serverUrl = observerServer.url;
+
+    // Create and start TUI
+    tuiInstance = new WorkflowTUI({ abort: () => controller.abort() });
+    tuiInstance.start();
+
+    // Show QR code with server URL
+    await tuiInstance.showQrCode(serverUrl);
+
+    // Create status bridge and wire snapshot
+    statusBridge = new StatusBridge(observerServer.broadcast);
+  }
+
   process.on('SIGINT', handler);
   try {
-    await workflow.run(options.taskPrompt, {
-      cwd: effectiveCwd,
-      workDir,
-      maxConcurrentTasks: options.maxConcurrent,
-      apiKeys: Object.keys(options.apiKeys).length > 0 ? options.apiKeys : undefined,
-      ...(useTui ? { verbose: false } : { verbose: true, onStatus: createStatusCallbacks(options.verbose) }),
-      signal: controller.signal,
-      ...(worktreeInfo ? { worktree: worktreeInfo } : {}),
-    });
+    if (useTui && tuiInstance && statusBridge) {
+      const tuiCallbacks = tuiInstance.getStatusCallbacks();
+      const bridgeCallbacks = statusBridge.getCallbacks();
+      const composedCallbacks = composeStatusCallbacks([tuiCallbacks, bridgeCallbacks]);
+
+      await workflow.run(options.taskPrompt as string, {
+        cwd: effectiveCwd,
+        workDir,
+        maxConcurrentTasks: options.maxConcurrent,
+        apiKeys: Object.keys(options.apiKeys).length > 0 ? options.apiKeys : undefined,
+        verbose: false,
+        onStatus: composedCallbacks,
+        signal: controller.signal,
+        ...(worktreeInfo ? { worktree: worktreeInfo } : {}),
+      });
+    } else {
+      await workflow.run(options.taskPrompt as string, {
+        cwd: effectiveCwd,
+        workDir,
+        maxConcurrentTasks: options.maxConcurrent,
+        apiKeys: Object.keys(options.apiKeys).length > 0 ? options.apiKeys : undefined,
+        verbose: true,
+        onStatus: createStatusCallbacks(options.verbose),
+        signal: controller.signal,
+        ...(worktreeInfo ? { worktree: worktreeInfo } : {}),
+      });
+    }
+
+    if (tuiInstance) {
+      // Keep TUI alive for inspection, passing signal so web terminate resolves the pause
+      await tuiInstance.pauseForInspection(controller.signal);
+      tuiInstance.stop();
+      observerServer?.stop();
+      tuiInstance = undefined;
+      observerServer = undefined;
+    }
+
     if (worktreeInfo) {
       const profilesDirs = resolveProfilesDirs(worktreeInfo.originalCwd, workflowName);
       await promptPostWorktreeAction({
@@ -78,6 +145,8 @@ export async function runCommand(options: CliOptions): Promise<void> {
       });
     }
   } finally {
+    tuiInstance?.stop();
+    observerServer?.stop();
     cleanup();
   }
 }
@@ -137,17 +206,82 @@ export async function resumeCommand(options: CliOptions): Promise<void> {
   // Set up SIGINT handler for cooperative cancellation
   const { handler, cleanup, controller } = setupSigintHandler(useTui);
 
+  let tuiInstance: WorkflowTUI | undefined;
+  let observerServer: { broadcast: (msg: ServerMessage) => void; stop: () => Promise<void>; url: string } | undefined;
+  let statusBridge: StatusBridge | undefined;
+
+  if (useTui) {
+    // Start observer web server with snapshot callback
+    const host = options.host ?? '127.0.0.1';
+    const port = options.port ?? 3619;
+    const snapshotFn = (): ServerMessage =>
+      statusBridge?.getSnapshot() ?? {
+        type: 'init',
+        currentPhase: '',
+        completedPhases: [],
+        tasks: [],
+        agents: [],
+        sidebar: { title: '', indicator: '' },
+      };
+    const { startObserverServer } = await import('../web/observer-server.js');
+    observerServer = await startObserverServer({
+      host,
+      port,
+      onTerminate: () => controller.abort(),
+      getSnapshot: snapshotFn,
+    });
+    const serverUrl = observerServer.url;
+
+    // Create and start TUI
+    tuiInstance = new WorkflowTUI({ abort: () => controller.abort() });
+    tuiInstance.start();
+
+    // Show QR code with server URL
+    await tuiInstance.showQrCode(serverUrl);
+
+    // Create status bridge and wire snapshot
+    statusBridge = new StatusBridge(observerServer.broadcast);
+  }
+
   process.on('SIGINT', handler);
   try {
-    await workflow.run(taskPrompt, {
-      cwd: options.cwd,
-      workDir,
-      maxConcurrentTasks: options.maxConcurrent,
-      apiKeys: Object.keys(options.apiKeys).length > 0 ? options.apiKeys : undefined,
-      ...(useTui ? { verbose: false } : { verbose: true, onStatus: createStatusCallbacks(options.verbose) }),
-      signal: controller.signal,
-      ...(worktreeInfo ? { worktree: worktreeInfo } : {}),
-    });
+    if (useTui && tuiInstance && statusBridge) {
+      const tuiCallbacks = tuiInstance.getStatusCallbacks();
+      const bridgeCallbacks = statusBridge.getCallbacks();
+      const composedCallbacks = composeStatusCallbacks([tuiCallbacks, bridgeCallbacks]);
+
+      await workflow.run(taskPrompt, {
+        cwd: options.cwd,
+        workDir,
+        maxConcurrentTasks: options.maxConcurrent,
+        apiKeys: Object.keys(options.apiKeys).length > 0 ? options.apiKeys : undefined,
+        verbose: false,
+        onStatus: composedCallbacks,
+        signal: controller.signal,
+        ...(worktreeInfo ? { worktree: worktreeInfo } : {}),
+      });
+    } else {
+      await workflow.run(taskPrompt, {
+        cwd: options.cwd,
+        workDir,
+        maxConcurrentTasks: options.maxConcurrent,
+        apiKeys: Object.keys(options.apiKeys).length > 0 ? options.apiKeys : undefined,
+        verbose: true,
+        onStatus: createStatusCallbacks(options.verbose),
+        signal: controller.signal,
+        ...(worktreeInfo ? { worktree: worktreeInfo } : {}),
+      });
+    }
+
+    if (tuiInstance) {
+      // Keep TUI alive for inspection, passing signal so web terminate resolves the pause
+      await tuiInstance.pauseForInspection(controller.signal);
+      tuiInstance.stop();
+      observerServer?.stop();
+      tuiInstance = undefined;
+      observerServer = undefined;
+    }
+
     if (worktreeInfo) {
       const profilesDirs = resolveProfilesDirs(worktreeInfo.originalCwd, workflowName);
       await promptPostWorktreeAction({
@@ -161,6 +295,8 @@ export async function resumeCommand(options: CliOptions): Promise<void> {
       });
     }
   } finally {
+    tuiInstance?.stop();
+    observerServer?.stop();
     cleanup();
   }
 }

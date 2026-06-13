@@ -279,12 +279,14 @@ describe('parseArgs', () => {
       expect(() => parseArgs(['web'])).toThrow(/Missing required <task-prompt>/);
     });
 
-    it('throws on web with --host (--host is now unknown)', () => {
-      expect(() => parseArgs(['web', '--host', '0.0.0.0'])).toThrow(/Unknown flag: "--host"/);
+    it('throws on web with --host (--host is now valid, but still missing task prompt)', () => {
+      // --host is now a valid flag; web is treated as workflow name, missing task prompt
+      expect(() => parseArgs(['web', '--host', '0.0.0.0'])).toThrow(/Missing required <task-prompt>/);
     });
 
-    it('throws on web with --port (--port is now unknown)', () => {
-      expect(() => parseArgs(['web', '--port', '3619'])).toThrow(/Unknown flag: "--port"/);
+    it('throws on web with --port (--port is now valid, but still missing task prompt)', () => {
+      // --port is now a valid flag; web is treated as workflow name, missing task prompt
+      expect(() => parseArgs(['web', '--port', '3619'])).toThrow(/Missing required <task-prompt>/);
     });
 
     it('throws on web with --cwd and no task prompt', () => {
@@ -299,12 +301,14 @@ describe('parseArgs', () => {
       expect(() => parseArgs(['web', '--api-key', 'anthropic=sk-xxx'])).toThrow(/Missing required <task-prompt>/);
     });
 
-    it('throws on --port anywhere (unknown flag)', () => {
-      expect(() => parseArgs(['run', 'task', '--port', '3619'])).toThrow(/Unknown flag: "--port"/);
+    it('parses --port as a valid flag with run command', () => {
+      const result = parseArgs(['run', 'task', '--port', '3619']);
+      expect(result.port).toBe(3619);
     });
 
-    it('throws on --host anywhere (unknown flag)', () => {
-      expect(() => parseArgs(['run', 'task', '--host', 'localhost'])).toThrow(/Unknown flag: "--host"/);
+    it('parses --host as a valid flag with run command', () => {
+      const result = parseArgs(['run', 'task', '--host', 'localhost']);
+      expect(result.host).toBe('localhost');
     });
 
     it('treats web as a workflow name when followed by a task prompt', () => {
@@ -319,6 +323,122 @@ describe('parseArgs', () => {
       expect(result.command).toBe('run');
       expect(result.workflowName).toBe('web');
       expect(result.taskPrompt).toBe('task1');
+    });
+  });
+
+  describe('--host and --port flags', () => {
+    it('parses --host with run command', () => {
+      const result = parseArgs(['develop', 'task', '--host', '0.0.0.0']);
+      expect(result.command).toBe('run');
+      expect(result.host).toBe('0.0.0.0');
+    });
+
+    it('parses --host with init command', () => {
+      const result = parseArgs(['init', '--host', '127.0.0.1']);
+      expect(result.command).toBe('init');
+      expect(result.host).toBe('127.0.0.1');
+    });
+
+    it('parses --host with resume command', () => {
+      const result = parseArgs(['resume', 'my-session', '--host', 'localhost']);
+      expect(result.command).toBe('resume');
+      expect(result.sessionName).toBe('my-session');
+      expect(result.host).toBe('localhost');
+    });
+
+    it('parses --host in interactive mode (only flags)', () => {
+      const result = parseArgs(['--host', '0.0.0.0']);
+      expect(result.command).toBe('run');
+      expect(result.host).toBe('0.0.0.0');
+      expect(result.workflowName).toBeUndefined();
+    });
+
+    it('parses --port with run command', () => {
+      const result = parseArgs(['develop', 'task', '--port', '8080']);
+      expect(result.command).toBe('run');
+      expect(result.port).toBe(8080);
+    });
+
+    it('parses --port with init command', () => {
+      const result = parseArgs(['init', '--port', '3619']);
+      expect(result.command).toBe('init');
+      expect(result.port).toBe(3619);
+    });
+
+    it('parses --port with resume command', () => {
+      const result = parseArgs(['resume', 'my-session', '--port', '3000']);
+      expect(result.command).toBe('resume');
+      expect(result.sessionName).toBe('my-session');
+      expect(result.port).toBe(3000);
+    });
+
+    it('parses --port in interactive mode (only flags)', () => {
+      const result = parseArgs(['--port', '9090']);
+      expect(result.command).toBe('run');
+      expect(result.port).toBe(9090);
+      expect(result.workflowName).toBeUndefined();
+    });
+
+    it('parses both --host and --port together', () => {
+      const result = parseArgs(['develop', 'task', '--host', '0.0.0.0', '--port', '8080']);
+      expect(result.host).toBe('0.0.0.0');
+      expect(result.port).toBe(8080);
+    });
+
+    it('--host defaults to undefined when not provided', () => {
+      const result = parseArgs(['develop', 'task']);
+      expect(result.host).toBeUndefined();
+    });
+
+    it('--port defaults to undefined when not provided', () => {
+      const result = parseArgs(['develop', 'task']);
+      expect(result.port).toBeUndefined();
+    });
+
+    describe('--port validation', () => {
+      it('accepts valid port 1', () => {
+        const result = parseArgs(['develop', 'task', '--port', '1']);
+        expect(result.port).toBe(1);
+      });
+
+      it('accepts valid port 65535', () => {
+        const result = parseArgs(['develop', 'task', '--port', '65535']);
+        expect(result.port).toBe(65535);
+      });
+
+      it('rejects port 0', () => {
+        expect(() => parseArgs(['develop', 'task', '--port', '0'])).toThrow(/--port/);
+      });
+
+      it('rejects port 65536', () => {
+        expect(() => parseArgs(['develop', 'task', '--port', '65536'])).toThrow(/--port/);
+      });
+
+      it('rejects negative port', () => {
+        expect(() => parseArgs(['develop', 'task', '--port', '-1'])).toThrow(/--port/);
+      });
+
+      it('rejects float port', () => {
+        expect(() => parseArgs(['develop', 'task', '--port', '1.5'])).toThrow(/--port/);
+      });
+
+      it('rejects non-numeric port', () => {
+        expect(() => parseArgs(['develop', 'task', '--port', 'abc'])).toThrow(/--port/);
+      });
+
+      it('rejects empty port', () => {
+        expect(() => parseArgs(['develop', 'task', '--port', ''])).toThrow(/--port/);
+      });
+    });
+
+    it('--host and --port appear in help return', () => {
+      const result = parseArgs(['--help']);
+      expect(result.command).toBe('help');
+    });
+
+    it('--host and --port appear in version return', () => {
+      const result = parseArgs(['--version']);
+      expect(result.command).toBe('version');
     });
   });
 
@@ -388,7 +508,7 @@ describe('parseArgs', () => {
   });
 
   describe('USAGE string', () => {
-    it('includes --worktree and does NOT include web or --host/--port in the help text', async () => {
+    it('includes --worktree, --host, --port and does NOT include web in the help text', async () => {
       const originalArgv = process.argv;
       const exitSpy = spyOn(process, 'exit').mockImplementation(((code: number) => {
         throw new Error(`process.exit(${code})`);
@@ -405,9 +525,11 @@ describe('parseArgs', () => {
       const output = stdoutSpy.mock.calls[0][0] as string;
       expect(output).toContain('--worktree');
       expect(output).toMatch(/--worktree\s+Run workflow in a git worktree/);
+      expect(output).toContain('--host');
+      expect(output).toMatch(/--host\s+<host>\s+Web server host/);
+      expect(output).toContain('--port');
+      expect(output).toMatch(/--port\s+<port>\s+Web server port/);
       expect(output).not.toContain('web');
-      expect(output).not.toContain('--host');
-      expect(output).not.toContain('--port');
       exitSpy.mockRestore();
       stdoutSpy.mockRestore();
     });
@@ -431,7 +553,7 @@ describe('parseArgs', () => {
     expect(typeof opts.worktree).toBe('boolean');
   });
 
-  it('CliOptions type no longer has host or port properties', () => {
+  it('CliOptions type includes host and port as optional fields', () => {
     const opts: CliOptions = {
       command: 'run',
       workflowName: 'develop',
@@ -442,10 +564,25 @@ describe('parseArgs', () => {
       worktree: true,
       apiKeys: {},
       warnings: [],
+      host: '0.0.0.0',
+      port: 8080,
     };
-    // After web command removal, host and port should not exist on the type
-    expect((opts as Record<string, unknown>).host).toBeUndefined();
-    expect((opts as Record<string, unknown>).port).toBeUndefined();
+    expect(opts.host).toBe('0.0.0.0');
+    expect(opts.port).toBe(8080);
+    // Verify they are optional by omitting them
+    const opts2: CliOptions = {
+      command: 'run',
+      workflowName: 'develop',
+      taskPrompt: 'task',
+      cwd: process.cwd(),
+      maxConcurrent: 5,
+      verbose: false,
+      worktree: false,
+      apiKeys: {},
+      warnings: [],
+    };
+    expect(opts2.host).toBeUndefined();
+    expect(opts2.port).toBeUndefined();
   });
 
   it('webCommand is no longer exported from cli.ts', async () => {
@@ -604,8 +741,9 @@ describe('main() interactive mode', () => {
     expect(result.command).toBe('init');
   });
 
-  it('web command is no longer a valid command', () => {
-    expect(() => parseArgs(['web', '--port', '4000'])).toThrow(/Unknown flag: "--port"/);
+  it('web command is no longer a valid command, --port is now a valid flag', () => {
+    // web is treated as a workflow name, --port is a valid flag, but still missing task prompt
+    expect(() => parseArgs(['web', '--port', '4000'])).toThrow(/Missing required <task-prompt>/);
   });
 
   it('resume command is not affected by interactive mode changes', () => {

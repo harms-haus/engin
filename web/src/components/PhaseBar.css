@@ -1,0 +1,36 @@
+.phase-bar {
+  display: flex;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
+  padding: 0 8px;
+  min-height: 36px;
+  align-items: center;
+  overflow-x: auto;
+}
+
+.phase-bar__tab {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 12px;
+  font-size: 13px;
+  color: var(--text-muted);
+  opacity: 0.5;
+  white-space: nowrap;
+}
+
+.phase-bar__tab--completed {
+  color: var(--success);
+  opacity: 1;
+}
+
+.phase-bar__tab--current {
+  color: var(--text-primary);
+  font-weight: bold;
+  border-bottom: 2px solid var(--accent);
+  opacity: 1;
+}
+
+.phase-bar__icon {
+  font-size: 14px;
+}

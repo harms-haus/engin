@@ -13,6 +13,10 @@ export interface CliOptions {
   warnings: string[];
   /** Session name for the resume command (the directory name under .engin/work/) */
   sessionName?: string;
+  /** Web server host (default: 127.0.0.1) */
+  host?: string;
+  /** Web server port (default: 3619) */
+  port?: number;
 }
 
 // ─── Constants ─────────────────────────────────────────────────────────────
@@ -33,6 +37,8 @@ Options:
   --verbose               Enable verbose logging
   --worktree              Run workflow in a git worktree
   --api-key <provider=key>  API key (repeatable)
+  --host <host>           Web server host (default: 127.0.0.1)
+  --port <port>           Web server port (default: 3619)
   --help, -h              Show this help message
   --version, -v           Show version`;
 
@@ -49,6 +55,8 @@ export function parseArgs(argv: string[]): CliOptions {
       worktree: false,
       apiKeys: {},
       warnings: [],
+      host: undefined,
+      port: undefined,
     };
   }
 
@@ -62,6 +70,8 @@ export function parseArgs(argv: string[]): CliOptions {
       worktree: false,
       apiKeys: {},
       warnings: [],
+      host: undefined,
+      port: undefined,
     };
   }
 
@@ -99,6 +109,18 @@ export function parseArgs(argv: string[]): CliOptions {
         throw new Error(`Missing value for ${arg}\n${USAGE}`);
       }
       flags.push(arg, val);
+    } else if (arg === '--host') {
+      const val = argv[++i];
+      if (val === undefined || val.startsWith('--')) {
+        throw new Error(`Missing value for ${arg}\n${USAGE}`);
+      }
+      flags.push(arg, val);
+    } else if (arg === '--port') {
+      const val = argv[++i];
+      if (val === undefined || val.startsWith('--')) {
+        throw new Error(`Missing value for ${arg}\n${USAGE}`);
+      }
+      flags.push(arg, val);
     } else if (arg.startsWith('--')) {
       throw new Error(`Unknown flag: "${arg}"\n${USAGE}`);
     } else {
@@ -116,6 +138,8 @@ export function parseArgs(argv: string[]): CliOptions {
   let apiKeyWarningIssued = false;
   let workDir: string | undefined;
   let maxConcurrent = 5;
+  let host: string | undefined;
+  let port: number | undefined;
 
   for (let j = 0; j < flags.length; j++) {
     const flag = flags[j];
@@ -134,6 +158,15 @@ export function parseArgs(argv: string[]): CliOptions {
       verbose = true;
     } else if (flag === '--worktree') {
       worktree = true;
+    } else if (flag === '--host') {
+      host = flags[++j];
+    } else if (flag === '--port') {
+      const raw = flags[++j];
+      const parsed = Number(raw);
+      if (!Number.isFinite(parsed) || !Number.isInteger(parsed) || parsed < 1 || parsed > 65535) {
+        throw new Error(`--port must be an integer between 1 and 65535, got "${raw}"\n${USAGE}`);
+      }
+      port = parsed;
     } else if (flag === '--api-key') {
       const pair = flags[++j];
       const eqIdx = pair.indexOf('=');
@@ -162,6 +195,8 @@ export function parseArgs(argv: string[]): CliOptions {
       worktree,
       apiKeys,
       warnings,
+      host,
+      port,
     };
   }
 
@@ -171,7 +206,7 @@ export function parseArgs(argv: string[]): CliOptions {
     if (positionals.length > 1) {
       throw new Error(`Unexpected argument: "${positionals[1]}"\n${USAGE}`);
     }
-    return { command: 'init', cwd, verbose, worktree, maxConcurrent, apiKeys, warnings };
+    return { command: 'init', cwd, verbose, worktree, maxConcurrent, apiKeys, warnings, host, port };
   }
 
   if (command === 'resume') {
@@ -189,6 +224,8 @@ export function parseArgs(argv: string[]): CliOptions {
       apiKeys,
       warnings,
       sessionName,
+      host,
+      port,
     };
   }
 
@@ -211,5 +248,7 @@ export function parseArgs(argv: string[]): CliOptions {
     worktree,
     apiKeys,
     warnings,
+    host,
+    port,
   };
 }

@@ -890,7 +890,6 @@ describe('runStep (step-execution module)', () => {
       expect(promptedText).toContain('## Task: Build feature');
       expect(promptedText).toContain('## Step: implement');
       expect(promptedText).toContain('Create a login page');
-      expect(promptedText).toContain('src/login.ts');
     });
 
     it('prompt includes review feedback when present', async () => {

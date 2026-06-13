@@ -636,4 +636,246 @@ describe('WorkflowTUI', () => {
       }
     });
   });
+
+  describe('showQrCode', () => {
+    it('creates an overlay via mocked TUI', async () => {
+      const _qrComponent = { render: () => [''], invalidate: () => {}, handleInput: () => {} };
+      const hideMock = mock(() => {});
+      const overlayHandle = {
+        hide: hideMock,
+        setHidden: mock(() => {}),
+        isHidden: mock(() => false),
+        focus: mock(() => {}),
+        unfocus: mock(() => {}),
+        isFocused: mock(() => false),
+      };
+
+      const mockShowOverlay = mock(() => overlayHandle);
+      const mockRequestRender = mock(() => {});
+
+      const wtui = new WorkflowTUI();
+      (wtui as any).tui = {
+        showOverlay: mockShowOverlay,
+        requestRender: mockRequestRender,
+        addInputListener: mock(() => () => {}),
+        addChild: mock(() => {}),
+        setFocus: mock(() => {}),
+        stop: mock(() => {}),
+        start: mock(() => {}),
+      } as any;
+      (wtui as any).running = true;
+
+      await wtui.showQrCode('https://example.com');
+
+      expect(mockShowOverlay).toHaveBeenCalledTimes(1);
+      const [component, options] = mockShowOverlay.mock.calls[0];
+      expect(component).toBeDefined();
+      expect(typeof component.render).toBe('function');
+      expect(options).toEqual({ anchor: 'bottom-right', nonCapturing: true });
+      expect(mockRequestRender).toHaveBeenCalled();
+    });
+
+    it('hides existing overlay handle before creating a new one', async () => {
+      const hideMock1 = mock(() => {});
+      const overlayHandle1 = {
+        hide: hideMock1,
+        setHidden: mock(() => {}),
+        isHidden: mock(() => false),
+        focus: mock(() => {}),
+        unfocus: mock(() => {}),
+        isFocused: mock(() => false),
+      };
+
+      const mockShowOverlay = mock(() => overlayHandle1);
+      const mockRequestRender = mock(() => {});
+
+      const wtui = new WorkflowTUI();
+      (wtui as any).tui = {
+        showOverlay: mockShowOverlay,
+        requestRender: mockRequestRender,
+        addInputListener: mock(() => () => {}),
+        addChild: mock(() => {}),
+        setFocus: mock(() => {}),
+        stop: mock(() => {}),
+        start: mock(() => {}),
+      } as any;
+      (wtui as any).running = true;
+
+      // First call
+      await wtui.showQrCode('https://example.com');
+      expect(hideMock1).not.toHaveBeenCalled();
+      expect(mockShowOverlay).toHaveBeenCalledTimes(1);
+
+      // Second call — should hide first handle
+      const hideMock2 = mock(() => {});
+      const overlayHandle2 = {
+        hide: hideMock2,
+        setHidden: mock(() => {}),
+        isHidden: mock(() => false),
+        focus: mock(() => {}),
+        unfocus: mock(() => {}),
+        isFocused: mock(() => false),
+      };
+      mockShowOverlay.mockReturnValue(overlayHandle2);
+
+      await wtui.showQrCode('https://other.com');
+
+      expect(hideMock1).toHaveBeenCalledTimes(1);
+      expect(mockShowOverlay).toHaveBeenCalledTimes(2);
+      expect(mockRequestRender).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('pauseForInspection', () => {
+    function setupPauseTest() {
+      const addInputMock = mock(() => () => {});
+      const requestRenderMock = mock(() => {});
+      const addLineMock = mock(() => {});
+
+      const wtui = new WorkflowTUI();
+      (wtui as any).tui = {
+        showOverlay: mock(() => {}),
+        requestRender: requestRenderMock,
+        addInputListener: addInputMock,
+        addChild: mock(() => {}),
+        setFocus: mock(() => {}),
+        stop: mock(() => {}),
+        start: mock(() => {}),
+      } as any;
+      (wtui as any).running = true;
+      (wtui as any).eventLog = {
+        addLine: addLineMock,
+        setMaxLines: mock(() => {}),
+        render: mock(() => []),
+      };
+
+      return { wtui, addInputMock, requestRenderMock, addLineMock };
+    }
+
+    it('resolves immediately when signal is already aborted', async () => {
+      const { wtui, addInputMock } = setupPauseTest();
+
+      const signal = AbortSignal.abort();
+      const start = performance.now();
+      await wtui.pauseForInspection(signal);
+      const elapsed = performance.now() - start;
+
+      // Should resolve synchronously (or near-synchronously)
+      expect(elapsed).toBeLessThan(50);
+      // Should NOT have added a new input listener
+      expect(addInputMock).not.toHaveBeenCalled();
+    });
+
+    it('resolves when signal is aborted after a tick', async () => {
+      const { wtui, addInputMock } = setupPauseTest();
+
+      const controller = new AbortController();
+      const promise = wtui.pauseForInspection(controller.signal);
+
+      // Verify that an input listener was registered
+      expect(addInputMock).toHaveBeenCalledTimes(1);
+
+      // Cancel via abort
+      controller.abort();
+
+      await expect(promise).resolves.toBeUndefined();
+    });
+
+    it('adds event log messages and requests render on pause', async () => {
+      const { wtui, addLineMock, requestRenderMock } = setupPauseTest();
+
+      const controller = new AbortController();
+      const promise = wtui.pauseForInspection(controller.signal);
+
+      expect(addLineMock).toHaveBeenCalledWith('');
+      expect(addLineMock).toHaveBeenCalledWith('Workflow complete. Press Ctrl+C or Escape to quit.');
+      expect(requestRenderMock).toHaveBeenCalled();
+
+      controller.abort();
+      await promise;
+    });
+
+    it('resolves when Ctrl+C key is pressed via the pause input listener', async () => {
+      const { wtui, addInputMock } = setupPauseTest();
+
+      const controller = new AbortController();
+      const promise = wtui.pauseForInspection(controller.signal);
+
+      // Get the listener that was registered
+      expect(addInputMock).toHaveBeenCalledTimes(1);
+      const listener = addInputMock.mock.calls[0][0];
+      expect(typeof listener).toBe('function');
+
+      // Simulate Ctrl+C press with raw terminal byte (\x03 = Ctrl+C)
+      const result = listener('\x03');
+      expect(result).toEqual({ consume: true });
+
+      await expect(promise).resolves.toBeUndefined();
+    });
+
+    it('resolves when Escape key is pressed via the pause input listener', async () => {
+      const { wtui, addInputMock } = setupPauseTest();
+
+      const controller = new AbortController();
+      const promise = wtui.pauseForInspection(controller.signal);
+
+      expect(addInputMock).toHaveBeenCalledTimes(1);
+      const listener = addInputMock.mock.calls[0][0];
+
+      // Simulate Escape press with raw terminal byte (\x1b = Escape)
+      const result = listener('\x1b');
+      expect(result).toEqual({ consume: true });
+
+      await expect(promise).resolves.toBeUndefined();
+    });
+
+    it('does nothing when tui is null', async () => {
+      const wtui = new WorkflowTUI();
+      // tui is null by default
+      await wtui.pauseForInspection();
+      // Should not throw; just return
+    });
+
+    it('does nothing when not running', async () => {
+      const wtui = new WorkflowTUI();
+      (wtui as any).tui = {
+        addInputListener: mock(() => {}),
+        requestRender: mock(() => {}),
+      };
+      (wtui as any).running = false;
+
+      await wtui.pauseForInspection();
+      // Should not throw; just return silently
+    });
+
+    it('resolves signal abort after pause listener setup prevents double-resolution', async () => {
+      const { wtui } = setupPauseTest();
+
+      const controller = new AbortController();
+      let resolveCount = 0;
+      const promise = wtui.pauseForInspection(controller.signal);
+      promise.then(() => resolveCount++);
+
+      // Abort once
+      controller.abort();
+      await promise;
+      expect(resolveCount).toBe(1);
+
+      // The resolved flag should prevent double-resolution; just verify no error
+    });
+
+    it('resolves via Ctrl+C even when AbortSignal never fires', async () => {
+      const { wtui, addInputMock } = setupPauseTest();
+
+      const promise = wtui.pauseForInspection();
+
+      expect(addInputMock).toHaveBeenCalledTimes(1);
+      const listener = addInputMock.mock.calls[0][0];
+
+      // Simulate Ctrl+C press with raw terminal byte
+      listener('\x03');
+
+      await expect(promise).resolves.toBeUndefined();
+    });
+  });
 });

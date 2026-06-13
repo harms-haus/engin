@@ -1,0 +1,14 @@
+.event-log {
+  flex: 1;
+  background: var(--bg-primary);
+  padding: 8px;
+  overflow-y: auto;
+}
+
+.event-log__entry {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  color: var(--text-secondary);
+}
