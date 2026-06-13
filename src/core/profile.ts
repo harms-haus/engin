@@ -129,21 +129,6 @@ export async function loadProfile(dirPath: string, profileId: string): Promise<A
 }
 
 /**
- * Load a single profile directly from a .md file path.
- * Bypasses the directory cache — use when you know the exact file.
- * Throws if the file does not exist or is invalid.
- */
-export async function loadProfileSingle(filePath: string): Promise<AgentProfile> {
-  let content: string;
-  try {
-    content = await readFile(filePath, 'utf-8');
-  } catch {
-    throw new Error(`Profile file does not exist: ${filePath}`);
-  }
-  return parseProfile(content, basename(filePath));
-}
-
-/**
  * Load and merge agent profiles from multiple directories.
  *
  * Directories are processed in reverse order (last entry first) so that

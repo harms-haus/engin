@@ -6,8 +6,6 @@ import { isEnoentError } from '../core/utils.js';
 export class AuditLog {
   private readonly logPath: string;
   private cache: AuditEvent[] | null = null;
-  private cacheBuildPromise: Promise<AuditEvent[]> | null = null;
-  private _cacheStale = false;
   private dirEnsured = false;
 
   constructor(private readonly logDir: string) {
@@ -26,55 +24,37 @@ export class AuditLog {
     } as AuditEvent;
 
     await appendFile(this.logPath, JSON.stringify(record) + '\n', 'utf-8');
-    this._cacheStale = true;
-    if (this.cacheBuildPromise === null) {
-      this.cache = null;
-    }
+    this.cache = null;
   }
 
   async getEvents(filter?: { taskId?: string; type?: string }): Promise<AuditEvent[]> {
-    // Loop ensures that all concurrent callers that await the same
-    // cacheBuildPromise re-check the condition after the promise resolves.
-    // This handles the case where append() set _cacheStale during a build.
-    while (this.cache === null || this._cacheStale) {
-      if (this._cacheStale) {
-        this._cacheStale = false;
-        this.cache = null;
-        this.cacheBuildPromise = null;
-      }
-
-      if (this.cache === null) {
-        if (this.cacheBuildPromise === null) {
-          this.cacheBuildPromise = (async () => {
-            let content: string;
-            try {
-              content = await readFile(this.logPath, 'utf-8');
-            } catch (err: unknown) {
-              if (isEnoentError(err)) {
-                this.cache = [];
-                this.cacheBuildPromise = null;
-                return this.cache;
-              } else {
-                throw err;
-              }
-            }
-
-            const events: AuditEvent[] = [];
-            for (const line of content.split('\n')) {
-              if (line.trim() === '') continue;
-              try {
-                events.push(JSON.parse(line) as AuditEvent);
-              } catch {
-                console.warn(`Skipping malformed JSONL line: ${line.slice(0, 100)}`);
-              }
-            }
-            this.cache = events;
-            this.cacheBuildPromise = null;
-            return this.cache;
-          })();
+    if (this.cache === null) {
+      let content: string;
+      try {
+        content = await readFile(this.logPath, 'utf-8');
+      } catch (err: unknown) {
+        if (isEnoentError(err)) {
+          this.cache = [];
+          return this.cache;
+        } else {
+          throw err;
         }
-        await this.cacheBuildPromise;
       }
+
+      let events: AuditEvent[] = [];
+      for (const line of content.split('\n')) {
+        if (line.trim() === '') continue;
+        try {
+          events.push(JSON.parse(line) as AuditEvent);
+        } catch {
+          console.warn(`Skipping malformed JSONL line: ${line.slice(0, 100)}`);
+        }
+      }
+      const MAX_CACHED_EVENTS = 5000;
+      if (events.length > MAX_CACHED_EVENTS) {
+        events = events.slice(-MAX_CACHED_EVENTS);
+      }
+      this.cache = events;
     }
 
     let filtered = this.cache as AuditEvent[];
@@ -130,8 +110,6 @@ export class AuditLog {
       if (!isEnoentError(err)) throw err;
     }
     this.cache = null;
-    this.cacheBuildPromise = null;
-    this._cacheStale = false;
     this.dirEnsured = false;
   }
 }

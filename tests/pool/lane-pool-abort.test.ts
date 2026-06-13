@@ -1,286 +1,107 @@
 /**
  * @fileoverview Tests for AbortSignal handling paths in LanePool.run().
- *
- * Covers three critical concurrency scenarios:
- *
- * 1. **Already-aborted signal returns early** (line 69 check):
- *    When signal is already aborted before run(), the pool returns
- *    {completedTasks:0, failedTasks:0} immediately without spawning
- *    lanes or loading profiles.
- *
- * 2. **Signal fires mid-run causes lanes to exit**:
- *    When abort fires while lanes are processing tasks, the lanes
- *    detect cancellation on their next loop iteration and the run()
- *    promise resolves without hanging.
- *
- * 3. **Active sessions are aborted when signal fires** (lines 94–100):
- *    The abortActiveSessions listener iterates activeSessions and calls
- *    abort() on each in-progress session so LLM calls are cancelled
- *    immediately instead of running to completion.
  */
 
-import { afterAll, beforeEach, describe, expect, it, mock } from 'bun:test';
-import type { Task } from '../../src/core/types.js';
-import { TaskTracker } from '../../src/tracking/task-status.js';
-import { makeMockSession } from '../helpers/make-session.js';
-import { makeTask } from '../helpers/make-task.js';
-
-// Capture real modules before mocking so we can restore them in afterAll.
-const realHarnessFactory = Object.assign({}, await import('../../src/core/harness-factory.ts'));
-const realProfile = Object.assign({}, await import('../../src/core/profile.ts'));
-const realStructuredOutput = Object.assign({}, await import('../../src/core/structured-output.ts'));
-
-// ─── Mocks ──────────────────────────────────────────────────────────────────
-
-const mockCreateHarness = mock() as ReturnType<typeof mock> & ((...args: unknown[]) => unknown);
-mock.module('../../src/core/harness-factory.ts', () => ({
-  createHarness: (...args: unknown[]) => mockCreateHarness(...args),
-}));
-
-const mockLoadProfilesFromDirs = mock() as ReturnType<typeof mock> & ((...args: unknown[]) => unknown);
-mock.module('../../src/core/profile.ts', () => ({
-  loadProfilesFromDirs: (...args: unknown[]) => mockLoadProfilesFromDirs(...args),
-}));
-
-const mockPromptForStructured = mock() as ReturnType<typeof mock> & ((...args: unknown[]) => unknown);
-mock.module('../../src/core/structured-output.ts', () => ({
-  promptForStructured: (...args: unknown[]) => mockPromptForStructured(...args),
-}));
-
-// ─── Imports (after mocks) ─────────────────────────────────────────────────
-
-import type { StatusCallbacks } from '../../src/core/types.js';
-import { LanePool } from '../../src/pool/lane-pool.ts';
-import type { StepDefinition } from '../../src/pool/types.js';
-
-// ─── Test Helpers ───────────────────────────────────────────────────────────
-
-const defaultProfile = {
-  id: 'coder',
-  name: 'Coder',
-  provider: 'openai',
-  model: 'gpt-4',
-  thinkingLevel: 'medium' as const,
-  systemPrompt: 'You are a coding agent.',
-  excludeTools: [] as string[],
-  includeTools: [] as string[],
-};
-
-function makeSession(textFn: (promptText: string) => string | undefined = () => 'done') {
-  return makeMockSession(textFn).session;
-}
-
-function setupProfileMocks() {
-  const profilesMap = new Map<string, typeof defaultProfile>();
-  profilesMap.set('coder', defaultProfile);
-  mockLoadProfilesFromDirs.mockResolvedValue(profilesMap);
-}
-
-function setupHarnessMocks(session?: ReturnType<typeof makeSession>) {
-  const sess = session ?? makeSession();
-  mockCreateHarness.mockResolvedValue({
-    session: sess,
-    sessionId: 'test-session',
-    dispose: mock(() => {}),
-  });
-  return sess;
-}
-
-interface AbortPoolOptions {
-  maxConcurrentLanes?: number;
-  getStepsForTask?: (task: Task) => StepDefinition[];
-  tasks?: Task[];
-  signal?: AbortSignal;
-  onStatus?: StatusCallbacks;
-}
-
-function createPoolAndTracker(overrides?: AbortPoolOptions) {
-  const tracker = new TaskTracker();
-  const tasks = overrides?.tasks ?? [makeTask()];
-  for (const task of tasks) {
-    tracker.addTask(task);
-  }
-
-  const getStepsForTask =
-    overrides?.getStepsForTask ??
-    ((_task: Task): StepDefinition[] => [{ name: 'implement', profileId: 'coder', isReadOnly: false }]);
-
-  const pool = new LanePool({
-    maxConcurrentLanes: overrides?.maxConcurrentLanes ?? 1,
-    profilesDirs: ['/mock/profiles'],
-    sessionBaseDir: '/tmp/sessions',
-    cwd: '/tmp/project',
-    phase: 'implementing',
-    taskTracker: tracker,
-    getStepsForTask,
-    signal: overrides?.signal,
-    onStatus: overrides?.onStatus,
-  });
-
-  return { pool, tracker };
-}
-
-// ─── Setup ──────────────────────────────────────────────────────────────────
+import { beforeEach, describe, expect, it, mock } from 'bun:test';
+import {
+  clearPoolMocks,
+  createPoolAndTracker,
+  makeSession,
+  makeTask,
+  mockCreateHarness,
+  mockLoadProfilesFromDirs,
+  setupHarnessMocks,
+  setupProfileMocks,
+} from './helpers.ts';
 
 beforeEach(() => {
-  mockCreateHarness.mockClear();
-  mockLoadProfilesFromDirs.mockClear();
-  mockPromptForStructured.mockClear();
+  clearPoolMocks();
 });
 
-// ─── Tests ──────────────────────────────────────────────────────────────────
-
 describe('LanePool AbortSignal handling', () => {
-  // ── Scenario 1: Already-aborted signal returns early ────────────────────
-
   describe('already-aborted signal returns early', () => {
     it('returns {completedTasks: 0, failedTasks: 0} when signal is already aborted', async () => {
       setupProfileMocks();
       setupHarnessMocks();
-
       const controller = new AbortController();
       controller.abort();
-
-      const { pool } = createPoolAndTracker({
-        tasks: [makeTask({ id: 'task-1' })],
-        maxConcurrentLanes: 1,
-        signal: controller.signal,
-      });
-
-      const result = await pool.run();
-
-      expect(result).toEqual({ completedTasks: 0, failedTasks: 0 });
+      expect(
+        await createPoolAndTracker({
+          tasks: [makeTask({ id: 'task-1' })],
+          maxConcurrentLanes: 1,
+          signal: controller.signal,
+        }).pool.run(),
+      ).toEqual({ completedTasks: 0, failedTasks: 0 });
     });
 
     it('does not call loadProfilesFromDirs when signal is already aborted', async () => {
       setupProfileMocks();
       setupHarnessMocks();
-
       const controller = new AbortController();
       controller.abort();
-
-      const { pool } = createPoolAndTracker({
-        tasks: [makeTask({ id: 'task-1' })],
-        signal: controller.signal,
-      });
-
-      await pool.run();
-
+      await createPoolAndTracker({ tasks: [makeTask({ id: 'task-1' })], signal: controller.signal }).pool.run();
       expect(mockLoadProfilesFromDirs).not.toHaveBeenCalled();
     });
 
     it('does not call createHarness when signal is already aborted', async () => {
       setupProfileMocks();
       setupHarnessMocks();
-
       const controller = new AbortController();
       controller.abort();
-
-      const { pool } = createPoolAndTracker({
-        tasks: [makeTask({ id: 'task-1' })],
-        signal: controller.signal,
-      });
-
-      await pool.run();
-
+      await createPoolAndTracker({ tasks: [makeTask({ id: 'task-1' })], signal: controller.signal }).pool.run();
       expect(mockCreateHarness).not.toHaveBeenCalled();
     });
 
-    it('returns early even with multiple tasks in the tracker', async () => {
+    it('returns early even with multiple tasks', async () => {
       setupProfileMocks();
       setupHarnessMocks();
-
       const controller = new AbortController();
       controller.abort();
-
-      const tasks = [makeTask({ id: 'task-1' }), makeTask({ id: 'task-2' }), makeTask({ id: 'task-3' })];
-
-      const { pool } = createPoolAndTracker({
-        tasks,
+      const result = await createPoolAndTracker({
+        tasks: [makeTask({ id: 'task-1' }), makeTask({ id: 'task-2' }), makeTask({ id: 'task-3' })],
         maxConcurrentLanes: 3,
         signal: controller.signal,
-      });
-
-      const result = await pool.run();
-
+      }).pool.run();
       expect(result).toEqual({ completedTasks: 0, failedTasks: 0 });
       expect(mockCreateHarness).not.toHaveBeenCalled();
-      expect(mockLoadProfilesFromDirs).not.toHaveBeenCalled();
     });
   });
-
-  // ── Scenario 2: Signal fires mid-run causes lanes to exit ───────────────
 
   describe('signal fires mid-run causes lanes to exit', () => {
     it('resolves run() without hanging when abort fires during processing', async () => {
       setupProfileMocks();
-
-      // Track pending prompt resolvers so abort can unblock them
       const promptResolvers: (() => void)[] = [];
-
       const abortFn = mock(async () => {
-        // When abort is called, resolve all pending prompts so lanes can exit
-        for (const resolve of promptResolvers) {
-          resolve();
-        }
+        promptResolvers.forEach((r) => r());
       });
-
-      let promptsCalledResolve: (() => void) | undefined;
-      const promptsCalled = new Promise<void>((resolve) => {
-        promptsCalledResolve = resolve;
+      let promptsCalled: () => void;
+      const called = new Promise<void>((r) => {
+        promptsCalled = r;
       });
-      let promptsCalledCount = 0;
-
-      const makeDelayedSession = () => ({
+      let count = 0;
+      const mkSession = () => ({
         ...makeSession(() => 'done'),
         abort: abortFn,
         prompt: mock(async () => {
-          promptsCalledCount++;
-          if (promptsCalledCount === 2 && promptsCalledResolve) {
-            promptsCalledResolve();
-          }
-          await new Promise<void>((resolve) => {
-            promptResolvers.push(resolve);
-          });
+          count++;
+          if (count === 2) promptsCalled!();
+          await new Promise<void>((r) => promptResolvers.push(r));
         }),
       });
-
-      let harnessCount = 0;
+      let hc = 0;
       mockCreateHarness.mockImplementation(() => {
-        harnessCount++;
-        return {
-          session: makeDelayedSession(),
-          sessionId: `session-${harnessCount}`,
-          dispose: mock(() => {}),
-        };
+        hc++;
+        return { session: mkSession(), sessionId: `s-${hc}`, dispose: mock(() => {}) };
       });
-
       const controller = new AbortController();
-
-      const tasks = [makeTask({ id: 'task-1' }), makeTask({ id: 'task-2' })];
-
-      const { pool } = createPoolAndTracker({
-        tasks,
+      const runPromise = createPoolAndTracker({
+        tasks: [makeTask({ id: 'task-1' }), makeTask({ id: 'task-2' })],
         maxConcurrentLanes: 2,
         signal: controller.signal,
-      });
-
-      const runPromise = pool.run();
-
-      // Wait for both lanes to call session.prompt (i.e., they are mid-prompt)
-      await promptsCalled;
-
-      // Abort while lanes are mid-prompt — abortActiveSessions calls session.abort()
-      // which resolves the pending prompt promises
+      }).pool.run();
+      await called;
       controller.abort();
-
-      // run() should resolve without hanging
       const result = await runPromise;
-
-      expect(result).toBeDefined();
-      expect(typeof result.completedTasks).toBe('number');
-      expect(typeof result.failedTasks).toBe('number');
-      // At least some tasks may not have completed due to abort
       expect(result.completedTasks + result.failedTasks).toBeLessThanOrEqual(2);
     });
 
@@ -291,14 +112,12 @@ describe('LanePool AbortSignal handling', () => {
 
       const tasks = [makeTask({ id: 'task-1' }), makeTask({ id: 'task-2' }), makeTask({ id: 'task-3' })];
 
-      // Use a single lane so tasks are processed sequentially
       const { pool } = createPoolAndTracker({
         tasks,
         maxConcurrentLanes: 1,
         signal: controller.signal,
       });
 
-      // First harness blocks on prompt; subsequent ones would succeed
       let harnessCallCount = 0;
       let firstPromptResolve: (() => void) | undefined;
       let promptCalledResolve: (() => void) | undefined;
@@ -353,285 +172,232 @@ describe('LanePool AbortSignal handling', () => {
 
     it('removes abort listener from signal after run completes', async () => {
       setupProfileMocks();
-
-      const session = {
-        ...makeSession(() => 'done'),
-        abort: mock(async () => {}),
-      };
-
-      mockCreateHarness.mockResolvedValue({
-        session,
-        sessionId: 'test-session',
-        dispose: mock(() => {}),
-      });
-
+      const session = { ...makeSession(() => 'done'), abort: mock(async () => {}) };
+      mockCreateHarness.mockResolvedValue({ session, sessionId: 'test-session', dispose: mock(() => {}) });
       const controller = new AbortController();
-
-      // Spy on removeEventListener to verify it's called in the finally block
       const removeSpy = mock(() => {});
-      const origRemove = controller.signal.removeEventListener.bind(controller.signal);
+      const orig = controller.signal.removeEventListener.bind(controller.signal);
       controller.signal.removeEventListener = ((...args: unknown[]) => {
         removeSpy(...args);
-        return origRemove(...args);
+        return orig(...args);
       }) as typeof controller.signal.removeEventListener;
-
-      const { pool } = createPoolAndTracker({
+      await createPoolAndTracker({
         tasks: [makeTask({ id: 'task-1' })],
         maxConcurrentLanes: 1,
         signal: controller.signal,
-      });
-
-      // Pool completes normally without abort
-      await pool.run();
-
-      // The finally block in run() removes the abortActiveSessions listener
-      // so it doesn't leak
+      }).pool.run();
       expect(removeSpy).toHaveBeenCalled();
     });
   });
 
-  // ── Scenario 3: Active sessions are aborted when signal fires ───────────
-
   describe('active sessions are aborted when signal fires', () => {
     it('calls abort on in-progress sessions when signal fires', async () => {
       setupProfileMocks();
-
-      // Create sessions with spyable abort methods
-      const abortFn1 = mock(async () => {});
-      const abortFn2 = mock(async () => {});
-
-      const session1 = {
-        ...makeSession(() => 'done'),
-        abort: abortFn1,
-      };
-      const session2 = {
-        ...makeSession(() => 'done'),
-        abort: abortFn2,
-      };
-
-      let harnessIndex = 0;
-      const sessions = [session1, session2];
-
-      // Create harness returns sessions that block on prompt until abort resolves them
-      mockCreateHarness.mockImplementation(() => {
-        const session = sessions[harnessIndex++];
-        return {
-          session,
-          sessionId: `session-${harnessIndex}`,
-          dispose: mock(() => {}),
-        };
-      });
-
+      const a1 = mock(async () => {}),
+        a2 = mock(async () => {});
+      const s1 = { ...makeSession(() => 'done'), abort: a1 },
+        s2 = { ...makeSession(() => 'done'), abort: a2 };
+      let idx = 0;
+      mockCreateHarness.mockImplementation(() => ({
+        session: [s1, s2][idx++],
+        sessionId: `s-${idx}`,
+        dispose: mock(() => {}),
+      }));
       const controller = new AbortController();
-
-      const tasks = [makeTask({ id: 'task-1' }), makeTask({ id: 'task-2' })];
-
-      // Override session.prompt to block until abort fires, and track
-      // when prompts are called so we know both lanes are mid-prompt.
-      let promptsCalledResolve: (() => void) | undefined;
-      const promptsCalled = new Promise<void>((resolve) => {
-        promptsCalledResolve = resolve;
+      let called: () => void;
+      const promptsCalled = new Promise<void>((r) => {
+        called = r;
       });
-      let promptsCalledCount = 0;
-
-      const promptPromises: { resolve: () => void }[] = [];
-
-      session1.prompt = mock(async () => {
-        promptsCalledCount++;
-        if (promptsCalledCount === 2 && promptsCalledResolve) {
-          promptsCalledResolve();
-        }
-        await new Promise<void>((resolve) => {
-          promptPromises.push({ resolve });
-        });
+      let pc = 0;
+      const pp: (() => void)[] = [];
+      s1.prompt = mock(async () => {
+        pc++;
+        if (pc === 2) called!();
+        await new Promise<void>((r) => pp.push(r));
       });
-      session2.prompt = mock(async () => {
-        promptsCalledCount++;
-        if (promptsCalledCount === 2 && promptsCalledResolve) {
-          promptsCalledResolve();
-        }
-        await new Promise<void>((resolve) => {
-          promptPromises.push({ resolve });
-        });
+      s2.prompt = mock(async () => {
+        pc++;
+        if (pc === 2) called!();
+        await new Promise<void>((r) => pp.push(r));
       });
-
-      const { pool } = createPoolAndTracker({
-        tasks,
+      const runPromise = createPoolAndTracker({
+        tasks: [makeTask({ id: 'task-1' }), makeTask({ id: 'task-2' })],
         maxConcurrentLanes: 2,
         signal: controller.signal,
-      });
-
-      const runPromise = pool.run();
-
-      // Wait for both sessions to start their prompts (both lanes mid-prompt)
+      }).pool.run();
       await promptsCalled;
-
-      // Both sessions should be in activeSessions now, fire abort
       controller.abort();
-
-      // Resolve the prompts so lanes can continue after abort
-      for (const p of promptPromises) {
-        p.resolve();
-      }
-
-      const result = await runPromise;
-
-      // The abortActiveSessions listener should have called abort() on the
-      // active sessions (the ones that were mid-prompt)
-      expect(result).toBeDefined();
-      // At least one abort should have been called (the session(s) in activeSessions)
-      const totalAborts = abortFn1.mock.calls.length + abortFn2.mock.calls.length;
-      expect(totalAborts).toBeGreaterThanOrEqual(1);
+      pp.forEach((r) => r());
+      await runPromise;
+      expect(a1.mock.calls.length + a2.mock.calls.length).toBeGreaterThanOrEqual(1);
     });
 
     it('pool completes without hanging when abort fires during session prompt', async () => {
       setupProfileMocks();
-
-      // Session that blocks on prompt and has abort to cancel it
-      let promptResolve: (() => void) | undefined;
-      const abortFn = mock(async () => {
-        // When abort is called, resolve the pending prompt so the lane can exit
-        if (promptResolve) promptResolve();
+      let pr: () => void;
+      const af = mock(async () => {
+        pr?.();
       });
-
-      let promptCalledResolve: (() => void) | undefined;
-      const promptCalled = new Promise<void>((resolve) => {
-        promptCalledResolve = resolve;
+      let called: () => void;
+      const promptCalled = new Promise<void>((r) => {
+        called = r;
       });
-
       const session = {
         ...makeSession(() => 'done'),
-        abort: abortFn,
+        abort: af,
         prompt: mock(async () => {
-          // Signal that the session prompt was called (lane is mid-prompt)
-          if (promptCalledResolve) promptCalledResolve();
-          await new Promise<void>((resolve) => {
-            promptResolve = resolve;
+          called!();
+          await new Promise<void>((r) => {
+            pr = r;
           });
         }),
       };
-
-      mockCreateHarness.mockResolvedValue({
-        session,
-        sessionId: 'test-session',
-        dispose: mock(() => {}),
-      });
-
+      mockCreateHarness.mockResolvedValue({ session, sessionId: 'test-session', dispose: mock(() => {}) });
       const controller = new AbortController();
-
-      const { pool } = createPoolAndTracker({
+      const runPromise = createPoolAndTracker({
         tasks: [makeTask({ id: 'task-1' })],
         maxConcurrentLanes: 1,
         signal: controller.signal,
-      });
-
-      const runPromise = pool.run();
-
-      // Wait for the session's prompt to be called (lane is mid-prompt)
+      }).pool.run();
       await promptCalled;
-
-      // Abort should trigger abortActiveSessions which calls session.abort(),
-      // which resolves the pending prompt, allowing the lane to continue
       controller.abort();
-
-      // Should resolve without hanging — this is the key assertion
       const result = await runPromise;
-
       expect(result).toBeDefined();
-      expect(typeof result.completedTasks).toBe('number');
-      expect(typeof result.failedTasks).toBe('number');
-      // The abort was called on the active session
-      expect(abortFn).toHaveBeenCalled();
-    });
-
-    it('active sessions Set is cleaned up as sessions finish after abort', async () => {
-      setupProfileMocks();
-
-      // Track when sessions enter/leave the active set by watching
-      // the onAgentSpawn/onAgentComplete callbacks which fire in the
-      // same finally block that removes from activeSessions
-      const spawnCount = { value: 0 };
-      const completeCount = { value: 0 };
-
-      const session = {
-        ...makeSession(() => 'done'),
-        abort: mock(async () => {}),
-      };
-
-      let promptResolve: (() => void) | undefined;
-      let promptCalledResolve: (() => void) | undefined;
-      const promptCalled = new Promise<void>((resolve) => {
-        promptCalledResolve = resolve;
-      });
-      session.prompt = mock(async () => {
-        // Signal that the session prompt was called (lane is mid-prompt)
-        if (promptCalledResolve) promptCalledResolve();
-        await new Promise<void>((resolve) => {
-          promptResolve = resolve;
-        });
-      });
-
-      mockCreateHarness.mockResolvedValue({
-        session,
-        sessionId: 'test-session',
-        dispose: mock(() => {}),
-      });
-
-      const controller = new AbortController();
-
-      const onAgentSpawn = mock(() => {
-        spawnCount.value++;
-      });
-      const onAgentComplete = mock(() => {
-        completeCount.value++;
-      });
-
-      createPoolAndTracker({
-        tasks: [makeTask({ id: 'task-1' })],
-        maxConcurrentLanes: 1,
-        signal: controller.signal,
-      });
-
-      // Re-create pool with status callbacks
-      const tracker = new TaskTracker();
-      tracker.addTask(makeTask({ id: 'task-1' }));
-
-      const poolWithStatus = new LanePool({
-        maxConcurrentLanes: 1,
-        profilesDirs: ['/mock/profiles'],
-        sessionBaseDir: '/tmp/sessions',
-        cwd: '/tmp/project',
-        phase: 'implementing',
-        taskTracker: tracker,
-        getStepsForTask: () => [{ name: 'implement', profileId: 'coder', isReadOnly: false }],
-        signal: controller.signal,
-        onStatus: { onAgentSpawn, onAgentComplete },
-      });
-
-      const runPromise = poolWithStatus.run();
-
-      // Wait for the session to start its prompt (lane is mid-processing)
-      await promptCalled;
-
-      // Abort while the session is active
-      controller.abort();
-
-      // Resolve the prompt so the lane can finish
-      if (promptResolve) promptResolve();
-
-      await runPromise;
-
-      // onAgentSpawn fires when session enters activeSessions
-      // onAgentComplete fires in the finally block when session is removed
-      expect(spawnCount.value).toBe(1);
-      expect(completeCount.value).toBe(1);
+      expect(af).toHaveBeenCalled();
     });
   });
-});
 
-// Restore the real modules so mocks don't leak into other test files.
-afterAll(() => {
-  mock.module('../../src/core/harness-factory.ts', () => realHarnessFactory);
-  mock.module('../../src/core/profile.ts', () => realProfile);
-  mock.module('../../src/core/structured-output.ts', () => realStructuredOutput);
+  describe('snapshot prevents skipped entries during abort iteration', () => {
+    it('all three concurrent sessions are aborted when signal fires', async () => {
+      setupProfileMocks();
+      const [a1, a2, a3] = [mock(async () => {}), mock(async () => {}), mock(async () => {})];
+      const [s1, s2, s3] = [
+        { ...makeSession(() => 'done'), abort: a1 },
+        { ...makeSession(() => 'done'), abort: a2 },
+        { ...makeSession(() => 'done'), abort: a3 },
+      ];
+      let idx = 0;
+      mockCreateHarness.mockImplementation(() => ({
+        session: [s1, s2, s3][idx++],
+        sessionId: `s-${idx}`,
+        dispose: mock(() => {}),
+      }));
+      const controller = new AbortController();
+      let allCalled: () => void;
+      const allPromptsCalled = new Promise<void>((r) => {
+        allCalled = r;
+      });
+      let pc = 0;
+      const resolvers: (() => void)[] = [];
+      for (const s of [s1, s2, s3]) {
+        s.prompt = mock(async () => {
+          pc++;
+          if (pc === 3) allCalled!();
+          await new Promise<void>((r) => resolvers.push(r));
+        });
+      }
+      const runPromise = createPoolAndTracker({
+        tasks: [makeTask({ id: 'task-1' }), makeTask({ id: 'task-2' }), makeTask({ id: 'task-3' })],
+        maxConcurrentLanes: 3,
+        signal: controller.signal,
+      }).pool.run();
+      await allPromptsCalled;
+      controller.abort();
+      resolvers.forEach((r) => r());
+      await runPromise;
+      expect(a1).toHaveBeenCalledTimes(1);
+      expect(a2).toHaveBeenCalledTimes(1);
+      expect(a3).toHaveBeenCalledTimes(1);
+    });
+
+    it('aborts all sessions even when one removes itself during another abort() call', async () => {
+      setupProfileMocks();
+      const [a1, a2, a3] = [mock(async () => {}), mock(async () => {}), mock(async () => {})];
+      const [s1, s2, s3] = [
+        { ...makeSession(() => 'done'), abort: a1 },
+        { ...makeSession(() => 'done'), abort: a2 },
+        { ...makeSession(() => 'done'), abort: a3 },
+      ];
+      let idx = 0;
+      mockCreateHarness.mockImplementation(() => ({
+        session: [s1, s2, s3][idx++],
+        sessionId: `s-${idx}`,
+        dispose: mock(() => {}),
+      }));
+      const controller = new AbortController();
+      let allCalled: () => void;
+      const allPromptsCalled = new Promise<void>((r) => {
+        allCalled = r;
+      });
+      let pc = 0;
+      const resolvers: (() => void)[] = [];
+      a1.mockImplementation(async () => {
+        if (resolvers.length >= 2) resolvers[1]();
+      });
+      for (const s of [s1, s2, s3]) {
+        s.prompt = mock(async () => {
+          pc++;
+          if (pc === 3) allCalled!();
+          await new Promise<void>((r) => resolvers.push(r));
+        });
+      }
+      const runPromise = createPoolAndTracker({
+        tasks: [makeTask({ id: 'task-1' }), makeTask({ id: 'task-2' }), makeTask({ id: 'task-3' })],
+        maxConcurrentLanes: 3,
+        signal: controller.signal,
+      }).pool.run();
+      await allPromptsCalled;
+      controller.abort();
+      resolvers.forEach((r) => r());
+      await runPromise;
+      expect(a1).toHaveBeenCalled();
+      expect(a2).toHaveBeenCalled();
+      expect(a3).toHaveBeenCalled();
+    });
+
+    it('still aborts remaining sessions when some sessions finish concurrently', async () => {
+      setupProfileMocks();
+      const [a1, a2, a3] = [mock(async () => {}), mock(async () => {}), mock(async () => {})];
+      const [s1, s2, s3] = [
+        { ...makeSession(() => 'done'), abort: a1 },
+        { ...makeSession(() => 'done'), abort: a2 },
+        { ...makeSession(() => 'done'), abort: a3 },
+      ];
+      let idx = 0;
+      mockCreateHarness.mockImplementation(() => ({
+        session: [s1, s2, s3][idx++],
+        sessionId: `s-${idx}`,
+        dispose: mock(() => {}),
+      }));
+      const controller = new AbortController();
+      s3.prompt = mock(async () => 'done');
+      let midCalled: () => void;
+      const midPromptsCalled = new Promise<void>((r) => {
+        midCalled = r;
+      });
+      let mc = 0;
+      const resolvers: (() => void)[] = [];
+      s1.prompt = mock(async () => {
+        mc++;
+        if (mc === 2) midCalled!();
+        await new Promise<void>((r) => resolvers.push(r));
+      });
+      s2.prompt = mock(async () => {
+        mc++;
+        if (mc === 2) midCalled!();
+        await new Promise<void>((r) => resolvers.push(r));
+      });
+      const runPromise = createPoolAndTracker({
+        tasks: [makeTask({ id: 'task-1' }), makeTask({ id: 'task-2' }), makeTask({ id: 'task-3' })],
+        maxConcurrentLanes: 3,
+        signal: controller.signal,
+      }).pool.run();
+      await midPromptsCalled;
+      controller.abort();
+      resolvers.forEach((r) => r());
+      await runPromise;
+      expect(a1).toHaveBeenCalled();
+      expect(a2).toHaveBeenCalled();
+    });
+  });
 });

@@ -9,7 +9,6 @@ import {
   SessionManager,
 } from '@earendil-works/pi-coding-agent';
 
-import { loadProfile } from './profile.js';
 import type { HarnessCreationOptions, TurnContentBlock } from './types.js';
 import { DEFAULT_TOOLS } from './utils.js';
 
@@ -169,19 +168,4 @@ export async function createHarness(
   };
 
   return { session, sessionId, dispose };
-}
-
-// ─── createHarnessFromProfile ───────────────────────────────────────────────
-
-/**
- * Convenience wrapper that loads an {@link AgentProfile} from a directory
- * and delegates to {@link createHarness}.
- */
-export async function createHarnessFromProfile(
-  dirPath: string,
-  profileId: string,
-  options: Omit<HarnessCreationOptions, 'profile'>,
-): Promise<{ session: AgentSession; sessionId: string; dispose: () => void }> {
-  const profile = await loadProfile(dirPath, profileId);
-  return createHarness({ ...options, profile });
 }

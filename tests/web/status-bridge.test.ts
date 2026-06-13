@@ -190,13 +190,16 @@ describe('StatusBridge', () => {
       callbacks.onAgentSpawn!({ agentId: 'a1', profile: 'scout', phase: 'scouting' });
 
       expect(messages).toHaveLength(1);
-      const msg = messages[0] as any;
+      const msg = messages[0];
+      expect(msg).toBeDefined();
       expect(msg.type).toBe('agent_spawned');
-      expect(msg.agent.agentId).toBe('a1');
-      expect(msg.agent.profile).toBe('scout');
-      expect(msg.agent.phase).toBe('scouting');
-      expect(msg.agent.active).toBe(true);
-      expect(msg.agent.log).toEqual([]);
+      if (msg.type === 'agent_spawned') {
+        expect(msg.agent.agentId).toBe('a1');
+        expect(msg.agent.profile).toBe('scout');
+        expect(msg.agent.phase).toBe('scouting');
+        expect(msg.agent.active).toBe(true);
+        expect(msg.agent.log).toEqual([]);
+      }
 
       const snapshot = bridge.getSnapshot();
       expect(snapshot.agents).toHaveLength(1);
@@ -221,9 +224,12 @@ describe('StatusBridge', () => {
       callbacks.onAgentComplete!({ agentId: 'a1', profile: 'scout', phase: 'scouting' });
 
       expect(messages).toHaveLength(2);
-      const msg = messages[1] as any;
+      const msg = messages[1];
+      expect(msg).toBeDefined();
       expect(msg.type).toBe('agent_complete');
-      expect(msg.agentId).toBe('a1');
+      if (msg.type === 'agent_complete') {
+        expect(msg.agentId).toBe('a1');
+      }
 
       const snapshot = bridge.getSnapshot();
       expect(snapshot.agents[0].active).toBe(false);
@@ -252,12 +258,15 @@ describe('StatusBridge', () => {
       });
 
       // Should have agent_spawned + agent_log
-      const logMsg = messages.find((m) => m.type === 'agent_log') as any;
+      const logMsg = messages.find((m) => m.type === 'agent_log');
       expect(logMsg).toBeDefined();
-      expect(logMsg.agentId).toBe('a1');
-      expect(logMsg.entry.type).toBe('text');
-      expect(logMsg.entry.content).toBe('Hello world');
-      expect(logMsg.entry.id).toMatch(/^text-/);
+      expect(logMsg?.type).toBe('agent_log');
+      if (logMsg?.type === 'agent_log') {
+        expect(logMsg.agentId).toBe('a1');
+        expect(logMsg.entry.type).toBe('text');
+        expect(logMsg.entry.content).toBe('Hello world');
+        expect(logMsg.entry.id).toMatch(/^text-/);
+      }
     });
 
     it('converts thinking content blocks to log entries', () => {
@@ -269,10 +278,13 @@ describe('StatusBridge', () => {
         contentBlocks: [{ type: 'thinking', thinking: 'deep thoughts' }],
       });
 
-      const logMsg = messages.find((m) => m.type === 'agent_log') as any;
+      const logMsg = messages.find((m) => m.type === 'agent_log');
       expect(logMsg).toBeDefined();
-      expect(logMsg.entry.type).toBe('thinking');
-      expect(logMsg.entry.content).toBe('deep thoughts');
+      expect(logMsg?.type).toBe('agent_log');
+      if (logMsg?.type === 'agent_log') {
+        expect(logMsg.entry.type).toBe('thinking');
+        expect(logMsg.entry.content).toBe('deep thoughts');
+      }
     });
 
     it('broadcasts agent_stats when tokens are present', () => {
@@ -283,11 +295,14 @@ describe('StatusBridge', () => {
         tokens: { input: 100, output: 50 },
       });
 
-      const statsMsg = messages.find((m) => m.type === 'agent_stats') as any;
+      const statsMsg = messages.find((m) => m.type === 'agent_stats');
       expect(statsMsg).toBeDefined();
-      expect(statsMsg.agentId).toBe('a1');
-      expect(statsMsg.inputTokens).toBe(100);
-      expect(statsMsg.outputTokens).toBe(50);
+      expect(statsMsg?.type).toBe('agent_stats');
+      if (statsMsg?.type === 'agent_stats') {
+        expect(statsMsg.agentId).toBe('a1');
+        expect(statsMsg.inputTokens).toBe(100);
+        expect(statsMsg.outputTokens).toBe(50);
+      }
     });
 
     it('appends log entries to the correct agent', () => {
@@ -316,15 +331,21 @@ describe('StatusBridge', () => {
         arguments: { path: 'test.ts' },
       });
 
-      const logMsg = messages.find((m) => m.type === 'agent_log') as any;
+      const logMsg = messages.find((m) => m.type === 'agent_log');
       expect(logMsg).toBeDefined();
-      expect(logMsg.entry.type).toBe('tool_call_start');
-      expect(logMsg.entry.content).toBe('read');
-      expect(logMsg.entry.id).toBe('call_1');
+      expect(logMsg?.type).toBe('agent_log');
+      if (logMsg?.type === 'agent_log') {
+        expect(logMsg.entry.type).toBe('tool_call_start');
+        expect(logMsg.entry.content).toBe('read');
+        expect(logMsg.entry.id).toBe('call_1');
+      }
 
-      const statsMsg = messages.find((m) => m.type === 'agent_stats') as any;
+      const statsMsg = messages.find((m) => m.type === 'agent_stats');
       expect(statsMsg).toBeDefined();
-      expect(statsMsg.toolCallCount).toBe(1);
+      expect(statsMsg?.type).toBe('agent_stats');
+      if (statsMsg?.type === 'agent_stats') {
+        expect(statsMsg.toolCallCount).toBe(1);
+      }
     });
   });
 
@@ -339,12 +360,15 @@ describe('StatusBridge', () => {
         isError: false,
       });
 
-      const logMsg = messages.find((m) => m.type === 'agent_log') as any;
+      const logMsg = messages.find((m) => m.type === 'agent_log');
       expect(logMsg).toBeDefined();
-      expect(logMsg.entry.type).toBe('tool_call_end');
-      expect(logMsg.entry.content).toBe('read');
-      expect(logMsg.entry.id).toBe('call_1-end');
-      expect(logMsg.entry.metadata?.isError).toBe(false);
+      expect(logMsg?.type).toBe('agent_log');
+      if (logMsg?.type === 'agent_log') {
+        expect(logMsg.entry.type).toBe('tool_call_end');
+        expect(logMsg.entry.content).toBe('read');
+        expect(logMsg.entry.id).toBe('call_1-end');
+        expect(logMsg.entry.metadata?.isError).toBe(false);
+      }
     });
   });
 
@@ -361,11 +385,14 @@ describe('StatusBridge', () => {
           contentBlocks: [{ type: 'text', text: 'progress report' }],
         });
 
-        const logMsg = messages.find((m) => m.type === 'agent_log') as any;
+        const logMsg = messages.find((m) => m.type === 'agent_log');
         expect(logMsg).toBeDefined();
-        expect(logMsg.agentId).toBe('a1');
-        expect(logMsg.taskId).toBe('t-42');
-        expect(logMsg.entry.content).toBe('progress report');
+        expect(logMsg?.type).toBe('agent_log');
+        if (logMsg?.type === 'agent_log') {
+          expect(logMsg.agentId).toBe('a1');
+          expect(logMsg.taskId).toBe('t-42');
+          expect(logMsg.entry.content).toBe('progress report');
+        }
       });
 
       it('broadcasts agent_stats with taskId when tokens are present', () => {
@@ -377,12 +404,15 @@ describe('StatusBridge', () => {
           tokens: { input: 200, output: 75 },
         });
 
-        const statsMsg = messages.find((m) => m.type === 'agent_stats') as any;
+        const statsMsg = messages.find((m) => m.type === 'agent_stats');
         expect(statsMsg).toBeDefined();
-        expect(statsMsg.agentId).toBe('a1');
-        expect(statsMsg.taskId).toBe('t-42');
-        expect(statsMsg.inputTokens).toBe(200);
-        expect(statsMsg.outputTokens).toBe(75);
+        expect(statsMsg?.type).toBe('agent_stats');
+        if (statsMsg?.type === 'agent_stats') {
+          expect(statsMsg.agentId).toBe('a1');
+          expect(statsMsg.taskId).toBe('t-42');
+          expect(statsMsg.inputTokens).toBe(200);
+          expect(statsMsg.outputTokens).toBe(75);
+        }
       });
 
       it('appends log entries to the correct agent when agent has taskId', () => {
@@ -413,12 +443,15 @@ describe('StatusBridge', () => {
           arguments: { path: 'file.ts' },
         });
 
-        const logMsg = messages.find((m) => m.type === 'agent_log') as any;
+        const logMsg = messages.find((m) => m.type === 'agent_log');
         expect(logMsg).toBeDefined();
-        expect(logMsg.agentId).toBe('a1');
-        expect(logMsg.taskId).toBe('t-42');
-        expect(logMsg.entry.type).toBe('tool_call_start');
-        expect(logMsg.entry.content).toBe('edit');
+        expect(logMsg?.type).toBe('agent_log');
+        if (logMsg?.type === 'agent_log') {
+          expect(logMsg.agentId).toBe('a1');
+          expect(logMsg.taskId).toBe('t-42');
+          expect(logMsg.entry.type).toBe('tool_call_start');
+          expect(logMsg.entry.content).toBe('edit');
+        }
       });
 
       it('broadcasts agent_stats with taskId on tool call start', () => {
@@ -431,11 +464,14 @@ describe('StatusBridge', () => {
           arguments: { path: 'file.ts' },
         });
 
-        const statsMsg = messages.find((m) => m.type === 'agent_stats') as any;
+        const statsMsg = messages.find((m) => m.type === 'agent_stats');
         expect(statsMsg).toBeDefined();
-        expect(statsMsg.agentId).toBe('a1');
-        expect(statsMsg.taskId).toBe('t-42');
-        expect(statsMsg.toolCallCount).toBe(1);
+        expect(statsMsg?.type).toBe('agent_stats');
+        if (statsMsg?.type === 'agent_stats') {
+          expect(statsMsg.agentId).toBe('a1');
+          expect(statsMsg.taskId).toBe('t-42');
+          expect(statsMsg.toolCallCount).toBe(1);
+        }
       });
 
       it('appends log entry to agent with composite key', () => {
@@ -466,12 +502,15 @@ describe('StatusBridge', () => {
           isError: false,
         });
 
-        const logMsg = messages.find((m) => m.type === 'agent_log') as any;
+        const logMsg = messages.find((m) => m.type === 'agent_log');
         expect(logMsg).toBeDefined();
-        expect(logMsg.agentId).toBe('a1');
-        expect(logMsg.taskId).toBe('t-42');
-        expect(logMsg.entry.type).toBe('tool_call_end');
-        expect(logMsg.entry.content).toBe('edit');
+        expect(logMsg?.type).toBe('agent_log');
+        if (logMsg?.type === 'agent_log') {
+          expect(logMsg.agentId).toBe('a1');
+          expect(logMsg.taskId).toBe('t-42');
+          expect(logMsg.entry.type).toBe('tool_call_end');
+          expect(logMsg.entry.content).toBe('edit');
+        }
       });
 
       it('appends log entry to agent with composite key', () => {
@@ -500,9 +539,12 @@ describe('StatusBridge', () => {
         contentBlocks: [{ type: 'text', text: 'no task' }],
       });
 
-      const logMsg = messages.find((m) => m.type === 'agent_log') as any;
+      const logMsg = messages.find((m) => m.type === 'agent_log');
       expect(logMsg).toBeDefined();
-      expect(logMsg.taskId).toBeUndefined();
+      expect(logMsg?.type).toBe('agent_log');
+      if (logMsg?.type === 'agent_log') {
+        expect(logMsg.taskId).toBeUndefined();
+      }
     });
 
     it('routes log to the most recently spawned agent when multiple are active', () => {
@@ -565,12 +607,15 @@ describe('StatusBridge', () => {
       callbacks.onAgentSpawn!({ agentId: 'a1', profile: 'scout', phase: 'scouting' });
       callbacks.onError!({ agentId: 'a1', error: 'crash', phase: 'planning', taskId: 't1' });
 
-      const logMsg = messages.find((m) => m.type === 'agent_log') as any;
+      const logMsg = messages.find((m) => m.type === 'agent_log');
       expect(logMsg).toBeDefined();
-      expect(logMsg.entry.type).toBe('error');
-      expect(logMsg.entry.content).toBe('crash');
-      expect(logMsg.entry.metadata?.phase).toBe('planning');
-      expect(logMsg.taskId).toBe('t1');
+      expect(logMsg?.type).toBe('agent_log');
+      if (logMsg?.type === 'agent_log') {
+        expect(logMsg.entry.type).toBe('error');
+        expect(logMsg.entry.content).toBe('crash');
+        expect(logMsg.entry.metadata?.phase).toBe('planning');
+        expect(logMsg.taskId).toBe('t1');
+      }
     });
   });
 
@@ -580,11 +625,14 @@ describe('StatusBridge', () => {
       callbacks.onAgentSpawn!({ agentId: 'a1', profile: 'scout', phase: 'scouting' });
       callbacks.onDecision!({ agentId: 'a1', decision: 'proceed', reasoning: 'looks good', taskId: 't1' });
 
-      const logMsg = messages.find((m) => m.type === 'agent_log') as any;
+      const logMsg = messages.find((m) => m.type === 'agent_log');
       expect(logMsg).toBeDefined();
-      expect(logMsg.entry.type).toBe('decision');
-      expect(logMsg.entry.content).toBe('proceed');
-      expect(logMsg.entry.metadata?.reasoning).toBe('looks good');
+      expect(logMsg?.type).toBe('agent_log');
+      if (logMsg?.type === 'agent_log') {
+        expect(logMsg.entry.type).toBe('decision');
+        expect(logMsg.entry.content).toBe('proceed');
+        expect(logMsg.entry.metadata?.reasoning).toBe('looks good');
+      }
     });
   });
 
@@ -595,11 +643,14 @@ describe('StatusBridge', () => {
         tasks: [{ id: 't1', title: 'Task 1', status: 'ready', dependencies: [] }],
       });
 
-      const msg = messages.find((m) => m.type === 'tasks_updated') as any;
+      const msg = messages.find((m) => m.type === 'tasks_updated');
       expect(msg).toBeDefined();
-      expect(msg.tasks).toHaveLength(1);
-      expect(msg.tasks[0].id).toBe('t1');
-      expect(msg.tasks[0].status).toBe('ready');
+      expect(msg?.type).toBe('tasks_updated');
+      if (msg?.type === 'tasks_updated') {
+        expect(msg.tasks).toHaveLength(1);
+        expect(msg.tasks[0].id).toBe('t1');
+        expect(msg.tasks[0].status).toBe('ready');
+      }
 
       const snapshot = bridge.getSnapshot();
       expect(snapshot.tasks).toHaveLength(1);
@@ -613,10 +664,15 @@ describe('StatusBridge', () => {
       callbacks.onTaskStart!({ taskId: 't1', title: 'Task 1', agentId: 'a1', phase: 'scouting', startedAt: 1000 });
 
       const msgs = messages.filter((m) => m.type === 'tasks_updated');
-      const lastMsg = msgs[msgs.length - 1] as any;
-      const task = lastMsg.tasks.find((t: any) => t.id === 't1');
-      expect(task.status).toBe('implementing');
-      expect(task.agentId).toBe('a1');
+      const lastMsg = msgs[msgs.length - 1];
+      expect(lastMsg).toBeDefined();
+      expect(lastMsg.type).toBe('tasks_updated');
+      if (lastMsg.type === 'tasks_updated') {
+        const task = lastMsg.tasks.find((t) => t.id === 't1');
+        expect(task).toBeDefined();
+        expect(task!.status).toBe('implementing');
+        expect(task!.agentId).toBe('a1');
+      }
 
       const snapshot = bridge.getSnapshot();
       const t = snapshot.tasks.find((t) => t.id === 't1')!;
@@ -633,9 +689,14 @@ describe('StatusBridge', () => {
       callbacks.onTaskComplete!({ taskId: 't1', title: 'Task 1' });
 
       const msgs = messages.filter((m) => m.type === 'tasks_updated');
-      const lastMsg = msgs[msgs.length - 1] as any;
-      const task = lastMsg.tasks.find((t: any) => t.id === 't1');
-      expect(task.status).toBe('done');
+      const lastMsg = msgs[msgs.length - 1];
+      expect(lastMsg).toBeDefined();
+      expect(lastMsg.type).toBe('tasks_updated');
+      if (lastMsg.type === 'tasks_updated') {
+        const task = lastMsg.tasks.find((t) => t.id === 't1');
+        expect(task).toBeDefined();
+        expect(task!.status).toBe('done');
+      }
     });
 
     it('onTaskRejected updates task status to failed', () => {
@@ -647,9 +708,14 @@ describe('StatusBridge', () => {
       callbacks.onTaskRejected!({ taskId: 't1', title: 'Task 1', reason: 'bad' });
 
       const msgs = messages.filter((m) => m.type === 'tasks_updated');
-      const lastMsg = msgs[msgs.length - 1] as any;
-      const task = lastMsg.tasks.find((t: any) => t.id === 't1');
-      expect(task.status).toBe('failed');
+      const lastMsg = msgs[msgs.length - 1];
+      expect(lastMsg).toBeDefined();
+      expect(lastMsg.type).toBe('tasks_updated');
+      if (lastMsg.type === 'tasks_updated') {
+        const task = lastMsg.tasks.find((t) => t.id === 't1');
+        expect(task).toBeDefined();
+        expect(task!.status).toBe('failed');
+      }
     });
   });
 
@@ -658,10 +724,13 @@ describe('StatusBridge', () => {
       const { callbacks, messages, bridge } = createBridge();
       callbacks.onSidebarUpdate!({ title: 'My Workflow', indicator: '🟢' });
 
-      const msg = messages.find((m) => m.type === 'workflow_sidebar') as any;
+      const msg = messages.find((m) => m.type === 'workflow_sidebar');
       expect(msg).toBeDefined();
-      expect(msg.sidebar.title).toBe('My Workflow');
-      expect(msg.sidebar.indicator).toBe('🟢');
+      expect(msg?.type).toBe('workflow_sidebar');
+      if (msg?.type === 'workflow_sidebar') {
+        expect(msg.sidebar.title).toBe('My Workflow');
+        expect(msg.sidebar.indicator).toBe('🟢');
+      }
 
       const snapshot = bridge.getSnapshot();
       expect(snapshot.sidebar.title).toBe('My Workflow');
@@ -699,6 +768,13 @@ describe('StatusBridge', () => {
   });
 
   // ─── Handler-group decomposition tests ────────────────────────────────────
+  //
+  // These tests access private methods (createWorkflowHandlers,
+  // createPhaseHandlers, createAgentHandlers, createTaskHandlers) via
+  // `(bridge as any).methodName()`. The `as any` cast is required here
+  // because these methods are private to StatusBridge and not exposed
+  // on the public type. These tests verify the internal decomposition
+  // of handler registration into groups.
 
   describe('handler-group decomposition', () => {
     describe('createWorkflowHandlers', () => {
@@ -1076,13 +1152,16 @@ describe('StatusBridge', () => {
       };
       broadcast(msg);
       expect(messages).toHaveLength(1);
-      const sent = messages[0] as any;
+      const sent = messages[0];
+      expect(sent).toBeDefined();
       expect(sent.type).toBe('agent_stats');
-      expect(sent.agentId).toBe('a1');
-      expect(sent.toolCallCount).toBe(3);
-      expect(sent.inputTokens).toBe(200);
-      expect(sent.outputTokens).toBe(75);
-      expect(sent.taskId).toBe('t-42');
+      if (sent.type === 'agent_stats') {
+        expect(sent.agentId).toBe('a1');
+        expect(sent.toolCallCount).toBe(3);
+        expect(sent.inputTokens).toBe(200);
+        expect(sent.outputTokens).toBe(75);
+        expect(sent.taskId).toBe('t-42');
+      }
     });
 
     it('can broadcast agent_stats without taskId (backward compat)', () => {
@@ -1094,7 +1173,12 @@ describe('StatusBridge', () => {
       };
       broadcast(msg);
       expect(messages).toHaveLength(1);
-      expect((messages[0] as any).taskId).toBeUndefined();
+      const sent = messages[0];
+      expect(sent).toBeDefined();
+      expect(sent.type).toBe('agent_stats');
+      if (sent.type === 'agent_stats') {
+        expect(sent.taskId).toBeUndefined();
+      }
     });
 
     it('broadcasting agent_stats with taskId does not break existing token stats', () => {
@@ -1108,9 +1192,206 @@ describe('StatusBridge', () => {
       };
       broadcast(msg);
       expect(messages).toHaveLength(1);
-      expect((messages[0] as any).inputTokens).toBe(150);
-      expect((messages[0] as any).outputTokens).toBe(60);
-      expect((messages[0] as any).taskId).toBe('t-99');
+      const sent = messages[0];
+      expect(sent).toBeDefined();
+      expect(sent.type).toBe('agent_stats');
+      if (sent.type === 'agent_stats') {
+        expect(sent.inputTokens).toBe(150);
+        expect(sent.outputTokens).toBe(60);
+        expect(sent.taskId).toBe('t-99');
+      }
+    });
+  });
+
+  // ─── Agent log cap tests ────────────────────────────────────────────────────
+
+  describe('agent log cap', () => {
+    describe('MAX_AGENT_LOG_ENTRIES constant', () => {
+      it('is exported with value 500', async () => {
+        const mod = await import('../../src/web/status-bridge.ts');
+        expect(mod.MAX_AGENT_LOG_ENTRIES).toBe(500);
+      });
+    });
+
+    describe('eviction behavior via appendAgentLog', () => {
+      it('preserves all entries when under the cap', () => {
+        const { callbacks, bridge } = createBridge();
+        callbacks.onAgentSpawn!({ agentId: 'a1', profile: 'scout', phase: 'scouting' });
+
+        // Add 100 entries (well under 500 cap) via onTurnEnd
+        for (let i = 0; i < 100; i++) {
+          callbacks.onTurnEnd!({
+            agentId: 'a1',
+            turn: i,
+            contentBlocks: [{ type: 'text', text: `entry-${i}` }],
+          });
+        }
+
+        const snapshot = bridge.getSnapshot();
+        const agent = snapshot.agents.find((a) => a.agentId === 'a1');
+        expect(agent).toBeDefined();
+        expect(agent!.log).toHaveLength(100);
+        expect(agent!.log[0].content).toBe('entry-0');
+        expect(agent!.log[99].content).toBe('entry-99');
+      });
+
+      it('preserves all entries when exactly at the cap', () => {
+        const { callbacks, bridge } = createBridge();
+        callbacks.onAgentSpawn!({ agentId: 'a1', profile: 'scout', phase: 'scouting' });
+
+        // Add exactly 500 entries
+        for (let i = 0; i < 500; i++) {
+          callbacks.onTurnEnd!({
+            agentId: 'a1',
+            turn: i,
+            contentBlocks: [{ type: 'text', text: `entry-${i}` }],
+          });
+        }
+
+        const snapshot = bridge.getSnapshot();
+        const agent = snapshot.agents.find((a) => a.agentId === 'a1');
+        expect(agent).toBeDefined();
+        expect(agent!.log).toHaveLength(500);
+        expect(agent!.log[0].content).toBe('entry-0');
+        expect(agent!.log[499].content).toBe('entry-499');
+      });
+
+      it('evicts oldest entry when exceeding the cap (FIFO)', () => {
+        const { callbacks, bridge } = createBridge();
+        callbacks.onAgentSpawn!({ agentId: 'a1', profile: 'scout', phase: 'scouting' });
+
+        // Add 501 entries — the first should be evicted
+        for (let i = 0; i < 501; i++) {
+          callbacks.onTurnEnd!({
+            agentId: 'a1',
+            turn: i,
+            contentBlocks: [{ type: 'text', text: `entry-${i}` }],
+          });
+        }
+
+        const snapshot = bridge.getSnapshot();
+        const agent = snapshot.agents.find((a) => a.agentId === 'a1');
+        expect(agent).toBeDefined();
+        expect(agent!.log).toHaveLength(500);
+        // entry-0 should have been shifted out
+        expect(agent!.log[0].content).toBe('entry-1');
+        expect(agent!.log[499].content).toBe('entry-500');
+      });
+
+      it('evicts oldest entries proportionally when many entries are added', () => {
+        const { callbacks, bridge } = createBridge();
+        callbacks.onAgentSpawn!({ agentId: 'a1', profile: 'scout', phase: 'scouting' });
+
+        // Add 1000 entries — the first 500 should be evicted, last 500 kept
+        for (let i = 0; i < 1000; i++) {
+          callbacks.onTurnEnd!({
+            agentId: 'a1',
+            turn: i,
+            contentBlocks: [{ type: 'text', text: `entry-${i}` }],
+          });
+        }
+
+        const snapshot = bridge.getSnapshot();
+        const agent = snapshot.agents.find((a) => a.agentId === 'a1');
+        expect(agent).toBeDefined();
+        expect(agent!.log).toHaveLength(500);
+        // entry-0 through entry-499 should be gone
+        expect(agent!.log[0].content).toBe('entry-500');
+        expect(agent!.log[499].content).toBe('entry-999');
+      });
+
+      it('evicts per-agent independently (isolated caps)', () => {
+        const { callbacks, bridge } = createBridge();
+        callbacks.onAgentSpawn!({ agentId: 'a1', profile: 'scout', phase: 'scouting' });
+        callbacks.onAgentSpawn!({ agentId: 'a2', profile: 'coder', phase: 'implement', taskId: 't1' });
+
+        // Add 600 entries to a1 (100 over cap)
+        for (let i = 0; i < 600; i++) {
+          callbacks.onTurnEnd!({
+            agentId: 'a1',
+            turn: i,
+            contentBlocks: [{ type: 'text', text: `a1-entry-${i}` }],
+          });
+        }
+
+        // Add 50 entries to a2 (well under cap)
+        for (let i = 0; i < 50; i++) {
+          callbacks.onTurnEnd!({
+            agentId: 'a2',
+            turn: i,
+            contentBlocks: [{ type: 'text', text: `a2-entry-${i}` }],
+          });
+        }
+
+        const snapshot = bridge.getSnapshot();
+
+        const agent1 = snapshot.agents.find((a) => a.agentId === 'a1');
+        expect(agent1).toBeDefined();
+        expect(agent1!.log).toHaveLength(500);
+        expect(agent1!.log[0].content).toBe('a1-entry-100');
+        expect(agent1!.log[499].content).toBe('a1-entry-599');
+
+        const agent2 = snapshot.agents.find((a) => a.agentId === 'a2');
+        expect(agent2).toBeDefined();
+        expect(agent2!.log).toHaveLength(50);
+        expect(agent2!.log[0].content).toBe('a2-entry-0');
+        expect(agent2!.log[49].content).toBe('a2-entry-49');
+      });
+
+      it('applies cap for tool_call_start entries too', () => {
+        const { callbacks, bridge } = createBridge();
+        callbacks.onAgentSpawn!({ agentId: 'a1', profile: 'scout', phase: 'scouting' });
+
+        // Add 500 tool calls (at cap)
+        for (let i = 0; i < 500; i++) {
+          callbacks.onToolCallStart!({
+            agentId: 'a1',
+            toolName: `tool-${i}`,
+            toolCallId: `call_${i}`,
+            arguments: {},
+          });
+        }
+
+        // Add one more to trigger eviction
+        callbacks.onToolCallStart!({
+          agentId: 'a1',
+          toolName: 'tool-500',
+          toolCallId: 'call_500',
+          arguments: {},
+        });
+
+        const snapshot = bridge.getSnapshot();
+        const agent = snapshot.agents.find((a) => a.agentId === 'a1');
+        expect(agent).toBeDefined();
+        expect(agent!.log).toHaveLength(500);
+        // First entry (call_0) should have been evicted
+        expect(agent!.log[0].id).toBe('call_1');
+        expect(agent!.log[499].id).toBe('call_500');
+      });
+
+      it('applies cap for error and decision entries too', () => {
+        const { callbacks, bridge } = createBridge();
+        callbacks.onAgentSpawn!({ agentId: 'a1', profile: 'scout', phase: 'scouting' });
+
+        // Add 500 errors (at cap)
+        for (let i = 0; i < 500; i++) {
+          callbacks.onError!({ agentId: 'a1', error: `error-${i}`, phase: 'test', taskId: undefined! });
+        }
+
+        // Snapshot should have exactly 500 error entries
+        expect(bridge.getSnapshot().agents.find((a) => a.agentId === 'a1')!.log).toHaveLength(500);
+
+        // Add one more decision to trigger eviction
+        callbacks.onDecision!({ agentId: 'a1', decision: 'final', reasoning: 'done', taskId: undefined! });
+
+        const snapshot = bridge.getSnapshot();
+        const agent = snapshot.agents.find((a) => a.agentId === 'a1');
+        expect(agent).toBeDefined();
+        expect(agent!.log).toHaveLength(500);
+        // First error should have been evicted
+        expect(agent!.log[0].content).toBe('error-1');
+        expect(agent!.log[499].type).toBe('decision');
+      });
     });
   });
 });

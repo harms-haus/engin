@@ -5,9 +5,6 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { isEnoentError, validateWorkflowName } from './utils.js';
 
-/** Default profile name for worker/agent tasks used by worktree operations. */
-export const DEFAULT_WORKER_PROFILE = 'worker';
-
 /**
  * Returns the global configuration directory for engin.
  * Uses $XDG_CONFIG_HOME/engin if XDG_CONFIG_HOME is set and non-empty,

@@ -66,7 +66,7 @@ describe('WorkflowStatusTracker – persist architecture (bounded promise chain)
       expect(disposeBody).not.toContain('_savePromise');
     });
 
-    it('_doPersist has try/catch/finally with _needsSave retry logic', async () => {
+    it('_doPersist has try/catch/finally with _queuedSave retry logic', async () => {
       const sourcePath = join(import.meta.dir, '..', '..', 'src', 'tracking', 'workflow-status.ts');
       const source = await fs.readFile(sourcePath, 'utf-8');
 
@@ -78,9 +78,9 @@ describe('WorkflowStatusTracker – persist architecture (bounded promise chain)
       expect(doPersistBody).toMatch(/try\s*\{[\s\S]*await\s+this\.save\(\)/);
       // Should have catch block with console.warn
       expect(doPersistBody).toMatch(/catch\s*\([\s\S]*console\.warn/);
-      // Should have finally block resetting _pendingSave and retrying if _needsSave
+      // Should have finally block resetting _pendingSave and retrying if _queuedSave
       expect(doPersistBody).toMatch(/finally\s*\{[\s\S]*_pendingSave\s*=\s*false/);
-      expect(doPersistBody).toMatch(/if\s*\(this\._needsSave\)\s*\{[\s\S]*void\s*this\._doPersist/);
+      expect(doPersistBody).toMatch(/if\s*\(this\._queuedSave\)\s*\{[\s\S]*void\s*this\._doPersist/);
     });
 
     it('does not have _saveLock removed — the save mutex is preserved', async () => {
@@ -147,7 +147,7 @@ describe('WorkflowStatusTracker – persist architecture (bounded promise chain)
       expect(tracker.sidebar?.title).toBe('non-blocking');
     });
 
-    it('calls during an in-flight save are coalesced with _needsSave', async () => {
+    it('calls during an in-flight save are coalesced with _queuedSave', async () => {
       // First, trigger a save
       tracker.setTaskPrompt('first');
       tracker.setSidebar({ title: 'first' });
@@ -410,9 +410,9 @@ describe('WorkflowStatusTracker – persist architecture (bounded promise chain)
     });
   });
 
-  // ── behavioral: _needsSave retry logic ────────────────────────────
+  // ── behavioral: _queuedSave retry logic ────────────────────────────
 
-  describe('_needsSave retry logic', () => {
+  describe('_queuedSave retry logic', () => {
     it('mutations during an in-flight save are persisted on the next cycle', async () => {
       let inFlightResolve: (() => void) | undefined;
       const originalSave = tracker.save.bind(tracker);
@@ -431,7 +431,7 @@ describe('WorkflowStatusTracker – persist architecture (bounded promise chain)
       // Let the save start (but it's blocked on our barrier)
       await new Promise((r) => setTimeout(r, 10));
 
-      // Trigger another change while save is in-flight — this sets _needsSave
+      // Trigger another change while save is in-flight — this sets _queuedSave
       tracker.setTaskPrompt('updated');
 
       // Release the barrier
@@ -485,14 +485,14 @@ describe('WorkflowStatusTracker – persist architecture (bounded promise chain)
       tracker.save = originalSave;
     });
 
-    it('_needsSave is false when no save is pending and no retry is needed', async () => {
+    it('_queuedSave is false when no save is pending and no retry is needed', async () => {
       // First save
-      tracker.setTaskPrompt('needs-save-check');
+      tracker.setTaskPrompt('queued-save-check');
       await tracker.save();
 
-      // After a clean save, _pendingSave is false and _needsSave is false
+      // After a clean save, _pendingSave is false and _queuedSave is false
       // We can verify by checking that the next persistState schedules a fresh save
-      // rather than setting _needsSave
+      // rather than setting _queuedSave
 
       // Reset the save counter
       let saveCalls = 0;
@@ -666,6 +666,229 @@ describe('WorkflowStatusTracker – persist architecture (bounded promise chain)
       expect(tracker.taskPrompt).toBe('save-in-flight');
 
       tracker.save = originalSave;
+    });
+  });
+
+  // ── behavioral: no duplicate saves (race condition fix) ────────────
+
+  describe('no duplicate saves (race condition fix)', () => {
+    it('_doPersist sets _pendingSave before yielding to prevent duplicate save window', async () => {
+      // Verify the source code fix: _doPersist must set _pendingSave = true
+      // at its start before any await point
+      const sourcePath = join(import.meta.dir, '..', '..', 'src', 'tracking', 'workflow-status.ts');
+      const source = await fs.readFile(sourcePath, 'utf-8');
+
+      // Find _doPersist method body
+      const doPersistStart = source.indexOf('private async _doPersist');
+      expect(doPersistStart).toBeGreaterThan(-1);
+
+      // The first statement inside the try block (or before it) must set _pendingSave = true
+      const methodBody = source.slice(doPersistStart, source.indexOf('private attachAutoPersist'));
+      expect(methodBody).toMatch(/this\._pendingSave\s*=\s*true/);
+
+      // The _pendingSave assignment must come BEFORE the try block (before any await)
+      const pendingSaveAssignIdx = methodBody.indexOf('this._pendingSave = true');
+      const tryIdx = methodBody.indexOf('try {');
+      expect(pendingSaveAssignIdx).toBeGreaterThan(-1);
+      expect(tryIdx).toBeGreaterThan(-1);
+      expect(pendingSaveAssignIdx).toBeLessThan(tryIdx);
+    });
+
+    it('no duplicate _doPersist invocations when persistState is called during the finally window', async () => {
+      // This test simulates the exact race condition scenario:
+      // 1. A save is in flight (_doPersist running)
+      // 2. During the finally block, the old code set _pendingSave = false
+      // 3. A concurrent persistState() could see _pendingSave = false and start
+      //    another _doPersist, while the recursive _doPersist() also starts
+      //
+      // With the fix (_doPersist sets _pendingSave = true at start), there should
+      // never be two concurrent save() I/O operations. We verify this by tracking
+      // how many times save() actually executes its I/O (goes past _saveLock).
+
+      let ioSaveCount = 0;
+      let concurrentIo = 0;
+      let maxConcurrentIo = 0;
+
+      const originalSave = tracker.save.bind(tracker);
+      tracker.save = async () => {
+        // _saveLock serializes entry, so by the time we're here,
+        // this is the one executing. Track actual I/O concurrency.
+        concurrentIo++;
+        maxConcurrentIo = Math.max(maxConcurrentIo, concurrentIo);
+        ioSaveCount++;
+        try {
+          await originalSave();
+        } finally {
+          concurrentIo--;
+        }
+      };
+
+      // Trigger a state change that starts a save
+      tracker.setTaskPrompt('race-test-1');
+      tracker.setSidebar({ title: 'race-1' });
+
+      // Wait a tick for _doPersist to start and hit the await
+      await new Promise((r) => setTimeout(r, 5));
+
+      // While the save is in-flight, trigger another persist
+      // This should set _queuedSave = true, not start a second _doPersist
+      tracker.setTaskPrompt('race-test-2');
+      tracker.setSidebar({ title: 'race-2' });
+
+      // Wait for everything to settle
+      await new Promise((r) => setTimeout(r, 50));
+
+      // At no point should we have had more than 1 concurrent I/O operation.
+      // _saveLock already serializes save(), and the _pendingSave flag prevents
+      // duplicate _doPersist chains.
+      expect(maxConcurrentIo).toBeLessThanOrEqual(1);
+
+      // We should have had at most 2 save() I/O calls total (initial + retry)
+      expect(ioSaveCount).toBeLessThanOrEqual(2);
+
+      // The final state should reflect all changes
+      const raw = await fs.readFile(join(dir, '.engin-state.json'), 'utf-8');
+      const data = JSON.parse(raw);
+      expect(data.taskPrompt).toBe('race-test-2');
+      expect(data.sidebar?.title).toBe('race-2');
+
+      tracker.save = originalSave;
+    });
+
+    it('persistState never starts a second _doPersist while one is already scheduled', async () => {
+      // Verify that rapid persistState calls don't spawn extra save operations.
+      // The debounce mechanism should coalesce them into at most 2 save calls.
+      let saveCallCount = 0;
+
+      const originalSave = tracker.save.bind(tracker);
+      tracker.save = async () => {
+        saveCallCount++;
+        await new Promise((r) => setTimeout(r, 5)); // small delay
+        await originalSave();
+      };
+
+      // Rapidly trigger many persistState calls in synchronous succession
+      for (let i = 0; i < 10; i++) {
+        tracker.setTaskPrompt(`burst-${i}`);
+        tracker.setSidebar({ title: `burst-${i}` });
+      }
+
+      // Wait for all saves to settle
+      await new Promise((r) => setTimeout(r, 200));
+
+      // We should NOT have 10 save calls. With proper coalescing, we should have
+      // at most 2 (the initial save, possibly one retry if _queuedSave was set).
+      expect(saveCallCount).toBeLessThanOrEqual(2);
+
+      // Final state must be correct
+      const raw = await fs.readFile(join(dir, '.engin-state.json'), 'utf-8');
+      const data = JSON.parse(raw);
+      expect(data.taskPrompt).toBe('burst-9');
+      expect(data.sidebar?.title).toBe('burst-9');
+
+      tracker.save = originalSave;
+    });
+
+    it('_doPersist start sets _pendingSave so recursive call is not visible as idle', async () => {
+      // This tests the core race condition fix:
+      // The finally block of _doPersist sets _pendingSave = false, then
+      // if _queuedSave is true, it calls _doPersist() recursively.
+      // Between _pendingSave = false and the recursive _doPersist() setting
+      // _pendingSave = true, there must be NO yield point where persistState()
+      // could observe _pendingSave == false.
+      //
+      // We verify this by hammering persistState() synchronously from the
+      // event queue while _doPersist is in its finally block. The key is that
+      // the recursive _doPersist() sets _pendingSave = true BEFORE any await,
+      // so there's no window for a second _doPersist to start.
+
+      // Track how many save I/O operations execute (go past _saveLock)
+      let ioExecutions = 0;
+      let maxConcurrentIo = 0;
+      let concurrentIo = 0;
+
+      const originalSave = tracker.save.bind(tracker);
+      tracker.save = async () => {
+        concurrentIo++;
+        maxConcurrentIo = Math.max(maxConcurrentIo, concurrentIo);
+        ioExecutions++;
+        try {
+          await new Promise((r) => setTimeout(r, 3));
+          await originalSave();
+        } finally {
+          concurrentIo--;
+        }
+      };
+
+      // Start a save and wait for it to be in-flight
+      tracker.setTaskPrompt('window-test-1');
+      tracker.setSidebar({ title: 'window-1' });
+      await new Promise((r) => setTimeout(r, 10));
+
+      // Trigger another change to set _queuedSave
+      tracker.setTaskPrompt('window-test-2');
+
+      // Issue a burst of synchronous persistState calls while the save
+      // machinery might be in its finally block transitioning flags.
+      // All synchronous calls happen in the same microtask, so they all
+      // see the same _pendingSave state.
+      for (let i = 0; i < 50; i++) {
+        tracker.setSidebar({ title: `window-${i}` });
+      }
+
+      // Wait for all saves to settle
+      await new Promise((r) => setTimeout(r, 150));
+
+      // We should never have had more than 1 concurrent I/O operation.
+      // _saveLock serializes save(), and the _pendingSave flag in _doPersist
+      // prevents duplicate chains.
+      expect(maxConcurrentIo).toBeLessThanOrEqual(1);
+
+      // Total actual I/O executions should be far fewer than 50 (which would indicate
+      // no coalescing). With proper debouncing, 50 synchronous calls should produce
+      // at most 2-3 save sequences (initial + maybe 1-2 retries).
+      expect(ioExecutions).toBeLessThanOrEqual(5);
+
+      // Final state must be coherent
+      const raw = await fs.readFile(join(dir, '.engin-state.json'), 'utf-8');
+      const data = JSON.parse(raw);
+      expect(data.taskPrompt).toBe('window-test-2');
+
+      tracker.save = originalSave;
+    });
+
+    it('_pendingSave and _queuedSave are both reset in dispose()', async () => {
+      const sourcePath = join(import.meta.dir, '..', '..', 'src', 'tracking', 'workflow-status.ts');
+      const source = await fs.readFile(sourcePath, 'utf-8');
+
+      // Find dispose method body. Note: attachAutoPersist is defined BEFORE dispose
+      // in the source, so we need to slice from dispose() to the next getter.
+      const disposeIdx = source.indexOf('dispose():');
+      const getterIdx = source.indexOf('get taskPrompt():');
+      const disposeBody = source.slice(disposeIdx, getterIdx);
+
+      // Must reset both flags
+      expect(disposeBody).toMatch(/_pendingSave\s*=\s*false/);
+      expect(disposeBody).toMatch(/_queuedSave\s*=\s*false/);
+    });
+
+    it('no _needsSave field remains in the source (renamed to _queuedSave)', async () => {
+      const sourcePath = join(import.meta.dir, '..', '..', 'src', 'tracking', 'workflow-status.ts');
+      const source = await fs.readFile(sourcePath, 'utf-8');
+
+      // The old field name should not appear as a field declaration
+      expect(source).not.toMatch(/private\s+_needsSave/);
+
+      // The old field name should not appear in method bodies
+      // (comments or test descriptions are fine, but not in runtime code)
+      const runtimeLines = source
+        .split('\n')
+        .filter((line) => !line.trim().startsWith('//') && !line.trim().startsWith('*'));
+      const hasNeedsSave = runtimeLines.some((line) => line.includes('_needsSave'));
+      expect(hasNeedsSave).toBe(false);
+
+      // The new field name should be declared
+      expect(source).toMatch(/private\s+_queuedSave\s*=\s*false/);
     });
   });
 });

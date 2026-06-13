@@ -126,7 +126,7 @@ describe('WorkflowStatusTracker – atomic save', () => {
 
   describe('source code structure', () => {
     it('imports rename from node:fs/promises', async () => {
-      const sourcePath = join(import.meta.dir, '..', '..', 'src', 'tracking', 'workflow-status.ts');
+      const sourcePath = join(import.meta.dir, '..', '..', 'src', 'tracking', 'workflow-serializer.ts');
       const source = await fs.readFile(sourcePath, 'utf-8');
 
       // Should import rename from node:fs/promises
@@ -135,53 +135,69 @@ describe('WorkflowStatusTracker – atomic save', () => {
       expect(importLine!).toContain('rename');
     });
 
-    it('save() method writes to temp path then renames', async () => {
-      const sourcePath = join(import.meta.dir, '..', '..', 'src', 'tracking', 'workflow-status.ts');
+    it('saveWorkflowState writes to temp path then renames', async () => {
+      const sourcePath = join(import.meta.dir, '..', '..', 'src', 'tracking', 'workflow-serializer.ts');
       const source = await fs.readFile(sourcePath, 'utf-8');
 
-      // Extract the save method body
-      const saveStart = source.indexOf('async save()');
-      const saveEnd = source.indexOf('\n  }', saveStart);
-      const saveBody = source.slice(saveStart, saveEnd);
+      // Extract the saveWorkflowState function body
+      const funcStart = source.indexOf('export async function saveWorkflowState(');
+      const funcEnd = source.indexOf('export async function loadWorkflowState(', funcStart);
+      const funcBody = source.slice(funcStart, funcEnd);
 
       // Should create a tmp path
-      expect(saveBody).toContain('.engin-state.json.tmp');
+      expect(funcBody).toContain('.engin-state.json.tmp');
 
       // Should write to the tmp path
-      expect(saveBody).toMatch(/writeFile\(tmpPath/);
+      expect(funcBody).toMatch(/writeFile\(tmpPath/);
 
       // Should rename tmp to final path
-      expect(saveBody).toMatch(/rename\(tmpPath,\s*filePath\)/);
+      expect(funcBody).toMatch(/rename\(tmpPath,\s*filePath\)/);
     });
 
-    it('save() does not write directly to the final state file path', async () => {
-      const sourcePath = join(import.meta.dir, '..', '..', 'src', 'tracking', 'workflow-status.ts');
+    it('saveWorkflowState does not write directly to the final state file path', async () => {
+      const sourcePath = join(import.meta.dir, '..', '..', 'src', 'tracking', 'workflow-serializer.ts');
       const source = await fs.readFile(sourcePath, 'utf-8');
 
-      const saveStart = source.indexOf('async save()');
-      const saveEnd = source.indexOf('\n  }', saveStart);
-      const saveBody = source.slice(saveStart, saveEnd);
+      const funcStart = source.indexOf('export async function saveWorkflowState(');
+      const funcEnd = source.indexOf('export async function loadWorkflowState(', funcStart);
+      const funcBody = source.slice(funcStart, funcEnd);
 
       // Should NOT have writeFile(filePath, ...) — only writeFile(tmpPath, ...)
       const directWritePattern = /writeFile\(filePath/g;
-      expect(directWritePattern.test(saveBody)).toBe(false);
+      expect(directWritePattern.test(funcBody)).toBe(false);
     });
 
-    it('save() creates the tmp file before renaming', async () => {
-      const sourcePath = join(import.meta.dir, '..', '..', 'src', 'tracking', 'workflow-status.ts');
+    it('saveWorkflowState creates the tmp file before renaming', async () => {
+      const sourcePath = join(import.meta.dir, '..', '..', 'src', 'tracking', 'workflow-serializer.ts');
       const source = await fs.readFile(sourcePath, 'utf-8');
 
-      const saveStart = source.indexOf('async save()');
-      const saveEnd = source.indexOf('\n  }', saveStart);
-      const saveBody = source.slice(saveStart, saveEnd);
+      const funcStart = source.indexOf('export async function saveWorkflowState(');
+      const funcEnd = source.indexOf('export async function loadWorkflowState(', funcStart);
+      const funcBody = source.slice(funcStart, funcEnd);
 
-      const writeFileIndex = saveBody.indexOf('writeFile(tmpPath');
-      const renameIndex = saveBody.indexOf('rename(tmpPath');
+      const writeFileIndex = funcBody.indexOf('writeFile(tmpPath');
+      const renameIndex = funcBody.indexOf('rename(tmpPath');
 
       // writeFile should come before rename
       expect(writeFileIndex).toBeGreaterThan(-1);
       expect(renameIndex).toBeGreaterThan(-1);
       expect(renameIndex).toBeGreaterThan(writeFileIndex);
+    });
+
+    it('save() in workflow-status.ts delegates to saveWorkflowState', async () => {
+      const sourcePath = join(import.meta.dir, '..', '..', 'src', 'tracking', 'workflow-status.ts');
+      const source = await fs.readFile(sourcePath, 'utf-8');
+
+      const saveStart = source.indexOf('async save()');
+      const saveEnd = source.indexOf('\n  }', saveStart);
+      const saveBody = source.slice(saveStart, saveEnd);
+
+      // Should NOT contain writeFile or rename directly
+      expect(saveBody).not.toMatch(/writeFile\(/);
+      expect(saveBody).not.toMatch(/rename\(/);
+
+      // Should delegate to saveWorkflowState
+      expect(saveBody).toMatch(/saveWorkflowState\(this,\s*this\.workDir\)/);
     });
   });
 

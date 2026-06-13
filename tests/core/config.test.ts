@@ -3,7 +3,6 @@ import { mkdir, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { LoadEnvResult } from '../../src/core/config.js';
 import {
-  DEFAULT_WORKER_PROFILE,
   ensureDir,
   getDefaultWorkDir,
   getGlobalConfigDir,
@@ -15,14 +14,6 @@ import {
 } from '../../src/core/config.js';
 import { useEnvSandbox } from '../helpers/env-sandbox.js';
 import { useTempDir } from '../helpers/use-temp-dir.js';
-
-// ─── DEFAULT_WORKER_PROFILE ─────────────────────────────────────────────────
-
-describe('DEFAULT_WORKER_PROFILE', () => {
-  it('has the value "worker"', () => {
-    expect(DEFAULT_WORKER_PROFILE).toBe('worker');
-  });
-});
 
 // ─── Temp directory helper ──────────────────────────────────────────────────
 

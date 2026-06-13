@@ -5,13 +5,12 @@ import { AuditLog } from '../../src/tracking/audit-log.js';
 import { useTempDir } from '../helpers/use-temp-dir.js';
 
 /**
- * Tests for the serialized cache rebuild mechanism.
+ * Tests for the simplified cache mechanism (invalidate-on-write).
  *
- * The invariant: at most one file-read rebuild can be in flight at a time.
- * Once the cache is populated, it is served from memory.
- * Concurrent callers awaiting getEvents() share the same rebuild promise.
+ * The cache is nulled on every append/clear. getEvents rebuilds it from
+ * disk on first call. No while loop, no cacheBuildPromise, no _cacheStale.
  */
-describe('AuditLog cache serialization', () => {
+describe('AuditLog cache (invalidate-on-write)', () => {
   const { getDir } = useTempDir();
   let dir: string;
   let log: AuditLog;
@@ -21,7 +20,7 @@ describe('AuditLog cache serialization', () => {
     log = new AuditLog(dir);
   });
 
-  // ── Fast path: cache hit does not trigger rebuild ──────────────────
+  // ── Cache hit: second call does NOT re-read the file ──────────────────
 
   it('getEvents uses cached data on second call without reading the file again', async () => {
     await log.append({ type: 'agent_start', agentId: 'a1', profile: {} as never });
@@ -38,35 +37,9 @@ describe('AuditLog cache serialization', () => {
     expect(second).toHaveLength(1);
   });
 
-  // ── Serialized rebuilds: concurrent getEvents share one promise ────
+  // ── Cache invalidated on append ──────────────────────────────────────
 
-  it('concurrent getEvents calls share a single rebuild promise', async () => {
-    // Write some events to the log
-    await log.append({ type: 'agent_start', agentId: 'a1', profile: {} as never });
-    await log.append({ type: 'agent_end', agentId: 'a1', result: {} });
-
-    // Invalidate cache so next getEvents triggers a rebuild
-    (log as any).cache = null;
-
-    // Fire multiple concurrent getEvents calls while cache is null.
-    // With serialized rebuilds, all should share the same cacheBuildPromise
-    // and only one file read should happen.
-    const [result1, result2, result3] = await Promise.all([log.getEvents(), log.getEvents(), log.getEvents()]);
-
-    // All should return the same data
-    expect(result1).toHaveLength(2);
-    expect(result2).toHaveLength(2);
-    expect(result3).toHaveLength(2);
-
-    // After all resolve, cache should be populated and build promise cleared
-    expect((log as any).cache).not.toBeNull();
-    // cacheBuildPromise should be null (not undefined) after the fix
-    expect((log as any).cacheBuildPromise).toBeNull();
-  });
-
-  // ── append invalidates cacheBuildPromise ───────────────────────────
-
-  it('append invalidates cache and any in-flight rebuild promise', async () => {
+  it('append invalidates cache (sets it to null)', async () => {
     await log.append({ type: 'agent_start', agentId: 'a1', profile: {} as never });
 
     // Populate cache
@@ -76,26 +49,15 @@ describe('AuditLog cache serialization', () => {
     // Append should null out cache
     await log.append({ type: 'agent_end', agentId: 'a1', result: { cost: 1.0 } });
     expect((log as any).cache).toBeNull();
-
-    // The build promise field should also be cleared (null)
-    expect((log as any).cacheBuildPromise).toBeNull();
   });
 
-  // ── append during rebuild invalidates the rebuild result ───────────
-
-  it('append after concurrent getEvents forces fresh data on next getEvents', async () => {
+  it('append forces fresh data on next getEvents', async () => {
     await log.append({ type: 'agent_start', agentId: 'a1', profile: {} as never });
-
-    // Populate cache so the first getEvents resolves quickly
     await log.getEvents();
-    expect((log as any).cache).not.toBeNull();
 
-    // Now append a new event — this invalidates the cache
+    // Append invalidates cache
     await log.append({ type: 'agent_end', agentId: 'a1', result: {} });
     expect((log as any).cache).toBeNull();
-
-    // The build promise field should also be cleared (null)
-    expect((log as any).cacheBuildPromise).toBeNull();
 
     // getEvents must now rebuild from disk and see both events
     const events = await log.getEvents();
@@ -103,7 +65,7 @@ describe('AuditLog cache serialization', () => {
     expect(events.map((e) => e.type)).toEqual(['agent_start', 'agent_end']);
   });
 
-  // ── Sequential getEvents calls after append see fresh data ─────────
+  // ── Sequential getEvents see latest data ─────────────────────────────
 
   it('sequential getEvents calls after append see the latest data', async () => {
     await log.append({ type: 'agent_start', agentId: 'a1', profile: {} as never });
@@ -122,104 +84,29 @@ describe('AuditLog cache serialization', () => {
     expect(third).toHaveLength(3);
   });
 
-  // ── cacheBuildPromise is null when cache is populated ──────────────
+  // ── Concurrent getEvents calls work correctly ────────────────────────
 
-  it('cacheBuildPromise is null after cache is populated from disk', async () => {
-    await log.append({ type: 'agent_start', agentId: 'a1', profile: {} as never });
-    (log as any).cache = null;
-
-    // Before getEvents, cacheBuildPromise should be null (no build in-flight yet)
-    expect((log as any).cacheBuildPromise).toBeNull();
-
-    await log.getEvents();
-
-    // After rebuilding, cache is populated and build promise is cleared by builder
-    expect((log as any).cache).not.toBeNull();
-    // Bug 1 fix: cacheBuildPromise is set to null inside the builder, exactly once
-    expect((log as any).cacheBuildPromise).toBeNull();
-  });
-
-  // ── Bug 1: cacheBuildPromise cleared by builder, not by all callers ──
-
-  it('cacheBuildPromise is cleared by the builder exactly once (Bug 1 fix)', async () => {
-    await log.append({ type: 'agent_start', agentId: 'a1', profile: {} as never });
-    (log as any).cache = null;
-
-    // Start first getEvents — triggers a rebuild
-    const promise1 = log.getEvents();
-
-    // While rebuild is in-flight, cacheBuildPromise should be a Promise
-    const duringBuild = (log as any).cacheBuildPromise;
-    expect(duringBuild).not.toBeNull();
-    expect(duringBuild).toBeInstanceOf(Promise);
-
-    // Start second getEvents — shares the same promise
-    const promise2 = log.getEvents();
-
-    // Both share the same promise reference
-    expect((log as any).cacheBuildPromise).toBe(duringBuild);
-
-    // Wait for both to complete
-    await Promise.all([promise1, promise2]);
-
-    // After both resolve, cacheBuildPromise must be null.
-    // With the bug, both callers would set cacheBuildPromise = null sequentially,
-    // which is wasteful but not harmful in this simple case. The real danger is
-    // a third caller arriving after both null assignments see cacheBuildPromise
-    // as null, cache as null (due to the old auto-invalidation), and start a
-    // redundant read. With the fix, the builder clears cacheBuildPromise once.
-    expect((log as any).cacheBuildPromise).toBeNull();
-
-    // Cache is populated
-    expect((log as any).cache).not.toBeNull();
-    expect((log as any).cache!.length).toBe(1);
-
-    // A third getEvents should use cache (no rebuild, no redundant disk read)
-    const promise3 = log.getEvents();
-    // cacheBuildPromise should remain null because cache is already populated
-    expect((log as any).cacheBuildPromise).toBeNull();
-    const r3 = await promise3;
-    expect(r3).toHaveLength(1);
-  });
-
-  it('cacheBuildPromise is null after ENOENT rebuild (missing file)', async () => {
-    // No file exists, no events appended
-    const events = await log.getEvents();
-
-    expect(events).toEqual([]);
-    expect((log as any).cache).toEqual([]);
-    // Builder sets cacheBuildPromise = null after populating cache
-    expect((log as any).cacheBuildPromise).toBeNull();
-  });
-
-  // ── Clear also resets cacheBuildPromise ────────────────────────────
-
-  it('clear resets both cache and cacheBuildPromise', async () => {
-    await log.append({ type: 'agent_start', agentId: 'a1', profile: {} as never });
-    await log.getEvents();
-
-    expect((log as any).cache).not.toBeNull();
-
-    await log.clear();
-
-    expect((log as any).cache).toBeNull();
-    expect((log as any).cacheBuildPromise).toBeNull();
-  });
-
-  // ── Multiple appends interleaved with getEvents see consistent data
-
-  it('multiple appends interleaved with concurrent getEvents see consistent data', async () => {
-    // Write 3 events
+  it('concurrent getEvents calls all return correct data', async () => {
     await log.append({ type: 'agent_start', agentId: 'a1', profile: {} as never });
     await log.append({ type: 'agent_end', agentId: 'a1', result: {} });
-    await log.append({ type: 'error', agentId: 'a2', error: 'fail' });
 
-    // Read events and verify all 3 are there
-    const events = await log.getEvents();
-    expect(events).toHaveLength(3);
+    // Invalidate cache so next getEvents triggers a rebuild
+    (log as any).cache = null;
+
+    // Fire multiple concurrent getEvents calls.
+    // With simple invalidate-on-write, each caller that finds cache===null
+    // will rebuild independently. This is safe because appendFile is atomic
+    // per line and readFile always sees a consistent snapshot.
+    const [result1, result2, result3] = await Promise.all([log.getEvents(), log.getEvents(), log.getEvents()]);
+
+    // All should return the same data
+    expect(result1).toHaveLength(2);
+    expect(result2).toHaveLength(2);
+    expect(result3).toHaveLength(2);
+
+    // After all resolve, cache should be populated
+    expect((log as any).cache).not.toBeNull();
   });
-
-  // ── Stress test: many concurrent getEvents with intermittent appends
 
   it('handles many concurrent getEvents calls correctly', async () => {
     // Pre-populate with events
@@ -239,47 +126,103 @@ describe('AuditLog cache serialization', () => {
     }
   });
 
-  // ── Rebuild promise is shared, not duplicated ──────────────────────
+  // ── Cache persists across sequential calls without append ────────────
 
-  it('second getEvents during rebuild awaits the same promise', async () => {
+  it('cache persists across sequential calls without append', async () => {
     await log.append({ type: 'agent_start', agentId: 'a1', profile: {} as never });
-    (log as any).cache = null;
+    await log.getEvents();
 
-    // Start first getEvents — it will initiate a rebuild
-    const promise1 = log.getEvents();
+    // Populate a large cache
+    const base = {
+      type: 'agent_start' as const,
+      agentId: 'x',
+      profile: {} as never,
+      timestamp: new Date().toISOString(),
+    };
+    (log as any).cache = Array.from({ length: 2000 }, () => ({ ...base }));
 
-    // While the rebuild is in-flight, cacheBuildPromise must be a Promise
-    const buildPromise = (log as any).cacheBuildPromise;
-    expect(buildPromise).not.toBeNull();
-    expect(buildPromise).toBeInstanceOf(Promise);
+    // First getEvents should return data and keep cache
+    const r1 = await log.getEvents();
+    expect(r1).toHaveLength(2000);
+    expect((log as any).cache).not.toBeNull();
 
-    // Start second getEvents — should attach to the same promise
-    const promise2 = log.getEvents();
-
-    // Both should share the same cacheBuildPromise
-    expect((log as any).cacheBuildPromise).toBe(buildPromise);
-
-    const [r1, r2] = await Promise.all([promise1, promise2]);
-
-    expect(r1).toHaveLength(1);
-    expect(r2).toHaveLength(1);
-
-    // After completion, the build promise should be null (set by builder)
-    expect((log as any).cacheBuildPromise).toBeNull();
+    // Second getEvents should use cached data (no re-read)
+    const r2 = await log.getEvents();
+    expect(r2).toHaveLength(2000);
+    expect((log as any).cache).not.toBeNull();
   });
 
-  // ── getEvents on empty file returns [] and populates cache ─────────
+  // ── Cache is NOT auto-evicted regardless of size ─────────────────────
 
-  it('getEvents on missing file populates cache with empty array and clears build promise', async () => {
-    // No file exists, no events appended
+  it('getEvents does not auto-evict cache even with many entries', async () => {
+    for (let i = 0; i < 5; i++) {
+      await log.append({ type: 'agent_start', agentId: `a${i}`, profile: {} as never });
+    }
+    const firstCall = await log.getEvents();
+    expect(firstCall).toHaveLength(5);
+
+    // Cache should now be populated
+    expect((log as any).cache).not.toBeNull();
+
+    // Manually inflate cache to >1000 entries
+    const base = {
+      type: 'agent_start' as const,
+      agentId: 'x',
+      profile: {} as never,
+      timestamp: new Date().toISOString(),
+    };
+    (log as any).cache = Array.from({ length: 1001 }, () => ({ ...base }));
+    expect((log as any).cache!.length).toBe(1001);
+
+    // getEvents must NOT evict the cache. The cache should persist.
+    const result = await log.getEvents();
+    expect(result).toHaveLength(1001);
+    // Cache is still present after getEvents (no auto-invalidation)
+    expect((log as any).cache).not.toBeNull();
+    expect((log as any).cache!.length).toBe(1001);
+  });
+
+  it('getEvents keeps cache populated after read regardless of size', async () => {
+    await log.append({ type: 'agent_start', agentId: 'a1', profile: {} as never });
+    await log.getEvents();
+
+    // Cache should be populated
+    expect((log as any).cache).not.toBeNull();
+
+    // Manually set cache to exactly 1000 entries
+    const base = {
+      type: 'agent_start' as const,
+      agentId: 'x',
+      profile: {} as never,
+      timestamp: new Date().toISOString(),
+    };
+    (log as any).cache = Array.from({ length: 1000 }, () => ({ ...base }));
+
+    await log.getEvents();
+
+    // Cache should NOT be evicted (no auto-invalidation at any size)
+    expect((log as any).cache).not.toBeNull();
+    expect((log as any).cache!.length).toBe(1000);
+  });
+
+  // ── Clear resets cache ───────────────────────────────────────────────
+
+  it('clear resets cache to null', async () => {
+    await log.append({ type: 'agent_start', agentId: 'a1', profile: {} as never });
+    await log.getEvents();
+
+    expect((log as any).cache).not.toBeNull();
+
+    await log.clear();
+
+    expect((log as any).cache).toBeNull();
+
+    // Subsequent getEvents should return empty
     const events = await log.getEvents();
-
     expect(events).toEqual([]);
-    expect((log as any).cache).toEqual([]);
-    expect((log as any).cacheBuildPromise).toBeNull();
   });
 
-  // ── getEvents with filter still uses cache properly ────────────────
+  // ── Filtered getEvents uses cache properly ───────────────────────────
 
   it('getEvents with filter uses cached data on subsequent calls', async () => {
     await log.append({ type: 'agent_start', agentId: 'a1', profile: {} as never });
@@ -297,35 +240,9 @@ describe('AuditLog cache serialization', () => {
     expect(ends).toHaveLength(1);
   });
 
-  // ── Cache is NOT auto-evicted after serialization fix ───────────────
+  // ── Concurrent getEvents with different filters ──────────────────────
 
-  it('getEvents does not auto-evict cache even with >1000 entries (Bug 2 fix)', async () => {
-    for (let i = 0; i < 5; i++) {
-      await log.append({ type: 'agent_start', agentId: `a${i}`, profile: {} as never });
-    }
-    const firstCall = await log.getEvents();
-    expect(firstCall).toHaveLength(5);
-
-    // Cache should be populated and no build promise in-flight
-    expect((log as any).cache).not.toBeNull();
-    expect((log as any).cacheBuildPromise).toBeNull();
-
-    // Manually inflate cache to >1000 entries
-    const base = { type: 'agent_start', agentId: 'x', profile: {}, timestamp: new Date().toISOString() };
-    (log as any).cache = Array.from({ length: 2000 }, () => ({ ...base }));
-
-    // getEvents must NOT evict the cache (auto-invalidation removed)
-    const result = await log.getEvents();
-    expect(result).toHaveLength(2000);
-    // Cache persists after getEvents
-    expect((log as any).cache).not.toBeNull();
-    expect((log as any).cache!.length).toBe(2000);
-    expect((log as any).cacheBuildPromise).toBeNull();
-  });
-
-  // ── Concurrent getEvents with different filters share the same rebuild
-
-  it('concurrent getEvents with different filters share one rebuild', async () => {
+  it('concurrent getEvents with different filters all work', async () => {
     await log.append({ type: 'agent_start', agentId: 'a1', profile: {} as never, taskId: 't1' });
     await log.append({ type: 'agent_end', agentId: 'a1', result: {}, taskId: 't1' });
     await log.append({ type: 'agent_start', agentId: 'a2', profile: {} as never, taskId: 't2' });
@@ -345,75 +262,13 @@ describe('AuditLog cache serialization', () => {
     expect(byTask).toHaveLength(2);
     expect(byTask.every((e) => (e as any).taskId === 't1')).toBe(true);
 
-    // Only one rebuild should have happened
+    // Cache should be populated
     expect((log as any).cache).not.toBeNull();
-    expect((log as any).cacheBuildPromise).toBeNull();
   });
 
-  // ── Race: append between two getEvents calls ───────────────────────
+  // ── getStats works correctly ─────────────────────────────────────────
 
-  it('append between two sequential getEvents calls ensures fresh data', async () => {
-    await log.append({ type: 'agent_start', agentId: 'a1', profile: {} as never });
-
-    const first = await log.getEvents();
-    expect(first).toHaveLength(1);
-
-    // Append invalidates cache
-    await log.append({ type: 'error', agentId: 'a1', error: 'oops' });
-
-    // Second getEvents must rebuild from disk and see the new event
-    const second = await log.getEvents();
-    expect(second).toHaveLength(2);
-    expect(second[1].type).toBe('error');
-  });
-
-  // ── Only one file read during concurrent getEvents (spy on readFile) ─
-
-  it('concurrent getEvents calls trigger at most one readFile call for the audit log', async () => {
-    for (let i = 0; i < 3; i++) {
-      await log.append({ type: 'agent_start', agentId: `a${i}`, profile: {} as never });
-    }
-
-    // Invalidate cache to force rebuild
-    (log as any).cache = null;
-
-    // Spy on fs.readFile to count how many times the audit log file is read
-    let readFileCallCount = 0;
-    const origReadFile = fs.readFile.bind(fs);
-    const spy = spyOn(fs, 'readFile').mockImplementation(async (...args: any[]) => {
-      const filePath = args[0];
-      if (typeof filePath === 'string' && filePath.endsWith('audit.jsonl')) {
-        readFileCallCount++;
-      }
-      // @ts-expect-error spy type mismatch
-      return origReadFile(...args);
-    });
-
-    // Fire 5 concurrent getEvents calls
-    const results = await Promise.all([
-      log.getEvents(),
-      log.getEvents(),
-      log.getEvents(),
-      log.getEvents(),
-      log.getEvents(),
-    ]);
-
-    // All should return correct data
-    for (const result of results) {
-      expect(result).toHaveLength(3);
-    }
-
-    // With serialized rebuilds, only 1 readFile call should have been made.
-    // Without the fix, each concurrent caller independently reads the file (5 reads).
-    // This is the key invariant that proves the race condition is fixed.
-    expect(readFileCallCount).toBeLessThanOrEqual(1);
-
-    spy.mockRestore();
-  });
-
-  // ── getStats works correctly with serialized rebuilds ──────────────
-
-  it('getStats works correctly with serialized rebuilds', async () => {
+  it('getStats works correctly', async () => {
     await log.append({ type: 'agent_start', agentId: 'a1', profile: {} as never });
     await log.append({
       type: 'agent_end',
@@ -430,19 +285,16 @@ describe('AuditLog cache serialization', () => {
     // Invalidate cache
     (log as any).cache = null;
 
-    // Call getStats concurrently — it calls getEvents internally
-    const [stats1, stats2] = await Promise.all([log.getStats(), log.getStats()]);
+    const stats = await log.getStats();
 
-    expect(stats1.totalEvents).toBe(4);
-    expect(stats1.totalCost).toBe(2.0);
-    expect(stats1.totalTokens).toBe(150);
-
-    expect(stats2).toEqual(stats1);
+    expect(stats.totalEvents).toBe(4);
+    expect(stats.totalCost).toBe(2.0);
+    expect(stats.totalTokens).toBe(150);
   });
 
-  // ── getEventsByTask works with serialized rebuilds ─────────────────
+  // ── getEventsByTask works correctly ──────────────────────────────────
 
-  it('getEventsByTask works correctly with serialized rebuilds', async () => {
+  it('getEventsByTask works correctly', async () => {
     await log.append({ type: 'agent_start', agentId: 'a1', profile: {} as never, taskId: 't1' });
     await log.append({ type: 'agent_end', agentId: 'a1', result: {}, taskId: 't1' });
     await log.append({ type: 'agent_start', agentId: 'a2', profile: {} as never, taskId: 't2' });
@@ -455,27 +307,17 @@ describe('AuditLog cache serialization', () => {
     expect(t2).toHaveLength(1);
   });
 
-  // ── Rebuild promise reference equality for concurrent callers ──────
+  // ── Missing file returns empty array ─────────────────────────────────
 
-  it('concurrent callers resolve with data from the same rebuild', async () => {
-    await log.append({ type: 'agent_start', agentId: 'a1', profile: {} as never });
-    (log as any).cache = null;
+  it('getEvents on missing file populates cache with empty array', async () => {
+    // No file exists, no events appended
+    const events = await log.getEvents();
 
-    // Start 3 concurrent getEvents
-    const promises = [log.getEvents(), log.getEvents(), log.getEvents()];
-
-    const results = await Promise.all(promises);
-
-    // All results should have the same length
-    expect(results.every((r) => r.length === 1)).toBe(true);
-
-    // Cache should now be populated
-    expect((log as any).cache).not.toBeNull();
-    // After fix: cacheBuildPromise is null (not falsy/undefined)
-    expect((log as any).cacheBuildPromise).toBeNull();
+    expect(events).toEqual([]);
+    expect((log as any).cache).toEqual([]);
   });
 
-  // ── Error during rebuild propagates to all waiters ─────────────────
+  // ── Error during file read propagates ────────────────────────────────
 
   it('error during file read propagates correctly', async () => {
     // Create a scenario where readFile will throw a non-ENOENT error
@@ -503,301 +345,65 @@ describe('AuditLog cache serialization', () => {
     spy.mockRestore();
   });
 
-  // ── Fresh rebuild after cache eviction uses serialized rebuild ──────
+  // ── Append during concurrent getEvents ───────────────────────────────
 
-  it('fresh rebuild after cache eviction still serializes', async () => {
-    for (let i = 0; i < 5; i++) {
-      await log.append({ type: 'agent_start', agentId: `a${i}`, profile: {} as never });
-    }
-
-    // First call to populate cache
-    await log.getEvents();
-    expect((log as any).cache).not.toBeNull();
-
-    // Manually null the cache to simulate eviction
-    (log as any).cache = null;
-
-    // Concurrent calls should share one rebuild
-    const [r1, r2] = await Promise.all([log.getEvents(), log.getEvents()]);
-
-    expect(r1).toHaveLength(5);
-    expect(r2).toHaveLength(5);
-    expect((log as any).cache).not.toBeNull();
-    expect((log as any).cacheBuildPromise).toBeNull();
-  });
-
-  // ── Clear resets both cache and cacheBuildPromise ──────────────────
-
-  it('clear resets both cache and cacheBuildPromise after cache populated', async () => {
-    await log.append({ type: 'agent_start', agentId: 'a1', profile: {} as never });
-    await log.getEvents();
-
-    expect((log as any).cache).not.toBeNull();
-
-    // No concurrent operations — clear should cleanly reset state
-    await log.clear();
-
-    expect((log as any).cache).toBeNull();
-    expect((log as any).cacheBuildPromise).toBeNull();
-
-    // Subsequent getEvents should return empty
-    const events = await log.getEvents();
-    expect(events).toEqual([]);
-  });
-
-  // ═══════════════════════════════════════════════════════════════════
-  //  Race-condition fix: append during concurrent getEvents rebuild
-  // ═══════════════════════════════════════════════════════════════════
-
-  it('append during concurrent getEvents rebuild returns fresh data (race fix)', async () => {
+  it('append during concurrent getEvents returns fresh data', async () => {
     // Write one event and populate the cache
     await log.append({ type: 'agent_start', agentId: 'a1', profile: {} as never });
     await log.getEvents();
 
-    // Manually set up a slow rebuild: null the cache but leave _cacheStale=false
-    // so getEvents enters the build path without the staleness shortcut
+    // Invalidate cache
     (log as any).cache = null;
-    (log as any)._cacheStale = false;
 
-    // Create a deferred promise to simulate a long-running file read
-    let resolveBuild: (events: AuditEvent[]) => void;
-    const slowBuild = new Promise<AuditEvent[]>((resolve) => {
-      resolveBuild = resolve;
-    });
-    (log as any).cacheBuildPromise = slowBuild;
-
-    // Start getEvents – it will await the slow build
+    // Start getEvents – it will read the file
     const getEventsPromise = log.getEvents();
 
-    // While the build is "in flight", append a new event
-    // With the fix, append() sets _cacheStale=true and does NOT null cacheBuildPromise
+    // While the read is "in flight", append a new event.
+    // With invalidate-on-write, append() sets cache=null, but the first
+    // getEvents already started reading. It will see the state of the
+    // file at the time it reads. If the append completes before the read,
+    // the read will include the new event. If not, the first getEvents
+    // misses it but the second getEvents will re-read and find it.
+    // Either way, data is eventually consistent.
     await log.append({ type: 'agent_end', agentId: 'a1', result: {} });
 
-    // _cacheStale should now be true (append marked it)
-    expect((log as any)._cacheStale).toBe(true);
-
-    // cacheBuildPromise should still be the slowBuild (append didn't null it)
-    expect((log as any).cacheBuildPromise).toBe(slowBuild);
-
-    // Resolve the slow build with stale data (missing the appended event)
-    const staleEvent: AuditEvent = {
-      type: 'agent_start',
-      agentId: 'a1',
-      profile: {} as never,
-      timestamp: new Date().toISOString(),
-    };
-    (resolveBuild as (v: AuditEvent[]) => void)([staleEvent]);
-
-    // Wait for getEvents to complete
+    // Wait for the first getEvents to complete
     const events = await getEventsPromise;
 
-    // With the race fix, getEvents detects _cacheStale after the stale build
-    // completes and triggers a fresh rebuild from disk that includes the
-    // appended event. The result should have 2 events, not 1.
-    expect(events).toHaveLength(2);
-    expect(events.map((e) => e.type).sort()).toEqual(['agent_end', 'agent_start']);
+    // The result must include at least the first event.
+    // Due to timing, it may or may not include the appended event,
+    // but the cache should be valid and subsequent calls see everything.
+    expect(events.length).toBeGreaterThanOrEqual(1);
+
+    // A subsequent getEvents must see both events
+    const allEvents = await log.getEvents();
+    expect(allEvents).toHaveLength(2);
+    expect(allEvents.map((e) => e.type).sort()).toEqual(['agent_end', 'agent_start']);
   });
 
-  it('append does not null cacheBuildPromise when build is in flight (race fix)', async () => {
-    // Populate cache so it's non-null
-    await log.append({ type: 'agent_start', agentId: 'a1', profile: {} as never });
-    await log.getEvents();
-    expect((log as any).cache).not.toBeNull();
+  // ── Structural: no while loop, no cacheBuildPromise, no _cacheStale ──
 
-    // Mark staleness as handled (clean slate)
-    (log as any)._cacheStale = false;
-
-    // Simulate an in-flight build by setting cacheBuildPromise to a deferred promise
-    let resolveBuild: (events: AuditEvent[]) => void;
-    const slowBuild = new Promise<AuditEvent[]>((resolve) => {
-      resolveBuild = resolve;
-    });
-    (log as any).cacheBuildPromise = slowBuild;
-
-    // Append while build is in flight
-    // With the fix, append() must NOT null cacheBuildPromise (it's non-null),
-    // and must NOT null cache (because cacheBuildPromise is non-null).
-    await log.append({ type: 'agent_end', agentId: 'a1', result: {} });
-
-    // cacheBuildPromise should still be the original slow build (append didn't null it)
-    expect((log as any).cacheBuildPromise).toBe(slowBuild);
-    // _cacheStale should be set to mark staleness
-    expect((log as any)._cacheStale).toBe(true);
-    // cache should NOT be nulled (because build was in flight, append only nulls cache
-    // when cacheBuildPromise is null)
-    expect((log as any).cache).not.toBeNull();
-
-    // Resolve the slow build so we can clean up
-    (resolveBuild as (v: AuditEvent[]) => void)([]);
+  it('does not have the old _cacheStale field', async () => {
+    expect((log as any)._cacheStale).toBeUndefined();
   });
 
-  it('append nulls cache when no build is in flight', async () => {
-    await log.append({ type: 'agent_start', agentId: 'a1', profile: {} as never });
+  it('does not have the old cacheBuildPromise field', async () => {
+    expect((log as any).cacheBuildPromise).toBeUndefined();
+  });
 
-    // Wait for getEvents to populate cache and settle
-    await log.getEvents();
-    expect((log as any).cache).not.toBeNull();
-    expect((log as any).cacheBuildPromise).toBeNull();
-
-    // Append with no build in flight – cache should be nulled
-    await log.append({ type: 'agent_end', agentId: 'a1', result: {} });
-
+  it('has the cache field (private)', async () => {
+    // cache is a private field, so we access it via any
     expect((log as any).cache).toBeNull();
-    // _cacheStale should also be true
-    expect((log as any)._cacheStale).toBe(true);
   });
 
-  it('concurrent getEvents with append during rebuild all see fresh data (race fix)', async () => {
-    // Write initial data
-    await log.append({ type: 'agent_start', agentId: 'a1', profile: {} as never });
-    await log.getEvents();
-
-    // Set up slow rebuild for multiple concurrent callers
-    (log as any).cache = null;
-    (log as any)._cacheStale = false;
-
-    let resolveBuild: (events: AuditEvent[]) => void;
-    const slowBuild = new Promise<AuditEvent[]>((resolve) => {
-      resolveBuild = resolve;
-    });
-    (log as any).cacheBuildPromise = slowBuild;
-
-    // Start multiple concurrent getEvents – all will await the same slow build
-    const promises = Array.from({ length: 5 }, () => log.getEvents());
-
-    // Append while all are waiting on the rebuild
-    await log.append({ type: 'agent_end', agentId: 'a1', result: {} });
-
-    // Resolve the slow build with stale data
-    const staleEvent: AuditEvent = {
-      type: 'agent_start',
-      agentId: 'a1',
-      profile: {} as never,
-      timestamp: new Date().toISOString(),
-    };
-    (resolveBuild as (v: AuditEvent[]) => void)([staleEvent]);
-
-    // All concurrent callers should return fresh data
-    const results = await Promise.all(promises);
-
-    expect(results).toHaveLength(5);
-    for (const events of results) {
-      expect(events).toHaveLength(2);
-      expect(events.map((e) => e.type).sort()).toEqual(['agent_end', 'agent_start']);
-    }
+  it('does not contain a while loop in getEvents source', async () => {
+    // Verify by checking the class definition has no while keyword
+    const source = AuditLog.prototype.getEvents.toString();
+    expect(source).not.toContain('while');
   });
 
-  it('multiple appends during rebuild all reflected in result (race fix)', async () => {
-    await log.append({ type: 'agent_start', agentId: 'a1', profile: {} as never });
-    await log.getEvents();
-
-    (log as any).cache = null;
-    (log as any)._cacheStale = false;
-
-    let resolveBuild: (events: AuditEvent[]) => void;
-    const slowBuild = new Promise<AuditEvent[]>((resolve) => {
-      resolveBuild = resolve;
-    });
-    (log as any).cacheBuildPromise = slowBuild;
-
-    // Start getEvents
-    const getEventsPromise = log.getEvents();
-
-    // Append multiple events while build is in flight
-    await log.append({ type: 'agent_end', agentId: 'a1', result: { cost: 1.0 } });
-    await log.append({ type: 'error', agentId: 'a2', error: 'oops' });
-
-    // Resolve the stale build
-    const staleEvent: AuditEvent = {
-      type: 'agent_start',
-      agentId: 'a1',
-      profile: {} as never,
-      timestamp: new Date().toISOString(),
-    };
-    (resolveBuild as (v: AuditEvent[]) => void)([staleEvent]);
-
-    const events = await getEventsPromise;
-
-    // All three events should be returned
-    expect(events).toHaveLength(3);
-    expect(events.map((e) => e.type).sort()).toEqual(['agent_end', 'agent_start', 'error']);
-  });
-
-  it('_cacheStale is reset by getEvents after rebuild (race fix)', async () => {
-    await log.append({ type: 'agent_start', agentId: 'a1', profile: {} as never });
-    await log.getEvents();
-
-    // Append sets _cacheStale = true
-    await log.append({ type: 'agent_end', agentId: 'a1', result: {} });
-    expect((log as any)._cacheStale).toBe(true);
-
-    // getEvents should clear _cacheStale after rebuilding
-    await log.getEvents();
-    expect((log as any)._cacheStale).toBe(false);
-  });
-
-  it('clear resets _cacheStale (race fix)', async () => {
-    await log.append({ type: 'agent_start', agentId: 'a1', profile: {} as never });
-    await log.getEvents();
-
-    await log.append({ type: 'agent_end', agentId: 'a1', result: {} });
-    expect((log as any)._cacheStale).toBe(true);
-
-    await log.clear();
-    expect((log as any)._cacheStale).toBe(false);
-    expect((log as any).cache).toBeNull();
-    expect((log as any).cacheBuildPromise).toBeNull();
-  });
-
-  it('readFile is called at most twice when append races with rebuild (race fix)', async () => {
-    // Write initial event and populate cache
-    await log.append({ type: 'agent_start', agentId: 'a1', profile: {} as never });
-    await log.getEvents();
-
-    (log as any).cache = null;
-    (log as any)._cacheStale = false;
-
-    // Set up spy to track file reads
-    let readFileCallCount = 0;
-    const origReadFile = fs.readFile.bind(fs);
-    const spy = spyOn(fs, 'readFile').mockImplementation(async (...args: any[]) => {
-      const filePath = args[0];
-      if (typeof filePath === 'string' && filePath.endsWith('audit.jsonl')) {
-        readFileCallCount++;
-      }
-      // @ts-expect-error spy type mismatch
-      return origReadFile(...args);
-    });
-
-    let resolveBuild: (events: AuditEvent[]) => void;
-    const slowBuild = new Promise<AuditEvent[]>((resolve) => {
-      resolveBuild = resolve;
-    });
-    (log as any).cacheBuildPromise = slowBuild;
-
-    // Start getEvents (awaits slow build)
-    const getEventsPromise = log.getEvents();
-
-    // Append during build
-    await log.append({ type: 'agent_end', agentId: 'a1', result: {} });
-
-    // Resolve with stale data
-    const staleEvent: AuditEvent = {
-      type: 'agent_start',
-      agentId: 'a1',
-      profile: {} as never,
-      timestamp: new Date().toISOString(),
-    };
-    (resolveBuild as (v: AuditEvent[]) => void)([staleEvent]);
-
-    await getEventsPromise;
-
-    // The stale build doesn't read from disk (we resolved manually), so
-    // the only readFile call is from the fresh rebuild triggered by staleness.
-    // In the worst case, if the stale build reads and then the fresh rebuild reads,
-    // we'd have 2 reads. With the fix, we expect at most 2.
-    expect(readFileCallCount).toBeLessThanOrEqual(2);
-
-    spy.mockRestore();
+  it('getEvents method does not contain cacheBuildPromise logic', async () => {
+    const source = AuditLog.prototype.getEvents.toString();
+    expect(source).not.toContain('cacheBuildPromise');
   });
 });

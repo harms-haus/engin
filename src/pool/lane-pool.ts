@@ -1,21 +1,11 @@
 // ─── Lane Pool ──────────────────────────────────────────────────────────────
 import { clearProfileCache, loadProfilesFromDirs } from '../core/profile.js';
-import type { AgentProfile, AuditEvent, Task } from '../core/types.js';
-import { appendReviewFeedback, safeErrorMessage } from '../core/utils.js';
+import type { AgentProfile } from '../core/types.js';
+import { safeErrorMessage } from '../core/utils.js';
 import { TaskTracker } from '../tracking/task-status.js';
 // buildPrompt is used via prompt-builder module directly
-import { extractSeverity, isFailingSeverity } from './severity.js';
-import type { StepExecutionContext } from './step-execution.js';
-import { runStep } from './step-execution.js';
-import type { LanePoolOptions, LanePoolResult, TrackedSession, WithoutTimestamp } from './types.js';
-
-// ─── Types ────────────────────────────────────────────────────────────────
-
-interface _RunStepContext {
-  stepIndex: number;
-  attempt: number;
-  execCount: number;
-}
+import { appendAuditEvent, processTask, reportError, safeFailTask } from './task-processor.js';
+import type { LanePoolOptions, LanePoolResult } from './types.js';
 
 // ─── LanePool ───────────────────────────────────────────────────────────────
 
@@ -94,8 +84,19 @@ export class LanePool {
         if (result.status === 'rejected') {
           const agentId = `lane-${index}`;
           const error = safeErrorMessage(result.reason);
-          this.reportError(agentId, error);
-          this.appendAuditEvent({ type: 'error', agentId, error });
+          reportError(agentId, error, undefined, undefined, {
+            options: this.options,
+            activeSessions: this.activeSessions,
+            phase: this.options.phase,
+          });
+          appendAuditEvent(
+            { type: 'error', agentId, error },
+            {
+              options: this.options,
+              activeSessions: this.activeSessions,
+              phase: this.options.phase,
+            },
+          );
         }
       });
 
@@ -191,17 +192,40 @@ export class LanePool {
         try {
           // startTask lives inside the try block so a tracker error is caught
           taskTracker.startTask(task.id, agentId);
-          await this.processTask(task, agentId, profiles);
+          await processTask(task, agentId, profiles, {
+            options: this.options,
+            activeSessions: this.activeSessions,
+            phase: this.options.phase,
+          });
         } catch (err) {
           // Fire onError callback on task processing error
           const error = safeErrorMessage(err);
-          this.reportError(agentId, error, undefined, task.id);
+          reportError(agentId, error, undefined, task.id, {
+            options: this.options,
+            activeSessions: this.activeSessions,
+            phase: this.options.phase,
+          });
           // Error during task processing — mark as failed to prevent the lane
           // from getting stuck.
-          this.safeFailTask(task.id, { completed: false, error: true });
+          safeFailTask(
+            task.id,
+            { completed: false, error: true },
+            {
+              options: this.options,
+              activeSessions: this.activeSessions,
+              phase: this.options.phase,
+            },
+          );
 
           // Audit log — error event
-          this.appendAuditEvent({ type: 'error', agentId, error, taskId: task.id });
+          appendAuditEvent(
+            { type: 'error', agentId, error, taskId: task.id },
+            {
+              options: this.options,
+              activeSessions: this.activeSessions,
+              phase: this.options.phase,
+            },
+          );
         }
         continue;
       }
@@ -209,229 +233,5 @@ export class LanePool {
       // No task available — wait for an event, timeout, or abort
       await wakePromise;
     }
-  }
-
-  // ── Task Processing ─────────────────────────────────────────────────────
-
-  /**
-   * Execute all steps for a task. On rejection, back up one step and retry
-   * up to `maxStepRetries` times **per step**.
-   */
-  private async processTask(task: Task, agentId: string, profiles: Map<string, AgentProfile>): Promise<void> {
-    const steps = this.options.getStepsForTask(task);
-
-    if (steps.length === 0) {
-      this.safeFailTask(task.id, { completed: false, error: 'No steps defined for task' });
-      return;
-    }
-
-    const maxStepRetries = this.options.maxStepRetries ?? 5;
-
-    this.options.onStatus?.onTaskStart?.({
-      taskId: task.id,
-      title: task.title,
-      agentId,
-      phase: this.options.phase,
-      startedAt: Date.now(),
-    });
-
-    let currentStepIndex = 0;
-    let lastOutput: unknown = undefined;
-    // Per-step retry counter: each step tracks its own rejection count
-    const stepAttempts = new Map<number, number>();
-    // Per-step execution counter: increments each time a step is executed
-    const stepExecutions = new Map<number, number>();
-    // Track sessions for disposal at task completion
-    const taskSessions = new Map<number, TrackedSession>();
-
-    const disposeAllTaskSessions = () => {
-      for (const ts of taskSessions.values()) {
-        try {
-          ts.dispose();
-        } catch (err) {
-          console.error(`[${agentId}] Error disposing harness for task ${task.id}:`, safeErrorMessage(err));
-        }
-      }
-      taskSessions.clear();
-    };
-
-    const execCtx: StepExecutionContext = {
-      sessionBaseDir: this.options.sessionBaseDir,
-      cwd: this.options.cwd,
-      apiKeys: this.options.apiKeys,
-      onStatus: this.options.onStatus,
-      activeSessions: this.activeSessions,
-      appendAuditEvent: (event) => this.appendAuditEvent(event),
-      phase: this.options.phase,
-    };
-
-    try {
-      while (currentStepIndex < steps.length) {
-        const step = steps[currentStepIndex];
-        const currentAttempt = stepAttempts.get(currentStepIndex) ?? 0;
-        const execCount = stepExecutions.get(currentStepIndex) ?? 0;
-        stepExecutions.set(currentStepIndex, execCount + 1);
-
-        // Check for an existing session to resume
-        let existingSessionPath: string | undefined;
-        const existing = taskSessions.get(currentStepIndex);
-        if (existing) {
-          existingSessionPath = existing.sessionPath;
-        }
-
-        const { result, trackedSession } = await runStep(
-          task,
-          step,
-          agentId,
-          { stepIndex: currentStepIndex, attempt: currentAttempt, execCount },
-          profiles,
-          execCtx,
-          existingSessionPath,
-        );
-
-        // Dispose old tracked session for this step (if any) now that we have the new one
-        const oldSession = taskSessions.get(currentStepIndex);
-        if (oldSession) {
-          try {
-            oldSession.dispose();
-          } catch (err) {
-            console.error(
-              `[${agentId}] Error disposing old session for step ${currentStepIndex} of task ${task.id}:`,
-              safeErrorMessage(err),
-            );
-          }
-        }
-        taskSessions.set(currentStepIndex, trackedSession);
-
-        if (result.type === 'approved') {
-          lastOutput = result.output;
-          currentStepIndex++;
-        } else {
-          // Rejected — record the retry attempt for this step, then back up
-          appendReviewFeedback(task, result.feedback);
-          const newAttempt = currentAttempt + 1;
-          stepAttempts.set(currentStepIndex, newAttempt);
-
-          // Log the retry decision
-          this.options.onStatus?.onDecision?.({
-            agentId,
-            decision: `Step "${step.name}" rejected (attempt ${newAttempt}/${maxStepRetries}), retrying`,
-            reasoning: result.feedback,
-            taskId: task.id,
-          });
-
-          if (newAttempt >= maxStepRetries) {
-            // Extract severity from the last structured rejection result
-            const severity = extractSeverity(result.output);
-
-            if (isFailingSeverity(severity)) {
-              // Critical/high → task failed
-              this.options.onStatus?.onTaskRejected?.({
-                taskId: task.id,
-                title: task.title,
-                reason: result.feedback,
-              });
-              this.safeFailTask(task.id, { completed: false, feedback: result.feedback, severity });
-            } else {
-              // Medium/low/missing → accept as completed with caveats
-              if (
-                this.safeSubmitAndComplete(task.id, {
-                  completed: true,
-                  feedback: result.feedback,
-                  severity,
-                  output: result.output,
-                })
-              ) {
-                this.options.onStatus?.onTaskComplete?.({
-                  taskId: task.id,
-                  title: task.title,
-                });
-              } else {
-                this.safeFailTask(task.id, {
-                  completed: false,
-                  error: 'Failed to submit task for review after max retries exceeded',
-                });
-              }
-            }
-            disposeAllTaskSessions();
-            return;
-          }
-
-          currentStepIndex = Math.max(0, currentStepIndex - 1);
-        }
-      }
-
-      // All steps approved — dispose sessions, then task complete
-      disposeAllTaskSessions();
-      if (this.safeSubmitAndComplete(task.id, { completed: true, output: lastOutput })) {
-        this.options.onStatus?.onTaskComplete?.({
-          taskId: task.id,
-          title: task.title,
-        });
-      } else {
-        this.safeFailTask(task.id, {
-          completed: false,
-          error: 'Failed to submit completed task for review',
-        });
-      }
-    } catch (err) {
-      // Unexpected error during while loop — clean up sessions
-      disposeAllTaskSessions();
-      throw err;
-    }
-  }
-
-  // ── Helpers ─────────────────────────────────────────────────────────────
-
-  /**
-   * Safely submit a task for review and complete it. Catches and logs
-   * errors from invalid state transitions.
-   */
-  private safeSubmitAndComplete(taskId: string, result: unknown): boolean {
-    try {
-      this.options.taskTracker.submitForReview(taskId, result);
-      this.options.taskTracker.completeTask(taskId);
-      return true;
-    } catch (err) {
-      const errorMsg = `safeSubmitAndComplete failed for ${taskId}: ${safeErrorMessage(err)}`;
-      this.reportError('pool', errorMsg, undefined, taskId);
-      return false;
-    }
-  }
-
-  /**
-   * Safely mark a task as failed. Catches and logs errors from invalid
-   * state transitions.
-   */
-  private safeFailTask(taskId: string, result: unknown): void {
-    try {
-      this.options.taskTracker.failTask(taskId, result);
-    } catch (err) {
-      const errorMsg = `safeFailTask failed for ${taskId}: ${safeErrorMessage(err)}`;
-      this.reportError('pool', errorMsg, undefined, taskId);
-    }
-  }
-
-  // ── Error & Audit Helpers ─────────────────────────────────────────────
-
-  /**
-   * Report an error via the onStatus callback or console.error fallback.
-   */
-  private reportError(agentId: string, error: string, phase?: string, taskId?: string): void {
-    const effectivePhase = phase ?? this.options.phase ?? 'implementing';
-    if (this.options.onStatus?.onError) {
-      this.options.onStatus.onError({ agentId, error, phase: effectivePhase, taskId });
-    } else {
-      console.error(`[${agentId}] ${error}`);
-    }
-  }
-
-  /**
-   * Append an event to the audit log if available (fire-and-forget).
-   */
-  private appendAuditEvent(event: WithoutTimestamp<AuditEvent>): void {
-    this.options.auditLog?.append(event).catch(() => {
-      // Swallow audit log errors — they must not crash the pool.
-    });
   }
 }

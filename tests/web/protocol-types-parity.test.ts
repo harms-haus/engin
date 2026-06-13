@@ -124,7 +124,7 @@ function checkVariant<T extends ServerSideMessage & ClientSideMessage>(_obj: T):
 
 describe('ServerMessage – variant parity (sample objects)', () => {
   it('init variant', () => {
-    checkVariant({
+    const sample = {
       type: 'init',
       currentPhase: 'scouting',
       completedPhases: ['planning'],
@@ -152,36 +152,47 @@ describe('ServerMessage – variant parity (sample objects)', () => {
         indicator: '🟢',
         phases: [{ id: 'p1', label: 'Plan', icon: '📋' }],
       },
-    });
-    expect(true).toBe(true);
+    };
+    checkVariant(sample);
+    expect(sample.type).toBe('init');
+    expect(sample.currentPhase).toBe('scouting');
+    expect(sample.completedPhases).toEqual(['planning']);
+    expect(sample.agents).toHaveLength(1);
+    expect(sample.agents[0].agentId).toBe('agent-1');
   });
 
   it('workflow_phase variant', () => {
-    checkVariant({
+    const sample = {
       type: 'workflow_phase',
       phase: 'executing',
       completed: ['scouting', 'planning'],
       currentPhase: 'executing',
-    });
-    expect(true).toBe(true);
+    };
+    checkVariant(sample);
+    expect(sample.type).toBe('workflow_phase');
+    expect(sample.phase).toBe('executing');
   });
 
   it('workflow_complete variant', () => {
-    checkVariant({ type: 'workflow_complete' });
-    expect(true).toBe(true);
+    const sample = { type: 'workflow_complete' };
+    checkVariant(sample);
+    expect(sample.type).toBe('workflow_complete');
   });
 
   it('workflow_failed variant', () => {
-    checkVariant({
+    const sample = {
       type: 'workflow_failed',
       error: 'Something went wrong',
       phase: 'planning',
-    });
-    expect(true).toBe(true);
+    };
+    checkVariant(sample);
+    expect(sample.type).toBe('workflow_failed');
+    expect(sample.error).toBe('Something went wrong');
+    expect(sample.phase).toBe('planning');
   });
 
   it('agent_spawned variant', () => {
-    checkVariant({
+    const sample = {
       type: 'agent_spawned',
       agent: {
         agentId: 'agent-2',
@@ -191,12 +202,15 @@ describe('ServerMessage – variant parity (sample objects)', () => {
         active: true,
         log: [],
       },
-    });
-    expect(true).toBe(true);
+    };
+    checkVariant(sample);
+    expect(sample.type).toBe('agent_spawned');
+    expect(sample.agent.agentId).toBe('agent-2');
+    expect(sample.agent.profile).toBe('coder');
   });
 
   it('agent_log variant', () => {
-    checkVariant({
+    const sample = {
       type: 'agent_log',
       agentId: 'agent-1',
       entry: {
@@ -207,34 +221,43 @@ describe('ServerMessage – variant parity (sample objects)', () => {
         metadata: { key: 'value' },
       },
       taskId: 'task-99',
-    });
-    expect(true).toBe(true);
+    };
+    checkVariant(sample);
+    expect(sample.type).toBe('agent_log');
+    expect(sample.entry.type).toBe('tool_call');
+    expect(sample.taskId).toBe('task-99');
   });
 
   it('agent_complete variant', () => {
-    checkVariant({
+    const sample = {
       type: 'agent_complete',
       agentId: 'agent-1',
       phase: 'coding',
       taskId: 'task-42',
-    });
-    expect(true).toBe(true);
+    };
+    checkVariant(sample);
+    expect(sample.type).toBe('agent_complete');
+    expect(sample.agentId).toBe('agent-1');
+    expect(sample.phase).toBe('coding');
   });
 
   it('agent_stats variant', () => {
-    checkVariant({
+    const sample = {
       type: 'agent_stats',
       agentId: 'agent-1',
       toolCallCount: 5,
       inputTokens: 1200,
       outputTokens: 800,
       taskId: 'task-42',
-    });
-    expect(true).toBe(true);
+    };
+    checkVariant(sample);
+    expect(sample.type).toBe('agent_stats');
+    expect(sample.toolCallCount).toBe(5);
+    expect(sample.inputTokens).toBe(1200);
   });
 
   it('tasks_updated variant', () => {
-    checkVariant({
+    const sample = {
       type: 'tasks_updated',
       tasks: [
         { id: 't1', title: 'Design API', status: 'completed' },
@@ -247,20 +270,25 @@ describe('ServerMessage – variant parity (sample objects)', () => {
           startedAt: Date.now(),
         },
       ],
-    });
-    expect(true).toBe(true);
+    };
+    checkVariant(sample);
+    expect(sample.type).toBe('tasks_updated');
+    expect(sample.tasks).toHaveLength(2);
+    expect(sample.tasks[0].status).toBe('completed');
   });
 
   it('workflow_sidebar variant', () => {
-    checkVariant({
+    const sample = {
       type: 'workflow_sidebar',
       sidebar: {
         title: 'Engin',
         indicator: '🔵',
         phases: [{ id: 'scouting', label: 'Scouting', icon: '🔍' }],
       },
-    });
-    expect(true).toBe(true);
+    };
+    checkVariant(sample);
+    expect(sample.type).toBe('workflow_sidebar');
+    expect(sample.sidebar.title).toBe('Engin');
   });
 });
 

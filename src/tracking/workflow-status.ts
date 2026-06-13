@@ -1,9 +1,8 @@
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { PersistedAgentRecord, WorkflowState, WorktreeInfo } from '../core/types.js';
-import { isEnoentError } from '../core/utils.js';
 import { AuditLog } from './audit-log.js';
 import { TaskTracker } from './task-status.js';
+import { loadWorkflowState, saveWorkflowState, serializeWorkflowState } from './workflow-serializer.js';
 
 export class WorkflowStatusTracker {
   private _taskPrompt = '';
@@ -26,7 +25,7 @@ export class WorkflowStatusTracker {
   private _onTaskSettled: (() => void) | undefined;
   private _onTaskReady: (() => void) | undefined;
   private _pendingSave = false;
-  private _needsSave = false;
+  private _queuedSave = false;
   private _saveLock: Promise<void> = Promise.resolve();
   private _sidebar?: { title?: string; indicator?: string; phases?: { id: string; label: string; icon: string }[] };
   private _worktree?: WorktreeInfo;
@@ -48,19 +47,20 @@ export class WorkflowStatusTracker {
       this._pendingSave = true;
       void this._doPersist();
     } else {
-      this._needsSave = true;
+      this._queuedSave = true;
     }
   }
 
   private async _doPersist(): Promise<void> {
+    this._pendingSave = true;
     try {
       await this.save();
     } catch (err) {
       console.warn('[WorkflowStatusTracker] Auto-persist save failed:', (err as Error).message);
     } finally {
       this._pendingSave = false;
-      if (this._needsSave) {
-        this._needsSave = false;
+      if (this._queuedSave) {
+        this._queuedSave = false;
         void this._doPersist();
       }
     }
@@ -87,7 +87,7 @@ export class WorkflowStatusTracker {
       this._onTaskReady = undefined;
     }
     this._pendingSave = false;
-    this._needsSave = false;
+    this._queuedSave = false;
     this._signal = null;
   }
 
@@ -253,6 +253,15 @@ export class WorkflowStatusTracker {
       record = { ...agentIdOrInfo };
     }
     this._spawnedAgents.push(record);
+    const MAX_SPAWNED_AGENTS = 500;
+    if (this._spawnedAgents.length > MAX_SPAWNED_AGENTS) {
+      const completedIdx = this._spawnedAgents.findIndex((a) => a.completedAt);
+      if (completedIdx >= 0) {
+        this._spawnedAgents.splice(completedIdx, 1);
+      } else {
+        this._spawnedAgents.shift();
+      }
+    }
     this.persistState();
   }
 
@@ -267,21 +276,7 @@ export class WorkflowStatusTracker {
   // ── Serialization ──────────────────────────────────────────────────
 
   toJSON(): WorkflowState {
-    return {
-      taskPrompt: this._taskPrompt,
-      currentPhase: this._currentPhase,
-      completedPhases: this._completedPhases,
-      tasks: this._taskTracker.getAllTasks(),
-      scoutingReports: this._scoutingReports,
-      plan: this._plan,
-      research: this._research,
-      planReviewFeedback: this._planReviewFeedback,
-      planReviewSuggestions: this._planReviewSuggestions,
-      stats: { ...this._stats },
-      spawnedAgents: this._spawnedAgents.length > 0 ? this._spawnedAgents.map((a) => ({ ...a })) : [],
-      sidebar: this._sidebar ? { ...this._sidebar } : undefined,
-      worktree: this._worktree ? { ...this._worktree } : undefined,
-    };
+    return serializeWorkflowState(this);
   }
 
   async save(): Promise<void> {
@@ -293,29 +288,14 @@ export class WorkflowStatusTracker {
     });
     await prev;
     try {
-      await mkdir(this.workDir, { recursive: true });
-      const filePath = join(this.workDir, '.engin-state.json');
-      const tmpPath = join(this.workDir, '.engin-state.json.tmp');
-      await writeFile(tmpPath, JSON.stringify(this.toJSON(), null, 2), 'utf-8');
-      await rename(tmpPath, filePath);
+      await saveWorkflowState(this, this.workDir);
     } finally {
       resolve();
     }
   }
 
   static async load(workDir: string): Promise<WorkflowStatusTracker> {
-    const filePath = join(workDir, '.engin-state.json');
-    let raw: string;
-    try {
-      raw = await readFile(filePath, 'utf-8');
-    } catch (err: unknown) {
-      if (isEnoentError(err)) {
-        throw new Error(`Workflow state file not found at "${filePath}"`, { cause: err });
-      }
-      throw new Error('Failed to load workflow state', { cause: err });
-    }
-
-    const data = JSON.parse(raw) as WorkflowState;
+    const data = await loadWorkflowState(workDir);
 
     const tracker = new WorkflowStatusTracker(workDir);
     tracker._taskPrompt = data.taskPrompt;

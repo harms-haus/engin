@@ -1,21 +1,21 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { PastRunEntry } from '../core/config.js';
 import { getDefaultWorkDir, getGlobalConfigDir, resolveProfilesDirs } from '../core/config.js';
-import { getLocalNetworkIP } from '../core/network.js';
 import { initDefaultConfig } from '../core/setup.js';
 import type { WorktreeInfo } from '../core/types.js';
 import { composeStatusCallbacks, validateWorkflowName } from '../core/utils.js';
 import { loadWorkflow } from '../core/workflow-loader.js';
 import { setupWorktree } from '../core/worktree-lifecycle.js';
-import { WorkflowTUI } from '../tui/workflow-tui.js';
-import type { ServerMessage } from '../web/protocol-types.js';
-import { StatusBridge } from '../web/status-bridge.js';
+import type { WorkflowTUI } from '../tui/workflow-tui.js';
+import type { ObserverServer } from '../web/observer-server.js';
+import type { StatusBridge } from '../web/status-bridge.js';
 import { createStatusCallbacks, formatTime, shouldUseTui } from './console-status.js';
 import type { CliOptions } from './parse-args.js';
 import { promptPostWorktreeAction } from './post-worktree.js';
 import { interactiveSelectRun, resolveSessionName } from './session-selector.js';
 import { setupSigintHandler } from './sigint.js';
+import { setupTuiAndObserver } from './tui-setup.js';
 
 // ─── Init Command ───────────────────────────────────────────────────────────
 
@@ -59,64 +59,19 @@ export async function runCommand(options: CliOptions): Promise<void> {
   const { handler, cleanup, controller } = setupSigintHandler(useTui);
 
   let tuiInstance: WorkflowTUI | undefined;
-  let observerServer: { broadcast: (msg: ServerMessage) => void; stop: () => Promise<void>; url: string } | undefined;
+  let observerServer: ObserverServer | undefined;
   let statusBridge: StatusBridge | undefined;
 
   if (useTui) {
-    // Start observer web server with snapshot callback
-    const port = options.port ?? 3619;
-    let bindHost: string;
-    let displayHost: string | undefined;
-
-    if (options.host) {
-      // User specified a host — use it for both bind and display
-      bindHost = options.host;
-      displayHost = undefined; // startObserverServer will use server.hostname
-    } else {
-      // Auto-detect: bind to all interfaces, display the LAN IP
-      bindHost = '0.0.0.0';
-      displayHost = getLocalNetworkIP() ?? '127.0.0.1';
-    }
-
-    // Create a mutable broadcast holder so StatusBridge can be instantiated
-    // before the observer server starts (avoiding snapshot race).
-    const broadcastHolder = {
-      fn: (_msg: ServerMessage) => {
-        void 0;
-      },
-    };
-    statusBridge = new StatusBridge((msg: ServerMessage) => broadcastHolder.fn(msg));
-
-    const bridge = statusBridge;
-    const snapshotFn = (): ServerMessage => bridge.getSnapshot();
-    const { startObserverServer } = await import('../web/observer-server.js');
-    observerServer = await startObserverServer({
-      host: bindHost,
-      port,
-      ...(displayHost ? { displayHost } : {}),
+    // Shared TUI + observer server setup
+    const tuiResult = await setupTuiAndObserver({
+      port: options.port,
+      host: options.host,
       onTerminate: () => controller.abort(),
-      getSnapshot: snapshotFn,
     });
-    const serverUrl = observerServer.url;
-
-    // Warn if the frontend is not built
-    const distDir = join(import.meta.dir, '..', '..', 'web', 'dist');
-    if (!existsSync(distDir)) {
-      console.warn(
-        'Warning: web/dist not found. The mobile UI will show a placeholder page. ' +
-          'Run "cd web && npm run build" to build the frontend.',
-      );
-    }
-
-    // Create TUI. Pre-generate the QR overlay BEFORE start() so it is attached
-    // during the first (scrollback-safe) render; attaching it later can cause it
-    // to flash and vanish due to a pi-tui incremental-render edge case.
-    tuiInstance = new WorkflowTUI({ abort: () => controller.abort() });
-    await tuiInstance.prepareQrCode(serverUrl);
-    tuiInstance.start();
-
-    // Wire the real broadcast now that the server is running.
-    broadcastHolder.fn = observerServer.broadcast;
+    tuiInstance = tuiResult.tuiInstance;
+    observerServer = tuiResult.observerServer;
+    statusBridge = tuiResult.statusBridge;
   }
 
   process.on('SIGINT', handler);
@@ -250,36 +205,23 @@ export async function resumeCommand(options: CliOptions): Promise<void> {
   const { handler, cleanup, controller } = setupSigintHandler(useTui);
 
   let tuiInstance: WorkflowTUI | undefined;
-  let observerServer: { broadcast: (msg: ServerMessage) => void; stop: () => Promise<void>; url: string } | undefined;
+  let observerServer: ObserverServer | undefined;
   let statusBridge: StatusBridge | undefined;
 
   if (useTui) {
-    // Start observer web server with snapshot callback
-    const port = options.port ?? 3619;
-    let bindHost: string;
-    let displayHost: string | undefined;
+    // Shared TUI + observer server setup (with agents from previous run)
+    const tuiResult = await setupTuiAndObserver({
+      port: options.port,
+      host: options.host,
+      onTerminate: () => controller.abort(),
+      initialAgents: state.spawnedAgents,
+    });
+    tuiInstance = tuiResult.tuiInstance;
+    observerServer = tuiResult.observerServer;
+    statusBridge = tuiResult.statusBridge;
 
-    if (options.host) {
-      // User specified a host — use it for both bind and display
-      bindHost = options.host;
-      displayHost = undefined; // startObserverServer will use server.hostname
-    } else {
-      // Auto-detect: bind to all interfaces, display the LAN IP
-      bindHost = '0.0.0.0';
-      displayHost = getLocalNetworkIP() ?? '127.0.0.1';
-    }
-
-    // Create a mutable broadcast holder so StatusBridge can be instantiated
-    // before the observer server starts (avoiding snapshot race).
-    const broadcastHolder = {
-      fn: (_msg: ServerMessage) => {
-        void 0;
-      },
-    };
-    statusBridge = new StatusBridge((msg: ServerMessage) => broadcastHolder.fn(msg));
-
-    // Seed the bridge with persisted state so late-connecting clients
-    // receive the full picture (phases, tasks, sidebar, etc.).
+    // Resume-specific: seed the bridge with persisted state so late-connecting
+    // clients receive the full picture (phases, tasks, sidebar, etc.).
     statusBridge.seed({
       currentPhase: state.currentPhase,
       completedPhases: state.completedPhases,
@@ -299,40 +241,6 @@ export async function resumeCommand(options: CliOptions): Promise<void> {
         : undefined,
       taskPrompt: state.taskPrompt,
     });
-
-    const bridge = statusBridge;
-    const snapshotFn = (): ServerMessage => bridge.getSnapshot();
-    const { startObserverServer } = await import('../web/observer-server.js');
-    observerServer = await startObserverServer({
-      host: bindHost,
-      port,
-      ...(displayHost ? { displayHost } : {}),
-      onTerminate: () => controller.abort(),
-      getSnapshot: snapshotFn,
-    });
-    const serverUrl = observerServer.url;
-
-    // Warn if the frontend is not built
-    const distDir = join(import.meta.dir, '..', '..', 'web', 'dist');
-    if (!existsSync(distDir)) {
-      console.warn(
-        'Warning: web/dist not found. The mobile UI will show a placeholder page. ' +
-          'Run "cd web && npm run build" to build the frontend.',
-      );
-    }
-
-    // Create TUI. Pre-generate the QR overlay BEFORE start() so it is attached
-    // during the first (scrollback-safe) render; attaching it later can cause it
-    // to flash and vanish due to a pi-tui incremental-render edge case.
-    tuiInstance = new WorkflowTUI({
-      abort: () => controller.abort(),
-      ...(state.spawnedAgents ? { initialAgents: state.spawnedAgents } : {}),
-    });
-    await tuiInstance.prepareQrCode(serverUrl);
-    tuiInstance.start();
-
-    // Wire the real broadcast now that the server is running.
-    broadcastHolder.fn = observerServer.broadcast;
   }
 
   process.on('SIGINT', handler);

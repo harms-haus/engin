@@ -332,14 +332,13 @@ describe('WorkflowStatusTracker – worktree persistence', () => {
       expect(methodBody).toMatch(/\{\s*\.\.\.\s*info\s*\}/);
     });
 
-    it('toJSON includes worktree with spread copy', async () => {
-      const sourcePath = join(import.meta.dir, '..', '..', 'src', 'tracking', 'workflow-status.ts');
+    it('serializeWorkflowState includes worktree with spread copy', async () => {
+      const sourcePath = join(import.meta.dir, '..', '..', 'src', 'tracking', 'workflow-serializer.ts');
       const source = await fs.readFile(sourcePath, 'utf-8');
 
-      // toJSON should contain worktree: this._worktree ? { ...this._worktree } : undefined
-      expect(source).toMatch(
-        /worktree\s*:\s*this\._worktree\s*\?\s*\{\s*\.\.\.\s*this\._worktree\s*\}\s*:\s*undefined/,
-      );
+      // serializeWorkflowState should contain worktree: tracker.worktree
+      // The getter already returns a defensive copy, so the serializer uses it directly
+      expect(source).toMatch(/worktree\s*:\s*tracker\.worktree/);
     });
 
     it('load() restores _worktree from data.worktree with spread copy', async () => {

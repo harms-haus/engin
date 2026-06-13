@@ -51,6 +51,7 @@ export interface AgentRecord {
  * exists ONLY for a full workflow restart, NOT for phase transitions.
  */
 export class AgentRegistry {
+  private static readonly MAX_AGENTS = 1000;
   private _agents: AgentRecord[] = [];
   private _activeByAgentId = new Map<string, string>();
   private _byTaskId = new Map<string, string>();
@@ -94,6 +95,8 @@ export class AgentRegistry {
     if (info.taskId) {
       this._byTaskId.set(info.taskId, uid);
     }
+
+    this.pruneIfNeeded();
 
     return uid;
   }
@@ -209,6 +212,19 @@ export class AgentRegistry {
     }
     if (partial.profile !== undefined) {
       record.profile = partial.profile;
+    }
+  }
+
+  /**
+   * If the _agents array exceeds MAX_AGENTS, prune the oldest completed
+   * agents, keeping all active agents and at most 500 most recent completed ones.
+   */
+  private pruneIfNeeded(): void {
+    if (this._agents.length > AgentRegistry.MAX_AGENTS) {
+      const active = this._agents.filter((a) => a.status === 'active');
+      const completed = this._agents.filter((a) => a.status === 'completed');
+      const keep = completed.slice(-500);
+      this._agents = [...keep, ...active];
     }
   }
 

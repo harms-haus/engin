@@ -4,7 +4,6 @@ import { makeProfile } from '../helpers/make-profile.js';
 // Capture real modules before mocking so we can restore them in afterAll.
 const realPiCodingAgent = Object.assign({}, await import('@earendil-works/pi-coding-agent'));
 const realPiAi = Object.assign({}, await import('@earendil-works/pi-ai'));
-const realProfile = Object.assign({}, await import('../../src/core/profile.ts'));
 
 // ─── Mocks ──────────────────────────────────────────────────────────────────
 
@@ -56,16 +55,10 @@ mock.module('@earendil-works/pi-ai', () => ({
   getModel: (...args: unknown[]) => mockGetModel(...args),
 }));
 
-// Mock loadProfile
-const mockLoadProfile = mock();
-mock.module('../../src/core/profile.ts', () => ({
-  loadProfile: (...args: unknown[]) => mockLoadProfile(...args),
-}));
-
 // ─── Imports (after mocks) ─────────────────────────────────────────────────
 
 import { AuthStorage, DefaultResourceLoader, SessionManager } from '@earendil-works/pi-coding-agent';
-import { createHarness, createHarnessFromProfile } from '../../src/core/harness-factory.ts';
+import { createHarness } from '../../src/core/harness-factory.ts';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -272,61 +265,8 @@ describe('createHarness', () => {
   });
 });
 
-// ─── createHarnessFromProfile ───────────────────────────────────────────────
-
-describe('createHarnessFromProfile', () => {
-  it('loads profile and delegates to createHarness', async () => {
-    const profile = makeProfile({ id: 'loaded-agent', provider: 'anthropic', model: 'claude-sonnet-4-20250514' });
-    mockLoadProfile.mockResolvedValue(profile);
-    mockGetModel.mockReturnValue({ ...mockModel, provider: 'anthropic' });
-
-    await createHarnessFromProfile('/profiles', 'loaded-agent', {
-      cwd: '/tmp',
-    });
-
-    expect(mockLoadProfile).toHaveBeenCalledWith('/profiles', 'loaded-agent');
-    expect(mockGetModel).toHaveBeenCalledWith('anthropic', 'claude-sonnet-4-20250514');
-  });
-
-  it('propagates loadProfile errors', async () => {
-    mockLoadProfile.mockRejectedValue(new Error('Profile "missing" not found'));
-
-    await expect(createHarnessFromProfile('/profiles', 'missing', { cwd: '/tmp' })).rejects.toThrow(
-      'Profile "missing" not found',
-    );
-  });
-
-  it('passes all options through to createHarness', async () => {
-    const profile = makeProfile();
-    mockLoadProfile.mockResolvedValue(profile);
-
-    await createHarnessFromProfile('/profiles', 'test-agent', {
-      cwd: '/my/project',
-      apiKeys: { openai: 'sk-from-profile' },
-    });
-
-    expect(mockCreateAgentSession).toHaveBeenCalledWith(
-      expect.objectContaining({
-        model: mockModel,
-      }),
-    );
-  });
-
-  it('returns session and sessionId', async () => {
-    mockLoadProfile.mockResolvedValue(makeProfile());
-
-    const result = await createHarnessFromProfile('/profiles', 'test-agent', {
-      cwd: '/tmp',
-    });
-
-    expect(result).toHaveProperty('session');
-    expect(result).toHaveProperty('sessionId');
-  });
-});
-
 // Restore the real modules so mocks don't leak into other test files.
 afterAll(() => {
   mock.module('@earendil-works/pi-coding-agent', () => realPiCodingAgent);
   mock.module('@earendil-works/pi-ai', () => realPiAi);
-  mock.module('../../src/core/profile.ts', () => realProfile);
 });

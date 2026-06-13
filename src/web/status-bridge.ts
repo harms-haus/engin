@@ -6,9 +6,14 @@ import type { AgentWindowState, LogEntry, ServerMessage, SidebarInfo, TaskInfo }
 /**
  * Build a composite key for agent lookup.
  */
-export function agentKey(agentId: string, taskId?: string): string {
+function agentKey(agentId: string, taskId?: string): string {
   return taskId ? agentId + '::' + taskId : agentId;
 }
+
+// ─── Constants ────────────────────────────────────────────────────────────────
+
+/** Maximum log entries kept per agent to prevent unbounded memory growth. */
+export const MAX_AGENT_LOG_ENTRIES = 500;
 
 // ─── StatusBridge ───────────────────────────────────────────────────────────
 
@@ -367,6 +372,9 @@ export class StatusBridge {
     const agent = this.agents.get(key);
     if (agent) {
       agent.log.push(entry);
+      if (agent.log.length > MAX_AGENT_LOG_ENTRIES) {
+        agent.log.shift();
+      }
     }
   }
 

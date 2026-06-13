@@ -445,60 +445,6 @@ describe('TaskTracker', () => {
     });
   });
 
-  // ── getBlockedWithMissingDeps ──────────────────────────────────────
-
-  describe('getBlockedWithMissingDeps', () => {
-    it('returns empty array when no blocked tasks have missing deps', () => {
-      const tracker = new TaskTracker();
-      tracker.addTask(makeTask({ id: 'a' }));
-      tracker.addTask({ ...makeTask({ id: 'b', dependencies: ['a'] }), status: undefined });
-
-      // b is blocked but dep 'a' exists
-      expect(tracker.getTask('b')!.status).toBe('blocked');
-      expect(tracker.getBlockedWithMissingDeps()).toEqual([]);
-    });
-
-    it('detects blocked tasks with missing dependency ids', () => {
-      const tracker = new TaskTracker();
-      tracker.addTask(makeTask({ id: 'a' }));
-      tracker.addTask({ ...makeTask({ id: 'b', dependencies: ['a', 'ghost'] }), status: undefined });
-
-      const result = tracker.getBlockedWithMissingDeps();
-      expect(result).toHaveLength(1);
-      expect(result[0].taskId).toBe('b');
-      expect(result[0].missingDepIds).toEqual(['ghost']);
-    });
-
-    it('returns empty array for non-blocked tasks with missing deps', () => {
-      const tracker = new TaskTracker();
-      // Add a task with missing dep but set status explicitly to 'ready'
-      tracker.addTask(makeTask({ id: 'a', dependencies: ['ghost'], status: 'ready' }));
-
-      expect(tracker.getBlockedWithMissingDeps()).toEqual([]);
-    });
-
-    it('handles multiple blocked tasks with various missing deps', () => {
-      const tracker = new TaskTracker();
-      tracker.addTask(makeTask({ id: 'a' }));
-      tracker.addTask({ ...makeTask({ id: 'b', dependencies: ['a', 'missing1'] }), status: undefined });
-      tracker.addTask({ ...makeTask({ id: 'c', dependencies: ['missing2', 'missing3'] }), status: undefined });
-
-      const result = tracker.getBlockedWithMissingDeps();
-      expect(result).toHaveLength(2);
-
-      const bResult = result.find((r) => r.taskId === 'b');
-      expect(bResult!.missingDepIds).toEqual(['missing1']);
-
-      const cResult = result.find((r) => r.taskId === 'c');
-      expect(cResult!.missingDepIds).toEqual(['missing2', 'missing3']);
-    });
-
-    it('returns empty array when there are no tasks', () => {
-      const tracker = new TaskTracker();
-      expect(tracker.getBlockedWithMissingDeps()).toEqual([]);
-    });
-  });
-
   // ── isPoolDone ────────────────────────────────────────────────────
 
   describe('isPoolDone', () => {
@@ -899,8 +845,7 @@ describe('TaskTracker', () => {
         emitted = true;
       });
 
-      // EventEmitter.emit is synchronous — if no event fires during recalculateStatuses,
-      // emitted stays false. No async wait needed.
+      // emit is deferred via queueMicrotask, but since no transition occurs, no emit is queued.
       tracker.recalculateStatuses();
 
       expect(emitted).toBe(false);
@@ -936,37 +881,6 @@ describe('TaskTracker', () => {
       await Promise.race([eventPromise, timeout]);
 
       expect(restored.getTask('b')!.status).toBe('ready');
-    });
-  });
-
-  // ── validateAllDependencies ─────────────────────────────────────────
-
-  describe('validateAllDependencies', () => {
-    it('throws when a task references a dependency not in the tracker', () => {
-      const tracker = new TaskTracker();
-      tracker.addTask(makeTask({ id: 'a' }));
-      tracker.addTask({ ...makeTask({ id: 'b', dependencies: ['a', 'ghost-x'] }), status: undefined });
-
-      expect(() => tracker.validateAllDependencies()).toThrow('missing dependencies');
-    });
-
-    it('does not throw when all dependencies exist in the tracker', () => {
-      const tracker = new TaskTracker();
-      tracker.addTask(makeTask({ id: 'a' }));
-      tracker.addTask(makeTask({ id: 'b' }));
-      tracker.addTask({ ...makeTask({ id: 'c', dependencies: ['a', 'b'] }), status: undefined });
-
-      expect(() => tracker.validateAllDependencies()).not.toThrow();
-    });
-
-    it('does not throw when deps reference tasks added in the same batch', () => {
-      const tracker = new TaskTracker();
-      tracker.addTask(makeTask({ id: 'a' }));
-      tracker.addTask(makeTask({ id: 'b' }));
-      tracker.addTask(makeTask({ id: 'c' }));
-      tracker.addTask({ ...makeTask({ id: 'd', dependencies: ['a', 'b', 'c'] }), status: undefined });
-
-      expect(() => tracker.validateAllDependencies()).not.toThrow();
     });
   });
 

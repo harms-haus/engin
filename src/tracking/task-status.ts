@@ -154,7 +154,7 @@ export class TaskTracker extends EventEmitter {
 
     task.status = 'done';
     this.recalculateStatuses(id);
-    this.emit(TaskTracker.Events.TaskSettled);
+    queueMicrotask(() => this.emit(TaskTracker.Events.TaskSettled));
   }
 
   failTask(id: string, result?: unknown): void {
@@ -168,7 +168,7 @@ export class TaskTracker extends EventEmitter {
     task.result = result;
     task.assignedAgent = undefined;
     this.recalculateStatuses(id);
-    this.emit(TaskTracker.Events.TaskSettled);
+    queueMicrotask(() => this.emit(TaskTracker.Events.TaskSettled));
   }
 
   rejectTask(id: string, reason: string): void {
@@ -181,7 +181,7 @@ export class TaskTracker extends EventEmitter {
     task.status = 'ready';
     appendReviewFeedback(task, reason);
     this.recalculateStatuses(id);
-    this.emit(TaskTracker.Events.TaskReady);
+    queueMicrotask(() => this.emit(TaskTracker.Events.TaskReady));
   }
 
   resetFailedTasks(): void {
@@ -224,7 +224,7 @@ export class TaskTracker extends EventEmitter {
     }
 
     if (transitioned) {
-      this.emit(TaskTracker.Events.TaskReady);
+      queueMicrotask(() => this.emit(TaskTracker.Events.TaskReady));
     }
   }
 
@@ -257,30 +257,6 @@ export class TaskTracker extends EventEmitter {
     }
     tracker.recalculateStatuses();
     return tracker;
-  }
-
-  getBlockedWithMissingDeps(): { taskId: string; missingDepIds: string[] }[] {
-    const results: { taskId: string; missingDepIds: string[] }[] = [];
-
-    for (const task of this.tasks.values()) {
-      if (task.status === 'blocked') {
-        const missingDepIds = task.dependencies.filter((dep) => !this.tasks.has(dep));
-        if (missingDepIds.length > 0) {
-          results.push({ taskId: task.id, missingDepIds });
-        }
-      }
-    }
-
-    return results;
-  }
-
-  validateAllDependencies(): void {
-    for (const task of this.tasks.values()) {
-      const missing = task.dependencies.filter((dep) => !this.tasks.has(dep));
-      if (missing.length > 0) {
-        throw new Error(`Task "${task.id}" references missing dependencies: ${JSON.stringify(missing)}`);
-      }
-    }
   }
 
   /**
