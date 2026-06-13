@@ -58,7 +58,9 @@ body {
     font-size: 13px;
   }
 
-  button, .lane-pool__lane, .phase-bar__tab {
+  button,
+  .lane-pool__lane,
+  .phase-bar__tab {
     touch-action: manipulation;
   }
 }

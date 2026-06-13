@@ -10,19 +10,15 @@
 
 import '@testing-library/jest-dom/vitest';
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, fireEvent } from '@testing-library/react';
+import { fireEvent, render } from '@testing-library/react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { EventLog } from './EventLog';
 
 /**
  * Helper: mock scrollHeight and clientHeight on a div so we can
  * reliably control the scroll geometry in jsdom.
  */
-function mockScrollGeometry(
-  el: HTMLDivElement,
-  scrollHeight: number,
-  clientHeight: number,
-): void {
+function mockScrollGeometry(el: HTMLDivElement, scrollHeight: number, clientHeight: number): void {
   Object.defineProperty(el, 'scrollHeight', {
     value: scrollHeight,
     configurable: true,

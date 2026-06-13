@@ -11,20 +11,17 @@
 
 import '@testing-library/jest-dom/vitest';
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, fireEvent } from '@testing-library/react';
-import type { AgentState } from '../types';
+import { fireEvent, render } from '@testing-library/react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { LogEntry } from '../protocol-types';
+import type { AgentState } from '../types';
 import { AgentLog } from './AgentLog';
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
 
 let entryCounter = 0;
 
-function makeLogEntry(
-  content: string,
-  type: LogEntry['type'] = 'text',
-): LogEntry {
+function makeLogEntry(content: string, type: LogEntry['type'] = 'text'): LogEntry {
   entryCounter += 1;
   return {
     id: `log-${entryCounter}`,
@@ -34,11 +31,7 @@ function makeLogEntry(
   };
 }
 
-function makeAgentState(
-  agentId: string,
-  log: LogEntry[],
-  overrides: Partial<AgentState> = {},
-): AgentState {
+function makeAgentState(agentId: string, log: LogEntry[], overrides: Partial<AgentState> = {}): AgentState {
   return {
     agentId,
     profile: 'test-profile',
@@ -55,11 +48,7 @@ function makeAgentState(
  * Helper: mock scrollHeight and clientHeight on a div so we can
  * reliably control the scroll geometry in jsdom.
  */
-function mockScrollGeometry(
-  el: HTMLDivElement,
-  scrollHeight: number,
-  clientHeight: number,
-): void {
+function mockScrollGeometry(el: HTMLDivElement, scrollHeight: number, clientHeight: number): void {
   Object.defineProperty(el, 'scrollHeight', {
     value: scrollHeight,
     configurable: true,
@@ -99,9 +88,7 @@ describe('AgentLog – auto-scroll behavior (single agent)', () => {
 
   it('auto-scrolls to bottom when new log entries arrive and user is at bottom', () => {
     const initialLog = [makeLogEntry('a'), makeLogEntry('b')];
-    const agents = new Map<string, AgentState>([
-      ['agent-1', makeAgentState('agent-1', initialLog)],
-    ]);
+    const agents = new Map<string, AgentState>([['agent-1', makeAgentState('agent-1', initialLog)]]);
 
     const { container, rerender } = render(
       <AgentLog agents={agents} onTerminate={vi.fn()} status="running" connected={true} />,
@@ -115,12 +102,8 @@ describe('AgentLog – auto-scroll behavior (single agent)', () => {
 
     // Add new log entries (triggers re-render)
     const newLog = [...initialLog, makeLogEntry('c')];
-    const updatedAgents = new Map<string, AgentState>([
-      ['agent-1', makeAgentState('agent-1', newLog)],
-    ]);
-    rerender(
-      <AgentLog agents={updatedAgents} onTerminate={vi.fn()} status="running" connected={true} />,
-    );
+    const updatedAgents = new Map<string, AgentState>([['agent-1', makeAgentState('agent-1', newLog)]]);
+    rerender(<AgentLog agents={updatedAgents} onTerminate={vi.fn()} status="running" connected={true} />);
 
     // With the fix: autoScroll starts as true → effect scrolls to bottom
     expect(scrollDiv.scrollTop).toBe(1000);
@@ -128,9 +111,7 @@ describe('AgentLog – auto-scroll behavior (single agent)', () => {
 
   it('does NOT auto-scroll when user has scrolled up and new log entries arrive', () => {
     const initialLog = [makeLogEntry('a'), makeLogEntry('b'), makeLogEntry('c')];
-    const agents = new Map<string, AgentState>([
-      ['agent-1', makeAgentState('agent-1', initialLog)],
-    ]);
+    const agents = new Map<string, AgentState>([['agent-1', makeAgentState('agent-1', initialLog)]]);
 
     const { container, rerender } = render(
       <AgentLog agents={agents} onTerminate={vi.fn()} status="running" connected={true} />,
@@ -141,12 +122,8 @@ describe('AgentLog – auto-scroll behavior (single agent)', () => {
 
     // Trigger initial auto-scroll with new entries
     const triggerLog = [...initialLog, makeLogEntry('d')];
-    let updatedAgents = new Map<string, AgentState>([
-      ['agent-1', makeAgentState('agent-1', triggerLog)],
-    ]);
-    rerender(
-      <AgentLog agents={updatedAgents} onTerminate={vi.fn()} status="running" connected={true} />,
-    );
+    let updatedAgents = new Map<string, AgentState>([['agent-1', makeAgentState('agent-1', triggerLog)]]);
+    rerender(<AgentLog agents={updatedAgents} onTerminate={vi.fn()} status="running" connected={true} />);
     expect(scrollDiv.scrollTop).toBe(1000);
 
     // Simulate user scrolling up – far from bottom
@@ -156,12 +133,8 @@ describe('AgentLog – auto-scroll behavior (single agent)', () => {
 
     // Add more entries while scrolled up
     const newLog = [...triggerLog, makeLogEntry('e'), makeLogEntry('f')];
-    updatedAgents = new Map<string, AgentState>([
-      ['agent-1', makeAgentState('agent-1', newLog)],
-    ]);
-    rerender(
-      <AgentLog agents={updatedAgents} onTerminate={vi.fn()} status="running" connected={true} />,
-    );
+    updatedAgents = new Map<string, AgentState>([['agent-1', makeAgentState('agent-1', newLog)]]);
+    rerender(<AgentLog agents={updatedAgents} onTerminate={vi.fn()} status="running" connected={true} />);
 
     // With the fix: autoScroll is false, so scrollTop should NOT change.
     // With current code: scrollTop would be set to scrollHeight (1000).
@@ -170,9 +143,7 @@ describe('AgentLog – auto-scroll behavior (single agent)', () => {
 
   it('re-enables auto-scroll when user scrolls back to bottom and new entries arrive', () => {
     const initialLog = [makeLogEntry('a'), makeLogEntry('b')];
-    const agents = new Map<string, AgentState>([
-      ['agent-1', makeAgentState('agent-1', initialLog)],
-    ]);
+    const agents = new Map<string, AgentState>([['agent-1', makeAgentState('agent-1', initialLog)]]);
 
     const { container, rerender } = render(
       <AgentLog agents={agents} onTerminate={vi.fn()} status="running" connected={true} />,
@@ -185,9 +156,7 @@ describe('AgentLog – auto-scroll behavior (single agent)', () => {
     let updatedAgents = new Map<string, AgentState>([
       ['agent-1', makeAgentState('agent-1', [...initialLog, makeLogEntry('c')])],
     ]);
-    rerender(
-      <AgentLog agents={updatedAgents} onTerminate={vi.fn()} status="running" connected={true} />,
-    );
+    rerender(<AgentLog agents={updatedAgents} onTerminate={vi.fn()} status="running" connected={true} />);
     expect(scrollDiv.scrollTop).toBe(1000);
 
     // Scroll up (disables auto-scroll)
@@ -198,9 +167,7 @@ describe('AgentLog – auto-scroll behavior (single agent)', () => {
     updatedAgents = new Map<string, AgentState>([
       ['agent-1', makeAgentState('agent-1', [...initialLog, makeLogEntry('c'), makeLogEntry('d')])],
     ]);
-    rerender(
-      <AgentLog agents={updatedAgents} onTerminate={vi.fn()} status="running" connected={true} />,
-    );
+    rerender(<AgentLog agents={updatedAgents} onTerminate={vi.fn()} status="running" connected={true} />);
     expect(scrollDiv.scrollTop).toBe(100);
 
     // Scroll back to bottom (within 30px threshold)
@@ -211,18 +178,14 @@ describe('AgentLog – auto-scroll behavior (single agent)', () => {
     updatedAgents = new Map<string, AgentState>([
       ['agent-1', makeAgentState('agent-1', [...initialLog, makeLogEntry('c'), makeLogEntry('d'), makeLogEntry('e')])],
     ]);
-    rerender(
-      <AgentLog agents={updatedAgents} onTerminate={vi.fn()} status="running" connected={true} />,
-    );
+    rerender(<AgentLog agents={updatedAgents} onTerminate={vi.fn()} status="running" connected={true} />);
 
     expect(scrollDiv.scrollTop).toBe(1000);
   });
 
   it('maintains auto-scroll when already at bottom and new log entries arrive', () => {
     const initialLog = [makeLogEntry('a'), makeLogEntry('b')];
-    const agents = new Map<string, AgentState>([
-      ['agent-1', makeAgentState('agent-1', initialLog)],
-    ]);
+    const agents = new Map<string, AgentState>([['agent-1', makeAgentState('agent-1', initialLog)]]);
 
     const { container, rerender } = render(
       <AgentLog agents={agents} onTerminate={vi.fn()} status="running" connected={true} />,
@@ -233,22 +196,14 @@ describe('AgentLog – auto-scroll behavior (single agent)', () => {
 
     // Trigger initial auto-scroll
     const midLog = [...initialLog, makeLogEntry('c')];
-    let updatedAgents = new Map<string, AgentState>([
-      ['agent-1', makeAgentState('agent-1', midLog)],
-    ]);
-    rerender(
-      <AgentLog agents={updatedAgents} onTerminate={vi.fn()} status="running" connected={true} />,
-    );
+    let updatedAgents = new Map<string, AgentState>([['agent-1', makeAgentState('agent-1', midLog)]]);
+    rerender(<AgentLog agents={updatedAgents} onTerminate={vi.fn()} status="running" connected={true} />);
     expect(scrollDiv.scrollTop).toBe(1000);
 
     // Multiple new entries arrive while user is at bottom
     const newLog = [...midLog, makeLogEntry('d'), makeLogEntry('e'), makeLogEntry('f')];
-    updatedAgents = new Map<string, AgentState>([
-      ['agent-1', makeAgentState('agent-1', newLog)],
-    ]);
-    rerender(
-      <AgentLog agents={updatedAgents} onTerminate={vi.fn()} status="running" connected={true} />,
-    );
+    updatedAgents = new Map<string, AgentState>([['agent-1', makeAgentState('agent-1', newLog)]]);
+    rerender(<AgentLog agents={updatedAgents} onTerminate={vi.fn()} status="running" connected={true} />);
 
     // Should still be at bottom
     expect(scrollDiv.scrollTop).toBe(1000);
@@ -276,18 +231,14 @@ describe('AgentLog – auto-scroll on agent switch', () => {
     mockScrollGeometry(scrollDiv, 1000, 200);
 
     // Trigger initial auto-scroll on agent-1
-    rerender(
-      <AgentLog agents={agents} onTerminate={vi.fn()} status="running" connected={true} />,
-    );
+    rerender(<AgentLog agents={agents} onTerminate={vi.fn()} status="running" connected={true} />);
     expect(scrollDiv.scrollTop).toBe(1000);
 
     // Now switch to agent-2 by changing the map so agent-2 is the only one
     const singleAgentMap = new Map<string, AgentState>([
       ['agent-2', makeAgentState('agent-2', [makeLogEntry('from agent 2')])],
     ]);
-    rerender(
-      <AgentLog agents={singleAgentMap} onTerminate={vi.fn()} status="running" connected={true} />,
-    );
+    rerender(<AgentLog agents={singleAgentMap} onTerminate={vi.fn()} status="running" connected={true} />);
 
     // When switching agents, agent?.log reference changes (different array).
     // With the fix: if autoScroll is true (user was at bottom), effect scrolls.
@@ -312,21 +263,15 @@ describe('AgentLog – auto-scroll on agent switch', () => {
     mockScrollGeometry(scrollDiv, 1000, 200);
 
     // Trigger initial auto-scroll (agent-1 selected)
-    rerender(
-      <AgentLog agents={agents} onTerminate={vi.fn()} status="running" connected={true} />,
-    );
+    rerender(<AgentLog agents={agents} onTerminate={vi.fn()} status="running" connected={true} />);
     expect(scrollDiv.scrollTop).toBe(1000);
 
     // Scroll up in agent-1 → autoScroll = false
     scrollTo(scrollDiv, 50);
 
     // Switch to agent-2 (only provide agent-2, forcing selection change)
-    const singleAgent = new Map<string, AgentState>([
-      ['agent-2', makeAgentState('agent-2', agent2Log)],
-    ]);
-    rerender(
-      <AgentLog agents={singleAgent} onTerminate={vi.fn()} status="running" connected={true} />,
-    );
+    const singleAgent = new Map<string, AgentState>([['agent-2', makeAgentState('agent-2', agent2Log)]]);
+    rerender(<AgentLog agents={singleAgent} onTerminate={vi.fn()} status="running" connected={true} />);
 
     // autoScroll is false (from scrolling up), so even though agent?.log
     // changed, the effect should NOT scroll because autoScroll is false.
@@ -342,9 +287,7 @@ describe('AgentLog – empty / edge cases', () => {
 
   it('renders without error when agents map is empty', () => {
     const agents = new Map<string, AgentState>();
-    const { container } = render(
-      <AgentLog agents={agents} onTerminate={vi.fn()} status="running" connected={true} />,
-    );
+    const { container } = render(<AgentLog agents={agents} onTerminate={vi.fn()} status="running" connected={true} />);
 
     // Should show "No agent selected"
     expect(container.textContent).toContain('No agent selected');
@@ -356,9 +299,7 @@ describe('AgentLog – empty / edge cases', () => {
 
   it('handles new agent being added (keys length changes)', () => {
     const initialLog = [makeLogEntry('initial')];
-    const agents = new Map<string, AgentState>([
-      ['agent-1', makeAgentState('agent-1', initialLog)],
-    ]);
+    const agents = new Map<string, AgentState>([['agent-1', makeAgentState('agent-1', initialLog)]]);
 
     const { container, rerender } = render(
       <AgentLog agents={agents} onTerminate={vi.fn()} status="running" connected={true} />,
@@ -368,9 +309,7 @@ describe('AgentLog – empty / edge cases', () => {
     mockScrollGeometry(scrollDiv, 1000, 200);
 
     // Trigger initial auto-scroll
-    rerender(
-      <AgentLog agents={agents} onTerminate={vi.fn()} status="running" connected={true} />,
-    );
+    rerender(<AgentLog agents={agents} onTerminate={vi.fn()} status="running" connected={true} />);
     expect(scrollDiv.scrollTop).toBe(1000);
 
     // Add a new agent
@@ -378,9 +317,7 @@ describe('AgentLog – empty / edge cases', () => {
       ['agent-1', makeAgentState('agent-1', initialLog)],
       ['agent-2', makeAgentState('agent-2', [makeLogEntry('new agent')])],
     ]);
-    rerender(
-      <AgentLog agents={updatedAgents} onTerminate={vi.fn()} status="running" connected={true} />,
-    );
+    rerender(<AgentLog agents={updatedAgents} onTerminate={vi.fn()} status="running" connected={true} />);
 
     // selectedIndex was 0, keys length changed from 1 to 2, but 0 < 2, so selection stays
     // autoScroll should still be true (no scroll happened to change it)
@@ -396,18 +333,9 @@ describe('AgentLog – terminate button (connected state)', () => {
   });
 
   it('shows terminate button when status is running and connected is true', () => {
-    const agents = new Map<string, AgentState>([
-      ['agent-1', makeAgentState('agent-1', [makeLogEntry('running')])],
-    ]);
+    const agents = new Map<string, AgentState>([['agent-1', makeAgentState('agent-1', [makeLogEntry('running')])]]);
 
-    const { container } = render(
-      <AgentLog
-        agents={agents}
-        onTerminate={vi.fn()}
-        status="running"
-        connected={true}
-      />,
-    );
+    const { container } = render(<AgentLog agents={agents} onTerminate={vi.fn()} status="running" connected={true} />);
 
     const button = container.querySelector('.agent-log__terminate');
     expect(button).toBeInTheDocument();
@@ -416,18 +344,9 @@ describe('AgentLog – terminate button (connected state)', () => {
   });
 
   it('shows terminate button as disabled with feedback text when disconnected', () => {
-    const agents = new Map<string, AgentState>([
-      ['agent-1', makeAgentState('agent-1', [makeLogEntry('running')])],
-    ]);
+    const agents = new Map<string, AgentState>([['agent-1', makeAgentState('agent-1', [makeLogEntry('running')])]]);
 
-    const { container } = render(
-      <AgentLog
-        agents={agents}
-        onTerminate={vi.fn()}
-        status="running"
-        connected={false}
-      />,
-    );
+    const { container } = render(<AgentLog agents={agents} onTerminate={vi.fn()} status="running" connected={false} />);
 
     const button = container.querySelector('.agent-log__terminate');
     expect(button).toBeInTheDocument();
@@ -436,36 +355,18 @@ describe('AgentLog – terminate button (connected state)', () => {
   });
 
   it('does not render terminate button when status is complete', () => {
-    const agents = new Map<string, AgentState>([
-      ['agent-1', makeAgentState('agent-1', [makeLogEntry('done')])],
-    ]);
+    const agents = new Map<string, AgentState>([['agent-1', makeAgentState('agent-1', [makeLogEntry('done')])]]);
 
-    const { container } = render(
-      <AgentLog
-        agents={agents}
-        onTerminate={vi.fn()}
-        status="complete"
-        connected={true}
-      />,
-    );
+    const { container } = render(<AgentLog agents={agents} onTerminate={vi.fn()} status="complete" connected={true} />);
 
     const button = container.querySelector('.agent-log__terminate');
     expect(button).not.toBeInTheDocument();
   });
 
   it('does not render terminate button when status is failed', () => {
-    const agents = new Map<string, AgentState>([
-      ['agent-1', makeAgentState('agent-1', [makeLogEntry('error')])],
-    ]);
+    const agents = new Map<string, AgentState>([['agent-1', makeAgentState('agent-1', [makeLogEntry('error')])]]);
 
-    const { container } = render(
-      <AgentLog
-        agents={agents}
-        onTerminate={vi.fn()}
-        status="failed"
-        connected={true}
-      />,
-    );
+    const { container } = render(<AgentLog agents={agents} onTerminate={vi.fn()} status="failed" connected={true} />);
 
     const button = container.querySelector('.agent-log__terminate');
     expect(button).not.toBeInTheDocument();
@@ -473,17 +374,10 @@ describe('AgentLog – terminate button (connected state)', () => {
 
   it('calls onTerminate when button is clicked while connected', () => {
     const onTerminate = vi.fn();
-    const agents = new Map<string, AgentState>([
-      ['agent-1', makeAgentState('agent-1', [makeLogEntry('running')])],
-    ]);
+    const agents = new Map<string, AgentState>([['agent-1', makeAgentState('agent-1', [makeLogEntry('running')])]]);
 
     const { container } = render(
-      <AgentLog
-        agents={agents}
-        onTerminate={onTerminate}
-        status="running"
-        connected={true}
-      />,
+      <AgentLog agents={agents} onTerminate={onTerminate} status="running" connected={true} />,
     );
 
     const button = container.querySelector('.agent-log__terminate')!;
@@ -493,17 +387,10 @@ describe('AgentLog – terminate button (connected state)', () => {
 
   it('does not call onTerminate when button is clicked while disconnected', () => {
     const onTerminate = vi.fn();
-    const agents = new Map<string, AgentState>([
-      ['agent-1', makeAgentState('agent-1', [makeLogEntry('running')])],
-    ]);
+    const agents = new Map<string, AgentState>([['agent-1', makeAgentState('agent-1', [makeLogEntry('running')])]]);
 
     const { container } = render(
-      <AgentLog
-        agents={agents}
-        onTerminate={onTerminate}
-        status="running"
-        connected={false}
-      />,
+      <AgentLog agents={agents} onTerminate={onTerminate} status="running" connected={false} />,
     );
 
     const button = container.querySelector('.agent-log__terminate')!;
@@ -520,18 +407,9 @@ describe('AgentLog – terminate button (connected state)', () => {
   });
 
   it('has correct CSS class on the terminate button', () => {
-    const agents = new Map<string, AgentState>([
-      ['agent-1', makeAgentState('agent-1', [makeLogEntry('running')])],
-    ]);
+    const agents = new Map<string, AgentState>([['agent-1', makeAgentState('agent-1', [makeLogEntry('running')])]]);
 
-    const { container } = render(
-      <AgentLog
-        agents={agents}
-        onTerminate={vi.fn()}
-        status="running"
-        connected={true}
-      />,
-    );
+    const { container } = render(<AgentLog agents={agents} onTerminate={vi.fn()} status="running" connected={true} />);
 
     const button = container.querySelector('.agent-log__terminate');
     expect(button).toHaveClass('agent-log__terminate');
@@ -539,17 +417,10 @@ describe('AgentLog – terminate button (connected state)', () => {
 
   it('transitions button text from connected to disconnected when connected prop changes', () => {
     const onTerminate = vi.fn();
-    const agents = new Map<string, AgentState>([
-      ['agent-1', makeAgentState('agent-1', [makeLogEntry('running')])],
-    ]);
+    const agents = new Map<string, AgentState>([['agent-1', makeAgentState('agent-1', [makeLogEntry('running')])]]);
 
     const { container, rerender } = render(
-      <AgentLog
-        agents={agents}
-        onTerminate={onTerminate}
-        status="running"
-        connected={true}
-      />,
+      <AgentLog agents={agents} onTerminate={onTerminate} status="running" connected={true} />,
     );
 
     const button = container.querySelector('.agent-log__terminate')!;
@@ -557,73 +428,38 @@ describe('AgentLog – terminate button (connected state)', () => {
     expect(button).not.toBeDisabled();
 
     // Simulate disconnect
-    rerender(
-      <AgentLog
-        agents={agents}
-        onTerminate={onTerminate}
-        status="running"
-        connected={false}
-      />,
-    );
+    rerender(<AgentLog agents={agents} onTerminate={onTerminate} status="running" connected={false} />);
 
     expect(button).toHaveTextContent('Disconnected - Reconnecting...');
     expect(button).toBeDisabled();
   });
 
   it('does not render terminate button when agents exist but status is complete even if connected', () => {
-    const agents = new Map<string, AgentState>([
-      ['agent-1', makeAgentState('agent-1', [makeLogEntry('done')])],
-    ]);
+    const agents = new Map<string, AgentState>([['agent-1', makeAgentState('agent-1', [makeLogEntry('done')])]]);
 
     const { container, rerender } = render(
-      <AgentLog
-        agents={agents}
-        onTerminate={vi.fn()}
-        status="running"
-        connected={true}
-      />,
+      <AgentLog agents={agents} onTerminate={vi.fn()} status="running" connected={true} />,
     );
 
     expect(container.querySelector('.agent-log__terminate')).toBeInTheDocument();
 
     // Status changes to complete
-    rerender(
-      <AgentLog
-        agents={agents}
-        onTerminate={vi.fn()}
-        status="complete"
-        connected={true}
-      />,
-    );
+    rerender(<AgentLog agents={agents} onTerminate={vi.fn()} status="complete" connected={true} />);
 
     expect(container.querySelector('.agent-log__terminate')).not.toBeInTheDocument();
   });
 
   it('does not render terminate button when agents exist but status is failed even if connected', () => {
-    const agents = new Map<string, AgentState>([
-      ['agent-1', makeAgentState('agent-1', [makeLogEntry('error')])],
-    ]);
+    const agents = new Map<string, AgentState>([['agent-1', makeAgentState('agent-1', [makeLogEntry('error')])]]);
 
     const { container, rerender } = render(
-      <AgentLog
-        agents={agents}
-        onTerminate={vi.fn()}
-        status="running"
-        connected={true}
-      />,
+      <AgentLog agents={agents} onTerminate={vi.fn()} status="running" connected={true} />,
     );
 
     expect(container.querySelector('.agent-log__terminate')).toBeInTheDocument();
 
     // Status changes to failed
-    rerender(
-      <AgentLog
-        agents={agents}
-        onTerminate={vi.fn()}
-        status="failed"
-        connected={true}
-      />,
-    );
+    rerender(<AgentLog agents={agents} onTerminate={vi.fn()} status="failed" connected={true} />);
 
     expect(container.querySelector('.agent-log__terminate')).not.toBeInTheDocument();
   });

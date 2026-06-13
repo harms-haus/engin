@@ -90,11 +90,7 @@ export function AgentLog({ agents, onTerminate, status, connected }: AgentLogPro
 
       {/* Terminate button */}
       {status === 'running' && (
-        <button
-          className="agent-log__terminate"
-          onClick={onTerminate}
-          disabled={!connected}
-        >
+        <button className="agent-log__terminate" onClick={onTerminate} disabled={!connected}>
           {connected ? 'Terminate Workflow' : 'Disconnected - Reconnecting...'}
         </button>
       )}
