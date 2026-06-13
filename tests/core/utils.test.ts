@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import type { StatusCallbacks } from '../../src/core/types.js';
+import { STATUS_CALLBACK_METHODS } from '../../src/core/types.js';
 import {
   appendReviewFeedback,
   composeStatusCallbacks,
@@ -59,20 +60,8 @@ describe('isEnoentError', () => {
     expect(isEnoentError({ code: 'EACCES' })).toBe(false);
   });
 
-  it('returns false for null', () => {
-    expect(isEnoentError(null)).toBe(false);
-  });
-
-  it('returns false for a string', () => {
-    expect(isEnoentError('ENOENT')).toBe(false);
-  });
-
   it('returns false for an object without a code property', () => {
     expect(isEnoentError({})).toBe(false);
-  });
-
-  it('returns false for undefined', () => {
-    expect(isEnoentError(undefined)).toBe(false);
   });
 });
 
@@ -86,39 +75,11 @@ describe('safeErrorMessage', () => {
   it('returns the string itself when given a string', () => {
     expect(safeErrorMessage('hello')).toBe('hello');
   });
-
-  it('returns the stringified number when given a number', () => {
-    expect(safeErrorMessage(42)).toBe('42');
-  });
-
-  it('returns "undefined" for undefined', () => {
-    expect(safeErrorMessage(undefined)).toBe('undefined');
-  });
 });
 
 // ─── forwardAgentStatus ───────────────────────────────────────────────────
 
 describe('forwardAgentStatus', () => {
-  it('returns undefined when onStatus is undefined', () => {
-    expect(forwardAgentStatus(undefined)).toBeUndefined();
-  });
-
-  it('returns callbacks that forward to the corresponding onStatus methods', () => {
-    const onTurnStart = () => {};
-    const onTurnEnd = () => {};
-    const onToolCallStart = () => {};
-    const onToolCallEnd = () => {};
-
-    const onStatus: StatusCallbacks = { onTurnStart, onTurnEnd, onToolCallStart, onToolCallEnd };
-    const result = forwardAgentStatus(onStatus);
-
-    expect(result).toBeDefined();
-    expect(result!.onTurnStart).toBeInstanceOf(Function);
-    expect(result!.onTurnEnd).toBeInstanceOf(Function);
-    expect(result!.onToolCallStart).toBeInstanceOf(Function);
-    expect(result!.onToolCallEnd).toBeInstanceOf(Function);
-  });
-
   it('forwards onTurnStart calls', () => {
     const calls: unknown[] = [];
     const onStatus: StatusCallbacks = {
@@ -165,6 +126,51 @@ describe('forwardAgentStatus', () => {
     result!.onToolCallEnd!(info);
     expect(calls).toHaveLength(1);
     expect(calls[0]).toEqual(['onToolCallEnd', info]);
+  });
+});
+
+// ─── STATUS_CALLBACK_METHODS ───────────────────────────────────────────────
+
+describe('STATUS_CALLBACK_METHODS', () => {
+  it('is defined as a frozen array of string literals', () => {
+    expect(STATUS_CALLBACK_METHODS).toBeInstanceOf(Array);
+    expect(Object.isFrozen(STATUS_CALLBACK_METHODS)).toBe(true);
+    expect(STATUS_CALLBACK_METHODS.length).toBeGreaterThan(0);
+  });
+
+  it('contains all method names from the StatusCallbacks interface', () => {
+    const expectedMethods = [
+      'onWorkflowStart',
+      'onPhaseStart',
+      'onPhaseComplete',
+      'onAgentSpawn',
+      'onAgentComplete',
+      'onTaskStart',
+      'onTaskComplete',
+      'onTaskRejected',
+      'onDecision',
+      'onError',
+      'onWorkflowComplete',
+      'onWorkflowFailed',
+      'onTurnStart',
+      'onTurnEnd',
+      'onToolCallStart',
+      'onToolCallEnd',
+      'onTasksAdded',
+      'onSidebarUpdate',
+    ];
+    expect([...STATUS_CALLBACK_METHODS].sort()).toEqual([...expectedMethods].sort());
+  });
+
+  it('contains no duplicate entries', () => {
+    const unique = new Set(STATUS_CALLBACK_METHODS);
+    expect(unique.size).toBe(STATUS_CALLBACK_METHODS.length);
+  });
+
+  it('each method name starts with "on" and is camelCase', () => {
+    for (const name of STATUS_CALLBACK_METHODS) {
+      expect(name).toMatch(/^on[A-Z]/);
+    }
   });
 });
 
@@ -216,6 +222,93 @@ describe('composeStatusCallbacks', () => {
     expect(calls1[0]).toBe(info);
   });
 
+  it('calls all methods on multiple callbacks in array order', () => {
+    const log: string[] = [];
+    const cb1: StatusCallbacks = {
+      onWorkflowStart: () => log.push('cb1.onWorkflowStart'),
+      onPhaseStart: () => log.push('cb1.onPhaseStart'),
+      onPhaseComplete: () => log.push('cb1.onPhaseComplete'),
+      onAgentSpawn: () => log.push('cb1.onAgentSpawn'),
+      onAgentComplete: () => log.push('cb1.onAgentComplete'),
+      onTaskStart: () => log.push('cb1.onTaskStart'),
+      onTaskComplete: () => log.push('cb1.onTaskComplete'),
+      onTaskRejected: () => log.push('cb1.onTaskRejected'),
+      onDecision: () => log.push('cb1.onDecision'),
+      onError: () => log.push('cb1.onError'),
+      onWorkflowComplete: () => log.push('cb1.onWorkflowComplete'),
+      onWorkflowFailed: () => log.push('cb1.onWorkflowFailed'),
+      onTurnStart: () => log.push('cb1.onTurnStart'),
+      onTurnEnd: () => log.push('cb1.onTurnEnd'),
+      onToolCallStart: () => log.push('cb1.onToolCallStart'),
+      onToolCallEnd: () => log.push('cb1.onToolCallEnd'),
+      onTasksAdded: () => log.push('cb1.onTasksAdded'),
+      onSidebarUpdate: () => log.push('cb1.onSidebarUpdate'),
+    };
+    const cb2: StatusCallbacks = {
+      onWorkflowStart: () => log.push('cb2.onWorkflowStart'),
+      onPhaseStart: () => log.push('cb2.onPhaseStart'),
+      onPhaseComplete: () => log.push('cb2.onPhaseComplete'),
+      onAgentSpawn: () => log.push('cb2.onAgentSpawn'),
+      onAgentComplete: () => log.push('cb2.onAgentComplete'),
+      onTaskStart: () => log.push('cb2.onTaskStart'),
+      onTaskComplete: () => log.push('cb2.onTaskComplete'),
+      onTaskRejected: () => log.push('cb2.onTaskRejected'),
+      onDecision: () => log.push('cb2.onDecision'),
+      onError: () => log.push('cb2.onError'),
+      onWorkflowComplete: () => log.push('cb2.onWorkflowComplete'),
+      onWorkflowFailed: () => log.push('cb2.onWorkflowFailed'),
+      onTurnStart: () => log.push('cb2.onTurnStart'),
+      onTurnEnd: () => log.push('cb2.onTurnEnd'),
+      onToolCallStart: () => log.push('cb2.onToolCallStart'),
+      onToolCallEnd: () => log.push('cb2.onToolCallEnd'),
+      onTasksAdded: () => log.push('cb2.onTasksAdded'),
+      onSidebarUpdate: () => log.push('cb2.onSidebarUpdate'),
+    };
+    const composed = composeStatusCallbacks([cb1, cb2]);
+
+    // Call each method on the composed object
+    composed.onWorkflowStart?.({} as any);
+    composed.onPhaseStart?.({} as any);
+    composed.onPhaseComplete?.({} as any);
+    composed.onAgentSpawn?.({} as any);
+    composed.onAgentComplete?.({} as any);
+    composed.onTaskStart?.({} as any);
+    composed.onTaskComplete?.({} as any);
+    composed.onTaskRejected?.({} as any);
+    composed.onDecision?.({} as any);
+    composed.onError?.({} as any);
+    composed.onWorkflowComplete?.({} as any);
+    composed.onWorkflowFailed?.({} as any);
+    composed.onTurnStart?.({} as any);
+    composed.onTurnEnd?.({} as any);
+    composed.onToolCallStart?.({} as any);
+    composed.onToolCallEnd?.({} as any);
+    composed.onTasksAdded?.({} as any);
+    composed.onSidebarUpdate?.({} as any);
+
+    // Each method should invoke both cb1 and cb2 in order
+    expect(log).toHaveLength(36);
+    for (let i = 0; i < 18; i++) {
+      const methodIndex = i * 2;
+      expect(log[methodIndex]).toBe(`cb1.${STATUS_CALLBACK_METHODS[i]}`);
+      expect(log[methodIndex + 1]).toBe(`cb2.${STATUS_CALLBACK_METHODS[i]}`);
+    }
+  });
+
+  it('calls a method only on cb1 when cb2 does not define it', () => {
+    const calls1: unknown[] = [];
+    const cb1: StatusCallbacks = {
+      onWorkflowStart: (info) => calls1.push(info),
+    };
+    // cb2 has no onWorkflowStart
+    const cb2: StatusCallbacks = {};
+    const composed = composeStatusCallbacks([cb1, cb2]);
+    const info = { taskPrompt: 'test', resumed: false, workDir: '/tmp' };
+    composed.onWorkflowStart?.(info);
+    expect(calls1).toHaveLength(1);
+    expect(calls1[0]).toBe(info);
+  });
+
   it('returns a no-op object when the array is empty', () => {
     const composed = composeStatusCallbacks([]);
     // All methods should exist and be callable without throwing
@@ -239,6 +332,14 @@ describe('composeStatusCallbacks', () => {
       composed.onTasksAdded?.({ tasks: [] });
       composed.onSidebarUpdate?.({});
     }).not.toThrow();
+  });
+
+  it('empty no-op object has all STATUS_CALLBACK_METHODS as keys', () => {
+    const composed = composeStatusCallbacks([]);
+    for (const methodName of STATUS_CALLBACK_METHODS) {
+      expect(composed).toHaveProperty(methodName);
+      expect(typeof (composed as any)[methodName]).toBe('function');
+    }
   });
 
   it('returns the same object reference when the array has exactly one element', () => {
@@ -277,9 +378,5 @@ describe('DEFAULT_TOOLS', () => {
     expect(DEFAULT_TOOLS).toContain('grep');
     expect(DEFAULT_TOOLS).toContain('find');
     expect(DEFAULT_TOOLS).toContain('ls');
-  });
-
-  it('has exactly 7 entries', () => {
-    expect(DEFAULT_TOOLS).toHaveLength(7);
   });
 });

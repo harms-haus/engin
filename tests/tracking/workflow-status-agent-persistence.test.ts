@@ -66,8 +66,7 @@ describe('WorkflowStatusTracker – agent persistence', () => {
     it('triggers auto-persist', async () => {
       tracker.recordAgentSpawn('agent-1', 'coder', 'scouting');
 
-      // Allow the fire-and-forget save() promise to settle
-      await new Promise((r) => setTimeout(r, 50));
+      await tracker.save();
 
       const raw = await fs.readFile(join(dir, '.engin-state.json'), 'utf-8');
       const data = JSON.parse(raw);
@@ -128,11 +127,10 @@ describe('WorkflowStatusTracker – agent persistence', () => {
 
     it('triggers auto-persist', async () => {
       tracker.recordAgentSpawn('agent-1', 'coder', 'scouting');
-      // Wait for spawn persist to settle
-      await new Promise((r) => setTimeout(r, 50));
+      await tracker.save();
 
       tracker.recordAgentComplete('agent-1');
-      await new Promise((r) => setTimeout(r, 50));
+      await tracker.save();
 
       const raw = await fs.readFile(join(dir, '.engin-state.json'), 'utf-8');
       const data = JSON.parse(raw);
@@ -241,8 +239,7 @@ describe('WorkflowStatusTracker – agent persistence', () => {
       expect(agents[1].agentId).toBe('agent-2');
       expect(agents[1].completedAt).toBeDefined();
 
-      // Wait for debounced persist to settle before reading from disk
-      await new Promise((r) => setTimeout(r, 50));
+      await restored.save();
 
       // Verify persisted
       const reloaded = await WorkflowStatusTracker.load(dir);
@@ -274,7 +271,7 @@ describe('WorkflowStatusTracker – agent persistence', () => {
     it('spawn triggers auto-persist to disk', async () => {
       tracker.recordAgentSpawn('agent-1', 'coder', 'scouting');
 
-      await new Promise((r) => setTimeout(r, 50));
+      await tracker.save();
 
       const restored = await WorkflowStatusTracker.load(dir);
       expect(restored.spawnedAgents).toHaveLength(1);
@@ -283,10 +280,10 @@ describe('WorkflowStatusTracker – agent persistence', () => {
 
     it('complete triggers auto-persist to disk', async () => {
       tracker.recordAgentSpawn('agent-1', 'coder', 'scouting');
-      await new Promise((r) => setTimeout(r, 50));
+      await tracker.save();
 
       tracker.recordAgentComplete('agent-1');
-      await new Promise((r) => setTimeout(r, 50));
+      await tracker.save();
 
       const restored = await WorkflowStatusTracker.load(dir);
       expect(restored.spawnedAgents[0].completedAt).toBeDefined();
@@ -366,8 +363,7 @@ describe('WorkflowStatusTracker – agent persistence', () => {
     it('persists via debounced auto-persist', async () => {
       tracker.recordAgentSpawn({ agentId: 'agent-obj-3', profile: 'coder', phase: 'implementing' });
 
-      // Wait for debounced persist
-      await new Promise((r) => setTimeout(r, 50));
+      await tracker.save();
 
       const raw = await fs.readFile(join(dir, '.engin-state.json'), 'utf-8');
       const data = JSON.parse(raw);
@@ -415,8 +411,7 @@ describe('WorkflowStatusTracker – agent persistence', () => {
       // All 5 should be in memory immediately
       expect(tracker.spawnedAgents).toHaveLength(5);
 
-      // Wait for debounced persist to settle
-      await new Promise((r) => setTimeout(r, 50));
+      await tracker.save();
 
       // All 5 should be persisted in a single file
       const raw = await fs.readFile(join(dir, '.engin-state.json'), 'utf-8');
@@ -435,8 +430,7 @@ describe('WorkflowStatusTracker – agent persistence', () => {
       expect(tracker.spawnedAgents).toHaveLength(1);
       expect(tracker.spawnedAgents[0].completedAt).toBeDefined();
 
-      // Wait for debounced persist
-      await new Promise((r) => setTimeout(r, 50));
+      await tracker.save();
 
       const raw = await fs.readFile(join(dir, '.engin-state.json'), 'utf-8');
       const data = JSON.parse(raw);
@@ -450,9 +444,7 @@ describe('WorkflowStatusTracker – agent persistence', () => {
 
       tracker.recordAgentSpawn('agent-1', 'coder', 'scouting');
 
-      // The debounced persist schedules a save on the next microtask.
-      // After a short delay, the file should exist on disk.
-      await new Promise((r) => setTimeout(r, 50));
+      await tracker.save();
 
       const raw = await fs.readFile(join(dir, '.engin-state.json'), 'utf-8');
       const data = JSON.parse(raw);

@@ -420,4 +420,154 @@ describe('StatusBridge', () => {
       expect(agentT2).toBeDefined();
     });
   });
+
+  // ─── Handler-group decomposition tests ────────────────────────────────────
+
+  describe('handler-group decomposition', () => {
+    describe('createWorkflowHandlers', () => {
+      it('returns onWorkflowStart, onWorkflowComplete, onWorkflowFailed', () => {
+        const { bridge } = createBridge();
+        const handlers = (bridge as any).createWorkflowHandlers();
+        expect(handlers).toHaveProperty('onWorkflowStart');
+        expect(handlers).toHaveProperty('onWorkflowComplete');
+        expect(handlers).toHaveProperty('onWorkflowFailed');
+        expect(Object.keys(handlers)).toHaveLength(3);
+      });
+
+      it('onWorkflowStart is a no-op (does not broadcast)', () => {
+        const { bridge, messages } = createBridge();
+        const handlers = (bridge as any).createWorkflowHandlers();
+        handlers.onWorkflowStart!({ taskPrompt: 'test', resumed: false, workDir: '/tmp' });
+        expect(messages).toHaveLength(0);
+      });
+
+      it('onWorkflowComplete broadcasts workflow_complete', () => {
+        const { bridge, messages } = createBridge();
+        const handlers = (bridge as any).createWorkflowHandlers();
+        handlers.onWorkflowComplete!({ totalDurationMs: 100, agentCount: 1 });
+        expect(messages).toHaveLength(1);
+        expect(messages[0]).toEqual({ type: 'workflow_complete' });
+      });
+
+      it('onWorkflowFailed broadcasts workflow_failed with error and phase', () => {
+        const { bridge, messages } = createBridge();
+        const handlers = (bridge as any).createWorkflowHandlers();
+        handlers.onWorkflowFailed!({ error: new Error('fail'), phase: 'test' });
+        expect(messages).toHaveLength(1);
+        expect(messages[0]).toEqual({
+          type: 'workflow_failed',
+          error: 'fail',
+          phase: 'test',
+        });
+      });
+    });
+
+    describe('createPhaseHandlers', () => {
+      it('returns onPhaseStart and onPhaseComplete', () => {
+        const { bridge } = createBridge();
+        const handlers = (bridge as any).createPhaseHandlers();
+        expect(handlers).toHaveProperty('onPhaseStart');
+        expect(handlers).toHaveProperty('onPhaseComplete');
+        expect(Object.keys(handlers)).toHaveLength(2);
+      });
+
+      it('onPhaseStart broadcasts workflow_phase and updates state', () => {
+        const { bridge, messages } = createBridge();
+        const handlers = (bridge as any).createPhaseHandlers();
+        handlers.onPhaseStart!({ phase: 'scouting', round: 1 });
+
+        expect(messages).toHaveLength(1);
+        expect(messages[0]).toEqual({
+          type: 'workflow_phase',
+          phase: 'scouting',
+          completed: [],
+          currentPhase: 'scouting',
+        });
+        expect(bridge['currentPhase']).toBe('scouting');
+      });
+
+      it('onPhaseComplete adds phase to completed and broadcasts', () => {
+        const { bridge, messages } = createBridge();
+        const handlers = (bridge as any).createPhaseHandlers();
+        handlers.onPhaseComplete!({ phase: 'scouting', durationMs: 500 });
+
+        expect(messages).toHaveLength(1);
+        expect(messages[0]).toEqual({
+          type: 'workflow_phase',
+          phase: 'scouting',
+          completed: ['scouting'],
+          currentPhase: '',
+        });
+      });
+    });
+
+    describe('createAgentHandlers', () => {
+      it('returns all agent-related handlers', () => {
+        const { bridge } = createBridge();
+        const handlers = (bridge as any).createAgentHandlers();
+        expect(handlers).toHaveProperty('onAgentSpawn');
+        expect(handlers).toHaveProperty('onAgentComplete');
+        expect(handlers).toHaveProperty('onTurnEnd');
+        expect(handlers).toHaveProperty('onToolCallStart');
+        expect(handlers).toHaveProperty('onToolCallEnd');
+        expect(handlers).toHaveProperty('onError');
+        expect(handlers).toHaveProperty('onDecision');
+        expect(Object.keys(handlers)).toHaveLength(7);
+      });
+    });
+
+    describe('createTaskHandlers', () => {
+      it('returns all task-related handlers', () => {
+        const { bridge } = createBridge();
+        const handlers = (bridge as any).createTaskHandlers();
+        expect(handlers).toHaveProperty('onTasksAdded');
+        expect(handlers).toHaveProperty('onTaskStart');
+        expect(handlers).toHaveProperty('onTaskComplete');
+        expect(handlers).toHaveProperty('onTaskRejected');
+        expect(Object.keys(handlers)).toHaveLength(4);
+      });
+    });
+
+    describe('getCallbacks composition', () => {
+      it('returns all required callbacks from merged groups', () => {
+        const { callbacks } = createBridge();
+        // Workflow handlers
+        expect(callbacks.onWorkflowStart).toBeDefined();
+        expect(callbacks.onWorkflowComplete).toBeDefined();
+        expect(callbacks.onWorkflowFailed).toBeDefined();
+        // Phase handlers
+        expect(callbacks.onPhaseStart).toBeDefined();
+        expect(callbacks.onPhaseComplete).toBeDefined();
+        // Agent handlers
+        expect(callbacks.onAgentSpawn).toBeDefined();
+        expect(callbacks.onAgentComplete).toBeDefined();
+        expect(callbacks.onTurnEnd).toBeDefined();
+        expect(callbacks.onToolCallStart).toBeDefined();
+        expect(callbacks.onToolCallEnd).toBeDefined();
+        expect(callbacks.onError).toBeDefined();
+        expect(callbacks.onDecision).toBeDefined();
+        // Task handlers
+        expect(callbacks.onTasksAdded).toBeDefined();
+        expect(callbacks.onTaskStart).toBeDefined();
+        expect(callbacks.onTaskComplete).toBeDefined();
+        expect(callbacks.onTaskRejected).toBeDefined();
+        // Sidebar (inline in getCallbacks)
+        expect(callbacks.onSidebarUpdate).toBeDefined();
+      });
+
+      it('onSidebarUpdate is a direct method on the returned object (not from a group)', () => {
+        const { bridge } = createBridge();
+        const callbacks = bridge.getCallbacks();
+        // Verify onSidebarUpdate is not from any of the group methods
+        const workflowKeys = Object.keys((bridge as any).createWorkflowHandlers());
+        const phaseKeys = Object.keys((bridge as any).createPhaseHandlers());
+        const agentKeys = Object.keys((bridge as any).createAgentHandlers());
+        const taskKeys = Object.keys((bridge as any).createTaskHandlers());
+        const allGroupKeys = [...workflowKeys, ...phaseKeys, ...agentKeys, ...taskKeys];
+        expect(allGroupKeys).not.toContain('onSidebarUpdate');
+        // But the callbacks object has it
+        expect(callbacks.onSidebarUpdate).toBeDefined();
+      });
+    });
+  });
 });

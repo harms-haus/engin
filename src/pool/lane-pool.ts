@@ -120,6 +120,7 @@ export class LanePool {
   private async runLane(laneIndex: number, profiles: Map<string, AgentProfile>): Promise<void> {
     const { taskTracker } = this.options;
     const agentId = `lane-${laneIndex}`;
+    const WAIT_TIMEOUT_MS = 30000;
 
     while (true) {
       // Check for cancellation
@@ -132,8 +133,13 @@ export class LanePool {
         if (taskTracker.isPoolDone()) {
           return;
         }
-        // ── Dual-listener wait ──────────────────────────────────────────
+        // ── Dual-listener wait with safety timeout ────────────────────────
         await new Promise<void>((resolve) => {
+          const timer = setTimeout(() => {
+            cleanup();
+            console.warn(`[${agentId}] Lane wait timeout after ${WAIT_TIMEOUT_MS}ms, retrying`);
+            resolve();
+          }, WAIT_TIMEOUT_MS);
           const onReady = () => {
             cleanup();
             resolve();
@@ -143,6 +149,7 @@ export class LanePool {
             resolve();
           };
           const cleanup = () => {
+            clearTimeout(timer);
             taskTracker.removeListener(TaskTracker.Events.TaskReady, onReady);
             taskTracker.removeListener(TaskTracker.Events.TaskSettled, onReady);
             this.options.signal?.removeEventListener('abort', onAbort);

@@ -49,6 +49,7 @@ mock.module('../../src/core/structured-output.ts', () => ({
 
 // ─── Imports (after mocks) ─────────────────────────────────────────────────
 
+import type { StatusCallbacks } from '../../src/core/types.js';
 import { LanePool } from '../../src/pool/lane-pool.ts';
 import type { StepDefinition } from '../../src/pool/types.js';
 
@@ -90,6 +91,7 @@ interface AbortPoolOptions {
   getStepsForTask?: (task: Task) => StepDefinition[];
   tasks?: Task[];
   signal?: AbortSignal;
+  onStatus?: StatusCallbacks;
 }
 
 function createPoolAndTracker(overrides?: AbortPoolOptions) {
@@ -111,6 +113,7 @@ function createPoolAndTracker(overrides?: AbortPoolOptions) {
     taskTracker: tracker,
     getStepsForTask,
     signal: overrides?.signal,
+    onStatus: overrides?.onStatus,
   });
 
   return { pool, tracker };
@@ -221,10 +224,20 @@ describe('LanePool AbortSignal handling', () => {
         }
       });
 
+      let promptsCalledResolve: (() => void) | undefined;
+      const promptsCalled = new Promise<void>((resolve) => {
+        promptsCalledResolve = resolve;
+      });
+      let promptsCalledCount = 0;
+
       const makeDelayedSession = () => ({
         ...makeSession(() => 'done'),
         abort: abortFn,
         prompt: mock(async () => {
+          promptsCalledCount++;
+          if (promptsCalledCount === 2 && promptsCalledResolve) {
+            promptsCalledResolve();
+          }
           await new Promise<void>((resolve) => {
             promptResolvers.push(resolve);
           });
@@ -253,8 +266,8 @@ describe('LanePool AbortSignal handling', () => {
 
       const runPromise = pool.run();
 
-      // Wait for lanes to start processing (harness created, prompt called)
-      await new Promise((resolve) => setTimeout(resolve, 80));
+      // Wait for both lanes to call session.prompt (i.e., they are mid-prompt)
+      await promptsCalled;
 
       // Abort while lanes are mid-prompt — abortActiveSessions calls session.abort()
       // which resolves the pending prompt promises
@@ -287,6 +300,10 @@ describe('LanePool AbortSignal handling', () => {
       // First harness blocks on prompt; subsequent ones would succeed
       let harnessCallCount = 0;
       let firstPromptResolve: (() => void) | undefined;
+      let promptCalledResolve: (() => void) | undefined;
+      const promptCalled = new Promise<void>((resolve) => {
+        promptCalledResolve = resolve;
+      });
       mockCreateHarness.mockImplementation(() => {
         harnessCallCount++;
         if (harnessCallCount === 1) {
@@ -298,6 +315,8 @@ describe('LanePool AbortSignal handling', () => {
               if (firstPromptResolve) firstPromptResolve();
             }),
             prompt: mock(async () => {
+              // Signal that prompt was called (lane is mid-prompt)
+              if (promptCalledResolve) promptCalledResolve();
               await new Promise<void>((resolve) => {
                 firstPromptResolve = resolve;
               });
@@ -318,8 +337,8 @@ describe('LanePool AbortSignal handling', () => {
 
       const runPromise = pool.run();
 
-      // Wait for the first task to be in progress (mid-prompt)
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      // Wait for the first task to start its prompt (lane is mid-processing)
+      await promptCalled;
 
       // Abort while the first task is still being processed
       controller.abort();
@@ -406,30 +425,45 @@ describe('LanePool AbortSignal handling', () => {
 
       const tasks = [makeTask({ id: 'task-1' }), makeTask({ id: 'task-2' })];
 
+      // Override session.prompt to block until abort fires, and track
+      // when prompts are called so we know both lanes are mid-prompt.
+      let promptsCalledResolve: (() => void) | undefined;
+      const promptsCalled = new Promise<void>((resolve) => {
+        promptsCalledResolve = resolve;
+      });
+      let promptsCalledCount = 0;
+
+      const promptPromises: { resolve: () => void }[] = [];
+
+      session1.prompt = mock(async () => {
+        promptsCalledCount++;
+        if (promptsCalledCount === 2 && promptsCalledResolve) {
+          promptsCalledResolve();
+        }
+        await new Promise<void>((resolve) => {
+          promptPromises.push({ resolve });
+        });
+      });
+      session2.prompt = mock(async () => {
+        promptsCalledCount++;
+        if (promptsCalledCount === 2 && promptsCalledResolve) {
+          promptsCalledResolve();
+        }
+        await new Promise<void>((resolve) => {
+          promptPromises.push({ resolve });
+        });
+      });
+
       const { pool } = createPoolAndTracker({
         tasks,
         maxConcurrentLanes: 2,
         signal: controller.signal,
       });
 
-      // Override session.prompt to block until abort fires
-      const promptPromises: { resolve: () => void }[] = [];
-
-      session1.prompt = mock(async () => {
-        await new Promise<void>((resolve) => {
-          promptPromises.push({ resolve });
-        });
-      });
-      session2.prompt = mock(async () => {
-        await new Promise<void>((resolve) => {
-          promptPromises.push({ resolve });
-        });
-      });
-
       const runPromise = pool.run();
 
-      // Wait for lanes to start and sessions to be added to activeSessions
-      await new Promise((resolve) => setTimeout(resolve, 80));
+      // Wait for both sessions to start their prompts (both lanes mid-prompt)
+      await promptsCalled;
 
       // Both sessions should be in activeSessions now, fire abort
       controller.abort();
@@ -459,10 +493,17 @@ describe('LanePool AbortSignal handling', () => {
         if (promptResolve) promptResolve();
       });
 
+      let promptCalledResolve: (() => void) | undefined;
+      const promptCalled = new Promise<void>((resolve) => {
+        promptCalledResolve = resolve;
+      });
+
       const session = {
         ...makeSession(() => 'done'),
         abort: abortFn,
         prompt: mock(async () => {
+          // Signal that the session prompt was called (lane is mid-prompt)
+          if (promptCalledResolve) promptCalledResolve();
           await new Promise<void>((resolve) => {
             promptResolve = resolve;
           });
@@ -485,8 +526,8 @@ describe('LanePool AbortSignal handling', () => {
 
       const runPromise = pool.run();
 
-      // Wait for the session to be in activeSessions (mid-prompt)
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      // Wait for the session's prompt to be called (lane is mid-prompt)
+      await promptCalled;
 
       // Abort should trigger abortActiveSessions which calls session.abort(),
       // which resolves the pending prompt, allowing the lane to continue
@@ -517,7 +558,13 @@ describe('LanePool AbortSignal handling', () => {
       };
 
       let promptResolve: (() => void) | undefined;
+      let promptCalledResolve: (() => void) | undefined;
+      const promptCalled = new Promise<void>((resolve) => {
+        promptCalledResolve = resolve;
+      });
       session.prompt = mock(async () => {
+        // Signal that the session prompt was called (lane is mid-prompt)
+        if (promptCalledResolve) promptCalledResolve();
         await new Promise<void>((resolve) => {
           promptResolve = resolve;
         });
@@ -561,7 +608,8 @@ describe('LanePool AbortSignal handling', () => {
 
       const runPromise = poolWithStatus.run();
 
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      // Wait for the session to start its prompt (lane is mid-processing)
+      await promptCalled;
 
       // Abort while the session is active
       controller.abort();

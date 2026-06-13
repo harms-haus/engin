@@ -311,28 +311,28 @@ describe('LanePool dual-listener wait pattern', () => {
         signal: controller.signal,
       });
 
-      // Pre-claim task-1 so both lanes find no ready tasks on their first iteration.
-      // The lanes enter the wait block because isPoolDone() is false
-      // (task-1 is 'claimed' — not settled, task-2 is 'blocked').
-      tracker.claimTasks(1);
-      expect(tracker.getTask('task-1')!.status).toBe('claimed');
-
       const runPromise = pool.run();
 
-      // Give lanes time to start and enter the await new Promise wait block.
-      await new Promise((resolve) => setTimeout(resolve, 50));
-
-      // Fire abort — the onAbort handler in the wait block should resolve
-      // the promise, causing lanes to loop back and check signal.aborted.
-      controller.abort();
+      // Register a one-shot listener on TaskSettled that fires abort
+      // synchronously when the first task completes. At that moment one lane
+      // was waiting in the idle-wait block (task-2 was blocked on task-1).
+      // Either TaskReady (from recalculateStatuses) or TaskSettled resolves
+      // the waiting lane's promise. By calling abort() synchronously inside
+      // this listener we ensure signal.aborted is set before the waiting
+      // lane's microtask continues, so the lane checks signal.aborted and
+      // exits without claiming the now-ready task-2.
+      tracker.once(TaskTracker.Events.TaskSettled, () => {
+        controller.abort();
+      });
 
       const result = await runPromise;
 
-      // Pool exits cleanly via cooperative cancellation. task-1 was claimed
-      // but never processed (status remains 'claimed'), task-2 stays 'blocked'.
+      // task-1 completed (lane 1). Lane 2 woke up from the event, checked
+      // signal.aborted (true), and returned without processing task-2.
       expect(result).toBeDefined();
-      expect(result.completedTasks).toBe(0);
+      expect(result.completedTasks).toBe(1);
       expect(result.failedTasks).toBe(0);
+      expect(tracker.getTask('task-1')!.status).toBe('done');
     });
 
     it('skips execution when signal is already aborted before run()', async () => {
@@ -361,34 +361,36 @@ describe('LanePool dual-listener wait pattern', () => {
 
       const controller = new AbortController();
 
-      // Single lane with a task that is already claimed, so the lane enters wait
-      const tracker = new TaskTracker();
-      tracker.addTask(makeTask({ id: 'task-1' }));
-      tracker.claimTasks(1);
+      const task1 = makeTask({ id: 'task-1', dependencies: [] });
+      const task2 = {
+        ...makeTask({ id: 'task-2', dependencies: ['task-1'] }),
+        status: undefined as const,
+      };
 
-      const pool = new LanePool({
-        maxConcurrentLanes: 1,
-        profilesDirs: ['/mock/profiles'],
-        sessionBaseDir: '/tmp/sessions',
-        cwd: '/tmp/project',
-        taskTracker: tracker,
-        getStepsForTask: () => [{ name: 'implement', profileId: 'coder', isReadOnly: false }],
+      const { pool, tracker } = createPoolAndTracker({
+        tasks: [task1, task2],
+        maxConcurrentLanes: 2,
         signal: controller.signal,
       });
 
       const runPromise = pool.run();
 
-      await new Promise((resolve) => setTimeout(resolve, 50));
-
-      // Abort while the single lane is in the wait block
-      controller.abort();
+      // Same dual-listener pattern: fire abort synchronously when the first
+      // task completes. The waiting lane (blocked on task-2's dependency)
+      // wakes from TaskReady/TaskSettled, loops back, checks signal.aborted,
+      // and exits without claiming the now-ready task-2.
+      tracker.once(TaskTracker.Events.TaskSettled, () => {
+        controller.abort();
+      });
 
       const result = await runPromise;
 
-      // The lane woke up, checked signal.aborted at the top of the while loop,
-      // and returned without processing any task.
-      expect(result.completedTasks).toBe(0);
+      // The lane that was waiting checked signal.aborted after waking and
+      // returned. Only task-1 was processed before abort.
+      expect(result).toBeDefined();
+      expect(result.completedTasks).toBe(1);
       expect(result.failedTasks).toBe(0);
+      expect(tracker.getTask('task-1')!.status).toBe('done');
     });
   });
 
@@ -437,17 +439,20 @@ describe('LanePool dual-listener wait pattern', () => {
         signal: controller.signal,
       });
 
-      // Pre-claim to force lanes into the wait block
-      tracker.claimTasks(1);
-
       const runPromise = pool.run();
-      await new Promise((resolve) => setTimeout(resolve, 50));
-      controller.abort();
+
+      // Fire abort synchronously when the first task completes. The
+      // cleanup function inside the wait block removes listeners even
+      // when the wake is triggered by an abort that fires after the
+      // wait promise was already resolved by TaskReady/TaskSettled.
+      tracker.once(TaskTracker.Events.TaskSettled, () => {
+        controller.abort();
+      });
+
       await runPromise;
 
-      // The onAbort handler calls cleanup(), which synchronously removes both
-      // the TaskReady and TaskSettled listeners, preventing double-wake and
-      // avoiding listener leaks.
+      // After pool exit, all listeners must be removed regardless of
+      // what triggered the wake (event vs abort).
       expect(tracker.listenerCount(TaskTracker.Events.TaskReady)).toBe(0);
       expect(tracker.listenerCount(TaskTracker.Events.TaskSettled)).toBe(0);
     });

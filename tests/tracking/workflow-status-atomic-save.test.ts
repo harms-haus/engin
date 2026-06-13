@@ -224,8 +224,7 @@ describe('WorkflowStatusTracker – atomic save', () => {
       tracker.taskTracker.submitForReview('t1', { done: true });
       tracker.taskTracker.completeTask('t1');
 
-      // Allow the fire-and-forget save to settle
-      await new Promise((r) => setTimeout(r, 50));
+      await tracker.save();
 
       // No temp file should remain
       const tmpPath = join(dir, '.engin-state.json.tmp');

@@ -349,8 +349,7 @@ describe('WorkflowStatusTracker', () => {
       tracker.taskTracker.submitForReview('t1', { ok: true });
       tracker.taskTracker.completeTask('t1');
 
-      // Allow the fire-and-forget save() promise to settle
-      await new Promise((r) => setTimeout(r, 50));
+      await tracker.save();
 
       const restored = await WorkflowStatusTracker.load(dir);
       expect(restored.taskTracker.getTask('t1')!.status).toBe('done');
@@ -365,7 +364,7 @@ describe('WorkflowStatusTracker', () => {
       tracker.taskTracker.startTask('t1', 'agent-x');
       tracker.taskTracker.failTask('t1', { error: 'boom' });
 
-      await new Promise((r) => setTimeout(r, 50));
+      await tracker.save();
 
       const restored = await WorkflowStatusTracker.load(dir);
       // On resume, failed tasks are reset to 'ready' for retry
@@ -389,7 +388,7 @@ describe('WorkflowStatusTracker', () => {
       restored.taskTracker.submitForReview('t1', { ok: true });
       restored.taskTracker.completeTask('t1');
 
-      await new Promise((r) => setTimeout(r, 50));
+      await restored.save();
 
       // Reload from disk — should reflect the completed task
       const reloaded = await WorkflowStatusTracker.load(dir);
@@ -414,8 +413,7 @@ describe('WorkflowStatusTracker', () => {
       // completeTask should not throw — save() is fire-and-forget with .catch()
       tracker.taskTracker.completeTask('t1');
 
-      // Wait for the fire-and-forget save attempt to settle
-      await new Promise((r) => setTimeout(r, 50));
+      await tracker.save().catch(() => {});
 
       // In-memory state is still correct despite the save failure
       expect(tracker.taskTracker.getTask('t1')!.status).toBe('done');
@@ -461,9 +459,6 @@ describe('WorkflowStatusTracker', () => {
         dependencies: [],
       });
 
-      // Wait one tick for any async save to settle
-      await new Promise((r) => setTimeout(r, 10));
-
       await expect(fs.readFile(path.join(isolatedDir, '.engin-state.json'), 'utf-8')).rejects.toThrow();
     });
 
@@ -479,11 +474,125 @@ describe('WorkflowStatusTracker', () => {
       isolatedTracker.taskTracker.submitForReview('t1', { done: true });
       isolatedTracker.taskTracker.completeTask('t1');
 
-      await new Promise((r) => setTimeout(r, 50));
-
       // Load from disk — the task should still be 'ready' (pre-dispose state)
       const restored = await WorkflowStatusTracker.load(isolatedDir);
       expect(restored.taskTracker.getTask('t1')!.status).toBe('ready');
+    });
+  });
+
+  // ── AbortSignal ────────────────────────────────────────────────────
+
+  describe('AbortSignal', () => {
+    it('constructor accepts an optional AbortSignal as second parameter', () => {
+      const ac = new AbortController();
+      const withSignal = new WorkflowStatusTracker(dir, ac.signal);
+      expect(withSignal).toBeDefined();
+      expect(withSignal.taskTracker).toBeDefined();
+      withSignal.dispose();
+    });
+
+    it('calling abort() on the signal triggers dispose() automatically', () => {
+      const ac = new AbortController();
+      const signalTracker = new WorkflowStatusTracker(dir, ac.signal);
+
+      // Spy on dispose by checking event listeners are removed after abort
+      signalTracker.taskTracker.addTask(makeTask({ id: 't1' }));
+      ac.abort();
+
+      // After abort, listeners should be removed — task operations should not throw
+      expect(() => {
+        signalTracker.taskTracker.addTask(makeTask({ id: 't2' }));
+      }).not.toThrow();
+    });
+
+    it('auto-persist is disabled after signal abort', async () => {
+      const ac = new AbortController();
+      const signalTracker = new WorkflowStatusTracker(dir, ac.signal);
+
+      signalTracker.setTaskPrompt('abort-test');
+      signalTracker.taskTracker.addTask(makeTask({ id: 't1' }));
+
+      ac.abort();
+
+      // Complete a task after abort — should NOT persist
+      const _claimed = signalTracker.taskTracker.claimTasks(1);
+      signalTracker.taskTracker.startTask('t1', 'agent-1');
+      signalTracker.taskTracker.submitForReview('t1', { done: true });
+      signalTracker.taskTracker.completeTask('t1');
+
+      // The original tracker never saved, so load should fail
+      await expect(WorkflowStatusTracker.load(dir)).rejects.toThrow('Workflow state file not found');
+    });
+
+    it('signal abort with once:true ensures listener is called only once', () => {
+      const ac = new AbortController();
+      let disposeCallCount = 0;
+
+      // Create tracker with signal
+      const signalTracker = new WorkflowStatusTracker(dir, ac.signal);
+
+      // Override dispose to count calls
+      const originalDispose = signalTracker.dispose.bind(signalTracker);
+      signalTracker.dispose = () => {
+        disposeCallCount++;
+        originalDispose();
+      };
+
+      ac.abort(); // First abort triggers dispose
+      ac.abort(); // Second abort should do nothing (once:true)
+
+      expect(disposeCallCount).toBe(1);
+
+      // Restore
+      signalTracker.dispose = originalDispose;
+    });
+
+    it('dispose() sets _signal to null (covered by no double-free)', () => {
+      const ac = new AbortController();
+      const signalTracker = new WorkflowStatusTracker(dir, ac.signal);
+      signalTracker.dispose();
+      // Second dispose should not throw
+      expect(() => signalTracker.dispose()).not.toThrow();
+    });
+
+    it('without signal, behavior is unchanged', () => {
+      const noSignal = new WorkflowStatusTracker(dir);
+      expect(noSignal).toBeDefined();
+      expect(() => noSignal.dispose()).not.toThrow();
+    });
+
+    it('static load() creates a tracker without a signal (known limitation)', async () => {
+      // First save with a normal tracker
+      tracker.setTaskPrompt('load-test');
+      await tracker.save();
+
+      // Load without signal — should work fine
+      const restored = await WorkflowStatusTracker.load(dir);
+      expect(restored.taskPrompt).toBe('load-test');
+      // No signal attached, so dispose still works
+      expect(() => restored.dispose()).not.toThrow();
+    });
+
+    it('multiple trackers can share the same signal', () => {
+      const ac = new AbortController();
+      const t1 = new WorkflowStatusTracker(dir, ac.signal);
+      const t2 = new WorkflowStatusTracker(dir, ac.signal);
+
+      ac.abort();
+
+      // Both should be disposed (listeners removed)
+      expect(() => t1.dispose()).not.toThrow();
+      expect(() => t2.dispose()).not.toThrow();
+    });
+
+    it('abort signal after manual dispose does not double-free', () => {
+      const ac = new AbortController();
+      const signalTracker = new WorkflowStatusTracker(dir, ac.signal);
+
+      signalTracker.dispose(); // Manual dispose first
+      ac.abort(); // Then abort — should not throw
+
+      expect(() => signalTracker.dispose()).not.toThrow();
     });
   });
 

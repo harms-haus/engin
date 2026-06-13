@@ -32,6 +32,26 @@ export class StatusBridge {
    */
   getCallbacks(): StatusCallbacks {
     return {
+      ...this.createWorkflowHandlers(),
+      ...this.createPhaseHandlers(),
+      ...this.createAgentHandlers(),
+      ...this.createTaskHandlers(),
+      onSidebarUpdate: (info) => {
+        if (info.title !== undefined) this.sidebar.title = info.title;
+        if (info.indicator !== undefined) this.sidebar.indicator = info.indicator;
+        if (info.phases !== undefined) this.sidebar.phases = info.phases;
+        this.broadcast({ type: 'workflow_sidebar', sidebar: { ...this.sidebar } });
+      },
+    };
+  }
+
+  // ─── Handler-group builders ──────────────────────────────────────────────
+
+  private createWorkflowHandlers(): Pick<
+    StatusCallbacks,
+    'onWorkflowStart' | 'onWorkflowComplete' | 'onWorkflowFailed'
+  > {
+    return {
       onWorkflowStart: () => {
         // no-op: workflow start is not broadcast
       },
@@ -43,7 +63,11 @@ export class StatusBridge {
       onWorkflowFailed: (info) => {
         this.broadcast({ type: 'workflow_failed', error: info.error.message, phase: info.phase });
       },
+    };
+  }
 
+  private createPhaseHandlers(): Pick<StatusCallbacks, 'onPhaseStart' | 'onPhaseComplete'> {
+    return {
       onPhaseStart: (info) => {
         if (this.currentPhase) {
           this.completedPhases.push(this.currentPhase);
@@ -68,7 +92,14 @@ export class StatusBridge {
           currentPhase: this.currentPhase,
         });
       },
+    };
+  }
 
+  private createAgentHandlers(): Pick<
+    StatusCallbacks,
+    'onAgentSpawn' | 'onAgentComplete' | 'onTurnEnd' | 'onToolCallStart' | 'onToolCallEnd' | 'onError' | 'onDecision'
+  > {
+    return {
       onAgentSpawn: (info) => {
         const agent: AgentWindowState = {
           agentId: info.agentId,
@@ -171,7 +202,14 @@ export class StatusBridge {
         this.appendAgentLog(info.agentId, info.taskId, entry);
         this.broadcast({ type: 'agent_log', agentId: info.agentId, entry, taskId: info.taskId });
       },
+    };
+  }
 
+  private createTaskHandlers(): Pick<
+    StatusCallbacks,
+    'onTasksAdded' | 'onTaskStart' | 'onTaskComplete' | 'onTaskRejected'
+  > {
+    return {
       onTasksAdded: (info) => {
         for (const task of info.tasks) {
           const existing = this.tasks.get(task.id);
@@ -232,13 +270,6 @@ export class StatusBridge {
           });
         }
         this.broadcast({ type: 'tasks_updated', tasks: Array.from(this.tasks.values()) });
-      },
-
-      onSidebarUpdate: (info) => {
-        if (info.title !== undefined) this.sidebar.title = info.title;
-        if (info.indicator !== undefined) this.sidebar.indicator = info.indicator;
-        if (info.phases !== undefined) this.sidebar.phases = info.phases;
-        this.broadcast({ type: 'workflow_sidebar', sidebar: { ...this.sidebar } });
       },
     };
   }

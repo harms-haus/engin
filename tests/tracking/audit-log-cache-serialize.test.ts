@@ -544,4 +544,260 @@ describe('AuditLog cache serialization', () => {
     const events = await log.getEvents();
     expect(events).toEqual([]);
   });
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  Race-condition fix: append during concurrent getEvents rebuild
+  // ═══════════════════════════════════════════════════════════════════
+
+  it('append during concurrent getEvents rebuild returns fresh data (race fix)', async () => {
+    // Write one event and populate the cache
+    await log.append({ type: 'agent_start', agentId: 'a1', profile: {} as never });
+    await log.getEvents();
+
+    // Manually set up a slow rebuild: null the cache but leave _cacheStale=false
+    // so getEvents enters the build path without the staleness shortcut
+    (log as any).cache = null;
+    (log as any)._cacheStale = false;
+
+    // Create a deferred promise to simulate a long-running file read
+    let resolveBuild: (events: AuditEvent[]) => void;
+    const slowBuild = new Promise<AuditEvent[]>((resolve) => {
+      resolveBuild = resolve;
+    });
+    (log as any).cacheBuildPromise = slowBuild;
+
+    // Start getEvents – it will await the slow build
+    const getEventsPromise = log.getEvents();
+
+    // While the build is "in flight", append a new event
+    // With the fix, append() sets _cacheStale=true and does NOT null cacheBuildPromise
+    await log.append({ type: 'agent_end', agentId: 'a1', result: {} });
+
+    // _cacheStale should now be true (append marked it)
+    expect((log as any)._cacheStale).toBe(true);
+
+    // cacheBuildPromise should still be the slowBuild (append didn't null it)
+    expect((log as any).cacheBuildPromise).toBe(slowBuild);
+
+    // Resolve the slow build with stale data (missing the appended event)
+    const staleEvent: AuditEvent = {
+      type: 'agent_start',
+      agentId: 'a1',
+      profile: {} as never,
+      timestamp: new Date().toISOString(),
+    };
+    (resolveBuild as (v: AuditEvent[]) => void)([staleEvent]);
+
+    // Wait for getEvents to complete
+    const events = await getEventsPromise;
+
+    // With the race fix, getEvents detects _cacheStale after the stale build
+    // completes and triggers a fresh rebuild from disk that includes the
+    // appended event. The result should have 2 events, not 1.
+    expect(events).toHaveLength(2);
+    expect(events.map((e) => e.type).sort()).toEqual(['agent_end', 'agent_start']);
+  });
+
+  it('append does not null cacheBuildPromise when build is in flight (race fix)', async () => {
+    // Populate cache so it's non-null
+    await log.append({ type: 'agent_start', agentId: 'a1', profile: {} as never });
+    await log.getEvents();
+    expect((log as any).cache).not.toBeNull();
+
+    // Mark staleness as handled (clean slate)
+    (log as any)._cacheStale = false;
+
+    // Simulate an in-flight build by setting cacheBuildPromise to a deferred promise
+    let resolveBuild: (events: AuditEvent[]) => void;
+    const slowBuild = new Promise<AuditEvent[]>((resolve) => {
+      resolveBuild = resolve;
+    });
+    (log as any).cacheBuildPromise = slowBuild;
+
+    // Append while build is in flight
+    // With the fix, append() must NOT null cacheBuildPromise (it's non-null),
+    // and must NOT null cache (because cacheBuildPromise is non-null).
+    await log.append({ type: 'agent_end', agentId: 'a1', result: {} });
+
+    // cacheBuildPromise should still be the original slow build (append didn't null it)
+    expect((log as any).cacheBuildPromise).toBe(slowBuild);
+    // _cacheStale should be set to mark staleness
+    expect((log as any)._cacheStale).toBe(true);
+    // cache should NOT be nulled (because build was in flight, append only nulls cache
+    // when cacheBuildPromise is null)
+    expect((log as any).cache).not.toBeNull();
+
+    // Resolve the slow build so we can clean up
+    (resolveBuild as (v: AuditEvent[]) => void)([]);
+  });
+
+  it('append nulls cache when no build is in flight', async () => {
+    await log.append({ type: 'agent_start', agentId: 'a1', profile: {} as never });
+
+    // Wait for getEvents to populate cache and settle
+    await log.getEvents();
+    expect((log as any).cache).not.toBeNull();
+    expect((log as any).cacheBuildPromise).toBeNull();
+
+    // Append with no build in flight – cache should be nulled
+    await log.append({ type: 'agent_end', agentId: 'a1', result: {} });
+
+    expect((log as any).cache).toBeNull();
+    // _cacheStale should also be true
+    expect((log as any)._cacheStale).toBe(true);
+  });
+
+  it('concurrent getEvents with append during rebuild all see fresh data (race fix)', async () => {
+    // Write initial data
+    await log.append({ type: 'agent_start', agentId: 'a1', profile: {} as never });
+    await log.getEvents();
+
+    // Set up slow rebuild for multiple concurrent callers
+    (log as any).cache = null;
+    (log as any)._cacheStale = false;
+
+    let resolveBuild: (events: AuditEvent[]) => void;
+    const slowBuild = new Promise<AuditEvent[]>((resolve) => {
+      resolveBuild = resolve;
+    });
+    (log as any).cacheBuildPromise = slowBuild;
+
+    // Start multiple concurrent getEvents – all will await the same slow build
+    const promises = Array.from({ length: 5 }, () => log.getEvents());
+
+    // Append while all are waiting on the rebuild
+    await log.append({ type: 'agent_end', agentId: 'a1', result: {} });
+
+    // Resolve the slow build with stale data
+    const staleEvent: AuditEvent = {
+      type: 'agent_start',
+      agentId: 'a1',
+      profile: {} as never,
+      timestamp: new Date().toISOString(),
+    };
+    (resolveBuild as (v: AuditEvent[]) => void)([staleEvent]);
+
+    // All concurrent callers should return fresh data
+    const results = await Promise.all(promises);
+
+    expect(results).toHaveLength(5);
+    for (const events of results) {
+      expect(events).toHaveLength(2);
+      expect(events.map((e) => e.type).sort()).toEqual(['agent_end', 'agent_start']);
+    }
+  });
+
+  it('multiple appends during rebuild all reflected in result (race fix)', async () => {
+    await log.append({ type: 'agent_start', agentId: 'a1', profile: {} as never });
+    await log.getEvents();
+
+    (log as any).cache = null;
+    (log as any)._cacheStale = false;
+
+    let resolveBuild: (events: AuditEvent[]) => void;
+    const slowBuild = new Promise<AuditEvent[]>((resolve) => {
+      resolveBuild = resolve;
+    });
+    (log as any).cacheBuildPromise = slowBuild;
+
+    // Start getEvents
+    const getEventsPromise = log.getEvents();
+
+    // Append multiple events while build is in flight
+    await log.append({ type: 'agent_end', agentId: 'a1', result: { cost: 1.0 } });
+    await log.append({ type: 'error', agentId: 'a2', error: 'oops' });
+
+    // Resolve the stale build
+    const staleEvent: AuditEvent = {
+      type: 'agent_start',
+      agentId: 'a1',
+      profile: {} as never,
+      timestamp: new Date().toISOString(),
+    };
+    (resolveBuild as (v: AuditEvent[]) => void)([staleEvent]);
+
+    const events = await getEventsPromise;
+
+    // All three events should be returned
+    expect(events).toHaveLength(3);
+    expect(events.map((e) => e.type).sort()).toEqual(['agent_end', 'agent_start', 'error']);
+  });
+
+  it('_cacheStale is reset by getEvents after rebuild (race fix)', async () => {
+    await log.append({ type: 'agent_start', agentId: 'a1', profile: {} as never });
+    await log.getEvents();
+
+    // Append sets _cacheStale = true
+    await log.append({ type: 'agent_end', agentId: 'a1', result: {} });
+    expect((log as any)._cacheStale).toBe(true);
+
+    // getEvents should clear _cacheStale after rebuilding
+    await log.getEvents();
+    expect((log as any)._cacheStale).toBe(false);
+  });
+
+  it('clear resets _cacheStale (race fix)', async () => {
+    await log.append({ type: 'agent_start', agentId: 'a1', profile: {} as never });
+    await log.getEvents();
+
+    await log.append({ type: 'agent_end', agentId: 'a1', result: {} });
+    expect((log as any)._cacheStale).toBe(true);
+
+    await log.clear();
+    expect((log as any)._cacheStale).toBe(false);
+    expect((log as any).cache).toBeNull();
+    expect((log as any).cacheBuildPromise).toBeNull();
+  });
+
+  it('readFile is called at most twice when append races with rebuild (race fix)', async () => {
+    // Write initial event and populate cache
+    await log.append({ type: 'agent_start', agentId: 'a1', profile: {} as never });
+    await log.getEvents();
+
+    (log as any).cache = null;
+    (log as any)._cacheStale = false;
+
+    // Set up spy to track file reads
+    let readFileCallCount = 0;
+    const origReadFile = fs.readFile.bind(fs);
+    const spy = spyOn(fs, 'readFile').mockImplementation(async (...args: any[]) => {
+      const filePath = args[0];
+      if (typeof filePath === 'string' && filePath.endsWith('audit.jsonl')) {
+        readFileCallCount++;
+      }
+      // @ts-expect-error spy type mismatch
+      return origReadFile(...args);
+    });
+
+    let resolveBuild: (events: AuditEvent[]) => void;
+    const slowBuild = new Promise<AuditEvent[]>((resolve) => {
+      resolveBuild = resolve;
+    });
+    (log as any).cacheBuildPromise = slowBuild;
+
+    // Start getEvents (awaits slow build)
+    const getEventsPromise = log.getEvents();
+
+    // Append during build
+    await log.append({ type: 'agent_end', agentId: 'a1', result: {} });
+
+    // Resolve with stale data
+    const staleEvent: AuditEvent = {
+      type: 'agent_start',
+      agentId: 'a1',
+      profile: {} as never,
+      timestamp: new Date().toISOString(),
+    };
+    (resolveBuild as (v: AuditEvent[]) => void)([staleEvent]);
+
+    await getEventsPromise;
+
+    // The stale build doesn't read from disk (we resolved manually), so
+    // the only readFile call is from the fresh rebuild triggered by staleness.
+    // In the worst case, if the stale build reads and then the fresh rebuild reads,
+    // we'd have 2 reads. With the fix, we expect at most 2.
+    expect(readFileCallCount).toBeLessThanOrEqual(2);
+
+    spy.mockRestore();
+  });
 });

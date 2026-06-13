@@ -432,26 +432,66 @@ describe('getDiff', () => {
     expect(diff).toContain('staged content');
   });
 
-  it('does not throw when a file literally named HEAD exists in the repo', () => {
+  it('does not throw when a tracked file named HEAD exists', () => {
     const dir = getDir();
     initRepo(dir);
 
-    // Create a file literally named "HEAD" and commit it
+    // Create a file literally named 'HEAD' and commit it
     writeFileSync(join(dir, 'HEAD'), 'HEAD file content');
     rawGit(['add', '-A'], dir);
     rawGit(['commit', '-m', 'add HEAD file'], dir);
 
-    // Modify a tracked file to create unstaged changes
+    // Modify a tracked (non-HEAD) file to create unstaged changes
     writeFileSync(join(dir, 'README.md'), 'modified content');
 
-    // getDiff must not throw — it currently does because
-    // execGit(['diff', 'HEAD']) is ambiguous when a file named HEAD exists
+    // getDiff must not throw — the trailing '.' pathspec after '--' ensures
+    // git treats HEAD as a revision, not a filename.
     let diff: string;
     expect(() => {
       diff = getDiff(dir);
     }).not.toThrow();
 
     expect(diff!).toContain('modified content');
+  });
+
+  it('returns correct diff when an untracked file named HEAD exists', () => {
+    const dir = getDir();
+    initRepo(dir);
+
+    // Create an untracked file named HEAD (not committed)
+    writeFileSync(join(dir, 'HEAD'), 'untracked HEAD content');
+
+    // Modify a tracked file
+    writeFileSync(join(dir, 'README.md'), 'modified content');
+
+    // This must work: the untracked HEAD file should not interfere
+    const diff = getDiff(dir);
+    expect(diff).toContain('modified content');
+    // Untracked HEAD file should NOT appear in the diff
+    expect(diff).not.toContain('untracked HEAD content');
+  });
+
+  it('shows both staged and unstaged changes when a file named HEAD exists', () => {
+    const dir = getDir();
+    initRepo(dir);
+
+    // Create and commit a file named HEAD
+    writeFileSync(join(dir, 'HEAD'), 'HEAD file content');
+    rawGit(['add', '-A'], dir);
+    rawGit(['commit', '-m', 'add HEAD file'], dir);
+
+    // Stage a change (staged.txt is only in the index, not yet committed)
+    writeFileSync(join(dir, 'staged.txt'), 'staged content');
+    rawGit(['add', '-A'], dir);
+
+    // Also have an unstaged change (modify README)
+    writeFileSync(join(dir, 'README.md'), 'unstaged modified');
+
+    // getDiff compares working tree against HEAD, so BOTH staged (staged.txt added)
+    // and unstaged (README.md modified) changes appear in the diff
+    const diff = getDiff(dir);
+    expect(diff).toContain('unstaged modified');
+    expect(diff).toContain('staged content');
   });
 });
 

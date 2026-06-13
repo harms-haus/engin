@@ -22,9 +22,9 @@ export class WorkflowStatusTracker {
   private _taskTracker: TaskTracker;
   private _auditLog: AuditLog;
   private readonly workDir: string;
+  private _signal: AbortSignal | null = null;
   private _onTaskSettled: (() => void) | undefined;
   private _onTaskReady: (() => void) | undefined;
-  private _savePromise: Promise<void> = Promise.resolve();
   private _pendingSave = false;
   private _needsSave = false;
   private _saveLock: Promise<void> = Promise.resolve();
@@ -32,30 +32,37 @@ export class WorkflowStatusTracker {
   private _worktree?: WorktreeInfo;
   private _spawnedAgents: PersistedAgentRecord[] = [];
 
-  constructor(workDir: string) {
+  constructor(workDir: string, signal?: AbortSignal) {
     this.workDir = workDir;
     this._taskTracker = new TaskTracker();
     this._auditLog = new AuditLog(join(workDir, 'audit'));
     this.attachAutoPersist();
+    if (signal) {
+      this._signal = signal;
+      signal.addEventListener('abort', () => this.dispose(), { once: true });
+    }
   }
 
   private persistState(): void {
     if (!this._pendingSave) {
       this._pendingSave = true;
-      this._savePromise = this._savePromise
-        .then(() => this.save())
-        .catch((err) => {
-          console.warn('[WorkflowStatusTracker] Auto-persist save failed:', (err as Error).message);
-        })
-        .finally(() => {
-          this._pendingSave = false;
-          if (this._needsSave) {
-            this._needsSave = false;
-            this.persistState();
-          }
-        });
+      void this._doPersist();
     } else {
       this._needsSave = true;
+    }
+  }
+
+  private async _doPersist(): Promise<void> {
+    try {
+      await this.save();
+    } catch (err) {
+      console.warn('[WorkflowStatusTracker] Auto-persist save failed:', (err as Error).message);
+    } finally {
+      this._pendingSave = false;
+      if (this._needsSave) {
+        this._needsSave = false;
+        void this._doPersist();
+      }
     }
   }
 
@@ -81,6 +88,7 @@ export class WorkflowStatusTracker {
     }
     this._pendingSave = false;
     this._needsSave = false;
+    this._signal = null;
   }
 
   // ── Getters ────────────────────────────────────────────────────────

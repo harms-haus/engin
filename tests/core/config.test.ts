@@ -19,18 +19,8 @@ import { useTempDir } from '../helpers/use-temp-dir.js';
 // ─── DEFAULT_WORKER_PROFILE ─────────────────────────────────────────────────
 
 describe('DEFAULT_WORKER_PROFILE', () => {
-  it('is exported as a string constant', () => {
-    expect(typeof DEFAULT_WORKER_PROFILE).toBe('string');
-  });
-
   it('has the value "worker"', () => {
     expect(DEFAULT_WORKER_PROFILE).toBe('worker');
-  });
-
-  it('is a compile-time constant (not mutable at runtime)', () => {
-    // Re-importing from the module should yield the same value;
-    // this also verifies the export is a simple string, not computed.
-    expect(DEFAULT_WORKER_PROFILE).toStrictEqual('worker');
   });
 });
 

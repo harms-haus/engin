@@ -36,6 +36,14 @@ const separatorComponent: Component = {
   },
 };
 
+// ─── QR Overlay Options ────────────────────────────────────────────────────
+
+const QR_OVERLAY_OPTIONS = {
+  anchor: 'top-right' as const,
+  nonCapturing: true,
+  margin: { top: 1, right: 1 },
+};
+
 // ─── WorkflowTUI ─────────────────────────────────────────────────────────────
 
 export class WorkflowTUI {
@@ -167,6 +175,18 @@ export class WorkflowTUI {
         return { consume: true };
       }
 
+      // PgUp/PgDn/Home/End: scroll the event log
+      if (
+        matchesKey(data, 'pageUp') ||
+        matchesKey(data, 'pageDown') ||
+        matchesKey(data, 'home') ||
+        matchesKey(data, 'end')
+      ) {
+        this.eventLog.handleInput(data);
+        this.tui?.requestRender();
+        return { consume: true };
+      }
+
       return undefined;
     });
 
@@ -195,6 +215,7 @@ export class WorkflowTUI {
     try {
       this.inputUnsubscribe?.();
       this.inputUnsubscribe = null;
+      this.qrHandle?.hide();
       this.qrHandle = null;
       console.log = this.originalConsoleLog;
       console.warn = this.originalConsoleWarn;
@@ -214,8 +235,15 @@ export class WorkflowTUI {
       this.qrHandle = null;
     }
 
-    const { component } = await createQrOverlayComponent(url);
-    this.qrHandle = this.tui?.showOverlay(component, { anchor: 'bottom-right', nonCapturing: true }) ?? null;
+    let component: Component;
+    try {
+      component = (await createQrOverlayComponent(url)).component;
+    } catch (err) {
+      this.originalConsoleError('Failed to generate QR code overlay:', err);
+      return;
+    }
+
+    this.qrHandle = this.tui?.showOverlay(component, QR_OVERLAY_OPTIONS) ?? null;
     this.tui?.requestRender();
   }
 

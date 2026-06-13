@@ -1,6 +1,7 @@
 // ─── Shared Utilities ────────────────────────────────────────────────────────
 
 import type { AgentStatusCallbacks, StatusCallbacks } from './types.js';
+import { STATUS_CALLBACK_METHODS } from './types.js';
 
 /**
  * Validates a workflow name, throwing if it contains path separators or "..".
@@ -36,86 +37,21 @@ export function safeErrorMessage(err: unknown): string {
  */
 export function composeStatusCallbacks(callbacks: StatusCallbacks[]): StatusCallbacks {
   if (callbacks.length === 0) {
-    return {
-      onWorkflowStart: () => undefined,
-      onPhaseStart: () => undefined,
-      onPhaseComplete: () => undefined,
-      onAgentSpawn: () => undefined,
-      onAgentComplete: () => undefined,
-      onTaskStart: () => undefined,
-      onTaskComplete: () => undefined,
-      onTaskRejected: () => undefined,
-      onDecision: () => undefined,
-      onError: () => undefined,
-      onWorkflowComplete: () => undefined,
-      onWorkflowFailed: () => undefined,
-      onTurnStart: () => undefined,
-      onTurnEnd: () => undefined,
-      onToolCallStart: () => undefined,
-      onToolCallEnd: () => undefined,
-      onTasksAdded: () => undefined,
-      onSidebarUpdate: () => undefined,
-    };
+    return Object.fromEntries(STATUS_CALLBACK_METHODS.map((name) => [name, () => undefined])) as StatusCallbacks;
   }
   if (callbacks.length === 1) {
     return callbacks[0];
   }
-  return {
-    onWorkflowStart: (info) => {
-      for (const cb of callbacks) cb.onWorkflowStart?.(info);
-    },
-    onPhaseStart: (info) => {
-      for (const cb of callbacks) cb.onPhaseStart?.(info);
-    },
-    onPhaseComplete: (info) => {
-      for (const cb of callbacks) cb.onPhaseComplete?.(info);
-    },
-    onAgentSpawn: (info) => {
-      for (const cb of callbacks) cb.onAgentSpawn?.(info);
-    },
-    onAgentComplete: (info) => {
-      for (const cb of callbacks) cb.onAgentComplete?.(info);
-    },
-    onTaskStart: (info) => {
-      for (const cb of callbacks) cb.onTaskStart?.(info);
-    },
-    onTaskComplete: (info) => {
-      for (const cb of callbacks) cb.onTaskComplete?.(info);
-    },
-    onTaskRejected: (info) => {
-      for (const cb of callbacks) cb.onTaskRejected?.(info);
-    },
-    onDecision: (info) => {
-      for (const cb of callbacks) cb.onDecision?.(info);
-    },
-    onError: (info) => {
-      for (const cb of callbacks) cb.onError?.(info);
-    },
-    onWorkflowComplete: (info) => {
-      for (const cb of callbacks) cb.onWorkflowComplete?.(info);
-    },
-    onWorkflowFailed: (info) => {
-      for (const cb of callbacks) cb.onWorkflowFailed?.(info);
-    },
-    onTurnStart: (info) => {
-      for (const cb of callbacks) cb.onTurnStart?.(info);
-    },
-    onTurnEnd: (info) => {
-      for (const cb of callbacks) cb.onTurnEnd?.(info);
-    },
-    onToolCallStart: (info) => {
-      for (const cb of callbacks) cb.onToolCallStart?.(info);
-    },
-    onToolCallEnd: (info) => {
-      for (const cb of callbacks) cb.onToolCallEnd?.(info);
-    },
-    onTasksAdded: (info) => {
-      for (const cb of callbacks) cb.onTasksAdded?.(info);
-    },
-    onSidebarUpdate: (info) => {
-      for (const cb of callbacks) cb.onSidebarUpdate?.(info);
-    },
-  };
+  return Object.fromEntries(
+    STATUS_CALLBACK_METHODS.map((name) => [
+      name,
+      (info: unknown) => {
+        for (const cb of callbacks) {
+          (cb as Record<string, (info: unknown) => void>)[name]?.(info);
+        }
+      },
+    ]),
+  ) as StatusCallbacks;
 }
 
 /**

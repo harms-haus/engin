@@ -635,11 +635,198 @@ describe('WorkflowTUI', () => {
         cleanup();
       }
     });
+
+    // ─── Scroll key routing (PgUp/PgDn/Home/End) ───────────────────────
+
+    it('routes pageUp key to eventLog.handleInput and consumes it', () => {
+      const { capturedCallback, requestRenderMock, wtui, cleanup } = setupTest();
+      try {
+        expect(capturedCallback).not.toBeNull();
+
+        // Add some lines so scrolling is meaningful
+        for (let i = 1; i <= 10; i++) {
+          wtui.getEventLog().addLine(`line ${i}`);
+        }
+        expect(wtui.getEventLog().isScrolledUp).toBe(false);
+
+        const result = capturedCallback!('\x1b[5~'); // pageUp legacy sequence
+        expect(result).toEqual({ consume: true });
+        expect(requestRenderMock).toHaveBeenCalled();
+        // After pageUp, the eventLog should be scrolled up
+        expect(wtui.getEventLog().isScrolledUp).toBe(true);
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('routes pageDown key to eventLog.handleInput and consumes it', () => {
+      const { capturedCallback, requestRenderMock, wtui, cleanup } = setupTest();
+      try {
+        expect(capturedCallback).not.toBeNull();
+
+        // Add lines and scroll up first so pageDown has effect
+        for (let i = 1; i <= 10; i++) {
+          wtui.getEventLog().addLine(`line ${i}`);
+        }
+        // Manually scroll up
+        capturedCallback!('\x1b[5~'); // pageUp
+        expect(wtui.getEventLog().isScrolledUp).toBe(true);
+        requestRenderMock.mockClear();
+
+        const result = capturedCallback!('\x1b[6~'); // pageDown legacy sequence
+        expect(result).toEqual({ consume: true });
+        expect(requestRenderMock).toHaveBeenCalled();
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('routes home key to eventLog.handleInput and consumes it', () => {
+      const { capturedCallback, requestRenderMock, wtui, cleanup } = setupTest();
+      try {
+        expect(capturedCallback).not.toBeNull();
+
+        // Add lines so scrolling to top is meaningful
+        for (let i = 1; i <= 10; i++) {
+          wtui.getEventLog().addLine(`line ${i}`);
+        }
+        expect(wtui.getEventLog().isScrolledUp).toBe(false);
+
+        const result = capturedCallback!('\x1b[H'); // home legacy sequence
+        expect(result).toEqual({ consume: true });
+        expect(requestRenderMock).toHaveBeenCalled();
+        // Home should scroll to top
+        expect(wtui.getEventLog().isScrolledUp).toBe(true);
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('routes end key to eventLog.handleInput and consumes it', () => {
+      const { capturedCallback, requestRenderMock, wtui, cleanup } = setupTest();
+      try {
+        expect(capturedCallback).not.toBeNull();
+
+        // Add lines and scroll up first so end has effect
+        for (let i = 1; i <= 10; i++) {
+          wtui.getEventLog().addLine(`line ${i}`);
+        }
+        // Manually scroll up
+        capturedCallback!('\x1b[5~'); // pageUp
+        expect(wtui.getEventLog().isScrolledUp).toBe(true);
+        requestRenderMock.mockClear();
+
+        const result = capturedCallback!('\x1b[F'); // end legacy sequence
+        expect(result).toEqual({ consume: true });
+        expect(requestRenderMock).toHaveBeenCalled();
+        // End should scroll back to bottom
+        expect(wtui.getEventLog().isScrolledUp).toBe(false);
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('routes pageDown to bottom enables autoScroll on eventLog', () => {
+      const { capturedCallback, wtui, cleanup } = setupTest();
+      try {
+        expect(capturedCallback).not.toBeNull();
+
+        for (let i = 1; i <= 10; i++) {
+          wtui.getEventLog().addLine(`line ${i}`);
+        }
+        // Scroll up
+        capturedCallback!('\x1b[5~'); // pageUp
+        expect(wtui.getEventLog().isScrolledUp).toBe(true);
+
+        // PageDown until back at bottom should re-enable autoScroll
+        // The eventLog has maxLines=20 (default), len=10, so pageDown
+        // with pageSize=19 will go straight to 0 and enable autoScroll.
+        capturedCallback!('\x1b[6~'); // pageDown
+
+        // Add a new line — if autoScroll is on, we should see it
+        wtui.getEventLog().addLine('bottom line');
+        expect(wtui.getEventLog().isScrolledUp).toBe(false);
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('scroll keys do not interfere with other key handlers', () => {
+      const { capturedCallback, requestRenderMock, cleanup } = setupTest();
+      try {
+        expect(capturedCallback).not.toBeNull();
+
+        // Verify other keys still work after adding scroll key handling
+        const tabResult = capturedCallback!('\t');
+        expect(tabResult).toEqual({ consume: true });
+
+        requestRenderMock.mockClear();
+        const leftResult = capturedCallback!('\x1b[D');
+        expect(leftResult).toEqual({ consume: true });
+
+        requestRenderMock.mockClear();
+        const rightResult = capturedCallback!('\x1b[C');
+        expect(rightResult).toEqual({ consume: true });
+
+        requestRenderMock.mockClear();
+        const pgUpResult = capturedCallback!('\x1b[5~');
+        expect(pgUpResult).toEqual({ consume: true });
+
+        requestRenderMock.mockClear();
+        const pgDnResult = capturedCallback!('\x1b[6~');
+        expect(pgDnResult).toEqual({ consume: true });
+
+        requestRenderMock.mockClear();
+        const homeResult = capturedCallback!('\x1b[H');
+        expect(homeResult).toEqual({ consume: true });
+
+        requestRenderMock.mockClear();
+        const endResult = capturedCallback!('\x1b[F');
+        expect(endResult).toEqual({ consume: true });
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('requests render for each scroll key', () => {
+      const { capturedCallback, requestRenderMock, cleanup } = setupTest();
+      try {
+        expect(capturedCallback).not.toBeNull();
+
+        const scrollKeys = ['\x1b[5~', '\x1b[6~', '\x1b[H', '\x1b[F'];
+        for (const key of scrollKeys) {
+          requestRenderMock.mockClear();
+          capturedCallback!(key);
+          expect(requestRenderMock).toHaveBeenCalled();
+        }
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('scroll keys set autoscroll to false when scrolling up', () => {
+      const { capturedCallback, wtui, cleanup } = setupTest();
+      try {
+        expect(capturedCallback).not.toBeNull();
+
+        for (let i = 1; i <= 10; i++) {
+          wtui.getEventLog().addLine(`line ${i}`);
+        }
+
+        // PageUp should disable autoScroll
+        capturedCallback!('\x1b[5~');
+        // After adding a new line with autoScroll=false, scrollOffset increments
+        wtui.getEventLog().addLine('new line');
+        // Viewport should NOT jump to show the new line
+        expect(wtui.getEventLog().isScrolledUp).toBe(true);
+      } finally {
+        cleanup();
+      }
+    });
   });
 
   describe('showQrCode', () => {
     it('creates an overlay via mocked TUI', async () => {
-      const _qrComponent = { render: () => [''], invalidate: () => {}, handleInput: () => {} };
       const hideMock = mock(() => {});
       const overlayHandle = {
         hide: hideMock,
@@ -671,7 +858,7 @@ describe('WorkflowTUI', () => {
       const [component, options] = mockShowOverlay.mock.calls[0];
       expect(component).toBeDefined();
       expect(typeof component.render).toBe('function');
-      expect(options).toEqual({ anchor: 'bottom-right', nonCapturing: true });
+      expect(options).toEqual({ anchor: 'top-right', nonCapturing: true, margin: { top: 1, right: 1 } });
       expect(mockRequestRender).toHaveBeenCalled();
     });
 

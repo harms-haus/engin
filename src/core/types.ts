@@ -150,6 +150,31 @@ export interface AgentStatusCallbacks {
 
 export type StatusCallbacks = WorkflowStatusCallbacks & AgentStatusCallbacks;
 
+/**
+ * Array of all method names in the `StatusCallbacks` interface.
+ * Must be kept in sync with `StatusCallbacks`.
+ */
+export const STATUS_CALLBACK_METHODS: readonly string[] = Object.freeze([
+  'onWorkflowStart',
+  'onPhaseStart',
+  'onPhaseComplete',
+  'onAgentSpawn',
+  'onAgentComplete',
+  'onTaskStart',
+  'onTaskComplete',
+  'onTaskRejected',
+  'onDecision',
+  'onError',
+  'onWorkflowComplete',
+  'onWorkflowFailed',
+  'onTurnStart',
+  'onTurnEnd',
+  'onToolCallStart',
+  'onToolCallEnd',
+  'onTasksAdded',
+  'onSidebarUpdate',
+]);
+
 // ─── Agent Loop Result ──────────────────────────────────────────────────────
 export interface AgentLoopResult<T> {
   result: T;
@@ -164,7 +189,8 @@ export interface WorkflowRunOptions {
   maxConcurrentTasks?: number;
   apiKeys?: Record<string, string>;
   onStatus?: StatusCallbacks;
-  /** Abort signal for cooperative cancellation (e.g. SIGINT) */
+  /** Abort signal for cooperative cancellation (e.g. SIGINT). When provided to a
+   * WorkflowStatusTracker, it triggers automatic listener cleanup on abort. */
   signal?: AbortSignal;
   /** Pre-created WorkflowStatusTracker; workflows should reuse instead of creating their own. Typed as `unknown` to avoid circular imports. */
   tracker?: unknown;

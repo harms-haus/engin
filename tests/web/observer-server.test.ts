@@ -239,6 +239,103 @@ describe('observer-server', () => {
     expect(response.headers.get('content-type')).toContain('javascript');
   });
 
+  // ─── Origin validation tests ───────────────────────────────────────────
+
+  describe('origin validation', () => {
+    /**
+     * Helper: send a plain HTTP GET to /ws and return the response status.
+     * Because the request lacks WebSocket upgrade headers, the server will
+     * return 400 when origin validation passes (upgrade fails) or 403 when
+     * origin validation rejects the request.
+     */
+    async function hitWs(serverUrl: string, origin?: string): Promise<Response> {
+      const headers: Record<string, string> = {};
+      if (origin !== undefined) {
+        headers['Origin'] = origin;
+      }
+      return await fetch(`${serverUrl}/ws`, { headers });
+    }
+
+    // ── Non-localhost (0.0.0.0) ───────────────────────────────────────────
+
+    it('rejects mismatched Origin on non-localhost', async () => {
+      const port = randomPort();
+      server = await startObserverServer({ host: '0.0.0.0', port });
+
+      const res = await hitWs(`http://0.0.0.0:${port}`, 'https://evil.com');
+      expect(res.status).toBe(403);
+      expect(await res.text()).toBe('Forbidden');
+    });
+
+    it('allows missing Origin on non-localhost', async () => {
+      const port = randomPort();
+      server = await startObserverServer({ host: '0.0.0.0', port });
+
+      const res = await hitWs(`http://0.0.0.0:${port}`); // no Origin header
+      expect(res.status).not.toBe(403);
+    });
+
+    it('allows matching Origin on non-localhost', async () => {
+      const port = randomPort();
+      server = await startObserverServer({ host: '0.0.0.0', port });
+
+      const res = await hitWs(`http://0.0.0.0:${port}`, `http://0.0.0.0:${port}`);
+      expect(res.status).not.toBe(403);
+    });
+
+    // ── Localhost (127.0.0.1 / localhost) ──────────────────────────────────
+
+    it('allows mismatched Origin when connecting via 127.0.0.1', async () => {
+      const port = randomPort();
+      server = await startObserverServer({ host: '127.0.0.1', port });
+
+      const res = await hitWs(`http://127.0.0.1:${port}`, 'https://evil.com');
+      expect(res.status).not.toBe(403);
+    });
+
+    it('allows mismatched Origin when connecting via localhost', async () => {
+      const port = randomPort();
+      server = await startObserverServer({ host: '127.0.0.1', port });
+
+      const res = await hitWs(`http://localhost:${port}`, 'https://evil.com');
+      expect(res.status).not.toBe(403);
+    });
+
+    it('allows missing Origin on localhost', async () => {
+      const port = randomPort();
+      server = await startObserverServer({ host: '127.0.0.1', port });
+
+      const res = await hitWs(`http://127.0.0.1:${port}`);
+      expect(res.status).not.toBe(403);
+    });
+
+    it('still allows real WebSocket connections from browser on localhost', async () => {
+      const getSnapshot = mock(() => ({
+        type: 'init' as const,
+        currentPhase: '',
+        completedPhases: [] as string[],
+        tasks: [] as any[],
+        agents: [] as any[],
+        sidebar: { title: '', indicator: '' },
+      }));
+
+      const port = randomPort();
+      server = await startObserverServer({
+        host: '127.0.0.1',
+        port,
+        getSnapshot,
+      });
+
+      const { ws, firstMessage } = connectAndGetFirstMessage(`ws://127.0.0.1:${port}/ws`);
+      try {
+        const msg = (await firstMessage) as any;
+        expect(msg.type).toBe('init');
+      } finally {
+        ws.close();
+      }
+    });
+  });
+
   it('SPA fallback serves index.html for unknown paths', async () => {
     const port = randomPort();
     server = await startObserverServer({

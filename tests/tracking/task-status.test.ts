@@ -865,21 +865,29 @@ describe('TaskTracker', () => {
         emitCount++;
       });
 
+      // Set up event-driven wait BEFORE the action
+      const readyEvent = new Promise<void>((resolve) => {
+        (tracker as unknown as { once: (event: string, cb: (...args: unknown[]) => void) => void }).once(
+          'taskReady',
+          () => resolve(),
+        );
+      });
+
       // Complete task a
       tracker.claimTasks(1);
       tracker.startTask('a', 'agent-1');
       tracker.submitForReview('a', 'done');
       tracker.completeTask('a');
 
-      // Give a microtask tick for any async event delivery
-      await new Promise((r) => setTimeout(r, 50));
+      // Event is emitted synchronously, so this resolves immediately
+      await readyEvent;
 
       expect(emitCount).toBeGreaterThanOrEqual(1);
       expect(tracker.getTask('b')!.status).toBe('ready');
       expect(tracker.getTask('c')!.status).toBe('ready');
     });
 
-    it('does not emit taskReady when no tasks transition', async () => {
+    it('does not emit taskReady when no tasks transition', () => {
       const tracker = new TaskTracker();
       tracker.addTask(makeTask({ id: 'a' }));
 
@@ -891,10 +899,9 @@ describe('TaskTracker', () => {
         emitted = true;
       });
 
+      // EventEmitter.emit is synchronous — if no event fires during recalculateStatuses,
+      // emitted stays false. No async wait needed.
       tracker.recalculateStatuses();
-
-      // Give a microtask tick for any async event delivery
-      await new Promise((r) => setTimeout(r, 50));
 
       expect(emitted).toBe(false);
     });

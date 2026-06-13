@@ -55,6 +55,45 @@ export interface ObserverServer {
   stop: () => Promise<void>;
 }
 
+// ─── Origin validation for WebSocket upgrades ─────────────────────────────
+
+/**
+ * Validate the Origin header for a WebSocket upgrade request.
+ *
+ * Non-browser clients such as curl or custom scripts that connect via WebSocket
+ * do not send an Origin header, so they bypass this check. The terminate_server
+ * command remains accessible to any client that can reach the WebSocket endpoint
+ * without an Origin header. A future enhancement should require authentication
+ * tokens for destructive commands like terminate_server. The primary protection
+ * is the default localhost binding.
+ *
+ * @returns true if the request should be allowed, false to reject with 403.
+ */
+function validateWebSocketOrigin(req: Request): boolean {
+  const origin = req.headers.get('origin');
+  const host = req.headers.get('host') || '';
+
+  // Determine if the connection is from localhost
+  const isLocalhost =
+    host.startsWith('localhost') || host.startsWith('127.0.0.1') || host.startsWith('::1') || host.startsWith('[::1]');
+
+  // If an Origin header is present AND the connection is NOT from localhost,
+  // parse the Origin URL and compare its host property to the Host header.
+  if (origin && !isLocalhost) {
+    try {
+      const originUrl = new URL(origin);
+      // Compare the host (hostname + port) from Origin to the Host header value.
+      if (originUrl.host !== host) {
+        return false;
+      }
+    } catch {
+      return false;
+    }
+  }
+
+  return true;
+}
+
 // ─── startObserverServer ────────────────────────────────────────────────────
 
 export async function startObserverServer(options: {
@@ -96,6 +135,11 @@ export async function startObserverServer(options: {
 
       // WebSocket upgrade
       if (url.pathname === '/ws') {
+        // Validate Origin header to prevent cross-origin WebSocket attacks
+        if (!validateWebSocketOrigin(req)) {
+          return new Response('Forbidden', { status: 403 });
+        }
+
         const upgraded = server.upgrade(req);
         if (!upgraded) {
           return new Response('Upgrade failed', { status: 400 });
