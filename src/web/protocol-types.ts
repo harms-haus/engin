@@ -61,4 +61,6 @@ export type ServerMessage =
 
 // ─── Client to Server Messages ──────────────────────────────────────────────
 
-export type ClientMessage = { type: 'terminate_server' };
+export interface ClientMessage {
+  type: 'terminate_server';
+}
