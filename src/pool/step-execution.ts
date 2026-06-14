@@ -92,6 +92,7 @@ export async function runStep(
     profile: step.profileId,
     phaseId: execCtx.phaseId,
     taskId: task.id,
+    stepIndex: ctx.stepIndex,
     sessionId: session.sessionId,
     sessionPath: trackedSession.sessionPath,
   });
