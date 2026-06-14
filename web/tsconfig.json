@@ -11,7 +11,7 @@
     "isolatedModules": true,
     "noEmit": true,
     "baseUrl": ".",
-    "paths": { "@app/*": ["./src/*"] }
+    "paths": { "@app/*": ["./src/*"], "@engin/*": ["../src/*"] }
   },
   "include": ["src"]
 }

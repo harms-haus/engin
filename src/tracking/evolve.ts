@@ -344,7 +344,13 @@ export function evolve(state: WorkflowProjection, event: EventRecord): WorkflowP
         timestamp: event.metadata.timestamp,
         type: 'tool_call_start' as const,
         content: String(event.data.toolName ?? ''),
-        metadata: { toolName: event.data.toolName, toolCallId: event.data.toolCallId },
+        // Preserve tool arguments so renderers (TUI + web) can produce
+        // human-readable summaries like `read → ./path` via formatToolCall.
+        metadata: {
+          toolName: event.data.toolName,
+          toolCallId: event.data.toolCallId,
+          arguments: event.data.arguments ?? {},
+        },
       };
       return clone(state, {
         agents: {

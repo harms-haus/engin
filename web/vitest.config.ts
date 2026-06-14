@@ -5,7 +5,7 @@ import { defineConfig } from 'vitest/config';
 export default defineConfig({
   plugins: [react()],
   resolve: {
-    alias: { '@app': path.resolve(__dirname, 'src') },
+    alias: { '@app': path.resolve(__dirname, 'src'), '@engin': path.resolve(__dirname, '..', 'src') },
   },
   test: {
     environment: 'jsdom',

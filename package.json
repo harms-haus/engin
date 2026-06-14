@@ -18,6 +18,10 @@
     ".": {
       "import": "./src/index.ts",
       "types": "./src/index.ts"
+    },
+    "./web/protocol-types": {
+      "import": "./src/web/protocol-types.ts",
+      "types": "./src/web/protocol-types.ts"
     }
   },
   "bin": {

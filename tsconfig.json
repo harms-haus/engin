@@ -8,6 +8,8 @@
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
+    "baseUrl": ".",
+    "paths": { "@engin/*": ["./src/*"] },
     "declaration": true,
     "declarationMap": true,
     "sourceMap": true,

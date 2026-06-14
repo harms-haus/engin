@@ -5,7 +5,7 @@ import { defineConfig } from 'vite';
 export default defineConfig({
   plugins: [react()],
   resolve: {
-    alias: { '@app': path.resolve(__dirname, 'src') },
+    alias: { '@app': path.resolve(__dirname, 'src'), '@engin': path.resolve(__dirname, '..', 'src') },
   },
   server: {
     host: true,

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { useAgentById, useAgentIds, useHasSnapshot, useStatus } from '../store/workflow-store';
+import { formatEntryContent } from '../utils/format-entry';
 import './AgentLog.css';
 
 export function AgentLog() {
@@ -87,7 +88,7 @@ export function AgentLog() {
         {agent ? (
           agent.log.map((entry) => (
             <div key={entry.id} className={`agent-log__entry agent-log__entry--${entry.type}`}>
-              {entry.content}
+              {formatEntryContent(entry)}
             </div>
           ))
         ) : (

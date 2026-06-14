@@ -527,7 +527,7 @@ describe('evolve', () => {
       expect(agent.toolCallCount).toBe(1);
       expect(agent.log).toHaveLength(1);
       expect(agent.log[0].type).toBe('tool_call_start');
-      expect(agent.log[0].metadata).toEqual({ toolName: 'bash', toolCallId: 'tc-1' });
+      expect(agent.log[0].metadata).toEqual({ toolName: 'bash', toolCallId: 'tc-1', arguments: { command: 'ls' } });
     });
   });
 

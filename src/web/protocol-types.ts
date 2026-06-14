@@ -1,6 +1,8 @@
 import type { EventRecord, WorkflowProjection } from '../tracking/event-types.js';
 
 // Re-export all state types so the web layer depends on tracking core.
+// This file is the single source of truth for the web-facing protocol:
+// the web app (`web/src/protocol-types.ts`) re-exports everything here.
 export type {
   AgentEntity,
   EventRecord,
@@ -9,6 +11,15 @@ export type {
   TaskEntity,
   WorkflowProjection,
 } from '../tracking/event-types.js';
+
+// ─── Shared UI value types ──────────────────────────────────────────────────
+// Describes a sidebar phase indicator entry (see WorkflowProjection.sidebar).
+
+export interface PhaseDescriptor {
+  id: string;
+  label: string;
+  icon: string;
+}
 
 // ─── Server to Client Messages ──────────────────────────────────────────────
 //
@@ -27,3 +38,20 @@ export type ServerMessage =
 // ─── Client to Server Messages ──────────────────────────────────────────────
 
 export type ClientMessage = { type: 'terminate_server' } | { type: 'resync'; lastSeq?: number };
+
+// ─── Type guard ─────────────────────────────────────────────────────────────
+
+export function isServerMessage(data: unknown): data is ServerMessage {
+  if (typeof data !== 'object' || data === null) return false;
+  const msg = data as Record<string, unknown>;
+  if (typeof msg.type !== 'string') return false;
+  switch (msg.type) {
+    case 'snapshot':
+    case 'events':
+    case 'workflow_complete':
+    case 'workflow_failed':
+      return true;
+    default:
+      return false;
+  }
+}

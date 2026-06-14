@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useHasSnapshot, useRecentLogEntries } from '../store/workflow-store';
+import { formatEntryContent } from '../utils/format-entry';
 import './EventLog.css';
 
 function entryClass(type: string): string {
@@ -68,7 +69,7 @@ export function EventLog() {
         entries.map((entry) => (
           <div key={entry.id} className={entryClass(entry.type)}>
             {entryPrefix(entry.type)}
-            {entry.content}
+            {formatEntryContent(entry)}
           </div>
         ))
       )}

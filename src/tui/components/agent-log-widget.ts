@@ -7,6 +7,7 @@ import {
   wrapTextWithAnsi,
 } from '@earendil-works/pi-tui';
 import type { AgentEntity, LogEntry } from '../../tracking/event-types.js';
+import { formatToolCall } from '../format-tool-call.js';
 import { cyan, dim, green, red } from '../theme.js';
 
 // Re-export LogEntry as AgentLogEntry for backward compatibility
@@ -242,13 +243,22 @@ export class AgentLogWidget implements Component {
       let totalEntryLineCount = 0;
 
       for (const entry of selectedAgent.log) {
-        const icon = typeIconMap[entry.type];
         const colorFn = typeColorMap[entry.type];
-        const prefix = `  ${icon} `;
+        // tool_call_start/tool_call carry structured args in metadata; render a
+        // human-readable summary (e.g. `read → ./path`) via formatToolCall.
+        // formatToolCall emits its own emoji, so those types get no generic icon.
+        const useFormatter = entry.type === 'tool_call_start' || entry.type === 'tool_call';
+        const text = useFormatter
+          ? formatToolCall(
+              String(entry.metadata?.toolName ?? entry.content),
+              (entry.metadata?.arguments as Record<string, unknown> | undefined) ?? {},
+            )
+          : entry.content;
+        const prefix = useFormatter ? '  ' : `  ${typeIconMap[entry.type]} `;
         const prefixLen = visibleWidth(prefix);
         const remainingWidth = Math.max(0, width - prefixLen);
 
-        const subLines = entry.content.split('\n');
+        const subLines = text.split('\n');
         for (let si = 0; si < subLines.length; si++) {
           const wrapped = wrapTextWithAnsi(subLines[si], remainingWidth);
           totalEntryLineCount += wrapped.length;

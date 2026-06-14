@@ -346,12 +346,22 @@ describe('evolveClient – turn lifecycle', () => {
 describe('evolveClient – tool call lifecycle', () => {
   it('tool_call_started increments toolCallCount and adds log', () => {
     let s = evolveClient(blankProjection(), event('agent_spawned', { profile: 'p' }, { agentId: 'a1' }, 1));
-    s = evolveClient(s, event('tool_call_started', { toolName: 'read_file', toolCallId: 'tc1' }, { agentId: 'a1' }, 2));
+    s = evolveClient(
+      s,
+      event(
+        'tool_call_started',
+        { toolName: 'read_file', toolCallId: 'tc1', arguments: { path: 'a.ts' } },
+        { agentId: 'a1' },
+        2,
+      ),
+    );
     expect(s.agents['a1'].toolCallCount).toBe(1);
     expect(s.agents['a1'].log).toHaveLength(1);
     expect(s.agents['a1'].log[0].type).toBe('tool_call_start');
     expect(s.agents['a1'].log[0].content).toBe('read_file');
     expect(s.agents['a1'].log[0].metadata?.toolCallId).toBe('tc1');
+    // arguments are preserved so the UI can render a human-readable summary
+    expect(s.agents['a1'].log[0].metadata?.arguments).toEqual({ path: 'a.ts' });
   });
 
   it('tool_call_ended adds a log entry (no count increment)', () => {

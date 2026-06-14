@@ -356,7 +356,13 @@ export function evolveClient(state: WorkflowProjection, event: EventRecord): Wor
         timestamp: event.metadata.timestamp,
         type: 'tool_call_start' as const,
         content: String(event.data.toolName ?? ''),
-        metadata: { toolName: event.data.toolName, toolCallId: event.data.toolCallId },
+        // Preserve tool arguments so the web client can render summaries like
+        // `read → ./path` via formatToolCall (mirrors engine evolve.ts).
+        metadata: {
+          toolName: event.data.toolName,
+          toolCallId: event.data.toolCallId,
+          arguments: event.data.arguments ?? {},
+        },
       };
       return clone(state, {
         agents: {
