@@ -87,6 +87,15 @@ export async function processTask(
   try {
     while (currentStepIndex < steps.length) {
       const step = steps[currentStepIndex];
+
+      // Fire onTaskStepStart before executing the step
+      options.onStatus?.onTaskStepStart?.({
+        taskId: task.id,
+        stepName: step.name,
+        stepIndex: currentStepIndex,
+        totalSteps: steps.length,
+      });
+
       const currentAttempt = stepAttempts.get(currentStepIndex) ?? 0;
       const execCount = stepExecutions.get(currentStepIndex) ?? 0;
       stepExecutions.set(currentStepIndex, execCount + 1);

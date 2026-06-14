@@ -1042,6 +1042,88 @@ describe('LanePool', () => {
     });
   });
 
+  describe('onTaskStepStart callback', () => {
+    it('fires onTaskStepStart with correct step info for each step', async () => {
+      setupProfileMocks();
+      setupHarnessMocks();
+      const onTaskStepStart = mock(() => {});
+      const { pool } = createPoolAndTracker({
+        getStepsForTask: () => [
+          { name: 'implement', profileId: 'coder', isReadOnly: false },
+          { name: 'review', profileId: 'reviewer', isReadOnly: true },
+        ],
+        onStatus: { onTaskStepStart },
+      });
+      await pool.run();
+      expect(onTaskStepStart).toHaveBeenCalledTimes(2);
+      expect(onTaskStepStart).toHaveBeenNthCalledWith(
+        1,
+        expect.objectContaining({
+          taskId: 'task-1',
+          stepName: 'implement',
+          stepIndex: 0,
+          totalSteps: 2,
+        }),
+      );
+      expect(onTaskStepStart).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({
+          taskId: 'task-1',
+          stepName: 'review',
+          stepIndex: 1,
+          totalSteps: 2,
+        }),
+      );
+    });
+
+    it('fires onTaskStepStart on retry (re-execution of same step)', async () => {
+      setupProfileMocks();
+      setupHarnessMocks();
+      let rc = 0;
+      mockPromptForStructured.mockImplementation(() =>
+        Promise.resolve(
+          ++rc <= 1
+            ? { result: { approved: false, feedback: 'Needs work', severity: 'critical' }, attempts: 1 }
+            : { result: { approved: true, feedback: undefined }, attempts: 1 },
+        ),
+      );
+      const onTaskStepStart = mock(() => {});
+      const { pool } = createPoolAndTracker({
+        maxStepRetries: 3,
+        getStepsForTask: () => [
+          { name: 'implement', profileId: 'coder', isReadOnly: false },
+          {
+            name: 'review',
+            profileId: 'reviewer',
+            isReadOnly: true,
+            schema: z.object({ approved: z.boolean(), feedback: z.string().optional() }),
+          },
+        ],
+        onStatus: { onTaskStepStart },
+      });
+      await pool.run();
+      // First pass: implement(0) + review(1). Review rejects, backing up to implement.
+      // Second pass: implement(0) + review(1). Both approved.
+      expect(onTaskStepStart).toHaveBeenCalledTimes(4);
+      expect(onTaskStepStart).toHaveBeenNthCalledWith(
+        1,
+        expect.objectContaining({ stepName: 'implement', stepIndex: 0, totalSteps: 2 }),
+      );
+      expect(onTaskStepStart).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({ stepName: 'review', stepIndex: 1, totalSteps: 2 }),
+      );
+      expect(onTaskStepStart).toHaveBeenNthCalledWith(
+        3,
+        expect.objectContaining({ stepName: 'implement', stepIndex: 0, totalSteps: 2 }),
+      );
+      expect(onTaskStepStart).toHaveBeenNthCalledWith(
+        4,
+        expect.objectContaining({ stepName: 'review', stepIndex: 1, totalSteps: 2 }),
+      );
+    });
+  });
+
   describe('session reuse on retry', () => {
     const RS = z.object({
       approved: z.boolean(),

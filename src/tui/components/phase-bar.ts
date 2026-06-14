@@ -1,5 +1,5 @@
 import { type Component, truncateToWidth } from '@earendil-works/pi-tui';
-import { bold, cyan, dim, green } from '../theme.js';
+import { bold, cyan, dim, green, underline } from '../theme.js';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -15,6 +15,7 @@ export class PhaseBar implements Component {
   private phases: PhaseDescriptor[] = [];
   private completedPhases = new Set<string>();
   private currentPhaseId = '';
+  private selectedPhaseId: string | null = null;
   private indicator = '';
   private dirty = true;
   private cachedWidth = -1;
@@ -27,6 +28,12 @@ export class PhaseBar implements Component {
 
   setCurrentPhase(id: string): void {
     this.currentPhaseId = id;
+    this.selectedPhaseId = null;
+    this.dirty = true;
+  }
+
+  setSelectedPhase(id: string): void {
+    this.selectedPhaseId = id;
     this.dirty = true;
   }
 
@@ -59,15 +66,16 @@ export class PhaseBar implements Component {
       line = parts.join(' ');
     } else {
       // Build phase segments
+      const effectiveSelected = this.selectedPhaseId ?? this.currentPhaseId;
       const segments: string[] = [];
       for (const phase of this.phases) {
-        if (this.completedPhases.has(phase.id)) {
-          segments.push(green('✓') + ' ' + phase.label);
-        } else if (phase.id === this.currentPhaseId) {
-          segments.push(cyan('●') + ' ' + bold(phase.label));
-        } else {
-          segments.push(dim('·') + ' ' + dim(phase.label));
-        }
+        const completed = this.completedPhases.has(phase.id);
+        const running = phase.id === this.currentPhaseId;
+        const selected = phase.id === effectiveSelected;
+        const marker = completed ? green('✓') : running ? cyan('●') : dim('·');
+        const baseLabel = completed ? phase.label : running ? bold(phase.label) : phase.label;
+        const label = selected ? underline(baseLabel) : !completed && !running ? dim(baseLabel) : baseLabel;
+        segments.push(marker + ' ' + label);
       }
       line = segments.join(dim(' │ '));
 

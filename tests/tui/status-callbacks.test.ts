@@ -293,6 +293,29 @@ describe('createTuiStatusCallbacks', () => {
       expect(agents[0].sessionId).toBe('sess-1');
       expect(agents[0].sessionPath).toBe('/sessions/sess-1');
     });
+
+    it('applies taskTitle from a prior onTaskStart (production ordering)', () => {
+      // Production ordering: onTaskStart fires BEFORE onAgentSpawn, so the
+      // title cannot be applied until the agent record exists. The title is
+      // stashed and applied during onAgentSpawn.
+      const ctx = createTestDeps();
+      ctx.callbacks.onTaskStart!({ taskId: 't1', title: 'Implement feature', agentId: 'a1' });
+      ctx.callbacks.onAgentSpawn!({ agentId: 'a1', profile: 'coder', phase: 'implement', taskId: 't1' });
+      const agents = ctx.dashboard.registry.getAgents();
+      expect(agents).toHaveLength(1);
+      expect(agents[0].taskTitle).toBe('Implement feature');
+    });
+
+    it('applies taskTitle from a prior onTasksAdded (production ordering)', () => {
+      const ctx = createTestDeps();
+      ctx.callbacks.onTasksAdded!({
+        tasks: [{ id: 't1', title: 'Queued feature', status: 'ready', dependencies: [] }],
+      });
+      ctx.callbacks.onAgentSpawn!({ agentId: 'a1', profile: 'coder', phase: 'implement', taskId: 't1' });
+      const agents = ctx.dashboard.registry.getAgents();
+      expect(agents).toHaveLength(1);
+      expect(agents[0].taskTitle).toBe('Queued feature');
+    });
   });
 
   describe('onAgentComplete', () => {
@@ -772,6 +795,7 @@ describe('createTuiStatusCallbacks', () => {
       ctx.callbacks.onAgentSpawn!({ agentId: 'a', profile: 'p', phase: 'x' });
       ctx.callbacks.onAgentComplete!({ agentId: 'a', profile: 'p', phase: 'x' });
       ctx.callbacks.onTaskStart!({ taskId: 't1', title: 'T', agentId: 'a1' });
+      ctx.callbacks.onTaskStepStart!({ taskId: 't1', stepName: 'step', stepIndex: 0, totalSteps: 1 });
       ctx.callbacks.onTaskComplete!({ taskId: 't1', title: 'T' });
       ctx.callbacks.onTaskRejected!({ taskId: 't1', title: 'T', reason: 'r' });
       ctx.callbacks.onDecision!({ agentId: 'a', decision: 'd', reasoning: 'r' });
@@ -783,10 +807,10 @@ describe('createTuiStatusCallbacks', () => {
 
       ctx.callbacks.onTasksAdded!({ tasks: [] });
 
-      // 16 callbacks total (onTurnStart removed – it was a no-op;
+      // 17 callbacks total (onTurnStart removed – it was a no-op;
       // onTurnEnd also returns early here because agent 'a' was completed
       // by onAgentComplete, so getActiveUid returns undefined)
-      expect(ctx.renderCount).toBe(16);
+      expect(ctx.renderCount).toBe(17);
     });
   });
 
@@ -886,6 +910,120 @@ describe('createTuiStatusCallbacks', () => {
   });
 
   // ─── initialAgents seeding ─────────────────────────────────────────
+
+  describe('onTaskStepStart', () => {
+    it('updates lane stepInfo with step name', () => {
+      const ctx = createTestDeps();
+      ctx.callbacks.onTaskStart!({ taskId: 't1', title: 'Implement feature', agentId: 'a1' });
+      ctx.callbacks.onTaskStepStart!({ taskId: 't1', stepName: 'test-writing', stepIndex: 1, totalSteps: 2 });
+      const lastLaneUpdate = ctx.lanePool.calls[ctx.lanePool.calls.length - 1].args[0] as TaskLane[];
+      expect(lastLaneUpdate[0].stepInfo).toBe('test-writing');
+    });
+
+    it('calls requestRender', () => {
+      const ctx = createTestDeps();
+      ctx.callbacks.onTaskStart!({ taskId: 't1', title: 'T', agentId: 'a1' });
+      ctx.resetRenderCount();
+      ctx.callbacks.onTaskStepStart!({ taskId: 't1', stepName: 'review', stepIndex: 1, totalSteps: 2 });
+      expect(ctx.renderCount).toBe(1);
+    });
+
+    it('is a no-op when lane is not found', () => {
+      const ctx = createTestDeps();
+      // No onTaskStart — lane doesn't exist
+      ctx.callbacks.onTaskStepStart!({ taskId: 'nonexistent', stepName: 'review', stepIndex: 0, totalSteps: 1 });
+      // Should not have called updateLanes
+      expect(ctx.lanePool.calls.length).toBe(0);
+    });
+
+    it('updates stepInfo on subsequent step changes', () => {
+      const ctx = createTestDeps();
+      ctx.callbacks.onTaskStart!({ taskId: 't1', title: 'Task', agentId: 'a1' });
+      ctx.callbacks.onTaskStepStart!({ taskId: 't1', stepName: 'implement', stepIndex: 0, totalSteps: 2 });
+      let laneUpdate = ctx.lanePool.calls[ctx.lanePool.calls.length - 1].args[0] as TaskLane[];
+      expect(laneUpdate[0].stepInfo).toBe('implement');
+
+      ctx.callbacks.onTaskStepStart!({ taskId: 't1', stepName: 'review', stepIndex: 1, totalSteps: 2 });
+      laneUpdate = ctx.lanePool.calls[ctx.lanePool.calls.length - 1].args[0] as TaskLane[];
+      expect(laneUpdate[0].stepInfo).toBe('review');
+    });
+
+    it('does not rebuild lanes when stepName is unchanged', () => {
+      const ctx = createTestDeps();
+      ctx.callbacks.onTaskStart!({ taskId: 't1', title: 'Task', agentId: 'a1' });
+      ctx.callbacks.onTaskStepStart!({ taskId: 't1', stepName: 'implement', stepIndex: 0, totalSteps: 2 });
+      // First step change rebuilds lanes.
+      expect(ctx.lanePool.calls.length).toBe(2); // onTaskStart + first step
+      ctx.resetRenderCount();
+
+      ctx.callbacks.onTaskStepStart!({ taskId: 't1', stepName: 'implement', stepIndex: 0, totalSteps: 2 });
+      // Same stepName → no second rebuild, but render still fires.
+      expect(ctx.lanePool.calls.length).toBe(2);
+      expect(ctx.renderCount).toBe(1);
+    });
+  });
+
+  describe('agentLog invalidation (Bug3)', () => {
+    it('onAgentSpawn invalidates agentLog', () => {
+      const ctx = createTestDeps();
+      ctx.callbacks.onAgentSpawn!({ agentId: 'a1', profile: 'scout', phase: 'scouting' });
+      expect(ctx.agentLog.calls).toContainEqual({ method: 'invalidate', args: [] });
+    });
+
+    it('onAgentComplete invalidates agentLog', () => {
+      const ctx = createTestDeps();
+      ctx.callbacks.onAgentSpawn!({ agentId: 'a1', profile: 'scout', phase: 'scouting' });
+      ctx.agentLog.calls.length = 0; // reset to only see onAgentComplete's calls
+      ctx.callbacks.onAgentComplete!({ agentId: 'a1', profile: 'scout', phase: 'scouting' });
+      expect(ctx.agentLog.calls).toContainEqual({ method: 'invalidate', args: [] });
+    });
+
+    it('onTurnEnd invalidates agentLog', () => {
+      const ctx = createTestDeps();
+      ctx.callbacks.onAgentSpawn!({ agentId: 'a1', profile: 'coder', phase: 'implement' });
+      ctx.agentLog.calls.length = 0;
+      ctx.callbacks.onTurnEnd!({
+        agentId: 'a1',
+        turn: 1,
+        contentBlocks: [{ type: 'text', text: 'Hello' }],
+      });
+      expect(ctx.agentLog.calls).toContainEqual({ method: 'invalidate', args: [] });
+    });
+
+    it('onToolCallStart invalidates agentLog', () => {
+      const ctx = createTestDeps();
+      ctx.callbacks.onAgentSpawn!({ agentId: 'a1', profile: 'scout', phase: 'scouting' });
+      ctx.agentLog.calls.length = 0;
+      ctx.callbacks.onToolCallStart!({
+        agentId: 'a1',
+        toolName: 'read',
+        toolCallId: 'tc1',
+        arguments: {},
+      });
+      expect(ctx.agentLog.calls).toContainEqual({ method: 'invalidate', args: [] });
+    });
+
+    it('onToolCallEnd invalidates agentLog even when not error', () => {
+      const ctx = createTestDeps();
+      ctx.callbacks.onAgentSpawn!({ agentId: 'a1', profile: 'scout', phase: 'scouting' });
+      ctx.agentLog.calls.length = 0;
+      ctx.callbacks.onToolCallEnd!({
+        agentId: 'a1',
+        toolName: 'read',
+        toolCallId: 'tc1',
+        isError: false,
+      });
+      expect(ctx.agentLog.calls).toContainEqual({ method: 'invalidate', args: [] });
+    });
+
+    it('onError invalidates agentLog', () => {
+      const ctx = createTestDeps();
+      ctx.callbacks.onAgentSpawn!({ agentId: 'a1', profile: 'scout', phase: 'scouting' });
+      ctx.agentLog.calls.length = 0;
+      ctx.callbacks.onError!({ agentId: 'a1', error: 'crash', phase: 'planning' });
+      expect(ctx.agentLog.calls).toContainEqual({ method: 'invalidate', args: [] });
+    });
+  });
 
   describe('initialAgents', () => {
     it('registers each initial agent in the registry', () => {

@@ -146,6 +146,7 @@ describe('STATUS_CALLBACK_METHODS', () => {
       'onAgentSpawn',
       'onAgentComplete',
       'onTaskStart',
+      'onTaskStepStart',
       'onTaskComplete',
       'onTaskRejected',
       'onDecision',
@@ -231,6 +232,7 @@ describe('composeStatusCallbacks', () => {
       onAgentSpawn: () => log.push('cb1.onAgentSpawn'),
       onAgentComplete: () => log.push('cb1.onAgentComplete'),
       onTaskStart: () => log.push('cb1.onTaskStart'),
+      onTaskStepStart: () => log.push('cb1.onTaskStepStart'),
       onTaskComplete: () => log.push('cb1.onTaskComplete'),
       onTaskRejected: () => log.push('cb1.onTaskRejected'),
       onDecision: () => log.push('cb1.onDecision'),
@@ -251,6 +253,7 @@ describe('composeStatusCallbacks', () => {
       onAgentSpawn: () => log.push('cb2.onAgentSpawn'),
       onAgentComplete: () => log.push('cb2.onAgentComplete'),
       onTaskStart: () => log.push('cb2.onTaskStart'),
+      onTaskStepStart: () => log.push('cb2.onTaskStepStart'),
       onTaskComplete: () => log.push('cb2.onTaskComplete'),
       onTaskRejected: () => log.push('cb2.onTaskRejected'),
       onDecision: () => log.push('cb2.onDecision'),
@@ -273,6 +276,7 @@ describe('composeStatusCallbacks', () => {
     composed.onAgentSpawn?.({} as any);
     composed.onAgentComplete?.({} as any);
     composed.onTaskStart?.({} as any);
+    composed.onTaskStepStart?.({} as any);
     composed.onTaskComplete?.({} as any);
     composed.onTaskRejected?.({} as any);
     composed.onDecision?.({} as any);
@@ -287,8 +291,8 @@ describe('composeStatusCallbacks', () => {
     composed.onSidebarUpdate?.({} as any);
 
     // Each method should invoke both cb1 and cb2 in order
-    expect(log).toHaveLength(36);
-    for (let i = 0; i < 18; i++) {
+    expect(log).toHaveLength(38);
+    for (let i = 0; i < 19; i++) {
       const methodIndex = i * 2;
       expect(log[methodIndex]).toBe(`cb1.${STATUS_CALLBACK_METHODS[i]}`);
       expect(log[methodIndex + 1]).toBe(`cb2.${STATUS_CALLBACK_METHODS[i]}`);

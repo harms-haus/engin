@@ -126,7 +126,7 @@ export class LanePoolWidget implements Component {
 
       if (lane.status === 'implementing' || lane.status === 'reviewing' || lane.status === 'claimed') {
         // Branch A (active): {icon} {colored title} - {dim status text} - {dim elapsed}
-        text = iconTitle + ' - ' + dim(lane.status);
+        text = iconTitle + ' - ' + dim(lane.stepInfo ?? lane.status);
         if (elapsed !== undefined) {
           text += ' - ' + elapsed;
         }

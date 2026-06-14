@@ -5,6 +5,7 @@ import type { TaskStatus } from '../core/types.js';
 export const cyan = (str: string): string => `\x1b[36m${str}\x1b[0m`;
 export const dim = (str: string): string => `\x1b[2m${str}\x1b[0m`;
 export const bold = (str: string): string => `\x1b[1m${str}\x1b[0m`;
+export const underline = (str: string): string => `\x1b[4m${str}\x1b[0m`;
 export const green = (str: string): string => `\x1b[32m${str}\x1b[0m`;
 export const red = (str: string): string => `\x1b[31m${str}\x1b[0m`;
 export const yellow = (str: string): string => `\x1b[33m${str}\x1b[0m`;

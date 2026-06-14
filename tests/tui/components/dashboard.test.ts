@@ -5,8 +5,8 @@ import { stripAnsi } from '../../../src/tui/theme.js';
 const WIDTH = 80;
 
 /** Helper to set up dashboard with two agents in the same phase for navigation tests. */
-function setupDashboardWithAgents(maxLanes = 3, logLines = 4): Dashboard {
-  const d = new Dashboard(maxLanes, logLines);
+function setupDashboardWithAgents(logLines = 4): Dashboard {
+  const d = new Dashboard(logLines);
   d.registry.register({
     agentId: 'agent-1',
     profile: 'coder',
@@ -25,14 +25,14 @@ function setupDashboardWithAgents(maxLanes = 3, logLines = 4): Dashboard {
 describe('Dashboard', () => {
   // ── registry getter ──────────────────────────────────────────────────
   it('dashboard.registry getter returns the AgentRegistry instance', () => {
-    const d = new Dashboard(3, 4);
+    const d = new Dashboard(4);
     expect(d.registry).toBeDefined();
     expect(typeof d.registry.register).toBe('function');
     expect(typeof d.registry.getAgents).toBe('function');
   });
 
   it('dashboard.registry is shared with agentLog', () => {
-    const d = new Dashboard(3, 4);
+    const d = new Dashboard(4);
 
     // Register an agent via dashboard.registry
     const uid = d.registry.register({
@@ -56,14 +56,14 @@ describe('Dashboard', () => {
 
   // ── getComputedHeight ───────────────────────────────────────────────
   it('returns correct total height including border lines', () => {
-    const d = new Dashboard(3, 4);
+    const d = new Dashboard(4);
     // PhaseBar renders 1 line, 0 lanes, agentLogLines=4
     // content = 1 + 0 + 4 = 5, + 4 borders = 9
     expect(d.getComputedHeight()).toBe(1 + 0 + 4 + 4);
   });
 
   it('accounts for visible lanes in computed height', () => {
-    const d = new Dashboard(3, 4);
+    const d = new Dashboard(4);
     d.lanePool.updateLanes([
       { id: 't1', title: 'A', status: 'ready' },
       { id: 't2', title: 'B', status: 'done' },
@@ -73,13 +73,13 @@ describe('Dashboard', () => {
   });
 
   it('uses default agentLogLines of 20', () => {
-    const d = new Dashboard(5);
+    const d = new Dashboard();
     // PhaseBar=1, lanes=0, agentLog=20 => content=21, +4 borders=25
     expect(d.getComputedHeight()).toBe(1 + 0 + 20 + 4);
   });
 
   it('getComputedHeight increases when agentLog is expanded', () => {
-    const d = new Dashboard(3, 4);
+    const d = new Dashboard(4);
     // Not expanded: agentLog.getExpandedLineCount() returns maxLines = 4
     // PhaseBar=1, lanes=0, agentLog=4 => content=5, +4 borders=9
     expect(d.getComputedHeight()).toBe(1 + 0 + 4 + 4);
@@ -93,7 +93,7 @@ describe('Dashboard', () => {
 
   // ── Sub-component getters ──────────────────────────────────────────
   it('exposes phaseBar, lanePool, and agentLog via getters', () => {
-    const d = new Dashboard(2, 3);
+    const d = new Dashboard(3);
     expect(d.phaseBar).toBeDefined();
     expect(d.lanePool).toBeDefined();
     expect(d.agentLog).toBeDefined();
@@ -101,14 +101,14 @@ describe('Dashboard', () => {
 
   // ── render line count ──────────────────────────────────────────────
   it('render() returns correct total line count with borders', () => {
-    const d = new Dashboard(3, 4);
+    const d = new Dashboard(4);
     const lines = d.render(WIDTH);
     // PhaseBar=1, lanes=0 (no lanes set), agentLog=4 => content=5, +4 borders=9
     expect(lines).toHaveLength(1 + 0 + 4 + 4);
   });
 
   it('render() with lanes returns correct line count', () => {
-    const d = new Dashboard(3, 4);
+    const d = new Dashboard(4);
     d.lanePool.updateLanes([
       { id: 't1', title: 'A', status: 'ready' },
       { id: 't2', title: 'B', status: 'done' },
@@ -119,7 +119,7 @@ describe('Dashboard', () => {
   });
 
   it('render() with default agentLogLines returns correct line count', () => {
-    const d = new Dashboard(2);
+    const d = new Dashboard();
     const lines = d.render(WIDTH);
     // PhaseBar=1, lanes=0, agentLog=20 => content=21, +4 borders=25
     expect(lines).toHaveLength(1 + 0 + 20 + 4);
@@ -127,19 +127,19 @@ describe('Dashboard', () => {
 
   // ── render() border structure ──────────────────────────────────────
   it('render() starts with top border ┌─┐', () => {
-    const d = new Dashboard(2, 3);
+    const d = new Dashboard(3);
     const lines = d.render(WIDTH);
     expect(lines[0]).toBe('┌' + '─'.repeat(WIDTH - 2) + '┐');
   });
 
   it('render() ends with bottom border └─┘', () => {
-    const d = new Dashboard(2, 3);
+    const d = new Dashboard(3);
     const lines = d.render(WIDTH);
     expect(lines[lines.length - 1]).toBe('└' + '─'.repeat(WIDTH - 2) + '┘');
   });
 
   it('render() has separators ├─┤ between sections', () => {
-    const d = new Dashboard(2, 3);
+    const d = new Dashboard(3);
     const lines = d.render(WIDTH);
     const sep = '├' + '─'.repeat(WIDTH - 2) + '┤';
     const sepCount = lines.filter((l) => l === sep).length;
@@ -147,7 +147,7 @@ describe('Dashboard', () => {
   });
 
   it('render() wraps content lines with │', () => {
-    const d = new Dashboard(2, 3);
+    const d = new Dashboard(3);
     d.phaseBar.setPhases([{ id: 'plan', label: 'Plan', icon: '📋' }]);
     d.phaseBar.setCurrentPhase('plan');
     const lines = d.render(WIDTH);
@@ -160,7 +160,7 @@ describe('Dashboard', () => {
 
   // ── invalidate ─────────────────────────────────────────────────────
   it('invalidate() calls invalidate on all sub-components', () => {
-    const d = new Dashboard(2, 3);
+    const d = new Dashboard(3);
 
     const phaseSpy = spyOn(d.phaseBar, 'invalidate');
     const laneSpy = spyOn(d.lanePool, 'invalidate');
@@ -324,6 +324,80 @@ describe('Dashboard', () => {
   });
 });
 
+// ─── Phase bar underline sync on handleInput ──────────────────────────
+
+describe('Dashboard phase bar underline sync', () => {
+  it('handleInput down arrow syncs phaseBar selected phase', () => {
+    const d = new Dashboard(4);
+
+    // Set up phases on phase bar
+    d.phaseBar.setPhases([
+      { id: 'phase-a', label: 'Phase A', icon: 'A' },
+      { id: 'phase-b', label: 'Phase B', icon: 'B' },
+    ]);
+    d.phaseBar.setCurrentPhase('phase-a');
+
+    // Register agents in both phases
+    d.registry.register({
+      agentId: 'agent-a',
+      profile: 'coder',
+      phase: 'phase-a',
+    });
+    d.registry.register({
+      agentId: 'agent-b',
+      profile: 'scout',
+      phase: 'phase-b',
+    });
+    d.agentLog.setPhases(['phase-a', 'phase-b']);
+    d.agentLog.setCurrentPhase('phase-a');
+
+    // Initially, Phase A should be underlined (current phase, no explicit selection)
+    let phaseBarLine = d.phaseBar.render(WIDTH - 2)[0];
+    expect(phaseBarLine).toContain('\x1b[4m');
+
+    // Down arrow: agent log cycles to phase-b
+    d.handleInput('\x1b[B');
+
+    // Phase bar should now underline Phase B
+    phaseBarLine = d.phaseBar.render(WIDTH - 2)[0];
+    // eslint-disable-next-line no-control-regex
+    const underlineCount = (phaseBarLine.match(/\x1b\[4m/g) || []).length;
+    expect(underlineCount).toBe(1);
+  });
+
+  it('handleInput up arrow syncs phaseBar selected phase backwards', () => {
+    const d = new Dashboard(4);
+
+    d.phaseBar.setPhases([
+      { id: 'phase-a', label: 'Phase A', icon: 'A' },
+      { id: 'phase-b', label: 'Phase B', icon: 'B' },
+    ]);
+    d.phaseBar.setCurrentPhase('phase-a');
+
+    d.registry.register({
+      agentId: 'agent-a',
+      profile: 'coder',
+      phase: 'phase-a',
+    });
+    d.registry.register({
+      agentId: 'agent-b',
+      profile: 'scout',
+      phase: 'phase-b',
+    });
+    d.agentLog.setPhases(['phase-a', 'phase-b']);
+    d.agentLog.setCurrentPhase('phase-a');
+
+    // Up arrow from phase-a wraps to phase-b (cycling backwards)
+    d.handleInput('\x1b[A');
+
+    // Phase bar should now underline Phase B
+    const phaseBarLine = d.phaseBar.render(WIDTH - 2)[0];
+    // eslint-disable-next-line no-control-regex
+    const underlineCount = (phaseBarLine.match(/\x1b\[4m/g) || []).length;
+    expect(underlineCount).toBe(1);
+  });
+});
+
 // ─── ANSI-aware border padding ───────────────────────────────────────────
 // The dashboard must account for ANSI escape codes when padding/truncating
 // content lines so that the right border '│' ends up at the correct visible
@@ -337,7 +411,7 @@ describe('Dashboard ANSI-aware border padding', () => {
   const visibleWidth = (s: string): number => stripAnsi(s).length;
 
   it('PhaseBar content lines have correct visible width when colored', () => {
-    const d = new Dashboard(2, 3);
+    const d = new Dashboard(3);
     d.phaseBar.setPhases([
       { id: 'plan', label: 'Planning', icon: '📋' },
       { id: 'build', label: 'Building', icon: '🔨' },
@@ -356,7 +430,7 @@ describe('Dashboard ANSI-aware border padding', () => {
   });
 
   it('AgentLog content lines have correct visible width when colored', () => {
-    const d = new Dashboard(2, 4);
+    const d = new Dashboard(4);
     // Register an agent via registry
     const uid = d.registry.register({
       agentId: 'agent-1',
@@ -379,7 +453,7 @@ describe('Dashboard ANSI-aware border padding', () => {
   });
 
   it('LanePool content lines have correct visible width when colored', () => {
-    const d = new Dashboard(3, 2);
+    const d = new Dashboard(2);
     d.lanePool.updateLanes([
       { id: 't1', title: 'Alpha', status: 'ready' },
       { id: 't2', title: 'Beta', status: 'done' },
@@ -397,7 +471,7 @@ describe('Dashboard ANSI-aware border padding', () => {
   });
 
   it('Right border column aligns across border, content, and separator lines', () => {
-    const d = new Dashboard(2, 3);
+    const d = new Dashboard(3);
     d.phaseBar.setPhases([
       { id: 'plan', label: 'Plan', icon: '📋' },
       { id: 'build', label: 'Build', icon: '🔨' },
@@ -429,7 +503,7 @@ describe('Dashboard ANSI-aware border padding', () => {
   });
 
   it('all content lines have string length <= innerWidth+2 even with ANSI codes', () => {
-    const d = new Dashboard(2, 3);
+    const d = new Dashboard(3);
     d.phaseBar.setPhases([
       { id: 'a', label: 'Alpha', icon: '📋' },
       { id: 'b', label: 'Beta', icon: '🔨' },
@@ -449,7 +523,7 @@ describe('Dashboard ANSI-aware border padding', () => {
   });
 
   it('ANSI-heavy lane pool lines maintain correct visible width', () => {
-    const d = new Dashboard(4, 2);
+    const d = new Dashboard(2);
     d.lanePool.updateLanes([
       { id: 't1', title: 'Short', status: 'done' },
       { id: 't2', title: 'Another task title', status: 'failed' },
@@ -466,7 +540,7 @@ describe('Dashboard ANSI-aware border padding', () => {
   });
 
   it('agent log with multiple colored entries maintains correct visible width per line', () => {
-    const d = new Dashboard(2, 5);
+    const d = new Dashboard(5);
     // Register an agent via registry
     const uid = d.registry.register({
       agentId: 'a1',

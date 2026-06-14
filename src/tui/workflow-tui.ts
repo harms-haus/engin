@@ -79,7 +79,7 @@ export class WorkflowTUI {
     this.initialAgents = options.initialAgents;
 
     this.eventLog = new EventLog();
-    this.dashboard = new Dashboard(this.maxConcurrentLanes, this.agentLogLines);
+    this.dashboard = new Dashboard(this.agentLogLines);
 
     this.statusCallbacks = createTuiStatusCallbacks({
       eventLog: this.eventLog,

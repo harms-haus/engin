@@ -123,6 +123,7 @@ export interface WorkflowStatusCallbacks {
     sessionId?: string;
   }) => void;
   onTaskStart?: (info: { taskId: string; title: string; agentId: string; phase?: string; startedAt?: number }) => void;
+  onTaskStepStart?: (info: { taskId: string; stepName: string; stepIndex: number; totalSteps: number }) => void;
   onTaskComplete?: (info: { taskId: string; title: string }) => void;
   onTaskRejected?: (info: { taskId: string; title: string; reason: string }) => void;
   onDecision?: (info: { agentId: string; decision: string; reasoning: string; taskId?: string }) => void;
@@ -174,6 +175,7 @@ export const STATUS_CALLBACK_METHODS: readonly string[] = Object.freeze([
   'onAgentSpawn',
   'onAgentComplete',
   'onTaskStart',
+  'onTaskStepStart',
   'onTaskComplete',
   'onTaskRejected',
   'onDecision',

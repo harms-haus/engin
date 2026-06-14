@@ -161,3 +161,144 @@ describe('PhaseBar', () => {
     expect(visibleWidth(lines[0])).toBe(40);
   });
 });
+
+// ─── Underline / Selection ──────────────────────────────────────────────
+
+describe('PhaseBar underline selection', () => {
+  it('setSelectedPhase underlines the correct phase label', () => {
+    const bar = new PhaseBar();
+    bar.setPhases([
+      { id: 'a', label: 'Alpha', icon: 'A' },
+      { id: 'b', label: 'Beta', icon: 'B' },
+      { id: 'c', label: 'Gamma', icon: 'C' },
+    ]);
+    bar.setCurrentPhase('a');
+    bar.setSelectedPhase('b');
+
+    const lines = bar.render(80);
+    const line = lines[0];
+
+    // Beta's label should have underline escape code \x1b[4m
+    expect(line).toContain('\x1b[4m');
+    // Only one underline (for Beta only)
+    // eslint-disable-next-line no-control-regex
+    const underlineCount = (line.match(/\x1b\[4m/g) || []).length;
+    expect(underlineCount).toBe(1);
+  });
+
+  it('when selectedPhaseId is null, underline follows currentPhaseId', () => {
+    const bar = new PhaseBar();
+    bar.setPhases([
+      { id: 'a', label: 'Alpha', icon: 'A' },
+      { id: 'b', label: 'Beta', icon: 'B' },
+    ]);
+    bar.setCurrentPhase('a');
+    // Do NOT call setSelectedPhase → selectedPhaseId remains null
+
+    const lines = bar.render(80);
+    const line = lines[0];
+
+    // Underline should be on Alpha (the current phase) since selectedPhaseId is null
+    expect(line).toContain('\x1b[4m');
+    // eslint-disable-next-line no-control-regex
+    const underlineCount = (line.match(/\x1b\[4m/g) || []).length;
+    expect(underlineCount).toBe(1);
+  });
+
+  it('setCurrentPhase resets selection (setSelectedPhase then setCurrentPhase)', () => {
+    const bar = new PhaseBar();
+    bar.setPhases([
+      { id: 'a', label: 'Alpha', icon: 'A' },
+      { id: 'b', label: 'Beta', icon: 'B' },
+      { id: 'c', label: 'Gamma', icon: 'C' },
+    ]);
+    bar.setCurrentPhase('a');
+    bar.setSelectedPhase('b');
+
+    // Verify 'b' is underlined
+    let lines = bar.render(80);
+    expect(lines[0]).toContain('\x1b[4m');
+
+    // Now setCurrentPhase('c') should reset selection to null
+    bar.setCurrentPhase('c');
+    lines = bar.render(80);
+    const line = lines[0];
+
+    // Gamma (now current, effectiveSelected = null ?? 'c' = 'c') should be underlined
+    expect(line).toContain('\x1b[4m');
+    // Only one underline (for Gamma, not Beta)
+    // eslint-disable-next-line no-control-regex
+    const underlineCount = (line.match(/\x1b\[4m/g) || []).length;
+    expect(underlineCount).toBe(1);
+  });
+
+  it('a completed phase that is also selected shows both ✓ and underline', () => {
+    const bar = new PhaseBar();
+    bar.setPhases([
+      { id: 'a', label: 'Alpha', icon: 'A' },
+      { id: 'b', label: 'Beta', icon: 'B' },
+      { id: 'c', label: 'Gamma', icon: 'C' },
+    ]);
+    bar.setCompletedPhases(['a']);
+    bar.setCurrentPhase('b');
+    bar.setSelectedPhase('a'); // Select the completed phase
+
+    const lines = bar.render(80);
+    const line = lines[0];
+
+    // Should contain ✓ (completed icon) and underline escape
+    expect(line).toContain('✓');
+    expect(line).toContain('\x1b[4m');
+    // Only one underline (for the selected completed phase)
+    // eslint-disable-next-line no-control-regex
+    const underlineCount = (line.match(/\x1b\[4m/g) || []).length;
+    expect(underlineCount).toBe(1);
+  });
+
+  it('invalidate() cache-busts after setSelectedPhase', () => {
+    const bar = new PhaseBar();
+    bar.setPhases([
+      { id: 'a', label: 'Alpha', icon: 'A' },
+      { id: 'b', label: 'Beta', icon: 'B' },
+    ]);
+    bar.setCurrentPhase('a');
+
+    const first = bar.render(60);
+
+    // setSelectedPhase should invalidate cache
+    bar.setSelectedPhase('b');
+    const second = bar.render(60);
+
+    expect(second).not.toBe(first);
+  });
+
+  it('selected pending phase label is underlined and NOT dimmed', () => {
+    const bar = new PhaseBar();
+    bar.setPhases([
+      { id: 'a', label: 'Alpha', icon: 'A' },
+      { id: 'b', label: 'Beta', icon: 'B' },
+      { id: 'c', label: 'Gamma', icon: 'C' },
+    ]);
+    bar.setCurrentPhase('a'); // Alpha is running
+    bar.setSelectedPhase('b'); // Beta is pending + selected
+
+    const lines = bar.render(80);
+    const line = lines[0];
+
+    // Phase b (Beta) is selected + pending: should have underline escape
+    // eslint-disable-next-line no-control-regex
+    const underlineCount = (line.match(/\x1b\[4m/g) || []).length;
+    expect(underlineCount).toBe(1);
+
+    // The underline escape must immediately precede 'Beta' (not preceded by dim '\x1b[2m')
+    expect(line).toContain('\x1b[4mBeta\x1b[0m');
+    // Must NOT contain dim-wrapped Beta (dim then underline)
+    expect(line).not.toContain('\x1b[2m\x1b[4mBeta');
+
+    // Phase a (Alpha) is running: should show cyan ●
+    expect(line).toContain('\x1b[36m●\x1b[0m');
+
+    // Phase c (Gamma) is pending + not selected: should show dim ·
+    expect(line).toContain('\x1b[2m·\x1b[0m');
+  });
+});

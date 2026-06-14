@@ -405,6 +405,45 @@ describe('LanePoolWidget', () => {
 
   describe('status-dependent row formats', () => {
     describe('active tasks (implementing, reviewing, claimed)', () => {
+      it('active task with stepInfo shows step name instead of status', () => {
+        const widget = new LanePoolWidget();
+        widget.updateLanes([
+          {
+            id: 't1',
+            title: 'My Task',
+            status: 'implementing',
+            stepInfo: 'test-writing',
+            startedAt: Date.now() - 5000,
+          },
+        ]);
+        const lines = widget.render(WIDTH);
+        expect(lines).toHaveLength(1);
+        const line = lines[0];
+        // Should contain the step name dimmed, NOT the status
+        expect(line).toContain(dim('test-writing'));
+        expect(line).not.toContain(dim('implementing'));
+        // Should contain the elapsed time
+        expect(line).toContain('5s');
+        // Should contain the title
+        expect(line).toContain('My Task');
+      });
+
+      it('active task without stepInfo falls back to status', () => {
+        const widget = new LanePoolWidget();
+        widget.updateLanes([
+          {
+            id: 't1',
+            title: 'My Task',
+            status: 'implementing',
+            startedAt: Date.now() - 5000,
+          },
+        ]);
+        const lines = widget.render(WIDTH);
+        expect(lines).toHaveLength(1);
+        const line = lines[0];
+        expect(line).toContain(dim('implementing'));
+      });
+
       it('active task implementing shows status text and elapsed', () => {
         const widget = new LanePoolWidget();
         widget.updateLanes([

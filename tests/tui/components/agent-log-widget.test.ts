@@ -146,8 +146,11 @@ describe('AgentLogWidget', () => {
     const lines = widget.render(20);
     expect(lines.length).toBe(5);
     // Content should wrap across multiple lines, not be truncated with '…'
+    // (the header line may show an ellipsis on narrow widths — that's expected
+    // H1 behavior — so only check the entry lines here).
     const allContent = lines.join('');
-    expect(allContent).not.toContain('…');
+    const entryContent = lines.slice(1).join('');
+    expect(entryContent).not.toContain('…');
     // The wrapped content should appear across multiple entry lines
     const entryLines = lines.slice(1).filter((l) => l.trim().length > 0);
     expect(entryLines.length).toBeGreaterThan(1);
@@ -777,5 +780,474 @@ describe('AgentLogWidget', () => {
     const lines = widget.render(80);
     // Should be at bottom (no scroll indicator)
     expect(lines[1]).not.toContain('up arrow');
+  });
+
+  // ─── Bug2: N/M agent indicator ───────────────────────────────────────
+
+  describe('Bug2: N/M agent indicator', () => {
+    it('header shows [1/3] when 3 agents in phase', () => {
+      const registry = new AgentRegistry();
+      const widget = new AgentLogWidget(5);
+      widget.setRegistry(registry);
+
+      registry.register({ agentId: 'a1', profile: 'coder', phase: 'test' });
+      registry.register({ agentId: 'a2', profile: 'scout', phase: 'test' });
+      registry.register({ agentId: 'a3', profile: 'planner', phase: 'test' });
+
+      widget.setPhases(['test']);
+      widget.setCurrentPhase('test');
+
+      const lines = widget.render(80);
+      expect(lines[0]).toContain('[1/3]');
+    });
+
+    it('header shows [2/3] after right arrow', () => {
+      const registry = new AgentRegistry();
+      const widget = new AgentLogWidget(5);
+      widget.setRegistry(registry);
+
+      registry.register({ agentId: 'a1', profile: 'coder', phase: 'test' });
+      registry.register({ agentId: 'a2', profile: 'scout', phase: 'test' });
+      registry.register({ agentId: 'a3', profile: 'planner', phase: 'test' });
+
+      widget.setPhases(['test']);
+      widget.setCurrentPhase('test');
+
+      widget.handleInput(RIGHT_ARROW);
+      const lines = widget.render(80);
+      expect(lines[0]).toContain('[2/3]');
+    });
+
+    it('header shows [3/3] at last agent after wrapping', () => {
+      const registry = new AgentRegistry();
+      const widget = new AgentLogWidget(5);
+      widget.setRegistry(registry);
+
+      registry.register({ agentId: 'a1', profile: 'coder', phase: 'test' });
+      registry.register({ agentId: 'a2', profile: 'scout', phase: 'test' });
+      registry.register({ agentId: 'a3', profile: 'planner', phase: 'test' });
+
+      widget.setPhases(['test']);
+      widget.setCurrentPhase('test');
+
+      // Right, right, right wraps back to 1, then left goes to 3
+      widget.handleInput(RIGHT_ARROW);
+      widget.handleInput(RIGHT_ARROW);
+      widget.handleInput(RIGHT_ARROW);
+      widget.handleInput(LEFT_ARROW);
+
+      const lines = widget.render(80);
+      expect(lines[0]).toContain('[3/3]');
+    });
+
+    it('header shows NO N/M indicator with a single agent', () => {
+      const { widget } = setupWidget(5);
+      const lines = widget.render(80);
+      // Should not contain any [N/M] pattern
+      expect(lines[0]).not.toMatch(/\[\d+\/\d+]/);
+    });
+
+    it('header shows NO N/M indicator with no agents', () => {
+      const registry = new AgentRegistry();
+      const widget = new AgentLogWidget(5);
+      widget.setRegistry(registry);
+      widget.setPhases(['test']);
+      widget.setCurrentPhase('test');
+
+      const lines = widget.render(80);
+      // No agent selected line, should not have [N/M]
+      expect(lines[0]).not.toMatch(/\[\d+\/\d+]/);
+    });
+  });
+
+  // ─── Bug5: auto-switch on agent completion ─────────────────────────────
+
+  describe('Bug5: auto-switch on agent completion', () => {
+    it('auto-switches to active agent when selected completes', () => {
+      const registry = new AgentRegistry();
+      const widget = new AgentLogWidget(5);
+      widget.setRegistry(registry);
+
+      const uid1 = registry.register({ agentId: 'a1', profile: 'coder', phase: 'test' });
+      const uid2 = registry.register({ agentId: 'a2', profile: 'scout', phase: 'test' });
+
+      widget.setPhases(['test']);
+      widget.setCurrentPhase('test');
+
+      // Initially selected agent is a1
+      expect(widget.getSelectedAgentUid()).toBe(uid1);
+
+      // Complete the selected agent
+      registry.complete(uid1);
+      widget.invalidate();
+
+      // After render (ensureSelection runs), should auto-switch to a2
+      widget.render(80);
+      expect(widget.getSelectedAgentUid()).toBe(uid2);
+    });
+
+    it('stays on completed agent when no active agents exist', () => {
+      const registry = new AgentRegistry();
+      const widget = new AgentLogWidget(5);
+      widget.setRegistry(registry);
+
+      const uid1 = registry.register({ agentId: 'a1', profile: 'coder', phase: 'test' });
+
+      widget.setPhases(['test']);
+      widget.setCurrentPhase('test');
+
+      expect(widget.getSelectedAgentUid()).toBe(uid1);
+
+      // Complete the only agent
+      registry.complete(uid1);
+      widget.invalidate();
+
+      // No active agents exist — should stay on the completed agent
+      widget.render(80);
+      expect(widget.getSelectedAgentUid()).toBe(uid1);
+    });
+
+    it('user can navigate to a completed agent and it sticks', () => {
+      const registry = new AgentRegistry();
+      const widget = new AgentLogWidget(5);
+      widget.setRegistry(registry);
+
+      const uid1 = registry.register({ agentId: 'a1', profile: 'coder', phase: 'test' });
+      const uid2 = registry.register({ agentId: 'a2', profile: 'scout', phase: 'test' });
+
+      widget.setPhases(['test']);
+      widget.setCurrentPhase('test');
+
+      // Complete agent-1 -> auto-switch to agent-2
+      registry.complete(uid1);
+      widget.invalidate();
+      widget.render(80);
+      expect(widget.getSelectedAgentUid()).toBe(uid2);
+
+      // User presses LEFT to navigate to agent-1 (completed)
+      widget.handleInput(LEFT_ARROW);
+      expect(widget.getSelectedAgentUid()).toBe(uid1);
+
+      // Render should still show agent-1 because _userNavigated is true
+      widget.render(80);
+      expect(widget.getSelectedAgentUid()).toBe(uid1);
+    });
+
+    it('auto-switch resumes after phase change', () => {
+      const registry = new AgentRegistry();
+      const widget = new AgentLogWidget(5);
+      widget.setRegistry(registry);
+
+      const uid1 = registry.register({ agentId: 'a1', profile: 'coder', phase: 'phase-a' });
+      const uid2 = registry.register({ agentId: 'a2', profile: 'scout', phase: 'phase-a' });
+      registry.register({ agentId: 'b1', profile: 'planner', phase: 'phase-b' });
+
+      widget.setPhases(['phase-a', 'phase-b']);
+      widget.setCurrentPhase('phase-a');
+
+      // Complete agent-1 -> auto-switch to agent-2
+      registry.complete(uid1);
+      widget.invalidate();
+      widget.render(80);
+      expect(widget.getSelectedAgentUid()).toBe(uid2);
+
+      // User navigates to agent-1 (completed) — sticks
+      widget.handleInput(LEFT_ARROW);
+      expect(widget.getSelectedAgentUid()).toBe(uid1);
+
+      // Switch phase (down) — resets _userNavigated
+      widget.handleInput(DOWN_ARROW);
+      expect(widget.getCurrentPhase()).toBe('phase-b');
+
+      // Switch back to phase-a — auto-switch should fire again
+      widget.handleInput(UP_ARROW);
+      expect(widget.getCurrentPhase()).toBe('phase-a');
+      // Should now auto-switch from completed agent-1 to active agent-2
+      expect(widget.getSelectedAgentUid()).toBe(uid2);
+    });
+
+    it('auto-switch resets after toggleExpand', () => {
+      const registry = new AgentRegistry();
+      const widget = new AgentLogWidget(5);
+      widget.setRegistry(registry);
+
+      const uid1 = registry.register({ agentId: 'a1', profile: 'coder', phase: 'test' });
+      const uid2 = registry.register({ agentId: 'a2', profile: 'scout', phase: 'test' });
+
+      widget.setPhases(['test']);
+      widget.setCurrentPhase('test');
+
+      // Complete agent-1 -> auto-switch to agent-2
+      registry.complete(uid1);
+      widget.invalidate();
+      widget.render(80);
+      expect(widget.getSelectedAgentUid()).toBe(uid2);
+
+      // Navigate to agent-1
+      widget.handleInput(LEFT_ARROW);
+      expect(widget.getSelectedAgentUid()).toBe(uid1);
+
+      // Toggle expand resets _userNavigated
+      widget.toggleExpand();
+
+      // Auto-switch should fire again: selected is completed, should move to agent-2
+      widget.render(80);
+      expect(widget.getSelectedAgentUid()).toBe(uid2);
+    });
+  });
+
+  // ─── Bug3 render fixes ──────────────────────────────────────────────
+
+  describe('Bug3 render fixes', () => {
+    it('render line count is always exactly getExpandedLineCount() collapsed with overflow', () => {
+      const { widget, registry, uid } = setupWidget(5); // totalLines=5
+      for (let i = 0; i < 20; i++) {
+        registry.addEntry(uid, { type: 'text', content: `entry-${i}` });
+      }
+      widget.invalidate();
+      expect(widget.render(WIDTH).length).toBe(5);
+    });
+
+    it('render line count is always exactly getExpandedLineCount() expanded with overflow', () => {
+      const widget = new AgentLogWidget(); // default: 20 collapsed, 40 expanded
+      const registry = new AgentRegistry();
+      widget.setRegistry(registry);
+      const uid = registry.register({ agentId: 'a', profile: 'p', phase: 'test' });
+      widget.setPhases(['test']);
+      widget.setCurrentPhase('test');
+      for (let i = 0; i < 100; i++) {
+        registry.addEntry(uid, { type: 'text', content: `entry-${i}` });
+      }
+      widget.toggleExpand();
+      widget.invalidate();
+      expect(widget.render(WIDTH).length).toBe(40);
+    });
+
+    it('render line count is exact with multi-line entries causing overflow', () => {
+      const { widget, registry, uid } = setupWidget(5); // totalLines=5, entrySlots=4
+      // Multi-line entry (3 rendered lines) + 5 single-line entries = 8 total lines > 4 slots
+      registry.addEntry(uid, { type: 'error', content: 'err1\nerr2\nerr3' });
+      for (let i = 0; i < 5; i++) {
+        registry.addEntry(uid, { type: 'text', content: `t-${i}` });
+      }
+      widget.invalidate();
+      expect(widget.render(WIDTH).length).toBe(5);
+    });
+
+    it('no entry loses its icon line when overflow', () => {
+      const { widget, registry, uid } = setupWidget(5); // totalLines=5, entrySlots=4
+      // 20 single-line entries: every visible one must retain its icon
+      for (let i = 0; i < 20; i++) {
+        registry.addEntry(uid, { type: 'text', content: `entry-${i}` });
+      }
+      widget.invalidate();
+
+      const lines = widget.render(WIDTH);
+      expect(lines.length).toBe(5);
+      // Should show the 4 most recent entries in chronological order
+      expect(lines[1]).toContain('entry-16');
+      expect(lines[2]).toContain('entry-17');
+      expect(lines[3]).toContain('entry-18');
+      expect(lines[4]).toContain('entry-19');
+      // All visible entries retain their icon (no splice-stripped icons)
+      for (let i = 1; i < 5; i++) {
+        expect(lines[i]).toContain('💬');
+      }
+    });
+
+    it('scroll indicator is a dedicated slot, not a content line', () => {
+      const widget = new AgentLogWidget(); // 20 collapsed, 40 expanded
+      const registry = new AgentRegistry();
+      widget.setRegistry(registry);
+      const uid = registry.register({ agentId: 'a1', profile: 'coder', phase: 'test' });
+      widget.setPhases(['test']);
+      widget.setCurrentPhase('test');
+
+      // Add 50 entries (each 1 line) — exceeds 39 entry slots when expanded
+      for (let i = 0; i < 50; i++) {
+        registry.addEntry(uid, { type: 'text', content: `entry-${i}` });
+      }
+      widget.invalidate();
+
+      widget.toggleExpand(); // totalLines=40, entrySlots=39
+      widget.render(80);
+
+      // Scroll up by 5
+      for (let i = 0; i < 5; i++) widget.handleInput(UP_ARROW);
+
+      const lines = widget.render(80);
+      // Total should be exactly 40
+      expect(lines.length).toBe(40);
+      // Line 0 = header
+      // Line 1 = scroll indicator (dedicated slot)
+      expect(lines[1]).toContain('up arrow');
+      expect(lines[1]).toContain('5');
+      // Lines 2–39 = 38 content lines (entrySlots - 1 = 38 when indicator present)
+      // Content lines should have 💬 icons
+      expect(lines[2]).toContain('💬');
+      expect(lines[39]).toContain('💬');
+    });
+
+    it('scroll indicator absent when not scrolled — full content slots used', () => {
+      const widget = new AgentLogWidget();
+      const registry = new AgentRegistry();
+      widget.setRegistry(registry);
+      const uid = registry.register({ agentId: 'a1', profile: 'coder', phase: 'test' });
+      widget.setPhases(['test']);
+      widget.setCurrentPhase('test');
+
+      for (let i = 0; i < 50; i++) {
+        registry.addEntry(uid, { type: 'text', content: `entry-${i}` });
+      }
+      widget.invalidate();
+      widget.toggleExpand();
+
+      const lines = widget.render(80);
+      expect(lines.length).toBe(40);
+      // No indicator when scrollOffset=0
+      expect(lines[1]).not.toContain('up arrow');
+      // All 39 content lines should have icons
+      for (let i = 1; i <= 39; i++) {
+        expect(lines[i]).toContain('💬');
+      }
+    });
+
+    it('scrollOffset consistent: pressing up N times then render shows N (no snap/jump)', () => {
+      const widget = new AgentLogWidget();
+      const registry = new AgentRegistry();
+      widget.setRegistry(registry);
+      const uid = registry.register({ agentId: 'a1', profile: 'coder', phase: 'test' });
+      widget.setPhases(['test']);
+      widget.setCurrentPhase('test');
+
+      for (let i = 0; i < 50; i++) {
+        registry.addEntry(uid, { type: 'text', content: `entry-${i}` });
+      }
+      widget.invalidate();
+      widget.toggleExpand();
+      widget.render(80);
+
+      // Press up 5 times
+      for (let i = 0; i < 5; i++) widget.handleInput(UP_ARROW);
+      let lines = widget.render(80);
+      expect(lines[1]).toContain('5');
+
+      // Press up 5 more (total 10)
+      for (let i = 0; i < 5; i++) widget.handleInput(UP_ARROW);
+      lines = widget.render(80);
+      expect(lines[1]).toContain('10');
+
+      // Scroll back down 3 — should show 7, no jump
+      for (let i = 0; i < 3; i++) widget.handleInput(DOWN_ARROW);
+      lines = widget.render(80);
+      expect(lines[1]).toContain('7');
+    });
+
+    it('addEntry then invalidate then render shows new entry', () => {
+      const { widget, registry, uid } = setupWidget(5);
+
+      registry.addEntry(uid, { type: 'text', content: 'first entry' });
+      widget.invalidate();
+
+      let lines = widget.render(WIDTH);
+      expect(lines[1]).toContain('first entry');
+
+      // Simulate what happens after onTurnEnd callback (addEntry + invalidate)
+      registry.addEntry(uid, { type: 'text', content: 'second entry' });
+      widget.invalidate(); // This is the key fix — callbacks now call invalidate
+
+      lines = widget.render(WIDTH);
+      // Entries render oldest-first: first entry at [1], second entry at [2]
+      expect(lines[1]).toContain('first entry');
+      expect(lines[2]).toContain('second entry');
+      expect(lines.length).toBe(5);
+    });
+  });
+
+  // ─── Review fixes (H1 / M1 / EFF-1) ────────────────────────────────
+
+  describe('Review fixes (H1 / M1 / EFF-1)', () => {
+    // FIX H1 — long titles no longer clip the N/M indicator + controls
+    it('header keeps N/M indicator and controls visible on a very long title', () => {
+      const registry = new AgentRegistry();
+      const widget = new AgentLogWidget(5);
+      widget.setRegistry(registry);
+      const uid1 = registry.register({ agentId: 'a1', profile: 'coder', phase: 'test' });
+      registry.register({ agentId: 'a2', profile: 'scout', phase: 'test' });
+      registry.register({ agentId: 'a3', profile: 'planner', phase: 'test' });
+      widget.setPhases(['test']);
+      widget.setCurrentPhase('test');
+      // Very long title that would otherwise push indicator + controls off-screen
+      registry.updateStats(uid1, { taskTitle: 'A'.repeat(60) });
+      widget.invalidate();
+
+      // Width 60 is wide enough to hold the full controls (~28) + indicator (~6)
+      // + gaps + a truncated title, but a 60-char title must be truncated.
+      const lines = widget.render(60);
+      expect(lines.length).toBe(widget.getExpandedLineCount());
+      // The N/M indicator survives (no longer clipped off the right edge)
+      expect(lines[0]).toContain('[1/3]');
+      // The full controls token survives at this width
+      expect(lines[0]).toContain('space');
+      expect(lines[0]).toContain('expand');
+      // The ellipsis lands on the TITLE side (before the indicator), proving
+      // it was the title that got truncated — not the indicator/controls.
+      const ellipsisIdx = lines[0].indexOf('…');
+      const indicatorIdx = lines[0].indexOf('[1/3]');
+      expect(ellipsisIdx).toBeGreaterThanOrEqual(0);
+      expect(indicatorIdx).toBeGreaterThanOrEqual(0);
+      expect(ellipsisIdx).toBeLessThan(indicatorIdx);
+    });
+
+    // FIX M1 — scrolling counts as engagement so auto-switch is suppressed
+    it('scrolling when expanded sets user-navigation (no auto-switch after scroll)', () => {
+      const registry = new AgentRegistry();
+      const widget = new AgentLogWidget(5);
+      widget.setRegistry(registry);
+      const uid1 = registry.register({ agentId: 'a1', profile: 'coder', phase: 'test' });
+      // A second (active) agent exists so auto-switch would have a target if it fired.
+      registry.register({ agentId: 'a2', profile: 'scout', phase: 'test' });
+      widget.setPhases(['test']);
+      widget.setCurrentPhase('test');
+      for (let i = 0; i < 60; i++) {
+        registry.addEntry(uid1, { type: 'text', content: `entry-${i}` });
+      }
+      widget.invalidate();
+
+      widget.toggleExpand();
+      widget.render(80); // compute _lastTotalEntryLines
+
+      // Scroll up — counts as engagement
+      widget.handleInput(UP_ARROW);
+      widget.render(80);
+
+      // Now complete the selected agent — auto-switch should be suppressed
+      // because scrolling set _userNavigated.
+      registry.complete(uid1);
+      widget.invalidate();
+      widget.render(80);
+      expect(widget.getSelectedAgentUid()).toBe(uid1);
+    });
+
+    // FIX EFF-1 — perf guard must not break line counts or drop newest entries
+    it('render line count is exactly getExpandedLineCount() with many entries after EFF-1 guard', () => {
+      const widget = new AgentLogWidget(); // 20 collapsed, 40 expanded
+      const registry = new AgentRegistry();
+      widget.setRegistry(registry);
+      const uid = registry.register({ agentId: 'a', profile: 'p', phase: 'test' });
+      widget.setPhases(['test']);
+      widget.setCurrentPhase('test');
+      for (let i = 0; i < 100; i++) {
+        registry.addEntry(uid, { type: 'text', content: `entry-${i}` });
+      }
+      widget.toggleExpand();
+      widget.invalidate();
+
+      const lines = widget.render(80);
+      expect(lines.length).toBe(40);
+      // The EFF-1 guard must not drop the newest entries from the visible window
+      expect(lines.some((l) => l.includes('entry-99'))).toBe(true);
+      expect(lines.some((l) => l.includes('entry-61'))).toBe(true);
+    });
   });
 });

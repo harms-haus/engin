@@ -11,11 +11,10 @@ export class Dashboard implements Component {
   private readonly _phaseBar: PhaseBar;
   private readonly _lanePool: LanePoolWidget;
   private readonly _agentLog: AgentLogWidget;
-  private readonly _agentLogLines: number;
   private readonly _registry: AgentRegistry;
+  private _lastSyncedPhase: string | null = null;
 
-  constructor(maxConcurrentLanes: number, agentLogLines = 20) {
-    this._agentLogLines = agentLogLines;
+  constructor(agentLogLines = 20) {
     this._phaseBar = new PhaseBar();
     this._lanePool = new LanePoolWidget();
     this._agentLog = new AgentLogWidget(agentLogLines);
@@ -97,6 +96,11 @@ export class Dashboard implements Component {
       matchesKey(data, Key.shift('down'))
     ) {
       this._agentLog.handleInput(data);
+      const cycled = this._agentLog.getCurrentPhase();
+      if (cycled !== null && cycled !== this._lastSyncedPhase) {
+        this._phaseBar.setSelectedPhase(cycled);
+        this._lastSyncedPhase = cycled;
+      }
     }
     // All other input is ignored (lane pool is display-only)
   }

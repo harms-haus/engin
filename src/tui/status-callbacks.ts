@@ -26,6 +26,10 @@ export function createTuiStatusCallbacks(deps: {
   const completedPhases: string[] = [];
   // Reverse map for task → agent lookups
   const taskToAgent = new Map<string, string>();
+  // Task titles keyed by taskId. Populated from onTasksAdded/onTaskStart so the
+  // title can be applied to the agent record in onAgentSpawn, regardless of
+  // callback ordering (in production onTaskStart fires BEFORE onAgentSpawn).
+  const taskTitles = new Map<string, string>();
 
   // ─── Seed initial agents from persisted state ───────────────────────────
 
@@ -104,6 +108,7 @@ export function createTuiStatusCallbacks(deps: {
     evLog: EventLog,
     dash: Dashboard,
     t2a: Map<string, string>,
+    ttls: Map<string, string>,
     render: () => void,
   ): Pick<
     StatusCallbacks,
@@ -114,7 +119,7 @@ export function createTuiStatusCallbacks(deps: {
         evLog.addLine('⏳ Agent ' + info.agentId + ' spawned (' + info.profile + ')');
 
         // Register the agent in the registry, which assigns a unique UID.
-        dash.registry.register({
+        const uid = dash.registry.register({
           agentId: info.agentId,
           profile: info.profile,
           phase: info.phase,
@@ -124,7 +129,16 @@ export function createTuiStatusCallbacks(deps: {
         });
         if (info.taskId) {
           t2a.set(info.taskId, info.agentId);
+          // In production onTaskStart fires before onAgentSpawn, so the title
+          // cannot be applied there (the agent record does not exist yet).
+          // Instead we stash the title in `ttls` and apply it here once the
+          // record exists.
+          const title = ttls.get(info.taskId);
+          if (title) {
+            dash.registry.updateStats(uid, { taskTitle: title });
+          }
         }
+        dash.agentLog.invalidate();
         render();
       },
 
@@ -135,6 +149,7 @@ export function createTuiStatusCallbacks(deps: {
           dash.registry.addEntry(uid, { type: 'text', content: 'Agent session ended' });
           dash.registry.complete(uid);
         }
+        dash.agentLog.invalidate();
         render();
       },
 
@@ -149,6 +164,7 @@ export function createTuiStatusCallbacks(deps: {
         if (uid) {
           dash.registry.addEntry(uid, { type: 'error', content: safeError });
         }
+        dash.agentLog.invalidate();
         render();
       },
 
@@ -172,6 +188,7 @@ export function createTuiStatusCallbacks(deps: {
             outputTokens: info.tokens.output,
           });
         }
+        dash.agentLog.invalidate();
         render();
       },
 
@@ -184,6 +201,7 @@ export function createTuiStatusCallbacks(deps: {
           });
           dash.registry.updateStats(uid, { toolCallCount: 1 });
         }
+        dash.agentLog.invalidate();
         render();
       },
 
@@ -194,6 +212,7 @@ export function createTuiStatusCallbacks(deps: {
             dash.registry.addEntry(uid, { type: 'error', content: `❌ ${info.toolName} failed` });
           }
         }
+        dash.agentLog.invalidate();
         render();
       },
     };
@@ -204,14 +223,17 @@ export function createTuiStatusCallbacks(deps: {
     dash: Dashboard,
     lns: Map<string, TaskLane>,
     t2a: Map<string, string>,
+    ttls: Map<string, string>,
     render: () => void,
-  ): Pick<StatusCallbacks, 'onTasksAdded' | 'onTaskStart' | 'onTaskComplete' | 'onTaskRejected'> {
+  ): Pick<StatusCallbacks, 'onTasksAdded' | 'onTaskStart' | 'onTaskStepStart' | 'onTaskComplete' | 'onTaskRejected'> {
     return {
       onTasksAdded(info) {
         for (const task of info.tasks) {
+          const safeTitle = stripAnsi(task.title);
+          ttls.set(task.id, safeTitle);
           lns.set(task.id, {
             id: task.id,
-            title: stripAnsi(task.title),
+            title: safeTitle,
             status: task.status,
             phase: task.phase,
           });
@@ -222,6 +244,7 @@ export function createTuiStatusCallbacks(deps: {
 
       onTaskStart(info) {
         const safeTitle = stripAnsi(info.title);
+        ttls.set(info.taskId, safeTitle);
         evLog.addLine('📋 Task ' + info.taskId + ': "' + safeTitle + '"');
         lns.set(info.taskId, {
           id: info.taskId,
@@ -237,6 +260,15 @@ export function createTuiStatusCallbacks(deps: {
         const uid = dash.registry.getActiveUid(agentId);
         if (uid) {
           dash.registry.updateStats(uid, { taskTitle: safeTitle });
+        }
+        render();
+      },
+
+      onTaskStepStart(info) {
+        const lane = lns.get(info.taskId);
+        if (lane && lane.stepInfo !== info.stepName) {
+          lane.stepInfo = info.stepName;
+          dash.lanePool.updateLanes(Array.from(lns.values()));
         }
         render();
       },
@@ -270,8 +302,8 @@ export function createTuiStatusCallbacks(deps: {
   return {
     ...buildWorkflowHandlers(eventLog, requestRender),
     ...buildPhaseHandlers(eventLog, dashboard, completedPhases, lanes, taskToAgent, requestRender),
-    ...buildAgentHandlers(eventLog, dashboard, taskToAgent, requestRender),
-    ...buildTaskHandlers(eventLog, dashboard, lanes, taskToAgent, requestRender),
+    ...buildAgentHandlers(eventLog, dashboard, taskToAgent, taskTitles, requestRender),
+    ...buildTaskHandlers(eventLog, dashboard, lanes, taskToAgent, taskTitles, requestRender),
 
     onSidebarUpdate(info) {
       if (info.phases) {
