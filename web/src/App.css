@@ -13,6 +13,7 @@
   padding: 4px 12px;
   font-size: 12px;
   font-family: var(--font-mono);
+  border: none;
 }
 
 .connection-status--connected {
@@ -23,5 +24,23 @@
 .connection-status--disconnected {
   background: var(--error);
   color: white;
+  font-weight: bold;
+}
+
+.status-banner {
+  width: 100%;
+  padding: 6px 12px;
+  font-size: 13px;
+  font-family: var(--font-mono);
+  color: white;
+}
+
+.status-banner--failed {
+  background: var(--error);
+  font-weight: bold;
+}
+
+.status-banner--complete {
+  background: var(--success);
   font-weight: bold;
 }

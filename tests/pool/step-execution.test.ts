@@ -1,6 +1,5 @@
 import { afterAll, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { z } from 'zod';
-// Task type used indirectly via makeTask
 import type { AgentProfile } from '../../src/core/types.js';
 import { makeMockSession } from '../helpers/make-session.js';
 import { makeTask } from '../helpers/make-task.js';
@@ -46,15 +45,6 @@ const reviewerProfile: AgentProfile = {
   name: 'Reviewer',
 };
 
-/** "Distributive Omit" that preserves discriminated union structure. */
-type WithoutTimestamp<T> = T extends infer U ? (U extends T ? Omit<U, 'timestamp'> : never) : never;
-type AuditEvent =
-  | { type: 'agent_start'; agentId: string; profile: AgentProfile; taskId?: string; timestamp: string; phase?: string }
-  | { type: 'agent_end'; agentId: string; result: unknown; taskId?: string; timestamp: string; phase?: string }
-  | { type: 'decision'; agentId: string; decision: string; reasoning: string; taskId?: string; timestamp: string }
-  | { type: 'structured_output'; agentId: string; output: unknown; taskId?: string; timestamp: string }
-  | { type: 'error'; agentId: string; error: string; taskId?: string; timestamp: string };
-
 interface RunStepContext {
   stepIndex: number;
   attempt: number;
@@ -66,18 +56,14 @@ function makeSession(textFn: (promptText: string) => string | undefined = () => 
 }
 
 function createStepExecutionContext(overrides?: Partial<StepExecutionContext>): StepExecutionContext {
-  const auditEvents: WithoutTimestamp<AuditEvent>[] = [];
   return {
     sessionBaseDir: '/tmp/sessions',
     cwd: '/tmp/project',
     apiKeys: undefined,
     onStatus: undefined,
     activeSessions: new Set<{ abort(): Promise<void> }>(),
-    appendAuditEvent: mock((event: WithoutTimestamp<AuditEvent>) => {
-      auditEvents.push(event);
-    }),
     ...overrides,
-  } as StepExecutionContext & { auditEvents: typeof auditEvents };
+  } as StepExecutionContext;
 }
 
 function createProfilesMap(...profiles: AgentProfile[]): Map<string, AgentProfile> {
@@ -367,21 +353,21 @@ describe('runStep (step-execution module)', () => {
       }
     });
 
-    it('appends error audit event when promptForStructured throws', async () => {
+    it('still returns rejected result when promptForStructured throws', async () => {
       setupHarnessMocks();
       mockPromptForStructured.mockRejectedValue(new Error('Parse error'));
 
       const execCtx = createStepExecutionContext();
       const profiles = createProfilesMap(defaultProfile, reviewerProfile);
 
-      await runStep(makeTask(), reviewStep, 'lane-0', defaultCtx, profiles, execCtx);
+      const { result } = await runStep(makeTask(), reviewStep, 'lane-0', defaultCtx, profiles, execCtx);
 
-      expect(execCtx.appendAuditEvent).toHaveBeenCalledTimes(3); // agent_start, error, agent_end
-      // Find the error event
-      const calls = (execCtx.appendAuditEvent as ReturnType<typeof mock>).mock.calls;
-      const errorCall = calls.find((c: unknown[]) => (c[0] as Record<string, unknown>).type === 'error');
-      expect(errorCall).toBeDefined();
-      expect((errorCall![0] as Record<string, unknown>).error).toContain('Parse error');
+      // Audit events now flow via onError → store callbacks, not appendAuditEvent.
+      // Verify the rejection result carries the error feedback.
+      expect(result.type).toBe('rejected');
+      if (result.type === 'rejected') {
+        expect(result.feedback).toContain('Parse error');
+      }
     });
 
     it('uses maxRetries: 3 on first attempt and maxRetries: 1 on retries', async () => {
@@ -667,62 +653,6 @@ describe('runStep (step-execution module)', () => {
       }
 
       expect(onAgentComplete).toHaveBeenCalledTimes(1);
-    });
-  });
-
-  // ─── Audit Events ────────────────────────────────────────────────────
-
-  describe('audit events', () => {
-    it('appends agent_start event before execution', async () => {
-      setupHarnessMocks();
-
-      const execCtx = createStepExecutionContext();
-      const profiles = createProfilesMap(defaultProfile);
-
-      await runStep(makeTask({ id: 'task-1' }), baseStep, 'lane-0', defaultCtx, profiles, execCtx);
-
-      const calls = (execCtx.appendAuditEvent as ReturnType<typeof mock>).mock.calls;
-      const startCall = calls[0][0] as Record<string, unknown>;
-      expect(startCall.type).toBe('agent_start');
-      expect(startCall.agentId).toBe('coder');
-      expect(startCall.phase).toBe('implementing');
-      expect(startCall.taskId).toBe('task-1');
-    });
-
-    it('appends agent_end event after execution', async () => {
-      setupHarnessMocks();
-
-      const execCtx = createStepExecutionContext();
-      const profiles = createProfilesMap(defaultProfile);
-
-      await runStep(makeTask({ id: 'task-1' }), baseStep, 'lane-0', defaultCtx, profiles, execCtx);
-
-      const calls = (execCtx.appendAuditEvent as ReturnType<typeof mock>).mock.calls;
-      const endCall = calls[calls.length - 1][0] as Record<string, unknown>;
-      expect(endCall.type).toBe('agent_end');
-      expect(endCall.agentId).toBe('coder');
-      expect(endCall.phase).toBe('implementing');
-      expect(endCall.taskId).toBe('task-1');
-    });
-
-    it('appends agent_end even when prompt throws', async () => {
-      const session = makeSession(() => {
-        throw new Error('Prompt failed');
-      });
-      setupHarnessMocks(session);
-
-      const execCtx = createStepExecutionContext();
-      const profiles = createProfilesMap(defaultProfile);
-
-      try {
-        await runStep(makeTask(), baseStep, 'lane-0', defaultCtx, profiles, execCtx);
-      } catch {
-        // Expected
-      }
-
-      const calls = (execCtx.appendAuditEvent as ReturnType<typeof mock>).mock.calls;
-      const endCalls = calls.filter((c: unknown[]) => (c[0] as Record<string, unknown>).type === 'agent_end');
-      expect(endCalls).toHaveLength(1);
     });
   });
 

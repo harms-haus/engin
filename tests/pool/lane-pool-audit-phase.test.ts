@@ -1,7 +1,6 @@
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
 import {
   clearPoolMocks,
-  createMockAuditLog,
   createPoolAndTracker,
   makeSession,
   mockCreateHarness,
@@ -13,76 +12,85 @@ beforeEach(() => {
   clearPoolMocks();
 });
 
-describe('LanePool audit event phase field', () => {
-  describe('agent_start includes phase: implementing', () => {
-    it('agent_start audit event from runStep includes phase: implementing', async () => {
+describe('LanePool status callback phase field', () => {
+  describe('onAgentSpawn includes phase: implementing', () => {
+    it('onAgentSpawn from runStep includes phase: implementing', async () => {
       setupProfileMocks();
       setupHarnessMocks();
-      const auditLog = createMockAuditLog();
-      const { pool } = createPoolAndTracker({ auditLog: auditLog as unknown as undefined });
+      const onAgentSpawn = mock(() => {});
+      const { pool } = createPoolAndTracker({ onStatus: { onAgentSpawn } });
       await pool.run();
-      const starts = auditLog.events.filter((e: Record<string, unknown>) => e.type === 'agent_start');
-      expect(starts).toHaveLength(1);
-      expect(starts[0]).toMatchObject({
-        type: 'agent_start',
-        agentId: 'coder',
-        phase: 'implementing',
-        taskId: 'task-1',
-      });
+      expect(onAgentSpawn).toHaveBeenCalledTimes(1);
+      expect(onAgentSpawn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          agentId: 'lane-0',
+          profile: 'coder',
+          phase: 'implementing',
+          taskId: 'task-1',
+        }),
+      );
     });
 
-    it('agent_start includes phase for every step in a multi-step flow', async () => {
+    it('onAgentSpawn includes phase for every step in a multi-step flow', async () => {
       setupProfileMocks();
       setupHarnessMocks();
-      const auditLog = createMockAuditLog();
+      const onAgentSpawn = mock(() => {});
       const { pool } = createPoolAndTracker({
-        auditLog: auditLog as unknown as undefined,
+        onStatus: { onAgentSpawn },
         getStepsForTask: () => [
           { name: 'implement', profileId: 'coder', isReadOnly: false },
           { name: 'review', profileId: 'reviewer', isReadOnly: true },
         ],
       });
       await pool.run();
-      const starts = auditLog.events.filter((e: Record<string, unknown>) => e.type === 'agent_start');
-      expect(starts).toHaveLength(2);
-      starts.forEach((e) => expect(e).toMatchObject({ phase: 'implementing' }));
+      expect(onAgentSpawn).toHaveBeenCalledTimes(2);
+      onAgentSpawn.mock.calls.forEach((call) => {
+        expect(call[0]).toMatchObject({ phase: 'implementing' });
+      });
     });
   });
 
-  describe('agent_end includes phase: implementing', () => {
-    it('agent_end audit event from runStep includes phase: implementing', async () => {
+  describe('onAgentComplete includes phase: implementing', () => {
+    it('onAgentComplete from runStep includes phase: implementing', async () => {
       setupProfileMocks();
       setupHarnessMocks();
-      const auditLog = createMockAuditLog();
-      const { pool } = createPoolAndTracker({ auditLog: auditLog as unknown as undefined });
+      const onAgentComplete = mock(() => {});
+      const { pool } = createPoolAndTracker({ onStatus: { onAgentComplete } });
       await pool.run();
-      const ends = auditLog.events.filter((e: Record<string, unknown>) => e.type === 'agent_end');
-      expect(ends).toHaveLength(1);
-      expect(ends[0]).toMatchObject({ type: 'agent_end', agentId: 'coder', phase: 'implementing', taskId: 'task-1' });
+      expect(onAgentComplete).toHaveBeenCalledTimes(1);
+      expect(onAgentComplete).toHaveBeenCalledWith(
+        expect.objectContaining({
+          agentId: 'lane-0',
+          profile: 'coder',
+          phase: 'implementing',
+          taskId: 'task-1',
+        }),
+      );
     });
 
-    it('agent_end includes phase for every step in a multi-step flow', async () => {
+    it('onAgentComplete includes phase for every step in a multi-step flow', async () => {
       setupProfileMocks();
       setupHarnessMocks();
-      const auditLog = createMockAuditLog();
+      const onAgentComplete = mock(() => {});
       const { pool } = createPoolAndTracker({
-        auditLog: auditLog as unknown as undefined,
+        onStatus: { onAgentComplete },
         getStepsForTask: () => [
           { name: 'implement', profileId: 'coder', isReadOnly: false },
           { name: 'review', profileId: 'reviewer', isReadOnly: true },
         ],
       });
       await pool.run();
-      const ends = auditLog.events.filter((e: Record<string, unknown>) => e.type === 'agent_end');
-      expect(ends).toHaveLength(2);
-      ends.forEach((e) => expect(e).toMatchObject({ phase: 'implementing' }));
+      expect(onAgentComplete).toHaveBeenCalledTimes(2);
+      onAgentComplete.mock.calls.forEach((call) => {
+        expect(call[0]).toMatchObject({ phase: 'implementing' });
+      });
     });
   });
 
   describe('phase is present even on failure paths', () => {
-    it('agent_end includes phase: implementing when prompt throws', async () => {
+    it('onAgentComplete includes phase: implementing when prompt throws', async () => {
       setupProfileMocks();
-      const auditLog = createMockAuditLog();
+      const onAgentComplete = mock(() => {});
       mockCreateHarness.mockResolvedValue({
         session: makeSession(() => {
           throw new Error('Prompt failed');
@@ -90,16 +98,15 @@ describe('LanePool audit event phase field', () => {
         sessionId: 'test-session',
         dispose: mock(() => {}),
       });
-      const { pool } = createPoolAndTracker({ auditLog: auditLog as unknown as undefined });
+      const { pool } = createPoolAndTracker({ onStatus: { onAgentComplete } });
       await pool.run();
-      const ends = auditLog.events.filter((e: Record<string, unknown>) => e.type === 'agent_end');
-      expect(ends).toHaveLength(1);
-      expect(ends[0]).toMatchObject({ phase: 'implementing' });
+      expect(onAgentComplete).toHaveBeenCalledTimes(1);
+      expect(onAgentComplete).toHaveBeenCalledWith(expect.objectContaining({ phase: 'implementing' }));
     });
 
-    it('agent_end includes phase: implementing when dispose throws', async () => {
+    it('onAgentComplete includes phase: implementing when dispose throws', async () => {
       setupProfileMocks();
-      const auditLog = createMockAuditLog();
+      const onAgentComplete = mock(() => {});
       const orig = console.error;
       console.error = () => {};
       try {
@@ -110,38 +117,37 @@ describe('LanePool audit event phase field', () => {
             throw new Error('dispose exploded');
           }),
         });
-        const { pool } = createPoolAndTracker({ auditLog: auditLog as unknown as undefined });
+        const { pool } = createPoolAndTracker({ onStatus: { onAgentComplete } });
         await pool.run();
-        const ends = auditLog.events.filter((e: Record<string, unknown>) => e.type === 'agent_end');
-        expect(ends).toHaveLength(1);
-        expect(ends[0]).toMatchObject({ phase: 'implementing' });
+        expect(onAgentComplete).toHaveBeenCalledTimes(1);
+        expect(onAgentComplete).toHaveBeenCalledWith(expect.objectContaining({ phase: 'implementing' }));
       } finally {
         console.error = orig;
       }
     });
   });
 
-  describe('combined audit event order and phase consistency', () => {
-    it('agent_start and agent_end pairs both carry phase: implementing', async () => {
+  describe('combined callback order and phase consistency', () => {
+    it('onAgentSpawn and onAgentComplete pairs both carry phase: implementing', async () => {
       setupProfileMocks();
       setupHarnessMocks();
-      const auditLog = createMockAuditLog();
+      const onAgentSpawn = mock(() => {});
+      const onAgentComplete = mock(() => {});
       const { pool } = createPoolAndTracker({
-        auditLog: auditLog as unknown as undefined,
+        onStatus: { onAgentSpawn, onAgentComplete },
         getStepsForTask: () => [
           { name: 'implement', profileId: 'coder', isReadOnly: false },
           { name: 'review', profileId: 'reviewer', isReadOnly: true },
         ],
       });
       await pool.run();
-      expect(auditLog.events).toHaveLength(4);
-      auditLog.events.forEach((e: Record<string, unknown>) => expect(e).toMatchObject({ phase: 'implementing' }));
-      expect(auditLog.events.map((e: Record<string, unknown>) => e.type)).toEqual([
-        'agent_start',
-        'agent_end',
-        'agent_start',
-        'agent_end',
-      ]);
+      expect(onAgentSpawn).toHaveBeenCalledTimes(2);
+      expect(onAgentComplete).toHaveBeenCalledTimes(2);
+      // Interleave: spawn, complete, spawn, complete
+      const spawnPhases = onAgentSpawn.mock.calls.map((c) => (c[0] as Record<string, unknown>).phase);
+      const completePhases = onAgentComplete.mock.calls.map((c) => (c[0] as Record<string, unknown>).phase);
+      expect(spawnPhases).toEqual(['implementing', 'implementing']);
+      expect(completePhases).toEqual(['implementing', 'implementing']);
     });
   });
 });

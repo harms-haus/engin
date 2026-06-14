@@ -326,7 +326,7 @@ describe('LanePool dual-listener wait pattern', () => {
   });
 
   describe('log noise reduction', () => {
-    it('logs routine timeout poll at debug level, not warn', async () => {
+    it('does not log routine timeout polls at all (noise removed)', async () => {
       setupProfileMocks();
       setupHarnessMocks();
       const task = makeTask({ id: 'task-1' });
@@ -343,7 +343,7 @@ describe('LanePool dual-listener wait pattern', () => {
       const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
       try {
         await pool.run();
-        expect(debugSpy.mock.calls.length).toBeGreaterThanOrEqual(1);
+        // Routine timeouts no longer log at all (debug or warn)
         expect(
           warnSpy.mock.calls.filter((call) => call.some((a) => typeof a === 'string' && a.includes('stall'))),
         ).toHaveLength(0);
@@ -368,17 +368,14 @@ describe('LanePool dual-listener wait pattern', () => {
         return origClaim(count);
       });
       const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
-      const debugSpy = spyOn(console, 'debug').mockImplementation(() => {});
       try {
         await pool.run();
         expect(
           warnSpy.mock.calls.filter((call) => call.some((a) => typeof a === 'string' && a.includes('stall'))),
         ).toHaveLength(1);
-        expect(debugSpy.mock.calls.length).toBeGreaterThan(1);
       } finally {
         spy.mockRestore();
         warnSpy.mockRestore();
-        debugSpy.mockRestore();
       }
     });
   });

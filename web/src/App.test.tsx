@@ -11,6 +11,7 @@ import '@testing-library/jest-dom/vitest';
 
 import { act, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { useWorkflowStore } from './store/workflow-store';
 
 // ─── Mock WebSocket ────────────────────────────────────────────────────────
 
@@ -47,6 +48,16 @@ class MockWebSocket {
     const ws = instance ?? MockWebSocket.instances[MockWebSocket.instances.length - 1];
     ws.readyState = MockWebSocket.OPEN;
     ws.onopen?.();
+  }
+
+  /** Simulate opening ALL active instances (useful when multiple hooks create sockets). */
+  static simulateOpenAll(): void {
+    for (const ws of MockWebSocket.instances) {
+      if (ws.readyState === MockWebSocket.CONNECTING) {
+        ws.readyState = MockWebSocket.OPEN;
+        ws.onopen?.();
+      }
+    }
   }
 
   /** Simulate a socket error. */
@@ -96,6 +107,22 @@ function setLocation(href: string): void {
 
 // ─── Tests ─────────────────────────────────────────────────────────────────
 
+function resetStore(): void {
+  useWorkflowStore.setState({
+    agentsById: {},
+    tasksById: {},
+    currentPhase: '',
+    completedPhases: [],
+    sidebar: { title: '', indicator: '' },
+    status: 'running',
+    taskPrompt: '',
+    error: undefined,
+    failedPhase: undefined,
+    seq: 0,
+    stats: { totalTokens: 0, agentCount: 0 },
+  });
+}
+
 beforeEach(() => {
   // Replace global WebSocket with mock
   globalThis.WebSocket = MockWebSocket as unknown as typeof WebSocket;
@@ -108,6 +135,8 @@ beforeEach(() => {
   setLocation('http://localhost:5173');
   // Ensure no leftover __WS_ENDPOINT__
   delete (window as any).__WS_ENDPOINT__;
+  // Reset Zustand store
+  resetStore();
 });
 
 afterEach(() => {
@@ -124,11 +153,11 @@ describe('App – connection status indicator', () => {
     expect(indicator).toBeInTheDocument();
   });
 
-  it('shows "Disconnected — Reconnecting..." initially before WebSocket opens', async () => {
+  it('shows "Connecting..." initially before first WebSocket connection', async () => {
     const { App } = await import('./App');
     render(<App />);
 
-    expect(screen.getByText('Disconnected — Reconnecting...')).toBeInTheDocument();
+    expect(screen.getByText('Connecting...')).toBeInTheDocument();
   });
 
   it('has the disconnected modifier class before WebSocket opens', async () => {
@@ -144,20 +173,60 @@ describe('App – connection status indicator', () => {
     const { App } = await import('./App');
     render(<App />);
 
-    // Initially disconnected
-    expect(screen.getByText('Disconnected — Reconnecting...')).toBeInTheDocument();
+    // Initially connecting (first attempt)
+    expect(screen.getByText('Connecting...')).toBeInTheDocument();
 
-    // Trigger the WebSocket open event (wrapped in act to flush React state updates)
+    // Wait for at least one WS instance (multiple hooks create sockets)
     await vi.waitFor(() => {
       expect(MockWebSocket.instances.length).toBeGreaterThanOrEqual(1);
     });
+    // Open ALL instances so every useWebSocket hook gets connected
     act(() => {
-      MockWebSocket.simulateOpen();
+      MockWebSocket.simulateOpenAll();
     });
 
     // Now should show Connected
     expect(screen.getByText('Connected')).toBeInTheDocument();
-    expect(screen.queryByText('Disconnected — Reconnecting...')).not.toBeInTheDocument();
+    expect(screen.queryByText('Connecting...')).not.toBeInTheDocument();
+  });
+
+  it('shows "Disconnected — Reconnecting..." after a connection drops (not on first attempt)', async () => {
+    const { App } = await import('./App');
+    render(<App />);
+
+    // Initially connecting
+    expect(screen.getByText('Connecting...')).toBeInTheDocument();
+
+    await vi.waitFor(() => {
+      expect(MockWebSocket.instances.length).toBeGreaterThanOrEqual(1);
+    });
+
+    // Connect
+    act(() => {
+      MockWebSocket.simulateOpenAll();
+    });
+    expect(screen.getByText('Connected')).toBeInTheDocument();
+
+    // Simulate a connection drop
+    act(() => {
+      for (const ws of MockWebSocket.instances) {
+        if (ws.readyState === MockWebSocket.OPEN) {
+          MockWebSocket.simulateClose(1006, 'abnormal closure', ws);
+        }
+      }
+    });
+
+    // Should now show reconnecting (not connecting, since we connected once)
+    expect(screen.getByText('Disconnected — Reconnecting...')).toBeInTheDocument();
+    expect(screen.queryByText('Connecting...')).not.toBeInTheDocument();
+  });
+
+  it('connection-status has aria-live="polite"', async () => {
+    const { App } = await import('./App');
+    render(<App />);
+
+    const indicator = document.querySelector('.connection-status');
+    expect(indicator).toHaveAttribute('aria-live', 'polite');
   });
 
   it('has the connected modifier class after WebSocket opens', async () => {
@@ -168,11 +237,62 @@ describe('App – connection status indicator', () => {
       expect(MockWebSocket.instances.length).toBeGreaterThanOrEqual(1);
     });
     act(() => {
-      MockWebSocket.simulateOpen();
+      MockWebSocket.simulateOpenAll();
     });
 
     const indicator = document.querySelector('.connection-status');
     expect(indicator).toHaveClass('connection-status--connected');
     expect(indicator).not.toHaveClass('connection-status--disconnected');
+  });
+});
+
+describe('App – status banner', () => {
+  it('does not render a status banner while running', async () => {
+    const { App } = await import('./App');
+    render(<App />);
+
+    expect(document.querySelector('.status-banner')).not.toBeInTheDocument();
+  });
+
+  it('renders a failed banner with error and phase when status is failed', async () => {
+    const { App } = await import('./App');
+    render(<App />);
+
+    act(() => {
+      useWorkflowStore.getState().setFailed('Something went wrong', 'scouting');
+    });
+
+    const banner = document.querySelector('.status-banner--failed');
+    expect(banner).toBeInTheDocument();
+    expect(banner).toHaveTextContent('Workflow failed in phase scouting');
+    expect(banner).toHaveTextContent('Something went wrong');
+    expect(banner).toHaveAttribute('aria-live', 'polite');
+  });
+
+  it('renders a failed banner with "unknown" phase when no phase set', async () => {
+    const { App } = await import('./App');
+    render(<App />);
+
+    act(() => {
+      useWorkflowStore.setState({ status: 'failed', error: 'crash', failedPhase: undefined });
+    });
+
+    const banner = document.querySelector('.status-banner--failed');
+    expect(banner).toBeInTheDocument();
+    expect(banner).toHaveTextContent('unknown');
+  });
+
+  it('renders a complete banner when status is complete', async () => {
+    const { App } = await import('./App');
+    render(<App />);
+
+    act(() => {
+      useWorkflowStore.getState().setStatus('complete');
+    });
+
+    const banner = document.querySelector('.status-banner--complete');
+    expect(banner).toBeInTheDocument();
+    expect(banner).toHaveTextContent('Workflow complete');
+    expect(banner).toHaveAttribute('aria-live', 'polite');
   });
 });

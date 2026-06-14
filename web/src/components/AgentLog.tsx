@@ -1,18 +1,16 @@
 import { useEffect, useRef, useState } from 'react';
-import type { AgentState } from '../types';
+import { useWebSocket } from '../hooks/useWebSocket';
+import { useAgentById, useAgentIds, useHasSnapshot, useStatus } from '../store/workflow-store';
 import './AgentLog.css';
 
-export interface AgentLogProps {
-  agents: Map<string, AgentState>;
-  onTerminate: () => void;
-  status: 'running' | 'complete' | 'failed';
-  connected: boolean;
-}
-
-export function AgentLog({ agents, onTerminate, status, connected }: AgentLogProps) {
-  const keys = Array.from(agents.keys());
+export function AgentLog() {
+  const keys = useAgentIds();
+  const status = useStatus();
+  const hasSnapshot = useHasSnapshot();
+  const { send, connected } = useWebSocket();
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [autoScroll, setAutoScroll] = useState(true);
+  const [confirming, setConfirming] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   // Reset selection when agents change
@@ -23,7 +21,7 @@ export function AgentLog({ agents, onTerminate, status, connected }: AgentLogPro
   }, [keys.length, selectedIndex]);
 
   const selectedKey = keys[selectedIndex] ?? null;
-  const agent = selectedKey ? agents.get(selectedKey) : undefined;
+  const agent = useAgentById(selectedKey ?? '__nonexistent__');
 
   // Auto-scroll on new log entries – only when the user is already at/near
   // the bottom so we don't yank them away from content they're reading.
@@ -39,7 +37,7 @@ export function AgentLog({ agents, onTerminate, status, connected }: AgentLogPro
     if (autoScroll && scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  });
+  }, [autoScroll, agent?.log]);
 
   const handlePrev = () => {
     setSelectedIndex((prev) => (prev > 0 ? prev - 1 : keys.length - 1));
@@ -49,14 +47,35 @@ export function AgentLog({ agents, onTerminate, status, connected }: AgentLogPro
     setSelectedIndex((prev) => (prev < keys.length - 1 ? prev + 1 : 0));
   };
 
+  const handleTerminateClick = () => {
+    if (!confirming) {
+      setConfirming(true);
+      return;
+    }
+    send({ type: 'terminate_server' });
+  };
+
+  const handleCancelTerminate = () => {
+    setConfirming(false);
+  };
+
+  // Reset confirmation when the workflow is no longer running
+  useEffect(() => {
+    if (status !== 'running') {
+      setConfirming(false);
+    }
+  }, [status]);
+
+  const emptyMessage = hasSnapshot ? 'No agent selected' : 'Connecting to workflow…';
+
   return (
     <div className="agent-log">
       {/* Header stats */}
       {agent && (
-        <div className="agent-log__header">
-          {agent.taskId || agent.agentId} (profile: {agent.profile}) - {agent.toolCallCount} tool calls - \u2191
-          {agent.inputTokens} - \u2193
-          {agent.outputTokens}
+        <div className="agent-log__header" aria-label={`Input: ${agent.inputTokens}, Output: ${agent.outputTokens}, ${agent.toolCallCount} tool calls`}>
+          {agent.taskId || agent.agentId} (profile: {agent.profile}) - {agent.toolCallCount} tool calls -{' '}
+          <span aria-label={`Input tokens: ${agent.inputTokens}`}>Input: {agent.inputTokens}</span> -{' '}
+          <span aria-label={`Output tokens: ${agent.outputTokens}`}>Output: {agent.outputTokens}</span>
         </div>
       )}
 
@@ -69,20 +88,20 @@ export function AgentLog({ agents, onTerminate, status, connected }: AgentLogPro
             </div>
           ))
         ) : (
-          <div className="agent-log__entry agent-log__entry--empty">No agent selected</div>
+          <div className="agent-log__entry agent-log__entry--empty">{emptyMessage}</div>
         )}
       </div>
 
       {/* Navigation */}
       {keys.length > 0 && (
         <div className="agent-log__nav">
-          <button className="agent-log__nav-btn" onClick={handlePrev}>
+          <button className="agent-log__nav-btn" onClick={handlePrev} aria-label="Previous agent">
             ←
           </button>
           <span className="agent-log__nav-info">
             {selectedIndex + 1} / {keys.length}
           </span>
-          <button className="agent-log__nav-btn" onClick={handleNext}>
+          <button className="agent-log__nav-btn" onClick={handleNext} aria-label="Next agent">
             →
           </button>
         </div>
@@ -90,9 +109,26 @@ export function AgentLog({ agents, onTerminate, status, connected }: AgentLogPro
 
       {/* Terminate button */}
       {status === 'running' && (
-        <button className="agent-log__terminate" onClick={onTerminate} disabled={!connected}>
-          {connected ? 'Terminate Workflow' : 'Disconnected - Reconnecting...'}
-        </button>
+        <div className="agent-log__terminate-row">
+          {confirming ? (
+            <>
+              <button
+                className="agent-log__terminate agent-log__terminate--confirm"
+                onClick={handleTerminateClick}
+                disabled={!connected}
+              >
+                {connected ? 'Confirm termination' : 'Disconnected - Reconnecting...'}
+              </button>
+              <button className="agent-log__cancel" onClick={handleCancelTerminate}>
+                Cancel
+              </button>
+            </>
+          ) : (
+            <button className="agent-log__terminate" onClick={handleTerminateClick} disabled={!connected}>
+              {connected ? 'Terminate Workflow' : 'Disconnected - Reconnecting...'}
+            </button>
+          )}
+        </div>
       )}
     </div>
   );

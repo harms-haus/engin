@@ -4,7 +4,6 @@ import {
   LanePool,
   TaskTracker,
   clearPoolMocks,
-  createMockAuditLog,
   createMockTaskTracker,
   createPoolAndTracker,
   defaultProfile,
@@ -668,23 +667,24 @@ describe('LanePool', () => {
   });
 
   describe('audit log', () => {
-    it('appends agent_start and agent_end events for each step', async () => {
+    it('fires onAgentSpawn and onAgentComplete for each step (audit events now via store callbacks)', async () => {
       setupProfileMocks();
       setupHarnessMocks();
-      const auditLog = createMockAuditLog();
+      const onAgentSpawn = mock(() => {});
+      const onAgentComplete = mock(() => {});
       const { pool } = createPoolAndTracker({
-        auditLog: auditLog as unknown as undefined,
+        onStatus: { onAgentSpawn, onAgentComplete },
         getStepsForTask: () => [
           { name: 'implement', profileId: 'coder', isReadOnly: false },
           { name: 'review', profileId: 'reviewer', isReadOnly: true },
         ],
       });
       await pool.run();
-      expect(auditLog.events).toHaveLength(4);
-      expect(auditLog.events[0]).toMatchObject({ type: 'agent_start', agentId: 'coder', taskId: 'task-1' });
+      expect(onAgentSpawn).toHaveBeenCalledTimes(2);
+      expect(onAgentComplete).toHaveBeenCalledTimes(2);
     });
 
-    it('appends error audit event when runLane catches a step error', async () => {
+    it('fires onError when runLane catches a step error (error now via onError → store)', async () => {
       setupProfileMocks();
       mockCreateHarness.mockRejectedValueOnce(new Error('Harness creation failed'));
       mockCreateHarness.mockResolvedValue({
@@ -692,23 +692,20 @@ describe('LanePool', () => {
         sessionId: 'test-session',
         dispose: mock(() => {}),
       });
-      const auditLog = createMockAuditLog();
-      const { pool } = createPoolAndTracker({ auditLog: auditLog as unknown as undefined });
+      const onError = mock(() => {});
+      const { pool } = createPoolAndTracker({ onStatus: { onError } });
       await pool.run();
-      const errors = auditLog.events.filter((e: Record<string, unknown>) => e.type === 'error');
-      expect(errors).toHaveLength(1);
-      expect(errors[0]).toMatchObject({ type: 'error', agentId: 'lane-0', taskId: 'task-1' });
+      expect(onError).toHaveBeenCalled();
     });
 
-    it('does not append audit events when no audit log is provided', async () => {
+    it('does not fire callbacks when no onStatus is provided', async () => {
       setupProfileMocks();
       setupHarnessMocks();
       expect((await createPoolAndTracker().pool.run()).completedTasks).toBe(1);
     });
 
-    it('agent_end event is appended even when step fails', async () => {
+    it('onAgentComplete fires even when step fails', async () => {
       setupProfileMocks();
-      const auditLog = createMockAuditLog();
       mockCreateHarness.mockResolvedValue({
         session: makeSession(() => {
           throw new Error('Prompt failed');
@@ -716,10 +713,12 @@ describe('LanePool', () => {
         sessionId: 'test-session',
         dispose: mock(() => {}),
       });
-      const { pool } = createPoolAndTracker({ auditLog: auditLog as unknown as undefined });
+      const onAgentSpawn = mock(() => {});
+      const onAgentComplete = mock(() => {});
+      const { pool } = createPoolAndTracker({ onStatus: { onAgentSpawn, onAgentComplete } });
       await pool.run();
-      expect(auditLog.events.filter((e: Record<string, unknown>) => e.type === 'agent_start')).toHaveLength(1);
-      expect(auditLog.events.filter((e: Record<string, unknown>) => e.type === 'agent_end')).toHaveLength(1);
+      expect(onAgentSpawn).toHaveBeenCalledTimes(1);
+      expect(onAgentComplete).toHaveBeenCalledTimes(1);
     });
   });
 

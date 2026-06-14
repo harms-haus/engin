@@ -3,10 +3,12 @@ import { join } from 'node:path';
 import type { PastRunEntry } from '../core/config.js';
 import { getDefaultWorkDir, getGlobalConfigDir, resolveProfilesDirs } from '../core/config.js';
 import { initDefaultConfig } from '../core/setup.js';
-import type { WorktreeInfo } from '../core/types.js';
+import type { StatusCallbacks, WorktreeInfo } from '../core/types.js';
 import { composeStatusCallbacks, validateWorkflowName } from '../core/utils.js';
 import { loadWorkflow } from '../core/workflow-loader.js';
 import { setupWorktree } from '../core/worktree-lifecycle.js';
+import { EventStore } from '../tracking/event-store.js';
+import { createStoreCallbacks } from '../tracking/store-callbacks.js';
 import type { WorkflowTUI } from '../tui/workflow-tui.js';
 import type { ObserverServer } from '../web/observer-server.js';
 import type { StatusBridge } from '../web/status-bridge.js';
@@ -61,25 +63,36 @@ export async function runCommand(options: CliOptions): Promise<void> {
   let tuiInstance: WorkflowTUI | undefined;
   let observerServer: ObserverServer | undefined;
   let statusBridge: StatusBridge | undefined;
+  let storeCallbacks: StatusCallbacks;
+  // Keep a store reference in both branches so the finally block can flush
+  // pending writes to disk before teardown (durability on exit).
+  let store: EventStore | undefined;
 
   if (useTui) {
     // Shared TUI + observer server setup
     const tuiResult = await setupTuiAndObserver({
       port: options.port,
       host: options.host,
+      workDir,
       onTerminate: () => controller.abort(),
     });
     tuiInstance = tuiResult.tuiInstance;
     observerServer = tuiResult.observerServer;
     statusBridge = tuiResult.statusBridge;
+    storeCallbacks = tuiResult.storeCallbacks;
+    store = tuiResult.store;
+  } else {
+    // Non-TUI/verbose path: still capture events into the canonical EventStore.
+    store = new EventStore(workDir);
+    storeCallbacks = createStoreCallbacks(store);
   }
 
   process.on('SIGINT', handler);
   try {
     if (useTui && tuiInstance && statusBridge) {
-      const tuiCallbacks = tuiInstance.getStatusCallbacks();
-      const bridgeCallbacks = statusBridge.getCallbacks();
-      const composedCallbacks = composeStatusCallbacks([tuiCallbacks, bridgeCallbacks]);
+      // The StatusBridge reads from the store via subscribe — no need to
+      // compose it into onStatus. Only storeCallbacks (which writes into the
+      // store) is needed here.
 
       await workflow.run(options.taskPrompt as string, {
         cwd: effectiveCwd,
@@ -87,18 +100,20 @@ export async function runCommand(options: CliOptions): Promise<void> {
         maxConcurrentTasks: options.maxConcurrent,
         apiKeys: Object.keys(options.apiKeys).length > 0 ? options.apiKeys : undefined,
         verbose: false,
-        onStatus: composedCallbacks,
+        onStatus: storeCallbacks,
         signal: controller.signal,
         ...(worktreeInfo ? { worktree: worktreeInfo } : {}),
       });
     } else {
+      const consoleCallbacks = createStatusCallbacks(options.verbose);
+      const composedCallbacks = composeStatusCallbacks([storeCallbacks, consoleCallbacks]);
       await workflow.run(options.taskPrompt as string, {
         cwd: effectiveCwd,
         workDir,
         maxConcurrentTasks: options.maxConcurrent,
         apiKeys: Object.keys(options.apiKeys).length > 0 ? options.apiKeys : undefined,
         verbose: options.verbose,
-        onStatus: createStatusCallbacks(options.verbose),
+        onStatus: composedCallbacks,
         signal: controller.signal,
         ...(worktreeInfo ? { worktree: worktreeInfo } : {}),
       });
@@ -126,8 +141,16 @@ export async function runCommand(options: CliOptions): Promise<void> {
       });
     }
   } finally {
+    // Flush any pending coalesced writes so the event log is durable before
+    // tearing down.  This guards against data loss on abnormal exit paths.
+    try {
+      await store?.flush();
+    } catch {
+      // flush errors are already logged inside the store; ignore here.
+    }
     tuiInstance?.stop();
     observerServer?.stop();
+    statusBridge?.dispose();
     cleanup();
   }
 }
@@ -207,48 +230,41 @@ export async function resumeCommand(options: CliOptions): Promise<void> {
   let tuiInstance: WorkflowTUI | undefined;
   let observerServer: ObserverServer | undefined;
   let statusBridge: StatusBridge | undefined;
+  let storeCallbacks: StatusCallbacks;
+  // Keep a store reference in both branches so the finally block can flush
+  // pending writes to disk before teardown (durability on exit).
+  let store: EventStore | undefined;
 
   if (useTui) {
-    // Shared TUI + observer server setup (with agents from previous run)
+    // Shared TUI + observer server setup.
     const tuiResult = await setupTuiAndObserver({
       port: options.port,
       host: options.host,
+      workDir,
       onTerminate: () => controller.abort(),
-      initialAgents: state.spawnedAgents,
     });
     tuiInstance = tuiResult.tuiInstance;
     observerServer = tuiResult.observerServer;
     statusBridge = tuiResult.statusBridge;
+    storeCallbacks = tuiResult.storeCallbacks;
+    store = tuiResult.store;
 
-    // Resume-specific: seed the bridge with persisted state so late-connecting
-    // clients receive the full picture (phases, tasks, sidebar, etc.).
-    statusBridge.seed({
-      currentPhase: state.currentPhase,
-      completedPhases: state.completedPhases,
-      tasks: state.tasks?.map((t) => ({
-        id: t.id,
-        title: t.title,
-        status: t.status,
-        agentId: t.assignedAgent,
-        phase: t.phase,
-      })),
-      sidebar: state.sidebar
-        ? {
-            title: state.sidebar.title ?? '',
-            indicator: state.sidebar.indicator ?? '',
-            ...(state.sidebar.phases ? { phases: state.sidebar.phases } : {}),
-          }
-        : undefined,
-      taskPrompt: state.taskPrompt,
-    });
+    // The store is loaded from disk via EventStore.load() in setupTuiAndObserver,
+    // so the projection already contains events from the previous run. Late-
+    // connecting clients receive the full state via getSnapshot() which reads
+    // the projection directly.
+  } else {
+    // Non-TUI/verbose path: still capture events into the canonical EventStore.
+    store = new EventStore(workDir);
+    storeCallbacks = createStoreCallbacks(store);
   }
 
   process.on('SIGINT', handler);
   try {
     if (useTui && tuiInstance && statusBridge) {
-      const tuiCallbacks = tuiInstance.getStatusCallbacks();
-      const bridgeCallbacks = statusBridge.getCallbacks();
-      const composedCallbacks = composeStatusCallbacks([tuiCallbacks, bridgeCallbacks]);
+      // The StatusBridge reads from the store via subscribe — no need to
+      // compose it into onStatus. Only storeCallbacks (which writes into the
+      // store) is needed here.
 
       await workflow.run(taskPrompt, {
         cwd: options.cwd,
@@ -256,18 +272,20 @@ export async function resumeCommand(options: CliOptions): Promise<void> {
         maxConcurrentTasks: options.maxConcurrent,
         apiKeys: Object.keys(options.apiKeys).length > 0 ? options.apiKeys : undefined,
         verbose: false,
-        onStatus: composedCallbacks,
+        onStatus: storeCallbacks,
         signal: controller.signal,
         ...(worktreeInfo ? { worktree: worktreeInfo } : {}),
       });
     } else {
+      const consoleCallbacks = createStatusCallbacks(options.verbose);
+      const composedCallbacks = composeStatusCallbacks([storeCallbacks, consoleCallbacks]);
       await workflow.run(taskPrompt, {
         cwd: options.cwd,
         workDir,
         maxConcurrentTasks: options.maxConcurrent,
         apiKeys: Object.keys(options.apiKeys).length > 0 ? options.apiKeys : undefined,
         verbose: options.verbose,
-        onStatus: createStatusCallbacks(options.verbose),
+        onStatus: composedCallbacks,
         signal: controller.signal,
         ...(worktreeInfo ? { worktree: worktreeInfo } : {}),
       });
@@ -295,8 +313,16 @@ export async function resumeCommand(options: CliOptions): Promise<void> {
       });
     }
   } finally {
+    // Flush any pending coalesced writes so the event log is durable before
+    // tearing down.  This guards against data loss on abnormal exit paths.
+    try {
+      await store?.flush();
+    } catch {
+      // flush errors are already logged inside the store; ignore here.
+    }
     tuiInstance?.stop();
     observerServer?.stop();
+    statusBridge?.dispose();
     cleanup();
   }
 }

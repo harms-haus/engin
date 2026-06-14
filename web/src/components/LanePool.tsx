@@ -1,9 +1,6 @@
-import type { TaskInfo } from '../protocol-types';
+import React, { useMemo } from 'react';
+import { useHasSnapshot, useTaskById, useTaskIds, useWorkflowStore } from '../store/workflow-store';
 import './LanePool.css';
-
-export interface LanePoolProps {
-  tasks: TaskInfo[];
-}
 
 const STATUS_PRIORITY: Record<string, number> = {
   implementing: 1,
@@ -34,19 +31,40 @@ function getStatusColor(status: string): string {
   }
 }
 
-export function LanePool({ tasks }: LanePoolProps) {
-  const sorted = [...tasks].sort((a, b) => (STATUS_PRIORITY[a.status] ?? 99) - (STATUS_PRIORITY[b.status] ?? 99));
+const Lane = React.memo(function Lane({ taskId }: { taskId: string }) {
+  const task = useTaskById(taskId);
+  if (!task) return null;
+  return (
+    <div className="lane-pool__lane" style={{ borderLeftColor: getStatusColor(task.status) }}>
+      <span className="lane-pool__title">{task.title}</span>
+    </div>
+  );
+});
 
-  if (sorted.length === 0) {
-    return <div className="lane-pool lane-pool--empty">No tasks</div>;
+export function LanePool() {
+  const taskIds = useTaskIds();
+  const hasSnapshot = useHasSnapshot();
+  // Subscribe to tasksById for sorting — individual Lanes are memoized so
+  // a single task update only re-renders the affected Lane, not siblings.
+  const tasksById = useWorkflowStore((s) => s.tasksById);
+
+  const sortedIds = useMemo(() => {
+    return [...taskIds].sort((a, b) => {
+      const sa = STATUS_PRIORITY[tasksById[a]?.status] ?? 99;
+      const sb = STATUS_PRIORITY[tasksById[b]?.status] ?? 99;
+      return sa - sb;
+    });
+  }, [taskIds, tasksById]);
+
+  if (sortedIds.length === 0) {
+    const message = hasSnapshot ? 'No tasks yet' : 'Connecting to workflow…';
+    return <div className="lane-pool lane-pool--empty">{message}</div>;
   }
 
   return (
     <div className="lane-pool">
-      {sorted.map((task) => (
-        <div key={task.id} className="lane-pool__lane" style={{ borderLeftColor: getStatusColor(task.status) }}>
-          <span className="lane-pool__title">{task.title}</span>
-        </div>
+      {sortedIds.map((id) => (
+        <Lane key={id} taskId={id} />
       ))}
     </div>
   );

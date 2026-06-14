@@ -136,9 +136,12 @@ Creates the `workflows/` subdirectory inside the global config directory (`~/.co
 | -------------------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `--cwd <path>`             | `run`          | Project working directory (default: `process.cwd()`)                                                                                                                                                          |
 | `--work-dir <path>`        | `run`          | Directory for workflow state persistence. Default: `.engin/work/<timestamp>-<workflow-name>` inside `cwd`                                                                                                     |
-| `--max-concurrent <n>`     | `run`          | Maximum parallel implementer agents (default: `3`). Must be a positive integer.                                                                                                                               |
+| `--max-concurrent <n>`     | `run`          | Maximum parallel implementer agents (default: `5`). Must be a positive integer.                                                                                                                               |
 | `--verbose`                | `all commands` | Enable verbose console output. When running in a TTY, this disables the TUI dashboard and uses console output instead. Shows `.env` file loading info and agent-level output (turns, tool calls, token usage) |
+| `--worktree`               | `run`          | Run the workflow in a git worktree                                                                                                                                                                            |
 | `--api-key <provider=key>` | `run`          | Provider → API key override. Repeatable. **Warning:** values are visible in process listings; prefer environment variables.                                                                                   |
+| `--host <host>`            | `run`          | Web server bind host (default: auto-detect LAN IP)                                                                                                                                                            |
+| `--port <port>`            | `run`          | Web server port (default: `3619`)                                                                                                                                                                             |
 
 ### Exit Codes
 
@@ -457,14 +460,15 @@ Resolution steps: resolve model via `getModel()`, create `AuthStorage` via `Auth
 
 **`HarnessCreationOptions` fields:**
 
-| Field                | Type                     | Description                                                                    |
-| -------------------- | ------------------------ | ------------------------------------------------------------------------------ |
-| `profile`            | `AgentProfile`           | The agent configuration                                                        |
-| `cwd`                | `string`                 | Working directory for file operations                                          |
-| `apiKeys?`           | `Record<string, string>` | Provider → API key overrides                                                   |
-| `onAgentStatus?`     | `AgentStatusCallbacks`   | Callbacks for turn-level and tool-level events                                 |
-| `sessionDir?`        | `string`                 | Directory for persisted session storage. Creates via `SessionManager.create()` |
-| `resumeSessionPath?` | `string`                 | Path to an existing session file for resumption via `SessionManager.open()`    |
+| Field                | Type                     | Description                                                                        |
+| -------------------- | ------------------------ | ---------------------------------------------------------------------------------- |
+| `profile`            | `AgentProfile`           | The agent configuration                                                            |
+| `cwd`                | `string`                 | Working directory for file operations                                              |
+| `apiKeys?`           | `Record<string, string>` | Provider → API key overrides                                                       |
+| `onAgentStatus?`     | `AgentStatusCallbacks`   | Callbacks for turn-level and tool-level events                                     |
+| `sessionDir?`        | `string`                 | Directory for persisted session storage. Creates via `SessionManager.create()`     |
+| `resumeSessionPath?` | `string`                 | Path to an existing session file for resumption via `SessionManager.open()`        |
+| `agentId?`           | `string`                 | Override agent ID used in status callbacks. Defaults to sessionId if not provided. |
 
 **Return fields:**
 
@@ -768,7 +772,7 @@ const pool = new LanePool({
       schema: ReviewSchema,
     },
   ],
-  maxStepRetries: 3,
+  maxStepRetries: 5,
 });
 
 const result = await pool.run();
@@ -786,60 +790,72 @@ class WorkflowTUI {
   constructor(options?: WorkflowTUIOptions);
   start(): void;
   stop(): void;
-  getStatusCallbacks(): StatusCallbacks;
   getEventLog(): EventLog;
   getDashboard(): Dashboard;
+  prepareQrCode(url: string): Promise<void>;
+  showQrCode(url: string): Promise<void>;
+  pauseForInspection(signal?: AbortSignal): Promise<void>;
 }
 ```
 
-Top-level TUI lifecycle manager. Constructs the terminal, widget tree, and status callbacks internally.
+Top-level TUI lifecycle manager. Constructs the terminal, widget tree, and subscribes to an [`EventStore`](#eventstore--event-sourced-status) internally. The TUI does **not** expose `StatusCallbacks` — instead, the engine wires `createStoreCallbacks(store)` into the workflow's `onStatus`, and the TUI receives projection updates via store subscription.
 
-**`start()`** — Initialises a `ProcessTerminal`, builds the widget tree (EventLog → separator → Dashboard), sets up input handling (Ctrl+C for graceful abort, Tab for lane cycling), overrides `console.log`/`warn`/`error` to route through the event log, and starts rendering. No-op if already running.
+**`start()`** — Initialises a `ProcessTerminal`, builds the widget tree (EventLog → separator → Dashboard), sets up input handling (Ctrl+C for graceful abort, Tab for lane cycling), overrides `console.warn`/`error` to route through the event log (`console.log` passes through unchanged), and starts rendering. No-op if already running.
 
 **`stop()`** — Restores original `console` methods, unsubscribes from input, and stops the TUI. Safe to call multiple times.
 
+**`prepareQrCode(url)`** — Pre-generates the QR overlay for the given observer URL. Call before `start()` so the overlay is ready instantly when toggled.
+
+**`showQrCode(url)`** — Generates (if needed) and displays the QR code overlay for the given observer URL.
+
+**`pauseForInspection(signal?)`** — Keeps the TUI alive after the workflow completes, allowing the user to inspect the final state. Resolves when `signal` fires or the observer sends a terminate request.
+
 **Keyboard shortcuts:**
 
-| Key       | Action                                               |
-| --------- | ---------------------------------------------------- |
-| `Ctrl+C`  | First press: calls `abort()`; second: `process.exit` |
-| `Tab`     | Cycle focused task lane                              |
-| `PgUp`    | Scroll event log up                                  |
-| `PgDn`    | Scroll event log down                                |
-| `Home`    | Jump to top of event log                             |
-| `End`     | Jump to bottom (resume auto-scroll)                  |
-| `↑` / `↓` | Navigate focused lane in the lane pool widget        |
+| Key         | Action                                                          |
+| ----------- | --------------------------------------------------------------- |
+| `Ctrl+C`    | First press: calls `abort()`; second: `process.exit`            |
+| `Tab`       | Cycle focused task lane                                         |
+| `Space`     | Expand/collapse agent log widget                                |
+| `↑` / `↓`   | Phase navigation when collapsed; scroll agent log when expanded |
+| `←` / `→`   | Cycle agents within the current phase                           |
+| `⇧↑` / `⇧↓` | Scroll agent log by 10 lines (expanded only)                    |
+| `PgUp`      | Scroll event log up                                             |
+| `PgDn`      | Scroll event log down                                           |
+| `Home`      | Jump to top of event log                                        |
+| `End`       | Jump to bottom (resume auto-scroll)                             |
 
 #### `WorkflowTUIOptions`
 
-| Field                | Type         | Default | Description                                                      |
-| -------------------- | ------------ | ------- | ---------------------------------------------------------------- |
-| `maxConcurrentLanes` | `number`     | `3`     | Number of lane rows in the dashboard                             |
-| `agentLogLines`      | `number`     | `4`     | Number of lines in the agent detail log                          |
-| `abort`              | `() => void` | —       | Callback invoked on first Ctrl+C; use to cancel the workflow run |
+| Field                | Type         | Default | Description                                                                                                                                                                           |
+| -------------------- | ------------ | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `maxConcurrentLanes` | `number`     | `5`     | Number of lane rows in the dashboard                                                                                                                                                  |
+| `agentLogLines`      | `number`     | `20`    | Collapsed height of the agent detail log (expanded shows 40 lines)                                                                                                                    |
+| `abort`              | `() => void` | —       | Callback invoked on first Ctrl+C; use to cancel the workflow run                                                                                                                      |
+| `store?`             | `EventStore` | —       | The canonical [`EventStore`](#eventstore--event-sourced-status). When provided, the TUI subscribes to it and syncs widgets from the live [`WorkflowProjection`](#workflowprojection). |
 
-#### `createTuiStatusCallbacks(deps): StatusCallbacks`
+#### `createStoreBackedTui(deps): { dispose: () => void }`
 
-Factory that returns a `StatusCallbacks` object routing every status event into the TUI widgets. Handles:
+Factory that subscribes the TUI widgets to an [`EventStore`](#eventstore--event-sourced-status). It does **not** implement `StatusCallbacks` — instead, it subscribes to the store's projection via `store.subscribe()` and syncs all three dashboard widgets from the projection.
 
-- `onWorkflowStart` / `onWorkflowComplete` / `onWorkflowFailed` → event log entries
-- `onPhaseStart` / `onPhaseComplete` → event log + `PhaseBar` updates
-- `onAgentSpawn` / `onAgentComplete` → event log + `AgentLogWidget` selection
-- `onTaskStart` / `onTaskComplete` / `onTaskRejected` → event log + `LanePoolWidget` lane state
-- `onDecision` / `onError` → event log + agent log entries
-- `onTurnEnd` → text and thinking blocks to agent log; tool calls to event log
-- `onToolCallStart` / `onToolCallEnd` → event log + agent log
-- `onSidebarUpdate` → `PhaseBar` phase descriptors and indicator icon
+On each store notification it:
+
+1. Reads new events via `store.getEventsSince(lastSeq)` and writes human-readable lines into the `EventLog` (workflow/phase/agent/task lifecycle and error events).
+2. Calls `dashboard.syncFromProjection(projection)` to push the current [`WorkflowProjection`](#workflowprojection) into the `PhaseBar`, `LanePoolWidget`, and `AgentLogWidget`.
+3. Calls `requestRender()` to trigger a TUI repaint.
+
+Any events that were already in the store before subscription (e.g. from a resumed run's replay) are processed immediately on construction.
 
 **`deps` parameter:**
 
-| Field           | Type         | Description                             |
-| --------------- | ------------ | --------------------------------------- |
-| `eventLog`      | `EventLog`   | The event log widget to write into      |
-| `dashboard`     | `Dashboard`  | The dashboard containing sub-widgets    |
-| `requestRender` | `() => void` | Trigger a TUI re-render after mutations |
+| Field           | Type         | Description                                                      |
+| --------------- | ------------ | ---------------------------------------------------------------- |
+| `store`         | `EventStore` | The store to subscribe to                                        |
+| `eventLog`      | `EventLog`   | The event log widget to write event-derived lines into           |
+| `dashboard`     | `Dashboard`  | The dashboard whose child widgets are synced from the projection |
+| `requestRender` | `() => void` | Trigger a TUI re-render after mutations                          |
 
-All text routed through the TUI is sanitised via `stripAnsi` to prevent ANSI escape leakage from agent output.
+Returns `{ dispose: () => void }` — call to unsubscribe from the store.
 
 #### Widget Components
 
@@ -863,40 +879,48 @@ When scrolled up, the first visible line is replaced with a dim indicator: `↑ 
 
 Single-line phase progress indicator.
 
-| Method               | Signature                           | Description                                                      |
-| -------------------- | ----------------------------------- | ---------------------------------------------------------------- |
-| `setPhases`          | `(phases: PhaseDescriptor[]): void` | Set the ordered list of phase descriptors.                       |
-| `setCurrentPhase`    | `(id: string): void`                | Highlight the given phase as current (cyan `●`).                 |
-| `setCompletedPhases` | `(ids: string[]): void`             | Mark phases as completed (green `✓`).                            |
-| `setIndicator`       | `(icon: string): void`              | Prepend an icon (e.g. workflow emoji) before the phase segments. |
+| Method               | Signature                           | Description                                                                                  |
+| -------------------- | ----------------------------------- | -------------------------------------------------------------------------------------------- |
+| `setPhases`          | `(phases: PhaseDescriptor[]): void` | Set the ordered list of phase descriptors.                                                   |
+| `setCurrentPhase`    | `(id: string): void`                | Highlight the given phase as current (cyan `●`). Clears the selected phase.                  |
+| `setSelectedPhase`   | `(id: string): void`                | Underline the given phase (overlays the current highlight). Used by agent log phase cycling. |
+| `setCompletedPhases` | `(ids: string[]): void`             | Mark phases as completed (green `✓`).                                                        |
+| `setIndicator`       | `(icon: string): void`              | Prepend an icon (e.g. workflow emoji) before the phase segments.                             |
 
 When no phases are set, renders just the indicator and/or current phase ID. Phase segments are joined with `│` separators.
 
 ##### `LanePoolWidget`
 
-Grid of task lanes, one row per concurrent worker.
+Grid of task lanes, one row per concurrent worker. Lanes are sorted by status priority (active first, then `claimed`, `ready`, `blocked`, and finally `done`/`failed`).
 
-| Method                | Signature                   | Description                                                 |
-| --------------------- | --------------------------- | ----------------------------------------------------------- |
-| `updateLanes`         | `(lanes: TaskLane[]): void` | Replace the full lane list. Completed lanes remain visible. |
-| `setFocusedLane`      | `(index: number): void`     | Highlight a specific lane (bold). Used by Tab cycling.      |
-| `getFocusedLaneIndex` | `(): number`                | Current focused lane index (-1 if none).                    |
-| `getLanes`            | `(): TaskLane[]`            | Current lane data.                                          |
-| `getFocusedTaskId`    | `(): string \| undefined`   | Task ID of the focused lane.                                |
-| `handleInput`         | `(data): void`              | Processes ↑/↓ arrow keys for lane focus navigation.         |
-
-Renders `maxLanes` rows (set at construction). Empty slots produce blank lines.
+| Method                | Signature                   | Description                                                                             |
+| --------------------- | --------------------------- | --------------------------------------------------------------------------------------- |
+| `updateLanes`         | `(lanes: TaskLane[]): void` | Replace the full lane list. Clears focus if the focused lane is no longer present.      |
+| `setFocusedLaneById`  | `(id: string): void`        | Highlight a lane by task ID (bold). No-op if the ID doesn't exist. Used by Tab cycling. |
+| `getFocusedLaneIndex` | `(): number`                | Index of the focused lane in the sorted list (-1 if none).                              |
+| `getFocusedLane`      | `(): TaskLane \| undefined` | The focused lane from the sorted list.                                                  |
+| `getFocusedTaskId`    | `(): string \| undefined`   | Task ID of the focused lane.                                                            |
+| `getLanes`            | `(): TaskLane[]`            | Current lane data (unsorted).                                                           |
+| `getSortedLanes`      | `(): TaskLane[]`            | Lanes sorted by status priority (ascending).                                            |
+| `getVisibleLaneCount` | `(): number`                | Number of lanes (determines rendered row count).                                        |
+| `handleInput`         | `(data): void`              | Processes ↑/↓ arrow keys for lane focus navigation.                                     |
 
 ##### `AgentLogWidget`
 
-Detail view showing the last N entries for the currently selected agent.
+Detail view showing entries for agents in the current phase. The widget filters agents by the active phase, auto-switches away from completed agents (unless the user has manually navigated), and supports expand/collapse with scroll.
 
-| Method        | Signature                                  | Description                                                                   |
-| ------------- | ------------------------------------------ | ----------------------------------------------------------------------------- |
-| `selectAgent` | `(agentId: string, profile: string): void` | Switch to a new agent, clearing previous entries.                             |
-| `clearAgent`  | `(): void`                                 | Deselect the current agent.                                                   |
-| `addEntry`    | `(entry: AgentLogEntry): void`             | Append an entry (ignored if no agent is selected). Pruned beyond 200 entries. |
-| `getAgentId`  | `(): string \| null`                       | Currently selected agent ID.                                                  |
+| Method                 | Signature                       | Description                                                            |
+| ---------------------- | ------------------------------- | ---------------------------------------------------------------------- |
+| `setAgents`            | `(agents: AgentEntity[]): void` | Replace the full agent list (filtered by current phase during render). |
+| `setCurrentPhase`      | `(phase: string): void`         | Set the active phase index, resetting selection and scroll.            |
+| `setPhases`            | `(phases: string[]): void`      | Set the ordered phase IDs for ↑/↓ cycling.                             |
+| `hasPhases`            | `(): boolean`                   | Whether any phase IDs have been set.                                   |
+| `getCurrentPhase`      | `(): string \| null`            | The currently selected phase ID.                                       |
+| `toggleExpand`         | `(): void`                      | Toggle between collapsed and expanded modes.                           |
+| `isExpanded`           | `(): boolean`                   | Whether the widget is expanded.                                        |
+| `getExpandedLineCount` | `(): number`                    | Rendered line count (collapsed: `agentLogLines`; expanded: 40).        |
+| `getSelectedAgentUid`  | `(): string \| null`            | UID of the currently selected agent in the active phase.               |
+| `invalidate`           | `(): void`                      | Mark the cached render as stale.                                       |
 
 Each entry is rendered with a type-specific icon and colour:
 
@@ -913,12 +937,13 @@ Each entry is rendered with a type-specific icon and colour:
 
 Composite widget containing `PhaseBar`, `LanePoolWidget`, and `AgentLogWidget`.
 
-| Method              | Signature    | Description                                                      |
-| ------------------- | ------------ | ---------------------------------------------------------------- |
-| `phaseBar`          | (getter)     | The `PhaseBar` sub-widget.                                       |
-| `lanePool`          | (getter)     | The `LanePoolWidget` sub-widget.                                 |
-| `agentLog`          | (getter)     | The `AgentLogWidget` sub-widget.                                 |
-| `getComputedHeight` | `(): number` | Total rendered height: `1 + maxConcurrentLanes + agentLogLines`. |
+| Method               | Signature                                | Description                                                                                              |
+| -------------------- | ---------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `phaseBar`           | (getter)                                 | The `PhaseBar` sub-widget.                                                                               |
+| `lanePool`           | (getter)                                 | The `LanePoolWidget` sub-widget.                                                                         |
+| `agentLog`           | (getter)                                 | The `AgentLogWidget` sub-widget.                                                                         |
+| `syncFromProjection` | `(projection: WorkflowProjection): void` | Push projection state into all child widgets (phases, lanes, agents). Called on each store notification. |
+| `getComputedHeight`  | `(): number`                             | Total rendered height: phase bar (1) + visible lanes + expanded agent log lines + 4 border lines.        |
 
 Renders sub-widgets top-to-bottom: phase bar, then lane rows, then agent log.
 
@@ -985,21 +1010,31 @@ All foreground functions have the signature `(str: string) => string` — they w
 
 ##### `TaskLane`
 
-| Field       | Type         | Description                                     |
-| ----------- | ------------ | ----------------------------------------------- |
-| `id`        | `string`     | Task identifier                                 |
-| `title`     | `string`     | Short task description                          |
-| `status`    | `TaskStatus` | Current lifecycle state                         |
-| `agentId?`  | `string`     | ID of the assigned agent                        |
-| `profile?`  | `string`     | Profile name of the assigned agent              |
-| `stepInfo?` | `string`     | Current step annotation (e.g. `"implementing"`) |
+| Field          | Type         | Description                                                                    |
+| -------------- | ------------ | ------------------------------------------------------------------------------ |
+| `id`           | `string`     | Task identifier                                                                |
+| `title`        | `string`     | Short task description                                                         |
+| `status`       | `TaskStatus` | Current lifecycle state                                                        |
+| `agentId?`     | `string`     | ID of the assigned agent                                                       |
+| `profile?`     | `string`     | Profile name of the assigned agent                                             |
+| `stepInfo?`    | `string`     | Current step annotation (e.g. `"implementing"`)                                |
+| `phase?`       | `string`     | Phase identifier the task belongs to                                           |
+| `startedAt?`   | `number`     | Epoch milliseconds when the task was started                                   |
+| `completedAt?` | `number`     | Epoch milliseconds when the task was completed (used for elapsed-time display) |
 
 ##### `AgentLogEntry`
 
-| Field     | Type                                                                                    | Description        |
-| --------- | --------------------------------------------------------------------------------------- | ------------------ |
-| `type`    | `'text' \| 'thinking' \| 'tool_call_start' \| 'tool_call_end' \| 'error' \| 'decision'` | Entry discriminant |
-| `content` | `string`                                                                                | Entry text content |
+Re-exported from `src/tracking/event-types.ts` as an alias of `LogEntry`.
+
+| Field       | Type                                                                                                   | Description                  |
+| ----------- | ------------------------------------------------------------------------------------------------------ | ---------------------------- |
+| `id`        | `string`                                                                                               | Stable entry identifier      |
+| `timestamp` | `string`                                                                                               | ISO timestamp                |
+| `type`      | `'text' \| 'thinking' \| 'tool_call' \| 'tool_call_start' \| 'tool_call_end' \| 'error' \| 'decision'` | Entry discriminant           |
+| `content`   | `string`                                                                                               | Entry text content           |
+| `metadata?` | `Record<string, unknown>`                                                                              | Optional structured metadata |
+
+See [EventStore / Event-Sourced Status](#eventstore--event-sourced-status) for the canonical `LogEntry` type.
 
 ---
 
@@ -1008,8 +1043,7 @@ All foreground functions have the signature `(str: string) => string` — they w
 ```
 src/
 ├── index.ts                     # Public API re-exports
-├── cli.ts                       # CLI entry point (run, init commands)
-├── setup.ts                     # Config directory creation (init command)
+├── cli.ts                       # CLI entry point (run, resume, init commands)
 ├── core/
 │   ├── types.ts                 # Shared type definitions and re-exports
 │   ├── config.ts                # Config directory resolution (global/local/work dirs)
@@ -1018,41 +1052,66 @@ src/
 │   ├── harness-factory.ts       # AgentSession construction from profiles
 │   ├── structured-output.ts     # JSON extraction, Zod-validated prompting
 │   ├── agent-loop.ts            # Looping, parallel, and sequential agent patterns
-│   └── utils.ts                 # Shared utilities (path traversal prevention, ENOENT detection, error-to-string, DEFAULT_TOOLS)
+│   └── utils.ts                 # Shared utilities (validateWorkflowName, isEnoentError, safeErrorMessage, composeStatusCallbacks, DEFAULT_TOOLS)
+├── cli/
+│   ├── commands.ts              # runCommand / resumeCommand / initCommand orchestration
+│   ├── parse-args.ts            # CLI argument parsing
+│   ├── tui-setup.ts             # Shared TUI + observer server setup (setupTuiAndObserver)
+│   ├── console-status.ts        # Console StatusCallbacks factory + TUI detection
+│   ├── session-selector.ts      # Interactive run selection for resume
+│   ├── post-worktree.ts         # Post-worktree action prompter
+│   ├── sigint.ts                # SIGINT handler for cooperative cancellation
+│   └── slash-command-parser.ts  # Slash-command argument parsing
 ├── pool/
 │   ├── index.ts                 # Pool module re-exports
 │   ├── types.ts                 # StepDefinition, LanePoolOptions, LanePoolResult, StepResult types
-│   └── lane-pool.ts             # Concurrent task processing pool (LanePool class)
+│   ├── lane-pool.ts             # Concurrent task processing pool (LanePool class)
+│   ├── prompt-builder.ts        # Builds prompt text with pre-loaded file contents
+│   ├── severity.ts              # Severity helpers
+│   ├── step-execution.ts        # Executes individual steps (profile load, session, approval)
+│   ├── task-processor.ts        # Runs a task's steps with retry
+│   └── validation.ts            # Task/dependency validation
 ├── tracking/
-│   ├── audit-log.ts             # JSONL-based audit event log
+│   ├── audit-log.ts             # JSONL-based audit event log (legacy AuditLog)
+│   ├── event-store.ts           # Event-sourced status store (EventStore class)
+│   ├── event-types.ts           # EventType, EventRecord, WorkflowProjection, AgentEntity, TaskEntity, LogEntry
+│   ├── evolve.ts                # Pure projection reducer (evolve function)
+│   ├── store-callbacks.ts       # createStoreCallbacks: StatusCallbacks → EventStore.append
 │   ├── task-status.ts           # Task DAG tracker with state transitions
 │   └── workflow-status.ts       # Full workflow phase state (persisted to JSON)
-└── tui/
-    ├── index.ts                 # TUI module re-exports
-    ├── workflow-tui.ts          # TUI lifecycle manager (WorkflowTUI class)
-    ├── status-callbacks.ts      # StatusCallbacks → TUI widget routing
-    ├── theme.ts                 # ANSI styling helpers and status mappings
-    └── components/
-        ├── index.ts             # Component re-exports
-        ├── event-log.ts         # Scrollable event log widget
-        ├── phase-bar.ts         # Phase progress indicator widget
-        ├── lane-pool-widget.ts  # Task lane grid widget
-        ├── agent-log-widget.ts  # Agent detail log widget
-        └── dashboard.ts         # Composite dashboard container
+├── tui/
+│   ├── index.ts                 # TUI module re-exports
+│   ├── composer.ts              # Composes the dashboard layout
+│   ├── format-tool-call.ts      # Formats tool-call args for display
+│   ├── workflow-tui.ts          # TUI lifecycle manager (WorkflowTUI class)
+│   ├── status-callbacks.ts      # createStoreBackedTui: subscribes TUI widgets to EventStore
+│   ├── theme.ts                 # ANSI styling helpers and status mappings
+│   └── components/
+│       ├── index.ts             # Component re-exports
+│       ├── event-log.ts         # Scrollable event log widget
+│       ├── phase-bar.ts         # Phase progress indicator widget
+│       ├── lane-pool-widget.ts  # Task lane grid widget
+│       ├── agent-log-widget.ts  # Agent detail log widget
+│       ├── dashboard.ts         # Composite dashboard container
+│       └── qr-overlay.ts        # QR code overlay for mobile observer URL
+└── web/
+    ├── observer-server.ts       # Bun HTTP + WebSocket server (static files + /ws)
+    ├── protocol-types.ts        # ServerMessage / ClientMessage protocol types
+    └── status-bridge.ts         # StatusBridge: store → WebSocket broadcast (snapshot/delta)
 ```
 
 ### Core Layer (`src/core/`)
 
-| Module                 | Responsibility                                                                                                                                                                                    |
-| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `types.ts`             | Re-exports from `pi-coding-agent`, `pi-agent-core`, and `pi-ai`; defines `AgentProfile`, `Task`, `WorkflowState`, `AuditEvent`, `WorkflowModule`, `WorkflowRunOptions`, and related types         |
-| `config.ts`            | Resolves global (`~/.config/engin/`) and local (`.engin/`) config directories; provides default work directory paths                                                                              |
-| `profile.ts`           | Parses markdown files with YAML frontmatter into `AgentProfile` objects; loads all profiles from a directory or merges from multiple directories                                                  |
-| `workflow-loader.ts`   | Dynamically loads workflow modules by name from config directories; discovers `main.ts` inside workflow subdirectories; caches loaded modules                                                     |
-| `harness-factory.ts`   | Creates a fully-wired `AgentSession` from a profile: model resolution, `AuthStorage`, tool filtering, `DefaultResourceLoader`, and `createAgentSession` from `@earendil-works/pi-coding-agent`    |
-| `structured-output.ts` | Extracts JSON from free-text model responses; prompts a session and validates output against a Zod schema with automatic retries                                                                  |
-| `agent-loop.ts`        | Higher-level patterns: `agentLoopUntil`, `parallelAgents`, `sequentialAgents`. Uses `AgentSession` and `dispose()` for cleanup                                                                    |
-| `utils.ts`             | Shared utilities: `validateWorkflowName` (path traversal prevention), `isEnoentError` (ENOENT detection), `safeErrorMessage` (safe error-to-string), `DEFAULT_TOOLS` (default tool list constant) |
+| Module                 | Responsibility                                                                                                                                                                                                                                           |
+| ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `types.ts`             | Re-exports from `pi-coding-agent`, `pi-agent-core`, and `pi-ai`; defines `AgentProfile`, `Task`, `WorkflowState`, `AuditEvent`, `WorkflowModule`, `WorkflowRunOptions`, and related types                                                                |
+| `config.ts`            | Resolves global (`~/.config/engin/`) and local (`.engin/`) config directories; provides default work directory paths                                                                                                                                     |
+| `profile.ts`           | Parses markdown files with YAML frontmatter into `AgentProfile` objects; loads all profiles from a directory or merges from multiple directories                                                                                                         |
+| `workflow-loader.ts`   | Dynamically loads workflow modules by name from config directories; discovers `main.ts` inside workflow subdirectories; caches loaded modules                                                                                                            |
+| `harness-factory.ts`   | Creates a fully-wired `AgentSession` from a profile: model resolution, `AuthStorage`, tool filtering, `DefaultResourceLoader`, and `createAgentSession` from `@earendil-works/pi-coding-agent`                                                           |
+| `structured-output.ts` | Extracts JSON from free-text model responses; prompts a session and validates output against a Zod schema with automatic retries                                                                                                                         |
+| `agent-loop.ts`        | Higher-level patterns: `agentLoopUntil`, `parallelAgents`, `sequentialAgents`. Uses `AgentSession` and `dispose()` for cleanup                                                                                                                           |
+| `utils.ts`             | Shared utilities: `validateWorkflowName` (path traversal prevention), `isEnoentError` (ENOENT detection), `safeErrorMessage` (safe error-to-string), `composeStatusCallbacks` (fan-out multiple callbacks), `DEFAULT_TOOLS` (default tool list constant) |
 
 ### Pool Layer (`src/pool/`)
 
@@ -1065,38 +1124,191 @@ src/
 
 ### Tracking Layer (`src/tracking/`)
 
-| Module               | Responsibility                                                                                                                              |
-| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| `audit-log.ts`       | Appends `AuditEvent` records to a JSONL file; supports filtering by type or task ID; computes aggregate stats                               |
-| `task-status.ts`     | Manages a collection of `Task` objects with a DAG of dependencies; enforces state transitions; detects cycles                               |
-| `workflow-status.ts` | Top-level workflow state: current phase, completed phases, scouting reports, plan, stats, and task tracker; persists to `.engin-state.json` |
+| Module               | Responsibility                                                                                                                                                                                                      |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `audit-log.ts`       | Appends `AuditEvent` records to a JSONL file; supports filtering by type or task ID; computes aggregate stats                                                                                                       |
+| `event-store.ts`     | Event-sourced status store — the single source of truth. Durable `events.jsonl` + in-memory `WorkflowProjection` evolved via `evolve()`. See [EventStore / Event-Sourced Status](#eventstore--event-sourced-status) |
+| `event-types.ts`     | Defines `EventType`, `EventRecord`, `WorkflowProjection`, `AgentEntity`, `TaskEntity`, `LogEntry`, and `createInitialProjection()`                                                                                  |
+| `evolve.ts`          | Pure, immutable reducer: `evolve(state, event) → WorkflowProjection`. Handles all 19 event types                                                                                                                    |
+| `store-callbacks.ts` | `createStoreCallbacks(store)` — a `StatusCallbacks` implementation that fans every callback into `store.append()`                                                                                                   |
+| `task-status.ts`     | Manages a collection of `Task` objects with a DAG of dependencies; enforces state transitions; detects cycles                                                                                                       |
+| `workflow-status.ts` | Top-level workflow state: current phase, completed phases, scouting reports, plan, stats, and task tracker; persists to `.engin-state.json`                                                                         |
+
+### CLI Layer (`src/cli/`)
+
+| Module                    | Responsibility                                                                                                                                             |
+| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `commands.ts`             | `runCommand`, `resumeCommand`, `initCommand` orchestration; TUI vs. console detection; `composeStatusCallbacks([storeCallbacks, consoleCallbacks])` wiring |
+| `parse-args.ts`           | CLI argument parsing (`--cwd`, `--work-dir`, `--max-concurrent`, `--verbose`, `--api-key`, etc.)                                                           |
+| `tui-setup.ts`            | `setupTuiAndObserver()` — shared setup of `EventStore`, `StatusBridge`, `ObserverServer`, and `WorkflowTUI` (with QR code)                                 |
+| `console-status.ts`       | `createStatusCallbacks(verbose)` console output factory; `shouldUseTui()` detection helper                                                                 |
+| `session-selector.ts`     | Interactive run selection for `resume` (scans past run directories)                                                                                        |
+| `post-worktree.ts`        | Post-worktree action prompter (merge, push, etc.)                                                                                                          |
+| `sigint.ts`               | SIGINT handler for cooperative cancellation via `AbortController`                                                                                          |
+| `slash-command-parser.ts` | Slash-command argument parsing                                                                                                                             |
+
+### Web Layer (`src/web/`)
+
+| Module               | Responsibility                                                                                                                                                                                                                                                         |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `observer-server.ts` | `startObserverServer()` — Bun HTTP + WebSocket server. Serves static files from `web/dist` (SPA fallback), handles `/ws` upgrade with Origin validation. WebSocket messages: `terminate_server`, `resync`. See [WebSocket Protocol](#websocket-protocol-snapshotdelta) |
+| `protocol-types.ts`  | `ServerMessage` and `ClientMessage` union types; re-exports state types from `tracking/event-types.ts`                                                                                                                                                                 |
+| `status-bridge.ts`   | `StatusBridge` — thin view over `EventStore` that broadcasts snapshot/delta `ServerMessage`s. Coalesces events per microtask tick; sends terminal lifecycle signals immediately                                                                                        |
 
 ### TUI Layer (`src/tui/`)
 
-| Module                           | Responsibility                                                                                                         |
-| -------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `workflow-tui.ts`                | Top-level TUI lifecycle: creates terminal, builds widget tree, overrides console, handles keyboard input (Ctrl+C, Tab) |
-| `status-callbacks.ts`            | Factory (`createTuiStatusCallbacks`) that routes every `StatusCallbacks` event into the appropriate TUI widget         |
-| `theme.ts`                       | ANSI colour/style helpers (`cyan`, `dim`, `bold`, etc.), status-to-colour/icon mappings, and `stripAnsi` sanitisation  |
-| `components/event-log.ts`        | Scrollable event log widget with PgUp/PgDn navigation and auto-scroll                                                  |
-| `components/phase-bar.ts`        | Single-line phase progress bar with completed/current/pending states                                                   |
-| `components/lane-pool-widget.ts` | Grid of task lanes with focus tracking (↑/↓/Tab)                                                                       |
-| `components/agent-log-widget.ts` | Detail view of the selected agent's recent text, thinking, tool calls, and errors                                      |
-| `components/dashboard.ts`        | Composite container: PhaseBar + LanePoolWidget + AgentLogWidget                                                        |
+| Module                           | Responsibility                                                                                                                                                    |
+| -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `workflow-tui.ts`                | Top-level TUI lifecycle: creates terminal, builds widget tree, subscribes to `EventStore`, overrides console, handles keyboard input (Ctrl+C, Tab, Space, arrows) |
+| `status-callbacks.ts`            | `createStoreBackedTui(deps)` — subscribes TUI widgets to an `EventStore` and syncs from projection                                                                |
+| `theme.ts`                       | ANSI colour/style helpers (`cyan`, `dim`, `bold`, etc.), status-to-colour/icon mappings, and `stripAnsi` sanitisation                                             |
+| `components/event-log.ts`        | Scrollable event log widget with PgUp/PgDn navigation and auto-scroll                                                                                             |
+| `components/phase-bar.ts`        | Single-line phase progress bar with completed/current/selected/pending states                                                                                     |
+| `components/lane-pool-widget.ts` | Grid of task lanes with focus tracking (↑/↓/Tab), sorted by status priority                                                                                       |
+| `components/agent-log-widget.ts` | Detail view of agents in the current phase with expand/collapse and scroll                                                                                        |
+| `components/dashboard.ts`        | Composite container: PhaseBar + LanePoolWidget + AgentLogWidget with `syncFromProjection()`                                                                       |
+| `components/qr-overlay.ts`       | QR code overlay rendering the mobile observer URL                                                                                                                 |
 
-This package is a **pure library** — it provides building blocks (harness creation, profile loading, structured output, agent loop patterns, task tracking, audit logging) that user-managed workflow scripts compose into pipelines. It does not ship any built-in workflows or agent profiles.
+This package is a **pure library** — it provides building blocks (harness creation, profile loading, structured output, agent loop patterns, task tracking, event-sourced status, audit logging, a TUI dashboard, and a WebSocket observer server) that user-managed workflow scripts compose into pipelines. It does not ship any built-in workflows or agent profiles.
+
+### EventStore / Event-Sourced Status
+
+The `EventStore` class (`src/tracking/event-store.ts`) is the single source of truth for workflow status. Instead of mutating a state object directly, every status change is recorded as an append-only `EventRecord` in `events.jsonl`, and an in-memory `WorkflowProjection` is derived by replaying events through the pure `evolve()` reducer.
+
+#### `EventStore`
+
+```typescript
+class EventStore {
+  constructor(workDir: string, opts?: { maxRingBuffer?: number });
+  append(
+    type: EventType,
+    data: Record<string, unknown>,
+    metadata?: { agentId?: string; taskId?: string; phase?: string },
+  ): EventRecord;
+  getProjection(): WorkflowProjection;
+  getSnapshot(): { state: WorkflowProjection; seq: number };
+  getEventsSince(seq: number): EventRecord[];
+  subscribe(cb: (projection: WorkflowProjection) => void): () => void;
+  flush(): Promise<void>;
+  saveSnapshot(): Promise<void>;
+  static load(workDir: string, opts?: { maxRingBuffer?: number }): Promise<EventStore>;
+}
+```
+
+**`append(type, data, metadata?)`** — Assigns the next monotonic `seq`, pushes the record into a bounded ring buffer (default 1000 entries), evolves the projection, enqueues a coalesced disk write, and notifies all subscribers synchronously. Returns the created `EventRecord`.
+
+**Write coalescing** — Records appended within the same microtask tick are accumulated in `pendingRecords` and flushed to disk in a single `appendFile` call by `drainPending()`. This avoids one fs syscall per event while preserving seq ordering and line-delimited JSON.
+
+**`flush(): Promise<void>`** — If a microtask drain is pending, drains it synchronously, then awaits the write queue. Guarantees durability even when called immediately after `append()`.
+
+**`getEventsSince(seq)`** — Returns all records with `seq > arg` from the ring buffer. Uses binary search (the buffer is a contiguous, seq-ordered slice) instead of a linear filter. If `seq` is older than the buffer's oldest record, returns everything available.
+
+**`subscribe(cb)`** — Registers a projection-change listener. Returns an unsubscribe function. Subscriber errors are caught and do not crash the store.
+
+**`saveSnapshot()`** — Atomically writes `{ state, seq, timestamp }` to `event-snapshot.json` (via temp file + rename).
+
+**`EventStore.load(workDir)`** — Factory for resume: loads a snapshot (if present), then replays `events.jsonl` records with `seq > snapshotSeq` through `evolve()`. Falls back to a pristine in-memory projection when neither file exists.
+
+#### `createStoreCallbacks(store): StatusCallbacks`
+
+A `StatusCallbacks` implementation that fans every callback into `store.append()` with the appropriate `EventType` and argument mapping. This is what the CLI passes to a workflow's `onStatus`. See [store-callbacks.ts](#tracking-layer-srctracking) for the full mapping table.
+
+#### `evolve(state, event): WorkflowProjection`
+
+Pure, immutable reducer (`src/tracking/evolve.ts`). Returns a **new** projection reflecting the given event. Handles all 19 event types:
+
+- **Workflow lifecycle** — `workflow_started`, `workflow_completed`, `workflow_failed`
+- **Phase lifecycle** — `phase_started`, `phase_completed`
+- **Agent lifecycle** — `agent_spawned` (upsert + agentCount increment on first spawn), `agent_completed`
+- **Task lifecycle** — `task_started`, `task_step_started`, `task_completed`, `task_rejected`, `tasks_added`
+- **Agent log / decisions / errors** — `decision`, `error`, `turn_ended` (text + thinking blocks appended to agent log; token accumulation)
+- **Tool call lifecycle** — `tool_call_started` (increments `toolCallCount`), `tool_call_ended`
+- **Sidebar** — `sidebar_updated` (title, indicator, phase descriptors)
+- **No-ops** — `turn_started` (seq bump only)
+
+Agent logs are capped at 500 entries (oldest dropped). Agent entities are keyed by `agentId::taskId` (or just `agentId` when no task is associated), with fuzzy resolution when only `agentId` is available.
+
+### WebSocket Protocol (Snapshot/Delta)
+
+The `ObserverServer` (`src/web/observer-server.ts`) is a Bun HTTP + WebSocket server that serves the static web frontend and broadcasts workflow status to connected clients (including mobile devices via a QR-coded URL).
+
+#### Message Types
+
+**Server → Client** (`ServerMessage`, defined in `src/web/protocol-types.ts`):
+
+| Type                | Shape                                | Description                                                      |
+| ------------------- | ------------------------------------ | ---------------------------------------------------------------- |
+| `snapshot`          | `{ seq, state: WorkflowProjection }` | Full projection — sent on connect or full resync                 |
+| `events`            | `{ seq, events: EventRecord[] }`     | Batch of raw event records since the client's last seq           |
+| `workflow_complete` | `{}`                                 | Terminal lifecycle signal — broadcast immediately, not coalesced |
+| `workflow_failed`   | `{ error: string, phase: string }`   | Terminal lifecycle signal — broadcast immediately, not coalesced |
+
+**Client → Server** (`ClientMessage`):
+
+| Type               | Shape                  | Description                                            |
+| ------------------ | ---------------------- | ------------------------------------------------------ |
+| `terminate_server` | `{}`                   | Request workflow cancellation (triggers `onTerminate`) |
+| `resync`           | `{ lastSeq?: number }` | Request catch-up after reconnect                       |
+
+#### `StatusBridge`
+
+Thin view over the `EventStore` that broadcasts `ServerMessage`s whenever the store changes:
+
+- **Late-joining clients** receive a full `{ type: 'snapshot' }` via `getSnapshot()`.
+- **Between snapshots**, changes are coalesced into a single `{ type: 'events' }` message per microtask tick, forwarding raw `EventRecord`s. The client replays them through its own `evolve()`.
+- **Terminal transitions** (→ complete / → failed) are broadcast **immediately** via dedicated messages so clients can surface a status banner without waiting for the batch flush. The coalesced events batch also carries the terminal records (idempotent).
+- **Resync** — `handleResync(lastSeq)` attempts event catch-up if the ring buffer is contiguous (`events[0].seq === lastSeq + 1`); otherwise falls back to a full snapshot.
+
+#### `ObserverServer`
+
+The server binds to `0.0.0.0` by default and auto-detects the LAN IP for display (overridable via the `host` option). WebSocket upgrades on `/ws` are validated against the `Origin` header (non-browser clients without an Origin header bypass the check; localhost connections are always allowed). Static files are served from `web/dist` with SPA fallback to `index.html`; a `{{WS_ENDPOINT}}` placeholder in `index.html` is replaced with the appropriate `ws://` or `wss://` URL at serve time.
 
 ---
 
 ## 10. Authoring Workflows
 
-Workflows are user-managed scripts that use the library's building blocks to define multi-agent pipelines. A typical workflow:
+Workflows are user-managed scripts that use the library's building blocks to define multi-agent pipelines.
 
-1. Resolves workflow-scoped profiles from config directories via `resolveProfilesDirs(cwd, workflowName)` and `loadProfilesFromDirs`.
-2. Creates a `WorkflowStatusTracker` for phase and task state persistence.
-3. Uses `createHarness` or `parallelAgents` to spawn agents with specific profiles.
-4. Uses `promptForStructured` with Zod schemas to enforce structured output.
-5. Tracks tasks via `TaskTracker` and logs events via `AuditLog`.
+### Recommended Pattern: Config + Shared Backbone
+
+The recommended authoring pattern is **config-driven**: a workflow is a thin wrapper that defines a `WorkflowConfig` (phases, profiles, schemas, step definitions) plus a `profiles/` directory of agent profile `.md` files, then delegates execution to a shared SPIR backbone. The bundled `develop`, `improve`, and `debug` workflows in the [workflows config repo](https://www.npmjs.com/package/@harms-haus/engin) all use this pattern, importing the shared backbone from `~/.config/engin/workflows/.lib`.
+
+In this model, the workflow's `run()` function:
+
+1. Receives `options.onStatus` — already wired by the engine to an [`EventStore`](#eventstore--event-sourced-status) via `createStoreCallbacks(store)`. The workflow should pass this through to all agent spawns and harnesses so events flow into the canonical store.
+2. Loads profiles from config directories via `resolveProfilesDirs(cwd, workflowName)` and `loadProfilesFromDirs`.
+3. Delegates to the shared SPIR backbone (or composes its own pipeline using `LanePool`, `promptForStructured`, `TaskTracker`, etc.).
+4. Uses `options.signal` for cooperative cancellation.
+
+The engine (`src/cli/tui-setup.ts` `setupTuiAndObserver`) owns the `EventStore`, `StatusBridge`, `ObserverServer`, and `WorkflowTUI`. **Workflows should not create their own TUI** — the TUI subscribes to the store internally and stays in sync automatically.
+
+### Advanced Pattern: Manual Composition
+
+For workflows that need full control, the lower-level building blocks are still available:
+
+- `createHarness` / `createHarnessFromProfile` — spawn a single agent session
+- `parallelAgents` / `sequentialAgents` — run multiple agents
+- `promptForStructured` — Zod-validated structured output
+- `LanePool` — concurrent task processing with configurable steps
+- `TaskTracker` — DAG-based task dependency tracking
+- `AuditLog` — JSONL audit trail
+
+See [Programmatic API](#8-programmatic-api) for the full list.
+
+### Composing Status Callbacks
+
+If a workflow needs both the engine-provided store callbacks and additional consumers (e.g. custom logging), use `composeStatusCallbacks`:
+
+```typescript
+import { composeStatusCallbacks } from '@harms-haus/engin';
+
+// options.onStatus is already wired to the EventStore by the engine.
+// Fan out to an additional consumer:
+const combined = composeStatusCallbacks([
+  options.onStatus!,
+  { onPhaseStart: (info) => console.log(`Phase: ${info.phase}`) },
+]);
+```
 
 See [Custom Workflows](#7-custom-workflows) for examples and [Programmatic API](#8-programmatic-api) for the full set of available building blocks.
 
@@ -1106,40 +1318,25 @@ When a [`Task`](#task) has `files` entries, `buildPrompt()` reads each file and 
 
 ### TUI Integration
 
-Workflows that want to support the TUI dashboard can detect when it is active and wire up the TUI status callbacks:
+The TUI dashboard is **owned by the engine**, not by workflows. When the CLI detects an interactive terminal (`process.stdout.isTTY`) without `--verbose`, it calls `setupTuiAndObserver()` which:
+
+1. Creates an [`EventStore`](#eventstore--event-sourced-status) for the run's work directory (loading existing events on resume).
+2. Creates `createStoreCallbacks(store)` — a `StatusCallbacks` that appends every event into the store.
+3. Starts the [`ObserverServer`](#websocket-protocol-snapshotdelta) (HTTP + WebSocket for the web/mobile UI).
+4. Creates a `WorkflowTUI` with the `store` option, so it subscribes to projection updates internally.
+5. Passes `storeCallbacks` as `options.onStatus` to the workflow's `run()` function.
+
+**Workflows do not create a TUI.** They simply pass `options.onStatus` through to their agent spawns. The TUI and web observer receive status updates automatically via store subscription.
+
+In non-TUI mode (`--verbose` or non-TTY), the CLI composes both the store callbacks and console callbacks:
 
 ```typescript
-import { WorkflowTUI, resolveProfilesDirs, loadProfilesFromDirs } from '@harms-haus/engin';
-import type { WorkflowRunOptions, StatusCallbacks } from '@harms-haus/engin';
-
-export async function run(taskPrompt: string, options: WorkflowRunOptions) {
-  const useTui = !options.verbose && process.stdout.isTTY;
-  const tui = useTui
-    ? new WorkflowTUI({
-        maxConcurrentLanes: options.maxConcurrentTasks,
-        abort: () => {
-          /* cancel workflow execution */
-        },
-      })
-    : undefined;
-
-  tui?.start();
-  const statusCallbacks = tui?.getStatusCallbacks();
-
-  try {
-    // Use statusCallbacks as onStatus when creating agents/harnesses
-    // ... your workflow logic ...
-  } finally {
-    tui?.stop();
-  }
-}
+const composed = composeStatusCallbacks([storeCallbacks, consoleCallbacks]);
 ```
 
-**Detection:** Check `!options.verbose && process.stdout.isTTY` — the CLI enables the TUI when stdout is a terminal and `--verbose` is not set.
+This ensures the `EventStore` is always populated regardless of output mode.
 
-**Lifecycle:** Call `start()` before any workflow work begins and `stop()` in a `finally` block to guarantee cleanup.
-
-**Console capture:** While the TUI is running, `console.log`, `console.warn`, and `console.error` are overridden to route output through the event log widget. Original methods are restored on `stop()`. This means `console.log` calls from deep within your workflow (or from dependencies) will appear in the TUI rather than corrupting the layout.
+**Console capture:** While the TUI is running, `console.log` passes through to the original console (library noise is not routed to avoid flooding), while `console.warn` and `console.error` are routed into the event log widget with deduplication. Original methods are restored on `stop()`.
 
 ---
 
@@ -1160,7 +1357,7 @@ Re-exported from `@earendil-works/pi-agent-core`.
 #### `TaskStatus`
 
 ```typescript
-type TaskStatus = 'blocked' | 'ready' | 'claimed' | 'implementing' | 'reviewing' | 'done';
+type TaskStatus = 'blocked' | 'ready' | 'claimed' | 'implementing' | 'reviewing' | 'done' | 'failed';
 ```
 
 See [Task lifecycle](#tasktracker) for valid transitions.
@@ -1212,6 +1409,7 @@ A discriminated union logged by `AuditLog`. Each variant has an auto-generated `
 | `agentId` | `string`        | Identifier of the agent          |
 | `profile` | `AgentProfile`  | Profile used to create the agent |
 | `taskId?` | `string`        | Associated task, if applicable   |
+| `phase?`  | `string`        | Phase the agent belongs to       |
 
 #### `agent_end`
 
@@ -1221,6 +1419,7 @@ A discriminated union logged by `AuditLog`. Each variant has an auto-generated `
 | `agentId` | `string`      | Identifier of the agent                                    |
 | `result`  | `unknown`     | The agent's final result (may include `cost` and `tokens`) |
 | `taskId?` | `string`      | Associated task, if applicable                             |
+| `phase?`  | `string`      | Phase the agent belongs to                                 |
 
 #### `decision`
 
@@ -1256,16 +1455,21 @@ A discriminated union logged by `AuditLog`. Each variant has an auto-generated `
 
 Serialized form of `WorkflowStatusTracker`. Written to `.engin-state.json` on `save()`.
 
-| Field             | Type                                                             | Description                                       |
-| ----------------- | ---------------------------------------------------------------- | ------------------------------------------------- |
-| `taskPrompt`      | `string`                                                         | The original task prompt                          |
-| `currentPhase`    | `string`                                                         | Phase the workflow is currently in                |
-| `completedPhases` | `string[]`                                                       | Phases that have finished                         |
-| `tasks`           | `Task[]`                                                         | All tasks in the plan                             |
-| `scoutingReports` | `unknown[]`                                                      | Collected scouting reports                        |
-| `plan`            | `unknown`                                                        | The validated implementation plan                 |
-| `research?`       | `string`                                                         | Synthesized research summary from scouting review |
-| `stats`           | `{ totalTokens: number; totalCost: number; agentCount: number }` | Aggregate statistics                              |
+| Field                    | Type                                                                                             | Description                                         |
+| ------------------------ | ------------------------------------------------------------------------------------------------ | --------------------------------------------------- |
+| `taskPrompt`             | `string`                                                                                         | The original task prompt                            |
+| `currentPhase`           | `string`                                                                                         | Phase the workflow is currently in                  |
+| `completedPhases`        | `string[]`                                                                                       | Phases that have finished                           |
+| `tasks`                  | `Task[]`                                                                                         | All tasks in the plan                               |
+| `scoutingReports`        | `unknown[]`                                                                                      | Collected scouting reports                          |
+| `plan`                   | `unknown`                                                                                        | The validated implementation plan                   |
+| `research?`              | `string`                                                                                         | Synthesized research summary from scouting review   |
+| `planReviewFeedback?`    | `string`                                                                                         | Plan review feedback when a plan is rejected        |
+| `planReviewSuggestions?` | `string[]`                                                                                       | Specific improvement suggestions from plan reviewer |
+| `stats`                  | `{ totalTokens: number; totalCost: number; agentCount: number }`                                 | Aggregate statistics                                |
+| `spawnedAgents?`         | `PersistedAgentRecord[]`                                                                         | Persisted records of spawned agents                 |
+| `sidebar?`               | `{ title?: string; indicator?: string; phases?: { id: string; label: string; icon: string }[] }` | Persisted sidebar info for restoring UI state       |
+| `worktree?`              | `WorktreeInfo`                                                                                   | Git worktree information for isolated execution     |
 
 ---
 
@@ -1273,15 +1477,17 @@ Serialized form of `WorkflowStatusTracker`. Written to `.engin-state.json` on `s
 
 Options passed to a workflow's `run()` function.
 
-| Field                 | Type                     | Description                                                    |
-| --------------------- | ------------------------ | -------------------------------------------------------------- |
-| `cwd`                 | `string`                 | Project directory to operate on                                |
-| `workDir`             | `string`                 | Directory for workflow state persistence                       |
-| `maxConcurrentTasks?` | `number`                 | Maximum parallel implementers (default 3)                      |
-| `apiKeys?`            | `Record<string, string>` | Provider → API key overrides                                   |
-| `onStatus?`           | `StatusCallbacks`        | Callbacks for workflow/agent events                            |
-| `verbose?`            | `boolean`                | When true, use verbose console output instead of TUI dashboard |
-| `signal?`             | `AbortSignal`            | Abort signal for cooperative cancellation                      |
+| Field                 | Type                     | Description                                                                               |
+| --------------------- | ------------------------ | ----------------------------------------------------------------------------------------- |
+| `cwd`                 | `string`                 | Project directory to operate on                                                           |
+| `workDir`             | `string`                 | Directory for workflow state persistence                                                  |
+| `maxConcurrentTasks?` | `number`                 | Maximum parallel implementers (default 5)                                                 |
+| `apiKeys?`            | `Record<string, string>` | Provider → API key overrides                                                              |
+| `onStatus?`           | `StatusCallbacks`        | Callbacks for workflow/agent events                                                       |
+| `verbose?`            | `boolean`                | When true, use verbose console output instead of TUI dashboard                            |
+| `signal?`             | `AbortSignal`            | Abort signal for cooperative cancellation                                                 |
+| `tracker?`            | `unknown`                | Pre-created `WorkflowStatusTracker`; workflows should reuse instead of creating their own |
+| `worktree?`           | `WorktreeInfo`           | Git worktree information for isolated execution                                           |
 
 ---
 
@@ -1301,14 +1507,15 @@ Interface for workflow modules loaded by `loadWorkflow`.
 
 Options for `createHarness`.
 
-| Field                | Type                     | Description                                                                    |
-| -------------------- | ------------------------ | ------------------------------------------------------------------------------ |
-| `profile`            | `AgentProfile`           | The agent configuration to use                                                 |
-| `cwd`                | `string`                 | Working directory for file operations                                          |
-| `apiKeys?`           | `Record<string, string>` | Provider → API key overrides                                                   |
-| `onAgentStatus?`     | `AgentStatusCallbacks`   | Callbacks for turn-level and tool-level events                                 |
-| `sessionDir?`        | `string`                 | Directory for persisted session storage. Creates via `SessionManager.create()` |
-| `resumeSessionPath?` | `string`                 | Path to an existing session file for resumption via `SessionManager.open()`    |
+| Field                | Type                     | Description                                                                        |
+| -------------------- | ------------------------ | ---------------------------------------------------------------------------------- |
+| `profile`            | `AgentProfile`           | The agent configuration to use                                                     |
+| `cwd`                | `string`                 | Working directory for file operations                                              |
+| `apiKeys?`           | `Record<string, string>` | Provider → API key overrides                                                       |
+| `onAgentStatus?`     | `AgentStatusCallbacks`   | Callbacks for turn-level and tool-level events                                     |
+| `sessionDir?`        | `string`                 | Directory for persisted session storage. Creates via `SessionManager.create()`     |
+| `resumeSessionPath?` | `string`                 | Path to an existing session file for resumption via `SessionManager.open()`        |
+| `agentId?`           | `string`                 | Override agent ID used in status callbacks. Defaults to sessionId if not provided. |
 
 Tool filtering is handled internally from the profile's `includeTools`/`excludeTools` fields. The default tool set is `read`, `bash`, `edit`, `write`, `grep`, `find`, `ls`.
 
@@ -1373,7 +1580,7 @@ A single step in the task processing pipeline. Each step maps to an agent profil
 Discriminated union returned by each step execution.
 
 ```typescript
-type StepResult = { type: 'approved'; output: unknown } | { type: 'rejected'; feedback: string };
+type StepResult = { type: 'approved'; output: unknown } | { type: 'rejected'; feedback: string; output?: unknown };
 ```
 
 ---
@@ -1393,7 +1600,9 @@ Configuration for creating a `LanePool`.
 | `apiKeys?`           | `Record<string, string>`           | No       | Optional API key overrides by provider                                                                               |
 | `onStatus?`          | `StatusCallbacks`                  | No       | Status callback handlers                                                                                             |
 | `auditLog?`          | `AuditLog`                         | No       | Audit log for recording events                                                                                       |
-| `maxStepRetries?`    | `number`                           | No       | Maximum retries per step on rejection (default: `3`)                                                                 |
+| `maxStepRetries?`    | `number`                           | No       | Maximum retries per step on rejection (default: `5`)                                                                 |
+| `laneWaitTimeoutMs?` | `number`                           | No       | Maximum time (ms) a lane waits for new work before polling again (default: `60000`)                                  |
+| `signal?`            | `AbortSignal`                      | No       | Abort signal for cooperative cancellation                                                                            |
 | `phase?`             | `string`                           | No       | Phase identifier for the TUI lane pool widget badge (default: `"implementing"`). See note below.                     |
 
 > **Phase badge for TUI lane pool**  
@@ -1438,19 +1647,6 @@ Both `AgentSession` instances and mock objects satisfy this interface. The `prom
 
 ---
 
-### `SessionStats`
-
-Token usage and cost aggregation returned by `TaskTracker` statistics.
-
-| Field               | Type     | Description                                    |
-| ------------------- | -------- | ---------------------------------------------- |
-| `totalInputTokens`  | `number` | Sum of input tokens from assistant messages    |
-| `totalOutputTokens` | `number` | Sum of output tokens from assistant messages   |
-| `totalCost`         | `number` | Sum of costs from assistant messages           |
-| `messageCount`      | `number` | Total number of message entries in the session |
-
----
-
 ### `AgentLoopResult<T>`
 
 Envelope returned by `retryAgentUntil`.
@@ -1471,20 +1667,23 @@ type StatusCallbacks = WorkflowStatusCallbacks & AgentStatusCallbacks;
 
 #### `WorkflowStatusCallbacks`
 
-| Method               | Parameter Shape                                                             | Fired when                             |
-| -------------------- | --------------------------------------------------------------------------- | -------------------------------------- |
-| `onWorkflowStart`    | `{ taskPrompt: string; resumed: boolean; workDir: string }`                 | The `run()` orchestrator starts        |
-| `onPhaseStart`       | `{ phase: string; round: number }`                                          | A phase begins execution               |
-| `onPhaseComplete`    | `{ phase: string; durationMs: number }`                                     | A phase finishes                       |
-| `onAgentSpawn`       | `{ agentId: string; profile: string; phase: string; taskId?: string }`      | An agent session is created            |
-| `onAgentComplete`    | `{ agentId: string; profile: string; phase: string; taskId?: string }`      | An agent finishes its prompt           |
-| `onTaskStart`        | `{ taskId: string; title: string; agentId: string }`                        | A task is claimed and dispatched       |
-| `onTaskComplete`     | `{ taskId: string; title: string }`                                         | A task passes review                   |
-| `onTaskRejected`     | `{ taskId: string; title: string; reason: string }`                         | A task fails review                    |
-| `onDecision`         | `{ agentId: string; decision: string; reasoning: string; taskId?: string }` | A reviewer makes a decision            |
-| `onError`            | `{ agentId: string; error: string; phase: string; taskId?: string }`        | An agent encounters an error           |
-| `onWorkflowComplete` | `{ totalDurationMs: number; agentCount: number }`                           | The workflow finishes successfully     |
-| `onWorkflowFailed`   | `{ error: Error; phase: string }`                                           | The workflow throws an unhandled error |
+| Method               | Parameter Shape                                                                                                  | Fired when                             |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------- | -------------------------------------- |
+| `onWorkflowStart`    | `{ taskPrompt: string; resumed: boolean; workDir: string }`                                                      | The `run()` orchestrator starts        |
+| `onPhaseStart`       | `{ phase: string; round: number }`                                                                               | A phase begins execution               |
+| `onPhaseComplete`    | `{ phase: string; durationMs: number }`                                                                          | A phase finishes                       |
+| `onAgentSpawn`       | `{ agentId: string; profile: string; phase: string; taskId?: string; sessionId?: string; sessionPath?: string }` | An agent session is created            |
+| `onAgentComplete`    | `{ agentId: string; profile: string; phase: string; taskId?: string; sessionId?: string }`                       | An agent finishes its prompt           |
+| `onTaskStart`        | `{ taskId: string; title: string; agentId: string; phase?: string; startedAt?: number }`                         | A task is claimed and dispatched       |
+| `onTaskStepStart`    | `{ taskId: string; stepName: string; stepIndex: number; totalSteps: number }`                                    | A task step begins execution           |
+| `onTaskComplete`     | `{ taskId: string; title: string }`                                                                              | A task passes review                   |
+| `onTaskRejected`     | `{ taskId: string; title: string; reason: string }`                                                              | A task fails review                    |
+| `onDecision`         | `{ agentId: string; decision: string; reasoning: string; taskId?: string }`                                      | A reviewer makes a decision            |
+| `onError`            | `{ agentId: string; error: string; phase: string; taskId?: string }`                                             | An agent encounters an error           |
+| `onWorkflowComplete` | `{ totalDurationMs: number; agentCount: number }`                                                                | The workflow finishes successfully     |
+| `onWorkflowFailed`   | `{ error: Error; phase: string }`                                                                                | The workflow throws an unhandled error |
+| `onTasksAdded`       | `{ tasks: { id: string; title: string; status: TaskStatus; dependencies: string[]; phase?: string }[] }`         | Tasks are added to the tracker         |
+| `onSidebarUpdate`    | `{ title?: string; indicator?: string; phases?: { id: string; label: string; icon: string }[] }`                 | Sidebar UI metadata is updated         |
 
 All methods are optional.
 
@@ -1494,7 +1693,7 @@ All methods are optional.
 | ----------------- | ------------------------------------------------------------------------------------------------------------------- | ------------------------- |
 | `onTurnStart`     | `{ agentId: string; turn: number }`                                                                                 | An agent turn begins      |
 | `onTurnEnd`       | `{ agentId: string; turn: number; tokens?: { input: number; output: number }; contentBlocks?: TurnContentBlock[] }` | An agent turn completes   |
-| `onToolCallStart` | `{ agentId: string; toolName: string; toolCallId: string }`                                                         | A tool execution starts   |
+| `onToolCallStart` | `{ agentId: string; toolName: string; toolCallId: string; arguments: Record<string, unknown> }`                     | A tool execution starts   |
 | `onToolCallEnd`   | `{ agentId: string; toolName: string; toolCallId: string; isError: boolean }`                                       | A tool execution finishes |
 
 All methods are optional.

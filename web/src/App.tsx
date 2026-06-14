@@ -1,29 +1,57 @@
-import { useCallback } from 'react';
 import './App.css';
 import { AgentLog } from './components/AgentLog';
 import { EventLog } from './components/EventLog';
 import { LanePool } from './components/LanePool';
 import { PhaseBar } from './components/PhaseBar';
 import { useWebSocket } from './hooks/useWebSocket';
+import { useError, useFailedPhase, useStatus } from './store/workflow-store';
 
 export function App() {
-  const { state, send, events, connected } = useWebSocket();
+  const { connected, hasConnectedOnce } = useWebSocket();
+  const status = useStatus();
+  const error = useError();
+  const failedPhase = useFailedPhase();
 
-  const handleTerminate = useCallback(() => {
-    send({ type: 'terminate_server' });
-  }, [send]);
-
-  const phases = state.sidebar.phases ?? [];
+  const connectionLabel = connected
+    ? 'Connected'
+    : hasConnectedOnce
+      ? 'Disconnected — Reconnecting...'
+      : 'Connecting...';
 
   return (
     <div className="app">
-      <div className={`connection-status connection-status--${connected ? 'connected' : 'disconnected'}`}>
-        {connected ? 'Connected' : 'Disconnected — Reconnecting...'}
+      <div
+        className={`connection-status connection-status--${connected ? 'connected' : 'disconnected'}`}
+        role="status"
+        aria-live="polite"
+      >
+        {connectionLabel}
       </div>
-      <EventLog entries={events} />
-      <PhaseBar phases={phases} currentPhase={state.currentPhase} completedPhases={state.completedPhases} />
-      <LanePool tasks={state.tasks} />
-      <AgentLog agents={state.agents} onTerminate={handleTerminate} status={state.status} connected={connected} />
+
+      {status === 'failed' && (
+        <div
+          className="status-banner status-banner--failed"
+          role="status"
+          aria-live="polite"
+        >
+          Workflow failed in phase {failedPhase ?? 'unknown'}
+          {error ? `: ${error}` : ''}
+        </div>
+      )}
+      {status === 'complete' && (
+        <div
+          className="status-banner status-banner--complete"
+          role="status"
+          aria-live="polite"
+        >
+          ✓ Workflow complete
+        </div>
+      )}
+
+      <EventLog />
+      <PhaseBar />
+      <LanePool />
+      <AgentLog />
     </div>
   );
 }

@@ -1,74 +1,29 @@
-// ─── Value Types ────────────────────────────────────────────────────────────
+import type { EventRecord, WorkflowProjection } from '../tracking/event-types.js';
 
-export interface PhaseDescriptor {
-  id: string;
-  label: string;
-  icon: string;
-}
-
-export interface LogEntry {
-  id: string;
-  timestamp: string;
-  type: 'text' | 'thinking' | 'tool_call' | 'tool_call_start' | 'tool_call_end' | 'decision' | 'error';
-  content: string;
-  metadata?: Record<string, unknown>;
-}
-
-export interface AgentWindowState {
-  agentId: string;
-  profile: string;
-  taskId?: string;
-  phase?: string;
-  active: boolean;
-  log: LogEntry[];
-}
-
-export interface TaskInfo {
-  id: string;
-  title: string;
-  status: string;
-  phase?: string;
-  agentId?: string;
-  startedAt?: number;
-}
-
-export interface SidebarInfo {
-  title: string;
-  indicator: string;
-  phases?: PhaseDescriptor[];
-}
+// Re-export all state types so the web layer depends on tracking core.
+export type {
+  AgentEntity,
+  EventRecord,
+  EventType,
+  LogEntry,
+  TaskEntity,
+  WorkflowProjection,
+} from '../tracking/event-types.js';
 
 // ─── Server to Client Messages ──────────────────────────────────────────────
+//
+// The protocol uses a snapshot/delta model:
+//   - `snapshot`   — full WorkflowProjection, sent on connect / full resync.
+//   - `events`     — batch of raw EventRecords since the last seq.
+//   - `workflow_complete` / `workflow_failed` — dedicated top-level lifecycle
+//     signals (not derivable from events alone in all edge cases).
 
 export type ServerMessage =
-  | {
-      type: 'init';
-      currentPhase: string;
-      completedPhases: string[];
-      tasks: TaskInfo[];
-      agents: AgentWindowState[];
-      sidebar: SidebarInfo;
-      taskPrompt?: string;
-    }
-  | { type: 'workflow_phase'; phase: string; completed: string[]; currentPhase: string }
+  | { type: 'snapshot'; seq: number; state: WorkflowProjection }
+  | { type: 'events'; seq: number; events: EventRecord[] }
   | { type: 'workflow_complete' }
-  | { type: 'workflow_failed'; error: string; phase: string }
-  | { type: 'agent_spawned'; agent: AgentWindowState }
-  | { type: 'agent_log'; agentId: string; entry: LogEntry; taskId?: string }
-  | { type: 'agent_complete'; agentId: string; phase?: string; taskId?: string }
-  | {
-      type: 'agent_stats';
-      agentId: string;
-      toolCallCount?: number;
-      inputTokens?: number;
-      outputTokens?: number;
-      taskId?: string;
-    }
-  | { type: 'tasks_updated'; tasks: TaskInfo[] }
-  | { type: 'workflow_sidebar'; sidebar: SidebarInfo };
+  | { type: 'workflow_failed'; error: string; phase: string };
 
 // ─── Client to Server Messages ──────────────────────────────────────────────
 
-export interface ClientMessage {
-  type: 'terminate_server';
-}
+export type ClientMessage = { type: 'terminate_server' } | { type: 'resync'; lastSeq?: number };

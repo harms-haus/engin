@@ -8,6 +8,14 @@
 // structural type system to verify at compile time that both ServerMessage
 // types (and their shared value types) remain structurally identical.
 //
+// After the snapshot/delta refactor (kb-13–17) the protocol only carries:
+//   - snapshot          (full WorkflowProjection on connect / full resync)
+//   - events            (batched EventRecord deltas)
+//   - workflow_complete / workflow_failed  (top-level lifecycle signals)
+//
+// The old per-event WS message types have been removed; this test now guards
+// the SMALLER retained union.
+//
 // === How it works ===
 //
 // 1. Top-level bi-directional assignability functions catch:
@@ -31,8 +39,14 @@
 // - IDEs (VS Code, etc.)           → show inline errors via Equal<> checks
 
 import { describe, expect, it } from 'bun:test';
-import type { ServerMessage as ServerSideMessage } from '../../src/web/protocol-types.ts';
-import type { ServerMessage as ClientSideMessage } from '../../web/src/protocol-types.ts';
+import type {
+  ClientMessage as ServerClientMessage,
+  ServerMessage as ServerSideMessage,
+} from '../../src/web/protocol-types.ts';
+import type {
+  ServerMessage as ClientSideMessage,
+  ClientMessage as WebClientMessage,
+} from '../../web/src/protocol-types.ts';
 
 // ─── Type-level exact equality utility ─────────────────────────────────────
 //
@@ -62,15 +76,15 @@ function clientAssignableToServer(_m: ClientSideMessage): ServerSideMessage {
 
 // ─── 2. Variant-level exact equality via Equal<> ───────────────────────────
 
-// ── init ──
-type ServerInit = Extract<ServerSideMessage, { type: 'init' }>;
-type ClientInit = Extract<ClientSideMessage, { type: 'init' }>;
-assertEqual<Equal<ServerInit, ClientInit>>('init');
+// ── snapshot ──
+type ServerSnapshot = Extract<ServerSideMessage, { type: 'snapshot' }>;
+type ClientSnapshot = Extract<ClientSideMessage, { type: 'snapshot' }>;
+assertEqual<Equal<ServerSnapshot, ClientSnapshot>>('snapshot');
 
-// ── workflow_phase ──
-type ServerWorkflowPhase = Extract<ServerSideMessage, { type: 'workflow_phase' }>;
-type ClientWorkflowPhase = Extract<ClientSideMessage, { type: 'workflow_phase' }>;
-assertEqual<Equal<ServerWorkflowPhase, ClientWorkflowPhase>>('workflow_phase');
+// ── events ──
+type ServerEvents = Extract<ServerSideMessage, { type: 'events' }>;
+type ClientEvents = Extract<ClientSideMessage, { type: 'events' }>;
+assertEqual<Equal<ServerEvents, ClientEvents>>('events');
 
 // ── workflow_complete ──
 type ServerWorkflowComplete = Extract<ServerSideMessage, { type: 'workflow_complete' }>;
@@ -82,35 +96,9 @@ type ServerWorkflowFailed = Extract<ServerSideMessage, { type: 'workflow_failed'
 type ClientWorkflowFailed = Extract<ClientSideMessage, { type: 'workflow_failed' }>;
 assertEqual<Equal<ServerWorkflowFailed, ClientWorkflowFailed>>('workflow_failed');
 
-// ── agent_spawned ──
-type ServerAgentSpawned = Extract<ServerSideMessage, { type: 'agent_spawned' }>;
-type ClientAgentSpawned = Extract<ClientSideMessage, { type: 'agent_spawned' }>;
-assertEqual<Equal<ServerAgentSpawned, ClientAgentSpawned>>('agent_spawned');
+// ─── 2b. ClientMessage variant-level exact equality ────────────────────────
 
-// ── agent_log ──
-type ServerAgentLog = Extract<ServerSideMessage, { type: 'agent_log' }>;
-type ClientAgentLog = Extract<ClientSideMessage, { type: 'agent_log' }>;
-assertEqual<Equal<ServerAgentLog, ClientAgentLog>>('agent_log');
-
-// ── agent_complete ──
-type ServerAgentComplete = Extract<ServerSideMessage, { type: 'agent_complete' }>;
-type ClientAgentComplete = Extract<ClientSideMessage, { type: 'agent_complete' }>;
-assertEqual<Equal<ServerAgentComplete, ClientAgentComplete>>('agent_complete');
-
-// ── agent_stats ──
-type ServerAgentStats = Extract<ServerSideMessage, { type: 'agent_stats' }>;
-type ClientAgentStats = Extract<ClientSideMessage, { type: 'agent_stats' }>;
-assertEqual<Equal<ServerAgentStats, ClientAgentStats>>('agent_stats');
-
-// ── tasks_updated ──
-type ServerTasksUpdated = Extract<ServerSideMessage, { type: 'tasks_updated' }>;
-type ClientTasksUpdated = Extract<ClientSideMessage, { type: 'tasks_updated' }>;
-assertEqual<Equal<ServerTasksUpdated, ClientTasksUpdated>>('tasks_updated');
-
-// ── workflow_sidebar ──
-type ServerWorkflowSidebar = Extract<ServerSideMessage, { type: 'workflow_sidebar' }>;
-type ClientWorkflowSidebar = Extract<ClientSideMessage, { type: 'workflow_sidebar' }>;
-assertEqual<Equal<ServerWorkflowSidebar, ClientWorkflowSidebar>>('workflow_sidebar');
+assertEqual<Equal<ServerClientMessage, WebClientMessage>>('ClientMessage');
 
 // ─── 3. Sample objects for each variant ────────────────────────────────────
 //
@@ -123,54 +111,97 @@ function checkVariant<T extends ServerSideMessage & ClientSideMessage>(_obj: T):
 }
 
 describe('ServerMessage – variant parity (sample objects)', () => {
-  it('init variant', () => {
+  it('snapshot variant', () => {
     const sample = {
-      type: 'init',
-      currentPhase: 'scouting',
-      completedPhases: ['planning'],
-      tasks: [{ id: 't1', title: 'Test task', status: 'running' }],
-      agents: [
-        {
-          agentId: 'agent-1',
-          profile: 'default',
-          taskId: 't-42',
-          phase: 'scouting',
-          active: true,
-          log: [
-            {
-              id: 'log-1',
-              timestamp: new Date().toISOString(),
-              type: 'text',
-              content: 'hello',
-              metadata: { foo: 'bar' },
-            },
-          ],
+      type: 'snapshot',
+      seq: 42,
+      state: {
+        seq: 42,
+        taskPrompt: 'Build the thing',
+        currentPhase: 'coding',
+        completedPhases: ['scouting', 'planning'],
+        tasks: {
+          t1: {
+            id: 't1',
+            title: 'Implement API',
+            status: 'running',
+            phase: 'coding',
+            agentId: 'a1',
+            startedAt: Date.now(),
+          },
         },
-      ],
-      sidebar: {
-        title: 'Engin',
-        indicator: '🟢',
-        phases: [{ id: 'p1', label: 'Plan', icon: '📋' }],
+        agents: {
+          a1: {
+            uid: 'uid-1',
+            agentId: 'a1',
+            profile: 'coder',
+            phase: 'coding',
+            taskId: 't1',
+            active: true,
+            log: [
+              {
+                id: 'log-1',
+                timestamp: new Date().toISOString(),
+                type: 'text',
+                content: 'working on it',
+              },
+            ],
+            toolCallCount: 3,
+            inputTokens: 500,
+            outputTokens: 200,
+            taskTitle: 'Implement API',
+          },
+        },
+        sidebar: {
+          title: 'Engin',
+          indicator: '🟢',
+          phases: [{ id: 'coding', label: 'Coding', icon: '💻' }],
+        },
+        status: 'running',
+        stats: { totalTokens: 700, agentCount: 1 },
       },
     };
     checkVariant(sample);
-    expect(sample.type).toBe('init');
-    expect(sample.currentPhase).toBe('scouting');
-    expect(sample.completedPhases).toEqual(['planning']);
-    expect(sample.agents).toHaveLength(1);
-    expect(sample.agents[0].agentId).toBe('agent-1');
+    expect(sample.type).toBe('snapshot');
+    expect(sample.seq).toBe(42);
+    expect(sample.state.currentPhase).toBe('coding');
+    expect(sample.state.status).toBe('running');
+    expect(Object.keys(sample.state.tasks)).toHaveLength(1);
+    expect(Object.keys(sample.state.agents)).toHaveLength(1);
   });
 
-  it('workflow_phase variant', () => {
+  it('events variant', () => {
     const sample = {
-      type: 'workflow_phase',
-      phase: 'executing',
-      completed: ['scouting', 'planning'],
-      currentPhase: 'executing',
+      type: 'events',
+      seq: 5,
+      events: [
+        {
+          seq: 4,
+          type: 'phase_started',
+          data: { phase: 'coding' },
+          metadata: {
+            timestamp: new Date().toISOString(),
+            phase: 'coding',
+          },
+        },
+        {
+          seq: 5,
+          type: 'agent_spawned',
+          data: { agentId: 'a1', profile: 'coder' },
+          metadata: {
+            timestamp: new Date().toISOString(),
+            agentId: 'a1',
+            phase: 'coding',
+          },
+        },
+      ],
     };
     checkVariant(sample);
-    expect(sample.type).toBe('workflow_phase');
-    expect(sample.phase).toBe('executing');
+    expect(sample.type).toBe('events');
+    expect(sample.seq).toBe(5);
+    expect(sample.events).toHaveLength(2);
+    expect(sample.events[0].type).toBe('phase_started');
+    expect(sample.events[1].type).toBe('agent_spawned');
   });
 
   it('workflow_complete variant', () => {
@@ -191,132 +222,99 @@ describe('ServerMessage – variant parity (sample objects)', () => {
     expect(sample.phase).toBe('planning');
   });
 
-  it('agent_spawned variant', () => {
+  it('snapshot variant – minimal (no optional sidebar phases)', () => {
     const sample = {
-      type: 'agent_spawned',
-      agent: {
-        agentId: 'agent-2',
-        profile: 'coder',
-        taskId: 't-42',
-        phase: 'coding',
-        active: true,
-        log: [],
+      type: 'snapshot',
+      seq: 0,
+      state: {
+        seq: 0,
+        taskPrompt: '',
+        currentPhase: '',
+        completedPhases: [],
+        tasks: {},
+        agents: {},
+        sidebar: { title: '', indicator: '' },
+        status: 'running' as const,
+        stats: { totalTokens: 0, agentCount: 0 },
       },
     };
     checkVariant(sample);
-    expect(sample.type).toBe('agent_spawned');
-    expect(sample.agent.agentId).toBe('agent-2');
-    expect(sample.agent.profile).toBe('coder');
+    expect(sample.type).toBe('snapshot');
+    expect(sample.state.tasks).toEqual({});
+    expect(sample.state.agents).toEqual({});
   });
 
-  it('agent_log variant', () => {
+  it('events variant – empty batch', () => {
     const sample = {
-      type: 'agent_log',
-      agentId: 'agent-1',
-      entry: {
-        id: 'log-1',
-        timestamp: new Date().toISOString(),
-        type: 'tool_call',
-        content: 'Tool output',
-        metadata: { key: 'value' },
-      },
-      taskId: 'task-99',
+      type: 'events',
+      seq: 3,
+      events: [],
     };
     checkVariant(sample);
-    expect(sample.type).toBe('agent_log');
-    expect(sample.entry.type).toBe('tool_call');
-    expect(sample.taskId).toBe('task-99');
+    expect(sample.type).toBe('events');
+    expect(sample.events).toHaveLength(0);
+  });
+});
+
+// ─── 4. ClientMessage sample objects ───────────────────────────────────────
+
+function checkClientMessage<T extends ServerClientMessage & WebClientMessage>(_obj: T): void {
+  // no-op: compile-time check only
+}
+
+describe('ClientMessage – variant parity (sample objects)', () => {
+  it('terminate_server variant', () => {
+    const sample = { type: 'terminate_server' as const };
+    checkClientMessage(sample);
+    expect(sample.type).toBe('terminate_server');
   });
 
-  it('agent_complete variant', () => {
-    const sample = {
-      type: 'agent_complete',
-      agentId: 'agent-1',
-      phase: 'coding',
-      taskId: 'task-42',
-    };
-    checkVariant(sample);
-    expect(sample.type).toBe('agent_complete');
-    expect(sample.agentId).toBe('agent-1');
-    expect(sample.phase).toBe('coding');
+  it('resync variant without lastSeq', () => {
+    const sample = { type: 'resync' as const };
+    checkClientMessage(sample);
+    expect(sample.type).toBe('resync');
   });
 
-  it('agent_stats variant', () => {
-    const sample = {
-      type: 'agent_stats',
-      agentId: 'agent-1',
-      toolCallCount: 5,
-      inputTokens: 1200,
-      outputTokens: 800,
-      taskId: 'task-42',
-    };
-    checkVariant(sample);
-    expect(sample.type).toBe('agent_stats');
-    expect(sample.toolCallCount).toBe(5);
-    expect(sample.inputTokens).toBe(1200);
-  });
-
-  it('tasks_updated variant', () => {
-    const sample = {
-      type: 'tasks_updated',
-      tasks: [
-        { id: 't1', title: 'Design API', status: 'completed' },
-        {
-          id: 't2',
-          title: 'Implement',
-          status: 'running',
-          phase: 'coding',
-          agentId: 'a1',
-          startedAt: Date.now(),
-        },
-      ],
-    };
-    checkVariant(sample);
-    expect(sample.type).toBe('tasks_updated');
-    expect(sample.tasks).toHaveLength(2);
-    expect(sample.tasks[0].status).toBe('completed');
-  });
-
-  it('workflow_sidebar variant', () => {
-    const sample = {
-      type: 'workflow_sidebar',
-      sidebar: {
-        title: 'Engin',
-        indicator: '🔵',
-        phases: [{ id: 'scouting', label: 'Scouting', icon: '🔍' }],
-      },
-    };
-    checkVariant(sample);
-    expect(sample.type).toBe('workflow_sidebar');
-    expect(sample.sidebar.title).toBe('Engin');
+  it('resync variant with lastSeq', () => {
+    const sample = { type: 'resync' as const, lastSeq: 42 };
+    checkClientMessage(sample);
+    expect(sample.type).toBe('resync');
+    expect(sample.lastSeq).toBe(42);
   });
 });
 
 // ─── Shared value types structural check ───────────────────────────────────
 //
-// Ensure the supporting types (PhaseDescriptor, LogEntry, etc.) are also
-// in sync.
+// Ensure the supporting types are also in sync.  PhaseDescriptor, LogEntry,
+// EventType, EventRecord, AgentEntity, TaskEntity, and WorkflowProjection are
+// the shared value/mirror types still used by both sides.
 
 import type {
-  AgentWindowState,
+  AgentEntity,
+  EventRecord,
+  EventType,
   LogEntry,
   PhaseDescriptor,
-  SidebarInfo,
-  TaskInfo,
+  TaskEntity,
+  WorkflowProjection,
 } from '../../src/web/protocol-types.ts';
 import type {
-  AgentWindowState as ClientAgentWindowState,
+  AgentEntity as ClientAgentEntity,
+  EventRecord as ClientEventRecord,
+  EventType as ClientEventType,
   LogEntry as ClientLogEntry,
   PhaseDescriptor as ClientPhaseDescriptor,
-  SidebarInfo as ClientSidebarInfo,
-  TaskInfo as ClientTaskInfo,
+  TaskEntity as ClientTaskEntity,
+  WorkflowProjection as ClientWorkflowProjection,
 } from '../../web/src/protocol-types.ts';
 
 assertEqual<Equal<PhaseDescriptor, ClientPhaseDescriptor>>('PhaseDescriptor');
 assertEqual<Equal<LogEntry, ClientLogEntry>>('LogEntry');
-assertEqual<Equal<AgentWindowState, ClientAgentWindowState>>('AgentWindowState');
-assertEqual<Equal<TaskInfo, ClientTaskInfo>>('TaskInfo');
-assertEqual<Equal<SidebarInfo, ClientSidebarInfo>>('SidebarInfo');
+assertEqual<Equal<EventType, ClientEventType>>('EventType');
+assertEqual<Equal<EventRecord, ClientEventRecord>>('EventRecord');
+assertEqual<Equal<AgentEntity, ClientAgentEntity>>('AgentEntity');
+assertEqual<Equal<TaskEntity, ClientTaskEntity>>('TaskEntity');
+assertEqual<Equal<WorkflowProjection, ClientWorkflowProjection>>('WorkflowProjection');
 
 // Also keep bi-directional assignability as a secondary check.
 // These functions will fail to compile if the types are not structurally
@@ -336,25 +334,32 @@ function logEntryAssignableFromClient(_e: ClientLogEntry): LogEntry {
   return _e;
 }
 
-function agentWindowStateAssignableFromServer(_a: AgentWindowState): ClientAgentWindowState {
+function eventRecordAssignableFromServer(_e: EventRecord): ClientEventRecord {
+  return _e;
+}
+function eventRecordAssignableFromClient(_e: ClientEventRecord): EventRecord {
+  return _e;
+}
+
+function agentEntityAssignableFromServer(_a: AgentEntity): ClientAgentEntity {
   return _a;
 }
-function agentWindowStateAssignableFromClient(_a: ClientAgentWindowState): AgentWindowState {
+function agentEntityAssignableFromClient(_a: ClientAgentEntity): AgentEntity {
   return _a;
 }
 
-function taskInfoAssignableFromServer(_t: TaskInfo): ClientTaskInfo {
+function taskEntityAssignableFromServer(_t: TaskEntity): ClientTaskEntity {
   return _t;
 }
-function taskInfoAssignableFromClient(_t: ClientTaskInfo): TaskInfo {
+function taskEntityAssignableFromClient(_t: ClientTaskEntity): TaskEntity {
   return _t;
 }
 
-function sidebarInfoAssignableFromServer(_s: SidebarInfo): ClientSidebarInfo {
-  return _s;
+function workflowProjectionAssignableFromServer(_w: WorkflowProjection): ClientWorkflowProjection {
+  return _w;
 }
-function sidebarInfoAssignableFromClient(_s: ClientSidebarInfo): SidebarInfo {
-  return _s;
+function workflowProjectionAssignableFromClient(_w: ClientWorkflowProjection): WorkflowProjection {
+  return _w;
 }
 
 // Suppress "unused variable" warnings so the guards remain active.
@@ -365,9 +370,108 @@ void phaseDescriptorAssignableFromServer;
 void phaseDescriptorAssignableFromClient;
 void logEntryAssignableFromServer;
 void logEntryAssignableFromClient;
-void agentWindowStateAssignableFromServer;
-void agentWindowStateAssignableFromClient;
-void taskInfoAssignableFromServer;
-void taskInfoAssignableFromClient;
-void sidebarInfoAssignableFromServer;
-void sidebarInfoAssignableFromClient;
+void eventRecordAssignableFromServer;
+void eventRecordAssignableFromClient;
+void agentEntityAssignableFromServer;
+void agentEntityAssignableFromClient;
+void taskEntityAssignableFromServer;
+void taskEntityAssignableFromClient;
+void workflowProjectionAssignableFromServer;
+void workflowProjectionAssignableFromClient;
+
+// ─── 5. Serialization round-trip ──────────────────────────────────────────
+//
+// Confirm that WorkflowProjection (and its nested types) are fully
+// JSON-serializable: no Map, no class instances, no functions.
+// JSON.parse(JSON.stringify(obj)) should produce a deep-equal copy.
+
+describe('WorkflowProjection – JSON round-trip', () => {
+  it('survives JSON.parse(JSON.stringify()) with full data', () => {
+    const projection: WorkflowProjection = {
+      seq: 7,
+      taskPrompt: 'Build the thing',
+      currentPhase: 'coding',
+      completedPhases: ['scouting', 'planning'],
+      tasks: {
+        t1: {
+          id: 't1',
+          title: 'Implement API',
+          status: 'running',
+          phase: 'coding',
+          agentId: 'a1',
+          startedAt: 1700000000000,
+        },
+      },
+      agents: {
+        a1: {
+          uid: 'uid-1',
+          agentId: 'a1',
+          profile: 'coder',
+          phase: 'coding',
+          taskId: 't1',
+          active: true,
+          log: [
+            {
+              id: 'log-1',
+              timestamp: '2025-01-01T00:00:00.000Z',
+              type: 'text',
+              content: 'working on it',
+              metadata: { key: 'value' },
+            },
+          ],
+          toolCallCount: 3,
+          inputTokens: 500,
+          outputTokens: 200,
+          taskTitle: 'Implement API',
+        },
+      },
+      sidebar: {
+        title: 'Engin',
+        indicator: '🟢',
+        phases: [{ id: 'coding', label: 'Coding', icon: '💻' }],
+      },
+      status: 'running',
+      stats: { totalTokens: 700, agentCount: 1 },
+    };
+
+    const roundTripped = JSON.parse(JSON.stringify(projection));
+    expect(roundTripped).toEqual(projection);
+  });
+
+  it('survives round-trip with optional fields populated', () => {
+    const projection: WorkflowProjection = {
+      seq: 1,
+      taskPrompt: '',
+      currentPhase: '',
+      completedPhases: [],
+      tasks: {},
+      agents: {},
+      sidebar: { title: '', indicator: '' },
+      status: 'failed',
+      error: 'Something broke',
+      failedPhase: 'planning',
+      stats: { totalTokens: 0, agentCount: 0 },
+    };
+
+    const roundTripped = JSON.parse(JSON.stringify(projection));
+    expect(roundTripped).toEqual(projection);
+    expect(roundTripped.error).toBe('Something broke');
+    expect(roundTripped.failedPhase).toBe('planning');
+  });
+
+  it('EventRecord survives JSON round-trip', () => {
+    const record = {
+      seq: 42,
+      type: 'phase_started' as const,
+      data: { phase: 'coding' },
+      metadata: {
+        timestamp: '2025-01-01T00:00:00.000Z',
+        agentId: 'a1',
+        phase: 'coding',
+      },
+    };
+
+    const roundTripped = JSON.parse(JSON.stringify(record));
+    expect(roundTripped).toEqual(record);
+  });
+});

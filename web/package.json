@@ -9,8 +9,10 @@
     "test:watch": "vitest --passWithNoTests"
   },
   "dependencies": {
+    "immer": "^11.1.8",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react-dom": "^19.0.0",
+    "zustand": "^5.0.14"
   },
   "devDependencies": {
     "@testing-library/jest-dom": "^6.9.1",

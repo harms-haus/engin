@@ -16,6 +16,12 @@ const mockWorkflowRun = mock<(taskPrompt: string, options: Record<string, unknow
 
 const mockPromptPostWorktreeAction = mock<(options: Record<string, unknown>) => Promise<void>>();
 
+// composeStatusCallbacks spy — used to verify the EventStore callbacks are
+// composed into the non-TUI status path. Returns the last element so the
+// existing verbose/non-verbose structural assertions stay meaningful.
+const mockComposeStatusCallbacks = mock<(callbacks: unknown[]) => unknown>();
+mockComposeStatusCallbacks.mockImplementation((callbacks: unknown[]) => callbacks[callbacks.length - 1]);
+
 const mockResolveProfilesDirs = mock<(cwd: string, workflowName?: string) => string[]>();
 
 // ─── Mock modules (hoisted before imports by Bun test runtime) ──────────────
@@ -27,6 +33,7 @@ mock.module('../../src/core/workflow-loader.js', () => ({
 
 mock.module('../../src/core/utils.js', () => ({
   validateWorkflowName: () => {},
+  composeStatusCallbacks: mockComposeStatusCallbacks,
 }));
 
 mock.module('../../src/core/config.js', () => ({

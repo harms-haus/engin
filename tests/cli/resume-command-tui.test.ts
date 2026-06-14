@@ -106,18 +106,13 @@ mock.module('../../src/web/observer-server.js', () => ({
 
 mock.module('../../src/web/status-bridge.js', () => ({
   StatusBridge: class {
-    constructor(broadcast: (msg: unknown) => void) {
+    constructor(broadcast: (msg: unknown) => void, _store: unknown) {
       capturedBridgeBroadcast = broadcast;
-    }
-    getCallbacks() {
-      return mockBridgeGetCallbacks();
     }
     getSnapshot() {
       return mockBridgeGetSnapshot();
     }
-    seed(_data: Record<string, unknown>) {
-      // Mock: no-op for testing
-    }
+    dispose() {}
   },
 }));
 
@@ -258,12 +253,19 @@ describe('resumeCommand — TUI/web/QR/pause integration', () => {
     mockTuiGetStatusCallbacks.mockReturnValue({ isTuiCallbacks: true });
     mockBridgeGetCallbacks.mockReturnValue({ isBridgeCallbacks: true });
     mockBridgeGetSnapshot.mockReturnValue({
-      type: 'init',
-      currentPhase: '',
-      completedPhases: [],
-      tasks: [],
-      agents: [],
-      sidebar: { title: '', indicator: '' },
+      type: 'snapshot',
+      seq: 0,
+      state: {
+        seq: 0,
+        taskPrompt: '',
+        currentPhase: '',
+        completedPhases: [],
+        tasks: {},
+        agents: {},
+        sidebar: { title: '', indicator: '' },
+        status: 'running',
+        stats: { totalTokens: 0, agentCount: 0 },
+      },
     });
     mockComposeStatusCallbacks.mockImplementation((callbacks: unknown[]) => ({
       composed: true,
@@ -379,7 +381,7 @@ describe('resumeCommand — TUI/web/QR/pause integration', () => {
       expect(mockObserverBroadcast).toHaveBeenCalledWith({ type: 'test' });
     });
 
-    it('composes callbacks from TUI and StatusBridge', async () => {
+    it('passes storeCallbacks directly as onStatus (no composition in TUI path)', async () => {
       const ts = Date.now();
       const dirName = `${ts}-my-workflow`;
       const tempDir = getDir();
@@ -387,26 +389,11 @@ describe('resumeCommand — TUI/web/QR/pause integration', () => {
 
       await resumeCommand(makeResumeOptions({ cwd: tempDir, sessionName: dirName }));
 
-      expect(mockTuiGetStatusCallbacks).toHaveBeenCalledTimes(1);
-      expect(mockBridgeGetCallbacks).toHaveBeenCalledTimes(1);
-      expect(mockComposeStatusCallbacks).toHaveBeenCalledTimes(1);
-      const composeArgs = mockComposeStatusCallbacks.mock.calls[0][0] as unknown[];
-      expect(composeArgs).toHaveLength(2);
-    });
-
-    it('passes composed callbacks to workflow.run as onStatus', async () => {
-      const composedResult = { composed: true };
-      mockComposeStatusCallbacks.mockReturnValue(composedResult);
-
-      const ts = Date.now();
-      const dirName = `${ts}-my-workflow`;
-      const tempDir = getDir();
-      createPastRunDir(tempDir, dirName, { taskPrompt: 'resumed task' });
-
-      await resumeCommand(makeResumeOptions({ cwd: tempDir, sessionName: dirName }));
-
+      // composeStatusCallbacks should NOT be called in the TUI path
+      expect(mockComposeStatusCallbacks).not.toHaveBeenCalled();
       const runOpts = mockWorkflowRun.mock.calls[0][1] as Record<string, unknown>;
-      expect(runOpts.onStatus).toBe(composedResult);
+      expect(runOpts.onStatus).toBeDefined();
+      expect(typeof runOpts.onStatus).toBe('object');
     });
 
     it('calls pauseForInspection after workflow.run completes', async () => {
@@ -531,10 +518,7 @@ describe('resumeCommand — TUI/web/QR/pause integration', () => {
       expect(mockTuiPrepareQrCode).toHaveBeenCalledTimes(1);
     });
 
-    it('composes callbacks and passes them to workflow.run', async () => {
-      const composedResult = { composed: true };
-      mockComposeStatusCallbacks.mockReturnValue(composedResult);
-
+    it('passes storeCallbacks directly as onStatus for worktree resume', async () => {
       const ts = Date.now();
       const dirName = `${ts}-my-workflow`;
       const tempDir = getDir();
@@ -545,8 +529,11 @@ describe('resumeCommand — TUI/web/QR/pause integration', () => {
 
       await resumeCommand(makeResumeOptions({ cwd: tempDir, sessionName: dirName }));
 
+      // composeStatusCallbacks should NOT be called in the TUI path
+      expect(mockComposeStatusCallbacks).not.toHaveBeenCalled();
       const runOpts = mockWorkflowRun.mock.calls[0][1] as Record<string, unknown>;
-      expect(runOpts.onStatus).toBe(composedResult);
+      expect(runOpts.onStatus).toBeDefined();
+      expect(typeof runOpts.onStatus).toBe('object');
     });
 
     it('calls pauseForInspection after workflow.run completes', async () => {

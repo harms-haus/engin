@@ -4,7 +4,7 @@ import type { AgentProfile } from '../core/types.js';
 import { safeErrorMessage } from '../core/utils.js';
 import { TaskTracker } from '../tracking/task-status.js';
 // buildPrompt is used via prompt-builder module directly
-import { appendAuditEvent, processTask, reportError, safeFailTask } from './task-processor.js';
+import { processTask, reportError, safeFailTask } from './task-processor.js';
 import type { LanePoolOptions, LanePoolResult } from './types.js';
 
 // ─── LanePool ───────────────────────────────────────────────────────────────
@@ -89,14 +89,6 @@ export class LanePool {
             activeSessions: this.activeSessions,
             phase: this.options.phase,
           });
-          appendAuditEvent(
-            { type: 'error', agentId, error },
-            {
-              options: this.options,
-              activeSessions: this.activeSessions,
-              phase: this.options.phase,
-            },
-          );
         }
       });
 
@@ -123,6 +115,7 @@ export class LanePool {
     const waitTimeoutMs = this.options.laneWaitTimeoutMs ?? 60000;
     const STALL_WARN_THRESHOLD = 5;
     let consecutiveTimeouts = 0;
+    let stallWarned = false; // Rate-limit the stall warning to once per lane
 
     while (true) {
       if (this.options.signal?.aborted) {
@@ -148,14 +141,13 @@ export class LanePool {
       };
       const timer = setTimeout(() => {
         cleanup();
-        console.debug(`[${agentId}] Lane wait timeout after ${waitTimeoutMs}ms, retrying`);
         consecutiveTimeouts++;
-        if (consecutiveTimeouts >= STALL_WARN_THRESHOLD) {
+        if (consecutiveTimeouts >= STALL_WARN_THRESHOLD && !stallWarned) {
           console.warn(
             `[${agentId}] Lane appears stalled — no task progress for ` +
               `${consecutiveTimeouts * waitTimeoutMs}ms. Tasks may be stuck.`,
           );
-          consecutiveTimeouts = 0; // Re-arm so warn doesn't spam every poll
+          stallWarned = true; // Warn at most once per lane
         }
         resolveWait();
       }, waitTimeoutMs);
@@ -210,16 +202,6 @@ export class LanePool {
           safeFailTask(
             task.id,
             { completed: false, error: true },
-            {
-              options: this.options,
-              activeSessions: this.activeSessions,
-              phase: this.options.phase,
-            },
-          );
-
-          // Audit log — error event
-          appendAuditEvent(
-            { type: 'error', agentId, error, taskId: task.id },
             {
               options: this.options,
               activeSessions: this.activeSessions,

@@ -86,15 +86,13 @@ mock.module('../../src/web/observer-server.js', () => ({
 
 mock.module('../../src/web/status-bridge.js', () => ({
   StatusBridge: class {
-    constructor(broadcast: (msg: unknown) => void) {
+    constructor(broadcast: (msg: unknown) => void, _store: unknown) {
       capturedBridgeBroadcast = broadcast;
-    }
-    getCallbacks() {
-      return mockBridgeGetCallbacks();
     }
     getSnapshot() {
       return mockBridgeGetSnapshot();
     }
+    dispose() {}
   },
 }));
 
@@ -221,12 +219,19 @@ describe('runCommand — TUI/web/QR/pause integration', () => {
     mockTuiGetStatusCallbacks.mockReturnValue({ isTuiCallbacks: true });
     mockBridgeGetCallbacks.mockReturnValue({ isBridgeCallbacks: true });
     mockBridgeGetSnapshot.mockReturnValue({
-      type: 'init',
-      currentPhase: '',
-      completedPhases: [],
-      tasks: [],
-      agents: [],
-      sidebar: { title: '', indicator: '' },
+      type: 'snapshot',
+      seq: 0,
+      state: {
+        seq: 0,
+        taskPrompt: '',
+        currentPhase: '',
+        completedPhases: [],
+        tasks: {},
+        agents: {},
+        sidebar: { title: '', indicator: '' },
+        status: 'running',
+        stats: { totalTokens: 0, agentCount: 0 },
+      },
     });
     mockComposeStatusCallbacks.mockImplementation((callbacks: unknown[]) => ({
       composed: true,
@@ -305,12 +310,19 @@ describe('runCommand — TUI/web/QR/pause integration', () => {
       const result = getSnapshot();
       expect(mockBridgeGetSnapshot).toHaveBeenCalled();
       expect(result).toEqual({
-        type: 'init',
-        currentPhase: '',
-        completedPhases: [],
-        tasks: [],
-        agents: [],
-        sidebar: { title: '', indicator: '' },
+        type: 'snapshot',
+        seq: 0,
+        state: {
+          seq: 0,
+          taskPrompt: '',
+          currentPhase: '',
+          completedPhases: [],
+          tasks: {},
+          agents: {},
+          sidebar: { title: '', indicator: '' },
+          status: 'running',
+          stats: { totalTokens: 0, agentCount: 0 },
+        },
       });
     });
 
@@ -401,29 +413,19 @@ describe('runCommand — TUI/web/QR/pause integration', () => {
       expect(mockObserverBroadcast).toHaveBeenCalledWith({ type: 'test' });
     });
 
-    it('gets callbacks from both TUI and StatusBridge', async () => {
+    // getCallbacks no longer exists on StatusBridge (bridge reads from store)
+
+    it('passes storeCallbacks directly as onStatus to workflow.run (no composition)', async () => {
       await runCommand(makeOptions());
 
-      expect(mockTuiGetStatusCallbacks).toHaveBeenCalledTimes(1);
-      expect(mockBridgeGetCallbacks).toHaveBeenCalledTimes(1);
-    });
-
-    it('composes callbacks from TUI and StatusBridge', async () => {
-      await runCommand(makeOptions());
-
-      expect(mockComposeStatusCallbacks).toHaveBeenCalledTimes(1);
-      const composeArgs = mockComposeStatusCallbacks.mock.calls[0][0] as unknown[];
-      expect(composeArgs).toHaveLength(2);
-    });
-
-    it('passes composed callbacks as onStatus to workflow.run', async () => {
-      const composedResult = { composed: true, custom: 'test' };
-      mockComposeStatusCallbacks.mockReturnValue(composedResult);
-
-      await runCommand(makeOptions());
+      // composeStatusCallbacks should NOT be called in the TUI path
+      // (the bridge reads from the store, not from onStatus)
+      expect(mockComposeStatusCallbacks).not.toHaveBeenCalled();
 
       const runOpts = mockWorkflowRun.mock.calls[0][1] as Record<string, unknown>;
-      expect(runOpts.onStatus).toBe(composedResult);
+      // onStatus should be the storeCallbacks object (not composed)
+      expect(runOpts.onStatus).toBeDefined();
+      expect(typeof runOpts.onStatus).toBe('object');
     });
   });
 

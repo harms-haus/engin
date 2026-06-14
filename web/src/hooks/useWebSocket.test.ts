@@ -1,5 +1,22 @@
+/**
+ * useWebSocket transport tests.
+ *
+ * Verifies:
+ * - URL derivation (http→ws, https→wss, __WS_ENDPOINT__)
+ * - Connection state (connected true/false)
+ * - Exponential backoff reconnect
+ * - Cleanup on unmount (no reconnect after unmount, pending timer cancelled)
+ * - Snapshot → store.applySnapshot
+ * - Events → store.applyEvents
+ * - workflow_complete → store.setStatus('complete')
+ * - workflow_failed → store.setStatus('failed')
+ * - Resync sent on (re)connect with current seq
+ * - send() queues JSON when socket is OPEN
+ */
+
 import { act, renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { useWorkflowStore } from '../store/workflow-store';
 import { useWebSocket } from './useWebSocket';
 
 // ─── Mock WebSocket ────────────────────────────────────────────────────────
@@ -17,6 +34,7 @@ class MockWebSocket {
   onerror: ((event: Event) => void) | null = null;
   onmessage: ((event: MessageEvent) => void) | null = null;
   readyState: number = MockWebSocket.CONNECTING;
+  sentMessages: string[] = [];
 
   constructor(url: string) {
     this.url = url;
@@ -28,42 +46,38 @@ class MockWebSocket {
     this.onclose?.(new CloseEvent('close', { code: 1000, reason: 'close' }));
   }
 
-  send(_data: string): void {
-    // no-op
+  send(data: string): void {
+    this.sentMessages.push(data);
   }
 
-  /** Simulate the server opening the connection. */
   static simulateOpen(instance?: MockWebSocket): void {
     const ws = instance ?? MockWebSocket.instances[MockWebSocket.instances.length - 1];
     ws.readyState = MockWebSocket.OPEN;
     ws.onopen?.();
   }
 
-  /** Simulate a socket error. */
   static simulateError(instance?: MockWebSocket): void {
     const ws = instance ?? MockWebSocket.instances[MockWebSocket.instances.length - 1];
     ws.onerror?.(new Event('error'));
   }
 
-  /** Simulate the connection closing. */
   static simulateClose(code = 1000, reason = 'close', instance?: MockWebSocket): void {
     const ws = instance ?? MockWebSocket.instances[MockWebSocket.instances.length - 1];
     ws.readyState = MockWebSocket.CLOSED;
     ws.onclose?.(new CloseEvent('close', { code, reason }));
   }
 
-  /** Simulate receiving a message from the server. */
   static simulateMessage(data: unknown, instance?: MockWebSocket): void {
     const ws = instance ?? MockWebSocket.instances[MockWebSocket.instances.length - 1];
     ws.onmessage?.(new MessageEvent('message', { data: JSON.stringify(data) }));
   }
 }
 
-// ─── Store original values so we can restore ───────────────────────────────
+// ─── Store original values ─────────────────────────────────────────────────
 
 const ORIGINAL_WS = globalThis.WebSocket;
 
-// ─── Location helpers ──────────────────────────────────────────────────────
+// ─── Location helper ───────────────────────────────────────────────────────
 
 function setLocation(href: string): void {
   const url = new URL(href);
@@ -84,98 +98,86 @@ function setLocation(href: string): void {
   });
 }
 
-// ─── Tests ─────────────────────────────────────────────────────────────────
+// ─── Reset store between tests ─────────────────────────────────────────────
+
+function resetStore(): void {
+  useWorkflowStore.setState({
+    agentsById: {},
+    tasksById: {},
+    currentPhase: '',
+    completedPhases: [],
+    sidebar: { title: '', indicator: '' },
+    status: 'running',
+    taskPrompt: '',
+    error: undefined,
+    failedPhase: undefined,
+    seq: 0,
+    stats: { totalTokens: 0, agentCount: 0 },
+  });
+}
+
+// ─── Setup / Teardown ─────────────────────────────────────────────────────
 
 beforeEach(() => {
-  // Replace global WebSocket with mock
   globalThis.WebSocket = MockWebSocket as unknown as typeof WebSocket;
   MockWebSocket.instances = [];
-  // Silence console noise during tests
   vi.spyOn(console, 'log').mockImplementation(() => {});
   vi.spyOn(console, 'warn').mockImplementation(() => {});
   vi.spyOn(console, 'error').mockImplementation(() => {});
-  // Default location
   setLocation('http://localhost:5173');
-  // Ensure no leftover __WS_ENDPOINT__
   delete (window as any).__WS_ENDPOINT__;
+  resetStore();
 });
 
 afterEach(() => {
   globalThis.WebSocket = ORIGINAL_WS;
   vi.restoreAllMocks();
+  resetStore();
 });
 
+// ─── URL derivation ────────────────────────────────────────────────────────
+
 describe('useWebSocket – URL derivation', () => {
-  it('derives ws:// URL when window.location.protocol is http:', () => {
+  it('derives ws:// URL from http:// window.location', () => {
     setLocation('http://localhost:5173');
     renderHook(() => useWebSocket());
-
-    expect(MockWebSocket.instances).toHaveLength(1);
     expect(MockWebSocket.instances[0].url).toBe('ws://localhost:5173/ws');
   });
 
-  it('derives wss:// URL when window.location.protocol is https:', () => {
+  it('derives wss:// URL from https:// window.location', () => {
     setLocation('https://example.com:3619');
     renderHook(() => useWebSocket());
-
-    expect(MockWebSocket.instances).toHaveLength(1);
     expect(MockWebSocket.instances[0].url).toBe('wss://example.com:3619/ws');
   });
 
-  it('derives ws:// from http:// window.location even with port', () => {
-    setLocation('http://localhost:3619');
-    renderHook(() => useWebSocket());
-
-    expect(MockWebSocket.instances).toHaveLength(1);
-    expect(MockWebSocket.instances[0].url).toBe('ws://localhost:3619/ws');
-  });
-
-  it('ignores the {{WS_ENDPOINT}} placeholder and falls back to window.location', () => {
+  it('ignores the {{WS_ENDPOINT}} placeholder', () => {
     (window as any).__WS_ENDPOINT__ = '{{WS_ENDPOINT}}';
-    setLocation('http://localhost:5173');
     renderHook(() => useWebSocket());
-
-    expect(MockWebSocket.instances).toHaveLength(1);
     expect(MockWebSocket.instances[0].url).toBe('ws://localhost:5173/ws');
   });
 
-  it('uses a valid __WS_ENDPOINT__ when it is a real ws:// URL', () => {
+  it('uses __WS_ENDPOINT__ when it is a real URL', () => {
     (window as any).__WS_ENDPOINT__ = 'ws://my-server:9999/ws';
-    setLocation('http://localhost:5173'); // should be ignored
     renderHook(() => useWebSocket());
-
-    expect(MockWebSocket.instances).toHaveLength(1);
     expect(MockWebSocket.instances[0].url).toBe('ws://my-server:9999/ws');
-  });
-
-  it('uses a valid __WS_ENDPOINT__ when it is a real wss:// URL', () => {
-    (window as any).__WS_ENDPOINT__ = 'wss://secure.example.com/ws';
-    setLocation('http://localhost:5173');
-    renderHook(() => useWebSocket());
-
-    expect(MockWebSocket.instances).toHaveLength(1);
-    expect(MockWebSocket.instances[0].url).toBe('wss://secure.example.com/ws');
   });
 });
 
-describe('useWebSocket – connection state and logging', () => {
-  it('sets connected=true on open and resets backoff', () => {
-    const { result } = renderHook(() => useWebSocket());
+// ─── Connection state ──────────────────────────────────────────────────────
 
+describe('useWebSocket – connection state', () => {
+  it('sets connected=true on open', () => {
+    const { result } = renderHook(() => useWebSocket());
     expect(result.current.connected).toBe(false);
-    expect(console.log).not.toHaveBeenCalled();
 
     act(() => {
       MockWebSocket.simulateOpen();
     });
-
     expect(result.current.connected).toBe(true);
-    expect(console.log).toHaveBeenCalledWith('[WebSocket] Connected to', 'ws://localhost:5173/ws');
   });
 
-  it('sets connected=false on close and logs a warning', () => {
+  it('sets connected=false on close', () => {
     const { result } = renderHook(() => useWebSocket());
-
     act(() => {
       MockWebSocket.simulateOpen();
     });
@@ -184,458 +186,50 @@ describe('useWebSocket – connection state and logging', () => {
     act(() => {
       MockWebSocket.simulateClose(1006, 'abnormal');
     });
-
     expect(result.current.connected).toBe(false);
-    expect(console.warn).toHaveBeenCalledWith('[WebSocket] Connection closed (code=%s reason=%s)', 1006, 'abnormal');
-  });
-
-  it('logs error on ws.onerror', () => {
-    renderHook(() => useWebSocket());
-
-    act(() => {
-      MockWebSocket.simulateError();
-    });
-
-    expect(console.error).toHaveBeenCalledWith('[WebSocket] Error', expect.any(Event));
   });
 });
 
-describe('useWebSocket – exponential backoff', () => {
-  it('starts backoff at 1000ms and increases on each reconnect', async () => {
-    vi.useFakeTimers();
-    const { result } = renderHook(() => useWebSocket());
+// ─── Resync on connect ────────────────────────────────────────────────────
 
-    // Simulate first close → reconnect with 1000ms delay
+describe('useWebSocket – resync', () => {
+  it('sends resync with lastSeq=0 on initial connect', () => {
+    renderHook(() => useWebSocket());
+
     act(() => {
-      MockWebSocket.simulateClose(1000, 'test close');
-    });
-    expect(result.current.connected).toBe(false);
-
-    // First reconnect timer: 1000ms
-    await vi.advanceTimersByTimeAsync(999);
-    // Only one instance so far (the original connection)
-    expect(MockWebSocket.instances).toHaveLength(1);
-
-    await vi.advanceTimersByTimeAsync(1);
-    // Now a new WebSocket instance should have been created
-    expect(MockWebSocket.instances).toHaveLength(2);
-    expect(MockWebSocket.instances[1].url).toBe('ws://localhost:5173/ws');
-
-    // Simulate second close → next delay should be 1500ms (1000 * 1.5)
-    act(() => {
-      MockWebSocket.simulateClose(1000, 'test close', MockWebSocket.instances[1]);
+      MockWebSocket.simulateOpen();
     });
 
-    await vi.advanceTimersByTimeAsync(1499);
-    expect(MockWebSocket.instances).toHaveLength(2);
-
-    await vi.advanceTimersByTimeAsync(1);
-    expect(MockWebSocket.instances).toHaveLength(3);
-
-    vi.useRealTimers();
+    const ws = MockWebSocket.instances[0];
+    expect(ws.sentMessages).toHaveLength(1);
+    const msg = JSON.parse(ws.sentMessages[0]);
+    expect(msg.type).toBe('resync');
+    expect(msg.lastSeq).toBe(0);
   });
 
-  it('resets backoff on successful open after reconnect', async () => {
+  it('sends resync with current seq on reconnect', async () => {
     vi.useFakeTimers();
     renderHook(() => useWebSocket());
 
-    // Close once → backoff 1000ms → reconnect
+    // Open initial connection
+    act(() => {
+      MockWebSocket.simulateOpen();
+    });
+
+    // Advance the store seq
+    act(() => {
+      useWorkflowStore
+        .getState()
+        .applyEvents([{ seq: 5, type: 'workflow_started', data: { taskPrompt: 'x' }, metadata: { timestamp: '' } }]);
+    });
+    expect(useWorkflowStore.getState().seq).toBe(5);
+
+    // Close → triggers reconnect
     act(() => {
       MockWebSocket.simulateClose(1000, 'close');
     });
-    await vi.advanceTimersByTimeAsync(1000);
-    expect(MockWebSocket.instances).toHaveLength(2);
 
-    // Open successfully → backoff resets to 1000ms
-    act(() => {
-      MockWebSocket.simulateOpen(MockWebSocket.instances[1]);
-    });
-
-    // Close again → delay should be 1000ms (reset), not 1500ms
-    act(() => {
-      MockWebSocket.simulateClose(1000, 'close', MockWebSocket.instances[1]);
-    });
-    await vi.advanceTimersByTimeAsync(1000);
-    expect(MockWebSocket.instances).toHaveLength(3);
-
-    vi.useRealTimers();
-  });
-
-  it('caps backoff at 30000ms', async () => {
-    vi.useFakeTimers();
-    renderHook(() => useWebSocket());
-
-    // Feed enough closes to push past the cap
-    // sequence: 1000 → 1500 → 2250 → 3375 → 5062.5 → 7593.75 → 11390.625 → 17085.9375 → 25628.90625 → 30000
-    for (let i = 0; i < 9; i++) {
-      const instance = MockWebSocket.instances[i];
-      act(() => {
-        MockWebSocket.simulateClose(1000, 'close', instance);
-      });
-    }
-    // Advance enough time to get through all reconnects
-    await vi.advanceTimersByTimeAsync(200_000);
-
-    // After 9 consecutive closes, the backoff should be 30000
-    expect(MockWebSocket.instances.length).toBeGreaterThanOrEqual(9);
-
-    // Now close the latest instance and check that delay is capped
-    const latest = MockWebSocket.instances[MockWebSocket.instances.length - 1];
-    act(() => {
-      MockWebSocket.simulateClose(1000, 'close', latest);
-    });
-
-    // The delay should be 30000ms (capped), so after 29999ms no new connection
-    await vi.advanceTimersByTimeAsync(29_999);
-    const countAfterShortWait = MockWebSocket.instances.length;
-
-    await vi.advanceTimersByTimeAsync(1);
-    expect(MockWebSocket.instances.length).toBe(countAfterShortWait + 1);
-
-    vi.useRealTimers();
-  });
-});
-
-describe('useWebSocket – send and message handling', () => {
-  it('send() queues JSON when socket is OPEN', () => {
-    const { result } = renderHook(() => useWebSocket());
-    const sendSpy = vi.spyOn(MockWebSocket.prototype, 'send');
-
-    // Socket not open yet → send should be a no-op
-    result.current.send({ type: 'terminate_server' });
-    expect(sendSpy).not.toHaveBeenCalled();
-
-    // Open the socket
-    act(() => {
-      MockWebSocket.simulateOpen();
-    });
-
-    result.current.send({ type: 'terminate_server' });
-    expect(sendSpy).toHaveBeenCalledWith(JSON.stringify({ type: 'terminate_server' }));
-  });
-
-  it('agent_stats updates an agent that was spawned with a taskId', () => {
-    const { result } = renderHook(() => useWebSocket());
-
-    act(() => {
-      MockWebSocket.simulateOpen();
-    });
-
-    // 1. Spawn an agent with both agentId and taskId
-    act(() => {
-      MockWebSocket.simulateMessage({
-        type: 'agent_spawned',
-        agent: {
-          agentId: 'agent-1',
-          taskId: 'task-42',
-          profile: 'test',
-          active: true,
-          log: [],
-        },
-      });
-    });
-
-    // 2. Send stats with matching agentId and taskId
-    act(() => {
-      MockWebSocket.simulateMessage({
-        type: 'agent_stats',
-        agentId: 'agent-1',
-        taskId: 'task-42',
-        toolCallCount: 3,
-        inputTokens: 100,
-        outputTokens: 50,
-      });
-    });
-
-    // 3. Verify the agent's counters were updated
-    const agent = result.current.state.agents.get('agent-1::task-42');
-    expect(agent).toBeDefined();
-    expect(agent!.toolCallCount).toBe(3);
-    expect(agent!.inputTokens).toBe(100);
-    expect(agent!.outputTokens).toBe(50);
-  });
-
-  it('agent_stats without taskId still works for agents stored under plain key', () => {
-    const { result } = renderHook(() => useWebSocket());
-
-    act(() => {
-      MockWebSocket.simulateOpen();
-    });
-
-    // Spawn an agent without a taskId (plain key)
-    act(() => {
-      MockWebSocket.simulateMessage({
-        type: 'agent_spawned',
-        agent: {
-          agentId: 'agent-legacy',
-          profile: 'legacy',
-          active: true,
-          log: [],
-        },
-      });
-    });
-
-    // Send stats without taskId
-    act(() => {
-      MockWebSocket.simulateMessage({
-        type: 'agent_stats',
-        agentId: 'agent-legacy',
-        toolCallCount: 5,
-      });
-    });
-
-    const agent = result.current.state.agents.get('agent-legacy');
-    expect(agent).toBeDefined();
-    expect(agent!.toolCallCount).toBe(5);
-  });
-
-  it('workflow_phase sets currentPhase from msg.currentPhase (not msg.phase)', () => {
-    const { result } = renderHook(() => useWebSocket());
-
-    act(() => {
-      MockWebSocket.simulateOpen();
-    });
-
-    // Send a workflow_phase message where phase differs from currentPhase.
-    // This simulates a phase completion: 'scouting' just completed,
-    // but the still-running phase is 'planning'.
-    act(() => {
-      MockWebSocket.simulateMessage({
-        type: 'workflow_phase',
-        phase: 'scouting',
-        currentPhase: 'planning',
-        completed: ['scouting'],
-      });
-    });
-
-    // The state should reflect currentPhase = 'planning', NOT 'scouting'
-    expect(result.current.state.currentPhase).toBe('planning');
-
-    // The event log should describe the phase that was started/completed
-    expect(result.current.events).toContain('Phase: scouting');
-
-    // completedPhases should be updated
-    expect(result.current.state.completedPhases).toEqual(['scouting']);
-  });
-
-  it('workflow_phase preserves existing completedPhases when new ones arrive', () => {
-    const { result } = renderHook(() => useWebSocket());
-
-    act(() => {
-      MockWebSocket.simulateOpen();
-    });
-
-    // First phase complete
-    act(() => {
-      MockWebSocket.simulateMessage({
-        type: 'workflow_phase',
-        phase: 'scouting',
-        currentPhase: 'planning',
-        completed: ['scouting'],
-      });
-    });
-
-    expect(result.current.state.completedPhases).toEqual(['scouting']);
-
-    // Second phase completes, currentPhase moves forward
-    act(() => {
-      MockWebSocket.simulateMessage({
-        type: 'workflow_phase',
-        phase: 'planning',
-        currentPhase: 'execution',
-        completed: ['scouting', 'planning'],
-      });
-    });
-
-    expect(result.current.state.currentPhase).toBe('execution');
-    expect(result.current.state.completedPhases).toEqual(['scouting', 'planning']);
-    expect(result.current.events).toContain('Phase: planning');
-  });
-
-  it('workflow_phase with same phase and currentPhase still works correctly', () => {
-    const { result } = renderHook(() => useWebSocket());
-
-    act(() => {
-      MockWebSocket.simulateOpen();
-    });
-
-    // When a phase starts (not a completion), phase === currentPhase
-    act(() => {
-      MockWebSocket.simulateMessage({
-        type: 'workflow_phase',
-        phase: 'scouting',
-        currentPhase: 'scouting',
-        completed: [],
-      });
-    });
-
-    expect(result.current.state.currentPhase).toBe('scouting');
-    expect(result.current.state.completedPhases).toEqual([]);
-    expect(result.current.events).toContain('Phase: scouting');
-  });
-
-  it('workflow_failed stores both error and failedPhase', () => {
-    const { result } = renderHook(() => useWebSocket());
-
-    act(() => {
-      MockWebSocket.simulateOpen();
-    });
-
-    act(() => {
-      MockWebSocket.simulateMessage({
-        type: 'workflow_failed',
-        error: 'something broke',
-        phase: 'planning',
-      });
-    });
-
-    expect(result.current.state.failedPhase).toBe('planning');
-    expect(result.current.state.error).toBe('something broke');
-    expect(result.current.state.status).toBe('failed');
-    expect(result.current.events).toContain('Failed: something broke');
-  });
-
-  it('stores taskPrompt when init message includes it', () => {
-    const { result } = renderHook(() => useWebSocket());
-
-    act(() => {
-      MockWebSocket.simulateOpen();
-    });
-
-    act(() => {
-      MockWebSocket.simulateMessage({
-        type: 'init',
-        currentPhase: 'planning',
-        completedPhases: ['scouting'],
-        tasks: [],
-        agents: [],
-        sidebar: { title: 'Test', indicator: 'green' },
-        taskPrompt: 'Implement login page',
-      });
-    });
-
-    expect(result.current.state.taskPrompt).toBe('Implement login page');
-  });
-
-  it('stores taskPrompt as empty string when init message omits it', () => {
-    const { result } = renderHook(() => useWebSocket());
-
-    act(() => {
-      MockWebSocket.simulateOpen();
-    });
-
-    act(() => {
-      MockWebSocket.simulateMessage({
-        type: 'init',
-        currentPhase: '',
-        completedPhases: [],
-        tasks: [],
-        agents: [],
-        sidebar: { title: '', indicator: '' },
-      });
-    });
-
-    expect(result.current.state.taskPrompt).toBeUndefined();
-  });
-
-  it('retains taskPrompt across subsequent messages after init', () => {
-    const { result } = renderHook(() => useWebSocket());
-
-    act(() => {
-      MockWebSocket.simulateOpen();
-    });
-
-    // Init sets the taskPrompt
-    act(() => {
-      MockWebSocket.simulateMessage({
-        type: 'init',
-        currentPhase: 'scouting',
-        completedPhases: [],
-        tasks: [],
-        agents: [],
-        sidebar: { title: '', indicator: '' },
-        taskPrompt: 'Build feature X',
-      });
-    });
-
-    expect(result.current.state.taskPrompt).toBe('Build feature X');
-
-    // Subsequent non-init messages should not clear taskPrompt
-    act(() => {
-      MockWebSocket.simulateMessage({
-        type: 'workflow_phase',
-        phase: 'scouting',
-        completed: [],
-        currentPhase: 'scouting',
-      });
-    });
-
-    expect(result.current.state.taskPrompt).toBe('Build feature X');
-  });
-
-  it('clears events array when init message is received after reconnection', async () => {
-    vi.useFakeTimers();
-    const { result } = renderHook(() => useWebSocket());
-
-    // Open the initial connection
-    act(() => {
-      MockWebSocket.simulateOpen();
-    });
-
-    // Send several workflow_phase messages to accumulate events
-    act(() => {
-      MockWebSocket.simulateMessage({
-        type: 'workflow_phase',
-        phase: 'scouting',
-        currentPhase: 'scouting',
-        completed: [],
-      });
-    });
-    act(() => {
-      MockWebSocket.simulateMessage({
-        type: 'workflow_phase',
-        phase: 'planning',
-        currentPhase: 'planning',
-        completed: ['scouting'],
-      });
-    });
-    act(() => {
-      MockWebSocket.simulateMessage({
-        type: 'workflow_phase',
-        phase: 'execution',
-        currentPhase: 'execution',
-        completed: ['scouting', 'planning'],
-      });
-    });
-    act(() => {
-      MockWebSocket.simulateMessage({
-        type: 'agent_spawned',
-        agent: {
-          agentId: 'agent-1',
-          taskId: 'task-1',
-          profile: 'test',
-          active: true,
-          log: [],
-        },
-      });
-    });
-
-    // Verify events have accumulated
-    expect(result.current.events.length).toBe(4);
-    expect(result.current.events).toEqual([
-      'Phase: scouting',
-      'Phase: planning',
-      'Phase: execution',
-      'Agent agent-1 spawned',
-    ]);
-
-    // Simulate connection close → triggers reconnect
-    act(() => {
-      MockWebSocket.simulateClose(1000, 'connection lost');
-    });
-    expect(result.current.connected).toBe(false);
-
-    // Advance timers past the backoff delay (1000ms) to create new connection
+    // Wait for backoff
     await vi.advanceTimersByTimeAsync(1000);
     expect(MockWebSocket.instances).toHaveLength(2);
 
@@ -643,395 +237,289 @@ describe('useWebSocket – send and message handling', () => {
     act(() => {
       MockWebSocket.simulateOpen(MockWebSocket.instances[1]);
     });
-    expect(result.current.connected).toBe(true);
 
-    // Events should still be present before init (reconnection hasn't sent init yet)
-    expect(result.current.events.length).toBe(4);
-
-    // Send init message on the new connection
-    act(() => {
-      MockWebSocket.simulateMessage(
-        {
-          type: 'init',
-          agents: [],
-          currentPhase: 'planning',
-          completedPhases: ['scouting'],
-          tasks: [],
-          sidebar: { title: 'Reconnected', indicator: 'green' },
-        },
-        MockWebSocket.instances[1],
-      );
-    });
-
-    // Events array should be cleared after init
-    expect(result.current.events).toEqual([]);
+    // The second ws should have sent resync with lastSeq=5
+    const ws2 = MockWebSocket.instances[1];
+    expect(ws2.sentMessages).toHaveLength(1);
+    const msg = JSON.parse(ws2.sentMessages[0]);
+    expect(msg.type).toBe('resync');
+    expect(msg.lastSeq).toBe(5);
 
     vi.useRealTimers();
   });
 });
 
-describe('useWebSocket – events cap', () => {
-  it('caps events array at 200 and discards oldest entries (sliding window)', () => {
-    const { result } = renderHook(() => useWebSocket());
+// ─── Store integration ────────────────────────────────────────────────────
 
-    act(() => {
-      MockWebSocket.simulateOpen();
-    });
-
-    // Send 250 workflow_phase messages, each generating an event
-    for (let i = 1; i <= 250; i++) {
-      act(() => {
-        MockWebSocket.simulateMessage({
-          type: 'workflow_phase',
-          phase: String(i),
-          completed: [],
-        });
-      });
-    }
-
-    // Length should be capped at 200, not 250
-    expect(result.current.events.length).toBe(200);
-
-    // The first event should be phase 51 (the 51st entry, which is the oldest retained)
-    expect(result.current.events[0]).toBe('Phase: 51');
-
-    // The last event should be phase 250
-    expect(result.current.events[result.current.events.length - 1]).toBe('Phase: 250');
-  });
-
-  it('keeps all events when under the limit', () => {
-    const { result } = renderHook(() => useWebSocket());
-
-    act(() => {
-      MockWebSocket.simulateOpen();
-    });
-
-    for (let i = 1; i <= 50; i++) {
-      act(() => {
-        MockWebSocket.simulateMessage({
-          type: 'workflow_phase',
-          phase: String(i),
-          completed: [],
-        });
-      });
-    }
-
-    expect(result.current.events.length).toBe(50);
-    expect(result.current.events[0]).toBe('Phase: 1');
-    expect(result.current.events[49]).toBe('Phase: 50');
-  });
-
-  it('retains exactly 200 events when exactly 200 are added', () => {
-    const { result } = renderHook(() => useWebSocket());
-
-    act(() => {
-      MockWebSocket.simulateOpen();
-    });
-
-    for (let i = 1; i <= 200; i++) {
-      act(() => {
-        MockWebSocket.simulateMessage({
-          type: 'workflow_phase',
-          phase: String(i),
-          completed: [],
-        });
-      });
-    }
-
-    expect(result.current.events.length).toBe(200);
-    expect(result.current.events[0]).toBe('Phase: 1');
-    expect(result.current.events[199]).toBe('Phase: 200');
-  });
-
-  it('continues to slide the window after multiple batches over the cap', () => {
-    const { result } = renderHook(() => useWebSocket());
-
-    act(() => {
-      MockWebSocket.simulateOpen();
-    });
-
-    // Send 1000 events total
-    for (let i = 1; i <= 1000; i++) {
-      act(() => {
-        MockWebSocket.simulateMessage({
-          type: 'workflow_phase',
-          phase: String(i),
-          completed: [],
-        });
-      });
-    }
-
-    expect(result.current.events.length).toBe(200);
-    // The oldest retained should be event 801 (1000 - 200 + 1)
-    expect(result.current.events[0]).toBe('Phase: 801');
-    expect(result.current.events[199]).toBe('Phase: 1000');
-  });
-
-  it('interleaves different event types and caps total', () => {
-    const { result } = renderHook(() => useWebSocket());
-
-    act(() => {
-      MockWebSocket.simulateOpen();
-    });
-
-    // Send 150 phase events + 100 complete events + 50 failed events = 300 total
-    for (let i = 1; i <= 150; i++) {
-      act(() => {
-        MockWebSocket.simulateMessage({
-          type: 'workflow_phase',
-          phase: String(i),
-          completed: [],
-        });
-      });
-    }
-    for (let i = 1; i <= 100; i++) {
-      act(() => {
-        MockWebSocket.simulateMessage({
-          type: 'workflow_complete',
-        });
-      });
-    }
-    for (let i = 1; i <= 50; i++) {
-      act(() => {
-        MockWebSocket.simulateMessage({
-          type: 'workflow_failed',
-          error: `error-${i}`,
-        });
-      });
-    }
-
-    // Total events generated: 300, should be capped to 200
-    expect(result.current.events.length).toBe(200);
-
-    // The first 50 phase events should be dropped; first retained is phase 101
-    // (150 phases + 100 completes + 50 failures = 300 total, oldest 100 dropped)
-    // Actually: events are added in order: 150 phases (Phase: 1..150), then 100 completes, then 50 failures
-    // After capping: the first 100 are dropped. So first event is the 101st phase event = 'Phase: 101'
-    expect(result.current.events[0]).toBe('Phase: 101');
-
-    // The last event should be the last failure
-    expect(result.current.events[199]).toBe('Failed: error-50');
-  });
-});
-
-describe('useWebSocket – cleanup on unmount', () => {
-  it('does not reconnect after unmount when close fires after cleanup', async () => {
-    vi.useFakeTimers();
-    const { result, unmount } = renderHook(() => useWebSocket());
-
-    // Open the connection so it's live
-    act(() => {
-      MockWebSocket.simulateOpen();
-    });
-    expect(result.current.connected).toBe(true);
-
-    // Unmount: sets manualCloseRef = true, clears timer, closes socket
-    unmount();
-
-    // The close() call during cleanup fires the onclose handler.
-    // Because manualCloseRef.current is true, it should NOT schedule a reconnect.
-    // After cleanup, no reconnect timer should be pending.
-    // Advance time significantly to ensure no new WebSocket instances appear.
-    await vi.advanceTimersByTimeAsync(100_000);
-
-    // There should be exactly 1 instance (the one created during mount)
-    expect(MockWebSocket.instances).toHaveLength(1);
-
-    vi.useRealTimers();
-  });
-
-  it('cancels a pending reconnect timer on unmount', async () => {
-    vi.useFakeTimers();
-    const { result, unmount } = renderHook(() => useWebSocket());
-
-    // Simulate a close → this schedules a reconnect timer via setTimeout
-    act(() => {
-      MockWebSocket.simulateClose(1000, 'connection lost');
-    });
-    expect(result.current.connected).toBe(false);
-
-    // At this point a reconnect timer is scheduled for 1000ms from now.
-    // Before it fires, we unmount the hook.
-    unmount();
-
-    // The cleanup should have cleared the pending timer.
-    // Advance time past the scheduled fire time to verify it never fires.
-    await vi.advanceTimersByTimeAsync(2000);
-
-    // No new WebSocket instance should have been created
-    expect(MockWebSocket.instances).toHaveLength(1);
-
-    vi.useRealTimers();
-  });
-
-  it('allows a fresh mount after unmount to reconnect normally', async () => {
-    vi.useFakeTimers();
-    // First mount and unmount
-    const { unmount: firstUnmount } = renderHook(() => useWebSocket());
-    firstUnmount();
-
-    // Now mount again – should connect fresh
-    const { result } = renderHook(() => useWebSocket());
-
-    // Should have created a new WebSocket instance
-    expect(MockWebSocket.instances).toHaveLength(2);
-
-    // Opening the new connection should work
-    act(() => {
-      MockWebSocket.simulateOpen(MockWebSocket.instances[1]);
-    });
-    expect(result.current.connected).toBe(true);
-
-    // Close should trigger reconnect (manualCloseRef was reset at start of connect)
-    act(() => {
-      MockWebSocket.simulateClose(1000, 'close', MockWebSocket.instances[1]);
-    });
-    expect(result.current.connected).toBe(false);
-
-    // Reconnect timer should fire after 1000ms
-    await vi.advanceTimersByTimeAsync(1000);
-    expect(MockWebSocket.instances).toHaveLength(3);
-
-    vi.useRealTimers();
-  });
-
-  it('sets manualCloseRef before closing the socket during cleanup', () => {
-    // This test verifies the ORDER of operations in cleanup:
-    // 1. manualCloseRef is set to true FIRST
-    // 2. Then the reconnect timer is cleared
-    // 3. Then the socket is closed
-    // This ensures that if close() synchronously fires onclose, it sees manualCloseRef=true
-    vi.useFakeTimers();
-    const { unmount } = renderHook(() => useWebSocket());
-
-    // Spy on the original close method after render
-    const closeSpy = vi.spyOn(MockWebSocket.prototype, 'close');
-
-    unmount();
-
-    // close() should have been called
-    expect(closeSpy).toHaveBeenCalledTimes(1);
-
-    // After unmount, no reconnect should happen (manualCloseRef prevents it)
-    // Advance time to verify
-    vi.advanceTimersByTimeAsync(100_000);
-    expect(MockWebSocket.instances).toHaveLength(1);
-
-    vi.useRealTimers();
-  });
-
-  it('does not reconnect when close is triggered by manual cleanup after error', async () => {
-    vi.useFakeTimers();
-    const { result, unmount } = renderHook(() => useWebSocket());
-
-    // Open the connection
-    act(() => {
-      MockWebSocket.simulateOpen();
-    });
-    expect(result.current.connected).toBe(true);
-
-    // Simulate an error which calls ws.close() internally
-    act(() => {
-      MockWebSocket.simulateError();
-    });
-    // The error handler calls ws.close(), which fires onclose.
-    // At this point manualCloseRef is still false, so reconnect is scheduled.
-    expect(result.current.connected).toBe(false);
-
-    // Now unmount before the reconnect timer fires
-    unmount();
-
-    // The cleanup should cancel the pending reconnect timer
-    await vi.advanceTimersByTimeAsync(100_000);
-
-    // No new WebSocket instances should have been created
-    expect(MockWebSocket.instances).toHaveLength(1);
-
-    vi.useRealTimers();
-  });
-});
-
-// ─── Diagnostic logging tests (kb-2) ─────────────────────────────────────
-// Diagnostics live in useWebSocket.ts (onmessage + handleServerMessage).
-// These tests guard against regressions in diagnostic logging.
-
-describe('useWebSocket – diagnostic logging', () => {
-  it('logs a warning when a malformed JSON payload is received', () => {
+describe('useWebSocket – snapshot → store', () => {
+  it('applies snapshot to the store', () => {
     renderHook(() => useWebSocket());
-
-    act(() => {
-      MockWebSocket.simulateOpen();
-    });
-
-    // Directly invoke onmessage with raw invalid JSON (bypass simulateMessage
-    // which always JSON.stringify's, producing valid JSON).
-    const ws = MockWebSocket.instances[0];
-    act(() => {
-      ws.onmessage?.(new MessageEvent('message', { data: '{not valid json' }));
-    });
-
-    // The hook should log a warning that includes 'Failed to parse'
-    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('Failed to parse'));
-  });
-
-  it('logs a warning when a valid JSON object has an unrecognized message type', () => {
-    renderHook(() => useWebSocket());
-
-    act(() => {
-      MockWebSocket.simulateOpen();
-    });
-
-    // Send a valid JSON object with a type that isServerMessage does not recognize.
-    // Include extra fields so we can verify the full payload is surfaced in the warning.
-    act(() => {
-      MockWebSocket.simulateMessage({ type: 'bogus_type', foo: 'bar-BODY' });
-    });
-
-    // The hook should log a single-string warning that includes BOTH the
-    // 'unknown message type' label AND the stringified data payload.
-    // This guards against the regression where only the type was logged and the
-    // rest of the message body was silently discarded.
-    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('unknown message type'));
-    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('bar-BODY'));
-  });
-
-  it('logs an init snapshot with correct counts on init message', () => {
-    renderHook(() => useWebSocket());
-
     act(() => {
       MockWebSocket.simulateOpen();
     });
 
     act(() => {
       MockWebSocket.simulateMessage({
-        type: 'init',
-        currentPhase: 'planning',
-        completedPhases: ['scouting', 'recon'],
-        tasks: [
-          { id: 't1', name: 'task 1' },
-          { id: 't2', name: 'task 2' },
-          { id: 't3', name: 'task 3' },
-        ],
-        agents: [
-          { agentId: 'a1', taskId: 't1', profile: 'p1', active: true, log: [] },
-          { agentId: 'a2', taskId: 't2', profile: 'p2', active: true, log: [] },
-        ],
-        sidebar: { title: 'S', indicator: 'green' },
+        type: 'snapshot',
+        seq: 10,
+        state: {
+          seq: 10,
+          taskPrompt: 'hello',
+          currentPhase: 'exec',
+          completedPhases: ['plan'],
+          tasks: {},
+          agents: {},
+          sidebar: { title: 'App', indicator: 'green' },
+          status: 'running',
+          stats: { totalTokens: 0, agentCount: 0 },
+        },
       });
     });
 
-    // The hook should log a message containing 'init snapshot'
-    expect(console.log).toHaveBeenCalledWith(expect.stringContaining('init snapshot'));
+    const s = useWorkflowStore.getState();
+    expect(s.taskPrompt).toBe('hello');
+    expect(s.currentPhase).toBe('exec');
+    expect(s.completedPhases).toEqual(['plan']);
+    expect(s.seq).toBe(10);
+  });
+});
 
-    // Verify the snapshot includes the correct counts.
-    // Find the call that contains 'init snapshot' and check for the counts.
-    const initCalls = (console.log as ReturnType<typeof vi.spyOn>).mock.calls.filter(
-      (args: unknown[]) => typeof args[0] === 'string' && args[0].includes('init snapshot'),
+describe('useWebSocket – events → store', () => {
+  it('applies events to the store', () => {
+    renderHook(() => useWebSocket());
+    act(() => {
+      MockWebSocket.simulateOpen();
+    });
+
+    act(() => {
+      MockWebSocket.simulateMessage({
+        type: 'events',
+        seq: 3,
+        events: [
+          { seq: 1, type: 'workflow_started', data: { taskPrompt: 'test' }, metadata: { timestamp: '' } },
+          { seq: 2, type: 'phase_started', data: { phase: 'scouting' }, metadata: { timestamp: '' } },
+          {
+            seq: 3,
+            type: 'agent_spawned',
+            data: { profile: 'coder' },
+            metadata: { timestamp: '', agentId: 'a1', taskId: 't1' },
+          },
+        ],
+      });
+    });
+
+    const s = useWorkflowStore.getState();
+    expect(s.taskPrompt).toBe('test');
+    expect(s.currentPhase).toBe('scouting');
+    expect(s.agentsById['a1::t1']).toBeDefined();
+    expect(s.seq).toBe(3);
+  });
+});
+
+describe('useWebSocket – workflow_complete → store', () => {
+  it('sets store status to complete', () => {
+    renderHook(() => useWebSocket());
+    act(() => {
+      MockWebSocket.simulateOpen();
+    });
+
+    act(() => {
+      MockWebSocket.simulateMessage({ type: 'workflow_complete' });
+    });
+
+    expect(useWorkflowStore.getState().status).toBe('complete');
+  });
+});
+
+describe('useWebSocket – workflow_failed → store', () => {
+  it('sets store status to failed', () => {
+    renderHook(() => useWebSocket());
+    act(() => {
+      MockWebSocket.simulateOpen();
+    });
+
+    act(() => {
+      MockWebSocket.simulateMessage({ type: 'workflow_failed', error: 'boom', phase: 'exec' });
+    });
+
+    expect(useWorkflowStore.getState().status).toBe('failed');
+  });
+});
+
+describe('useWebSocket – ignores non-server messages', () => {
+  it('does not crash on unrecognized message types', () => {
+    renderHook(() => useWebSocket());
+    act(() => {
+      MockWebSocket.simulateOpen();
+    });
+
+    // Should not throw
+    act(() => {
+      MockWebSocket.simulateMessage({ type: 'bogus_type', foo: 'bar' });
+    });
+
+    // Store should be unchanged
+    expect(useWorkflowStore.getState().seq).toBe(0);
+  });
+});
+
+// ─── Exponential backoff ──────────────────────────────────────────────────
+
+describe('useWebSocket – exponential backoff', () => {
+  it('reconnects after 1000ms on first close', async () => {
+    vi.useFakeTimers();
+    renderHook(() => useWebSocket());
+
+    act(() => {
+      MockWebSocket.simulateClose(1000, 'close');
+    });
+
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(MockWebSocket.instances).toHaveLength(2);
+
+    vi.useRealTimers();
+  });
+
+  it('increases delay on successive closes', async () => {
+    vi.useFakeTimers();
+    renderHook(() => useWebSocket());
+
+    // Close 1 → 1000ms
+    act(() => {
+      MockWebSocket.simulateClose(1000, 'close');
+    });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(MockWebSocket.instances).toHaveLength(2);
+
+    // Close 2 → 1500ms (1000 * 1.5)
+    act(() => {
+      MockWebSocket.simulateClose(1000, 'close', MockWebSocket.instances[1]);
+    });
+    await vi.advanceTimersByTimeAsync(1499);
+    expect(MockWebSocket.instances).toHaveLength(2);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(MockWebSocket.instances).toHaveLength(3);
+
+    vi.useRealTimers();
+  });
+
+  it('resets backoff on successful open', async () => {
+    vi.useFakeTimers();
+    renderHook(() => useWebSocket());
+
+    // Close → reconnect (1000ms)
+    act(() => {
+      MockWebSocket.simulateClose(1000, 'close');
+    });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(MockWebSocket.instances).toHaveLength(2);
+
+    // Open successfully
+    act(() => {
+      MockWebSocket.simulateOpen(MockWebSocket.instances[1]);
+    });
+
+    // Close again → should be 1000ms again (reset)
+    act(() => {
+      MockWebSocket.simulateClose(1000, 'close', MockWebSocket.instances[1]);
+    });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(MockWebSocket.instances).toHaveLength(3);
+
+    vi.useRealTimers();
+  });
+});
+
+// ─── send() ────────────────────────────────────────────────────────────────
+
+describe('useWebSocket – send', () => {
+  it('sends JSON when socket is OPEN', () => {
+    const { result } = renderHook(() => useWebSocket());
+
+    act(() => {
+      MockWebSocket.simulateOpen();
+    });
+
+    result.current.send({ type: 'terminate_server' });
+    expect(MockWebSocket.instances[0].sentMessages).toContain(JSON.stringify({ type: 'terminate_server' }));
+  });
+
+  it('does not send when socket is not OPEN', () => {
+    const { result } = renderHook(() => useWebSocket());
+
+    result.current.send({ type: 'terminate_server' });
+    expect(MockWebSocket.instances[0].sentMessages).toHaveLength(0);
+  });
+});
+
+// ─── Cleanup on unmount ───────────────────────────────────────────────────
+
+describe('useWebSocket – cleanup', () => {
+  it('does not reconnect after unmount', async () => {
+    vi.useFakeTimers();
+    const { unmount } = renderHook(() => useWebSocket());
+
+    act(() => {
+      MockWebSocket.simulateOpen();
+    });
+
+    unmount();
+
+    await vi.advanceTimersByTimeAsync(100_000);
+    expect(MockWebSocket.instances).toHaveLength(1);
+
+    vi.useRealTimers();
+  });
+
+  it('cancels pending reconnect timer on unmount', async () => {
+    vi.useFakeTimers();
+    const { unmount } = renderHook(() => useWebSocket());
+
+    act(() => {
+      MockWebSocket.simulateClose(1000, 'close');
+    });
+
+    unmount();
+
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(MockWebSocket.instances).toHaveLength(1);
+
+    vi.useRealTimers();
+  });
+});
+
+// ─── No console.log/warn in useWebSocket ───────────────────────────────────
+
+describe('useWebSocket – no diagnostic logging', () => {
+  it('does not call console.log', () => {
+    renderHook(() => useWebSocket());
+    act(() => {
+      MockWebSocket.simulateOpen();
+    });
+    act(() => {
+      MockWebSocket.simulateClose(1000, 'close');
+    });
+
+    // No console.log calls from useWebSocket (store may log internally, but
+    // the transport itself should be silent).
+    const transportLogs = (console.log as ReturnType<typeof vi.spyOn>).mock.calls.filter(
+      (args: unknown[]) => typeof args[0] === 'string' && args[0].startsWith('[WebSocket]'),
     );
-    expect(initCalls.length).toBeGreaterThanOrEqual(1);
-    const snapshotMsg = initCalls[0][0] as string;
-    expect(snapshotMsg).toContain('3'); // 3 tasks
-    expect(snapshotMsg).toContain('2'); // 2 agents
-    expect(snapshotMsg).toContain('2'); // 2 completedPhases
+    expect(transportLogs).toHaveLength(0);
+  });
+
+  it('does not call console.warn', () => {
+    renderHook(() => useWebSocket());
+    act(() => {
+      MockWebSocket.simulateOpen();
+    });
+    act(() => {
+      MockWebSocket.simulateClose(1000, 'close');
+    });
+
+    const transportWarns = (console.warn as ReturnType<typeof vi.spyOn>).mock.calls.filter(
+      (args: unknown[]) => typeof args[0] === 'string' && args[0].startsWith('[WebSocket]'),
+    );
+    expect(transportWarns).toHaveLength(0);
   });
 });

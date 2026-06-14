@@ -1,18 +1,12 @@
+import { useCompletedPhases, useCurrentPhase, useSidebar } from '../store/workflow-store';
 import './PhaseBar.css';
 
-export interface Phase {
-  id: string;
-  label: string;
-  icon: string;
-}
+export function PhaseBar() {
+  const sidebar = useSidebar();
+  const currentPhase = useCurrentPhase();
+  const completedPhases = useCompletedPhases();
+  const phases = sidebar.phases ?? [];
 
-export interface PhaseBarProps {
-  phases: Phase[];
-  currentPhase: string;
-  completedPhases: string[];
-}
-
-export function PhaseBar({ phases, currentPhase, completedPhases }: PhaseBarProps) {
   const isCompleted = (id: string) => completedPhases.includes(id);
   const isCurrent = (id: string) => id === currentPhase;
 

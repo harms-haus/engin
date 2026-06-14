@@ -1,10 +1,10 @@
 import { join } from 'node:path';
 import { createHarness } from '../core/harness-factory.js';
 import { promptForStructured } from '../core/structured-output.js';
-import type { AgentProfile, AuditEvent, Task } from '../core/types.js';
+import type { AgentProfile, Task } from '../core/types.js';
 import { forwardAgentStatus, safeErrorMessage } from '../core/utils.js';
 import { buildPrompt } from './prompt-builder.js';
-import type { LanePoolOptions, StepDefinition, StepResult, TrackedSession, WithoutTimestamp } from './types.js';
+import type { LanePoolOptions, StepDefinition, StepResult, TrackedSession } from './types.js';
 import { assertSafeName } from './validation.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────
@@ -22,7 +22,6 @@ export interface StepExecutionContext {
   apiKeys?: Record<string, string>;
   onStatus: LanePoolOptions['onStatus'];
   activeSessions: Set<{ abort(): Promise<void> }>;
-  appendAuditEvent: (event: WithoutTimestamp<AuditEvent>) => void;
   /** Phase identifier propagated from the LanePool options. */
   phase?: string;
 }
@@ -72,15 +71,6 @@ export async function runStep(
     onAgentStatus: forwardAgentStatus(execCtx.onStatus),
   };
 
-  // Audit log — fires before harness creation (no sessionId needed)
-  execCtx.appendAuditEvent({
-    type: 'agent_start',
-    agentId: step.profileId,
-    profile: adjustedProfile,
-    phase: execCtx.phase ?? 'implementing',
-    taskId: task.id,
-  });
-
   // Create harness
   const { session, dispose } = await createHarness(harnessOpts);
 
@@ -120,14 +110,8 @@ export async function runStep(
         structuredResult = result;
       } catch (err) {
         const errorMsg = safeErrorMessage(err);
-        // Log the structured output failure for observability
-        execCtx.appendAuditEvent({
-          type: 'error',
-          agentId,
-          error: `promptForStructured failed: ${errorMsg}`,
-          taskId: task.id,
-        });
-        // Treat as critical — the reviewer never produced valid output, so fail-safe
+        // Treat as critical — the reviewer never produced valid output, so fail-safe.
+        // The error is observable via the rejection feedback and reportError() → onError → store.
         return { result: { type: 'rejected', feedback: errorMsg, output: { severity: 'critical' } }, trackedSession };
       }
 
@@ -168,15 +152,6 @@ export async function runStep(
       phase: execCtx.phase ?? 'implementing',
       taskId: task.id,
       sessionId: session.sessionId,
-    });
-
-    // Audit log — agent_end event
-    execCtx.appendAuditEvent({
-      type: 'agent_end',
-      agentId: step.profileId,
-      result: {},
-      phase: execCtx.phase ?? 'implementing',
-      taskId: task.id,
     });
   }
 }

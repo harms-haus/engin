@@ -9,6 +9,11 @@ const realUtils = Object.assign({}, await import('../../src/core/utils.js'));
 
 const mockWorkflowRun = mock<(taskPrompt: string, options: Record<string, unknown>) => Promise<void>>();
 
+// composeStatusCallbacks spy — used to verify the EventStore callbacks are
+// composed into the non-TUI status path. Returns the last element so the
+// existing verbose/non-verbose structural assertions stay meaningful.
+const mockComposeStatusCallbacks = mock<(callbacks: unknown[]) => unknown>();
+
 // ─── Mock modules (hoisted before imports by Bun test runtime) ───────────────
 
 mock.module('../../src/core/workflow-loader.js', () => ({
@@ -18,6 +23,7 @@ mock.module('../../src/core/workflow-loader.js', () => ({
 
 mock.module('../../src/core/utils.js', () => ({
   validateWorkflowName: () => {},
+  composeStatusCallbacks: mockComposeStatusCallbacks,
 }));
 
 // ─── Import SUT after mocks ──────────────────────────────────────────────────
@@ -47,6 +53,11 @@ describe('runCommand — input validation guards', () => {
 
     mockWorkflowRun.mockReset();
     mockWorkflowRun.mockResolvedValue(undefined);
+
+    // composeStatusCallbacks returns the last element (the console callbacks)
+    // so the verbose/non-verbose structural assertions remain meaningful.
+    mockComposeStatusCallbacks.mockReset();
+    mockComposeStatusCallbacks.mockImplementation((callbacks: unknown[]) => callbacks[callbacks.length - 1]);
   });
 
   afterEach(() => {
@@ -287,6 +298,28 @@ describe('runCommand — input validation guards', () => {
       expect(status.onTurnEnd).toBeUndefined();
       expect(status.onToolCallStart).toBeUndefined();
       expect(status.onToolCallEnd).toBeUndefined();
+    });
+
+    it('composes EventStore callbacks with console callbacks in the non-TUI path', async () => {
+      const options = {
+        command: 'run' as const,
+        workflowName: 'test-workflow',
+        taskPrompt: 'some task',
+        cwd: '/tmp',
+        maxConcurrent: 3,
+        verbose: true,
+        worktree: false,
+        apiKeys: {},
+        warnings: [],
+      };
+
+      await runCommand(options);
+
+      // The store callbacks are composed FIRST, ahead of the console callbacks,
+      // so every event is captured into the canonical EventStore.
+      expect(mockComposeStatusCallbacks).toHaveBeenCalledTimes(1);
+      const composeArgs = mockComposeStatusCallbacks.mock.calls[0][0] as unknown[];
+      expect(composeArgs).toHaveLength(2);
     });
   });
 

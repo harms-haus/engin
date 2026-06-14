@@ -7,11 +7,11 @@ import {
   type OverlayHandle,
   type Terminal,
 } from '@earendil-works/pi-tui';
-import type { StatusCallbacks } from '../core/types.js';
+import type { EventStore } from '../tracking/event-store.js';
 import { Dashboard } from './components/dashboard.js';
 import { EventLog } from './components/event-log.js';
 import { createQrOverlayComponent } from './components/qr-overlay.js';
-import { createTuiStatusCallbacks } from './status-callbacks.js';
+import { createStoreBackedTui } from './status-callbacks.js';
 import { dim } from './theme.js';
 
 // ─── Options ─────────────────────────────────────────────────────────────────
@@ -20,13 +20,7 @@ export interface WorkflowTUIOptions {
   maxConcurrentLanes?: number;
   agentLogLines?: number;
   abort?: () => void;
-  initialAgents?: {
-    agentId: string;
-    profile: string;
-    phase: string;
-    taskId?: string;
-    completedAt?: string;
-  }[];
+  store?: EventStore;
 }
 
 // ─── Separator Component ─────────────────────────────────────────────────────
@@ -58,10 +52,11 @@ export class WorkflowTUI {
   private terminal: ProcessTerminal | null = null;
   private readonly eventLog: EventLog;
   private readonly dashboard: Dashboard;
-  private readonly statusCallbacks: StatusCallbacks;
   private readonly maxConcurrentLanes: number;
   private readonly agentLogLines: number;
   private readonly abortFn: (() => void) | undefined;
+  private readonly store: EventStore | undefined;
+  private storeDispose: (() => void) | null = null;
   private running = false;
   private interruptCount = 0;
   private inputUnsubscribe: (() => void) | null = null;
@@ -70,29 +65,34 @@ export class WorkflowTUI {
   private readonly originalConsoleLog: typeof console.log;
   private readonly originalConsoleWarn: typeof console.warn;
   private readonly originalConsoleError: typeof console.error;
-  private readonly initialAgents: WorkflowTUIOptions['initialAgents'];
+  /** Tracks recently-seen console.warn/error messages for deduplication. */
+  private readonly recentWarnErrors = new Set<string>();
+  private lastWarnError = '';
 
   constructor(options: WorkflowTUIOptions = {}) {
     this.maxConcurrentLanes = options.maxConcurrentLanes ?? 5;
     this.agentLogLines = options.agentLogLines ?? 20;
     this.abortFn = options.abort;
-    this.initialAgents = options.initialAgents;
+    this.store = options.store;
 
     this.eventLog = new EventLog();
     this.dashboard = new Dashboard(this.agentLogLines);
 
-    this.statusCallbacks = createTuiStatusCallbacks({
-      eventLog: this.eventLog,
-      dashboard: this.dashboard,
-      requestRender: () => {
-        this.tui?.requestRender();
-      },
-      initialAgents: this.initialAgents,
-    });
-
     this.originalConsoleLog = console.log;
     this.originalConsoleWarn = console.warn;
     this.originalConsoleError = console.error;
+
+    // If a store is provided, subscribe to it so the TUI stays in sync.
+    if (this.store) {
+      this.storeDispose = createStoreBackedTui({
+        store: this.store,
+        eventLog: this.eventLog,
+        dashboard: this.dashboard,
+        requestRender: () => {
+          this.tui?.requestRender();
+        },
+      }).dispose;
+    }
   }
 
   // ─── Lifecycle ───────────────────────────────────────────────────────
@@ -191,17 +191,44 @@ export class WorkflowTUI {
       return undefined;
     });
 
-    // Override console methods to route through eventLog
+    // Override console methods to route warnings/errors through the event log.
+    // console.log is NOT routed — library noise (e.g. dotenv) floods the event
+    // log. It always passes through to the original console.
+    //
+    // console.warn/console.error are routed into the event log (prefixed) with
+    // simple dedup so repeated identical messages don't flood. The originals
+    // are ALWAYS also called so non-TUI/verbose mode still sees output.
     console.log = (...args: unknown[]) => {
-      this.eventLog.addLine(args.join(' '));
-      this.tui?.requestRender();
+      this.originalConsoleLog(...args);
     };
     console.warn = (...args: unknown[]) => {
-      this.eventLog.addLine('⚠️ ' + args.join(' '));
+      const msg = args.join(' ');
+      this.originalConsoleWarn(...args);
+      if (msg === this.lastWarnError || this.recentWarnErrors.has(msg)) {
+        return;
+      }
+      this.lastWarnError = msg;
+      this.recentWarnErrors.add(msg);
+      if (this.recentWarnErrors.size > 50) {
+        this.recentWarnErrors.clear();
+        this.recentWarnErrors.add(msg);
+      }
+      this.eventLog.addLine('⚠️ ' + msg);
       this.tui?.requestRender();
     };
     console.error = (...args: unknown[]) => {
-      this.eventLog.addLine('❌ ' + args.join(' '));
+      const msg = args.join(' ');
+      this.originalConsoleError(...args);
+      if (msg === this.lastWarnError || this.recentWarnErrors.has(msg)) {
+        return;
+      }
+      this.lastWarnError = msg;
+      this.recentWarnErrors.add(msg);
+      if (this.recentWarnErrors.size > 50) {
+        this.recentWarnErrors.clear();
+        this.recentWarnErrors.add(msg);
+      }
+      this.eventLog.addLine('❌ ' + msg);
       this.tui?.requestRender();
     };
 
@@ -223,6 +250,8 @@ export class WorkflowTUI {
     this.running = false;
 
     try {
+      this.storeDispose?.();
+      this.storeDispose = null;
       this.inputUnsubscribe?.();
       this.inputUnsubscribe = null;
       this.qrHandle?.hide();
@@ -230,6 +259,8 @@ export class WorkflowTUI {
       console.log = this.originalConsoleLog;
       console.warn = this.originalConsoleWarn;
       console.error = this.originalConsoleError;
+      this.recentWarnErrors.clear();
+      this.lastWarnError = '';
       this.interruptCount = 0;
       this.tui?.stop();
     } catch (err) {
@@ -317,10 +348,6 @@ export class WorkflowTUI {
   }
 
   // ─── Accessors ───────────────────────────────────────────────────────
-
-  getStatusCallbacks(): StatusCallbacks {
-    return this.statusCallbacks;
-  }
 
   getEventLog(): EventLog {
     return this.eventLog;

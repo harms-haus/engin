@@ -260,6 +260,34 @@ export class TaskTracker extends EventEmitter {
   }
 
   /**
+   * Validates referential integrity of all dependency references.
+   *
+   * Every id listed in each task's `dependencies` array must correspond to a
+   * task that exists in this tracker. Throws with a descriptive message if
+   * any violations are found.
+   *
+   * This is distinct from cycle detection (handled by `addTask` at insert
+   * time) — this method only checks that dependency IDs exist.
+   */
+  validateAllDependencies(): void {
+    const violations: { taskId: string; missingDeps: string[] }[] = [];
+
+    for (const task of this.tasks.values()) {
+      const missingDeps = task.dependencies.filter((dep) => !this.tasks.has(dep));
+      if (missingDeps.length > 0) {
+        violations.push({ taskId: task.id, missingDeps });
+      }
+    }
+
+    if (violations.length > 0) {
+      const details = violations
+        .map(({ taskId, missingDeps }) => `"${taskId}" → missing: [${missingDeps.map((d) => `"${d}"`).join(', ')}]`)
+        .join('; ');
+      throw new Error(`Dependency integrity check failed: ${details}`);
+    }
+  }
+
+  /**
    * Single-pass check for the lane loop hot path.
    *
    * Returns `true` when every task is settled (`done` / `failed`) or

@@ -131,6 +131,7 @@ export async function startObserverServer(options: {
   displayHost?: string;
   onTerminate?: () => void;
   getSnapshot?: () => ServerMessage;
+  handleResync?: (ws: ServerWebSocket, lastSeq?: number) => void;
 }): Promise<ObserverServer> {
   const clients = new Set<ServerWebSocket>();
 
@@ -157,6 +158,8 @@ export async function startObserverServer(options: {
           const msg = JSON.parse(raw.toString());
           if (msg.type === 'terminate_server') {
             options.onTerminate?.();
+          } else if (msg.type === 'resync') {
+            options.handleResync?.(ws, msg.lastSeq as number | undefined);
           }
         } catch {
           // Ignore invalid messages

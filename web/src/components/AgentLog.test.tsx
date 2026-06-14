@@ -7,14 +7,32 @@
  * - Re-enables auto-scroll when the user scrolls back to the bottom
  * - Auto-scrolls on agent switch (agent?.log reference changes, triggering effect)
  * - Handles empty / no-agent state gracefully
+ *
+ * The component now self-subscribes to the Zustand store — tests seed the
+ * store directly instead of passing props.
  */
 
 import '@testing-library/jest-dom/vitest';
 
-import { fireEvent, render } from '@testing-library/react';
+import { act, fireEvent, render } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { LogEntry } from '../protocol-types';
-import type { AgentState } from '../types';
+import type { AgentEntity, LogEntry } from '../protocol-types';
+import { useWorkflowStore } from '../store/workflow-store';
+
+// ─── Mock useWebSocket ─────────────────────────────────────────────────────
+
+const mockSend = vi.fn();
+
+vi.mock('../hooks/useWebSocket', () => ({
+  useWebSocket: vi.fn(() => ({
+    send: mockSend,
+    connected: true,
+    hasConnectedOnce: true,
+  })),
+}));
+
+// Must import AgentLog AFTER vi.mock so the mock is wired up
+import { useWebSocket } from '../hooks/useWebSocket';
 import { AgentLog } from './AgentLog';
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
@@ -31,23 +49,49 @@ function makeLogEntry(content: string, type: LogEntry['type'] = 'text'): LogEntr
   };
 }
 
-function makeAgentState(agentId: string, log: LogEntry[], overrides: Partial<AgentState> = {}): AgentState {
+function makeAgentEntity(agentId: string, log: LogEntry[], overrides: Partial<AgentEntity> = {}): AgentEntity {
+  const key = overrides.taskId ? `${agentId}::${overrides.taskId}` : agentId;
   return {
+    uid: key,
     agentId,
     profile: 'test-profile',
+    phase: '',
     active: true,
     log,
     toolCallCount: 0,
     inputTokens: 0,
     outputTokens: 0,
+    taskTitle: '',
     ...overrides,
   };
 }
 
-/**
- * Helper: mock scrollHeight and clientHeight on a div so we can
- * reliably control the scroll geometry in jsdom.
- */
+/** Seed the store with agents. */
+function seedStore(agents: Record<string, AgentEntity>): void {
+  useWorkflowStore.getState().applySnapshot(
+    {
+      seq: 1,
+      taskPrompt: '',
+      currentPhase: '',
+      completedPhases: [],
+      tasks: {},
+      agents,
+      sidebar: { title: '', indicator: '' },
+      status: 'running',
+      stats: { totalTokens: 0, agentCount: Object.keys(agents).length },
+    },
+    1,
+  );
+}
+
+/** Seed the store wrapped in act() so React flushes the re-render. */
+function seedStoreAct(agents: Record<string, AgentEntity>): void {
+  act(() => {
+    seedStore(agents);
+  });
+}
+
+/** Helper: mock scrollHeight and clientHeight on a div. */
 function mockScrollGeometry(el: HTMLDivElement, scrollHeight: number, clientHeight: number): void {
   Object.defineProperty(el, 'scrollHeight', {
     value: scrollHeight,
@@ -61,21 +105,33 @@ function mockScrollGeometry(el: HTMLDivElement, scrollHeight: number, clientHeig
   });
 }
 
-/**
- * Helper: scroll a div to a given position and fire the scroll event
- * so React's onScroll handler runs.
- */
+/** Helper: scroll a div to a given position and fire the scroll event. */
 function scrollTo(el: HTMLDivElement, scrollTop: number): void {
   el.scrollTop = scrollTop;
   fireEvent.scroll(el);
 }
 
-/**
- * Helper: get the scrollable entries container inside AgentLog.
- * It's the div with className "agent-log__entries".
- */
+/** Helper: get the scrollable entries container inside AgentLog. */
 function getScrollContainer(container: HTMLElement): HTMLDivElement {
   return container.querySelector('.agent-log__entries') as HTMLDivElement;
+}
+
+// ─── Store reset ───────────────────────────────────────────────────────────
+
+function resetStore(): void {
+  useWorkflowStore.setState({
+    agentsById: {},
+    tasksById: {},
+    currentPhase: '',
+    completedPhases: [],
+    sidebar: { title: '', indicator: '' },
+    status: 'running',
+    taskPrompt: '',
+    error: undefined,
+    failedPhase: undefined,
+    seq: 0,
+    stats: { totalTokens: 0, agentCount: 0 },
+  });
 }
 
 // ─── Tests ─────────────────────────────────────────────────────────────────
@@ -84,15 +140,15 @@ describe('AgentLog – auto-scroll behavior (single agent)', () => {
   beforeEach(() => {
     entryCounter = 0;
     vi.restoreAllMocks();
+    resetStore();
+    vi.mocked(useWebSocket).mockReturnValue({ send: mockSend, connected: true, hasConnectedOnce: true });
   });
 
   it('auto-scrolls to bottom when new log entries arrive and user is at bottom', () => {
     const initialLog = [makeLogEntry('a'), makeLogEntry('b')];
-    const agents = new Map<string, AgentState>([['agent-1', makeAgentState('agent-1', initialLog)]]);
+    seedStoreAct({ 'agent-1': makeAgentEntity('agent-1', initialLog) });
 
-    const { container, rerender } = render(
-      <AgentLog agents={agents} onTerminate={vi.fn()} status="running" connected={true} />,
-    );
+    const { container } = render(<AgentLog />);
 
     const scrollDiv = getScrollContainer(container);
     expect(scrollDiv).toBeInTheDocument();
@@ -100,63 +156,52 @@ describe('AgentLog – auto-scroll behavior (single agent)', () => {
     // Mock geometry BEFORE triggering the effect with new log entries
     mockScrollGeometry(scrollDiv, 1000, 200);
 
-    // Add new log entries (triggers re-render)
+    // Add new log entries via the store
     const newLog = [...initialLog, makeLogEntry('c')];
-    const updatedAgents = new Map<string, AgentState>([['agent-1', makeAgentState('agent-1', newLog)]]);
-    rerender(<AgentLog agents={updatedAgents} onTerminate={vi.fn()} status="running" connected={true} />);
+    seedStoreAct({ 'agent-1': makeAgentEntity('agent-1', newLog) });
 
-    // With the fix: autoScroll starts as true → effect scrolls to bottom
+    // With autoScroll=true initially → effect scrolls to bottom
     expect(scrollDiv.scrollTop).toBe(1000);
   });
 
   it('does NOT auto-scroll when user has scrolled up and new log entries arrive', () => {
     const initialLog = [makeLogEntry('a'), makeLogEntry('b'), makeLogEntry('c')];
-    const agents = new Map<string, AgentState>([['agent-1', makeAgentState('agent-1', initialLog)]]);
+    seedStoreAct({ 'agent-1': makeAgentEntity('agent-1', initialLog) });
 
-    const { container, rerender } = render(
-      <AgentLog agents={agents} onTerminate={vi.fn()} status="running" connected={true} />,
-    );
+    const { container } = render(<AgentLog />);
 
     const scrollDiv = getScrollContainer(container);
     mockScrollGeometry(scrollDiv, 1000, 200);
 
     // Trigger initial auto-scroll with new entries
     const triggerLog = [...initialLog, makeLogEntry('d')];
-    let updatedAgents = new Map<string, AgentState>([['agent-1', makeAgentState('agent-1', triggerLog)]]);
-    rerender(<AgentLog agents={updatedAgents} onTerminate={vi.fn()} status="running" connected={true} />);
+    seedStoreAct({ 'agent-1': makeAgentEntity('agent-1', triggerLog) });
     expect(scrollDiv.scrollTop).toBe(1000);
 
     // Simulate user scrolling up – far from bottom
-    // isNearBottom = scrollHeight - scrollTop - clientHeight < 30
-    // 1000 - 100 - 200 = 700 >= 30 → not near bottom → autoScroll = false
     scrollTo(scrollDiv, 100);
 
     // Add more entries while scrolled up
     const newLog = [...triggerLog, makeLogEntry('e'), makeLogEntry('f')];
-    updatedAgents = new Map<string, AgentState>([['agent-1', makeAgentState('agent-1', newLog)]]);
-    rerender(<AgentLog agents={updatedAgents} onTerminate={vi.fn()} status="running" connected={true} />);
+    seedStoreAct({ 'agent-1': makeAgentEntity('agent-1', newLog) });
 
-    // With the fix: autoScroll is false, so scrollTop should NOT change.
-    // With current code: scrollTop would be set to scrollHeight (1000).
+    // autoScroll is false, so scrollTop should NOT change.
     expect(scrollDiv.scrollTop).toBe(100);
   });
 
   it('re-enables auto-scroll when user scrolls back to bottom and new entries arrive', () => {
     const initialLog = [makeLogEntry('a'), makeLogEntry('b')];
-    const agents = new Map<string, AgentState>([['agent-1', makeAgentState('agent-1', initialLog)]]);
+    seedStoreAct({ 'agent-1': makeAgentEntity('agent-1', initialLog) });
 
-    const { container, rerender } = render(
-      <AgentLog agents={agents} onTerminate={vi.fn()} status="running" connected={true} />,
-    );
+    const { container } = render(<AgentLog />);
 
     const scrollDiv = getScrollContainer(container);
     mockScrollGeometry(scrollDiv, 1000, 200);
 
     // Trigger initial auto-scroll
-    let updatedAgents = new Map<string, AgentState>([
-      ['agent-1', makeAgentState('agent-1', [...initialLog, makeLogEntry('c')])],
-    ]);
-    rerender(<AgentLog agents={updatedAgents} onTerminate={vi.fn()} status="running" connected={true} />);
+    seedStoreAct({
+      'agent-1': makeAgentEntity('agent-1', [...initialLog, makeLogEntry('c')]),
+    });
     expect(scrollDiv.scrollTop).toBe(1000);
 
     // Scroll up (disables auto-scroll)
@@ -164,46 +209,39 @@ describe('AgentLog – auto-scroll behavior (single agent)', () => {
     expect(scrollDiv.scrollTop).toBe(100);
 
     // Add entries while scrolled up – should NOT scroll
-    updatedAgents = new Map<string, AgentState>([
-      ['agent-1', makeAgentState('agent-1', [...initialLog, makeLogEntry('c'), makeLogEntry('d')])],
-    ]);
-    rerender(<AgentLog agents={updatedAgents} onTerminate={vi.fn()} status="running" connected={true} />);
+    seedStoreAct({
+      'agent-1': makeAgentEntity('agent-1', [...initialLog, makeLogEntry('c'), makeLogEntry('d')]),
+    });
     expect(scrollDiv.scrollTop).toBe(100);
 
     // Scroll back to bottom (within 30px threshold)
-    // isNearBottom = 1000 - 970 - 200 = -170 < 30 → true → autoScroll = true
     scrollTo(scrollDiv, 970);
 
     // Add another entry – should auto-scroll now
-    updatedAgents = new Map<string, AgentState>([
-      ['agent-1', makeAgentState('agent-1', [...initialLog, makeLogEntry('c'), makeLogEntry('d'), makeLogEntry('e')])],
-    ]);
-    rerender(<AgentLog agents={updatedAgents} onTerminate={vi.fn()} status="running" connected={true} />);
+    seedStoreAct({
+      'agent-1': makeAgentEntity('agent-1', [...initialLog, makeLogEntry('c'), makeLogEntry('d'), makeLogEntry('e')]),
+    });
 
     expect(scrollDiv.scrollTop).toBe(1000);
   });
 
   it('maintains auto-scroll when already at bottom and new log entries arrive', () => {
     const initialLog = [makeLogEntry('a'), makeLogEntry('b')];
-    const agents = new Map<string, AgentState>([['agent-1', makeAgentState('agent-1', initialLog)]]);
+    seedStoreAct({ 'agent-1': makeAgentEntity('agent-1', initialLog) });
 
-    const { container, rerender } = render(
-      <AgentLog agents={agents} onTerminate={vi.fn()} status="running" connected={true} />,
-    );
+    const { container } = render(<AgentLog />);
 
     const scrollDiv = getScrollContainer(container);
     mockScrollGeometry(scrollDiv, 1000, 200);
 
     // Trigger initial auto-scroll
     const midLog = [...initialLog, makeLogEntry('c')];
-    let updatedAgents = new Map<string, AgentState>([['agent-1', makeAgentState('agent-1', midLog)]]);
-    rerender(<AgentLog agents={updatedAgents} onTerminate={vi.fn()} status="running" connected={true} />);
+    seedStoreAct({ 'agent-1': makeAgentEntity('agent-1', midLog) });
     expect(scrollDiv.scrollTop).toBe(1000);
 
     // Multiple new entries arrive while user is at bottom
     const newLog = [...midLog, makeLogEntry('d'), makeLogEntry('e'), makeLogEntry('f')];
-    updatedAgents = new Map<string, AgentState>([['agent-1', makeAgentState('agent-1', newLog)]]);
-    rerender(<AgentLog agents={updatedAgents} onTerminate={vi.fn()} status="running" connected={true} />);
+    seedStoreAct({ 'agent-1': makeAgentEntity('agent-1', newLog) });
 
     // Should still be at bottom
     expect(scrollDiv.scrollTop).toBe(1000);
@@ -214,67 +252,64 @@ describe('AgentLog – auto-scroll on agent switch', () => {
   beforeEach(() => {
     entryCounter = 0;
     vi.restoreAllMocks();
+    resetStore();
+    vi.mocked(useWebSocket).mockReturnValue({ send: mockSend, connected: true, hasConnectedOnce: true });
   });
 
   it('auto-scrolls when switching to a different agent (log reference changes)', () => {
-    // Two agents with different logs
-    const agents = new Map<string, AgentState>([
-      ['agent-1', makeAgentState('agent-1', [makeLogEntry('from agent 1')])],
-      ['agent-2', makeAgentState('agent-2', [makeLogEntry('from agent 2')])],
-    ]);
+    seedStoreAct({
+      'agent-1': makeAgentEntity('agent-1', [makeLogEntry('from agent 1')]),
+      'agent-2': makeAgentEntity('agent-2', [makeLogEntry('from agent 2')]),
+    });
 
-    const { container, rerender } = render(
-      <AgentLog agents={agents} onTerminate={vi.fn()} status="running" connected={true} />,
-    );
+    const { container } = render(<AgentLog />);
 
     const scrollDiv = getScrollContainer(container);
     mockScrollGeometry(scrollDiv, 1000, 200);
 
     // Trigger initial auto-scroll on agent-1
-    rerender(<AgentLog agents={agents} onTerminate={vi.fn()} status="running" connected={true} />);
+    seedStoreAct({
+      'agent-1': makeAgentEntity('agent-1', [makeLogEntry('from agent 1')]),
+      'agent-2': makeAgentEntity('agent-2', [makeLogEntry('from agent 2')]),
+    });
     expect(scrollDiv.scrollTop).toBe(1000);
 
-    // Now switch to agent-2 by changing the map so agent-2 is the only one
-    const singleAgentMap = new Map<string, AgentState>([
-      ['agent-2', makeAgentState('agent-2', [makeLogEntry('from agent 2')])],
-    ]);
-    rerender(<AgentLog agents={singleAgentMap} onTerminate={vi.fn()} status="running" connected={true} />);
+    // Switch to agent-2 by removing agent-1 from the store
+    seedStoreAct({
+      'agent-2': makeAgentEntity('agent-2', [makeLogEntry('from agent 2')]),
+    });
 
-    // When switching agents, agent?.log reference changes (different array).
-    // With the fix: if autoScroll is true (user was at bottom), effect scrolls.
-    // Since we were at bottom before the switch, autoScroll should be true.
+    // autoScroll is true (user was at bottom), so effect scrolls.
     expect(scrollDiv.scrollTop).toBe(1000);
   });
 
   it('does not auto-scroll on agent switch if user had scrolled up before switching', () => {
-    // Setup with two agents
-    const agent1Log = [makeLogEntry('a1')];
-    const agent2Log = [makeLogEntry('b1')];
-    const agents = new Map<string, AgentState>([
-      ['agent-1', makeAgentState('agent-1', agent1Log)],
-      ['agent-2', makeAgentState('agent-2', agent2Log)],
-    ]);
+    seedStoreAct({
+      'agent-1': makeAgentEntity('agent-1', [makeLogEntry('a1')]),
+      'agent-2': makeAgentEntity('agent-2', [makeLogEntry('b1')]),
+    });
 
-    const { container, rerender } = render(
-      <AgentLog agents={agents} onTerminate={vi.fn()} status="running" connected={true} />,
-    );
+    const { container } = render(<AgentLog />);
 
     const scrollDiv = getScrollContainer(container);
     mockScrollGeometry(scrollDiv, 1000, 200);
 
     // Trigger initial auto-scroll (agent-1 selected)
-    rerender(<AgentLog agents={agents} onTerminate={vi.fn()} status="running" connected={true} />);
+    seedStoreAct({
+      'agent-1': makeAgentEntity('agent-1', [makeLogEntry('a1')]),
+      'agent-2': makeAgentEntity('agent-2', [makeLogEntry('b1')]),
+    });
     expect(scrollDiv.scrollTop).toBe(1000);
 
     // Scroll up in agent-1 → autoScroll = false
     scrollTo(scrollDiv, 50);
 
-    // Switch to agent-2 (only provide agent-2, forcing selection change)
-    const singleAgent = new Map<string, AgentState>([['agent-2', makeAgentState('agent-2', agent2Log)]]);
-    rerender(<AgentLog agents={singleAgent} onTerminate={vi.fn()} status="running" connected={true} />);
+    // Switch to agent-2
+    seedStoreAct({
+      'agent-2': makeAgentEntity('agent-2', [makeLogEntry('b1')]),
+    });
 
-    // autoScroll is false (from scrolling up), so even though agent?.log
-    // changed, the effect should NOT scroll because autoScroll is false.
+    // autoScroll is false, so even though agent?.log changed, should NOT scroll.
     expect(scrollDiv.scrollTop).toBe(50);
   });
 });
@@ -283,11 +318,14 @@ describe('AgentLog – empty / edge cases', () => {
   beforeEach(() => {
     entryCounter = 0;
     vi.restoreAllMocks();
+    resetStore();
+    vi.mocked(useWebSocket).mockReturnValue({ send: mockSend, connected: true, hasConnectedOnce: true });
   });
 
   it('renders without error when agents map is empty', () => {
-    const agents = new Map<string, AgentState>();
-    const { container } = render(<AgentLog agents={agents} onTerminate={vi.fn()} status="running" connected={true} />);
+    seedStoreAct({});
+
+    const { container } = render(<AgentLog />);
 
     // Should show "No agent selected"
     expect(container.textContent).toContain('No agent selected');
@@ -299,30 +337,75 @@ describe('AgentLog – empty / edge cases', () => {
 
   it('handles new agent being added (keys length changes)', () => {
     const initialLog = [makeLogEntry('initial')];
-    const agents = new Map<string, AgentState>([['agent-1', makeAgentState('agent-1', initialLog)]]);
 
-    const { container, rerender } = render(
-      <AgentLog agents={agents} onTerminate={vi.fn()} status="running" connected={true} />,
-    );
-
+    // Render with empty store so we can mock scroll geometry first
+    const { container } = render(<AgentLog />);
     const scrollDiv = getScrollContainer(container);
     mockScrollGeometry(scrollDiv, 1000, 200);
 
-    // Trigger initial auto-scroll
-    rerender(<AgentLog agents={agents} onTerminate={vi.fn()} status="running" connected={true} />);
+    // Seed agent data — agent?.log changes undefined → initialLog, triggering auto-scroll
+    seedStoreAct({ 'agent-1': makeAgentEntity('agent-1', initialLog) });
     expect(scrollDiv.scrollTop).toBe(1000);
 
     // Add a new agent
-    const updatedAgents = new Map<string, AgentState>([
-      ['agent-1', makeAgentState('agent-1', initialLog)],
-      ['agent-2', makeAgentState('agent-2', [makeLogEntry('new agent')])],
-    ]);
-    rerender(<AgentLog agents={updatedAgents} onTerminate={vi.fn()} status="running" connected={true} />);
+    seedStoreAct({
+      'agent-1': makeAgentEntity('agent-1', initialLog),
+      'agent-2': makeAgentEntity('agent-2', [makeLogEntry('new agent')]),
+    });
 
     // selectedIndex was 0, keys length changed from 1 to 2, but 0 < 2, so selection stays
-    // autoScroll should still be true (no scroll happened to change it)
-    // The effect should re-run and scroll to bottom
+    // autoScroll should still be true → effect scrolls to bottom
     expect(scrollDiv.scrollTop).toBe(1000);
+  });
+
+  it('shows "Connecting to workflow…" when no snapshot has arrived (seq=0)', () => {
+    // Store is in initial state — seq=0, no snapshot
+    const { container } = render(<AgentLog />);
+    expect(container.textContent).toContain('Connecting to workflow…');
+    expect(container.textContent).not.toContain('No agent selected');
+  });
+});
+
+describe('AgentLog – accessibility', () => {
+  beforeEach(() => {
+    entryCounter = 0;
+    vi.restoreAllMocks();
+    resetStore();
+    vi.mocked(useWebSocket).mockReturnValue({ send: mockSend, connected: true, hasConnectedOnce: true });
+  });
+
+  it('adds aria-label to previous/next nav buttons', () => {
+    seedStoreAct({
+      'agent-1': makeAgentEntity('agent-1', [makeLogEntry('a')]),
+      'agent-2': makeAgentEntity('agent-2', [makeLogEntry('b')]),
+    });
+
+    const { container } = render(<AgentLog />);
+
+    const buttons = container.querySelectorAll('.agent-log__nav-btn');
+    expect(buttons).toHaveLength(2);
+    expect(buttons[0]).toHaveAttribute('aria-label', 'Previous agent');
+    expect(buttons[1]).toHaveAttribute('aria-label', 'Next agent');
+  });
+
+  it('renders readable token stats with Input/Output labels', () => {
+    seedStoreAct({
+      'agent-1': makeAgentEntity('agent-1', [makeLogEntry('a')], {
+        inputTokens: 123,
+        outputTokens: 456,
+        toolCallCount: 3,
+      }),
+    });
+
+    const { container } = render(<AgentLog />);
+
+    const header = container.querySelector('.agent-log__header');
+    expect(header).toBeInTheDocument();
+    expect(header?.textContent).toContain('Input: 123');
+    expect(header?.textContent).toContain('Output: 456');
+    expect(header?.textContent).toContain('3 tool calls');
+    expect(header?.textContent).not.toContain('↑');
+    expect(header?.textContent).not.toContain('↓');
   });
 });
 
@@ -330,12 +413,15 @@ describe('AgentLog – terminate button (connected state)', () => {
   beforeEach(() => {
     entryCounter = 0;
     vi.restoreAllMocks();
+    resetStore();
+    mockSend.mockClear();
   });
 
   it('shows terminate button when status is running and connected is true', () => {
-    const agents = new Map<string, AgentState>([['agent-1', makeAgentState('agent-1', [makeLogEntry('running')])]]);
+    vi.mocked(useWebSocket).mockReturnValue({ send: mockSend, connected: true, hasConnectedOnce: true });
+    seedStoreAct({ 'agent-1': makeAgentEntity('agent-1', [makeLogEntry('running')]) });
 
-    const { container } = render(<AgentLog agents={agents} onTerminate={vi.fn()} status="running" connected={true} />);
+    const { container } = render(<AgentLog />);
 
     const button = container.querySelector('.agent-log__terminate');
     expect(button).toBeInTheDocument();
@@ -344,9 +430,10 @@ describe('AgentLog – terminate button (connected state)', () => {
   });
 
   it('shows terminate button as disabled with feedback text when disconnected', () => {
-    const agents = new Map<string, AgentState>([['agent-1', makeAgentState('agent-1', [makeLogEntry('running')])]]);
+    vi.mocked(useWebSocket).mockReturnValue({ send: mockSend, connected: false, hasConnectedOnce: true });
+    seedStoreAct({ 'agent-1': makeAgentEntity('agent-1', [makeLogEntry('running')]) });
 
-    const { container } = render(<AgentLog agents={agents} onTerminate={vi.fn()} status="running" connected={false} />);
+    const { container } = render(<AgentLog />);
 
     const button = container.querySelector('.agent-log__terminate');
     expect(button).toBeInTheDocument();
@@ -355,111 +442,145 @@ describe('AgentLog – terminate button (connected state)', () => {
   });
 
   it('does not render terminate button when status is complete', () => {
-    const agents = new Map<string, AgentState>([['agent-1', makeAgentState('agent-1', [makeLogEntry('done')])]]);
+    vi.mocked(useWebSocket).mockReturnValue({ send: mockSend, connected: true, hasConnectedOnce: true });
+    seedStore({ 'agent-1': makeAgentEntity('agent-1', [makeLogEntry('done')]) });
+    act(() => {
+      useWorkflowStore.getState().setStatus('complete');
+    });
 
-    const { container } = render(<AgentLog agents={agents} onTerminate={vi.fn()} status="complete" connected={true} />);
+    const { container } = render(<AgentLog />);
 
     const button = container.querySelector('.agent-log__terminate');
     expect(button).not.toBeInTheDocument();
   });
 
   it('does not render terminate button when status is failed', () => {
-    const agents = new Map<string, AgentState>([['agent-1', makeAgentState('agent-1', [makeLogEntry('error')])]]);
+    vi.mocked(useWebSocket).mockReturnValue({ send: mockSend, connected: true, hasConnectedOnce: true });
+    seedStore({ 'agent-1': makeAgentEntity('agent-1', [makeLogEntry('error')]) });
+    act(() => {
+      useWorkflowStore.getState().setStatus('failed');
+    });
 
-    const { container } = render(<AgentLog agents={agents} onTerminate={vi.fn()} status="failed" connected={true} />);
+    const { container } = render(<AgentLog />);
 
     const button = container.querySelector('.agent-log__terminate');
     expect(button).not.toBeInTheDocument();
   });
 
-  it('calls onTerminate when button is clicked while connected', () => {
-    const onTerminate = vi.fn();
-    const agents = new Map<string, AgentState>([['agent-1', makeAgentState('agent-1', [makeLogEntry('running')])]]);
+  it('calls send with terminate_server after two clicks (confirmation flow)', () => {
+    vi.mocked(useWebSocket).mockReturnValue({ send: mockSend, connected: true, hasConnectedOnce: true });
+    seedStoreAct({ 'agent-1': makeAgentEntity('agent-1', [makeLogEntry('running')]) });
 
-    const { container } = render(
-      <AgentLog agents={agents} onTerminate={onTerminate} status="running" connected={true} />,
-    );
+    const { container } = render(<AgentLog />);
 
     const button = container.querySelector('.agent-log__terminate')!;
+
+    // First click → enters confirmation state, does NOT send yet
     fireEvent.click(button);
-    expect(onTerminate).toHaveBeenCalledTimes(1);
+    expect(mockSend).not.toHaveBeenCalled();
+    expect(button).toHaveTextContent('Confirm termination');
+
+    // Second click → actually sends
+    fireEvent.click(button);
+    expect(mockSend).toHaveBeenCalledTimes(1);
+    expect(mockSend).toHaveBeenCalledWith({ type: 'terminate_server' });
   });
 
-  it('does not call onTerminate when button is clicked while disconnected', () => {
-    const onTerminate = vi.fn();
-    const agents = new Map<string, AgentState>([['agent-1', makeAgentState('agent-1', [makeLogEntry('running')])]]);
+  it('shows Cancel button in confirmation state and cancels termination', () => {
+    vi.mocked(useWebSocket).mockReturnValue({ send: mockSend, connected: true, hasConnectedOnce: true });
+    seedStoreAct({ 'agent-1': makeAgentEntity('agent-1', [makeLogEntry('running')]) });
 
-    const { container } = render(
-      <AgentLog agents={agents} onTerminate={onTerminate} status="running" connected={false} />,
-    );
+    const { container } = render(<AgentLog />);
+
+    const terminateBtn = container.querySelector('.agent-log__terminate')!;
+    expect(container.querySelector('.agent-log__cancel')).not.toBeInTheDocument();
+
+    // First click → confirmation state
+    fireEvent.click(terminateBtn);
+    expect(terminateBtn).toHaveTextContent('Confirm termination');
+
+    const cancelBtn = container.querySelector('.agent-log__cancel') as HTMLButtonElement;
+    expect(cancelBtn).toBeInTheDocument();
+
+    // Cancel → back to initial state
+    fireEvent.click(cancelBtn);
+    expect(mockSend).not.toHaveBeenCalled();
+    const restoreBtn = container.querySelector('.agent-log__terminate')!;
+    expect(restoreBtn).toHaveTextContent('Terminate Workflow');
+    expect(container.querySelector('.agent-log__cancel')).not.toBeInTheDocument();
+  });
+
+  it('does not call send when button is clicked while disconnected', () => {
+    vi.mocked(useWebSocket).mockReturnValue({ send: mockSend, connected: false, hasConnectedOnce: true });
+    seedStoreAct({ 'agent-1': makeAgentEntity('agent-1', [makeLogEntry('running')]) });
+
+    const { container } = render(<AgentLog />);
 
     const button = container.querySelector('.agent-log__terminate')!;
     expect(button).toBeDisabled();
 
-    // Clicking a disabled button should not trigger onClick in HTML,
-    // but React still fires the click handler – the disabled attribute
-    // prevents the default action but the handler may still be called.
-    // We verify the button is disabled so the user cannot interact with it.
     fireEvent.click(button);
-    // The handler may or may not fire; what matters is the button is disabled.
-    // We just verify it's disabled.
-    expect(button).toBeDisabled();
+    expect(mockSend).not.toHaveBeenCalled();
   });
 
   it('has correct CSS class on the terminate button', () => {
-    const agents = new Map<string, AgentState>([['agent-1', makeAgentState('agent-1', [makeLogEntry('running')])]]);
+    vi.mocked(useWebSocket).mockReturnValue({ send: mockSend, connected: true, hasConnectedOnce: true });
+    seedStoreAct({ 'agent-1': makeAgentEntity('agent-1', [makeLogEntry('running')]) });
 
-    const { container } = render(<AgentLog agents={agents} onTerminate={vi.fn()} status="running" connected={true} />);
+    const { container } = render(<AgentLog />);
 
     const button = container.querySelector('.agent-log__terminate');
     expect(button).toHaveClass('agent-log__terminate');
   });
 
-  it('transitions button text from connected to disconnected when connected prop changes', () => {
-    const onTerminate = vi.fn();
-    const agents = new Map<string, AgentState>([['agent-1', makeAgentState('agent-1', [makeLogEntry('running')])]]);
+  it('transitions button text from connected to disconnected when connected changes', () => {
+    vi.mocked(useWebSocket).mockReturnValue({ send: mockSend, connected: true, hasConnectedOnce: true });
+    seedStoreAct({ 'agent-1': makeAgentEntity('agent-1', [makeLogEntry('running')]) });
 
-    const { container, rerender } = render(
-      <AgentLog agents={agents} onTerminate={onTerminate} status="running" connected={true} />,
-    );
+    const { container, rerender } = render(<AgentLog />);
 
     const button = container.querySelector('.agent-log__terminate')!;
     expect(button).toHaveTextContent('Terminate Workflow');
     expect(button).not.toBeDisabled();
 
     // Simulate disconnect
-    rerender(<AgentLog agents={agents} onTerminate={onTerminate} status="running" connected={false} />);
+    vi.mocked(useWebSocket).mockReturnValue({ send: mockSend, connected: false, hasConnectedOnce: true });
+    rerender(<AgentLog />);
 
     expect(button).toHaveTextContent('Disconnected - Reconnecting...');
     expect(button).toBeDisabled();
   });
 
-  it('does not render terminate button when agents exist but status is complete even if connected', () => {
-    const agents = new Map<string, AgentState>([['agent-1', makeAgentState('agent-1', [makeLogEntry('done')])]]);
+  it('does not render terminate button when status transitions to complete', () => {
+    vi.mocked(useWebSocket).mockReturnValue({ send: mockSend, connected: true, hasConnectedOnce: true });
+    seedStoreAct({ 'agent-1': makeAgentEntity('agent-1', [makeLogEntry('done')]) });
 
-    const { container, rerender } = render(
-      <AgentLog agents={agents} onTerminate={vi.fn()} status="running" connected={true} />,
-    );
+    const { container, rerender } = render(<AgentLog />);
 
     expect(container.querySelector('.agent-log__terminate')).toBeInTheDocument();
 
     // Status changes to complete
-    rerender(<AgentLog agents={agents} onTerminate={vi.fn()} status="complete" connected={true} />);
+    act(() => {
+      useWorkflowStore.getState().setStatus('complete');
+    });
+    rerender(<AgentLog />);
 
     expect(container.querySelector('.agent-log__terminate')).not.toBeInTheDocument();
   });
 
-  it('does not render terminate button when agents exist but status is failed even if connected', () => {
-    const agents = new Map<string, AgentState>([['agent-1', makeAgentState('agent-1', [makeLogEntry('error')])]]);
+  it('does not render terminate button when status transitions to failed', () => {
+    vi.mocked(useWebSocket).mockReturnValue({ send: mockSend, connected: true, hasConnectedOnce: true });
+    seedStoreAct({ 'agent-1': makeAgentEntity('agent-1', [makeLogEntry('error')]) });
 
-    const { container, rerender } = render(
-      <AgentLog agents={agents} onTerminate={vi.fn()} status="running" connected={true} />,
-    );
+    const { container, rerender } = render(<AgentLog />);
 
     expect(container.querySelector('.agent-log__terminate')).toBeInTheDocument();
 
     // Status changes to failed
-    rerender(<AgentLog agents={agents} onTerminate={vi.fn()} status="failed" connected={true} />);
+    act(() => {
+      useWorkflowStore.getState().setStatus('failed');
+    });
+    rerender(<AgentLog />);
 
     expect(container.querySelector('.agent-log__terminate')).not.toBeInTheDocument();
   });

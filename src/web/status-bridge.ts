@@ -1,409 +1,151 @@
-import type { StatusCallbacks, TurnContentBlock } from '../core/types.js';
-import type { AgentWindowState, LogEntry, ServerMessage, SidebarInfo, TaskInfo } from './protocol-types.js';
-
-// ─── Helpers ────────────────────────────────────────────────────────────────
-
-/**
- * Build a composite key for agent lookup.
- */
-function agentKey(agentId: string, taskId?: string): string {
-  return taskId ? agentId + '::' + taskId : agentId;
-}
-
-// ─── Constants ────────────────────────────────────────────────────────────────
-
-/** Maximum log entries kept per agent to prevent unbounded memory growth. */
-export const MAX_AGENT_LOG_ENTRIES = 500;
+import type { EventStore } from '../tracking/event-store.js';
+import type { EventRecord, WorkflowProjection } from '../tracking/event-types.js';
+import type { ServerMessage } from './protocol-types.js';
 
 // ─── StatusBridge ───────────────────────────────────────────────────────────
 
 /**
- * Lightweight StatusCallbacks implementation that broadcasts all workflow
- * events via WebSocket and maintains state for snapshot-on-connect.
+ * Thin view over the {@link EventStore} that broadcasts
+ * snapshot/delta {@link ServerMessage}s whenever the store changes.
  *
- * Does NOT use RunRegistry.
+ * - Late-joining clients receive a `{ type: 'snapshot' }` via `getSnapshot()`.
+ * - Between snapshots the bridge coalesces store changes into a single
+ *   `{ type: 'events' }` message per microtask tick, forwarding raw
+ *   {@link EventRecord}s. The web client replays them via its own evolve.
+ * - Terminal lifecycle transitions (→ complete / → failed) are broadcast
+ *   IMMEDIATELY via `{ type: 'workflow_complete' }` /
+ *   `{ type: 'workflow_failed' }`, not coalesced, so clients can surface a
+ *   status banner without waiting for the event batch flush.  The coalesced
+ *   events batch also carries the terminal event records (idempotent).
  */
 export class StatusBridge {
-  private currentPhase = '';
-  private completedPhases: string[] = [];
-  private tasks = new Map<string, TaskInfo>();
-  private agents = new Map<string, AgentWindowState>();
-  private sidebar: SidebarInfo = { title: '', indicator: '' };
-  private taskPrompt = '';
+  private unsubscribe: () => void;
 
-  constructor(private broadcast: (msg: ServerMessage) => void) {}
+  /** Last projection seq we sent to clients. */
+  private lastSentSeq: number;
+
+  /** Whether a microtask flush is already scheduled. */
+  private flushPending = false;
+
+  /** Reference to the store. */
+  private readonly store: EventStore;
+
+  /** Last projection status we observed (for terminal lifecycle detection). */
+  private prevStatus: WorkflowProjection['status'];
+
+  constructor(
+    private broadcast: (msg: ServerMessage) => void,
+    store: EventStore,
+  ) {
+    this.store = store;
+
+    // Initialise lastSentSeq to the store's current seq so that pre-subscribe
+    // history is NOT re-broadcast — late joiners get it via getSnapshot().
+    const snap = store.getSnapshot();
+    this.lastSentSeq = snap.seq;
+    this.prevStatus = snap.state.status;
+
+    // Subscribe to future projection changes.
+    this.unsubscribe = store.subscribe((projection) => this.onProjectionChange(projection));
+  }
 
   /**
-   * Seed the bridge with persisted state so that late-connecting clients
-   * (e.g., during a resumed run) receive the full picture rather than
-   * starting from an empty snapshot.
-   *
-   * Only the fields that are provided are updated; omitted fields are
-   * left unchanged.
+   * Return a full snapshot derived from the store's current projection.
+   * This is what a late-connecting web client receives.
    */
-  seed(data: {
-    currentPhase?: string;
-    completedPhases?: string[];
-    tasks?: TaskInfo[];
-    sidebar?: SidebarInfo;
-    taskPrompt?: string;
-  }): void {
-    if (data.currentPhase !== undefined) this.currentPhase = data.currentPhase;
-    if (data.completedPhases !== undefined) this.completedPhases = [...data.completedPhases];
-    if (data.tasks !== undefined) {
-      this.tasks.clear();
-      for (const task of data.tasks) {
-        this.tasks.set(task.id, { ...task });
+  getSnapshot(): ServerMessage & { type: 'snapshot' } {
+    const { state, seq } = this.store.getSnapshot();
+    return { type: 'snapshot', seq, state };
+  }
+
+  /**
+   * Handle a resync request from a client. Returns the appropriate message
+   * to send back to the requesting WebSocket (via the broadcast callback
+   * from the observer server).
+   */
+  handleResync(lastSeq?: number): ServerMessage {
+    if (lastSeq !== undefined && lastSeq >= 0) {
+      const events = this.store.getEventsSince(lastSeq);
+      // Only use events catch-up if they are contiguous: the first event's
+      // seq must equal lastSeq + 1.  If there's a gap (ring buffer evicted
+      // the intervening events) or the buffer is empty, fall through to a
+      // full snapshot so the client gets a clean baseline.
+      if (events.length > 0 && events[0].seq === lastSeq + 1) {
+        return {
+          type: 'events',
+          seq: this.store.getSnapshot().seq,
+          events,
+        };
       }
     }
-    if (data.sidebar !== undefined) {
-      // Merge into existing sidebar so previously set fields survive
-      this.sidebar = { ...this.sidebar, ...data.sidebar };
-    }
-    if (data.taskPrompt !== undefined) this.taskPrompt = data.taskPrompt;
+    // Full resync — snapshot
+    return this.getSnapshot();
   }
 
   /**
-   * Return a StatusCallbacks object wired to this bridge.
+   * Unsubscribe from the store. Call during teardown to avoid leaks.
    */
-  getCallbacks(): StatusCallbacks {
-    return {
-      ...this.createWorkflowHandlers(),
-      ...this.createPhaseHandlers(),
-      ...this.createAgentHandlers(),
-      ...this.createTaskHandlers(),
-      onSidebarUpdate: (info) => {
-        if (info.title !== undefined) this.sidebar.title = info.title;
-        if (info.indicator !== undefined) this.sidebar.indicator = info.indicator;
-        if (info.phases !== undefined) this.sidebar.phases = info.phases;
-        this.broadcast({ type: 'workflow_sidebar', sidebar: { ...this.sidebar } });
-      },
-    };
-  }
-
-  // ─── Handler-group builders ──────────────────────────────────────────────
-
-  private createWorkflowHandlers(): Pick<
-    StatusCallbacks,
-    'onWorkflowStart' | 'onWorkflowComplete' | 'onWorkflowFailed'
-  > {
-    return {
-      onWorkflowStart: (info) => {
-        this.taskPrompt = info.taskPrompt;
-        // no broadcast: workflow start is only stored for late-connecting clients
-      },
-
-      onWorkflowComplete: () => {
-        this.broadcast({ type: 'workflow_complete' });
-      },
-
-      onWorkflowFailed: (info) => {
-        this.broadcast({ type: 'workflow_failed', error: info.error.message, phase: info.phase });
-      },
-    };
-  }
-
-  private createPhaseHandlers(): Pick<StatusCallbacks, 'onPhaseStart' | 'onPhaseComplete'> {
-    return {
-      onPhaseStart: (info) => {
-        if (this.currentPhase && !this.completedPhases.includes(this.currentPhase)) {
-          this.completedPhases.push(this.currentPhase);
-        }
-        this.currentPhase = info.phase;
-        this.broadcast({
-          type: 'workflow_phase',
-          phase: info.phase,
-          completed: [...this.completedPhases],
-          currentPhase: info.phase,
-        });
-      },
-
-      onPhaseComplete: (info) => {
-        if (!this.completedPhases.includes(info.phase)) {
-          this.completedPhases.push(info.phase);
-        }
-        this.broadcast({
-          type: 'workflow_phase',
-          phase: info.phase,
-          completed: [...this.completedPhases],
-          currentPhase: this.currentPhase,
-        });
-      },
-    };
-  }
-
-  private createAgentHandlers(): Pick<
-    StatusCallbacks,
-    'onAgentSpawn' | 'onAgentComplete' | 'onTurnEnd' | 'onToolCallStart' | 'onToolCallEnd' | 'onError' | 'onDecision'
-  > {
-    return {
-      onAgentSpawn: (info) => {
-        const agent: AgentWindowState = {
-          agentId: info.agentId,
-          profile: info.profile,
-          taskId: info.taskId,
-          phase: info.phase,
-          active: true,
-          log: [],
-        };
-        this.agents.set(agentKey(info.agentId, info.taskId), agent);
-        this.broadcast({ type: 'agent_spawned', agent });
-      },
-
-      onAgentComplete: (info) => {
-        const key = agentKey(info.agentId, info.taskId);
-        const agent = this.agents.get(key) || this.agents.get(info.agentId);
-        if (agent) {
-          agent.active = false;
-        }
-        this.broadcast({
-          type: 'agent_complete',
-          agentId: info.agentId,
-          phase: info.phase,
-          taskId: info.taskId,
-        });
-      },
-
-      onTurnEnd: (info) => {
-        const taskId = this.findTaskIdForAgent(info.agentId);
-        if (info.contentBlocks) {
-          for (const block of info.contentBlocks) {
-            const entry = this.blockToEntry(block);
-            if (entry) {
-              this.appendAgentLog(info.agentId, taskId, entry);
-              this.broadcast({
-                type: 'agent_log',
-                agentId: info.agentId,
-                entry,
-                ...(taskId !== undefined ? { taskId } : {}),
-              });
-            }
-          }
-        }
-        if (info.tokens) {
-          this.broadcast({
-            type: 'agent_stats',
-            agentId: info.agentId,
-            inputTokens: info.tokens.input,
-            outputTokens: info.tokens.output,
-            ...(taskId !== undefined ? { taskId } : {}),
-          });
-        }
-      },
-
-      onToolCallStart: (info) => {
-        const taskId = this.findTaskIdForAgent(info.agentId);
-        const entry: LogEntry = {
-          id: info.toolCallId,
-          timestamp: new Date().toISOString(),
-          type: 'tool_call_start',
-          content: info.toolName,
-        };
-        this.appendAgentLog(info.agentId, taskId, entry);
-        this.broadcast({
-          type: 'agent_log',
-          agentId: info.agentId,
-          entry,
-          ...(taskId !== undefined ? { taskId } : {}),
-        });
-        this.broadcast({
-          type: 'agent_stats',
-          agentId: info.agentId,
-          toolCallCount: 1,
-          ...(taskId !== undefined ? { taskId } : {}),
-        });
-      },
-
-      onToolCallEnd: (info) => {
-        const taskId = this.findTaskIdForAgent(info.agentId);
-        const entry: LogEntry = {
-          id: info.toolCallId + '-end',
-          timestamp: new Date().toISOString(),
-          type: 'tool_call_end' as const,
-          content: info.toolName,
-          metadata: { isError: info.isError },
-        };
-        this.appendAgentLog(info.agentId, taskId, entry);
-        this.broadcast({
-          type: 'agent_log',
-          agentId: info.agentId,
-          entry,
-          ...(taskId !== undefined ? { taskId } : {}),
-        });
-      },
-
-      onError: (info) => {
-        const entry: LogEntry = {
-          id: `error-${Date.now()}`,
-          timestamp: new Date().toISOString(),
-          type: 'error',
-          content: info.error,
-          metadata: { phase: info.phase },
-        };
-        this.appendAgentLog(info.agentId, info.taskId, entry);
-        this.broadcast({ type: 'agent_log', agentId: info.agentId, entry, taskId: info.taskId });
-      },
-
-      onDecision: (info) => {
-        const entry: LogEntry = {
-          id: `decision-${Date.now()}`,
-          timestamp: new Date().toISOString(),
-          type: 'decision',
-          content: info.decision,
-          metadata: { reasoning: info.reasoning },
-        };
-        this.appendAgentLog(info.agentId, info.taskId, entry);
-        this.broadcast({ type: 'agent_log', agentId: info.agentId, entry, taskId: info.taskId });
-      },
-    };
-  }
-
-  private createTaskHandlers(): Pick<
-    StatusCallbacks,
-    'onTasksAdded' | 'onTaskStart' | 'onTaskComplete' | 'onTaskRejected'
-  > {
-    return {
-      onTasksAdded: (info) => {
-        for (const task of info.tasks) {
-          const existing = this.tasks.get(task.id);
-          this.tasks.set(task.id, {
-            id: task.id,
-            title: task.title,
-            status: task.status,
-            phase: task.phase,
-            agentId: existing?.agentId,
-            startedAt: existing?.startedAt,
-          });
-        }
-        this.broadcast({ type: 'tasks_updated', tasks: Array.from(this.tasks.values()) });
-      },
-
-      onTaskStart: (info) => {
-        const existing = this.tasks.get(info.taskId);
-        if (existing) {
-          existing.status = 'implementing';
-          existing.agentId = info.agentId;
-          existing.startedAt = info.startedAt;
-        } else {
-          this.tasks.set(info.taskId, {
-            id: info.taskId,
-            title: info.title,
-            status: 'implementing',
-            phase: info.phase,
-            agentId: info.agentId,
-            startedAt: info.startedAt,
-          });
-        }
-        this.broadcast({ type: 'tasks_updated', tasks: Array.from(this.tasks.values()) });
-      },
-
-      onTaskComplete: (info) => {
-        const existing = this.tasks.get(info.taskId);
-        if (existing) {
-          existing.status = 'done';
-        } else {
-          this.tasks.set(info.taskId, {
-            id: info.taskId,
-            title: info.title,
-            status: 'done',
-          });
-        }
-        this.broadcast({ type: 'tasks_updated', tasks: Array.from(this.tasks.values()) });
-      },
-
-      onTaskRejected: (info) => {
-        const existing = this.tasks.get(info.taskId);
-        if (existing) {
-          existing.status = 'failed';
-        } else {
-          this.tasks.set(info.taskId, {
-            id: info.taskId,
-            title: info.title,
-            status: 'failed',
-          });
-        }
-        this.broadcast({ type: 'tasks_updated', tasks: Array.from(this.tasks.values()) });
-      },
-    };
-  }
-
-  /**
-   * Build an `init` message from accumulated state.
-   */
-  getSnapshot(): ServerMessage & { type: 'init' } {
-    return {
-      type: 'init',
-      currentPhase: this.currentPhase,
-      completedPhases: [...this.completedPhases],
-      tasks: Array.from(this.tasks.values()),
-      agents: Array.from(this.agents.values()),
-      sidebar: { ...this.sidebar },
-      taskPrompt: this.taskPrompt,
-    };
+  dispose(): void {
+    this.unsubscribe();
   }
 
   // ─── Private helpers ──────────────────────────────────────────────────────
 
   /**
-   * Search the agents map for an entry with matching agentId (ignoring taskId in the key)
-   * and return its taskId, or undefined if not found.
-   *
-   * Prefers the most recently spawned agent that is still active; if none are active,
-   * falls back to the most recently spawned matching agent overall. This ensures that
-   * in a pool/lane system where the same agentId is reused across tasks, log entries
-   * are routed to the currently active agent rather than the earliest-spawned one.
+   * Handle a projection change from the store.  Terminal lifecycle
+   * transitions (→ complete / → failed) are broadcast IMMEDIATELY — not
+   * coalesced — so clients can surface a status banner without waiting for
+   * the event batch flush.  All projection changes (including terminal ones)
+   * also schedule a coalesced events flush.
    */
-  private findTaskIdForAgent(agentId: string): string | undefined {
-    const matching = Array.from(this.agents.values()).filter((a) => a.agentId === agentId);
-    if (matching.length === 0) return undefined;
+  private onProjectionChange(projection: WorkflowProjection): void {
+    const prev = this.prevStatus;
+    this.prevStatus = projection.status;
 
-    // Prefer the most recently spawned active agent
-    for (let i = matching.length - 1; i >= 0; i--) {
-      if (matching[i].active) {
-        return matching[i].taskId;
+    if (prev !== projection.status) {
+      if (projection.status === 'complete') {
+        this.broadcast({ type: 'workflow_complete' });
+      } else if (projection.status === 'failed') {
+        this.broadcast({
+          type: 'workflow_failed',
+          error: projection.error ?? '',
+          phase: projection.failedPhase ?? '',
+        });
       }
     }
-    // Fall back to the most recently spawned matching agent
-    return matching[matching.length - 1].taskId;
+
+    this.scheduleFlush();
   }
 
-  private appendAgentLog(agentId: string, taskId: string | undefined, entry: LogEntry): void {
-    const key = agentKey(agentId, taskId);
-    const agent = this.agents.get(key);
-    if (agent) {
-      agent.log.push(entry);
-      if (agent.log.length > MAX_AGENT_LOG_ENTRIES) {
-        agent.log.shift();
-      }
+  /**
+   * Schedule a microtask flush if one isn't already pending.
+   * Multiple store.append() calls within the same synchronous frame will be
+   * coalesced into a single events broadcast.
+   */
+  private scheduleFlush(): void {
+    if (!this.flushPending) {
+      this.flushPending = true;
+      queueMicrotask(() => this.flush());
     }
   }
 
-  private blockToEntry(block: TurnContentBlock): LogEntry | undefined {
-    if (block.type === 'text') {
-      return {
-        id: `text-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-        timestamp: new Date().toISOString(),
-        type: 'text',
-        content: block.text,
-      };
-    }
-    if (block.type === 'thinking') {
-      return {
-        id: `thinking-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-        timestamp: new Date().toISOString(),
-        type: 'thinking',
-        content: block.thinking,
-      };
-    }
-    if (block.type === 'toolCall') {
-      return {
-        id: block.id,
-        timestamp: new Date().toISOString(),
-        type: 'tool_call',
-        content: block.name,
-        metadata: { arguments: block.arguments },
-      };
-    }
-    return undefined;
+  /**
+   * Collect all events since lastSentSeq and broadcast them in one message.
+   */
+  private flush(): void {
+    this.flushPending = false;
+
+    const latestSeq = this.store.getSnapshot().seq;
+    if (latestSeq <= this.lastSentSeq) return; // nothing new
+
+    const events: EventRecord[] = this.store.getEventsSince(this.lastSentSeq);
+    if (events.length === 0) return; // should not happen, but guard
+
+    this.lastSentSeq = latestSeq;
+    this.broadcast({
+      type: 'events',
+      seq: latestSeq,
+      events,
+    });
   }
 }

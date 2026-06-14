@@ -12,12 +12,12 @@
     "engine"
   ],
   "type": "module",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
   "exports": {
     ".": {
-      "import": "./dist/index.js",
-      "types": "./dist/index.d.ts"
+      "import": "./src/index.ts",
+      "types": "./src/index.ts"
     }
   },
   "bin": {
@@ -40,7 +40,8 @@
     "prepare": "simple-git-hooks"
   },
   "files": [
-    "dist"
+    "dist",
+    "src"
   ],
   "dependencies": {
     "@earendil-works/pi-coding-agent": "^0.79.0",

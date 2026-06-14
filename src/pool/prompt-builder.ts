@@ -130,7 +130,7 @@ export async function buildPrompt(task: Task, step: StepDefinition, cwd: string)
         parts.push(content);
         parts.push('```');
       } catch (err) {
-        console.warn(`[prompt-builder] Skipping file ${fp}: ${err instanceof Error ? err.message : err}`);
+        console.debug(`[prompt-builder] Skipping file ${fp}: ${err instanceof Error ? err.message : err}`);
       }
     }
   }

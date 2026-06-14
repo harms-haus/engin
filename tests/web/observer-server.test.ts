@@ -101,12 +101,34 @@ describe('observer-server', () => {
 
   it('sends snapshot on WebSocket connection', async () => {
     const getSnapshot = mock(() => ({
-      type: 'init' as const,
-      currentPhase: 'scouting',
-      completedPhases: ['setup'],
-      tasks: [{ id: 't1', title: 'Task 1', status: 'done' }],
-      agents: [{ agentId: 'a1', profile: 'scout', active: false, log: [] }],
-      sidebar: { title: 'Test', indicator: '🟢' },
+      type: 'snapshot' as const,
+      seq: 1,
+      state: {
+        seq: 1,
+        taskPrompt: 'Build it',
+        currentPhase: 'scouting',
+        completedPhases: ['setup'],
+        tasks: {
+          t1: { id: 't1', title: 'Task 1', status: 'done' },
+        },
+        agents: {
+          a1: {
+            uid: 'uid-1',
+            agentId: 'a1',
+            profile: 'scout',
+            phase: 'scouting',
+            active: false,
+            log: [],
+            toolCallCount: 0,
+            inputTokens: 0,
+            outputTokens: 0,
+            taskTitle: 'Task 1',
+          },
+        },
+        sidebar: { title: 'Test', indicator: '🟢' },
+        status: 'running',
+        stats: { totalTokens: 0, agentCount: 1 },
+      },
     }));
 
     const port = randomPort();
@@ -119,13 +141,13 @@ describe('observer-server', () => {
     const { ws, firstMessage } = connectAndGetFirstMessage(`ws://127.0.0.1:${port}/ws`);
     try {
       const msg = (await firstMessage) as any;
-      expect(msg.type).toBe('init');
-      expect(msg.currentPhase).toBe('scouting');
-      expect(msg.completedPhases).toEqual(['setup']);
-      expect(msg.tasks).toHaveLength(1);
-      expect(msg.tasks[0].id).toBe('t1');
-      expect(msg.agents).toHaveLength(1);
-      expect(msg.sidebar.title).toBe('Test');
+      expect(msg.type).toBe('snapshot');
+      expect(msg.state.currentPhase).toBe('scouting');
+      expect(msg.state.completedPhases).toEqual(['setup']);
+      expect(Object.keys(msg.state.tasks)).toHaveLength(1);
+      expect(msg.state.tasks.t1.id).toBe('t1');
+      expect(Object.keys(msg.state.agents)).toHaveLength(1);
+      expect(msg.state.sidebar.title).toBe('Test');
     } finally {
       ws.close();
     }
@@ -134,15 +156,22 @@ describe('observer-server', () => {
   it('broadcast sends message to all connected clients', async () => {
     const port = randomPort();
 
-    // Provide a snapshot so clients receive an init message on connect
+    // Provide a snapshot so clients receive a snapshot message on connect
     // (makes it easier to sequence the test).
     const getSnapshot = mock(() => ({
-      type: 'init' as const,
-      currentPhase: '',
-      completedPhases: [] as string[],
-      tasks: [] as any[],
-      agents: [] as any[],
-      sidebar: { title: '', indicator: '' },
+      type: 'snapshot' as const,
+      seq: 0,
+      state: {
+        seq: 0,
+        taskPrompt: '',
+        currentPhase: '',
+        completedPhases: [] as string[],
+        tasks: {},
+        agents: {},
+        sidebar: { title: '', indicator: '' },
+        status: 'running',
+        stats: { totalTokens: 0, agentCount: 0 },
+      },
     }));
 
     server = await startObserverServer({
@@ -155,13 +184,13 @@ describe('observer-server', () => {
     const ws1 = new WebSocket(`ws://127.0.0.1:${port}/ws`);
     await waitForOpen(ws1);
     const snapshot1 = await waitForMessage(ws1);
-    expect((snapshot1 as any).type).toBe('init');
+    expect((snapshot1 as any).type).toBe('snapshot');
 
     // Connect client 2 and wait for its snapshot
     const ws2 = new WebSocket(`ws://127.0.0.1:${port}/ws`);
     await waitForOpen(ws2);
     const snapshot2 = await waitForMessage(ws2);
-    expect((snapshot2 as any).type).toBe('init');
+    expect((snapshot2 as any).type).toBe('snapshot');
 
     // Broadcast a test message — both clients should receive it
     const msgPromise1 = waitForMessage(ws1);
@@ -397,12 +426,19 @@ describe('observer-server', () => {
 
     it('still allows real WebSocket connections from browser on localhost', async () => {
       const getSnapshot = mock(() => ({
-        type: 'init' as const,
-        currentPhase: '',
-        completedPhases: [] as string[],
-        tasks: [] as any[],
-        agents: [] as any[],
-        sidebar: { title: '', indicator: '' },
+        type: 'snapshot' as const,
+        seq: 0,
+        state: {
+          seq: 0,
+          taskPrompt: '',
+          currentPhase: '',
+          completedPhases: [] as string[],
+          tasks: {},
+          agents: {},
+          sidebar: { title: '', indicator: '' },
+          status: 'running',
+          stats: { totalTokens: 0, agentCount: 0 },
+        },
       }));
 
       const port = randomPort();
@@ -415,7 +451,7 @@ describe('observer-server', () => {
       const { ws, firstMessage } = connectAndGetFirstMessage(`ws://127.0.0.1:${port}/ws`);
       try {
         const msg = (await firstMessage) as any;
-        expect(msg.type).toBe('init');
+        expect(msg.type).toBe('snapshot');
       } finally {
         ws.close();
       }

@@ -6,27 +6,28 @@ import {
   visibleWidth,
   wrapTextWithAnsi,
 } from '@earendil-works/pi-tui';
-import type { AgentRegistry } from '../../tracking/agent-registry.js';
-import { type AgentLogEntry, type AgentRecord } from '../../tracking/agent-registry.js';
+import type { AgentEntity, LogEntry } from '../../tracking/event-types.js';
 import { cyan, dim, green, red } from '../theme.js';
 
-// Re-export AgentLogEntry for backward compatibility
-export type { AgentLogEntry } from '../../tracking/agent-registry.js';
+// Re-export LogEntry as AgentLogEntry for backward compatibility
+export type { LogEntry as AgentLogEntry } from '../../tracking/event-types.js';
 
 // ─── Type Icon Map ───────────────────────────────────────────────────────────
 
-const typeIconMap: Record<AgentLogEntry['type'], string> = {
+const typeIconMap: Record<LogEntry['type'], string> = {
   text: '💬',
   thinking: '🧠',
+  tool_call: '🔧',
   tool_call_start: '🔧',
   tool_call_end: '✅',
   error: '⚠️',
   decision: '🤝',
 };
 
-const typeColorMap: Record<AgentLogEntry['type'], ((s: string) => string) | null> = {
+const typeColorMap: Record<LogEntry['type'], ((s: string) => string) | null> = {
   text: null,
   thinking: dim,
+  tool_call: cyan,
   tool_call_start: cyan,
   tool_call_end: green,
   error: red,
@@ -42,7 +43,7 @@ const padToWidth = (line: string, width: number): string => {
 // ─── AgentLogWidget ──────────────────────────────────────────────────────────
 
 export class AgentLogWidget implements Component {
-  private _registry: AgentRegistry | null = null;
+  private _agents: AgentEntity[] = [];
   private _phases: string[] = [];
   private _currentPhaseIndex = -1;
   private _selectedAgentIndex = 0;
@@ -64,8 +65,8 @@ export class AgentLogWidget implements Component {
 
   // ─── Public API ──────────────────────────────────────────────────────
 
-  setRegistry(registry: AgentRegistry): void {
-    this._registry = registry;
+  setAgents(agents: AgentEntity[]): void {
+    this._agents = agents;
     this.dirty = true;
   }
 
@@ -136,11 +137,10 @@ export class AgentLogWidget implements Component {
   // ─── Private helpers ─────────────────────────────────────────────────
 
   /** Return all agent records in the current phase. */
-  private getAgentsInCurrentPhase(): AgentRecord[] {
-    if (!this._registry) return [];
+  private getAgentsInCurrentPhase(): AgentEntity[] {
     const phase = this.getCurrentPhase();
     if (!phase) return [];
-    return this._registry.getAgentsByPhase(phase);
+    return this._agents.filter((a) => a.phase === phase);
   }
 
   /** Number of entry render lines available (no footer). */
@@ -149,7 +149,7 @@ export class AgentLogWidget implements Component {
   }
 
   /** Clamp selected agent index to valid range, auto-switch if completed. */
-  private ensureSelection(agents?: AgentRecord[]): void {
+  private ensureSelection(agents?: AgentEntity[]): void {
     // EFF-3: accept a precomputed agent list to avoid a duplicate lookup.
     const list = agents ?? this.getAgentsInCurrentPhase();
     if (list.length > 0 && this._selectedAgentIndex >= list.length) {
@@ -158,8 +158,8 @@ export class AgentLogWidget implements Component {
     // Auto-switch away from completed agent if user hasn't manually navigated
     if (!this._userNavigated && list.length > 0) {
       const selected = list[this._selectedAgentIndex];
-      if (selected && selected.status === 'completed') {
-        const firstActive = list.findIndex((a) => a.status === 'active');
+      if (selected && !selected.active) {
+        const firstActive = list.findIndex((a) => a.active);
         if (firstActive >= 0) {
           this._selectedAgentIndex = firstActive;
           this.dirty = true;
@@ -241,7 +241,7 @@ export class AgentLogWidget implements Component {
       const pending: { text: string; prefix: string; colorFn: ((s: string) => string) | null }[] = [];
       let totalEntryLineCount = 0;
 
-      for (const entry of selectedAgent.entries) {
+      for (const entry of selectedAgent.log) {
         const icon = typeIconMap[entry.type];
         const colorFn = typeColorMap[entry.type];
         const prefix = `  ${icon} `;

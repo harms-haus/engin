@@ -1,0 +1,6847 @@
+[
+  {
+    "name": "workflow_started sets taskPrompt and status",
+    "events": [
+      {
+        "seq": 1,
+        "type": "workflow_started",
+        "data": {
+          "taskPrompt": "Build auth module"
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z"
+        }
+      }
+    ],
+    "expect": {
+      "taskPrompt": "Build auth module",
+      "status": "running",
+      "seq": 1
+    }
+  },
+  {
+    "name": "agent_spawned first spawn creates entity and increments agentCount",
+    "events": [
+      {
+        "seq": 1,
+        "type": "workflow_started",
+        "data": {
+          "taskPrompt": "x"
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z"
+        }
+      },
+      {
+        "seq": 2,
+        "type": "agent_spawned",
+        "data": {
+          "profile": "coder",
+          "sessionId": "s1",
+          "sessionPath": "/s1"
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1",
+          "taskId": "t1",
+          "phase": "impl"
+        }
+      }
+    ],
+    "expect": {
+      "seq": 2,
+      "stats": {
+        "totalTokens": 0,
+        "agentCount": 1
+      },
+      "agents": {
+        "a1::t1": {
+          "uid": "a1::t1",
+          "agentId": "a1",
+          "profile": "coder",
+          "phase": "impl",
+          "taskId": "t1",
+          "sessionId": "s1",
+          "sessionPath": "/s1",
+          "active": true,
+          "log": [],
+          "toolCallCount": 0,
+          "inputTokens": 0,
+          "outputTokens": 0,
+          "taskTitle": ""
+        }
+      }
+    }
+  },
+  {
+    "name": "agent_spawned without taskId uses agentId as key",
+    "events": [
+      {
+        "seq": 1,
+        "type": "workflow_started",
+        "data": {
+          "taskPrompt": "x"
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z"
+        }
+      },
+      {
+        "seq": 2,
+        "type": "agent_spawned",
+        "data": {
+          "profile": "legacy"
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "legacy"
+        }
+      }
+    ],
+    "expect": {
+      "seq": 2,
+      "stats": {
+        "totalTokens": 0,
+        "agentCount": 1
+      },
+      "agents": {
+        "legacy": {
+          "uid": "legacy",
+          "agentId": "legacy",
+          "profile": "legacy",
+          "active": true
+        }
+      }
+    }
+  },
+  {
+    "name": "agent_spawned re-spawn preserves accumulated log/tokens/toolCallCount (kb-11)",
+    "events": [
+      {
+        "seq": 1,
+        "type": "workflow_started",
+        "data": {
+          "taskPrompt": "x"
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z"
+        }
+      },
+      {
+        "seq": 2,
+        "type": "agent_spawned",
+        "data": {
+          "profile": "coder"
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1",
+          "taskId": "t1"
+        }
+      },
+      {
+        "seq": 3,
+        "type": "turn_ended",
+        "data": {
+          "tokens": {
+            "input": 200,
+            "output": 100
+          },
+          "contentBlocks": [
+            {
+              "type": "text",
+              "text": "hello"
+            }
+          ]
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1",
+          "taskId": "t1"
+        }
+      },
+      {
+        "seq": 4,
+        "type": "tool_call_started",
+        "data": {
+          "toolName": "write",
+          "toolCallId": "tc1"
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1",
+          "taskId": "t1"
+        }
+      },
+      {
+        "seq": 5,
+        "type": "decision",
+        "data": {
+          "decision": "proceed",
+          "reasoning": "looks good"
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1",
+          "taskId": "t1"
+        }
+      },
+      {
+        "seq": 6,
+        "type": "agent_spawned",
+        "data": {
+          "profile": "coder-v2"
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1",
+          "taskId": "t1"
+        }
+      }
+    ],
+    "expect": {
+      "seq": 6,
+      "stats": {
+        "totalTokens": 300,
+        "agentCount": 1
+      },
+      "agents": {
+        "a1::t1": {
+          "profile": "coder-v2",
+          "active": true,
+          "log": {
+            "length": 3
+          },
+          "toolCallCount": 1,
+          "inputTokens": 200,
+          "outputTokens": 100
+        }
+      }
+    }
+  },
+  {
+    "name": "turn_ended accumulates inputTokens/outputTokens and adds text/thinking log entries",
+    "events": [
+      {
+        "seq": 1,
+        "type": "workflow_started",
+        "data": {
+          "taskPrompt": "x"
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z"
+        }
+      },
+      {
+        "seq": 2,
+        "type": "agent_spawned",
+        "data": {
+          "profile": "coder"
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 3,
+        "type": "turn_ended",
+        "data": {
+          "tokens": {
+            "input": 150,
+            "output": 75
+          },
+          "contentBlocks": [
+            {
+              "type": "text",
+              "text": "Hello world"
+            },
+            {
+              "type": "thinking",
+              "thinking": "Let me reason..."
+            }
+          ]
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      }
+    ],
+    "expect": {
+      "seq": 3,
+      "stats": {
+        "totalTokens": 225,
+        "agentCount": 1
+      },
+      "agents": {
+        "a1": {
+          "inputTokens": 150,
+          "outputTokens": 75,
+          "log": {
+            "length": 2
+          }
+        }
+      }
+    }
+  },
+  {
+    "name": "tool_call_started increments toolCallCount and tool_call_ended appends log",
+    "events": [
+      {
+        "seq": 1,
+        "type": "workflow_started",
+        "data": {
+          "taskPrompt": "x"
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z"
+        }
+      },
+      {
+        "seq": 2,
+        "type": "agent_spawned",
+        "data": {
+          "profile": "coder"
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 3,
+        "type": "tool_call_started",
+        "data": {
+          "toolName": "read_file",
+          "toolCallId": "tc1"
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 4,
+        "type": "tool_call_ended",
+        "data": {
+          "toolName": "read_file",
+          "toolCallId": "tc1",
+          "isError": false
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      }
+    ],
+    "expect": {
+      "seq": 4,
+      "agents": {
+        "a1": {
+          "toolCallCount": 1,
+          "log": {
+            "length": 2
+          }
+        }
+      }
+    }
+  },
+  {
+    "name": "log cap at 500 drops oldest entries when log exceeds 500",
+    "events": [
+      {
+        "seq": 1,
+        "type": "workflow_started",
+        "data": {
+          "taskPrompt": "x"
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z"
+        }
+      },
+      {
+        "seq": 2,
+        "type": "agent_spawned",
+        "data": {
+          "profile": "coder"
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 3,
+        "type": "decision",
+        "data": {
+          "decision": "d-0",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 4,
+        "type": "decision",
+        "data": {
+          "decision": "d-1",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 5,
+        "type": "decision",
+        "data": {
+          "decision": "d-2",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 6,
+        "type": "decision",
+        "data": {
+          "decision": "d-3",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 7,
+        "type": "decision",
+        "data": {
+          "decision": "d-4",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 8,
+        "type": "decision",
+        "data": {
+          "decision": "d-5",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 9,
+        "type": "decision",
+        "data": {
+          "decision": "d-6",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 10,
+        "type": "decision",
+        "data": {
+          "decision": "d-7",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 11,
+        "type": "decision",
+        "data": {
+          "decision": "d-8",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 12,
+        "type": "decision",
+        "data": {
+          "decision": "d-9",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 13,
+        "type": "decision",
+        "data": {
+          "decision": "d-10",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 14,
+        "type": "decision",
+        "data": {
+          "decision": "d-11",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 15,
+        "type": "decision",
+        "data": {
+          "decision": "d-12",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 16,
+        "type": "decision",
+        "data": {
+          "decision": "d-13",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 17,
+        "type": "decision",
+        "data": {
+          "decision": "d-14",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 18,
+        "type": "decision",
+        "data": {
+          "decision": "d-15",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 19,
+        "type": "decision",
+        "data": {
+          "decision": "d-16",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 20,
+        "type": "decision",
+        "data": {
+          "decision": "d-17",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 21,
+        "type": "decision",
+        "data": {
+          "decision": "d-18",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 22,
+        "type": "decision",
+        "data": {
+          "decision": "d-19",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 23,
+        "type": "decision",
+        "data": {
+          "decision": "d-20",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 24,
+        "type": "decision",
+        "data": {
+          "decision": "d-21",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 25,
+        "type": "decision",
+        "data": {
+          "decision": "d-22",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 26,
+        "type": "decision",
+        "data": {
+          "decision": "d-23",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 27,
+        "type": "decision",
+        "data": {
+          "decision": "d-24",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 28,
+        "type": "decision",
+        "data": {
+          "decision": "d-25",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 29,
+        "type": "decision",
+        "data": {
+          "decision": "d-26",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 30,
+        "type": "decision",
+        "data": {
+          "decision": "d-27",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 31,
+        "type": "decision",
+        "data": {
+          "decision": "d-28",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 32,
+        "type": "decision",
+        "data": {
+          "decision": "d-29",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 33,
+        "type": "decision",
+        "data": {
+          "decision": "d-30",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 34,
+        "type": "decision",
+        "data": {
+          "decision": "d-31",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 35,
+        "type": "decision",
+        "data": {
+          "decision": "d-32",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 36,
+        "type": "decision",
+        "data": {
+          "decision": "d-33",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 37,
+        "type": "decision",
+        "data": {
+          "decision": "d-34",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 38,
+        "type": "decision",
+        "data": {
+          "decision": "d-35",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 39,
+        "type": "decision",
+        "data": {
+          "decision": "d-36",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 40,
+        "type": "decision",
+        "data": {
+          "decision": "d-37",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 41,
+        "type": "decision",
+        "data": {
+          "decision": "d-38",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 42,
+        "type": "decision",
+        "data": {
+          "decision": "d-39",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 43,
+        "type": "decision",
+        "data": {
+          "decision": "d-40",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 44,
+        "type": "decision",
+        "data": {
+          "decision": "d-41",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 45,
+        "type": "decision",
+        "data": {
+          "decision": "d-42",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 46,
+        "type": "decision",
+        "data": {
+          "decision": "d-43",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 47,
+        "type": "decision",
+        "data": {
+          "decision": "d-44",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 48,
+        "type": "decision",
+        "data": {
+          "decision": "d-45",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 49,
+        "type": "decision",
+        "data": {
+          "decision": "d-46",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 50,
+        "type": "decision",
+        "data": {
+          "decision": "d-47",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 51,
+        "type": "decision",
+        "data": {
+          "decision": "d-48",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 52,
+        "type": "decision",
+        "data": {
+          "decision": "d-49",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 53,
+        "type": "decision",
+        "data": {
+          "decision": "d-50",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 54,
+        "type": "decision",
+        "data": {
+          "decision": "d-51",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 55,
+        "type": "decision",
+        "data": {
+          "decision": "d-52",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 56,
+        "type": "decision",
+        "data": {
+          "decision": "d-53",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 57,
+        "type": "decision",
+        "data": {
+          "decision": "d-54",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 58,
+        "type": "decision",
+        "data": {
+          "decision": "d-55",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 59,
+        "type": "decision",
+        "data": {
+          "decision": "d-56",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 60,
+        "type": "decision",
+        "data": {
+          "decision": "d-57",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 61,
+        "type": "decision",
+        "data": {
+          "decision": "d-58",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 62,
+        "type": "decision",
+        "data": {
+          "decision": "d-59",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 63,
+        "type": "decision",
+        "data": {
+          "decision": "d-60",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 64,
+        "type": "decision",
+        "data": {
+          "decision": "d-61",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 65,
+        "type": "decision",
+        "data": {
+          "decision": "d-62",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 66,
+        "type": "decision",
+        "data": {
+          "decision": "d-63",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 67,
+        "type": "decision",
+        "data": {
+          "decision": "d-64",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 68,
+        "type": "decision",
+        "data": {
+          "decision": "d-65",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 69,
+        "type": "decision",
+        "data": {
+          "decision": "d-66",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 70,
+        "type": "decision",
+        "data": {
+          "decision": "d-67",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 71,
+        "type": "decision",
+        "data": {
+          "decision": "d-68",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 72,
+        "type": "decision",
+        "data": {
+          "decision": "d-69",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 73,
+        "type": "decision",
+        "data": {
+          "decision": "d-70",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 74,
+        "type": "decision",
+        "data": {
+          "decision": "d-71",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 75,
+        "type": "decision",
+        "data": {
+          "decision": "d-72",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 76,
+        "type": "decision",
+        "data": {
+          "decision": "d-73",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 77,
+        "type": "decision",
+        "data": {
+          "decision": "d-74",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 78,
+        "type": "decision",
+        "data": {
+          "decision": "d-75",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 79,
+        "type": "decision",
+        "data": {
+          "decision": "d-76",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 80,
+        "type": "decision",
+        "data": {
+          "decision": "d-77",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 81,
+        "type": "decision",
+        "data": {
+          "decision": "d-78",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 82,
+        "type": "decision",
+        "data": {
+          "decision": "d-79",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 83,
+        "type": "decision",
+        "data": {
+          "decision": "d-80",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 84,
+        "type": "decision",
+        "data": {
+          "decision": "d-81",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 85,
+        "type": "decision",
+        "data": {
+          "decision": "d-82",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 86,
+        "type": "decision",
+        "data": {
+          "decision": "d-83",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 87,
+        "type": "decision",
+        "data": {
+          "decision": "d-84",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 88,
+        "type": "decision",
+        "data": {
+          "decision": "d-85",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 89,
+        "type": "decision",
+        "data": {
+          "decision": "d-86",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 90,
+        "type": "decision",
+        "data": {
+          "decision": "d-87",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 91,
+        "type": "decision",
+        "data": {
+          "decision": "d-88",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 92,
+        "type": "decision",
+        "data": {
+          "decision": "d-89",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 93,
+        "type": "decision",
+        "data": {
+          "decision": "d-90",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 94,
+        "type": "decision",
+        "data": {
+          "decision": "d-91",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 95,
+        "type": "decision",
+        "data": {
+          "decision": "d-92",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 96,
+        "type": "decision",
+        "data": {
+          "decision": "d-93",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 97,
+        "type": "decision",
+        "data": {
+          "decision": "d-94",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 98,
+        "type": "decision",
+        "data": {
+          "decision": "d-95",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 99,
+        "type": "decision",
+        "data": {
+          "decision": "d-96",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 100,
+        "type": "decision",
+        "data": {
+          "decision": "d-97",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 101,
+        "type": "decision",
+        "data": {
+          "decision": "d-98",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 102,
+        "type": "decision",
+        "data": {
+          "decision": "d-99",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 103,
+        "type": "decision",
+        "data": {
+          "decision": "d-100",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 104,
+        "type": "decision",
+        "data": {
+          "decision": "d-101",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 105,
+        "type": "decision",
+        "data": {
+          "decision": "d-102",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 106,
+        "type": "decision",
+        "data": {
+          "decision": "d-103",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 107,
+        "type": "decision",
+        "data": {
+          "decision": "d-104",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 108,
+        "type": "decision",
+        "data": {
+          "decision": "d-105",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 109,
+        "type": "decision",
+        "data": {
+          "decision": "d-106",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 110,
+        "type": "decision",
+        "data": {
+          "decision": "d-107",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 111,
+        "type": "decision",
+        "data": {
+          "decision": "d-108",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 112,
+        "type": "decision",
+        "data": {
+          "decision": "d-109",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 113,
+        "type": "decision",
+        "data": {
+          "decision": "d-110",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 114,
+        "type": "decision",
+        "data": {
+          "decision": "d-111",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 115,
+        "type": "decision",
+        "data": {
+          "decision": "d-112",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 116,
+        "type": "decision",
+        "data": {
+          "decision": "d-113",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 117,
+        "type": "decision",
+        "data": {
+          "decision": "d-114",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 118,
+        "type": "decision",
+        "data": {
+          "decision": "d-115",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 119,
+        "type": "decision",
+        "data": {
+          "decision": "d-116",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 120,
+        "type": "decision",
+        "data": {
+          "decision": "d-117",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 121,
+        "type": "decision",
+        "data": {
+          "decision": "d-118",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 122,
+        "type": "decision",
+        "data": {
+          "decision": "d-119",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 123,
+        "type": "decision",
+        "data": {
+          "decision": "d-120",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 124,
+        "type": "decision",
+        "data": {
+          "decision": "d-121",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 125,
+        "type": "decision",
+        "data": {
+          "decision": "d-122",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 126,
+        "type": "decision",
+        "data": {
+          "decision": "d-123",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 127,
+        "type": "decision",
+        "data": {
+          "decision": "d-124",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 128,
+        "type": "decision",
+        "data": {
+          "decision": "d-125",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 129,
+        "type": "decision",
+        "data": {
+          "decision": "d-126",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 130,
+        "type": "decision",
+        "data": {
+          "decision": "d-127",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 131,
+        "type": "decision",
+        "data": {
+          "decision": "d-128",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 132,
+        "type": "decision",
+        "data": {
+          "decision": "d-129",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 133,
+        "type": "decision",
+        "data": {
+          "decision": "d-130",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 134,
+        "type": "decision",
+        "data": {
+          "decision": "d-131",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 135,
+        "type": "decision",
+        "data": {
+          "decision": "d-132",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 136,
+        "type": "decision",
+        "data": {
+          "decision": "d-133",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 137,
+        "type": "decision",
+        "data": {
+          "decision": "d-134",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 138,
+        "type": "decision",
+        "data": {
+          "decision": "d-135",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 139,
+        "type": "decision",
+        "data": {
+          "decision": "d-136",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 140,
+        "type": "decision",
+        "data": {
+          "decision": "d-137",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 141,
+        "type": "decision",
+        "data": {
+          "decision": "d-138",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 142,
+        "type": "decision",
+        "data": {
+          "decision": "d-139",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 143,
+        "type": "decision",
+        "data": {
+          "decision": "d-140",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 144,
+        "type": "decision",
+        "data": {
+          "decision": "d-141",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 145,
+        "type": "decision",
+        "data": {
+          "decision": "d-142",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 146,
+        "type": "decision",
+        "data": {
+          "decision": "d-143",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 147,
+        "type": "decision",
+        "data": {
+          "decision": "d-144",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 148,
+        "type": "decision",
+        "data": {
+          "decision": "d-145",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 149,
+        "type": "decision",
+        "data": {
+          "decision": "d-146",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 150,
+        "type": "decision",
+        "data": {
+          "decision": "d-147",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 151,
+        "type": "decision",
+        "data": {
+          "decision": "d-148",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 152,
+        "type": "decision",
+        "data": {
+          "decision": "d-149",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 153,
+        "type": "decision",
+        "data": {
+          "decision": "d-150",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 154,
+        "type": "decision",
+        "data": {
+          "decision": "d-151",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 155,
+        "type": "decision",
+        "data": {
+          "decision": "d-152",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 156,
+        "type": "decision",
+        "data": {
+          "decision": "d-153",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 157,
+        "type": "decision",
+        "data": {
+          "decision": "d-154",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 158,
+        "type": "decision",
+        "data": {
+          "decision": "d-155",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 159,
+        "type": "decision",
+        "data": {
+          "decision": "d-156",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 160,
+        "type": "decision",
+        "data": {
+          "decision": "d-157",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 161,
+        "type": "decision",
+        "data": {
+          "decision": "d-158",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 162,
+        "type": "decision",
+        "data": {
+          "decision": "d-159",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 163,
+        "type": "decision",
+        "data": {
+          "decision": "d-160",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 164,
+        "type": "decision",
+        "data": {
+          "decision": "d-161",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 165,
+        "type": "decision",
+        "data": {
+          "decision": "d-162",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 166,
+        "type": "decision",
+        "data": {
+          "decision": "d-163",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 167,
+        "type": "decision",
+        "data": {
+          "decision": "d-164",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 168,
+        "type": "decision",
+        "data": {
+          "decision": "d-165",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 169,
+        "type": "decision",
+        "data": {
+          "decision": "d-166",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 170,
+        "type": "decision",
+        "data": {
+          "decision": "d-167",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 171,
+        "type": "decision",
+        "data": {
+          "decision": "d-168",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 172,
+        "type": "decision",
+        "data": {
+          "decision": "d-169",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 173,
+        "type": "decision",
+        "data": {
+          "decision": "d-170",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 174,
+        "type": "decision",
+        "data": {
+          "decision": "d-171",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 175,
+        "type": "decision",
+        "data": {
+          "decision": "d-172",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 176,
+        "type": "decision",
+        "data": {
+          "decision": "d-173",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 177,
+        "type": "decision",
+        "data": {
+          "decision": "d-174",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 178,
+        "type": "decision",
+        "data": {
+          "decision": "d-175",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 179,
+        "type": "decision",
+        "data": {
+          "decision": "d-176",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 180,
+        "type": "decision",
+        "data": {
+          "decision": "d-177",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 181,
+        "type": "decision",
+        "data": {
+          "decision": "d-178",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 182,
+        "type": "decision",
+        "data": {
+          "decision": "d-179",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 183,
+        "type": "decision",
+        "data": {
+          "decision": "d-180",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 184,
+        "type": "decision",
+        "data": {
+          "decision": "d-181",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 185,
+        "type": "decision",
+        "data": {
+          "decision": "d-182",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 186,
+        "type": "decision",
+        "data": {
+          "decision": "d-183",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 187,
+        "type": "decision",
+        "data": {
+          "decision": "d-184",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 188,
+        "type": "decision",
+        "data": {
+          "decision": "d-185",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 189,
+        "type": "decision",
+        "data": {
+          "decision": "d-186",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 190,
+        "type": "decision",
+        "data": {
+          "decision": "d-187",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 191,
+        "type": "decision",
+        "data": {
+          "decision": "d-188",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 192,
+        "type": "decision",
+        "data": {
+          "decision": "d-189",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 193,
+        "type": "decision",
+        "data": {
+          "decision": "d-190",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 194,
+        "type": "decision",
+        "data": {
+          "decision": "d-191",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 195,
+        "type": "decision",
+        "data": {
+          "decision": "d-192",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 196,
+        "type": "decision",
+        "data": {
+          "decision": "d-193",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 197,
+        "type": "decision",
+        "data": {
+          "decision": "d-194",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 198,
+        "type": "decision",
+        "data": {
+          "decision": "d-195",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 199,
+        "type": "decision",
+        "data": {
+          "decision": "d-196",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 200,
+        "type": "decision",
+        "data": {
+          "decision": "d-197",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 201,
+        "type": "decision",
+        "data": {
+          "decision": "d-198",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 202,
+        "type": "decision",
+        "data": {
+          "decision": "d-199",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 203,
+        "type": "decision",
+        "data": {
+          "decision": "d-200",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 204,
+        "type": "decision",
+        "data": {
+          "decision": "d-201",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 205,
+        "type": "decision",
+        "data": {
+          "decision": "d-202",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 206,
+        "type": "decision",
+        "data": {
+          "decision": "d-203",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 207,
+        "type": "decision",
+        "data": {
+          "decision": "d-204",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 208,
+        "type": "decision",
+        "data": {
+          "decision": "d-205",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 209,
+        "type": "decision",
+        "data": {
+          "decision": "d-206",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 210,
+        "type": "decision",
+        "data": {
+          "decision": "d-207",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 211,
+        "type": "decision",
+        "data": {
+          "decision": "d-208",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 212,
+        "type": "decision",
+        "data": {
+          "decision": "d-209",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 213,
+        "type": "decision",
+        "data": {
+          "decision": "d-210",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 214,
+        "type": "decision",
+        "data": {
+          "decision": "d-211",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 215,
+        "type": "decision",
+        "data": {
+          "decision": "d-212",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 216,
+        "type": "decision",
+        "data": {
+          "decision": "d-213",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 217,
+        "type": "decision",
+        "data": {
+          "decision": "d-214",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 218,
+        "type": "decision",
+        "data": {
+          "decision": "d-215",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 219,
+        "type": "decision",
+        "data": {
+          "decision": "d-216",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 220,
+        "type": "decision",
+        "data": {
+          "decision": "d-217",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 221,
+        "type": "decision",
+        "data": {
+          "decision": "d-218",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 222,
+        "type": "decision",
+        "data": {
+          "decision": "d-219",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 223,
+        "type": "decision",
+        "data": {
+          "decision": "d-220",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 224,
+        "type": "decision",
+        "data": {
+          "decision": "d-221",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 225,
+        "type": "decision",
+        "data": {
+          "decision": "d-222",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 226,
+        "type": "decision",
+        "data": {
+          "decision": "d-223",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 227,
+        "type": "decision",
+        "data": {
+          "decision": "d-224",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 228,
+        "type": "decision",
+        "data": {
+          "decision": "d-225",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 229,
+        "type": "decision",
+        "data": {
+          "decision": "d-226",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 230,
+        "type": "decision",
+        "data": {
+          "decision": "d-227",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 231,
+        "type": "decision",
+        "data": {
+          "decision": "d-228",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 232,
+        "type": "decision",
+        "data": {
+          "decision": "d-229",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 233,
+        "type": "decision",
+        "data": {
+          "decision": "d-230",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 234,
+        "type": "decision",
+        "data": {
+          "decision": "d-231",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 235,
+        "type": "decision",
+        "data": {
+          "decision": "d-232",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 236,
+        "type": "decision",
+        "data": {
+          "decision": "d-233",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 237,
+        "type": "decision",
+        "data": {
+          "decision": "d-234",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 238,
+        "type": "decision",
+        "data": {
+          "decision": "d-235",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 239,
+        "type": "decision",
+        "data": {
+          "decision": "d-236",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 240,
+        "type": "decision",
+        "data": {
+          "decision": "d-237",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 241,
+        "type": "decision",
+        "data": {
+          "decision": "d-238",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 242,
+        "type": "decision",
+        "data": {
+          "decision": "d-239",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 243,
+        "type": "decision",
+        "data": {
+          "decision": "d-240",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 244,
+        "type": "decision",
+        "data": {
+          "decision": "d-241",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 245,
+        "type": "decision",
+        "data": {
+          "decision": "d-242",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 246,
+        "type": "decision",
+        "data": {
+          "decision": "d-243",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 247,
+        "type": "decision",
+        "data": {
+          "decision": "d-244",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 248,
+        "type": "decision",
+        "data": {
+          "decision": "d-245",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 249,
+        "type": "decision",
+        "data": {
+          "decision": "d-246",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 250,
+        "type": "decision",
+        "data": {
+          "decision": "d-247",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 251,
+        "type": "decision",
+        "data": {
+          "decision": "d-248",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 252,
+        "type": "decision",
+        "data": {
+          "decision": "d-249",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 253,
+        "type": "decision",
+        "data": {
+          "decision": "d-250",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 254,
+        "type": "decision",
+        "data": {
+          "decision": "d-251",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 255,
+        "type": "decision",
+        "data": {
+          "decision": "d-252",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 256,
+        "type": "decision",
+        "data": {
+          "decision": "d-253",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 257,
+        "type": "decision",
+        "data": {
+          "decision": "d-254",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 258,
+        "type": "decision",
+        "data": {
+          "decision": "d-255",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 259,
+        "type": "decision",
+        "data": {
+          "decision": "d-256",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 260,
+        "type": "decision",
+        "data": {
+          "decision": "d-257",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 261,
+        "type": "decision",
+        "data": {
+          "decision": "d-258",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 262,
+        "type": "decision",
+        "data": {
+          "decision": "d-259",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 263,
+        "type": "decision",
+        "data": {
+          "decision": "d-260",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 264,
+        "type": "decision",
+        "data": {
+          "decision": "d-261",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 265,
+        "type": "decision",
+        "data": {
+          "decision": "d-262",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 266,
+        "type": "decision",
+        "data": {
+          "decision": "d-263",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 267,
+        "type": "decision",
+        "data": {
+          "decision": "d-264",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 268,
+        "type": "decision",
+        "data": {
+          "decision": "d-265",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 269,
+        "type": "decision",
+        "data": {
+          "decision": "d-266",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 270,
+        "type": "decision",
+        "data": {
+          "decision": "d-267",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 271,
+        "type": "decision",
+        "data": {
+          "decision": "d-268",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 272,
+        "type": "decision",
+        "data": {
+          "decision": "d-269",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 273,
+        "type": "decision",
+        "data": {
+          "decision": "d-270",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 274,
+        "type": "decision",
+        "data": {
+          "decision": "d-271",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 275,
+        "type": "decision",
+        "data": {
+          "decision": "d-272",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 276,
+        "type": "decision",
+        "data": {
+          "decision": "d-273",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 277,
+        "type": "decision",
+        "data": {
+          "decision": "d-274",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 278,
+        "type": "decision",
+        "data": {
+          "decision": "d-275",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 279,
+        "type": "decision",
+        "data": {
+          "decision": "d-276",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 280,
+        "type": "decision",
+        "data": {
+          "decision": "d-277",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 281,
+        "type": "decision",
+        "data": {
+          "decision": "d-278",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 282,
+        "type": "decision",
+        "data": {
+          "decision": "d-279",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 283,
+        "type": "decision",
+        "data": {
+          "decision": "d-280",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 284,
+        "type": "decision",
+        "data": {
+          "decision": "d-281",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 285,
+        "type": "decision",
+        "data": {
+          "decision": "d-282",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 286,
+        "type": "decision",
+        "data": {
+          "decision": "d-283",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 287,
+        "type": "decision",
+        "data": {
+          "decision": "d-284",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 288,
+        "type": "decision",
+        "data": {
+          "decision": "d-285",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 289,
+        "type": "decision",
+        "data": {
+          "decision": "d-286",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 290,
+        "type": "decision",
+        "data": {
+          "decision": "d-287",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 291,
+        "type": "decision",
+        "data": {
+          "decision": "d-288",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 292,
+        "type": "decision",
+        "data": {
+          "decision": "d-289",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 293,
+        "type": "decision",
+        "data": {
+          "decision": "d-290",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 294,
+        "type": "decision",
+        "data": {
+          "decision": "d-291",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 295,
+        "type": "decision",
+        "data": {
+          "decision": "d-292",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 296,
+        "type": "decision",
+        "data": {
+          "decision": "d-293",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 297,
+        "type": "decision",
+        "data": {
+          "decision": "d-294",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 298,
+        "type": "decision",
+        "data": {
+          "decision": "d-295",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 299,
+        "type": "decision",
+        "data": {
+          "decision": "d-296",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 300,
+        "type": "decision",
+        "data": {
+          "decision": "d-297",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 301,
+        "type": "decision",
+        "data": {
+          "decision": "d-298",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 302,
+        "type": "decision",
+        "data": {
+          "decision": "d-299",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 303,
+        "type": "decision",
+        "data": {
+          "decision": "d-300",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 304,
+        "type": "decision",
+        "data": {
+          "decision": "d-301",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 305,
+        "type": "decision",
+        "data": {
+          "decision": "d-302",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 306,
+        "type": "decision",
+        "data": {
+          "decision": "d-303",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 307,
+        "type": "decision",
+        "data": {
+          "decision": "d-304",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 308,
+        "type": "decision",
+        "data": {
+          "decision": "d-305",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 309,
+        "type": "decision",
+        "data": {
+          "decision": "d-306",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 310,
+        "type": "decision",
+        "data": {
+          "decision": "d-307",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 311,
+        "type": "decision",
+        "data": {
+          "decision": "d-308",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 312,
+        "type": "decision",
+        "data": {
+          "decision": "d-309",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 313,
+        "type": "decision",
+        "data": {
+          "decision": "d-310",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 314,
+        "type": "decision",
+        "data": {
+          "decision": "d-311",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 315,
+        "type": "decision",
+        "data": {
+          "decision": "d-312",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 316,
+        "type": "decision",
+        "data": {
+          "decision": "d-313",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 317,
+        "type": "decision",
+        "data": {
+          "decision": "d-314",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 318,
+        "type": "decision",
+        "data": {
+          "decision": "d-315",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 319,
+        "type": "decision",
+        "data": {
+          "decision": "d-316",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 320,
+        "type": "decision",
+        "data": {
+          "decision": "d-317",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 321,
+        "type": "decision",
+        "data": {
+          "decision": "d-318",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 322,
+        "type": "decision",
+        "data": {
+          "decision": "d-319",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 323,
+        "type": "decision",
+        "data": {
+          "decision": "d-320",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 324,
+        "type": "decision",
+        "data": {
+          "decision": "d-321",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 325,
+        "type": "decision",
+        "data": {
+          "decision": "d-322",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 326,
+        "type": "decision",
+        "data": {
+          "decision": "d-323",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 327,
+        "type": "decision",
+        "data": {
+          "decision": "d-324",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 328,
+        "type": "decision",
+        "data": {
+          "decision": "d-325",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 329,
+        "type": "decision",
+        "data": {
+          "decision": "d-326",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 330,
+        "type": "decision",
+        "data": {
+          "decision": "d-327",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 331,
+        "type": "decision",
+        "data": {
+          "decision": "d-328",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 332,
+        "type": "decision",
+        "data": {
+          "decision": "d-329",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 333,
+        "type": "decision",
+        "data": {
+          "decision": "d-330",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 334,
+        "type": "decision",
+        "data": {
+          "decision": "d-331",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 335,
+        "type": "decision",
+        "data": {
+          "decision": "d-332",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 336,
+        "type": "decision",
+        "data": {
+          "decision": "d-333",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 337,
+        "type": "decision",
+        "data": {
+          "decision": "d-334",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 338,
+        "type": "decision",
+        "data": {
+          "decision": "d-335",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 339,
+        "type": "decision",
+        "data": {
+          "decision": "d-336",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 340,
+        "type": "decision",
+        "data": {
+          "decision": "d-337",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 341,
+        "type": "decision",
+        "data": {
+          "decision": "d-338",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 342,
+        "type": "decision",
+        "data": {
+          "decision": "d-339",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 343,
+        "type": "decision",
+        "data": {
+          "decision": "d-340",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 344,
+        "type": "decision",
+        "data": {
+          "decision": "d-341",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 345,
+        "type": "decision",
+        "data": {
+          "decision": "d-342",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 346,
+        "type": "decision",
+        "data": {
+          "decision": "d-343",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 347,
+        "type": "decision",
+        "data": {
+          "decision": "d-344",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 348,
+        "type": "decision",
+        "data": {
+          "decision": "d-345",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 349,
+        "type": "decision",
+        "data": {
+          "decision": "d-346",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 350,
+        "type": "decision",
+        "data": {
+          "decision": "d-347",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 351,
+        "type": "decision",
+        "data": {
+          "decision": "d-348",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 352,
+        "type": "decision",
+        "data": {
+          "decision": "d-349",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 353,
+        "type": "decision",
+        "data": {
+          "decision": "d-350",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 354,
+        "type": "decision",
+        "data": {
+          "decision": "d-351",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 355,
+        "type": "decision",
+        "data": {
+          "decision": "d-352",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 356,
+        "type": "decision",
+        "data": {
+          "decision": "d-353",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 357,
+        "type": "decision",
+        "data": {
+          "decision": "d-354",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 358,
+        "type": "decision",
+        "data": {
+          "decision": "d-355",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 359,
+        "type": "decision",
+        "data": {
+          "decision": "d-356",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 360,
+        "type": "decision",
+        "data": {
+          "decision": "d-357",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 361,
+        "type": "decision",
+        "data": {
+          "decision": "d-358",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 362,
+        "type": "decision",
+        "data": {
+          "decision": "d-359",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 363,
+        "type": "decision",
+        "data": {
+          "decision": "d-360",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 364,
+        "type": "decision",
+        "data": {
+          "decision": "d-361",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 365,
+        "type": "decision",
+        "data": {
+          "decision": "d-362",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 366,
+        "type": "decision",
+        "data": {
+          "decision": "d-363",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 367,
+        "type": "decision",
+        "data": {
+          "decision": "d-364",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 368,
+        "type": "decision",
+        "data": {
+          "decision": "d-365",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 369,
+        "type": "decision",
+        "data": {
+          "decision": "d-366",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 370,
+        "type": "decision",
+        "data": {
+          "decision": "d-367",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 371,
+        "type": "decision",
+        "data": {
+          "decision": "d-368",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 372,
+        "type": "decision",
+        "data": {
+          "decision": "d-369",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 373,
+        "type": "decision",
+        "data": {
+          "decision": "d-370",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 374,
+        "type": "decision",
+        "data": {
+          "decision": "d-371",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 375,
+        "type": "decision",
+        "data": {
+          "decision": "d-372",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 376,
+        "type": "decision",
+        "data": {
+          "decision": "d-373",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 377,
+        "type": "decision",
+        "data": {
+          "decision": "d-374",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 378,
+        "type": "decision",
+        "data": {
+          "decision": "d-375",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 379,
+        "type": "decision",
+        "data": {
+          "decision": "d-376",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 380,
+        "type": "decision",
+        "data": {
+          "decision": "d-377",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 381,
+        "type": "decision",
+        "data": {
+          "decision": "d-378",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 382,
+        "type": "decision",
+        "data": {
+          "decision": "d-379",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 383,
+        "type": "decision",
+        "data": {
+          "decision": "d-380",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 384,
+        "type": "decision",
+        "data": {
+          "decision": "d-381",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 385,
+        "type": "decision",
+        "data": {
+          "decision": "d-382",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 386,
+        "type": "decision",
+        "data": {
+          "decision": "d-383",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 387,
+        "type": "decision",
+        "data": {
+          "decision": "d-384",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 388,
+        "type": "decision",
+        "data": {
+          "decision": "d-385",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 389,
+        "type": "decision",
+        "data": {
+          "decision": "d-386",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 390,
+        "type": "decision",
+        "data": {
+          "decision": "d-387",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 391,
+        "type": "decision",
+        "data": {
+          "decision": "d-388",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 392,
+        "type": "decision",
+        "data": {
+          "decision": "d-389",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 393,
+        "type": "decision",
+        "data": {
+          "decision": "d-390",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 394,
+        "type": "decision",
+        "data": {
+          "decision": "d-391",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 395,
+        "type": "decision",
+        "data": {
+          "decision": "d-392",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 396,
+        "type": "decision",
+        "data": {
+          "decision": "d-393",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 397,
+        "type": "decision",
+        "data": {
+          "decision": "d-394",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 398,
+        "type": "decision",
+        "data": {
+          "decision": "d-395",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 399,
+        "type": "decision",
+        "data": {
+          "decision": "d-396",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 400,
+        "type": "decision",
+        "data": {
+          "decision": "d-397",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 401,
+        "type": "decision",
+        "data": {
+          "decision": "d-398",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 402,
+        "type": "decision",
+        "data": {
+          "decision": "d-399",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 403,
+        "type": "decision",
+        "data": {
+          "decision": "d-400",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 404,
+        "type": "decision",
+        "data": {
+          "decision": "d-401",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 405,
+        "type": "decision",
+        "data": {
+          "decision": "d-402",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 406,
+        "type": "decision",
+        "data": {
+          "decision": "d-403",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 407,
+        "type": "decision",
+        "data": {
+          "decision": "d-404",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 408,
+        "type": "decision",
+        "data": {
+          "decision": "d-405",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 409,
+        "type": "decision",
+        "data": {
+          "decision": "d-406",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 410,
+        "type": "decision",
+        "data": {
+          "decision": "d-407",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 411,
+        "type": "decision",
+        "data": {
+          "decision": "d-408",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 412,
+        "type": "decision",
+        "data": {
+          "decision": "d-409",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 413,
+        "type": "decision",
+        "data": {
+          "decision": "d-410",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 414,
+        "type": "decision",
+        "data": {
+          "decision": "d-411",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 415,
+        "type": "decision",
+        "data": {
+          "decision": "d-412",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 416,
+        "type": "decision",
+        "data": {
+          "decision": "d-413",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 417,
+        "type": "decision",
+        "data": {
+          "decision": "d-414",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 418,
+        "type": "decision",
+        "data": {
+          "decision": "d-415",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 419,
+        "type": "decision",
+        "data": {
+          "decision": "d-416",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 420,
+        "type": "decision",
+        "data": {
+          "decision": "d-417",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 421,
+        "type": "decision",
+        "data": {
+          "decision": "d-418",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 422,
+        "type": "decision",
+        "data": {
+          "decision": "d-419",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 423,
+        "type": "decision",
+        "data": {
+          "decision": "d-420",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 424,
+        "type": "decision",
+        "data": {
+          "decision": "d-421",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 425,
+        "type": "decision",
+        "data": {
+          "decision": "d-422",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 426,
+        "type": "decision",
+        "data": {
+          "decision": "d-423",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 427,
+        "type": "decision",
+        "data": {
+          "decision": "d-424",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 428,
+        "type": "decision",
+        "data": {
+          "decision": "d-425",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 429,
+        "type": "decision",
+        "data": {
+          "decision": "d-426",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 430,
+        "type": "decision",
+        "data": {
+          "decision": "d-427",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 431,
+        "type": "decision",
+        "data": {
+          "decision": "d-428",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 432,
+        "type": "decision",
+        "data": {
+          "decision": "d-429",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 433,
+        "type": "decision",
+        "data": {
+          "decision": "d-430",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 434,
+        "type": "decision",
+        "data": {
+          "decision": "d-431",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 435,
+        "type": "decision",
+        "data": {
+          "decision": "d-432",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 436,
+        "type": "decision",
+        "data": {
+          "decision": "d-433",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 437,
+        "type": "decision",
+        "data": {
+          "decision": "d-434",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 438,
+        "type": "decision",
+        "data": {
+          "decision": "d-435",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 439,
+        "type": "decision",
+        "data": {
+          "decision": "d-436",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 440,
+        "type": "decision",
+        "data": {
+          "decision": "d-437",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 441,
+        "type": "decision",
+        "data": {
+          "decision": "d-438",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 442,
+        "type": "decision",
+        "data": {
+          "decision": "d-439",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 443,
+        "type": "decision",
+        "data": {
+          "decision": "d-440",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 444,
+        "type": "decision",
+        "data": {
+          "decision": "d-441",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 445,
+        "type": "decision",
+        "data": {
+          "decision": "d-442",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 446,
+        "type": "decision",
+        "data": {
+          "decision": "d-443",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 447,
+        "type": "decision",
+        "data": {
+          "decision": "d-444",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 448,
+        "type": "decision",
+        "data": {
+          "decision": "d-445",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 449,
+        "type": "decision",
+        "data": {
+          "decision": "d-446",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 450,
+        "type": "decision",
+        "data": {
+          "decision": "d-447",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 451,
+        "type": "decision",
+        "data": {
+          "decision": "d-448",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 452,
+        "type": "decision",
+        "data": {
+          "decision": "d-449",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 453,
+        "type": "decision",
+        "data": {
+          "decision": "d-450",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 454,
+        "type": "decision",
+        "data": {
+          "decision": "d-451",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 455,
+        "type": "decision",
+        "data": {
+          "decision": "d-452",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 456,
+        "type": "decision",
+        "data": {
+          "decision": "d-453",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 457,
+        "type": "decision",
+        "data": {
+          "decision": "d-454",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 458,
+        "type": "decision",
+        "data": {
+          "decision": "d-455",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 459,
+        "type": "decision",
+        "data": {
+          "decision": "d-456",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 460,
+        "type": "decision",
+        "data": {
+          "decision": "d-457",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 461,
+        "type": "decision",
+        "data": {
+          "decision": "d-458",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 462,
+        "type": "decision",
+        "data": {
+          "decision": "d-459",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 463,
+        "type": "decision",
+        "data": {
+          "decision": "d-460",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 464,
+        "type": "decision",
+        "data": {
+          "decision": "d-461",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 465,
+        "type": "decision",
+        "data": {
+          "decision": "d-462",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 466,
+        "type": "decision",
+        "data": {
+          "decision": "d-463",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 467,
+        "type": "decision",
+        "data": {
+          "decision": "d-464",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 468,
+        "type": "decision",
+        "data": {
+          "decision": "d-465",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 469,
+        "type": "decision",
+        "data": {
+          "decision": "d-466",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 470,
+        "type": "decision",
+        "data": {
+          "decision": "d-467",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 471,
+        "type": "decision",
+        "data": {
+          "decision": "d-468",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 472,
+        "type": "decision",
+        "data": {
+          "decision": "d-469",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 473,
+        "type": "decision",
+        "data": {
+          "decision": "d-470",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 474,
+        "type": "decision",
+        "data": {
+          "decision": "d-471",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 475,
+        "type": "decision",
+        "data": {
+          "decision": "d-472",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 476,
+        "type": "decision",
+        "data": {
+          "decision": "d-473",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 477,
+        "type": "decision",
+        "data": {
+          "decision": "d-474",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 478,
+        "type": "decision",
+        "data": {
+          "decision": "d-475",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 479,
+        "type": "decision",
+        "data": {
+          "decision": "d-476",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 480,
+        "type": "decision",
+        "data": {
+          "decision": "d-477",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 481,
+        "type": "decision",
+        "data": {
+          "decision": "d-478",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 482,
+        "type": "decision",
+        "data": {
+          "decision": "d-479",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 483,
+        "type": "decision",
+        "data": {
+          "decision": "d-480",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 484,
+        "type": "decision",
+        "data": {
+          "decision": "d-481",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 485,
+        "type": "decision",
+        "data": {
+          "decision": "d-482",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 486,
+        "type": "decision",
+        "data": {
+          "decision": "d-483",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 487,
+        "type": "decision",
+        "data": {
+          "decision": "d-484",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 488,
+        "type": "decision",
+        "data": {
+          "decision": "d-485",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 489,
+        "type": "decision",
+        "data": {
+          "decision": "d-486",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 490,
+        "type": "decision",
+        "data": {
+          "decision": "d-487",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 491,
+        "type": "decision",
+        "data": {
+          "decision": "d-488",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 492,
+        "type": "decision",
+        "data": {
+          "decision": "d-489",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 493,
+        "type": "decision",
+        "data": {
+          "decision": "d-490",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 494,
+        "type": "decision",
+        "data": {
+          "decision": "d-491",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 495,
+        "type": "decision",
+        "data": {
+          "decision": "d-492",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 496,
+        "type": "decision",
+        "data": {
+          "decision": "d-493",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 497,
+        "type": "decision",
+        "data": {
+          "decision": "d-494",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 498,
+        "type": "decision",
+        "data": {
+          "decision": "d-495",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 499,
+        "type": "decision",
+        "data": {
+          "decision": "d-496",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 500,
+        "type": "decision",
+        "data": {
+          "decision": "d-497",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 501,
+        "type": "decision",
+        "data": {
+          "decision": "d-498",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 502,
+        "type": "decision",
+        "data": {
+          "decision": "d-499",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 503,
+        "type": "decision",
+        "data": {
+          "decision": "d-500",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 504,
+        "type": "decision",
+        "data": {
+          "decision": "d-501",
+          "reasoning": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      }
+    ],
+    "expect": {
+      "seq": 504,
+      "agents": {
+        "a1": {
+          "log": {
+            "length": 500
+          }
+        }
+      }
+    }
+  },
+  {
+    "name": "task lifecycle: started → step_started → completed transitions status correctly",
+    "events": [
+      {
+        "seq": 1,
+        "type": "workflow_started",
+        "data": {
+          "taskPrompt": "x"
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z"
+        }
+      },
+      {
+        "seq": 2,
+        "type": "tasks_added",
+        "data": {
+          "tasks": [
+            {
+              "id": "t1",
+              "title": "Auth handler",
+              "status": "ready"
+            }
+          ]
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z"
+        }
+      },
+      {
+        "seq": 3,
+        "type": "task_started",
+        "data": {
+          "taskId": "t1",
+          "title": "Auth handler",
+          "agentId": "a1",
+          "startedAt": 1000
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "taskId": "t1"
+        }
+      },
+      {
+        "seq": 4,
+        "type": "task_step_started",
+        "data": {
+          "taskId": "t1",
+          "stepName": "review"
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "taskId": "t1"
+        }
+      },
+      {
+        "seq": 5,
+        "type": "task_completed",
+        "data": {
+          "taskId": "t1"
+        },
+        "metadata": {
+          "timestamp": "2025-01-01",
+          "taskId": "t1"
+        }
+      }
+    ],
+    "expect": {
+      "seq": 5,
+      "tasks": {
+        "t1": {
+          "id": "t1",
+          "title": "Auth handler",
+          "status": "done",
+          "agentId": "a1",
+          "startedAt": 1000,
+          "completedAt": "2025-01-01"
+        }
+      }
+    }
+  },
+  {
+    "name": "task_rejected sets status to failed",
+    "events": [
+      {
+        "seq": 1,
+        "type": "workflow_started",
+        "data": {
+          "taskPrompt": "x"
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z"
+        }
+      },
+      {
+        "seq": 2,
+        "type": "tasks_added",
+        "data": {
+          "tasks": [
+            {
+              "id": "t1",
+              "title": "T",
+              "status": "ready"
+            }
+          ]
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z"
+        }
+      },
+      {
+        "seq": 3,
+        "type": "task_started",
+        "data": {
+          "taskId": "t1",
+          "title": "T",
+          "agentId": "a1"
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "taskId": "t1"
+        }
+      },
+      {
+        "seq": 4,
+        "type": "task_rejected",
+        "data": {
+          "taskId": "t1",
+          "reason": "Bad approach"
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "taskId": "t1"
+        }
+      }
+    ],
+    "expect": {
+      "seq": 4,
+      "tasks": {
+        "t1": {
+          "status": "failed"
+        }
+      }
+    }
+  },
+  {
+    "name": "tasks_added does not overwrite existing tasks",
+    "events": [
+      {
+        "seq": 1,
+        "type": "workflow_started",
+        "data": {
+          "taskPrompt": "x"
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z"
+        }
+      },
+      {
+        "seq": 2,
+        "type": "tasks_added",
+        "data": {
+          "tasks": [
+            {
+              "id": "t1",
+              "title": "Original",
+              "status": "ready"
+            }
+          ]
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z"
+        }
+      },
+      {
+        "seq": 3,
+        "type": "tasks_added",
+        "data": {
+          "tasks": [
+            {
+              "id": "t1",
+              "title": "Overwrite?",
+              "status": "done"
+            }
+          ]
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z"
+        }
+      }
+    ],
+    "expect": {
+      "seq": 3,
+      "tasks": {
+        "t1": {
+          "title": "Original",
+          "status": "ready"
+        }
+      }
+    }
+  },
+  {
+    "name": "sidebar_updated patches title, indicator, and phases",
+    "events": [
+      {
+        "seq": 1,
+        "type": "workflow_started",
+        "data": {
+          "taskPrompt": "x"
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z"
+        }
+      },
+      {
+        "seq": 2,
+        "type": "sidebar_updated",
+        "data": {
+          "title": "My Workflow",
+          "indicator": "Building…",
+          "phases": [
+            {
+              "id": "p1",
+              "label": "Phase 1",
+              "icon": "🚀"
+            }
+          ]
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z"
+        }
+      }
+    ],
+    "expect": {
+      "seq": 2,
+      "sidebar": {
+        "title": "My Workflow",
+        "indicator": "Building…",
+        "phases": [
+          {
+            "id": "p1",
+            "label": "Phase 1",
+            "icon": "🚀"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "workflow_completed sets status to complete",
+    "events": [
+      {
+        "seq": 1,
+        "type": "workflow_started",
+        "data": {
+          "taskPrompt": "x"
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z"
+        }
+      },
+      {
+        "seq": 2,
+        "type": "workflow_completed",
+        "data": {
+          "totalDurationMs": 5000
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z"
+        }
+      }
+    ],
+    "expect": {
+      "seq": 2,
+      "status": "complete"
+    }
+  },
+  {
+    "name": "workflow_failed sets status to failed with error and failedPhase",
+    "events": [
+      {
+        "seq": 1,
+        "type": "workflow_started",
+        "data": {
+          "taskPrompt": "x"
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z"
+        }
+      },
+      {
+        "seq": 2,
+        "type": "phase_started",
+        "data": {
+          "phase": "implementing",
+          "round": 1
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "phase": "implementing"
+        }
+      },
+      {
+        "seq": 3,
+        "type": "workflow_failed",
+        "data": {
+          "error": "Kaboom",
+          "phase": "implementing"
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z"
+        }
+      }
+    ],
+    "expect": {
+      "seq": 3,
+      "status": "failed",
+      "error": "Kaboom",
+      "failedPhase": "implementing"
+    }
+  },
+  {
+    "name": "phase lifecycle: currentPhase tracks latest, completedPhases accumulates",
+    "events": [
+      {
+        "seq": 1,
+        "type": "workflow_started",
+        "data": {
+          "taskPrompt": "x"
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z"
+        }
+      },
+      {
+        "seq": 2,
+        "type": "phase_started",
+        "data": {
+          "phase": "scouting",
+          "round": 1
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "phase": "scouting"
+        }
+      },
+      {
+        "seq": 3,
+        "type": "phase_completed",
+        "data": {
+          "phase": "scouting",
+          "durationMs": 100
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "phase": "scouting"
+        }
+      },
+      {
+        "seq": 4,
+        "type": "phase_started",
+        "data": {
+          "phase": "planning",
+          "round": 1
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "phase": "planning"
+        }
+      },
+      {
+        "seq": 5,
+        "type": "phase_completed",
+        "data": {
+          "phase": "planning",
+          "durationMs": 200
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "phase": "planning"
+        }
+      }
+    ],
+    "expect": {
+      "seq": 5,
+      "currentPhase": "planning",
+      "completedPhases": ["scouting", "planning"]
+    }
+  },
+  {
+    "name": "agent_completed marks agent inactive with completedAt",
+    "events": [
+      {
+        "seq": 1,
+        "type": "workflow_started",
+        "data": {
+          "taskPrompt": "x"
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z"
+        }
+      },
+      {
+        "seq": 2,
+        "type": "agent_spawned",
+        "data": {
+          "profile": "coder"
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1",
+          "taskId": "t1"
+        }
+      },
+      {
+        "seq": 3,
+        "type": "agent_completed",
+        "data": {
+          "agentId": "a1"
+        },
+        "metadata": {
+          "timestamp": "2025-01-01",
+          "agentId": "a1",
+          "taskId": "t1"
+        }
+      }
+    ],
+    "expect": {
+      "seq": 3,
+      "agents": {
+        "a1::t1": {
+          "active": false,
+          "completedAt": "2025-01-01"
+        }
+      }
+    }
+  }
+]

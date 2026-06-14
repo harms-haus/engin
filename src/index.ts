@@ -18,6 +18,10 @@ export * from './pool/index.js';
 
 // ─── Tracking ───────────────────────────────────────────────────────────────
 export * from './tracking/audit-log.js';
+export * from './tracking/event-store.js';
+export * from './tracking/event-types.js';
+export * from './tracking/evolve.js';
+export { createStoreCallbacks } from './tracking/store-callbacks.js';
 export * from './tracking/task-status.js';
 export * from './tracking/workflow-status.js';
 

@@ -3,12 +3,12 @@
 // Extracted from LanePool.processTask. Contains the core step-execution loop
 // with retry logic, plus internal helper functions for error/audit reporting.
 
-import type { AgentProfile, AuditEvent, Task } from '../core/types.js';
+import type { AgentProfile, Task } from '../core/types.js';
 import { appendReviewFeedback, safeErrorMessage } from '../core/utils.js';
 import { extractSeverity, isFailingSeverity } from './severity.js';
 import type { StepExecutionContext } from './step-execution.js';
 import { runStep } from './step-execution.js';
-import type { LanePoolOptions, TrackedSession, WithoutTimestamp } from './types.js';
+import type { LanePoolOptions, TrackedSession } from './types.js';
 
 // ─── Context ───────────────────────────────────────────────────────────────
 
@@ -80,7 +80,6 @@ export async function processTask(
     apiKeys: options.apiKeys,
     onStatus: options.onStatus,
     activeSessions: ctx.activeSessions,
-    appendAuditEvent: (event) => appendAuditEvent(event, ctx),
     phase: ctx.phase ?? options.phase,
   };
 
@@ -270,13 +269,4 @@ export function reportError(
   } else {
     console.error(`[${agentId}] ${error}`);
   }
-}
-
-/**
- * Append an event to the audit log if available (fire-and-forget).
- */
-export function appendAuditEvent(event: WithoutTimestamp<AuditEvent>, ctx: TaskProcessorContext): void {
-  ctx.options.auditLog?.append(event).catch(() => {
-    // Swallow audit log errors — they must not crash the pool.
-  });
 }
