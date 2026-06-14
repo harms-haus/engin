@@ -16,7 +16,7 @@ import '@testing-library/jest-dom/vitest';
 
 import { act, fireEvent, render } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { AgentEntity, LogEntry, WorkflowProjection } from '../protocol-types';
+import type { AgentEntity, LogEntry } from '../protocol-types';
 import { useWorkflowStore } from '../store/workflow-store';
 import { EventLog } from './EventLog';
 

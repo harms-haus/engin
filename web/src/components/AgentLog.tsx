@@ -72,7 +72,10 @@ export function AgentLog() {
     <div className="agent-log">
       {/* Header stats */}
       {agent && (
-        <div className="agent-log__header" aria-label={`Input: ${agent.inputTokens}, Output: ${agent.outputTokens}, ${agent.toolCallCount} tool calls`}>
+        <div
+          className="agent-log__header"
+          aria-label={`Input: ${agent.inputTokens}, Output: ${agent.outputTokens}, ${agent.toolCallCount} tool calls`}
+        >
           {agent.taskId || agent.agentId} (profile: {agent.profile}) - {agent.toolCallCount} tool calls -{' '}
           <span aria-label={`Input tokens: ${agent.inputTokens}`}>Input: {agent.inputTokens}</span> -{' '}
           <span aria-label={`Output tokens: ${agent.outputTokens}`}>Output: {agent.outputTokens}</span>

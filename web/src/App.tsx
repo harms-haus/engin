@@ -29,21 +29,13 @@ export function App() {
       </div>
 
       {status === 'failed' && (
-        <div
-          className="status-banner status-banner--failed"
-          role="status"
-          aria-live="polite"
-        >
+        <div className="status-banner status-banner--failed" role="status" aria-live="polite">
           Workflow failed in phase {failedPhase ?? 'unknown'}
           {error ? `: ${error}` : ''}
         </div>
       )}
       {status === 'complete' && (
-        <div
-          className="status-banner status-banner--complete"
-          role="status"
-          aria-live="polite"
-        >
+        <div className="status-banner status-banner--complete" role="status" aria-live="polite">
           ✓ Workflow complete
         </div>
       )}
