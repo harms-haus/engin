@@ -36,6 +36,14 @@ export class Dashboard implements Component {
   /** Cached step entities for the currently selected task (needed for tab navigation). */
   private _steps: { index: number; agentKey?: string }[] = [];
 
+  /**
+   * Last projection pushed via syncFromProjection. Retained so handleInput
+   * can re-apply the current selection to the child widgets (filter tasks by
+   * phase, push the selected task's steps/agents) and invalidate them for an
+   * immediate re-render — without waiting for the next store event.
+   */
+  private _lastProjection: WorkflowProjection | null = null;
+
   constructor(agentLogLines = 20) {
     this._phaseBar = new PhaseBar();
     this._taskList = new TaskListWidget();
@@ -98,9 +106,6 @@ export class Dashboard implements Component {
     // Cache phase IDs for keyboard navigation
     this._phaseIds = projection.phases.map((p) => p.id);
 
-    // Reset steps cache; will be populated below when we find selected task
-    this._steps = [];
-
     // ── PHASE FOLLOW ──
     const completedSet = new Set(projection.completedPhaseIds);
     if (
@@ -117,6 +122,26 @@ export class Dashboard implements Component {
       this._selection.selectedPhaseId = projection.currentPhaseId;
     }
     // If selectedPhaseId is in completedPhaseIds → leave it (reviewing history)
+
+    // Apply the (possibly phase-followed) selection to child widgets + invalidate.
+    this._lastProjection = projection;
+    this._applySelectionToWidgets();
+  }
+
+  /**
+   * Push the current selection state into the child widgets (task filter,
+   * task-follow, step-follow, agent-log steps/agents) and invalidate them so
+   * the next render reflects the selection. Does NOT run the phase-follow rule
+   * (that mutates selection and only runs on store events).
+   *
+   * Called from syncFromProjection (after ingesting a new projection) AND from
+   * handleInput (after keyboard navigation mutates the selection), so that
+   * navigation re-renders immediately instead of waiting for the next store
+   * event to bust the widget render caches.
+   */
+  private _applySelectionToWidgets(): void {
+    const projection = this._lastProjection;
+    if (!projection) return;
 
     // ── Filter tasks by selected phase ──
     const effectivePhaseId = this._selection.selectedPhaseId ?? projection.currentPhaseId;
@@ -247,6 +272,11 @@ export class Dashboard implements Component {
       this._selection.selectedTaskId = null;
       this._selection.selectedStepIndex = null;
       this._selection.userPinnedStep = false;
+
+      // Re-filter tasks for the new phase, push the auto-selected task's steps /
+      // agents to the agent log, and invalidate all widgets so the navigation
+      // re-renders immediately.
+      this._applySelectionToWidgets();
       return;
     }
 
@@ -269,6 +299,9 @@ export class Dashboard implements Component {
           this._selection.userPinnedStep = false;
         }
       }
+      // Re-push the selected task's steps / agents to the agent log and
+      // invalidate all widgets so task navigation re-renders immediately.
+      this._applySelectionToWidgets();
       return;
     }
 
@@ -276,6 +309,7 @@ export class Dashboard implements Component {
     if (matchesKey(data, Key.shift('up')) || matchesKey(data, Key.shift('down'))) {
       if (this._agentLog.isExpanded()) {
         this._agentLog.handleInput(data);
+        this._agentLog.invalidate();
       }
       return;
     }

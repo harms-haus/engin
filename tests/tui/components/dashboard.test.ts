@@ -963,8 +963,9 @@ describe('Dashboard', () => {
 
       const after = d.getSelection();
       expect(after.selectedTaskId).toBe('t2');
-      // Step should reset to null (will be set by next sync)
-      expect(after.selectedStepIndex).toBeNull();
+      // Step follows to t2's activeStepIndex immediately (no longer deferred to
+      // the next sync) so the agent log re-renders without waiting for an event.
+      expect(after.selectedStepIndex).toBe(0);
       expect(after.userPinnedStep).toBe(false);
     });
   });
