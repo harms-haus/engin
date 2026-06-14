@@ -1,6 +1,6 @@
 import type { AgentEntity, EventRecord, TaskEntity, WorkflowProjection } from './event-types.js';
 
-const MAX_AGENT_LOG = 500;
+export const MAX_AGENT_LOG = 500;
 
 /** Stable key for an agent entity: agentId::taskId, or just agentId if no task. */
 function agentKey(agentId: string, taskId?: string): string {

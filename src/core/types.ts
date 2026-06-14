@@ -43,15 +43,8 @@ export interface WorkflowState {
   currentPhase: string;
   completedPhases: string[];
   tasks: Task[];
-  /** Scouting reports stored as opaque values; consumers should cast to their specific schema type */
-  scoutingReports: unknown[];
-  /** Plan stored as opaque value; consumers should cast to their specific schema type */
-  plan: unknown;
-  research?: string;
-  /** Plan review feedback text from the reviewer when a plan is rejected */
-  planReviewFeedback?: string;
-  /** Specific improvement suggestions from the plan reviewer */
-  planReviewSuggestions?: string[];
+  /** Generic workflow data bag — consumers store workflow-specific state here */
+  workflowData: Record<string, unknown>;
   stats: {
     totalTokens: number;
     totalCost: number;

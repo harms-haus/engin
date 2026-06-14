@@ -22,8 +22,9 @@ describe('WorkflowStatusTracker', () => {
       expect(tracker.taskPrompt).toBe('');
       expect(tracker.currentPhase).toBe('');
       expect(tracker.completedPhases).toEqual([]);
-      expect(tracker.scoutingReports).toEqual([]);
-      expect(tracker.plan).toBeUndefined();
+      expect(tracker.workflowData).toEqual({});
+      expect((tracker.workflowData as Record<string, unknown>).scoutingReports).toBeUndefined();
+      expect((tracker.workflowData as Record<string, unknown>).plan).toBeUndefined();
       expect(tracker.stats).toEqual({ totalTokens: 0, totalCost: 0, agentCount: 0 });
     });
 
@@ -101,35 +102,35 @@ describe('WorkflowStatusTracker', () => {
     });
   });
 
-  // ── setScoutingReports ─────────────────────────────────────────────
+  // ── setWorkflowData / scoutingReports ────────────────────────────────
 
-  describe('setScoutingReports', () => {
+  describe('setWorkflowData – scoutingReports', () => {
     it('stores the reports', () => {
       const reports = [{ summary: 'found issues' }, { summary: 'all clear' }];
-      tracker.setScoutingReports(reports);
-      expect(tracker.scoutingReports).toEqual(reports);
+      tracker.setWorkflowData({ scoutingReports: reports });
+      expect((tracker.workflowData as Record<string, unknown>).scoutingReports).toEqual(reports);
     });
 
     it('overwrites previous reports', () => {
-      tracker.setScoutingReports([{ a: 1 }]);
-      tracker.setScoutingReports([{ b: 2 }]);
-      expect(tracker.scoutingReports).toEqual([{ b: 2 }]);
+      tracker.setWorkflowData({ scoutingReports: [{ a: 1 }] });
+      tracker.setWorkflowData({ scoutingReports: [{ b: 2 }] });
+      expect((tracker.workflowData as Record<string, unknown>).scoutingReports).toEqual([{ b: 2 }]);
     });
   });
 
-  // ── setPlan ────────────────────────────────────────────────────────
+  // ── setWorkflowData / plan ─────────────────────────────────────────
 
-  describe('setPlan', () => {
+  describe('setWorkflowData – plan', () => {
     it('stores the plan', () => {
       const plan = { tasks: ['t1', 't2'], estimate: '2h' };
-      tracker.setPlan(plan);
-      expect(tracker.plan).toEqual(plan);
+      tracker.setWorkflowData({ plan });
+      expect((tracker.workflowData as Record<string, unknown>).plan).toEqual(plan);
     });
 
     it('overwrites previous plan', () => {
-      tracker.setPlan({ version: 1 });
-      tracker.setPlan({ version: 2 });
-      expect(tracker.plan).toEqual({ version: 2 });
+      tracker.setWorkflowData({ plan: { version: 1 } });
+      tracker.setWorkflowData({ plan: { version: 2 } });
+      expect((tracker.workflowData as Record<string, unknown>).plan).toEqual({ version: 2 });
     });
   });
 
@@ -160,32 +161,41 @@ describe('WorkflowStatusTracker', () => {
     });
   });
 
-  // ── planReviewFeedback ────────────────────────────────────────────
+  // ── setWorkflowData / planReviewFeedback ──────────────────────────
 
-  describe('planReviewFeedback', () => {
+  describe('setWorkflowData – planReviewFeedback', () => {
     it('getters return undefined initially', () => {
-      expect(tracker.planReviewFeedback).toBeUndefined();
-      expect(tracker.planReviewSuggestions).toBeUndefined();
+      const data = tracker.workflowData as Record<string, unknown>;
+      expect(data.planReviewFeedback).toBeUndefined();
+      expect(data.planReviewSuggestions).toBeUndefined();
     });
 
-    it('setPlanReviewFeedback stores both feedback and suggestions', () => {
-      tracker.setPlanReviewFeedback('Missing error handling', ['Add try/catch']);
-      expect(tracker.planReviewFeedback).toBe('Missing error handling');
-      expect(tracker.planReviewSuggestions).toEqual(['Add try/catch']);
+    it('setWorkflowData stores both feedback and suggestions', () => {
+      tracker.setWorkflowData({
+        planReviewFeedback: 'Missing error handling',
+        planReviewSuggestions: ['Add try/catch'],
+      });
+      const data = tracker.workflowData as Record<string, unknown>;
+      expect(data.planReviewFeedback).toBe('Missing error handling');
+      expect(data.planReviewSuggestions).toEqual(['Add try/catch']);
     });
 
     it('planReviewSuggestions getter returns a defensive copy', () => {
-      tracker.setPlanReviewFeedback('Needs improvement', ['s1', 's2']);
-      const suggestions = tracker.planReviewSuggestions;
-      suggestions!.push('s3');
-      expect(tracker.planReviewSuggestions).toEqual(['s1', 's2']);
+      tracker.setWorkflowData({ planReviewFeedback: 'Needs improvement', planReviewSuggestions: ['s1', 's2'] });
+      const data = tracker.workflowData as Record<string, unknown>;
+      const suggestions = data.planReviewSuggestions as string[] | undefined;
+      if (suggestions) {
+        suggestions.push('s3');
+      }
+      expect((tracker.workflowData as Record<string, unknown>).planReviewSuggestions).toEqual(['s1', 's2']);
     });
 
     it('clearPlanReviewFeedback resets both to undefined', () => {
-      tracker.setPlanReviewFeedback('Feedback', ['Suggestion']);
-      tracker.clearPlanReviewFeedback();
-      expect(tracker.planReviewFeedback).toBeUndefined();
-      expect(tracker.planReviewSuggestions).toBeUndefined();
+      tracker.setWorkflowData({ planReviewFeedback: 'Feedback', planReviewSuggestions: ['Suggestion'] });
+      tracker.setWorkflowData({ planReviewFeedback: undefined, planReviewSuggestions: undefined });
+      const data = tracker.workflowData as Record<string, unknown>;
+      expect(data.planReviewFeedback).toBeUndefined();
+      expect(data.planReviewSuggestions).toBeUndefined();
     });
   });
 
@@ -194,8 +204,7 @@ describe('WorkflowStatusTracker', () => {
   describe('toJSON', () => {
     it('returns a complete WorkflowState object', () => {
       tracker.setTaskPrompt('my prompt');
-      tracker.setScoutingReports([{ note: 'hello' }]);
-      tracker.setPlan({ steps: [1, 2, 3] });
+      tracker.setWorkflowData({ scoutingReports: [{ note: 'hello' }], plan: { steps: [1, 2, 3] } });
       tracker.addTokensToStats({ input: 100, output: 50 });
       tracker.incrementAgentCount();
 
@@ -204,19 +213,22 @@ describe('WorkflowStatusTracker', () => {
       expect(json.taskPrompt).toBe('my prompt');
       expect(json.currentPhase).toBe('');
       expect(json.completedPhases).toEqual([]);
-      expect(json.scoutingReports).toEqual([{ note: 'hello' }]);
-      expect(json.plan).toEqual({ steps: [1, 2, 3] });
+      expect(json.workflowData.scoutingReports).toEqual([{ note: 'hello' }]);
+      expect(json.workflowData.plan).toEqual({ steps: [1, 2, 3] });
       expect(json.stats).toEqual({ totalTokens: 150, totalCost: 0, agentCount: 1 });
       expect(json.tasks).toEqual([]);
     });
 
     it('includes planReviewFeedback fields when set', () => {
-      tracker.setPlanReviewFeedback('Missing error handling', ['Add try/catch']);
+      tracker.setWorkflowData({
+        planReviewFeedback: 'Missing error handling',
+        planReviewSuggestions: ['Add try/catch'],
+      });
 
       const json = tracker.toJSON();
 
-      expect(json.planReviewFeedback).toBe('Missing error handling');
-      expect(json.planReviewSuggestions).toEqual(['Add try/catch']);
+      expect(json.workflowData.planReviewFeedback).toBe('Missing error handling');
+      expect(json.workflowData.planReviewSuggestions).toEqual(['Add try/catch']);
     });
 
     it('includes tasks from the taskTracker', () => {
@@ -239,8 +251,10 @@ describe('WorkflowStatusTracker', () => {
   describe('save / load round-trip', () => {
     it('restores all fields through save and load', async () => {
       tracker.setTaskPrompt('Build something great');
-      tracker.setScoutingReports([{ summary: 'report 1' }, { summary: 'report 2' }]);
-      tracker.setPlan({ phases: ['a', 'b', 'c'] });
+      tracker.setWorkflowData({
+        scoutingReports: [{ summary: 'report 1' }, { summary: 'report 2' }],
+        plan: { phases: ['a', 'b', 'c'] },
+      });
       tracker.addTokensToStats({ input: 500, output: 250 });
       tracker.addTokensToStats({ input: 100, output: 50 });
       tracker.incrementAgentCount();
@@ -262,8 +276,9 @@ describe('WorkflowStatusTracker', () => {
       expect(restored.taskPrompt).toBe('Build something great');
       expect(restored.currentPhase).toBe('planning');
       expect(restored.completedPhases).toEqual(['scouting']);
-      expect(restored.scoutingReports).toEqual([{ summary: 'report 1' }, { summary: 'report 2' }]);
-      expect(restored.plan).toEqual({ phases: ['a', 'b', 'c'] });
+      const restoredData = restored.workflowData as Record<string, unknown>;
+      expect(restoredData.scoutingReports).toEqual([{ summary: 'report 1' }, { summary: 'report 2' }]);
+      expect(restoredData.plan).toEqual({ phases: ['a', 'b', 'c'] });
       expect(restored.stats).toEqual({
         totalTokens: 900,
         totalCost: 0,
@@ -277,13 +292,14 @@ describe('WorkflowStatusTracker', () => {
     });
 
     it('restores planReviewFeedback through save and load', async () => {
-      tracker.setPlanReviewFeedback('Build error handling', ['Add try/catch']);
+      tracker.setWorkflowData({ planReviewFeedback: 'Build error handling', planReviewSuggestions: ['Add try/catch'] });
 
       await tracker.save();
       const restored = await WorkflowStatusTracker.load(dir);
 
-      expect(restored.planReviewFeedback).toBe('Build error handling');
-      expect(restored.planReviewSuggestions).toEqual(['Add try/catch']);
+      const restoredData = restored.workflowData as Record<string, unknown>;
+      expect(restoredData.planReviewFeedback).toBe('Build error handling');
+      expect(restoredData.planReviewSuggestions).toEqual(['Add try/catch']);
     });
 
     it("save creates the workDir if it doesn't exist", async () => {
@@ -647,11 +663,12 @@ describe('WorkflowStatusTracker', () => {
         ],
         metadata: { version: 2, author: 'test' },
       };
-      tracker.setPlan(complexPlan);
+      tracker.setWorkflowData({ plan: complexPlan });
       await tracker.save();
 
       const restored = await WorkflowStatusTracker.load(dir);
-      expect(restored.plan).toEqual(complexPlan);
+      const restoredData = restored.workflowData as Record<string, unknown>;
+      expect(restoredData.plan).toEqual(complexPlan);
     });
   });
 });

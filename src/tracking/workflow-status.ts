@@ -8,11 +8,7 @@ export class WorkflowStatusTracker {
   private _taskPrompt = '';
   private _currentPhase = '';
   private _completedPhases: string[] = [];
-  private _scoutingReports: unknown[] = [];
-  private _plan: unknown = undefined;
-  private _research?: string;
-  private _planReviewFeedback?: string;
-  private _planReviewSuggestions?: string[];
+  private _workflowData: Record<string, unknown> = {};
   private _stats: { totalTokens: number; totalCost: number; agentCount: number } = {
     totalTokens: 0,
     totalCost: 0,
@@ -105,30 +101,8 @@ export class WorkflowStatusTracker {
     return [...this._completedPhases];
   }
 
-  get scoutingReports(): unknown[] {
-    return [...this._scoutingReports];
-  }
-
-  get plan(): unknown {
-    if (typeof this._plan === 'object' && this._plan !== null) {
-      return structuredClone(this._plan);
-    }
-    return this._plan;
-  }
-
-  get research(): string | undefined {
-    return this._research;
-  }
-
-  get planReviewFeedback(): string | undefined {
-    return this._planReviewFeedback;
-  }
-
-  get planReviewSuggestions(): string[] | undefined {
-    if (this._planReviewSuggestions) {
-      return [...this._planReviewSuggestions];
-    }
-    return undefined;
+  get workflowData(): Record<string, unknown> {
+    return structuredClone(this._workflowData);
   }
 
   get stats(): { totalTokens: number; totalCost: number; agentCount: number } {
@@ -184,26 +158,9 @@ export class WorkflowStatusTracker {
     this._currentPhase = phase;
   }
 
-  setScoutingReports(reports: unknown[]): void {
-    this._scoutingReports = reports;
-  }
-
-  setPlan(plan: unknown): void {
-    this._plan = plan;
-  }
-
-  setResearch(research: string): void {
-    this._research = research;
-  }
-
-  setPlanReviewFeedback(feedback: string, suggestions: string[]): void {
-    this._planReviewFeedback = feedback;
-    this._planReviewSuggestions = suggestions;
-  }
-
-  clearPlanReviewFeedback(): void {
-    this._planReviewFeedback = undefined;
-    this._planReviewSuggestions = undefined;
+  setWorkflowData(updates: Record<string, unknown>): void {
+    this._workflowData = { ...this._workflowData, ...updates };
+    this.persistState();
   }
 
   addTokensToStats(tokens: { input: number; output: number }): void {
@@ -301,11 +258,7 @@ export class WorkflowStatusTracker {
     tracker._taskPrompt = data.taskPrompt;
     tracker._currentPhase = data.currentPhase;
     tracker._completedPhases = [...data.completedPhases];
-    tracker._scoutingReports = data.scoutingReports;
-    tracker._plan = data.plan;
-    tracker._research = data.research;
-    tracker._planReviewFeedback = data.planReviewFeedback;
-    tracker._planReviewSuggestions = data.planReviewSuggestions ? [...data.planReviewSuggestions] : undefined;
+    tracker._workflowData = data.workflowData ?? {};
     tracker._stats = { ...data.stats };
     tracker._spawnedAgents = data.spawnedAgents ? data.spawnedAgents.map((a) => ({ ...a })) : [];
     tracker._sidebar = data.sidebar ? { ...data.sidebar } : undefined;

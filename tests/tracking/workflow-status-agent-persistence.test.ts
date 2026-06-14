@@ -208,11 +208,7 @@ describe('WorkflowStatusTracker – agent persistence', () => {
         currentPhase: 'scouting',
         completedPhases: [],
         tasks: [],
-        scoutingReports: [],
-        plan: undefined,
-        research: undefined,
-        planReviewFeedback: undefined,
-        planReviewSuggestions: undefined,
+        workflowData: {},
         stats: { totalTokens: 0, totalCost: 0, agentCount: 0 },
         // Note: no spawnedAgents field
       };

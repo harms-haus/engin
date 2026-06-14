@@ -58,7 +58,7 @@ describe('WorkflowStatusTracker – atomic save', () => {
   describe('atomic write via rename', () => {
     it('save produces a valid state file that loads correctly', async () => {
       tracker.setTaskPrompt('atomic-verify');
-      tracker.setPlan({ steps: ['a', 'b'] });
+      tracker.setWorkflowData({ plan: { steps: ['a', 'b'] } });
       tracker.addTokensToStats({ input: 42, output: 7 });
       tracker.incrementAgentCount();
       tracker.taskTracker.addTask(makeTask({ id: 't1' }));
@@ -67,7 +67,8 @@ describe('WorkflowStatusTracker – atomic save', () => {
 
       const restored = await WorkflowStatusTracker.load(dir);
       expect(restored.taskPrompt).toBe('atomic-verify');
-      expect(restored.plan).toEqual({ steps: ['a', 'b'] });
+      const restoredData = restored.workflowData as Record<string, unknown>;
+      expect(restoredData.plan).toEqual({ steps: ['a', 'b'] });
       expect(restored.stats.totalTokens).toBe(49);
       expect(restored.stats.agentCount).toBe(1);
       expect(restored.taskTracker.getAllTasks()).toHaveLength(1);
@@ -76,20 +77,20 @@ describe('WorkflowStatusTracker – atomic save', () => {
     it('rename overwrites previous state file completely', async () => {
       // First save with one set of data
       tracker.setTaskPrompt('version-1');
-      tracker.setPlan({ v: 1 });
+      tracker.setWorkflowData({ plan: { v: 1 } });
       await tracker.save();
 
       // Verify first version
       let restored = await WorkflowStatusTracker.load(dir);
-      expect(restored.plan).toEqual({ v: 1 });
+      expect((restored.workflowData as Record<string, unknown>).plan).toEqual({ v: 1 });
 
       // Second save with different data
-      tracker.setPlan({ v: 2, extra: true });
+      tracker.setWorkflowData({ plan: { v: 2, extra: true } });
       await tracker.save();
 
       // Verify second version replaces first entirely
       restored = await WorkflowStatusTracker.load(dir);
-      expect(restored.plan).toEqual({ v: 2, extra: true });
+      expect((restored.workflowData as Record<string, unknown>).plan).toEqual({ v: 2, extra: true });
       expect(restored.taskPrompt).toBe('version-1');
     });
 
@@ -206,10 +207,13 @@ describe('WorkflowStatusTracker – atomic save', () => {
   describe('data integrity', () => {
     it('round-trip preserves all field types through atomic write', async () => {
       tracker.setTaskPrompt('integrity-test');
-      tracker.setScoutingReports([{ a: 1 }, { b: [2, 3] }]);
-      tracker.setPlan({ nested: { deep: true } });
-      tracker.setResearch('some research notes');
-      tracker.setPlanReviewFeedback('looks good', ['suggestion-1']);
+      tracker.setWorkflowData({
+        scoutingReports: [{ a: 1 }, { b: [2, 3] }],
+        plan: { nested: { deep: true } },
+        research: 'some research notes',
+        planReviewFeedback: 'looks good',
+        planReviewSuggestions: ['suggestion-1'],
+      });
       tracker.setCurrentPhase('implementing');
       tracker.addTokensToStats({ input: 100, output: 200 });
       tracker.incrementAgentCount();
@@ -219,12 +223,13 @@ describe('WorkflowStatusTracker – atomic save', () => {
       await tracker.save();
 
       const restored = await WorkflowStatusTracker.load(dir);
+      const restoredData = restored.workflowData as Record<string, unknown>;
       expect(restored.taskPrompt).toBe('integrity-test');
-      expect(restored.scoutingReports).toEqual([{ a: 1 }, { b: [2, 3] }]);
-      expect(restored.plan).toEqual({ nested: { deep: true } });
-      expect(restored.research).toBe('some research notes');
-      expect(restored.planReviewFeedback).toBe('looks good');
-      expect(restored.planReviewSuggestions).toEqual(['suggestion-1']);
+      expect(restoredData.scoutingReports).toEqual([{ a: 1 }, { b: [2, 3] }]);
+      expect(restoredData.plan).toEqual({ nested: { deep: true } });
+      expect(restoredData.research).toBe('some research notes');
+      expect(restoredData.planReviewFeedback).toBe('looks good');
+      expect(restoredData.planReviewSuggestions).toEqual(['suggestion-1']);
       expect(restored.currentPhase).toBe('implementing');
       expect(restored.stats).toEqual({ totalTokens: 300, totalCost: 0, agentCount: 2 });
       expect(restored.taskTracker.getAllTasks()).toHaveLength(1);

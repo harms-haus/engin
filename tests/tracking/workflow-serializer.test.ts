@@ -30,8 +30,7 @@ describe('workflow-serializer', () => {
       expect(state.taskPrompt).toBe('');
       expect(state.currentPhase).toBe('');
       expect(state.completedPhases).toEqual([]);
-      expect(state.scoutingReports).toEqual([]);
-      expect(state.plan).toBeUndefined();
+      expect(state.workflowData).toEqual({});
       expect(state.stats).toEqual({ totalTokens: 0, totalCost: 0, agentCount: 0 });
       expect(state.tasks).toEqual([]);
       expect(state.spawnedAgents).toEqual([]);
@@ -40,10 +39,13 @@ describe('workflow-serializer', () => {
     it('includes all set properties', () => {
       tracker.setTaskPrompt('Build a thing');
       tracker.setCurrentPhase('implementing');
-      tracker.setScoutingReports([{ summary: 'done' }]);
-      tracker.setPlan({ steps: ['a', 'b'] });
-      tracker.setResearch('research notes');
-      tracker.setPlanReviewFeedback('Great', ['Fix this']);
+      tracker.setWorkflowData({
+        scoutingReports: [{ summary: 'done' }],
+        plan: { steps: ['a', 'b'] },
+        research: 'research notes',
+        planReviewFeedback: 'Great',
+        planReviewSuggestions: ['Fix this'],
+      });
       tracker.addTokensToStats({ input: 100, output: 50 });
       tracker.incrementAgentCount();
       tracker.recordAgentSpawn('agent-1', 'coder', 'scouting');
@@ -59,11 +61,11 @@ describe('workflow-serializer', () => {
       expect(state.taskPrompt).toBe('Build a thing');
       expect(state.currentPhase).toBe('implementing');
       expect(state.completedPhases).toEqual([]);
-      expect(state.scoutingReports).toEqual([{ summary: 'done' }]);
-      expect(state.plan).toEqual({ steps: ['a', 'b'] });
-      expect(state.research).toBe('research notes');
-      expect(state.planReviewFeedback).toBe('Great');
-      expect(state.planReviewSuggestions).toEqual(['Fix this']);
+      expect(state.workflowData.scoutingReports).toEqual([{ summary: 'done' }]);
+      expect(state.workflowData.plan).toEqual({ steps: ['a', 'b'] });
+      expect(state.workflowData.research).toBe('research notes');
+      expect(state.workflowData.planReviewFeedback).toBe('Great');
+      expect(state.workflowData.planReviewSuggestions).toEqual(['Fix this']);
       expect(state.stats).toEqual({ totalTokens: 150, totalCost: 0, agentCount: 1 });
       expect(state.spawnedAgents).toHaveLength(1);
       expect(state.spawnedAgents![0].agentId).toBe('agent-1');
@@ -85,18 +87,18 @@ describe('workflow-serializer', () => {
 
     it('returns a defensive copy — mutations do not affect tracker', () => {
       tracker.setTaskPrompt('original');
-      tracker.setPlan({ key: 'value' });
+      tracker.setWorkflowData({ plan: { key: 'value' } });
       tracker.recordAgentSpawn('a1', 'coder', 'scouting');
 
       const state = serializeWorkflowState(tracker);
       state.taskPrompt = 'mutated';
-      state.plan = { key: 'mutated' };
+      state.workflowData.plan = { key: 'mutated' };
       state.stats.totalTokens = 999;
       state.spawnedAgents!.push({ agentId: 'fake', profile: 'p', phase: 'scouting' });
       state.completedPhases.push('fake-phase');
 
       expect(tracker.taskPrompt).toBe('original');
-      expect(tracker.plan).toEqual({ key: 'value' });
+      expect((tracker.workflowData as Record<string, unknown>).plan).toEqual({ key: 'value' });
       expect(tracker.stats.totalTokens).toBe(0);
       expect(tracker.spawnedAgents).toHaveLength(1);
       expect(tracker.completedPhases).toEqual([]);
@@ -185,17 +187,19 @@ describe('workflow-serializer', () => {
 
   describe('loadWorkflowState', () => {
     it('reads and parses a valid state file', async () => {
-      // Write a state file manually
+      // Write a state file manually in the new format (workflowData)
       const state: WorkflowState = {
         taskPrompt: 'loaded',
         currentPhase: 'scouting',
         completedPhases: [],
         tasks: [],
-        scoutingReports: [],
-        plan: { version: 2 },
-        research: 'research notes',
-        planReviewFeedback: 'Feedback',
-        planReviewSuggestions: ['Suggestion 1'],
+        workflowData: {
+          scoutingReports: [],
+          plan: { version: 2 },
+          research: 'research notes',
+          planReviewFeedback: 'Feedback',
+          planReviewSuggestions: ['Suggestion 1'],
+        },
         stats: { totalTokens: 100, totalCost: 0, agentCount: 1 },
         spawnedAgents: [{ agentId: 'a1', profile: 'coder', phase: 'scouting' }],
         sidebar: { title: 'Sidebar' },
@@ -209,10 +213,10 @@ describe('workflow-serializer', () => {
 
       expect(loaded.taskPrompt).toBe('loaded');
       expect(loaded.currentPhase).toBe('scouting');
-      expect(loaded.plan).toEqual({ version: 2 });
-      expect(loaded.research).toBe('research notes');
-      expect(loaded.planReviewFeedback).toBe('Feedback');
-      expect(loaded.planReviewSuggestions).toEqual(['Suggestion 1']);
+      expect(loaded.workflowData.plan).toEqual({ version: 2 });
+      expect(loaded.workflowData.research).toBe('research notes');
+      expect(loaded.workflowData.planReviewFeedback).toBe('Feedback');
+      expect(loaded.workflowData.planReviewSuggestions).toEqual(['Suggestion 1']);
       expect(loaded.stats).toEqual({ totalTokens: 100, totalCost: 0, agentCount: 1 });
       expect(loaded.spawnedAgents).toHaveLength(1);
       expect(loaded.spawnedAgents![0].agentId).toBe('a1');
@@ -239,8 +243,7 @@ describe('workflow-serializer', () => {
         currentPhase: '',
         completedPhases: [],
         tasks: [],
-        scoutingReports: [],
-        plan: undefined,
+        workflowData: {},
         stats: { totalTokens: 0, totalCost: 0, agentCount: 0 },
       };
 
@@ -249,6 +252,7 @@ describe('workflow-serializer', () => {
 
       const loaded = await loadWorkflowState(dir);
       expect(loaded.taskPrompt).toBe('');
+      expect(loaded.workflowData).toEqual({});
       expect(loaded.spawnedAgents).toBeUndefined();
       expect(loaded.sidebar).toBeUndefined();
       expect(loaded.worktree).toBeUndefined();
@@ -262,10 +266,13 @@ describe('workflow-serializer', () => {
       tracker.setTaskPrompt('Round trip');
       tracker.setCurrentPhase('implementing');
       tracker.setPhase('review');
-      tracker.setScoutingReports([{ summary: 'Done' }]);
-      tracker.setPlan({ tasks: ['t1'] });
-      tracker.setResearch('Some research');
-      tracker.setPlanReviewFeedback('Looks good', ['Minor fix']);
+      tracker.setWorkflowData({
+        scoutingReports: [{ summary: 'Done' }],
+        plan: { tasks: ['t1'] },
+        research: 'Some research',
+        planReviewFeedback: 'Looks good',
+        planReviewSuggestions: ['Minor fix'],
+      });
       tracker.addTokensToStats({ input: 200, output: 100 });
       tracker.incrementAgentCount();
       tracker.recordAgentSpawn('agent-1', 'coder', 'scouting');
@@ -287,11 +294,11 @@ describe('workflow-serializer', () => {
       expect(loaded.taskPrompt).toBe('Round trip');
       expect(loaded.currentPhase).toBe('review');
       expect(loaded.completedPhases).toEqual(['implementing']);
-      expect(loaded.scoutingReports).toEqual([{ summary: 'Done' }]);
-      expect(loaded.plan).toEqual({ tasks: ['t1'] });
-      expect(loaded.research).toBe('Some research');
-      expect(loaded.planReviewFeedback).toBe('Looks good');
-      expect(loaded.planReviewSuggestions).toEqual(['Minor fix']);
+      expect(loaded.workflowData.scoutingReports).toEqual([{ summary: 'Done' }]);
+      expect(loaded.workflowData.plan).toEqual({ tasks: ['t1'] });
+      expect(loaded.workflowData.research).toBe('Some research');
+      expect(loaded.workflowData.planReviewFeedback).toBe('Looks good');
+      expect(loaded.workflowData.planReviewSuggestions).toEqual(['Minor fix']);
       expect(loaded.stats).toEqual({ totalTokens: 300, totalCost: 0, agentCount: 1 });
       expect(loaded.spawnedAgents).toHaveLength(1);
       expect(loaded.spawnedAgents![0].agentId).toBe('agent-1');

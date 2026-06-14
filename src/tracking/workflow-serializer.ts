@@ -13,11 +13,7 @@ export function serializeWorkflowState(tracker: WorkflowStatusTracker): Workflow
     currentPhase: tracker.currentPhase,
     completedPhases: tracker.completedPhases,
     tasks: tracker.taskTracker.getAllTasks(),
-    scoutingReports: tracker.scoutingReports,
-    plan: tracker.plan,
-    research: tracker.research,
-    planReviewFeedback: tracker.planReviewFeedback,
-    planReviewSuggestions: tracker.planReviewSuggestions,
+    workflowData: tracker.workflowData,
     stats: { ...tracker.stats },
     spawnedAgents: tracker.spawnedAgents.length > 0 ? tracker.spawnedAgents.map((a) => ({ ...a })) : [],
     sidebar: tracker.sidebar,
@@ -61,5 +57,30 @@ export async function loadWorkflowState(workDir: string): Promise<WorkflowState>
     }
     throw new Error('Failed to load workflow state', { cause: err });
   }
-  return JSON.parse(raw) as WorkflowState;
+  let parsed = JSON.parse(raw) as Record<string, unknown>;
+  // Backward-compat migration: old state files have top-level SPIR fields.
+  // If workflowData is absent but any old fields exist, migrate them into workflowData.
+  if (!parsed.workflowData) {
+    const spirFields = ['scoutingReports', 'plan', 'research', 'planReviewFeedback', 'planReviewSuggestions'] as const;
+    const migrated: Record<string, unknown> = {};
+    let hasAny = false;
+    for (const field of spirFields) {
+      if (parsed[field] !== undefined) {
+        migrated[field] = parsed[field];
+        hasAny = true;
+      }
+    }
+    if (hasAny) {
+      const {
+        scoutingReports: _sr,
+        plan: _p,
+        research: _r,
+        planReviewFeedback: _pf,
+        planReviewSuggestions: _ps,
+        ...rest
+      } = parsed;
+      parsed = { ...rest, workflowData: migrated };
+    }
+  }
+  return parsed as unknown as WorkflowState;
 }
