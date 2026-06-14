@@ -72,8 +72,12 @@ function connectAndGetFirstMessage(url: string, timeoutMs = 3000): { ws: WebSock
 /**
  * Pick a random high port for testing.
  */
+// Each test gets a unique port (monotonic counter) so multiple servers that
+// remain listening until afterAll never collide with EADDRINUSE. The
+// randomized base avoids cross-run TIME_WAIT collisions on re-runs.
+let nextPort = 20000 + Math.floor(Math.random() * 8000);
 function randomPort(): number {
-  return 18000 + Math.floor(Math.random() * 2000);
+  return nextPort++;
 }
 
 // ─── Tests ──────────────────────────────────────────────────────────────────
