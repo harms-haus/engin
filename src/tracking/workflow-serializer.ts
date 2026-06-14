@@ -1,4 +1,4 @@
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { WorkflowState } from '../core/types.js';
 import { isEnoentError } from '../core/utils.js';
@@ -25,14 +25,23 @@ export function serializeWorkflowState(tracker: WorkflowStatusTracker): Workflow
   };
 }
 
+// Monotonic counter guarantees a unique temp filename per call within a
+// process, so concurrent saves (e.g. an in-flight auto-persist racing with an
+// explicit saveWorkflowState) never write/rename the same temp path.
+let saveSeq = 0;
+
 /**
  * Atomically write the tracker state to disk.
- * Writes to a temporary file then renames to the final path.
+ * Writes to a uniquely-named temporary file then renames it to the final path.
+ * Also removes a stale legacy `.engin-state.json.tmp` left by a previous
+ * (pre-unique-name) failed write.
  */
 export async function saveWorkflowState(tracker: WorkflowStatusTracker, workDir: string): Promise<void> {
   await mkdir(workDir, { recursive: true });
   const filePath = join(workDir, '.engin-state.json');
-  const tmpPath = join(workDir, '.engin-state.json.tmp');
+  // Clean up a stale legacy temp file from a previous failed write.
+  await rm(join(workDir, '.engin-state.json.tmp'), { force: true });
+  const tmpPath = join(workDir, `.engin-state.json.tmp.${process.pid}.${saveSeq++}`);
   await writeFile(tmpPath, JSON.stringify(serializeWorkflowState(tracker), null, 2), 'utf-8');
   await rename(tmpPath, filePath);
 }
