@@ -1,10 +1,18 @@
 // ─── runStepTask Tests ──────────────────────────────────────────────────────
 
-import { beforeEach, describe, expect, it, mock } from 'bun:test';
+import { afterAll, beforeEach, describe, expect, it, mock } from 'bun:test';
 import type { ZodType } from 'zod';
 import { z } from 'zod';
 import type { AgentProfile, AgentStatusCallbacks, StatusCallbacks } from '../../src/core/types.js';
 import { makeMockSession } from '../helpers/make-session.js';
+
+// Capture real modules before mocking so we can restore them in afterAll.
+// Without the restore, these relative-path mock.module() registrations leak
+// into sibling test files (harness-factory.subscribe.test.ts,
+// structured-output.test.ts) under CI's parallel scheduling.
+const realProfile = Object.assign({}, await import('../../src/core/profile.js'));
+const realHarnessFactory = Object.assign({}, await import('../../src/core/harness-factory.js'));
+const realStructuredOutput = Object.assign({}, await import('../../src/core/structured-output.js'));
 
 // ─── Mock Dependencies ─────────────────────────────────────────────────────
 
@@ -749,4 +757,11 @@ describe('runStepTask', () => {
       expect(mockCreateHarness).toHaveBeenCalledWith(expect.objectContaining({ apiKeys: undefined }));
     });
   });
+});
+
+// Restore the real modules so mocks don't leak into other test files.
+afterAll(() => {
+  mock.module('../../src/core/profile.js', () => realProfile);
+  mock.module('../../src/core/harness-factory.js', () => realHarnessFactory);
+  mock.module('../../src/core/structured-output.js', () => realStructuredOutput);
 });
