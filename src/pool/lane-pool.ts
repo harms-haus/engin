@@ -49,16 +49,22 @@ export class LanePool {
       return { completedTasks: 0, failedTasks: 0 };
     }
 
-    // Fire onTasksAdded so the TUI gets the initial task layout immediately,
-    // before any profile loading or agent spawning.
-    this.options.onStatus?.onTasksAdded?.({
-      tasks: taskTracker.getAllTasks().map((t) => ({
-        id: t.id,
-        title: t.title,
-        status: t.status,
-        dependencies: t.dependencies,
-      })),
-    });
+    // Fire onTaskRegister once per task so the TUI gets the initial task layout
+    // with phaseId and step definitions before any profile loading or agent spawning.
+    for (const task of taskTracker.getAllTasks()) {
+      const steps = this.options.getStepsForTask(task).map((s) => ({
+        name: s.name,
+        profileId: s.profileId,
+        isReadOnly: s.isReadOnly,
+      }));
+      this.options.onStatus?.onTaskRegister?.({
+        taskId: task.id,
+        phaseId: this.options.phaseId,
+        title: task.title,
+        dependencies: task.dependencies,
+        steps,
+      });
+    }
 
     // Clear stale cached profiles before loading fresh ones
     clearProfileCache();
@@ -87,14 +93,14 @@ export class LanePool {
           reportError(agentId, error, undefined, undefined, {
             options: this.options,
             activeSessions: this.activeSessions,
-            phase: this.options.phase,
+            phaseId: this.options.phaseId,
           });
         }
       });
 
       // Count results from the tracker by status
       const allTasks = taskTracker.getAllTasks();
-      const completedTasks = allTasks.filter((t) => t.status === 'done').length;
+      const completedTasks = allTasks.filter((t) => t.status === 'complete').length;
       const failedTasks = allTasks.filter((t) => t.status === 'failed').length;
 
       return { completedTasks, failedTasks };
@@ -174,7 +180,7 @@ export class LanePool {
         return;
       }
 
-      const claimed = taskTracker.claimTasks(1);
+      const claimed = taskTracker.claimTasks(1, agentId);
 
       if (claimed.length > 0) {
         cleanup();
@@ -182,12 +188,10 @@ export class LanePool {
         const task = claimed[0];
 
         try {
-          // startTask lives inside the try block so a tracker error is caught
-          taskTracker.startTask(task.id, agentId);
           await processTask(task, agentId, profiles, {
             options: this.options,
             activeSessions: this.activeSessions,
-            phase: this.options.phase,
+            phaseId: this.options.phaseId,
           });
         } catch (err) {
           // Fire onError callback on task processing error
@@ -195,7 +199,7 @@ export class LanePool {
           reportError(agentId, error, undefined, task.id, {
             options: this.options,
             activeSessions: this.activeSessions,
-            phase: this.options.phase,
+            phaseId: this.options.phaseId,
           });
           // Error during task processing — mark as failed to prevent the lane
           // from getting stuck.
@@ -205,7 +209,7 @@ export class LanePool {
             {
               options: this.options,
               activeSessions: this.activeSessions,
-              phase: this.options.phase,
+              phaseId: this.options.phaseId,
             },
           );
         }

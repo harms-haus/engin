@@ -179,7 +179,7 @@ describe('WorkflowStatusTracker – worktree persistence', () => {
 
       const restored = await WorkflowStatusTracker.load(dir);
       expect(restored.taskPrompt).toBe('full-state');
-      expect(restored.currentPhase).toBe('implementing');
+      expect(restored.currentPhaseId).toBe('implementing');
       expect(restored.stats).toEqual({ totalTokens: 300, totalCost: 0, agentCount: 1 });
       expect(restored.worktree).toBeDefined();
       expect(restored.worktree!.worktreePath).toBe('/tmp/wt-full');

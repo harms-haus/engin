@@ -8,18 +8,16 @@ export type {
   EventRecord,
   EventType,
   LogEntry,
+  PhaseEntity,
+  StepEntity,
   TaskEntity,
   WorkflowProjection,
 } from '../tracking/event-types.js';
 
 // ─── Shared UI value types ──────────────────────────────────────────────────
 // Describes a sidebar phase indicator entry (see WorkflowProjection.sidebar).
-
-export interface PhaseDescriptor {
-  id: string;
-  label: string;
-  icon: string;
-}
+// NOTE: PhaseDescriptor has been replaced by PhaseEntity (re-exported above).
+// Consumers should import PhaseEntity instead.
 
 // ─── Server to Client Messages ──────────────────────────────────────────────
 //

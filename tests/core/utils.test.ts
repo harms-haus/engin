@@ -143,10 +143,12 @@ describe('STATUS_CALLBACK_METHODS', () => {
       'onWorkflowStart',
       'onPhaseStart',
       'onPhaseComplete',
+      'onPhaseRegister',
       'onAgentSpawn',
       'onAgentComplete',
       'onTaskStart',
-      'onTaskStepStart',
+      'onTaskRegister',
+      'onStepStart',
       'onTaskComplete',
       'onTaskRejected',
       'onDecision',
@@ -157,7 +159,6 @@ describe('STATUS_CALLBACK_METHODS', () => {
       'onTurnEnd',
       'onToolCallStart',
       'onToolCallEnd',
-      'onTasksAdded',
       'onSidebarUpdate',
     ];
     expect([...STATUS_CALLBACK_METHODS].sort()).toEqual([...expectedMethods].sort());
@@ -229,10 +230,12 @@ describe('composeStatusCallbacks', () => {
       onWorkflowStart: () => log.push('cb1.onWorkflowStart'),
       onPhaseStart: () => log.push('cb1.onPhaseStart'),
       onPhaseComplete: () => log.push('cb1.onPhaseComplete'),
+      onPhaseRegister: () => log.push('cb1.onPhaseRegister'),
       onAgentSpawn: () => log.push('cb1.onAgentSpawn'),
       onAgentComplete: () => log.push('cb1.onAgentComplete'),
       onTaskStart: () => log.push('cb1.onTaskStart'),
-      onTaskStepStart: () => log.push('cb1.onTaskStepStart'),
+      onTaskRegister: () => log.push('cb1.onTaskRegister'),
+      onStepStart: () => log.push('cb1.onStepStart'),
       onTaskComplete: () => log.push('cb1.onTaskComplete'),
       onTaskRejected: () => log.push('cb1.onTaskRejected'),
       onDecision: () => log.push('cb1.onDecision'),
@@ -243,17 +246,18 @@ describe('composeStatusCallbacks', () => {
       onTurnEnd: () => log.push('cb1.onTurnEnd'),
       onToolCallStart: () => log.push('cb1.onToolCallStart'),
       onToolCallEnd: () => log.push('cb1.onToolCallEnd'),
-      onTasksAdded: () => log.push('cb1.onTasksAdded'),
       onSidebarUpdate: () => log.push('cb1.onSidebarUpdate'),
     };
     const cb2: StatusCallbacks = {
       onWorkflowStart: () => log.push('cb2.onWorkflowStart'),
       onPhaseStart: () => log.push('cb2.onPhaseStart'),
       onPhaseComplete: () => log.push('cb2.onPhaseComplete'),
+      onPhaseRegister: () => log.push('cb2.onPhaseRegister'),
       onAgentSpawn: () => log.push('cb2.onAgentSpawn'),
       onAgentComplete: () => log.push('cb2.onAgentComplete'),
       onTaskStart: () => log.push('cb2.onTaskStart'),
-      onTaskStepStart: () => log.push('cb2.onTaskStepStart'),
+      onTaskRegister: () => log.push('cb2.onTaskRegister'),
+      onStepStart: () => log.push('cb2.onStepStart'),
       onTaskComplete: () => log.push('cb2.onTaskComplete'),
       onTaskRejected: () => log.push('cb2.onTaskRejected'),
       onDecision: () => log.push('cb2.onDecision'),
@@ -264,7 +268,6 @@ describe('composeStatusCallbacks', () => {
       onTurnEnd: () => log.push('cb2.onTurnEnd'),
       onToolCallStart: () => log.push('cb2.onToolCallStart'),
       onToolCallEnd: () => log.push('cb2.onToolCallEnd'),
-      onTasksAdded: () => log.push('cb2.onTasksAdded'),
       onSidebarUpdate: () => log.push('cb2.onSidebarUpdate'),
     };
     const composed = composeStatusCallbacks([cb1, cb2]);
@@ -273,10 +276,12 @@ describe('composeStatusCallbacks', () => {
     composed.onWorkflowStart?.({} as any);
     composed.onPhaseStart?.({} as any);
     composed.onPhaseComplete?.({} as any);
+    composed.onPhaseRegister?.({} as any);
     composed.onAgentSpawn?.({} as any);
     composed.onAgentComplete?.({} as any);
     composed.onTaskStart?.({} as any);
-    composed.onTaskStepStart?.({} as any);
+    composed.onTaskRegister?.({} as any);
+    composed.onStepStart?.({} as any);
     composed.onTaskComplete?.({} as any);
     composed.onTaskRejected?.({} as any);
     composed.onDecision?.({} as any);
@@ -287,12 +292,11 @@ describe('composeStatusCallbacks', () => {
     composed.onTurnEnd?.({} as any);
     composed.onToolCallStart?.({} as any);
     composed.onToolCallEnd?.({} as any);
-    composed.onTasksAdded?.({} as any);
     composed.onSidebarUpdate?.({} as any);
 
     // Each method should invoke both cb1 and cb2 in order
-    expect(log).toHaveLength(38);
-    for (let i = 0; i < 19; i++) {
+    expect(log).toHaveLength(40);
+    for (let i = 0; i < 20; i++) {
       const methodIndex = i * 2;
       expect(log[methodIndex]).toBe(`cb1.${STATUS_CALLBACK_METHODS[i]}`);
       expect(log[methodIndex + 1]).toBe(`cb2.${STATUS_CALLBACK_METHODS[i]}`);
@@ -320,20 +324,22 @@ describe('composeStatusCallbacks', () => {
       composed.onWorkflowStart?.({ taskPrompt: '', resumed: false, workDir: '' });
       composed.onPhaseStart?.({ phase: '', round: 0 });
       composed.onPhaseComplete?.({ phase: '', durationMs: 0 });
-      composed.onAgentSpawn?.({ agentId: '', profile: '', phase: '' });
-      composed.onAgentComplete?.({ agentId: '', profile: '', phase: '' });
+      composed.onPhaseRegister?.({ id: '', label: '', icon: '' });
+      composed.onAgentSpawn?.({ agentId: '', profile: '', phaseId: '' });
+      composed.onAgentComplete?.({ agentId: '', profile: '', phaseId: '' });
       composed.onTaskStart?.({ taskId: '', title: '', agentId: '' });
+      composed.onTaskRegister?.({ taskId: '', phaseId: '', title: '', dependencies: [], steps: [] });
+      composed.onStepStart?.({ taskId: '', stepIndex: 0, stepName: '', agentId: '' });
       composed.onTaskComplete?.({ taskId: '', title: '' });
       composed.onTaskRejected?.({ taskId: '', title: '', reason: '' });
       composed.onDecision?.({ agentId: '', decision: '', reasoning: '' });
-      composed.onError?.({ agentId: '', error: '', phase: '' });
+      composed.onError?.({ agentId: '', error: '', phaseId: '' });
       composed.onWorkflowComplete?.({ totalDurationMs: 0, agentCount: 0 });
-      composed.onWorkflowFailed?.({ error: new Error(), phase: '' });
+      composed.onWorkflowFailed?.({ error: new Error(), phaseId: '' });
       composed.onTurnStart?.({ agentId: '', turn: 0 });
       composed.onTurnEnd?.({ agentId: '', turn: 0 });
       composed.onToolCallStart?.({ agentId: '', toolName: '', toolCallId: '', arguments: {} });
       composed.onToolCallEnd?.({ agentId: '', toolName: '', toolCallId: '', isError: false });
-      composed.onTasksAdded?.({ tasks: [] });
       composed.onSidebarUpdate?.({});
     }).not.toThrow();
   });

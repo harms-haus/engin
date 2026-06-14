@@ -22,7 +22,6 @@ function resetSeq() {
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 describe('evolve', () => {
-  // Each describe block resets the seq counter
   it('returns a new object (immutability)', () => {
     resetSeq();
     const state = createInitialProjection();
@@ -45,22 +44,39 @@ describe('evolve', () => {
     });
   });
 
-  describe('phase_started', () => {
-    it('sets currentPhase', () => {
+  describe('phase_registered', () => {
+    it('appends a PhaseEntity to phases array', () => {
       resetSeq();
       let state = evolve(createInitialProjection(), makeEvent('workflow_started', { taskPrompt: 'x' }));
-      state = evolve(
-        state,
-        makeEvent(
-          'phase_started',
-          { phase: 'scouting', round: 1 },
-          { timestamp: new Date().toISOString(), phase: 'scouting' },
-        ),
-      );
-      expect(state.currentPhase).toBe('scouting');
+      state = evolve(state, makeEvent('phase_registered', { id: 'scouting', label: 'Scouting', icon: '🔍' }));
+      expect(state.phases).toHaveLength(1);
+      expect(state.phases[0].id).toBe('scouting');
+      expect(state.phases[0].label).toBe('Scouting');
+      expect(state.phases[0].icon).toBe('🔍');
+      expect(state.phases[0].taskIds).toEqual([]);
     });
 
-    it('changes currentPhase without pushing completedPhases', () => {
+    it('preserves insertion order', () => {
+      resetSeq();
+      let state = evolve(createInitialProjection(), makeEvent('workflow_started', { taskPrompt: 'x' }));
+      state = evolve(state, makeEvent('phase_registered', { id: 'a', label: 'A', icon: '' }));
+      state = evolve(state, makeEvent('phase_registered', { id: 'b', label: 'B', icon: '' }));
+      state = evolve(state, makeEvent('phase_registered', { id: 'c', label: 'C', icon: '' }));
+      expect(state.phases.map((p) => p.id)).toEqual(['a', 'b', 'c']);
+    });
+
+    it('no-op when phase already registered', () => {
+      resetSeq();
+      let state = evolve(createInitialProjection(), makeEvent('workflow_started', { taskPrompt: 'x' }));
+      state = evolve(state, makeEvent('phase_registered', { id: 'p1', label: 'First', icon: '1' }));
+      state = evolve(state, makeEvent('phase_registered', { id: 'p1', label: 'Second', icon: '2' }));
+      expect(state.phases).toHaveLength(1);
+      expect(state.phases[0].label).toBe('First');
+    });
+  });
+
+  describe('phase_started', () => {
+    it('sets currentPhaseId', () => {
       resetSeq();
       let state = evolve(createInitialProjection(), makeEvent('workflow_started', { taskPrompt: 'x' }));
       state = evolve(
@@ -68,7 +84,21 @@ describe('evolve', () => {
         makeEvent(
           'phase_started',
           { phase: 'scouting', round: 1 },
-          { timestamp: new Date().toISOString(), phase: 'scouting' },
+          { timestamp: new Date().toISOString(), phaseId: 'scouting' },
+        ),
+      );
+      expect(state.currentPhaseId).toBe('scouting');
+    });
+
+    it('changes currentPhaseId without pushing completedPhaseIds', () => {
+      resetSeq();
+      let state = evolve(createInitialProjection(), makeEvent('workflow_started', { taskPrompt: 'x' }));
+      state = evolve(
+        state,
+        makeEvent(
+          'phase_started',
+          { phase: 'scouting', round: 1 },
+          { timestamp: new Date().toISOString(), phaseId: 'scouting' },
         ),
       );
       state = evolve(
@@ -76,16 +106,16 @@ describe('evolve', () => {
         makeEvent(
           'phase_started',
           { phase: 'planning', round: 1 },
-          { timestamp: new Date().toISOString(), phase: 'planning' },
+          { timestamp: new Date().toISOString(), phaseId: 'planning' },
         ),
       );
-      expect(state.currentPhase).toBe('planning');
-      expect(state.completedPhases).toEqual([]);
+      expect(state.currentPhaseId).toBe('planning');
+      expect(state.completedPhaseIds).toEqual([]);
     });
   });
 
   describe('phase_completed', () => {
-    it('pushes current phase to completedPhases', () => {
+    it('pushes current phase to completedPhaseIds', () => {
       resetSeq();
       let state = evolve(createInitialProjection(), makeEvent('workflow_started', { taskPrompt: 'x' }));
       state = evolve(
@@ -93,7 +123,7 @@ describe('evolve', () => {
         makeEvent(
           'phase_started',
           { phase: 'scouting', round: 1 },
-          { timestamp: new Date().toISOString(), phase: 'scouting' },
+          { timestamp: new Date().toISOString(), phaseId: 'scouting' },
         ),
       );
       state = evolve(
@@ -101,10 +131,10 @@ describe('evolve', () => {
         makeEvent(
           'phase_completed',
           { phase: 'scouting', durationMs: 100 },
-          { timestamp: new Date().toISOString(), phase: 'scouting' },
+          { timestamp: new Date().toISOString(), phaseId: 'scouting' },
         ),
       );
-      expect(state.completedPhases).toEqual(['scouting']);
+      expect(state.completedPhaseIds).toEqual(['scouting']);
     });
 
     it('chains multiple phase completions', () => {
@@ -114,7 +144,7 @@ describe('evolve', () => {
       state = evolve(state, makeEvent('phase_completed', { phase: 'scouting', durationMs: 100 }));
       state = evolve(state, makeEvent('phase_started', { phase: 'planning', round: 1 }));
       state = evolve(state, makeEvent('phase_completed', { phase: 'planning', durationMs: 200 }));
-      expect(state.completedPhases).toEqual(['scouting', 'planning']);
+      expect(state.completedPhaseIds).toEqual(['scouting', 'planning']);
     });
   });
 
@@ -127,14 +157,14 @@ describe('evolve', () => {
         makeEvent(
           'agent_spawned',
           { agentId: 'agent-1', profile: 'coder', sessionId: 'sess-1', sessionPath: '/tmp/sess' },
-          { timestamp: new Date().toISOString(), agentId: 'agent-1', taskId: 'task-1', phase: 'impl' },
+          { timestamp: new Date().toISOString(), agentId: 'agent-1', taskId: 'task-1', phaseId: 'impl' },
         ),
       );
       const key = 'agent-1::task-1';
       expect(state.agents[key]).toBeDefined();
       expect(state.agents[key].agentId).toBe('agent-1');
       expect(state.agents[key].profile).toBe('coder');
-      expect(state.agents[key].phase).toBe('impl');
+      expect(state.agents[key].phaseId).toBe('impl');
       expect(state.agents[key].taskId).toBe('task-1');
       expect(state.agents[key].sessionId).toBe('sess-1');
       expect(state.agents[key].active).toBe(true);
@@ -220,6 +250,42 @@ describe('evolve', () => {
       // agentCount must NOT double-count
       expect(state.stats.agentCount).toBe(1);
     });
+
+    it('stamps stepIndex from metadata and links to task step', () => {
+      resetSeq();
+      let state = evolve(createInitialProjection(), makeEvent('workflow_started', { taskPrompt: 'x' }));
+
+      // Register a phase and a task with steps
+      state = evolve(state, makeEvent('phase_registered', { id: 'p1', label: 'Phase 1', icon: '' }));
+      state = evolve(
+        state,
+        makeEvent('task_registered', {
+          taskId: 't1',
+          title: 'Do thing',
+          phaseId: 'p1',
+          steps: [
+            { name: 'analyze', profileId: 'scout', isReadOnly: true },
+            { name: 'implement', profileId: 'coder', isReadOnly: false },
+          ],
+          dependencies: [],
+        }),
+      );
+
+      // Spawn agent with stepIndex
+      state = evolve(
+        state,
+        makeEvent(
+          'agent_spawned',
+          { agentId: 'a1', profile: 'coder' },
+          { timestamp: new Date().toISOString(), agentId: 'a1', taskId: 't1', stepIndex: 1 },
+        ),
+      );
+
+      const key = 'a1::t1';
+      expect(state.agents[key].stepIndex).toBe(1);
+      // Task step should be linked
+      expect(state.tasks['t1'].steps[1].agentKey).toBe(key);
+    });
   });
 
   describe('agent_completed', () => {
@@ -248,30 +314,111 @@ describe('evolve', () => {
     });
   });
 
-  describe('task_started', () => {
-    it('upserts a TaskEntity with status implementing', () => {
+  describe('task_registered', () => {
+    it('creates a TaskEntity with steps and appends taskId to phase', () => {
       resetSeq();
       let state = evolve(createInitialProjection(), makeEvent('workflow_started', { taskPrompt: 'x' }));
+      state = evolve(state, makeEvent('phase_registered', { id: 'p1', label: 'Phase 1', icon: '' }));
+
+      state = evolve(
+        state,
+        makeEvent('task_registered', {
+          taskId: 't1',
+          title: 'Do thing',
+          phaseId: 'p1',
+          steps: [{ name: 'analyze', profileId: 'scout', isReadOnly: true }],
+          dependencies: ['t0'],
+        }),
+      );
+
+      expect(state.tasks['t1']).toBeDefined();
+      expect(state.tasks['t1'].title).toBe('Do thing');
+      expect(state.tasks['t1'].phaseId).toBe('p1');
+      expect(state.tasks['t1'].status).toBe('ready');
+      expect(state.tasks['t1'].steps).toHaveLength(1);
+      expect(state.tasks['t1'].steps[0].name).toBe('analyze');
+      expect(state.tasks['t1'].steps[0].index).toBe(0);
+      expect(state.tasks['t1'].steps[0].profile).toBe('scout');
+      expect(state.tasks['t1'].steps[0].isReadOnly).toBe(true);
+      expect(state.tasks['t1'].steps[0].agentKey).toBeUndefined();
+      expect(state.tasks['t1'].activeStepIndex).toBeUndefined();
+      expect(state.tasks['t1'].dependencies).toEqual(['t0']);
+
+      // Phase should have the taskId appended
+      expect(state.phases[0].taskIds).toEqual(['t1']);
+    });
+
+    it('no-op if task already exists', () => {
+      resetSeq();
+      let state = evolve(createInitialProjection(), makeEvent('workflow_started', { taskPrompt: 'x' }));
+      state = evolve(state, makeEvent('phase_registered', { id: 'p1', label: 'P1', icon: '' }));
+      state = evolve(
+        state,
+        makeEvent('task_registered', { taskId: 't1', title: 'First', phaseId: 'p1', steps: [], dependencies: [] }),
+      );
+      state = evolve(
+        state,
+        makeEvent('task_registered', { taskId: 't1', title: 'Second', phaseId: 'p1', steps: [], dependencies: [] }),
+      );
+      expect(state.tasks['t1'].title).toBe('First');
+    });
+  });
+
+  describe('task_started', () => {
+    it('sets status to active, startedAt, and agentId', () => {
+      resetSeq();
+      let state = evolve(createInitialProjection(), makeEvent('workflow_started', { taskPrompt: 'x' }));
+      state = evolve(state, makeEvent('phase_registered', { id: 'p1', label: 'P1', icon: '' }));
+      state = evolve(
+        state,
+        makeEvent('task_registered', {
+          taskId: 't1',
+          title: 'Do thing',
+          phaseId: 'p1',
+          steps: [],
+          dependencies: [],
+        }),
+      );
       state = evolve(
         state,
         makeEvent(
           'task_started',
           { taskId: 't1', title: 'Do thing', agentId: 'a1', startedAt: 1000 },
-          { timestamp: new Date().toISOString(), agentId: 'a1', taskId: 't1' },
+          { timestamp: new Date().toISOString(), taskId: 't1' },
         ),
       );
       expect(state.tasks['t1']).toBeDefined();
       expect(state.tasks['t1'].title).toBe('Do thing');
-      expect(state.tasks['t1'].status).toBe('implementing');
-      expect(state.tasks['t1'].agentId).toBe('a1');
+      expect(state.tasks['t1'].status).toBe('active');
       expect(state.tasks['t1'].startedAt).toBe(1000);
+    });
+
+    it('no-op when task does not exist', () => {
+      resetSeq();
+      let state = evolve(createInitialProjection(), makeEvent('workflow_started', { taskPrompt: 'x' }));
+      state = evolve(state, makeEvent('task_started', { taskId: 'nonexistent', title: 'Nope', agentId: 'a1' }));
+      expect(state.tasks).toEqual({});
     });
   });
 
-  describe('task_step_started', () => {
-    it('sets stepInfo on the task', () => {
+  describe('step_started', () => {
+    it('sets activeStepIndex on the task', () => {
       resetSeq();
       let state = evolve(createInitialProjection(), makeEvent('workflow_started', { taskPrompt: 'x' }));
+      state = evolve(state, makeEvent('phase_registered', { id: 'p1', label: 'P1', icon: '' }));
+      state = evolve(
+        state,
+        makeEvent('task_registered', {
+          taskId: 't1',
+          title: 'Do thing',
+          phaseId: 'p1',
+          steps: [
+            { name: 'analyze', profileId: 'scout', isReadOnly: true },
+            { name: 'implement', profileId: 'coder', isReadOnly: false },
+          ],
+          dependencies: [],
+        }),
+      );
       state = evolve(
         state,
         makeEvent(
@@ -283,19 +430,91 @@ describe('evolve', () => {
       state = evolve(
         state,
         makeEvent(
-          'task_step_started',
-          { taskId: 't1', stepName: 'analyze', stepIndex: 1, totalSteps: 3 },
-          { timestamp: new Date().toISOString(), taskId: 't1' },
+          'step_started',
+          { taskId: 't1', stepIndex: 1, stepName: 'implement' },
+          { timestamp: new Date().toISOString(), taskId: 't1', agentId: 'a1' },
         ),
       );
-      expect(state.tasks['t1'].stepInfo).toBe('analyze');
+      expect(state.tasks['t1'].activeStepIndex).toBe(1);
+    });
+
+    it('links agentKey to step when agent exists', () => {
+      resetSeq();
+      let state = evolve(createInitialProjection(), makeEvent('workflow_started', { taskPrompt: 'x' }));
+      state = evolve(state, makeEvent('phase_registered', { id: 'p1', label: 'P1', icon: '' }));
+      state = evolve(
+        state,
+        makeEvent('task_registered', {
+          taskId: 't1',
+          title: 'Do thing',
+          phaseId: 'p1',
+          steps: [{ name: 'analyze', profileId: 'scout', isReadOnly: true }],
+          dependencies: [],
+        }),
+      );
+      // Spawn agent first
+      state = evolve(
+        state,
+        makeEvent(
+          'agent_spawned',
+          { agentId: 'a1', profile: 'coder' },
+          { timestamp: new Date().toISOString(), agentId: 'a1', taskId: 't1' },
+        ),
+      );
+      state = evolve(
+        state,
+        makeEvent(
+          'step_started',
+          { taskId: 't1', stepIndex: 0, stepName: 'analyze' },
+          { timestamp: new Date().toISOString(), taskId: 't1', agentId: 'a1' },
+        ),
+      );
+      expect(state.tasks['t1'].activeStepIndex).toBe(0);
+      expect(state.tasks['t1'].steps[0].agentKey).toBe('a1::t1');
+    });
+
+    it('allows backward movement (retry)', () => {
+      resetSeq();
+      let state = evolve(createInitialProjection(), makeEvent('workflow_started', { taskPrompt: 'x' }));
+      state = evolve(state, makeEvent('phase_registered', { id: 'p1', label: 'P1', icon: '' }));
+      state = evolve(
+        state,
+        makeEvent('task_registered', {
+          taskId: 't1',
+          title: 'Task',
+          phaseId: 'p1',
+          steps: [
+            { name: 'step0', profileId: 'p0', isReadOnly: false },
+            { name: 'step1', profileId: 'p1', isReadOnly: false },
+          ],
+          dependencies: [],
+        }),
+      );
+      state = evolve(state, makeEvent('step_started', { taskId: 't1', stepIndex: 0 }));
+      expect(state.tasks['t1'].activeStepIndex).toBe(0);
+      state = evolve(state, makeEvent('step_started', { taskId: 't1', stepIndex: 1 }));
+      expect(state.tasks['t1'].activeStepIndex).toBe(1);
+      // Retry — move backward
+      state = evolve(state, makeEvent('step_started', { taskId: 't1', stepIndex: 0 }));
+      expect(state.tasks['t1'].activeStepIndex).toBe(0);
     });
   });
 
   describe('task_completed', () => {
-    it('sets status to done', () => {
+    it('sets status to complete', () => {
       resetSeq();
       let state = evolve(createInitialProjection(), makeEvent('workflow_started', { taskPrompt: 'x' }));
+      state = evolve(state, makeEvent('phase_registered', { id: 'p1', label: 'P1', icon: '' }));
+      state = evolve(
+        state,
+        makeEvent('task_registered', {
+          taskId: 't1',
+          title: 'Do thing',
+          phaseId: 'p1',
+          steps: [],
+          dependencies: [],
+        }),
+      );
       state = evolve(
         state,
         makeEvent(
@@ -312,7 +531,7 @@ describe('evolve', () => {
           { timestamp: new Date().toISOString(), taskId: 't1' },
         ),
       );
-      expect(state.tasks['t1'].status).toBe('done');
+      expect(state.tasks['t1'].status).toBe('complete');
       expect(state.tasks['t1'].completedAt).toBeDefined();
     });
   });
@@ -321,6 +540,17 @@ describe('evolve', () => {
     it('sets status to failed', () => {
       resetSeq();
       let state = evolve(createInitialProjection(), makeEvent('workflow_started', { taskPrompt: 'x' }));
+      state = evolve(state, makeEvent('phase_registered', { id: 'p1', label: 'P1', icon: '' }));
+      state = evolve(
+        state,
+        makeEvent('task_registered', {
+          taskId: 't1',
+          title: 'Do thing',
+          phaseId: 'p1',
+          steps: [],
+          dependencies: [],
+        }),
+      );
       state = evolve(
         state,
         makeEvent(
@@ -391,44 +621,8 @@ describe('evolve', () => {
     });
   });
 
-  describe('tasks_added', () => {
-    it('upserts tasks (delta, not full replace)', () => {
-      resetSeq();
-      let state = evolve(createInitialProjection(), makeEvent('workflow_started', { taskPrompt: 'x' }));
-      state = evolve(
-        state,
-        makeEvent(
-          'task_started',
-          { taskId: 't1', title: 'Existing', agentId: 'a1', startedAt: 1000 },
-          { timestamp: new Date().toISOString(), taskId: 't1' },
-        ),
-      );
-      // Add t2 and t3
-      state = evolve(
-        state,
-        makeEvent(
-          'tasks_added',
-          {
-            tasks: [
-              { id: 't2', title: 'New task', status: 'ready', dependencies: [] },
-              { id: 't3', title: 'Another', status: 'blocked', dependencies: ['t2'] },
-            ],
-          },
-          { timestamp: new Date().toISOString() },
-        ),
-      );
-      // t1 should still exist with its implementing status
-      expect(state.tasks['t1']).toBeDefined();
-      expect(state.tasks['t1'].status).toBe('implementing');
-      expect(state.tasks['t2']).toBeDefined();
-      expect(state.tasks['t2'].title).toBe('New task');
-      expect(state.tasks['t3']).toBeDefined();
-      expect(state.tasks['t3'].status).toBe('blocked');
-    });
-  });
-
   describe('sidebar_updated', () => {
-    it('merges sidebar fields', () => {
+    it('merges sidebar fields (title, indicator only)', () => {
       resetSeq();
       let state = evolve(createInitialProjection(), makeEvent('workflow_started', { taskPrompt: 'x' }));
       state = evolve(
@@ -436,13 +630,10 @@ describe('evolve', () => {
         makeEvent('sidebar_updated', {
           title: 'My Workflow',
           indicator: 'Building…',
-          phases: [{ id: 'p1', label: 'Phase 1', icon: '🚀' }],
         }),
       );
       expect(state.sidebar.title).toBe('My Workflow');
       expect(state.sidebar.indicator).toBe('Building…');
-      expect(state.sidebar.phases).toHaveLength(1);
-      expect(state.sidebar.phases![0].id).toBe('p1');
     });
   });
 
@@ -454,7 +645,7 @@ describe('evolve', () => {
         ...state,
         tasks: { ...state.tasks },
         agents: { ...state.agents },
-        completedPhases: [...state.completedPhases],
+        completedPhaseIds: [...state.completedPhaseIds],
       };
       state = evolve(
         state,
@@ -576,13 +767,21 @@ describe('evolve', () => {
         makeEvent(
           'phase_started',
           { phase: 'implementing', round: 1 },
-          { timestamp: new Date().toISOString(), phase: 'implementing' },
+          { timestamp: new Date().toISOString(), phaseId: 'implementing' },
         ),
       );
-      state = evolve(state, makeEvent('workflow_failed', { error: 'Kaboom', phase: 'implementing' }));
+      state = evolve(state, makeEvent('workflow_failed', { error: 'Kaboom', phaseId: 'implementing' }));
       expect(state.status).toBe('failed');
       expect(state.error).toBe('Kaboom');
       expect(state.failedPhase).toBe('implementing');
+    });
+
+    it('falls back to phase for backward compat', () => {
+      resetSeq();
+      let state = evolve(createInitialProjection(), makeEvent('workflow_started', { taskPrompt: 'x' }));
+      state = evolve(state, makeEvent('phase_started', { phase: 'scouting', round: 1 }));
+      state = evolve(state, makeEvent('workflow_failed', { error: 'Boom', phase: 'scouting' }));
+      expect(state.failedPhase).toBe('scouting');
     });
   });
 
@@ -620,7 +819,7 @@ describe('evolve', () => {
   });
 
   describe('multi-event sequence', () => {
-    it('spawn → tasks_added → task_started → decision → tool_call → turn_end → task_completed → agent_completed → verify final state', () => {
+    it('phase_registered → task_registered → task_started → step_started → agent_spawned → decision → tool_call → turn_end → task_completed → agent_completed → verify final state', () => {
       resetSeq();
       let state = createInitialProjection();
 
@@ -632,36 +831,39 @@ describe('evolve', () => {
       expect(state.taskPrompt).toBe('Build auth module');
       expect(state.status).toBe('running');
 
-      // 2. phase_started
+      // 2. phase_registered
+      state = evolve(state, makeEvent('phase_registered', { id: 'implementing', label: 'Implementing', icon: '🔧' }));
+      expect(state.phases).toHaveLength(1);
+      expect(state.phases[0].id).toBe('implementing');
+
+      // 3. phase_started
       state = evolve(
         state,
         makeEvent(
           'phase_started',
           { phase: 'implementing', round: 1 },
-          { timestamp: new Date().toISOString(), phase: 'implementing' },
+          { timestamp: new Date().toISOString(), phaseId: 'implementing' },
         ),
       );
-      expect(state.currentPhase).toBe('implementing');
+      expect(state.currentPhaseId).toBe('implementing');
 
-      // 3. tasks_added
+      // 4. task_registered
       state = evolve(
         state,
-        makeEvent('tasks_added', { tasks: [{ id: 't1', title: 'Auth handler', status: 'ready', dependencies: [] }] }),
+        makeEvent('task_registered', {
+          taskId: 't1',
+          title: 'Auth handler',
+          phaseId: 'implementing',
+          steps: [
+            { name: 'analyze', profileId: 'scout', isReadOnly: true },
+            { name: 'implement', profileId: 'coder', isReadOnly: false },
+          ],
+          dependencies: [],
+        }),
       );
       expect(state.tasks['t1'].title).toBe('Auth handler');
       expect(state.tasks['t1'].status).toBe('ready');
-
-      // 4. agent_spawned
-      state = evolve(
-        state,
-        makeEvent(
-          'agent_spawned',
-          { agentId: 'coder-1', profile: 'coder', sessionId: 'sess-abc', sessionPath: '/sessions/abc' },
-          { timestamp: new Date().toISOString(), agentId: 'coder-1', taskId: 't1', phase: 'implementing' },
-        ),
-      );
-      expect(state.agents['coder-1::t1']).toBeDefined();
-      expect(state.agents['coder-1::t1'].active).toBe(true);
+      expect(state.tasks['t1'].steps).toHaveLength(2);
 
       // 5. task_started
       state = evolve(
@@ -672,10 +874,52 @@ describe('evolve', () => {
           { timestamp: new Date().toISOString(), agentId: 'coder-1', taskId: 't1' },
         ),
       );
-      expect(state.tasks['t1'].status).toBe('implementing');
-      expect(state.tasks['t1'].agentId).toBe('coder-1');
+      expect(state.tasks['t1'].status).toBe('active');
 
-      // 6. decision
+      // 6. step_started (step 0)
+      state = evolve(
+        state,
+        makeEvent(
+          'step_started',
+          { taskId: 't1', stepIndex: 0, stepName: 'analyze' },
+          { timestamp: new Date().toISOString(), taskId: 't1' },
+        ),
+      );
+      expect(state.tasks['t1'].activeStepIndex).toBe(0);
+
+      // 7. agent_spawned (for step 1)
+      state = evolve(
+        state,
+        makeEvent(
+          'agent_spawned',
+          { agentId: 'coder-1', profile: 'coder', sessionId: 'sess-abc', sessionPath: '/sessions/abc' },
+          {
+            timestamp: new Date().toISOString(),
+            agentId: 'coder-1',
+            taskId: 't1',
+            stepIndex: 1,
+            phaseId: 'implementing',
+          },
+        ),
+      );
+      expect(state.agents['coder-1::t1']).toBeDefined();
+      expect(state.agents['coder-1::t1'].active).toBe(true);
+      expect(state.agents['coder-1::t1'].stepIndex).toBe(1);
+      // Task step should be linked
+      expect(state.tasks['t1'].steps[1].agentKey).toBe('coder-1::t1');
+
+      // 8. step_started (step 1) — also links agentKey
+      state = evolve(
+        state,
+        makeEvent(
+          'step_started',
+          { taskId: 't1', stepIndex: 1, stepName: 'implement' },
+          { timestamp: new Date().toISOString(), taskId: 't1', agentId: 'coder-1' },
+        ),
+      );
+      expect(state.tasks['t1'].activeStepIndex).toBe(1);
+
+      // 9. decision
       state = evolve(
         state,
         makeEvent(
@@ -685,7 +929,7 @@ describe('evolve', () => {
         ),
       );
 
-      // 7. tool_call_started
+      // 10. tool_call_started
       state = evolve(
         state,
         makeEvent(
@@ -696,7 +940,7 @@ describe('evolve', () => {
       );
       expect(state.agents['coder-1::t1'].toolCallCount).toBe(1);
 
-      // 8. tool_call_ended
+      // 11. tool_call_ended
       state = evolve(
         state,
         makeEvent(
@@ -706,7 +950,7 @@ describe('evolve', () => {
         ),
       );
 
-      // 9. turn_ended with tokens
+      // 12. turn_ended with tokens
       state = evolve(
         state,
         makeEvent(
@@ -723,7 +967,7 @@ describe('evolve', () => {
       expect(state.agents['coder-1::t1'].outputTokens).toBe(100);
       expect(state.stats.totalTokens).toBe(300);
 
-      // 10. task_completed
+      // 13. task_completed
       state = evolve(
         state,
         makeEvent(
@@ -732,9 +976,9 @@ describe('evolve', () => {
           { timestamp: new Date().toISOString(), taskId: 't1' },
         ),
       );
-      expect(state.tasks['t1'].status).toBe('done');
+      expect(state.tasks['t1'].status).toBe('complete');
 
-      // 11. agent_completed
+      // 14. agent_completed
       state = evolve(
         state,
         makeEvent(
@@ -746,25 +990,25 @@ describe('evolve', () => {
       expect(state.agents['coder-1::t1'].active).toBe(false);
       expect(state.agents['coder-1::t1'].completedAt).toBeDefined();
 
-      // 12. phase_completed
+      // 15. phase_completed
       state = evolve(
         state,
         makeEvent(
           'phase_completed',
           { phase: 'implementing', durationMs: 3000 },
-          { timestamp: new Date().toISOString(), phase: 'implementing' },
+          { timestamp: new Date().toISOString(), phaseId: 'implementing' },
         ),
       );
-      expect(state.completedPhases).toEqual(['implementing']);
+      expect(state.completedPhaseIds).toEqual(['implementing']);
 
-      // 13. workflow_completed
+      // 16. workflow_completed
       state = evolve(state, makeEvent('workflow_completed', { totalDurationMs: 5000, agentCount: 1 }));
       expect(state.status).toBe('complete');
 
       // Final verification
       expect(state.taskPrompt).toBe('Build auth module');
-      expect(state.currentPhase).toBe('implementing');
-      expect(state.completedPhases).toEqual(['implementing']);
+      expect(state.currentPhaseId).toBe('implementing');
+      expect(state.completedPhaseIds).toEqual(['implementing']);
       expect(Object.keys(state.tasks)).toEqual(['t1']);
       expect(Object.keys(state.agents)).toEqual(['coder-1::t1']);
       expect(state.stats.totalTokens).toBe(300);

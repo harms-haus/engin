@@ -65,6 +65,18 @@ describe('formatWorkflowEventLine', () => {
 
   // ── Phase lifecycle ──────────────────────────────────────────────────────
 
+  describe('phase_registered', () => {
+    it('returns expected line with label', () => {
+      const line = formatWorkflowEventLine(ev('phase_registered', { label: 'Scouting' }));
+      expect(line).toBe('📝 Phase registered: Scouting');
+    });
+
+    it('defaults label to empty string when missing', () => {
+      const line = formatWorkflowEventLine(ev('phase_registered', {}));
+      expect(line).toBe('📝 Phase registered: ');
+    });
+  });
+
   describe('phase_started', () => {
     it('returns expected line with phase and round', () => {
       const line = formatWorkflowEventLine(ev('phase_started', { phase: 'scouting', round: 2 }));
@@ -116,6 +128,31 @@ describe('formatWorkflowEventLine', () => {
 
   // ── Task lifecycle ───────────────────────────────────────────────────────
 
+  describe('task_registered', () => {
+    it('returns expected line with title, phaseId from data, and step count', () => {
+      const line = formatWorkflowEventLine(
+        ev('task_registered', { title: 'Implement feature', phaseId: 'p1', stepCount: 3 }),
+      );
+      expect(line).toBe('📋 Task registered: "Implement feature" (phase: p1, 3 steps)');
+    });
+
+    it('falls back to metadata phaseId when data.phaseId is missing', () => {
+      const line = formatWorkflowEventLine(
+        ev(
+          'task_registered',
+          { title: 'Task', stepCount: 2 },
+          { timestamp: '2025-01-01T00:00:00Z', phaseId: 'meta-p1' },
+        ),
+      );
+      expect(line).toBe('📋 Task registered: "Task" (phase: meta-p1, 2 steps)');
+    });
+
+    it('defaults missing fields to empty string and 0', () => {
+      const line = formatWorkflowEventLine(ev('task_registered', {}));
+      expect(line).toBe('📋 Task registered: "" (phase: , 0 steps)');
+    });
+  });
+
   describe('task_started', () => {
     it('returns expected line with taskId and title', () => {
       const line = formatWorkflowEventLine(ev('task_started', { taskId: 't1', title: 'Implement feature' }));
@@ -163,7 +200,7 @@ describe('formatWorkflowEventLine', () => {
   describe('error', () => {
     it('returns expected line with agentId from metadata, error from data, phase from metadata', () => {
       const line = formatWorkflowEventLine(
-        ev('error', { error: 'crash' }, { timestamp: '2025-01-01T00:00:00Z', agentId: 'a1', phase: 'planning' }),
+        ev('error', { error: 'crash' }, { timestamp: '2025-01-01T00:00:00Z', agentId: 'a1', phaseId: 'planning' }),
       );
       expect(line).toBe('⚠️ Error in a1: crash (planning)');
     });
@@ -171,7 +208,7 @@ describe('formatWorkflowEventLine', () => {
     it('strips ANSI escape codes from error message', () => {
       const ansiError = '\x1b[31mFATAL\x1b[0m: broken';
       const line = formatWorkflowEventLine(
-        ev('error', { error: ansiError }, { timestamp: '2025-01-01T00:00:00Z', agentId: 'a1', phase: 'p' }),
+        ev('error', { error: ansiError }, { timestamp: '2025-01-01T00:00:00Z', agentId: 'a1', phaseId: 'p' }),
       );
       expect(line).toBe('⚠️ Error in a1: FATAL: broken (p)');
       expect(line).not.toContain('\x1b');
@@ -236,13 +273,38 @@ describe('formatWorkflowEventLine', () => {
         formatWorkflowEventLine(ev('tasks_added', { tasks: [{ id: 't1', title: 'Task', status: 'ready' }] })),
       ).toBeNull();
     });
+  });
 
-    it('task_step_started returns null', () => {
-      expect(
-        formatWorkflowEventLine(
-          ev('task_step_started', { taskId: 't1', stepName: 'review', stepIndex: 1, totalSteps: 3 }),
+  // ── Step lifecycle ──────────────────────────────────────────────────────
+
+  describe('step_started', () => {
+    it('returns step name with task and agent', () => {
+      const line = formatWorkflowEventLine(
+        ev('step_started', { stepIndex: 1, stepName: 'review', taskId: 't1', agentId: 'a1' }),
+      );
+      expect(line).toBe('Step 1 started: review (task: t1, agent: a1)');
+    });
+
+    it('falls back to metadata taskId and agentId', () => {
+      const line = formatWorkflowEventLine(
+        ev(
+          'step_started',
+          { stepIndex: 2, stepName: 'build' },
+          { timestamp: '2025-01-01T00:00:00Z', taskId: 'meta-t1', agentId: 'meta-a1', stepIndex: 2 },
         ),
-      ).toBeNull();
+      );
+      expect(line).toBe('Step 2 started: build (task: meta-t1, agent: meta-a1)');
+    });
+
+    it('falls back to metadata stepIndex when data.stepIndex is missing', () => {
+      const line = formatWorkflowEventLine(
+        ev(
+          'step_started',
+          { stepName: 'test' },
+          { timestamp: '2025-01-01T00:00:00Z', taskId: 't1', agentId: 'a1', stepIndex: 3 },
+        ),
+      );
+      expect(line).toBe('Step 3 started: test (task: t1, agent: a1)');
     });
   });
 });

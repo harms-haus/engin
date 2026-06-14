@@ -74,7 +74,7 @@ describe('LanePool dual-listener wait pattern', () => {
         const result = await pool.run();
         expect(result.failedTasks).toBe(1);
         expect(result.completedTasks).toBe(1);
-        expect(tracker.getTask('task-2')!.status).toBe('done');
+        expect(tracker.getTask('task-2')!.status).toBe('complete');
       } finally {
         spy.mockRestore();
       }
@@ -94,7 +94,7 @@ describe('LanePool dual-listener wait pattern', () => {
       });
       const result = await pool.run();
       expect(result.completedTasks).toBe(4);
-      expect(tracker.getTask('task-D')!.status).toBe('done');
+      expect(tracker.getTask('task-D')!.status).toBe('complete');
     });
   });
 
@@ -115,7 +115,7 @@ describe('LanePool dual-listener wait pattern', () => {
       tracker.once(TaskTracker.Events.TaskSettled, () => controller.abort());
       const result = await runPromise;
       expect(result.completedTasks).toBe(1);
-      expect(tracker.getTask('task-1')!.status).toBe('done');
+      expect(tracker.getTask('task-1')!.status).toBe('complete');
     });
 
     it('skips execution when signal is already aborted before run()', async () => {
@@ -145,7 +145,7 @@ describe('LanePool dual-listener wait pattern', () => {
       tracker.once(TaskTracker.Events.TaskSettled, () => controller.abort());
       const result = await runPromise;
       expect(result.completedTasks).toBe(1);
-      expect(tracker.getTask('task-1')!.status).toBe('done');
+      expect(tracker.getTask('task-1')!.status).toBe('complete');
     });
   });
 
@@ -215,7 +215,7 @@ describe('LanePool dual-listener wait pattern', () => {
       setupProfileMocks();
       setupHarnessMocks();
       const task = makeTask({ id: 'task-1' });
-      task.status = 'implementing';
+      task.status = 'active';
       const { pool, tracker } = createPoolAndTracker({ tasks: [task], maxConcurrentLanes: 1, laneWaitTimeoutMs: 1234 });
       const spy = spyOn(globalThis, 'setTimeout').mockImplementation(((
         cb: (...args: unknown[]) => void,
@@ -248,7 +248,7 @@ describe('LanePool dual-listener wait pattern', () => {
       setupProfileMocks();
       setupHarnessMocks();
       const task = makeTask({ id: 'task-1' });
-      task.status = 'implementing';
+      task.status = 'active';
       const { pool, tracker } = createPoolAndTracker({ tasks: [task], maxConcurrentLanes: 1 });
       const spy = spyOn(globalThis, 'setTimeout').mockImplementation(((
         cb: (...args: unknown[]) => void,
@@ -285,7 +285,7 @@ describe('LanePool dual-listener wait pattern', () => {
 
       const realSetTimeout = globalThis.setTimeout;
       const task = makeTask({ id: 'task-1', dependencies: [] });
-      task.status = 'implementing';
+      task.status = 'active';
 
       const { pool, tracker } = createPoolAndTracker({
         tasks: [task],
@@ -317,7 +317,7 @@ describe('LanePool dual-listener wait pattern', () => {
       try {
         const result = await pool.run();
         expect(result.completedTasks).toBe(1);
-        expect(tracker.getTask('task-1')!.status).toBe('done');
+        expect(tracker.getTask('task-1')!.status).toBe('complete');
       } finally {
         claimSpy.mockRestore();
         setTimeoutSpy.mockRestore();
@@ -330,7 +330,7 @@ describe('LanePool dual-listener wait pattern', () => {
       setupProfileMocks();
       setupHarnessMocks();
       const task = makeTask({ id: 'task-1' });
-      task.status = 'implementing';
+      task.status = 'active';
       const { pool, tracker } = createPoolAndTracker({ tasks: [task], maxConcurrentLanes: 1, laneWaitTimeoutMs: 10 });
       let c = 0;
       const origClaim = tracker.claimTasks.bind(tracker);
@@ -358,7 +358,7 @@ describe('LanePool dual-listener wait pattern', () => {
       setupProfileMocks();
       setupHarnessMocks();
       const task = makeTask({ id: 'task-1' });
-      task.status = 'implementing';
+      task.status = 'active';
       const { pool, tracker } = createPoolAndTracker({ tasks: [task], maxConcurrentLanes: 1, laneWaitTimeoutMs: 10 });
       let c = 0;
       const origClaim = tracker.claimTasks.bind(tracker);
@@ -381,7 +381,7 @@ describe('LanePool dual-listener wait pattern', () => {
   });
 
   describe('stranded-task hardening', () => {
-    it('fails task when submitForReview throws instead of stranding it', async () => {
+    it('fails task when completeTask throws instead of stranding it', async () => {
       setupProfileMocks();
       setupHarnessMocks();
       const controller = new AbortController();
@@ -391,7 +391,7 @@ describe('LanePool dual-listener wait pattern', () => {
         laneWaitTimeoutMs: 100,
         signal: controller.signal,
       });
-      const submitSpy = spyOn(tracker, 'submitForReview').mockImplementation(() => {
+      const completeSpy = spyOn(tracker, 'completeTask').mockImplementation(() => {
         throw new Error('Tracker state error');
       });
       const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
@@ -402,7 +402,7 @@ describe('LanePool dual-listener wait pattern', () => {
         expect(tracker.getTask('task-1')!.status).toBe('failed');
       } finally {
         clearTimeout(t);
-        submitSpy.mockRestore();
+        completeSpy.mockRestore();
         errorSpy.mockRestore();
       }
     });

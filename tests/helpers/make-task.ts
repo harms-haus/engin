@@ -13,6 +13,7 @@ export function makeTask(overrides?: Partial<Task>): Task {
     files: ['src/index.ts'],
     dependencies: [],
     status: 'ready',
+    phaseId: 'phase-1',
     ...overrides,
   };
 }

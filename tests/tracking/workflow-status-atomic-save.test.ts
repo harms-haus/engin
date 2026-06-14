@@ -230,7 +230,7 @@ describe('WorkflowStatusTracker – atomic save', () => {
       expect(restoredData.research).toBe('some research notes');
       expect(restoredData.planReviewFeedback).toBe('looks good');
       expect(restoredData.planReviewSuggestions).toEqual(['suggestion-1']);
-      expect(restored.currentPhase).toBe('implementing');
+      expect(restored.currentPhaseId).toBe('implementing');
       expect(restored.stats).toEqual({ totalTokens: 300, totalCost: 0, agentCount: 2 });
       expect(restored.taskTracker.getAllTasks()).toHaveLength(1);
       expect(restored.taskTracker.getTask('task-integrity')!.id).toBe('task-integrity');
@@ -240,9 +240,7 @@ describe('WorkflowStatusTracker – atomic save', () => {
       tracker.setTaskPrompt('auto-atomic');
       tracker.taskTracker.addTask(makeTask({ id: 't1' }));
 
-      const _claimed = tracker.taskTracker.claimTasks(1);
-      tracker.taskTracker.startTask('t1', 'agent-1');
-      tracker.taskTracker.submitForReview('t1', { done: true });
+      tracker.taskTracker.claimTasks(1, 'agent-1');
       tracker.taskTracker.completeTask('t1');
 
       await tracker.save();
@@ -253,7 +251,7 @@ describe('WorkflowStatusTracker – atomic save', () => {
 
       // State file should have correct content
       const restored = await WorkflowStatusTracker.load(dir);
-      expect(restored.taskTracker.getTask('t1')!.status).toBe('done');
+      expect(restored.taskTracker.getTask('t1')!.status).toBe('complete');
       expect(restored.taskPrompt).toBe('auto-atomic');
     });
 

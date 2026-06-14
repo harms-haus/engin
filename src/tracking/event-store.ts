@@ -42,7 +42,7 @@ export class EventStore {
   append(
     type: EventType,
     data: Record<string, unknown>,
-    metadata?: { agentId?: string; taskId?: string; phase?: string },
+    metadata?: { agentId?: string; taskId?: string; phaseId?: string },
   ): EventRecord {
     const record: EventRecord = {
       seq: ++this.seq,

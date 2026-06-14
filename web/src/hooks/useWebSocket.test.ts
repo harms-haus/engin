@@ -104,8 +104,9 @@ function resetStore(): void {
   useWorkflowStore.setState({
     agentsById: {},
     tasksById: {},
-    currentPhase: '',
-    completedPhases: [],
+    phases: [],
+    currentPhaseId: '',
+    completedPhaseIds: [],
     sidebar: { title: '', indicator: '' },
     status: 'running',
     taskPrompt: '',
@@ -114,6 +115,11 @@ function resetStore(): void {
     seq: 0,
     stats: { totalTokens: 0, agentCount: 0 },
     workflowEventLog: [],
+    selectedPhaseId: null,
+    selectedTaskId: null,
+    selectedStepIndex: null,
+    userPinnedPhase: false,
+    userPinnedStep: false,
   });
 }
 
@@ -321,8 +327,9 @@ describe('useWebSocket – snapshot → store', () => {
         state: {
           seq: 10,
           taskPrompt: 'hello',
-          currentPhase: 'exec',
-          completedPhases: ['plan'],
+          phases: [{ id: 'plan', label: 'Plan', icon: '📋', taskIds: [] }],
+          currentPhaseId: 'exec',
+          completedPhaseIds: ['plan'],
           tasks: {},
           agents: {},
           sidebar: { title: 'App', indicator: 'green' },
@@ -334,8 +341,8 @@ describe('useWebSocket – snapshot → store', () => {
 
     const s = useWorkflowStore.getState();
     expect(s.taskPrompt).toBe('hello');
-    expect(s.currentPhase).toBe('exec');
-    expect(s.completedPhases).toEqual(['plan']);
+    expect(s.currentPhaseId).toBe('exec');
+    expect(s.completedPhaseIds).toEqual(['plan']);
     expect(s.seq).toBe(10);
   });
 });
@@ -366,7 +373,7 @@ describe('useWebSocket – events → store', () => {
 
     const s = useWorkflowStore.getState();
     expect(s.taskPrompt).toBe('test');
-    expect(s.currentPhase).toBe('scouting');
+    expect(s.currentPhaseId).toBe('scouting');
     expect(s.agentsById['a1::t1']).toBeDefined();
     expect(s.seq).toBe(3);
   });

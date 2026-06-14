@@ -23,7 +23,7 @@ export interface StepExecutionContext {
   onStatus: LanePoolOptions['onStatus'];
   activeSessions: Set<{ abort(): Promise<void> }>;
   /** Phase identifier propagated from the LanePool options. */
-  phase?: string;
+  phaseId: string;
 }
 
 /**
@@ -90,7 +90,7 @@ export async function runStep(
   execCtx.onStatus?.onAgentSpawn?.({
     agentId,
     profile: step.profileId,
-    phase: execCtx.phase ?? 'implementing',
+    phaseId: execCtx.phaseId,
     taskId: task.id,
     sessionId: session.sessionId,
     sessionPath: trackedSession.sessionPath,
@@ -149,7 +149,7 @@ export async function runStep(
     execCtx.onStatus?.onAgentComplete?.({
       agentId,
       profile: step.profileId,
-      phase: execCtx.phase ?? 'implementing',
+      phaseId: execCtx.phaseId,
       taskId: task.id,
       sessionId: session.sessionId,
     });

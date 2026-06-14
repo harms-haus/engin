@@ -28,6 +28,9 @@ export function formatWorkflowEventLine(ev: EventRecord): string | null {
       return '💥 Failed at ' + String(d.phase ?? '') + ': ' + String(d.error ?? '');
 
     // ── Phase lifecycle ──────────────────────────────────
+    case 'phase_registered':
+      return '📝 Phase registered: ' + String(d.label ?? '');
+
     case 'phase_started':
       return '📦 Phase: ' + String(d.phase ?? '') + ' (round ' + String(d.round ?? '') + ')';
 
@@ -42,6 +45,17 @@ export function formatWorkflowEventLine(ev: EventRecord): string | null {
       return '✅ Agent ' + String(d.agentId ?? m.agentId ?? '') + ' complete';
 
     // ── Task lifecycle ───────────────────────────────────
+    case 'task_registered':
+      return (
+        '📋 Task registered: "' +
+        String(d.title ?? '') +
+        '" (phase: ' +
+        String(d.phaseId ?? m.phaseId ?? '') +
+        ', ' +
+        String(d.stepCount ?? 0) +
+        ' steps)'
+      );
+
     case 'task_started':
       return '📋 Task ' + String(d.taskId ?? m.taskId ?? '') + ': "' + stripAnsi(String(d.title ?? '')) + '"';
 
@@ -59,7 +73,7 @@ export function formatWorkflowEventLine(ev: EventRecord): string | null {
         ': ' +
         stripAnsi(String(d.error ?? '')) +
         ' (' +
-        String(m.phase ?? '') +
+        String(m.phaseId ?? '') +
         ')'
       );
 
@@ -70,9 +84,23 @@ export function formatWorkflowEventLine(ev: EventRecord): string | null {
       }
       return null;
 
+    // ── Step lifecycle ────────────────────────────────────
+    case 'step_started':
+      return (
+        'Step ' +
+        String(d.stepIndex ?? m.stepIndex ?? '') +
+        ' started: ' +
+        String(d.stepName ?? '') +
+        ' (task: ' +
+        String(d.taskId ?? m.taskId ?? '') +
+        ', agent: ' +
+        String(d.agentId ?? m.agentId ?? '') +
+        ')'
+      );
+
     // ── Verbose events — no event log line ────────────────
     // decision, turn_started, turn_ended, tool_call_started,
-    // tool_call_ended, tasks_added, task_step_started — intentionally silent
+    // tool_call_ended, tasks_added — intentionally silent
     default:
       return null;
   }

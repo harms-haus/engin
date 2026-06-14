@@ -96,8 +96,8 @@ describe('WorkflowStatusTracker – persist architecture (bounded promise chain)
 
   describe('debounce / coalescing', () => {
     it('persistState sets _pendingSave and schedules one save', async () => {
-      // Trigger persistState via setSidebar (which calls persistState)
-      tracker.setSidebar({ title: 'test' });
+      // Trigger persistState via setWorkflowData (which calls persistState)
+      tracker.setWorkflowData({ someKey: 'test' });
 
       // At this point _pendingSave is true, _doPersist is scheduled
       // After a tick, the save should complete
@@ -106,13 +106,13 @@ describe('WorkflowStatusTracker – persist architecture (bounded promise chain)
       // The state file should now exist
       const raw = await fs.readFile(join(dir, '.engin-state.json'), 'utf-8');
       const data = JSON.parse(raw);
-      expect(data.sidebar?.title).toBe('test');
+      expect(data.workflowData?.someKey).toBe('test');
     });
 
     it('rapid calls to persistState are coalesced into a single save', async () => {
       // Trigger persistState multiple times in rapid succession
       tracker.setTaskPrompt('v1');
-      tracker.setSidebar({ title: 'v1' });
+      tracker.setWorkflowData({ key1: 'v1' });
       tracker.recordAgentSpawn('a1', 'coder', 'scouting');
       tracker.setTaskPrompt('v2');
       tracker.recordAgentSpawn('a2', 'coder', 'planning');
@@ -135,8 +135,8 @@ describe('WorkflowStatusTracker – persist architecture (bounded promise chain)
       tracker.setTaskPrompt('sync-test');
 
       const start = performance.now();
-      // setSidebar calls persistState synchronously — should return immediately
-      tracker.setSidebar({ title: 'non-blocking' });
+      // setWorkflowData calls persistState synchronously — should return immediately
+      tracker.setWorkflowData({ someKey: 'non-blocking' });
       const elapsed = performance.now() - start;
 
       // Must be sub-millisecond (no synchronous I/O)
@@ -144,13 +144,13 @@ describe('WorkflowStatusTracker – persist architecture (bounded promise chain)
 
       // In-memory state is updated immediately
       expect(tracker.taskPrompt).toBe('sync-test');
-      expect(tracker.sidebar?.title).toBe('non-blocking');
+      expect((tracker.workflowData as Record<string, unknown>).someKey).toBe('non-blocking');
     });
 
     it('calls during an in-flight save are coalesced with _queuedSave', async () => {
       // First, trigger a save
       tracker.setTaskPrompt('first');
-      tracker.setSidebar({ title: 'first' });
+      tracker.setWorkflowData({ key: 'first' });
 
       // Wait for it to settle
       await new Promise((r) => setTimeout(r, 30));
@@ -168,7 +168,7 @@ describe('WorkflowStatusTracker – persist architecture (bounded promise chain)
 
       // Start a persist (which will call our slow save)
       tracker.setTaskPrompt('slow');
-      tracker.setSidebar({ title: 'slow' });
+      tracker.setWorkflowData({ key: 'slow' });
 
       // Give the microtask queue a chance to start _doPersist
       await new Promise((r) => setTimeout(r, 5));
@@ -197,8 +197,8 @@ describe('WorkflowStatusTracker – persist architecture (bounded promise chain)
       // Rapidly trigger many persistState calls
       for (let i = 0; i < 20; i++) {
         tracker.setTaskPrompt(`iteration-${i}`);
-        // Each setSidebar calls persistState
-        tracker.setSidebar({ title: `sidebar-${i}` });
+        // Each setWorkflowData calls persistState
+        tracker.setWorkflowData({ iteration: i });
       }
 
       await new Promise((r) => setTimeout(r, 50));
@@ -207,7 +207,7 @@ describe('WorkflowStatusTracker – persist architecture (bounded promise chain)
       const raw = await fs.readFile(join(dir, '.engin-state.json'), 'utf-8');
       const data = JSON.parse(raw);
       expect(data.taskPrompt).toBe('iteration-19');
-      expect(data.sidebar?.title).toBe('sidebar-19');
+      expect(data.workflowData?.iteration).toBe(19);
     });
   });
 
@@ -229,7 +229,7 @@ describe('WorkflowStatusTracker – persist architecture (bounded promise chain)
 
       // Trigger a persist — first save will fail
       tracker.setTaskPrompt('first-attempt');
-      tracker.setSidebar({ title: 'first' });
+      tracker.setWorkflowData({ attempt: 'first' });
 
       await new Promise((r) => setTimeout(r, 30));
 
@@ -238,7 +238,7 @@ describe('WorkflowStatusTracker – persist architecture (bounded promise chain)
 
       // Trigger another persist — second save should succeed
       tracker.setTaskPrompt('second-attempt');
-      tracker.setSidebar({ title: 'second' });
+      tracker.setWorkflowData({ attempt: 'second' });
 
       await new Promise((r) => setTimeout(r, 30));
 
@@ -264,15 +264,15 @@ describe('WorkflowStatusTracker – persist architecture (bounded promise chain)
 
       // Trigger multiple persists — all saves will fail
       tracker.setTaskPrompt('fail-1');
-      tracker.setSidebar({ title: 'fail-1' });
+      tracker.setWorkflowData({ tag: 'fail-1' });
       await new Promise((r) => setTimeout(r, 20));
 
       tracker.setTaskPrompt('fail-2');
-      tracker.setSidebar({ title: 'fail-2' });
+      tracker.setWorkflowData({ tag: 'fail-2' });
       await new Promise((r) => setTimeout(r, 20));
 
       tracker.setTaskPrompt('fail-3');
-      tracker.setSidebar({ title: 'fail-3' });
+      tracker.setWorkflowData({ tag: 'fail-3' });
       await new Promise((r) => setTimeout(r, 20));
 
       // save() should have been called multiple times (each persist attempt)
@@ -280,7 +280,7 @@ describe('WorkflowStatusTracker – persist architecture (bounded promise chain)
 
       // In-memory state should always be correct despite failures
       expect(tracker.taskPrompt).toBe('fail-3');
-      expect(tracker.sidebar?.title).toBe('fail-3');
+      expect((tracker.workflowData as Record<string, unknown>).tag).toBe('fail-3');
 
       // Restore original save
       tracker.save = originalSave;
@@ -295,7 +295,7 @@ describe('WorkflowStatusTracker – persist architecture (bounded promise chain)
       // These should not throw despite save failures
       expect(() => {
         tracker.setTaskPrompt('resilient');
-        tracker.setSidebar({ title: 'resilient' });
+        tracker.setWorkflowData({ tag: 'resilient' });
         tracker.recordAgentSpawn('a1', 'coder', 'scouting');
         tracker.recordAgentComplete('a1');
       }).not.toThrow();
@@ -324,8 +324,8 @@ describe('WorkflowStatusTracker – persist architecture (bounded promise chain)
       // This test simulates many sequential state changes
       for (let i = 0; i < 100; i++) {
         tracker.setTaskPrompt(`chain-test-${i}`);
-        // setSidebar triggers persistState
-        tracker.setSidebar({ indicator: `step-${i}` });
+        // setWorkflowData triggers persistState
+        tracker.setWorkflowData({ indicator: `step-${i}` });
       }
 
       // Wait for all debounced saves to complete
@@ -335,18 +335,18 @@ describe('WorkflowStatusTracker – persist architecture (bounded promise chain)
       const raw = await fs.readFile(join(dir, '.engin-state.json'), 'utf-8');
       const data = JSON.parse(raw);
       expect(data.taskPrompt).toBe('chain-test-99');
-      expect(data.sidebar?.indicator).toBe('step-99');
+      expect(data.workflowData?.indicator).toBe('step-99');
 
       // After settling, there should be no pending save
       // We verify by checking that another save works fresh
       tracker.setTaskPrompt('fresh-after-chain');
-      tracker.setSidebar({ title: 'fresh-after-chain' });
+      tracker.setWorkflowData({ wfTitle: 'fresh-after-chain' });
       await new Promise((r) => setTimeout(r, 30));
 
       const raw2 = await fs.readFile(join(dir, '.engin-state.json'), 'utf-8');
       const data2 = JSON.parse(raw2);
       expect(data2.taskPrompt).toBe('fresh-after-chain');
-      expect(data2.sidebar?.title).toBe('fresh-after-chain');
+      expect(data2.workflowData?.wfTitle).toBe('fresh-after-chain');
     });
 
     it('no promise chain accumulates after rapid agent spawns', async () => {
@@ -383,7 +383,7 @@ describe('WorkflowStatusTracker – persist architecture (bounded promise chain)
     it('no memory leak — _pendingSave resets after each cycle', async () => {
       // This test verifies the state machine resets properly
       tracker.setTaskPrompt('reset-test');
-      tracker.setSidebar({ title: 'reset' });
+      tracker.setWorkflowData({ wfTitle: 'reset' });
 
       await new Promise((r) => setTimeout(r, 30));
 
@@ -401,7 +401,7 @@ describe('WorkflowStatusTracker – persist architecture (bounded promise chain)
 
       // Third save cycle (via auto-persist)
       tracker.setTaskPrompt('reset-test-3');
-      tracker.setSidebar({ title: 'reset-3' });
+      tracker.setWorkflowData({ wfTitle: 'reset-3' });
 
       await new Promise((r) => setTimeout(r, 30));
 
@@ -426,7 +426,7 @@ describe('WorkflowStatusTracker – persist architecture (bounded promise chain)
 
       // Start a save cycle
       tracker.setTaskPrompt('initial');
-      tracker.setSidebar({ title: 'initial' });
+      tracker.setWorkflowData({ wfTitle: 'initial' });
 
       // Let the save start (but it's blocked on our barrier)
       await new Promise((r) => setTimeout(r, 10));
@@ -461,7 +461,7 @@ describe('WorkflowStatusTracker – persist architecture (bounded promise chain)
 
       // Start a save
       tracker.setTaskPrompt('base');
-      tracker.setSidebar({ title: 'base' });
+      tracker.setWorkflowData({ wfTitle: 'base' });
       await new Promise((r) => setTimeout(r, 10));
 
       // Multiple changes while in-flight
@@ -503,7 +503,7 @@ describe('WorkflowStatusTracker – persist architecture (bounded promise chain)
       };
 
       // Trigger a persist — should call save once
-      tracker.setSidebar({ title: 'clean-save' });
+      tracker.setWorkflowData({ wfTitle: 'clean-save' });
       await new Promise((r) => setTimeout(r, 30));
 
       // save should have been called exactly once for this cycle
@@ -545,7 +545,7 @@ describe('WorkflowStatusTracker – persist architecture (bounded promise chain)
 
     it('auto-persist via _doPersist still calls through save() (uses _saveLock)', async () => {
       tracker.setTaskPrompt('auto-persist-via-dopersist');
-      tracker.setSidebar({ title: 'auto-persist' });
+      tracker.setWorkflowData({ wfTitle: 'auto-persist' });
 
       await new Promise((r) => setTimeout(r, 30));
 
@@ -562,15 +562,13 @@ describe('WorkflowStatusTracker – persist architecture (bounded promise chain)
       tracker.setTaskPrompt('task-auto-persist');
       tracker.taskTracker.addTask(makeTask({ id: 't1' }));
 
-      const _claimed = tracker.taskTracker.claimTasks(1);
-      tracker.taskTracker.startTask('t1', 'agent-x');
-      tracker.taskTracker.submitForReview('t1', { ok: true });
+      tracker.taskTracker.claimTasks(1, 'agent-x');
       tracker.taskTracker.completeTask('t1');
 
       await new Promise((r) => setTimeout(r, 50));
 
       const restored = await WorkflowStatusTracker.load(dir);
-      expect(restored.taskTracker.getTask('t1')!.status).toBe('done');
+      expect(restored.taskTracker.getTask('t1')!.status).toBe('complete');
       expect(restored.taskPrompt).toBe('task-auto-persist');
     });
 
@@ -597,7 +595,7 @@ describe('WorkflowStatusTracker – persist architecture (bounded promise chain)
 
     it('auto-persist is still disabled after dispose()', async () => {
       tracker.setTaskPrompt('dispose-test');
-      tracker.setSidebar({ title: 'dispose-test' });
+      tracker.setWorkflowData({ wfTitle: 'dispose-test' });
       await new Promise((r) => setTimeout(r, 30));
 
       tracker.dispose();
@@ -614,27 +612,27 @@ describe('WorkflowStatusTracker – persist architecture (bounded promise chain)
   // ── behavioral: edge cases ────────────────────────────────────────
 
   describe('edge cases', () => {
-    it('setSidebar calls persistState (uses the new architecture)', async () => {
-      tracker.setSidebar({ title: 'sidebar-test' });
+    it('setWorkflowData calls persistState (uses the new architecture)', async () => {
+      tracker.setWorkflowData({ wfTitle: 'sidebar-test' });
 
       await new Promise((r) => setTimeout(r, 30));
 
       const raw = await fs.readFile(join(dir, '.engin-state.json'), 'utf-8');
-      expect(JSON.parse(raw).sidebar?.title).toBe('sidebar-test');
+      expect(JSON.parse(raw).workflowData?.wfTitle).toBe('sidebar-test');
     });
 
-    it('multiple calls to setSidebar are properly debounced', async () => {
-      tracker.setSidebar({ title: 'v1' });
-      tracker.setSidebar({ indicator: 'v2' });
-      tracker.setSidebar({ title: 'v3' });
+    it('multiple calls that trigger persistState are properly debounced', async () => {
+      tracker.setWorkflowData({ wfTitle: 'v1' });
+      tracker.setWorkflowData({ wfIndicator: 'v2' });
+      tracker.setWorkflowData({ wfTitle: 'v3' });
 
       await new Promise((r) => setTimeout(r, 30));
 
       // setSidebar merges properties, so final state should have title from v3 and indicator from v2
       const raw = await fs.readFile(join(dir, '.engin-state.json'), 'utf-8');
       const data = JSON.parse(raw);
-      expect(data.sidebar?.title).toBe('v3');
-      expect(data.sidebar?.indicator).toBe('v2');
+      expect(data.workflowData?.wfTitle).toBe('v3');
+      expect(data.workflowData?.wfIndicator).toBe('v2');
     });
 
     it('dispose() during an in-flight save is safe', async () => {
@@ -649,7 +647,7 @@ describe('WorkflowStatusTracker – persist architecture (bounded promise chain)
 
       // Start a save
       tracker.setTaskPrompt('save-in-flight');
-      tracker.setSidebar({ title: 'in-flight' });
+      tracker.setWorkflowData({ wfTitle: 'in-flight' });
       await new Promise((r) => setTimeout(r, 10));
 
       // Dispose while save is blocked
@@ -725,7 +723,7 @@ describe('WorkflowStatusTracker – persist architecture (bounded promise chain)
 
       // Trigger a state change that starts a save
       tracker.setTaskPrompt('race-test-1');
-      tracker.setSidebar({ title: 'race-1' });
+      tracker.setWorkflowData({ wfTitle: 'race-1' });
 
       // Wait a tick for _doPersist to start and hit the await
       await new Promise((r) => setTimeout(r, 5));
@@ -733,7 +731,7 @@ describe('WorkflowStatusTracker – persist architecture (bounded promise chain)
       // While the save is in-flight, trigger another persist
       // This should set _queuedSave = true, not start a second _doPersist
       tracker.setTaskPrompt('race-test-2');
-      tracker.setSidebar({ title: 'race-2' });
+      tracker.setWorkflowData({ wfTitle: 'race-2' });
 
       // Wait for everything to settle
       await new Promise((r) => setTimeout(r, 50));
@@ -750,7 +748,7 @@ describe('WorkflowStatusTracker – persist architecture (bounded promise chain)
       const raw = await fs.readFile(join(dir, '.engin-state.json'), 'utf-8');
       const data = JSON.parse(raw);
       expect(data.taskPrompt).toBe('race-test-2');
-      expect(data.sidebar?.title).toBe('race-2');
+      expect(data.workflowData?.wfTitle).toBe('race-2');
 
       tracker.save = originalSave;
     });
@@ -770,7 +768,7 @@ describe('WorkflowStatusTracker – persist architecture (bounded promise chain)
       // Rapidly trigger many persistState calls in synchronous succession
       for (let i = 0; i < 10; i++) {
         tracker.setTaskPrompt(`burst-${i}`);
-        tracker.setSidebar({ title: `burst-${i}` });
+        tracker.setWorkflowData({ title: `burst-${i}` });
       }
 
       // Wait for all saves to settle
@@ -784,7 +782,7 @@ describe('WorkflowStatusTracker – persist architecture (bounded promise chain)
       const raw = await fs.readFile(join(dir, '.engin-state.json'), 'utf-8');
       const data = JSON.parse(raw);
       expect(data.taskPrompt).toBe('burst-9');
-      expect(data.sidebar?.title).toBe('burst-9');
+      expect(data.workflowData?.title).toBe('burst-9');
 
       tracker.save = originalSave;
     });
@@ -822,7 +820,7 @@ describe('WorkflowStatusTracker – persist architecture (bounded promise chain)
 
       // Start a save and wait for it to be in-flight
       tracker.setTaskPrompt('window-test-1');
-      tracker.setSidebar({ title: 'window-1' });
+      tracker.setWorkflowData({ wfTitle: 'window-1' });
       await new Promise((r) => setTimeout(r, 10));
 
       // Trigger another change to set _queuedSave
@@ -833,7 +831,7 @@ describe('WorkflowStatusTracker – persist architecture (bounded promise chain)
       // All synchronous calls happen in the same microtask, so they all
       // see the same _pendingSave state.
       for (let i = 0; i < 50; i++) {
-        tracker.setSidebar({ title: `window-${i}` });
+        tracker.setWorkflowData({ wfTitle: `window-${i}` });
       }
 
       // Wait for all saves to settle

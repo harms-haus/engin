@@ -62,6 +62,7 @@ function createStepExecutionContext(overrides?: Partial<StepExecutionContext>): 
     apiKeys: undefined,
     onStatus: undefined,
     activeSessions: new Set<{ abort(): Promise<void> }>(),
+    phaseId: 'implementing',
     ...overrides,
   } as StepExecutionContext;
 }
@@ -600,7 +601,7 @@ describe('runStep (step-execution module)', () => {
         expect.objectContaining({
           agentId: 'lane-0',
           profile: 'coder',
-          phase: 'implementing',
+          phaseId: 'implementing',
           taskId: 'task-1',
         }),
       );
@@ -625,7 +626,7 @@ describe('runStep (step-execution module)', () => {
         expect.objectContaining({
           agentId: 'lane-0',
           profile: 'coder',
-          phase: 'implementing',
+          phaseId: 'implementing',
           taskId: 'task-1',
         }),
       );

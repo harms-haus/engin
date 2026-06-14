@@ -13,8 +13,8 @@ beforeEach(() => {
 });
 
 describe('LanePool status callback phase field', () => {
-  describe('onAgentSpawn includes phase: implementing', () => {
-    it('onAgentSpawn from runStep includes phase: implementing', async () => {
+  describe('onAgentSpawn includes phaseId: implementing', () => {
+    it('onAgentSpawn from runStep includes phaseId: implementing', async () => {
       setupProfileMocks();
       setupHarnessMocks();
       const onAgentSpawn = mock(() => {});
@@ -25,13 +25,13 @@ describe('LanePool status callback phase field', () => {
         expect.objectContaining({
           agentId: 'lane-0',
           profile: 'coder',
-          phase: 'implementing',
+          phaseId: 'implementing',
           taskId: 'task-1',
         }),
       );
     });
 
-    it('onAgentSpawn includes phase for every step in a multi-step flow', async () => {
+    it('onAgentSpawn includes phaseId for every step in a multi-step flow', async () => {
       setupProfileMocks();
       setupHarnessMocks();
       const onAgentSpawn = mock(() => {});
@@ -45,13 +45,13 @@ describe('LanePool status callback phase field', () => {
       await pool.run();
       expect(onAgentSpawn).toHaveBeenCalledTimes(2);
       onAgentSpawn.mock.calls.forEach((call) => {
-        expect(call[0]).toMatchObject({ phase: 'implementing' });
+        expect(call[0]).toMatchObject({ phaseId: 'implementing' });
       });
     });
   });
 
-  describe('onAgentComplete includes phase: implementing', () => {
-    it('onAgentComplete from runStep includes phase: implementing', async () => {
+  describe('onAgentComplete includes phaseId: implementing', () => {
+    it('onAgentComplete from runStep includes phaseId: implementing', async () => {
       setupProfileMocks();
       setupHarnessMocks();
       const onAgentComplete = mock(() => {});
@@ -62,13 +62,13 @@ describe('LanePool status callback phase field', () => {
         expect.objectContaining({
           agentId: 'lane-0',
           profile: 'coder',
-          phase: 'implementing',
+          phaseId: 'implementing',
           taskId: 'task-1',
         }),
       );
     });
 
-    it('onAgentComplete includes phase for every step in a multi-step flow', async () => {
+    it('onAgentComplete includes phaseId for every step in a multi-step flow', async () => {
       setupProfileMocks();
       setupHarnessMocks();
       const onAgentComplete = mock(() => {});
@@ -82,13 +82,13 @@ describe('LanePool status callback phase field', () => {
       await pool.run();
       expect(onAgentComplete).toHaveBeenCalledTimes(2);
       onAgentComplete.mock.calls.forEach((call) => {
-        expect(call[0]).toMatchObject({ phase: 'implementing' });
+        expect(call[0]).toMatchObject({ phaseId: 'implementing' });
       });
     });
   });
 
-  describe('phase is present even on failure paths', () => {
-    it('onAgentComplete includes phase: implementing when prompt throws', async () => {
+  describe('phaseId is present even on failure paths', () => {
+    it('onAgentComplete includes phaseId: implementing when prompt throws', async () => {
       setupProfileMocks();
       const onAgentComplete = mock(() => {});
       mockCreateHarness.mockResolvedValue({
@@ -101,10 +101,10 @@ describe('LanePool status callback phase field', () => {
       const { pool } = createPoolAndTracker({ onStatus: { onAgentComplete } });
       await pool.run();
       expect(onAgentComplete).toHaveBeenCalledTimes(1);
-      expect(onAgentComplete).toHaveBeenCalledWith(expect.objectContaining({ phase: 'implementing' }));
+      expect(onAgentComplete).toHaveBeenCalledWith(expect.objectContaining({ phaseId: 'implementing' }));
     });
 
-    it('onAgentComplete includes phase: implementing when dispose throws', async () => {
+    it('onAgentComplete includes phaseId: implementing when dispose throws', async () => {
       setupProfileMocks();
       const onAgentComplete = mock(() => {});
       const orig = console.error;
@@ -120,15 +120,15 @@ describe('LanePool status callback phase field', () => {
         const { pool } = createPoolAndTracker({ onStatus: { onAgentComplete } });
         await pool.run();
         expect(onAgentComplete).toHaveBeenCalledTimes(1);
-        expect(onAgentComplete).toHaveBeenCalledWith(expect.objectContaining({ phase: 'implementing' }));
+        expect(onAgentComplete).toHaveBeenCalledWith(expect.objectContaining({ phaseId: 'implementing' }));
       } finally {
         console.error = orig;
       }
     });
   });
 
-  describe('combined callback order and phase consistency', () => {
-    it('onAgentSpawn and onAgentComplete pairs both carry phase: implementing', async () => {
+  describe('combined callback order and phaseId consistency', () => {
+    it('onAgentSpawn and onAgentComplete pairs both carry phaseId: implementing', async () => {
       setupProfileMocks();
       setupHarnessMocks();
       const onAgentSpawn = mock(() => {});
@@ -144,8 +144,8 @@ describe('LanePool status callback phase field', () => {
       expect(onAgentSpawn).toHaveBeenCalledTimes(2);
       expect(onAgentComplete).toHaveBeenCalledTimes(2);
       // Interleave: spawn, complete, spawn, complete
-      const spawnPhases = onAgentSpawn.mock.calls.map((c) => (c[0] as Record<string, unknown>).phase);
-      const completePhases = onAgentComplete.mock.calls.map((c) => (c[0] as Record<string, unknown>).phase);
+      const spawnPhases = onAgentSpawn.mock.calls.map((c) => (c[0] as Record<string, unknown>).phaseId);
+      const completePhases = onAgentComplete.mock.calls.map((c) => (c[0] as Record<string, unknown>).phaseId);
       expect(spawnPhases).toEqual(['implementing', 'implementing']);
       expect(completePhases).toEqual(['implementing', 'implementing']);
     });

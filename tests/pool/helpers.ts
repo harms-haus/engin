@@ -144,7 +144,7 @@ export function createPoolAndTracker(overrides?: PoolOptions) {
     profilesDirs: ['/mock/profiles'],
     sessionBaseDir: '/tmp/sessions',
     cwd: '/tmp/project',
-    phase: 'implementing',
+    phaseId: 'implementing',
     taskTracker: tracker,
     getStepsForTask,
     maxStepRetries: overrides?.maxStepRetries,
@@ -178,8 +178,6 @@ export function createMockAuditLog() {
 export function createMockTaskTracker(overrides: Record<string, unknown> = {}) {
   return {
     claimTasks: mock(() => []),
-    startTask: mock(() => {}),
-    submitForReview: mock(() => {}),
     completeTask: mock(() => {}),
     isPoolDone: mock(() => true),
     getAllTasks: mock(() => []),

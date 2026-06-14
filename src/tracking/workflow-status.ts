@@ -6,8 +6,9 @@ import { loadWorkflowState, saveWorkflowState, serializeWorkflowState } from './
 
 export class WorkflowStatusTracker {
   private _taskPrompt = '';
-  private _currentPhase = '';
-  private _completedPhases: string[] = [];
+  private _currentPhaseId = '';
+  private _completedPhaseIds: string[] = [];
+  private _phases: { id: string; label: string; icon: string }[] = [];
   private _workflowData: Record<string, unknown> = {};
   private _stats: { totalTokens: number; totalCost: number; agentCount: number } = {
     totalTokens: 0,
@@ -23,7 +24,6 @@ export class WorkflowStatusTracker {
   private _pendingSave = false;
   private _queuedSave = false;
   private _saveLock: Promise<void> = Promise.resolve();
-  private _sidebar?: { title?: string; indicator?: string; phases?: { id: string; label: string; icon: string }[] };
   private _worktree?: WorktreeInfo;
   private _spawnedAgents: PersistedAgentRecord[] = [];
 
@@ -34,7 +34,23 @@ export class WorkflowStatusTracker {
     this.attachAutoPersist();
     if (signal) {
       this._signal = signal;
-      signal.addEventListener('abort', () => this.dispose(), { once: true });
+      signal.addEventListener(
+        'abort',
+        () => {
+          // Cancel any outstanding active tasks before disposal
+          for (const t of this._taskTracker.getAllTasks()) {
+            if (t.status === 'active') {
+              try {
+                this._taskTracker.cancelTask(t.id);
+              } catch {
+                // ignore errors from double-cancel or already settled
+              }
+            }
+          }
+          this.dispose();
+        },
+        { once: true },
+      );
     }
   }
 
@@ -93,12 +109,16 @@ export class WorkflowStatusTracker {
     return this._taskPrompt;
   }
 
-  get currentPhase(): string {
-    return this._currentPhase;
+  get currentPhaseId(): string {
+    return this._currentPhaseId;
   }
 
-  get completedPhases(): string[] {
-    return [...this._completedPhases];
+  get completedPhaseIds(): string[] {
+    return [...this._completedPhaseIds];
+  }
+
+  get phases(): { id: string; label: string; icon: string }[] {
+    return this._phases.map((p) => ({ ...p }));
   }
 
   get workflowData(): Record<string, unknown> {
@@ -117,14 +137,6 @@ export class WorkflowStatusTracker {
     return this._auditLog;
   }
 
-  get sidebar():
-    | { title?: string; indicator?: string; phases?: { id: string; label: string; icon: string }[] }
-    | undefined {
-    return this._sidebar
-      ? { ...this._sidebar, phases: this._sidebar.phases ? [...this._sidebar.phases] : undefined }
-      : undefined;
-  }
-
   get worktree(): WorktreeInfo | undefined {
     return this._worktree ? { ...this._worktree } : undefined;
   }
@@ -140,22 +152,46 @@ export class WorkflowStatusTracker {
   }
 
   /**
-   * Transition to a new phase. Pushes the current phase into completedPhases
+   * Transition to a new phase. Pushes the current phase into completedPhaseIds
    * and sets the new phase as current.
    */
-  setPhase(phase: string): void {
-    if (this._currentPhase) {
-      this._completedPhases.push(this._currentPhase);
+  setPhase(phaseId: string): void {
+    if (this._currentPhaseId) {
+      this._completedPhaseIds.push(this._currentPhaseId);
     }
-    this._currentPhase = phase;
+    this._currentPhaseId = phaseId;
   }
 
   /**
-   * Set the current phase without pushing the previous one to completedPhases.
+   * Set the current phase without pushing the previous one to completedPhaseIds.
    * Used to initialise a fresh tracker or restore from saved state.
    */
-  setCurrentPhase(phase: string): void {
-    this._currentPhase = phase;
+  setCurrentPhase(phaseId: string): void {
+    this._currentPhaseId = phaseId;
+  }
+
+  /**
+   * Register a phase definition (id, label, icon) for display purposes.
+   */
+  registerPhase(info: { id: string; label: string; icon: string }): void {
+    this._phases.push({ ...info });
+    this.persistState();
+  }
+
+  /**
+   * Register a task with the task tracker.
+   */
+  registerTask(info: { taskId: string; phaseId: string; title: string; dependencies: string[] }): void {
+    this._taskTracker.addTask({
+      id: info.taskId,
+      phaseId: info.phaseId,
+      title: info.title,
+      dependencies: info.dependencies,
+      prompt: '',
+      profile: '',
+      files: [],
+    });
+    this.persistState();
   }
 
   setWorkflowData(updates: Record<string, unknown>): void {
@@ -175,37 +211,24 @@ export class WorkflowStatusTracker {
     this._worktree = { ...info };
   }
 
-  setSidebar(info: {
-    title?: string;
-    indicator?: string;
-    phases?: { id: string; label: string; icon: string }[];
-  }): void {
-    if (!this._sidebar) {
-      this._sidebar = {};
-    }
-    if (info.title !== undefined) {
-      this._sidebar.title = info.title;
-    }
-    if (info.indicator !== undefined) {
-      this._sidebar.indicator = info.indicator;
-    }
-    if (info.phases !== undefined) {
-      this._sidebar.phases = info.phases;
-    }
-    this.persistState();
-  }
-
-  recordAgentSpawn(agentId: string, profile: string, phase: string, taskId?: string): void;
-  recordAgentSpawn(info: { agentId: string; profile: string; phase: string; taskId?: string }): void;
+  recordAgentSpawn(agentId: string, profile: string, phaseId: string, taskId?: string, stepIndex?: number): void;
+  recordAgentSpawn(info: {
+    agentId: string;
+    profile: string;
+    phaseId: string;
+    taskId?: string;
+    stepIndex?: number;
+  }): void;
   recordAgentSpawn(
-    agentIdOrInfo: string | { agentId: string; profile: string; phase: string; taskId?: string },
+    agentIdOrInfo: string | { agentId: string; profile: string; phaseId: string; taskId?: string; stepIndex?: number },
     profile?: string,
-    phase?: string,
+    phaseId?: string,
     taskId?: string,
+    stepIndex?: number,
   ): void {
     let record: PersistedAgentRecord;
     if (typeof agentIdOrInfo === 'string') {
-      record = { agentId: agentIdOrInfo, profile: profile as string, phase: phase as string, taskId };
+      record = { agentId: agentIdOrInfo, profile: profile as string, phaseId: phaseId as string, taskId, stepIndex };
     } else {
       record = { ...agentIdOrInfo };
     }
@@ -256,12 +279,11 @@ export class WorkflowStatusTracker {
 
     const tracker = new WorkflowStatusTracker(workDir);
     tracker._taskPrompt = data.taskPrompt;
-    tracker._currentPhase = data.currentPhase;
-    tracker._completedPhases = [...data.completedPhases];
+    tracker._currentPhaseId = data.currentPhaseId ?? '';
+    tracker._completedPhaseIds = [...(data.completedPhaseIds ?? [])];
     tracker._workflowData = data.workflowData ?? {};
     tracker._stats = { ...data.stats };
     tracker._spawnedAgents = data.spawnedAgents ? data.spawnedAgents.map((a) => ({ ...a })) : [];
-    tracker._sidebar = data.sidebar ? { ...data.sidebar } : undefined;
     tracker._worktree = data.worktree ? { ...data.worktree } : undefined;
 
     // Rebuild TaskTracker from saved tasks

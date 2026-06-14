@@ -7,7 +7,7 @@ import { createStoreCallbacks } from '../../src/tracking/store-callbacks.js';
 interface AppendCall {
   type: EventType;
   data: Record<string, unknown>;
-  metadata?: { agentId?: string; taskId?: string; phase?: string };
+  metadata?: { agentId?: string; taskId?: string; phaseId?: string; stepIndex?: number };
 }
 
 function createMockStore(): {
@@ -15,7 +15,7 @@ function createMockStore(): {
     append: (
       type: EventType,
       data: Record<string, unknown>,
-      metadata?: { agentId?: string; taskId?: string; phase?: string },
+      metadata?: { agentId?: string; taskId?: string; phaseId?: string; stepIndex?: number },
     ) => EventRecord;
   };
   calls: AppendCall[];
@@ -26,7 +26,7 @@ function createMockStore(): {
       append(
         type: EventType,
         data: Record<string, unknown>,
-        metadata?: { agentId?: string; taskId?: string; phase?: string },
+        metadata?: { agentId?: string; taskId?: string; phaseId?: string; stepIndex?: number },
       ) {
         calls.push({ type, data, metadata });
         return { seq: calls.length, type, data, metadata: { timestamp: new Date().toISOString(), ...metadata } };
@@ -53,6 +53,18 @@ describe('createStoreCallbacks', () => {
     });
   });
 
+  describe('onPhaseRegister', () => {
+    it('appends phase_registered with correct data and metadata', () => {
+      const { store, calls } = createMockStore();
+      const cb = createStoreCallbacks(store as never);
+      cb.onPhaseRegister!({ id: 'scouting', label: 'Scouting', icon: '🔍' });
+      expect(calls).toHaveLength(1);
+      expect(calls[0].type).toBe('phase_registered');
+      expect(calls[0].data).toEqual({ id: 'scouting', label: 'Scouting', icon: '🔍' });
+      expect(calls[0].metadata).toEqual({ phaseId: 'scouting' });
+    });
+  });
+
   describe('onPhaseStart', () => {
     it('appends phase_started with correct data and metadata', () => {
       const { store, calls } = createMockStore();
@@ -61,7 +73,7 @@ describe('createStoreCallbacks', () => {
       expect(calls).toHaveLength(1);
       expect(calls[0].type).toBe('phase_started');
       expect(calls[0].data).toEqual({ phase: 'scouting', round: 1 });
-      expect(calls[0].metadata).toEqual({ phase: 'scouting' });
+      expect(calls[0].metadata).toEqual({ phaseId: 'scouting' });
     });
   });
 
@@ -73,19 +85,45 @@ describe('createStoreCallbacks', () => {
       expect(calls).toHaveLength(1);
       expect(calls[0].type).toBe('phase_completed');
       expect(calls[0].data).toEqual({ phase: 'scouting', durationMs: 1500 });
-      expect(calls[0].metadata).toEqual({ phase: 'scouting' });
+      expect(calls[0].metadata).toEqual({ phaseId: 'scouting' });
+    });
+  });
+
+  describe('onTaskRegister', () => {
+    it('appends task_registered with correct data and metadata', () => {
+      const { store, calls } = createMockStore();
+      const cb = createStoreCallbacks(store as never);
+      const steps = [{ name: 'analyze', profileId: 'coder', isReadOnly: false }];
+      cb.onTaskRegister!({
+        taskId: 't1',
+        phaseId: 'impl',
+        title: 'Build auth',
+        dependencies: ['t0'],
+        steps,
+      });
+      expect(calls).toHaveLength(1);
+      expect(calls[0].type).toBe('task_registered');
+      expect(calls[0].data).toEqual({
+        taskId: 't1',
+        phaseId: 'impl',
+        title: 'Build auth',
+        dependencies: ['t0'],
+        steps,
+      });
+      expect(calls[0].metadata).toEqual({ taskId: 't1', phaseId: 'impl' });
     });
   });
 
   describe('onAgentSpawn', () => {
-    it('appends agent_spawned with correct data and metadata', () => {
+    it('appends agent_spawned with correct data and metadata including stepIndex', () => {
       const { store, calls } = createMockStore();
       const cb = createStoreCallbacks(store as never);
       cb.onAgentSpawn!({
         agentId: 'a1',
         profile: 'coder',
-        phase: 'impl',
+        phaseId: 'impl',
         taskId: 't1',
+        stepIndex: 1,
         sessionId: 'sess-1',
         sessionPath: '/tmp/s',
       });
@@ -95,7 +133,7 @@ describe('createStoreCallbacks', () => {
       expect(calls[0].data.profile).toBe('coder');
       expect(calls[0].data.sessionId).toBe('sess-1');
       expect(calls[0].data.sessionPath).toBe('/tmp/s');
-      expect(calls[0].metadata).toEqual({ agentId: 'a1', taskId: 't1', phase: 'impl' });
+      expect(calls[0].metadata).toEqual({ agentId: 'a1', taskId: 't1', phaseId: 'impl', stepIndex: 1 });
     });
   });
 
@@ -103,13 +141,13 @@ describe('createStoreCallbacks', () => {
     it('appends agent_completed with correct data and metadata', () => {
       const { store, calls } = createMockStore();
       const cb = createStoreCallbacks(store as never);
-      cb.onAgentComplete!({ agentId: 'a1', profile: 'coder', phase: 'impl', taskId: 't1', sessionId: 'sess-1' });
+      cb.onAgentComplete!({ agentId: 'a1', profile: 'coder', phaseId: 'impl', taskId: 't1', sessionId: 'sess-1' });
       expect(calls).toHaveLength(1);
       expect(calls[0].type).toBe('agent_completed');
       expect(calls[0].data.agentId).toBe('a1');
       expect(calls[0].data.profile).toBe('coder');
       expect(calls[0].data.sessionId).toBe('sess-1');
-      expect(calls[0].metadata).toEqual({ agentId: 'a1', taskId: 't1', phase: 'impl' });
+      expect(calls[0].metadata).toEqual({ agentId: 'a1', taskId: 't1', phaseId: 'impl' });
     });
   });
 
@@ -117,26 +155,26 @@ describe('createStoreCallbacks', () => {
     it('appends task_started with correct data and metadata', () => {
       const { store, calls } = createMockStore();
       const cb = createStoreCallbacks(store as never);
-      cb.onTaskStart!({ taskId: 't1', title: 'Build auth', agentId: 'a1', phase: 'impl', startedAt: 1000 });
+      cb.onTaskStart!({ taskId: 't1', title: 'Build auth', agentId: 'a1', phaseId: 'impl', startedAt: 1000 });
       expect(calls).toHaveLength(1);
       expect(calls[0].type).toBe('task_started');
       expect(calls[0].data.taskId).toBe('t1');
       expect(calls[0].data.title).toBe('Build auth');
       expect(calls[0].data.agentId).toBe('a1');
       expect(calls[0].data.startedAt).toBe(1000);
-      expect(calls[0].metadata).toEqual({ agentId: 'a1', taskId: 't1', phase: 'impl' });
+      expect(calls[0].metadata).toEqual({ agentId: 'a1', taskId: 't1', phaseId: 'impl' });
     });
   });
 
-  describe('onTaskStepStart', () => {
-    it('appends task_step_started with correct data and metadata', () => {
+  describe('onStepStart', () => {
+    it('appends step_started with correct data and metadata', () => {
       const { store, calls } = createMockStore();
       const cb = createStoreCallbacks(store as never);
-      cb.onTaskStepStart!({ taskId: 't1', stepName: 'analyze', stepIndex: 1, totalSteps: 3 });
+      cb.onStepStart!({ taskId: 't1', stepIndex: 1, stepName: 'analyze', agentId: 'a1' });
       expect(calls).toHaveLength(1);
-      expect(calls[0].type).toBe('task_step_started');
-      expect(calls[0].data).toEqual({ taskId: 't1', stepName: 'analyze', stepIndex: 1, totalSteps: 3 });
-      expect(calls[0].metadata).toEqual({ taskId: 't1' });
+      expect(calls[0].type).toBe('step_started');
+      expect(calls[0].data).toEqual({ taskId: 't1', stepIndex: 1, stepName: 'analyze', agentId: 'a1' });
+      expect(calls[0].metadata).toEqual({ taskId: 't1', agentId: 'a1' });
     });
   });
 
@@ -180,11 +218,11 @@ describe('createStoreCallbacks', () => {
     it('appends error with correct data and metadata', () => {
       const { store, calls } = createMockStore();
       const cb = createStoreCallbacks(store as never);
-      cb.onError!({ agentId: 'a1', error: 'Kaboom', phase: 'impl', taskId: 't1' });
+      cb.onError!({ agentId: 'a1', error: 'Kaboom', phaseId: 'impl', taskId: 't1' });
       expect(calls).toHaveLength(1);
       expect(calls[0].type).toBe('error');
       expect(calls[0].data).toEqual({ error: 'Kaboom' });
-      expect(calls[0].metadata).toEqual({ agentId: 'a1', taskId: 't1', phase: 'impl' });
+      expect(calls[0].metadata).toEqual({ agentId: 'a1', taskId: 't1', phaseId: 'impl' });
     });
   });
 
@@ -205,7 +243,7 @@ describe('createStoreCallbacks', () => {
       const { store, calls } = createMockStore();
       const cb = createStoreCallbacks(store as never);
       const err = new Error('Kaboom');
-      cb.onWorkflowFailed!({ error: err, phase: 'impl' });
+      cb.onWorkflowFailed!({ error: err, phaseId: 'impl' });
       expect(calls).toHaveLength(1);
       expect(calls[0].type).toBe('workflow_failed');
       expect(calls[0].data.error).toBe('Kaboom');
@@ -216,32 +254,17 @@ describe('createStoreCallbacks', () => {
     });
   });
 
-  describe('onTasksAdded', () => {
-    it('appends tasks_added with correct data', () => {
-      const { store, calls } = createMockStore();
-      const cb = createStoreCallbacks(store as never);
-      const tasks = [{ id: 't1', title: 'Task 1', status: 'ready' as const, dependencies: [] }];
-      cb.onTasksAdded!({ tasks });
-      expect(calls).toHaveLength(1);
-      expect(calls[0].type).toBe('tasks_added');
-      expect(calls[0].data.tasks).toEqual(tasks);
-      expect(calls[0].metadata).toBeUndefined();
-    });
-  });
-
   describe('onSidebarUpdate', () => {
-    it('appends sidebar_updated with correct data', () => {
+    it('appends sidebar_updated with title and indicator only', () => {
       const { store, calls } = createMockStore();
       const cb = createStoreCallbacks(store as never);
       cb.onSidebarUpdate!({
         title: 'My Workflow',
         indicator: 'Building…',
-        phases: [{ id: 'p1', label: 'Phase 1', icon: '🚀' }],
       });
       expect(calls).toHaveLength(1);
       expect(calls[0].type).toBe('sidebar_updated');
-      expect(calls[0].data.title).toBe('My Workflow');
-      expect(calls[0].data.indicator).toBe('Building…');
+      expect(calls[0].data).toEqual({ title: 'My Workflow', indicator: 'Building…' });
       expect(calls[0].metadata).toBeUndefined();
     });
   });
@@ -301,30 +324,31 @@ describe('createStoreCallbacks', () => {
     });
   });
 
-  describe('all 19 methods are present', () => {
+  describe('all methods are present', () => {
     it('returns an object with all StatusCallbacks methods defined', () => {
       const { store } = createMockStore();
       const cb = createStoreCallbacks(store as never);
       const methods = [
         'onWorkflowStart',
+        'onPhaseRegister',
         'onPhaseStart',
         'onPhaseComplete',
+        'onTaskRegister',
         'onAgentSpawn',
         'onAgentComplete',
         'onTaskStart',
-        'onTaskStepStart',
+        'onStepStart',
         'onTaskComplete',
         'onTaskRejected',
         'onDecision',
         'onError',
         'onWorkflowComplete',
         'onWorkflowFailed',
+        'onSidebarUpdate',
         'onTurnStart',
         'onTurnEnd',
         'onToolCallStart',
         'onToolCallEnd',
-        'onTasksAdded',
-        'onSidebarUpdate',
       ] as const;
       for (const m of methods) {
         expect(typeof (cb as Record<string, unknown>)[m]).toBe('function');
@@ -350,7 +374,7 @@ describe('store-callbacks → EventStore integration', () => {
   it('onWorkflowFailed sets projection.error to the message string (not [object Object])', () => {
     const store = new EventStore(dir);
     const cb = createStoreCallbacks(store);
-    cb.onWorkflowFailed!({ error: new Error('boom'), phase: 'review' });
+    cb.onWorkflowFailed!({ error: new Error('boom'), phaseId: 'review' });
     const proj = store.getProjection();
     expect(proj.status).toBe('failed');
     expect(proj.error).toBe('boom');

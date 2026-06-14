@@ -1,6 +1,10 @@
 // ─── Event Types ─────────────────────────────────────────────────────────────
 // Maps 1:1 to the 19 StatusCallbacks methods in core/types.ts.
 
+// ─── Re-exports from core/types.ts ──────────────────────────────────────────
+import type { StepDefinition, StepEntity, TaskEntity, TaskStatus } from '../core/types.js';
+export type { StepDefinition, StepEntity, TaskEntity, TaskStatus };
+
 // ─── LogEntry ──────────────────────────────────────────────────────────────
 // Canonical definition lives here (tracking core). The web layer re-exports
 // this type from src/web/protocol-types.ts so that web depends on core, not
@@ -16,19 +20,20 @@ export interface LogEntry {
 
 export type EventType =
   | 'workflow_started'
+  | 'phase_registered'
   | 'phase_started'
   | 'phase_completed'
   | 'agent_spawned'
   | 'agent_completed'
+  | 'task_registered'
   | 'task_started'
-  | 'task_step_started'
+  | 'step_started'
   | 'task_completed'
   | 'task_rejected'
   | 'decision'
   | 'error'
   | 'workflow_completed'
   | 'workflow_failed'
-  | 'tasks_added'
   | 'sidebar_updated'
   | 'turn_started'
   | 'turn_ended'
@@ -45,17 +50,26 @@ export interface EventRecord {
     timestamp: string;
     agentId?: string;
     taskId?: string;
-    phase?: string;
+    phaseId?: string;
+    stepIndex?: number;
   };
 }
 
 // ─── Entities ────────────────────────────────────────────────────────────────
 
+export interface PhaseEntity {
+  id: string;
+  label: string;
+  icon: string;
+  taskIds: string[];
+}
+
 export interface AgentEntity {
   uid: string;
   agentId: string;
   profile: string;
-  phase: string;
+  phaseId: string;
+  stepIndex?: number;
   taskId?: string;
   sessionId?: string;
   sessionPath?: string;
@@ -68,30 +82,19 @@ export interface AgentEntity {
   completedAt?: string;
 }
 
-export interface TaskEntity {
-  id: string;
-  title: string;
-  status: string;
-  phase?: string;
-  agentId?: string;
-  startedAt?: number;
-  stepInfo?: string;
-  completedAt?: string;
-}
-
 // ─── Workflow Projection ─────────────────────────────────────────────────────
 
 export interface WorkflowProjection {
   seq: number;
   taskPrompt: string;
-  currentPhase: string;
-  completedPhases: string[];
+  phases: PhaseEntity[];
+  currentPhaseId: string;
+  completedPhaseIds: string[];
   tasks: Record<string, TaskEntity>;
   agents: Record<string, AgentEntity>;
   sidebar: {
     title: string;
     indicator: string;
-    phases?: { id: string; label: string; icon: string }[];
   };
   status: 'running' | 'complete' | 'failed';
   error?: string;
@@ -108,8 +111,9 @@ export function createInitialProjection(): WorkflowProjection {
   return {
     seq: 0,
     taskPrompt: '',
-    currentPhase: '',
-    completedPhases: [],
+    phases: [],
+    currentPhaseId: '',
+    completedPhaseIds: [],
     tasks: {},
     agents: {},
     sidebar: { title: '', indicator: '' },

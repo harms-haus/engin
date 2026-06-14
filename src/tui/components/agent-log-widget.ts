@@ -6,9 +6,9 @@ import {
   visibleWidth,
   wrapTextWithAnsi,
 } from '@earendil-works/pi-tui';
-import type { AgentEntity, LogEntry } from '../../tracking/event-types.js';
+import type { AgentEntity, LogEntry, StepEntity } from '../../tracking/event-types.js';
 import { formatToolCall } from '../format-tool-call.js';
-import { cyan, dim, green, red } from '../theme.js';
+import { bold, cyan, dim, green, red, underline } from '../theme.js';
 
 // Re-export LogEntry as AgentLogEntry for backward compatibility
 export type { LogEntry as AgentLogEntry } from '../../tracking/event-types.js';
@@ -45,10 +45,10 @@ const padToWidth = (line: string, width: number): string => {
 
 export class AgentLogWidget implements Component {
   private _agents: AgentEntity[] = [];
-  private _phases: string[] = [];
-  private _currentPhaseIndex = -1;
-  private _selectedAgentIndex = 0;
-  private _userNavigated = false;
+  private _steps: StepEntity[] = [];
+  private _selectedStepIndex = 0;
+  private _activeStepIndex = 0;
+  private _userPinnedStep = false;
 
   private readonly _collapsedLines: number;
   private _expanded = false;
@@ -71,47 +71,53 @@ export class AgentLogWidget implements Component {
     this.dirty = true;
   }
 
-  setCurrentPhase(phase: string): void {
-    const idx = this._phases.indexOf(phase);
-    if (idx >= 0) {
-      this._currentPhaseIndex = idx;
+  setSteps(steps: StepEntity[]): void {
+    this._steps = [...steps];
+    if (this._steps.length > 0) {
+      // Clamp selectedStepIndex
+      if (this._selectedStepIndex >= this._steps.length) {
+        this._selectedStepIndex = this._steps.length - 1;
+      }
     } else {
-      this._phases.push(phase);
-      this._currentPhaseIndex = this._phases.length - 1;
-    }
-    this._selectedAgentIndex = 0;
-    this._scrollOffset = 0;
-    this._userNavigated = false;
-    this.dirty = true;
-  }
-
-  setPhases(phases: string[]): void {
-    this._phases = [...phases];
-    if (this._currentPhaseIndex >= this._phases.length) {
-      this._currentPhaseIndex = this._phases.length > 0 ? this._phases.length - 1 : -1;
-    }
-    // If current phase index is -1 and phases exist, set to first
-    if (this._currentPhaseIndex < 0 && this._phases.length > 0) {
-      this._currentPhaseIndex = 0;
+      this._selectedStepIndex = 0;
     }
     this.dirty = true;
   }
 
-  hasPhases(): boolean {
-    return this._phases.length > 0;
+  setSelectedStepIndex(index: number): void {
+    if (index >= -1 && index < this._steps.length) {
+      this._selectedStepIndex = index;
+      this._scrollOffset = 0;
+      this._userPinnedStep = true;
+      this.dirty = true;
+    }
   }
 
-  getCurrentPhase(): string | null {
-    if (this._currentPhaseIndex >= 0 && this._currentPhaseIndex < this._phases.length) {
-      return this._phases[this._currentPhaseIndex];
+  setSelectedAgentUid(uid: string | null): void {
+    if (uid === null) {
+      this._selectedStepIndex = -1;
+      this.dirty = true;
+      return;
     }
-    return null;
+    // Find step whose agentKey matches this uid
+    const idx = this._steps.findIndex((s) => s.agentKey === uid);
+    if (idx >= 0) {
+      this._selectedStepIndex = idx;
+      this._scrollOffset = 0;
+      this._userPinnedStep = true;
+      this.dirty = true;
+    }
+  }
+
+  setActiveStepIndex(index: number): void {
+    this._activeStepIndex = index;
+    this.dirty = true;
   }
 
   toggleExpand(): void {
     this._expanded = !this._expanded;
     this._scrollOffset = 0;
-    this._userNavigated = false;
+    this._userPinnedStep = false;
     this.dirty = true;
   }
 
@@ -124,11 +130,10 @@ export class AgentLogWidget implements Component {
   }
 
   getSelectedAgentUid(): string | null {
-    // EFF-3: compute agents once and reuse for both selection + lookup.
-    const agents = this.getAgentsInCurrentPhase();
-    this.ensureSelection(agents);
-    if (agents.length === 0) return null;
-    return agents[this._selectedAgentIndex]?.uid ?? null;
+    if (this._selectedStepIndex < 0 || this._selectedStepIndex >= this._steps.length) {
+      return null;
+    }
+    return this._steps[this._selectedStepIndex]?.agentKey ?? null;
   }
 
   invalidate(): void {
@@ -137,36 +142,17 @@ export class AgentLogWidget implements Component {
 
   // ─── Private helpers ─────────────────────────────────────────────────
 
-  /** Return all agent records in the current phase. */
-  private getAgentsInCurrentPhase(): AgentEntity[] {
-    const phase = this.getCurrentPhase();
-    if (!phase) return [];
-    return this._agents.filter((a) => a.phase === phase);
+  /** Get the agent entity for the selected step, or null if none. */
+  private getSelectedAgent(): AgentEntity | null {
+    const agentKey = this.getSelectedAgentUid();
+    if (!agentKey) return null;
+    return this._agents.find((a) => a.uid === agentKey) ?? null;
   }
 
-  /** Number of entry render lines available (no footer). */
+  /** Number of entry render lines available (after reserving header + tab bar). */
   private getEntrySlots(): number {
-    return this.getExpandedLineCount() - 1;
-  }
-
-  /** Clamp selected agent index to valid range, auto-switch if completed. */
-  private ensureSelection(agents?: AgentEntity[]): void {
-    // EFF-3: accept a precomputed agent list to avoid a duplicate lookup.
-    const list = agents ?? this.getAgentsInCurrentPhase();
-    if (list.length > 0 && this._selectedAgentIndex >= list.length) {
-      this._selectedAgentIndex = 0;
-    }
-    // Auto-switch away from completed agent if user hasn't manually navigated
-    if (!this._userNavigated && list.length > 0) {
-      const selected = list[this._selectedAgentIndex];
-      if (selected && !selected.active) {
-        const firstActive = list.findIndex((a) => a.active);
-        if (firstActive >= 0) {
-          this._selectedAgentIndex = firstActive;
-          this.dirty = true;
-        }
-      }
-    }
+    // totalLines = header (1) + entry slots + tab bar (1)
+    return this.getExpandedLineCount() - 2;
   }
 
   // ─── Render ──────────────────────────────────────────────────────────
@@ -176,22 +162,24 @@ export class AgentLogWidget implements Component {
       return this.cachedLines;
     }
 
-    // EFF-3: compute the agent list ONCE and reuse for selection + header.
-    const agents = this.getAgentsInCurrentPhase();
-    this.ensureSelection(agents);
-
     const totalLines = this.getExpandedLineCount();
     const lines: string[] = [];
 
-    const selectedAgent =
-      agents.length > 0 && this._selectedAgentIndex < agents.length ? agents[this._selectedAgentIndex] : null;
+    const selectedAgent = this.getSelectedAgent();
 
     if (!selectedAgent) {
-      // No agent selected in current phase
-      lines.push(padToWidth(dim('  No agent selected'), width));
-      for (let i = 1; i < totalLines; i++) {
+      // ─── No agent for selected step — show dimmed placeholder ─────
+      const stepName =
+        this._selectedStepIndex >= 0 && this._selectedStepIndex < this._steps.length
+          ? this._steps[this._selectedStepIndex].name
+          : 'unknown';
+      lines.push(padToWidth(dim(`  No agent for step "${stepName}"`), width));
+      const entrySlots = this.getEntrySlots();
+      for (let i = 0; i < entrySlots; i++) {
         lines.push(padToWidth('', width));
       }
+      // Tab bar
+      lines.push(this.renderTabBar(width));
     } else {
       // ─── HEADER (line 0) ─────────────────────────────────────
       const title = selectedAgent.taskTitle || selectedAgent.profile || selectedAgent.uid;
@@ -201,56 +189,34 @@ export class AgentLogWidget implements Component {
       if (this._expanded) {
         controlsRaw = '↑↓scroll x10⇧↑↓ space collapse';
       } else {
-        controlsRaw = '↑↓phase ←→agent space expand';
+        controlsRaw = 'Tab step space expand';
       }
 
-      // N/M agent indicator (1-indexed)
-      const indicatorRaw =
-        agents.length <= 1 ? '' : `[${Math.min(this._selectedAgentIndex, agents.length - 1) + 1}/${agents.length}] `;
-
-      // FIX H1: reserve tail width for the indicator + controls so a very long
-      // title is truncated with an ellipsis on the title side instead of
-      // pushing them off the right edge. Only truncate when the title side
-      // alone would overflow the line (normal headers stay fully intact).
+      // Reserve tail width for controls so a very long title is truncated
       const controlsW = visibleWidth(controlsRaw);
-      const indicatorW = visibleWidth(indicatorRaw);
       let leftFinal: string;
-      if (visibleWidth(leftRaw) > width - indicatorW - 1) {
-        const leftMax = Math.max(10, width - controlsW - indicatorW - 2); // -2 for the gap separators
+      if (visibleWidth(leftRaw) > width - controlsW - 1) {
+        const leftMax = Math.max(10, width - controlsW - 2);
         leftFinal = truncateToWidth(leftRaw, leftMax, '…', true);
       } else {
         leftFinal = leftRaw;
       }
-      const gap = Math.max(1, width - visibleWidth(leftFinal) - indicatorW - controlsW);
-      // FIX L1: dim the indicator so it matches the otherwise all-dim header.
-      const header = dim(leftFinal) + ' '.repeat(gap) + dim(indicatorRaw) + dim(controlsRaw);
+      const gap = Math.max(1, width - visibleWidth(leftFinal) - controlsW);
+      const header = dim(leftFinal) + ' '.repeat(gap) + dim(controlsRaw);
       lines.push(padToWidth(header, width));
 
       // ─── ACCUMULATE entry lines (oldest→newest) ────────────────
-      // EFF-2: iterate oldest→newest and push so `pending` is chronological
-      // (index 0 = oldest line, newest at the end).
-      // EFF-1: wrapTextWithAnsi is called for EVERY entry (required to count
-      // _lastTotalEntryLines), but the expensive padToWidth + colorFn +
-      // template pass is deferred to the visible window below. We also bound
-      // the buffer to the newest `renderNeeded` lines so off-screen tail lines
-      // are never stored.
-      const entrySlots = this.getEntrySlots(); // totalLines - 1
+      const entrySlots = this.getEntrySlots();
       const hasIndicator = this._expanded && this._scrollOffset > 0;
       const contentSlots = hasIndicator ? entrySlots - 1 : entrySlots;
-      const renderNeeded = contentSlots + this._scrollOffset + 1; // +1 line of slack
+      const renderNeeded = contentSlots + this._scrollOffset + 1;
 
       const pending: { text: string; prefix: string; colorFn: ((s: string) => string) | null }[] = [];
       let totalEntryLineCount = 0;
 
       for (const entry of selectedAgent.log) {
-        // tool_call_end is a redundant completion marker (the tool_call_start
-        // entry already shows the call). Keep it in the underlying data; hide
-        // it from the rendered log to avoid clutter.
         if (entry.type === 'tool_call_end') continue;
         const colorFn = typeColorMap[entry.type];
-        // tool_call_start/tool_call carry structured args in metadata; render a
-        // human-readable summary (e.g. `read → ./path`) via formatToolCall.
-        // formatToolCall emits its own emoji, so those types get no generic icon.
         const useFormatter = entry.type === 'tool_call_start' || entry.type === 'tool_call';
         const text = useFormatter
           ? formatToolCall(
@@ -269,7 +235,6 @@ export class AgentLogWidget implements Component {
           for (let wi = 0; wi < wrapped.length; wi++) {
             const linePrefix = si === 0 && wi === 0 ? prefix : ' '.repeat(prefixLen);
             pending.push({ text: wrapped[wi], prefix: linePrefix, colorFn });
-            // Keep only the newest renderNeeded plain lines (drop oldest from front).
             if (pending.length > renderNeeded) pending.shift();
           }
         }
@@ -277,15 +242,13 @@ export class AgentLogWidget implements Component {
 
       this._lastTotalEntryLines = totalEntryLineCount;
 
-      // ─── SCROLL / VISIBLE WINDOW ────────────────────────────
-      // Clamp scrollOffset (consistent with handleInput's baseline).
+      // Clamp scrollOffset
       const maxScrollOffset = Math.max(0, totalEntryLineCount - entrySlots);
       this._scrollOffset = Math.min(this._scrollOffset, maxScrollOffset);
 
-      // Newest contentSlots lines, shifted up by scrollOffset.
       const startIdx = Math.max(0, pending.length - contentSlots - this._scrollOffset);
 
-      // ─── ASSEMBLE OUTPUT ────────────────────────────────────
+      // Scroll indicator
       if (hasIndicator) {
         const scrollLine = `  up arrow ${this._scrollOffset} more lines`;
         lines.push(padToWidth(dim(scrollLine), width));
@@ -298,16 +261,60 @@ export class AgentLogWidget implements Component {
         lines.push(padToWidth(colored, width));
       }
 
-      // Pad remaining to totalLines
-      while (lines.length < totalLines) {
+      // Pad remaining to fill entry area (before tab bar)
+      while (lines.length < totalLines - 1) {
         lines.push(padToWidth('', width));
       }
+
+      // ─── TAB BAR (last line) ──────────────────────────────────
+      lines.push(this.renderTabBar(width));
     }
 
     this.cachedLines = lines;
     this.cachedWidth = width;
     this.dirty = false;
     return lines;
+  }
+
+  /** Render the step/agent tab bar (bottom line of the widget). */
+  private renderTabBar(width: number): string {
+    if (this._steps.length === 0) {
+      return padToWidth(dim('  no steps'), width);
+    }
+
+    const parts: string[] = [];
+    for (let i = 0; i < this._steps.length; i++) {
+      const step = this._steps[i];
+      const isSelected = i === this._selectedStepIndex;
+      const hasAgent = step.agentKey !== undefined;
+
+      // Determine positional marker based on activeStepIndex
+      let marker: string;
+      if (i < this._activeStepIndex) {
+        marker = '✓'; // done
+      } else if (i === this._activeStepIndex) {
+        marker = '▶'; // active
+      } else {
+        marker = '○'; // pending
+      }
+
+      const label = `${i + 1} ${step.name} ${marker}`;
+
+      let styled: string;
+      if (!hasAgent) {
+        // Steps without an agentKey are dimmed
+        styled = dim(label);
+      } else if (isSelected) {
+        // Selected step: bold + underline
+        styled = bold(underline(label));
+      } else {
+        styled = label;
+      }
+      parts.push(styled);
+    }
+
+    const tabBar = '  ' + parts.join(' | ');
+    return padToWidth(tabBar, width);
   }
 
   // ─── Input handling ─────────────────────────────────────────────────
@@ -319,15 +326,13 @@ export class AgentLogWidget implements Component {
         const entrySlots = this.getEntrySlots();
         const maxScrollOffset = Math.max(0, this._lastTotalEntryLines - entrySlots);
         this._scrollOffset = Math.min(this._scrollOffset + 1, maxScrollOffset);
-        // FIX M1: scrolling counts as engagement — don't auto-switch away.
-        this._userNavigated = true;
+        this._userPinnedStep = true;
         this.dirty = true;
         return;
       }
       if (matchesKey(data, 'down')) {
         this._scrollOffset = Math.max(0, this._scrollOffset - 1);
-        // FIX M1: scrolling counts as engagement — don't auto-switch away.
-        this._userNavigated = true;
+        this._userPinnedStep = true;
         this.dirty = true;
         return;
       }
@@ -335,57 +340,47 @@ export class AgentLogWidget implements Component {
         const entrySlots = this.getEntrySlots();
         const maxScrollOffset = Math.max(0, this._lastTotalEntryLines - entrySlots);
         this._scrollOffset = Math.min(this._scrollOffset + 10, maxScrollOffset);
-        // FIX M1: scrolling counts as engagement — don't auto-switch away.
-        this._userNavigated = true;
+        this._userPinnedStep = true;
         this.dirty = true;
         return;
       }
       if (matchesKey(data, Key.shift('down'))) {
         this._scrollOffset = Math.max(0, this._scrollOffset - 10);
-        // FIX M1: scrolling counts as engagement — don't auto-switch away.
-        this._userNavigated = true;
+        this._userPinnedStep = true;
         this.dirty = true;
         return;
       }
     }
 
-    // ─── Phase cycling (up/down) ──────────────────────────────
-    if (matchesKey(data, 'up')) {
-      if (this._phases.length === 0) return;
-      this._currentPhaseIndex = this._currentPhaseIndex <= 0 ? this._phases.length - 1 : this._currentPhaseIndex - 1;
-      this._selectedAgentIndex = 0;
+    // ─── Tab/Shift+Tab cycle steps that have agentKey ─────────
+    // Build list of step indices that have agentKey set
+    const agentStepIndices = this._steps.map((s, i) => (s.agentKey !== undefined ? i : -1)).filter((i) => i >= 0);
+
+    if (agentStepIndices.length === 0) return;
+
+    if (matchesKey(data, 'tab')) {
+      // Find next step with agentKey (forward cycle)
+      const currentPos = agentStepIndices.indexOf(this._selectedStepIndex);
+      const nextPos = (currentPos + 1) % agentStepIndices.length;
+      this._selectedStepIndex = agentStepIndices[nextPos];
       this._scrollOffset = 0;
-      this._userNavigated = false;
-      this.dirty = true;
-      return;
-    }
-    if (matchesKey(data, 'down')) {
-      if (this._phases.length === 0) return;
-      this._currentPhaseIndex = this._currentPhaseIndex >= this._phases.length - 1 ? 0 : this._currentPhaseIndex + 1;
-      this._selectedAgentIndex = 0;
-      this._scrollOffset = 0;
-      this._userNavigated = false;
+      this._userPinnedStep = true;
       this.dirty = true;
       return;
     }
 
-    // ─── Agent cycling (left/right) ───────────────────────────
-    const agents = this.getAgentsInCurrentPhase();
-    if (agents.length <= 1) return;
+    if (matchesKey(data, Key.shift('tab'))) {
+      // Find previous step with agentKey (backward cycle)
+      const currentPos = agentStepIndices.indexOf(this._selectedStepIndex);
+      const prevPos = (currentPos - 1 + agentStepIndices.length) % agentStepIndices.length;
+      this._selectedStepIndex = agentStepIndices[prevPos];
+      this._scrollOffset = 0;
+      this._userPinnedStep = true;
+      this.dirty = true;
+      return;
+    }
 
-    if (matchesKey(data, 'left')) {
-      this._selectedAgentIndex = this._selectedAgentIndex <= 0 ? agents.length - 1 : this._selectedAgentIndex - 1;
-      this._scrollOffset = 0;
-      this._userNavigated = true;
-      this.dirty = true;
-      return;
-    }
-    if (matchesKey(data, 'right')) {
-      this._selectedAgentIndex = this._selectedAgentIndex >= agents.length - 1 ? 0 : this._selectedAgentIndex + 1;
-      this._scrollOffset = 0;
-      this._userNavigated = true;
-      this.dirty = true;
-      return;
-    }
+    // NOTE: Up/Down when collapsed are NOT handled here (Dashboard routes to TaskListWidget)
+    // NOTE: Left/Right are NOT handled here (they go to PhaseBar)
   }
 }

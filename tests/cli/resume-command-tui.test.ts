@@ -258,8 +258,8 @@ describe('resumeCommand — TUI/web/QR/pause integration', () => {
       state: {
         seq: 0,
         taskPrompt: '',
-        currentPhase: '',
-        completedPhases: [],
+        currentPhaseId: '',
+        completedPhaseIds: [],
         tasks: {},
         agents: {},
         sidebar: { title: '', indicator: '' },

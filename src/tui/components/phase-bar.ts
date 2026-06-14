@@ -1,19 +1,16 @@
 import { type Component, truncateToWidth } from '@earendil-works/pi-tui';
+import type { PhaseEntity } from '../../tracking/event-types.js';
 import { bold, cyan, dim, green, underline } from '../theme.js';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
-export interface PhaseDescriptor {
-  id: string;
-  label: string;
-  icon: string;
-}
+export type { PhaseEntity };
 
 // ─── PhaseBar Component ─────────────────────────────────────────────────────
 
 export class PhaseBar implements Component {
-  private phases: PhaseDescriptor[] = [];
-  private completedPhases = new Set<string>();
+  private phases: PhaseEntity[] = [];
+  private completedPhaseIds = new Set<string>();
   private currentPhaseId = '';
   private selectedPhaseId: string | null = null;
   private indicator = '';
@@ -21,12 +18,12 @@ export class PhaseBar implements Component {
   private cachedWidth = -1;
   private cachedLines: string[] = [];
 
-  setPhases(phases: PhaseDescriptor[]): void {
+  setPhases(phases: PhaseEntity[]): void {
     this.phases = phases;
     this.dirty = true;
   }
 
-  setCurrentPhase(id: string): void {
+  setCurrentPhaseId(id: string): void {
     this.currentPhaseId = id;
     this.selectedPhaseId = null;
     this.dirty = true;
@@ -37,8 +34,8 @@ export class PhaseBar implements Component {
     this.dirty = true;
   }
 
-  setCompletedPhases(ids: string[]): void {
-    this.completedPhases = new Set(ids);
+  setCompletedPhaseIds(ids: string[]): void {
+    this.completedPhaseIds = new Set(ids);
     this.dirty = true;
   }
 
@@ -49,6 +46,35 @@ export class PhaseBar implements Component {
 
   invalidate(): void {
     this.dirty = true;
+  }
+
+  handleInput(data: string): void {
+    if (this.phases.length === 0) return;
+
+    // Left arrow = \x1b[D, Right arrow = \x1b[C
+    if (data === '\x1b[D') {
+      // Find current index
+      const currentId = this.selectedPhaseId ?? this.currentPhaseId;
+      const idx = this.phases.findIndex((p) => p.id === currentId);
+      if (idx <= 0) {
+        // Wrap to last
+        this.selectedPhaseId = this.phases[this.phases.length - 1].id;
+      } else {
+        this.selectedPhaseId = this.phases[idx - 1].id;
+      }
+      this.dirty = true;
+    } else if (data === '\x1b[C') {
+      // Find current index
+      const currentId = this.selectedPhaseId ?? this.currentPhaseId;
+      const idx = this.phases.findIndex((p) => p.id === currentId);
+      if (idx < 0 || idx >= this.phases.length - 1) {
+        // Wrap to first
+        this.selectedPhaseId = this.phases[0].id;
+      } else {
+        this.selectedPhaseId = this.phases[idx + 1].id;
+      }
+      this.dirty = true;
+    }
   }
 
   render(width: number): string[] {
@@ -69,7 +95,7 @@ export class PhaseBar implements Component {
       const effectiveSelected = this.selectedPhaseId ?? this.currentPhaseId;
       const segments: string[] = [];
       for (const phase of this.phases) {
-        const completed = this.completedPhases.has(phase.id);
+        const completed = this.completedPhaseIds.has(phase.id);
         const running = phase.id === this.currentPhaseId;
         const selected = phase.id === effectiveSelected;
         const marker = completed ? green('✓') : running ? cyan('●') : dim('·');

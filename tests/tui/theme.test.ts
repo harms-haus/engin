@@ -65,11 +65,10 @@ describe('ANSI style functions', () => {
 
 describe('statusColor', () => {
   const cases: [TaskStatus, string][] = [
-    ['done', '\x1b[32mX\x1b[0m'],
+    ['active', '\x1b[33mX\x1b[0m'],
+    ['complete', '\x1b[32mX\x1b[0m'],
     ['failed', '\x1b[31mX\x1b[0m'],
-    ['implementing', '\x1b[33mX\x1b[0m'],
-    ['reviewing', '\x1b[35mX\x1b[0m'],
-    ['claimed', '\x1b[34mX\x1b[0m'],
+    ['cancelled', '\x1b[2mX\x1b[0m'],
     ['ready', '\x1b[36mX\x1b[0m'],
     ['blocked', '\x1b[38;5;131mX\x1b[0m'],
   ];
@@ -79,7 +78,7 @@ describe('statusColor', () => {
   });
 
   it('returns a function', () => {
-    const fn = statusColor('done');
+    const fn = statusColor('active');
     expect(typeof fn).toBe('function');
   });
 });
@@ -105,13 +104,12 @@ describe('formatElapsed', () => {
 
 describe('statusIcon', () => {
   const cases: [TaskStatus, string][] = [
-    ['done', '✓'],
+    ['active', '▶'],
+    ['complete', '✓'],
     ['failed', '✗'],
-    ['implementing', '⟳'],
-    ['reviewing', '◎'],
-    ['claimed', '→'],
+    ['cancelled', '⊘'],
     ['ready', '○'],
-    ['blocked', '⊘'],
+    ['blocked', '·'],
   ];
 
   it.each(cases)('statusIcon(%s) returns %s', (status, expected) => {

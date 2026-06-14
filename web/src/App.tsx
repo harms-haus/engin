@@ -1,8 +1,8 @@
 import './App.css';
 import { AgentLog } from './components/AgentLog';
 import { EventLog } from './components/EventLog';
-import { LanePool } from './components/LanePool';
 import { PhaseBar } from './components/PhaseBar';
+import { TaskList } from './components/TaskList';
 import { useWebSocket } from './hooks/useWebSocket';
 import { useError, useFailedPhase, useStatus } from './store/workflow-store';
 
@@ -42,7 +42,7 @@ export function App() {
 
       <EventLog />
       <PhaseBar />
-      <LanePool />
+      <TaskList />
       <AgentLog />
     </div>
   );

@@ -55,8 +55,9 @@ function seedEmptySnapshot(): void {
     {
       seq: 1,
       taskPrompt: '',
-      currentPhase: '',
-      completedPhases: [],
+      phases: [],
+      currentPhaseId: '',
+      completedPhaseIds: [],
       tasks: {},
       agents: {},
       sidebar: { title: '', indicator: '' },
@@ -93,8 +94,9 @@ function resetStore(): void {
   useWorkflowStore.setState({
     agentsById: {},
     tasksById: {},
-    currentPhase: '',
-    completedPhases: [],
+    phases: [],
+    currentPhaseId: '',
+    completedPhaseIds: [],
     sidebar: { title: '', indicator: '' },
     status: 'running',
     taskPrompt: '',
@@ -103,6 +105,11 @@ function resetStore(): void {
     seq: 0,
     stats: { totalTokens: 0, agentCount: 0 },
     workflowEventLog: [],
+    selectedPhaseId: null,
+    selectedTaskId: null,
+    selectedStepIndex: null,
+    userPinnedPhase: false,
+    userPinnedStep: false,
   });
 }
 
@@ -136,7 +143,7 @@ describe('EventLog – workflow-level event rendering', () => {
   });
 
   it('renders error with emoji line', () => {
-    pushEventsAct([mkEvent(1, 'error', { error: 'crash' }, { agentId: 'a1', phase: 'planning' })]);
+    pushEventsAct([mkEvent(1, 'error', { error: 'crash' }, { agentId: 'a1', phaseId: 'planning' })]);
 
     const { container } = render(<EventLog />);
     expect(container.textContent).toContain('⚠️ Error in a1: crash (planning)');

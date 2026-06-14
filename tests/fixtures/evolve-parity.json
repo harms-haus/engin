@@ -44,7 +44,7 @@
           "timestamp": "2025-01-01T00:00:00.000Z",
           "agentId": "a1",
           "taskId": "t1",
-          "phase": "impl"
+          "phaseId": "impl"
         }
       }
     ],
@@ -59,7 +59,7 @@
           "uid": "a1::t1",
           "agentId": "a1",
           "profile": "coder",
-          "phase": "impl",
+          "phaseId": "impl",
           "taskId": "t1",
           "sessionId": "s1",
           "sessionPath": "/s1",
@@ -6408,7 +6408,7 @@
     }
   },
   {
-    "name": "task lifecycle: started → step_started → completed transitions status correctly",
+    "name": "task lifecycle: registered \u2192 started \u2192 step_started \u2192 completed transitions status correctly",
     "events": [
       {
         "seq": 1,
@@ -6422,15 +6422,11 @@
       },
       {
         "seq": 2,
-        "type": "tasks_added",
+        "type": "phase_registered",
         "data": {
-          "tasks": [
-            {
-              "id": "t1",
-              "title": "Auth handler",
-              "status": "ready"
-            }
-          ]
+          "id": "p1",
+          "label": "Phase 1",
+          "icon": ""
         },
         "metadata": {
           "timestamp": "2025-01-01T00:00:00.000Z"
@@ -6438,6 +6434,26 @@
       },
       {
         "seq": 3,
+        "type": "task_registered",
+        "data": {
+          "taskId": "t1",
+          "title": "Auth handler",
+          "phaseId": "p1",
+          "steps": [
+            {
+              "name": "review",
+              "profileId": "reviewer",
+              "isReadOnly": true
+            }
+          ],
+          "dependencies": []
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z"
+        }
+      },
+      {
+        "seq": 4,
         "type": "task_started",
         "data": {
           "taskId": "t1",
@@ -6451,19 +6467,34 @@
         }
       },
       {
-        "seq": 4,
-        "type": "task_step_started",
+        "seq": 5,
+        "type": "agent_spawned",
+        "data": {
+          "profile": "reviewer"
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1",
+          "taskId": "t1",
+          "phaseId": "p1"
+        }
+      },
+      {
+        "seq": 6,
+        "type": "step_started",
         "data": {
           "taskId": "t1",
+          "stepIndex": 0,
           "stepName": "review"
         },
         "metadata": {
           "timestamp": "2025-01-01T00:00:00.000Z",
-          "taskId": "t1"
+          "taskId": "t1",
+          "agentId": "a1"
         }
       },
       {
-        "seq": 5,
+        "seq": 7,
         "type": "task_completed",
         "data": {
           "taskId": "t1"
@@ -6475,15 +6506,21 @@
       }
     ],
     "expect": {
-      "seq": 5,
+      "seq": 7,
       "tasks": {
         "t1": {
           "id": "t1",
           "title": "Auth handler",
-          "status": "done",
-          "agentId": "a1",
+          "status": "complete",
+          "phaseId": "p1",
           "startedAt": 1000,
-          "completedAt": "2025-01-01"
+          "completedAt": "2025-01-01",
+          "activeStepIndex": 0,
+          "steps": [
+            {
+              "agentKey": "a1::t1"
+            }
+          ]
         }
       }
     }
@@ -6503,15 +6540,11 @@
       },
       {
         "seq": 2,
-        "type": "tasks_added",
+        "type": "phase_registered",
         "data": {
-          "tasks": [
-            {
-              "id": "t1",
-              "title": "T",
-              "status": "ready"
-            }
-          ]
+          "id": "p1",
+          "label": "Phase 1",
+          "icon": ""
         },
         "metadata": {
           "timestamp": "2025-01-01T00:00:00.000Z"
@@ -6519,6 +6552,20 @@
       },
       {
         "seq": 3,
+        "type": "task_registered",
+        "data": {
+          "taskId": "t1",
+          "title": "T",
+          "phaseId": "p1",
+          "steps": [],
+          "dependencies": []
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z"
+        }
+      },
+      {
+        "seq": 4,
         "type": "task_started",
         "data": {
           "taskId": "t1",
@@ -6531,7 +6578,7 @@
         }
       },
       {
-        "seq": 4,
+        "seq": 5,
         "type": "task_rejected",
         "data": {
           "taskId": "t1",
@@ -6544,7 +6591,7 @@
       }
     ],
     "expect": {
-      "seq": 4,
+      "seq": 5,
       "tasks": {
         "t1": {
           "status": "failed"
@@ -6553,7 +6600,7 @@
     }
   },
   {
-    "name": "tasks_added does not overwrite existing tasks",
+    "name": "task_registered creates entity with steps and updates phase taskIds",
     "events": [
       {
         "seq": 1,
@@ -6567,15 +6614,11 @@
       },
       {
         "seq": 2,
-        "type": "tasks_added",
+        "type": "phase_registered",
         "data": {
-          "tasks": [
-            {
-              "id": "t1",
-              "title": "Original",
-              "status": "ready"
-            }
-          ]
+          "id": "p1",
+          "label": "Phase 1",
+          "icon": "\ud83d\ude80"
         },
         "metadata": {
           "timestamp": "2025-01-01T00:00:00.000Z"
@@ -6583,15 +6626,50 @@
       },
       {
         "seq": 3,
-        "type": "tasks_added",
+        "type": "phase_registered",
         "data": {
-          "tasks": [
+          "id": "p2",
+          "label": "Phase 2",
+          "icon": "\ud83d\udd27"
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z"
+        }
+      },
+      {
+        "seq": 4,
+        "type": "task_registered",
+        "data": {
+          "taskId": "t1",
+          "title": "Task 1",
+          "phaseId": "p1",
+          "steps": [
             {
-              "id": "t1",
-              "title": "Overwrite?",
-              "status": "done"
+              "name": "analyze",
+              "profileId": "scout",
+              "isReadOnly": true
+            },
+            {
+              "name": "implement",
+              "profileId": "coder",
+              "isReadOnly": false
             }
-          ]
+          ],
+          "dependencies": []
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z"
+        }
+      },
+      {
+        "seq": 5,
+        "type": "task_registered",
+        "data": {
+          "taskId": "t2",
+          "title": "Task 2",
+          "phaseId": "p1",
+          "steps": [],
+          "dependencies": []
         },
         "metadata": {
           "timestamp": "2025-01-01T00:00:00.000Z"
@@ -6599,17 +6677,110 @@
       }
     ],
     "expect": {
-      "seq": 3,
+      "seq": 5,
       "tasks": {
         "t1": {
-          "title": "Original",
-          "status": "ready"
+          "id": "t1",
+          "title": "Task 1",
+          "status": "ready",
+          "phaseId": "p1",
+          "steps": {
+            "length": 2
+          },
+          "dependencies": []
+        },
+        "t2": {
+          "id": "t2",
+          "title": "Task 2",
+          "status": "ready",
+          "phaseId": "p1",
+          "steps": {
+            "length": 0
+          },
+          "dependencies": []
         }
+      },
+      "phases": {
+        "length": 2
       }
     }
   },
   {
-    "name": "sidebar_updated patches title, indicator, and phases",
+    "name": "phase_registered builds phases array in insertion order",
+    "events": [
+      {
+        "seq": 1,
+        "type": "workflow_started",
+        "data": {
+          "taskPrompt": "x"
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z"
+        }
+      },
+      {
+        "seq": 2,
+        "type": "phase_registered",
+        "data": {
+          "id": "scouting",
+          "label": "Scouting",
+          "icon": "\ud83d\udd0d"
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z"
+        }
+      },
+      {
+        "seq": 3,
+        "type": "phase_registered",
+        "data": {
+          "id": "planning",
+          "label": "Planning",
+          "icon": "\ud83d\udccb"
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z"
+        }
+      },
+      {
+        "seq": 4,
+        "type": "phase_registered",
+        "data": {
+          "id": "implementing",
+          "label": "Implementing",
+          "icon": "\ud83d\udd27"
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z"
+        }
+      }
+    ],
+    "expect": {
+      "seq": 4,
+      "phases": [
+        {
+          "id": "scouting",
+          "label": "Scouting",
+          "icon": "\ud83d\udd0d",
+          "taskIds": []
+        },
+        {
+          "id": "planning",
+          "label": "Planning",
+          "icon": "\ud83d\udccb",
+          "taskIds": []
+        },
+        {
+          "id": "implementing",
+          "label": "Implementing",
+          "icon": "\ud83d\udd27",
+          "taskIds": []
+        }
+      ]
+    }
+  },
+  {
+    "name": "sidebar_updated patches title and indicator (no phases)",
     "events": [
       {
         "seq": 1,
@@ -6626,14 +6797,7 @@
         "type": "sidebar_updated",
         "data": {
           "title": "My Workflow",
-          "indicator": "Building…",
-          "phases": [
-            {
-              "id": "p1",
-              "label": "Phase 1",
-              "icon": "🚀"
-            }
-          ]
+          "indicator": "Building\u2026"
         },
         "metadata": {
           "timestamp": "2025-01-01T00:00:00.000Z"
@@ -6644,14 +6808,7 @@
       "seq": 2,
       "sidebar": {
         "title": "My Workflow",
-        "indicator": "Building…",
-        "phases": [
-          {
-            "id": "p1",
-            "label": "Phase 1",
-            "icon": "🚀"
-          }
-        ]
+        "indicator": "Building\u2026"
       }
     }
   },
@@ -6706,7 +6863,7 @@
         },
         "metadata": {
           "timestamp": "2025-01-01T00:00:00.000Z",
-          "phase": "implementing"
+          "phaseId": "implementing"
         }
       },
       {
@@ -6714,7 +6871,7 @@
         "type": "workflow_failed",
         "data": {
           "error": "Kaboom",
-          "phase": "implementing"
+          "phaseId": "implementing"
         },
         "metadata": {
           "timestamp": "2025-01-01T00:00:00.000Z"
@@ -6729,7 +6886,7 @@
     }
   },
   {
-    "name": "phase lifecycle: currentPhase tracks latest, completedPhases accumulates",
+    "name": "phase lifecycle: currentPhaseId tracks latest, completedPhaseIds accumulates",
     "events": [
       {
         "seq": 1,
@@ -6750,7 +6907,7 @@
         },
         "metadata": {
           "timestamp": "2025-01-01T00:00:00.000Z",
-          "phase": "scouting"
+          "phaseId": "scouting"
         }
       },
       {
@@ -6762,7 +6919,7 @@
         },
         "metadata": {
           "timestamp": "2025-01-01T00:00:00.000Z",
-          "phase": "scouting"
+          "phaseId": "scouting"
         }
       },
       {
@@ -6774,7 +6931,7 @@
         },
         "metadata": {
           "timestamp": "2025-01-01T00:00:00.000Z",
-          "phase": "planning"
+          "phaseId": "planning"
         }
       },
       {
@@ -6786,14 +6943,14 @@
         },
         "metadata": {
           "timestamp": "2025-01-01T00:00:00.000Z",
-          "phase": "planning"
+          "phaseId": "planning"
         }
       }
     ],
     "expect": {
       "seq": 5,
-      "currentPhase": "planning",
-      "completedPhases": ["scouting", "planning"]
+      "currentPhaseId": "planning",
+      "completedPhaseIds": ["scouting", "planning"]
     }
   },
   {

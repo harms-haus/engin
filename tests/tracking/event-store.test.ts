@@ -37,10 +37,10 @@ describe('EventStore', () => {
 
     it('includes optional metadata', () => {
       const store = new EventStore(dir);
-      const rec = store.append('decision', { decision: 'use X' }, { agentId: 'a1', taskId: 't1', phase: 'impl' });
+      const rec = store.append('decision', { decision: 'use X' }, { agentId: 'a1', taskId: 't1', phaseId: 'impl' });
       expect(rec.metadata.agentId).toBe('a1');
       expect(rec.metadata.taskId).toBe('t1');
-      expect(rec.metadata.phase).toBe('impl');
+      expect(rec.metadata.phaseId).toBe('impl');
     });
 
     it('appends a JSONL line to events.jsonl', async () => {
@@ -367,8 +367,8 @@ describe('EventStore', () => {
       // Load should restore from snapshot + replay seq 3, 4
       const store2 = await EventStore.load(dir);
       expect(store2.getProjection().taskPrompt).toBe('original');
-      expect(store2.getProjection().currentPhase).toBe('planning');
-      expect(store2.getProjection().completedPhases).toEqual(['scouting']);
+      expect(store2.getProjection().currentPhaseId).toBe('planning');
+      expect(store2.getProjection().completedPhaseIds).toEqual(['scouting']);
       expect(store2.getProjection().seq).toBe(4);
     });
 
@@ -406,7 +406,7 @@ describe('EventStore', () => {
 
       const store = await EventStore.load(dir);
       expect(store.getProjection().taskPrompt).toBe('from file');
-      expect(store.getProjection().currentPhase).toBe('impl');
+      expect(store.getProjection().currentPhaseId).toBe('impl');
       expect(store.getProjection().seq).toBe(2);
     });
 
@@ -443,8 +443,8 @@ describe('EventStore', () => {
       const store2 = await EventStore.load(dir);
       const proj = store2.getProjection();
       expect(proj.taskPrompt).toBe('Build feature X');
-      expect(proj.currentPhase).toBe('implementing');
-      expect(proj.completedPhases).toEqual(['scouting']);
+      expect(proj.currentPhaseId).toBe('implementing');
+      expect(proj.completedPhaseIds).toEqual(['scouting']);
       expect(proj.seq).toBe(4);
     });
 

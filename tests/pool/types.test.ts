@@ -66,9 +66,7 @@ describe('getStepsForTask with TaskTracker', () => {
     expect(steps[0].profileId).toBe('coder');
 
     // Complete t1 so t2 becomes ready
-    tracker.claimTasks(1);
-    tracker.startTask('t1', 'agent-1');
-    tracker.submitForReview('t1', { schema: 'created' });
+    tracker.claimTasks(1, 'agent-1');
     tracker.completeTask('t1');
 
     const task2Updated = tracker.getTask('t2')!;
@@ -102,9 +100,7 @@ describe('getStepsForTask with TaskTracker', () => {
     expect(stepsA[0].name).toBe('scout');
 
     // Complete 'a' through the full lifecycle
-    tracker.claimTasks(1);
-    tracker.startTask('a', 'agent-x');
-    tracker.submitForReview('a', { report: 'done' });
+    tracker.claimTasks(1, 'agent-x');
     tracker.completeTask('a');
 
     // Now b and c should be ready
@@ -123,31 +119,16 @@ describe('getStepsForTask with TaskTracker', () => {
 // ─── TaskTracker failed status and reset ────────────────────────────────────
 
 describe('TaskTracker failed status and reset', () => {
-  it('failTask transitions implementing → failed', () => {
+  it('failTask transitions active → failed', () => {
     const tracker = new TaskTracker();
     tracker.addTask({ id: 't1', title: 'T1', prompt: 'Do it', profile: 'coder', files: [], dependencies: [] });
-    tracker.claimTasks(1);
-    tracker.startTask('t1', 'agent-1');
+    tracker.claimTasks(1, 'agent-1');
 
     tracker.failTask('t1', { error: 'timeout' });
 
     const task = tracker.getTask('t1')!;
     expect(task.status).toBe('failed');
     expect(task.result).toEqual({ error: 'timeout' });
-  });
-
-  it('failTask transitions reviewing → failed', () => {
-    const tracker = new TaskTracker();
-    tracker.addTask({ id: 't1', title: 'T1', prompt: 'Do it', profile: 'coder', files: [], dependencies: [] });
-    tracker.claimTasks(1);
-    tracker.startTask('t1', 'agent-1');
-    tracker.submitForReview('t1', { output: 'done' });
-
-    tracker.failTask('t1', 'review error');
-
-    const task = tracker.getTask('t1')!;
-    expect(task.status).toBe('failed');
-    expect(task.result).toBe('review error');
   });
 
   it('failTask throws on invalid status', () => {
@@ -161,8 +142,7 @@ describe('TaskTracker failed status and reset', () => {
   it('resetFailedTasks resets failed tasks to ready', () => {
     const tracker = new TaskTracker();
     tracker.addTask({ id: 't1', title: 'T1', prompt: 'Do it', profile: 'coder', files: [], dependencies: [] });
-    tracker.claimTasks(1);
-    tracker.startTask('t1', 'agent-1');
+    tracker.claimTasks(1, 'agent-1');
     tracker.failTask('t1', 'oops');
 
     expect(tracker.getTask('t1')!.status).toBe('failed');
@@ -175,35 +155,32 @@ describe('TaskTracker failed status and reset', () => {
     expect(task.result).toBeUndefined();
   });
 
-  it('resetFailedTasks does not touch done tasks', () => {
+  it('resetFailedTasks does not touch complete tasks', () => {
     const tracker = new TaskTracker();
     tracker.addTask({ id: 't1', title: 'T1', prompt: 'Do it', profile: 'coder', files: [], dependencies: [] });
     tracker.addTask({ id: 't2', title: 'T2', prompt: 'Do it too', profile: 'coder', files: [], dependencies: [] });
 
     // Complete t1
-    tracker.claimTasks(1);
-    tracker.startTask('t1', 'agent-1');
-    tracker.submitForReview('t1', { ok: true });
+    tracker.claimTasks(1, 'agent-1');
     tracker.completeTask('t1');
 
     // Fail t2
-    const t2Claimed = tracker.claimTasks(1);
+    const t2Claimed = tracker.claimTasks(1, 'agent-2');
     expect(t2Claimed).toHaveLength(1);
-    tracker.startTask('t2', 'agent-2');
     tracker.failTask('t2', 'error');
 
     tracker.resetFailedTasks();
 
-    expect(tracker.getTask('t1')!.status).toBe('done');
+    expect(tracker.getTask('t1')!.status).toBe('complete');
     expect(tracker.getTask('t2')!.status).toBe('ready');
   });
 
-  it('resetStuckTasks resets claimed tasks', () => {
+  it('resetStuckTasks resets active tasks to ready', () => {
     const tracker = new TaskTracker();
     tracker.addTask({ id: 't1', title: 'T1', prompt: 'Do it', profile: 'coder', files: [], dependencies: [] });
-    tracker.claimTasks(1);
+    tracker.claimTasks(1, 'agent-1');
 
-    expect(tracker.getTask('t1')!.status).toBe('claimed');
+    expect(tracker.getTask('t1')!.status).toBe('active');
 
     tracker.resetStuckTasks();
 
@@ -211,38 +188,7 @@ describe('TaskTracker failed status and reset', () => {
     expect(tracker.getTask('t1')!.assignedAgent).toBeUndefined();
   });
 
-  it('resetStuckTasks resets implementing tasks', () => {
-    const tracker = new TaskTracker();
-    tracker.addTask({ id: 't1', title: 'T1', prompt: 'Do it', profile: 'coder', files: [], dependencies: [] });
-    tracker.claimTasks(1);
-    tracker.startTask('t1', 'agent-1');
-
-    expect(tracker.getTask('t1')!.status).toBe('implementing');
-
-    tracker.resetStuckTasks();
-
-    expect(tracker.getTask('t1')!.status).toBe('ready');
-    expect(tracker.getTask('t1')!.assignedAgent).toBeUndefined();
-  });
-
-  it('resetStuckTasks resets reviewing tasks', () => {
-    const tracker = new TaskTracker();
-    tracker.addTask({ id: 't1', title: 'T1', prompt: 'Do it', profile: 'coder', files: [], dependencies: [] });
-    tracker.claimTasks(1);
-    tracker.startTask('t1', 'agent-1');
-    tracker.submitForReview('t1', { output: 'implementation' });
-
-    expect(tracker.getTask('t1')!.status).toBe('reviewing');
-    expect(tracker.getTask('t1')!.result).toBeDefined();
-
-    tracker.resetStuckTasks();
-
-    expect(tracker.getTask('t1')!.status).toBe('ready');
-    expect(tracker.getTask('t1')!.assignedAgent).toBeUndefined();
-    expect(tracker.getTask('t1')!.result).toBeUndefined();
-  });
-
-  it('resetStuckTasks does not touch ready/done/failed tasks', () => {
+  it('resetStuckTasks does not touch ready/complete/failed tasks', () => {
     const tracker = new TaskTracker();
     tracker.addTask({ id: 'ready1', title: 'R', prompt: '...', profile: 'coder', files: [], dependencies: [] });
     tracker.addTask({ id: 'done1', title: 'D', prompt: '...', profile: 'coder', files: [], dependencies: [] });
@@ -257,16 +203,13 @@ describe('TaskTracker failed status and reset', () => {
     });
 
     // Complete done1 so blocked1 stays blocked
-    tracker.claimTasks(1);
-    tracker.startTask('done1', 'agent-1');
-    tracker.submitForReview('done1', null);
+    tracker.claimTasks(1, 'agent-1');
     tracker.completeTask('done1');
 
     // Claim and fail failed1
-    const claimed = tracker.claimTasks(1);
+    const claimed = tracker.claimTasks(1, 'agent-2');
     const failedTask = claimed.find((t) => t.id === 'failed1');
     if (failedTask) {
-      tracker.startTask('failed1', 'agent-2');
       tracker.failTask('failed1', 'err');
     }
 
@@ -279,7 +222,7 @@ describe('TaskTracker failed status and reset', () => {
 
     tracker.resetStuckTasks();
 
-    // Only claimed/implementing would change — none of these are in those states
+    // Only active tasks would change — none of these are active
     expect(tracker.getTask('ready1')!.status).toBe(statusesBefore.ready1);
     expect(tracker.getTask('done1')!.status).toBe(statusesBefore.done1);
     expect(tracker.getTask('failed1')!.status).toBe(statusesBefore.failed1);
@@ -293,26 +236,20 @@ describe('TaskTracker failed status and reset', () => {
     tracker.addTask({ id: 'fail1', title: 'F', prompt: '...', profile: 'coder', files: [], dependencies: [] });
 
     // Complete done1
-    tracker.claimTasks(1);
-    tracker.startTask('done1', 'agent-1');
-    tracker.submitForReview('done1', null);
+    tracker.claimTasks(1, 'agent-1');
     tracker.completeTask('done1');
 
-    // Claim both remaining tasks (alphabetical: fail1, impl1)
-    tracker.claimTasks(2);
+    // Claim both remaining tasks
+    tracker.claimTasks(2, 'agent-2');
 
-    // Start impl1 (stuck at implementing)
-    tracker.startTask('impl1', 'agent-2');
-
-    // Start fail1, then fail it
-    tracker.startTask('fail1', 'agent-3');
+    // Fail fail1
     tracker.failTask('fail1', 'crashed');
 
     // Serialize and deserialize
     const json = tracker.toJSON();
     const restored = TaskTracker.fromJSON(json);
 
-    expect(restored.getTask('done1')!.status).toBe('done');
+    expect(restored.getTask('done1')!.status).toBe('complete');
     expect(restored.getTask('impl1')!.status).toBe('ready');
     expect(restored.getTask('impl1')!.assignedAgent).toBeUndefined();
     expect(restored.getTask('fail1')!.status).toBe('ready');
@@ -320,22 +257,19 @@ describe('TaskTracker failed status and reset', () => {
     expect(restored.getTask('fail1')!.result).toBeUndefined();
   });
 
-  it('isPoolDone returns true when all are done or failed', () => {
+  it('isPoolDone returns true when all are complete or failed', () => {
     const tracker = new TaskTracker();
     tracker.addTask({ id: 't1', title: 'T1', prompt: '...', profile: 'coder', files: [], dependencies: [] });
     tracker.addTask({ id: 't2', title: 'T2', prompt: '...', profile: 'coder', files: [], dependencies: [] });
 
     // Complete t1
-    tracker.claimTasks(1);
-    tracker.startTask('t1', 'agent-1');
-    tracker.submitForReview('t1', null);
+    tracker.claimTasks(1, 'agent-1');
     tracker.completeTask('t1');
 
     // Fail t2
-    const claimed = tracker.claimTasks(1);
+    const claimed = tracker.claimTasks(1, 'agent-2');
     const failTask = claimed.find((t) => t.id === 't2');
     if (failTask) {
-      tracker.startTask('t2', 'agent-2');
       tracker.failTask('t2', 'oops');
     }
 
@@ -348,16 +282,13 @@ describe('TaskTracker failed status and reset', () => {
     tracker.addTask({ id: 't2', title: 'T2', prompt: '...', profile: 'coder', files: [], dependencies: [] });
 
     // Complete t1
-    tracker.claimTasks(1);
-    tracker.startTask('t1', 'agent-1');
-    tracker.submitForReview('t1', null);
+    tracker.claimTasks(1, 'agent-1');
     tracker.completeTask('t1');
 
     // Fail t2
-    const claimed = tracker.claimTasks(1);
+    const claimed = tracker.claimTasks(1, 'agent-2');
     const failTask = claimed.find((t) => t.id === 't2');
     if (failTask) {
-      tracker.startTask('t2', 'agent-2');
       tracker.failTask('t2', 'oops');
     }
 
@@ -373,8 +304,7 @@ describe('TaskTracker failed status and reset', () => {
     expect(tracker.getTask('b')!.status).toBe('blocked');
 
     // Claim and fail a
-    tracker.claimTasks(1);
-    tracker.startTask('a', 'agent-1');
+    tracker.claimTasks(1, 'agent-1');
     tracker.failTask('a', 'failed but ok for deps');
 
     // After failTask, recalculateStatuses should unblock b

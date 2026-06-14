@@ -59,8 +59,8 @@ describe('StatusBridge', () => {
       expect(snapshot.state).toBe(storeSnap.state);
       expect(snapshot.seq).toBe(0);
       expect(snapshot.state.status).toBe('running');
-      expect(snapshot.state.currentPhase).toBe('');
-      expect(snapshot.state.completedPhases).toEqual([]);
+      expect(snapshot.state.currentPhaseId).toBe('');
+      expect(snapshot.state.completedPhaseIds).toEqual([]);
       expect(snapshot.state.tasks).toEqual({});
       expect(snapshot.state.agents).toEqual({});
       expect(snapshot.state.sidebar).toEqual({ title: '', indicator: '' });
@@ -76,15 +76,19 @@ describe('StatusBridge', () => {
 
     it('reflects phase state', () => {
       const { store, bridge } = createSetup();
-      store.append('phase_started', { phase: 'scouting', round: 1 }, { phase: 'scouting' });
+      store.append('phase_started', { phaseId: 'scouting', round: 1 }, { phaseId: 'scouting' });
       const snapshot = bridge.getSnapshot();
-      expect(snapshot.state.currentPhase).toBe('scouting');
+      expect(snapshot.state.currentPhaseId).toBe('scouting');
     });
 
     it('reflects tasks', () => {
       const { store, bridge } = createSetup();
-      store.append('tasks_added', {
-        tasks: [{ id: 't1', title: 'Task 1', status: 'ready', dependencies: [] }],
+      store.append('task_registered', {
+        taskId: 't1',
+        phaseId: 'p1',
+        title: 'Task 1',
+        dependencies: [],
+        steps: [],
       });
       const snapshot = bridge.getSnapshot();
       expect(Object.keys(snapshot.state.tasks)).toHaveLength(1);
@@ -93,7 +97,7 @@ describe('StatusBridge', () => {
 
     it('reflects agents', () => {
       const { store, bridge } = createSetup();
-      store.append('agent_spawned', { agentId: 'a1', profile: 'scout' }, { agentId: 'a1', phase: 'scouting' });
+      store.append('agent_spawned', { agentId: 'a1', profile: 'scout' }, { agentId: 'a1', phaseId: 'scouting' });
       const snapshot = bridge.getSnapshot();
       const agentKeys = Object.keys(snapshot.state.agents);
       expect(agentKeys).toHaveLength(1);
@@ -112,11 +116,11 @@ describe('StatusBridge', () => {
     it('always returns the latest state', () => {
       const { store, bridge } = createSetup();
       store.append('workflow_started', { taskPrompt: 'step 1' });
-      store.append('phase_started', { phase: 'a', round: 1 }, { phase: 'a' });
-      store.append('phase_completed', { phase: 'a', durationMs: 100 }, { phase: 'a' });
+      store.append('phase_started', { phaseId: 'a', round: 1 }, { phaseId: 'a' });
+      store.append('phase_completed', { phaseId: 'a', durationMs: 100 }, { phaseId: 'a' });
       const snapshot = bridge.getSnapshot();
-      expect(snapshot.state.currentPhase).toBe('a');
-      expect(snapshot.state.completedPhases).toEqual(['a']);
+      expect(snapshot.state.currentPhaseId).toBe('a');
+      expect(snapshot.state.completedPhaseIds).toEqual(['a']);
       expect(snapshot.seq).toBe(3);
     });
   });
@@ -157,14 +161,14 @@ describe('StatusBridge', () => {
 
     it('forwards raw EventRecords with correct seq', async () => {
       const { store, msgs, flushMicrotasks } = createSetup();
-      store.append('phase_started', { phase: 'scouting', round: 1 }, { phase: 'scouting' });
+      store.append('phase_started', { phaseId: 'scouting', round: 1 }, { phaseId: 'scouting' });
       await flushMicrotasks();
 
       const events = msgs('events');
       expect(events).toHaveLength(1);
       expect(events[0].events[0].seq).toBe(1);
       expect(events[0].events[0].type).toBe('phase_started');
-      expect(events[0].events[0].metadata.phase).toBe('scouting');
+      expect(events[0].events[0].metadata.phaseId).toBe('scouting');
     });
 
     it('includes all event types in the batch', async () => {
@@ -186,7 +190,7 @@ describe('StatusBridge', () => {
       const { store, msgs, flushMicrotasks } = createSetup();
       store.append('workflow_started', { taskPrompt: 'a' });
       store.append('sidebar_updated', { title: 'b' });
-      store.append('phase_started', { phase: 'c', round: 1 }, { phase: 'c' });
+      store.append('phase_started', { phaseId: 'c', round: 1 }, { phaseId: 'c' });
       await flushMicrotasks();
 
       const events = msgs('events');
@@ -204,7 +208,7 @@ describe('StatusBridge', () => {
       // Synchronous appends — should produce only one flush
       store.append('workflow_started', { taskPrompt: 'a' });
       store.append('sidebar_updated', { title: 'b' });
-      store.append('phase_started', { phase: 'c', round: 1 }, { phase: 'c' });
+      store.append('phase_started', { phaseId: 'c', round: 1 }, { phaseId: 'c' });
 
       await flushMicrotasks();
 
@@ -289,12 +293,12 @@ describe('StatusBridge', () => {
     it('getSnapshot returns full state including pre-bridge events', () => {
       const store = new EventStore('/tmp/bridge-late3-' + Math.random().toString(36).slice(2));
       store.append('workflow_started', { taskPrompt: 'history' });
-      store.append('phase_started', { phase: 'a', round: 1 }, { phase: 'a' });
+      store.append('phase_started', { phaseId: 'a', round: 1 }, { phaseId: 'a' });
 
       const bridge = new StatusBridge(() => {}, store);
       const snapshot = bridge.getSnapshot();
       expect(snapshot.state.taskPrompt).toBe('history');
-      expect(snapshot.state.currentPhase).toBe('a');
+      expect(snapshot.state.currentPhaseId).toBe('a');
       expect(snapshot.seq).toBe(2);
       bridge.dispose();
     });
@@ -307,7 +311,7 @@ describe('StatusBridge', () => {
       const { store, bridge } = createSetup();
       store.append('workflow_started', { taskPrompt: 'a' }); // seq 1
       store.append('sidebar_updated', { title: 'b' }); // seq 2
-      store.append('phase_started', { phase: 'c', round: 1 }, { phase: 'c' }); // seq 3
+      store.append('phase_started', { phaseId: 'c', round: 1 }, { phaseId: 'c' }); // seq 3
 
       const msg = bridge.handleResync(1);
       expect(msg.type).toBe('events');
@@ -436,12 +440,16 @@ describe('StatusBridge', () => {
       // Exercise many event types that used to map to old per-event WS
       // messages.  All of them should now travel inside an events batch.
       store.append('workflow_started', { taskPrompt: 'x' });
-      store.append('phase_started', { phase: 'scouting', round: 1 }, { phase: 'scouting' });
-      store.append('tasks_added', {
-        tasks: [{ id: 't1', title: 'Task 1', status: 'ready', dependencies: [] }],
+      store.append('phase_started', { phaseId: 'scouting', round: 1 }, { phaseId: 'scouting' });
+      store.append('task_registered', {
+        taskId: 't1',
+        phaseId: 'p1',
+        title: 'Task 1',
+        dependencies: [],
+        steps: [],
       });
       store.append('sidebar_updated', { title: 'T', indicator: '🟢' });
-      store.append('agent_spawned', { agentId: 'a1', profile: 'scout' }, { agentId: 'a1', phase: 'scouting' });
+      store.append('agent_spawned', { agentId: 'a1', profile: 'scout' }, { agentId: 'a1', phaseId: 'scouting' });
       store.append(
         'turn_ended',
         {

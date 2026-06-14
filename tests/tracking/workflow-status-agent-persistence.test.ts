@@ -24,7 +24,7 @@ describe('WorkflowStatusTracker – agent persistence', () => {
 
     it('spawnedAgents getter returns a copy', () => {
       const agents = tracker.spawnedAgents;
-      agents.push({ agentId: 'fake', profile: 'p', phase: 'scouting' });
+      agents.push({ agentId: 'fake', profile: 'p', phaseId: 'scouting' });
       expect(tracker.spawnedAgents).toEqual([]);
     });
   });
@@ -39,9 +39,10 @@ describe('WorkflowStatusTracker – agent persistence', () => {
       expect(agents).toHaveLength(1);
       expect(agents[0].agentId).toBe('agent-1');
       expect(agents[0].profile).toBe('coder');
-      expect(agents[0].phase).toBe('scouting');
+      expect(agents[0].phaseId).toBe('scouting');
       expect(agents[0].completedAt).toBeUndefined();
       expect(agents[0].taskId).toBeUndefined();
+      expect(agents[0].stepIndex).toBeUndefined();
     });
 
     it('stores taskId when provided', () => {
@@ -49,6 +50,26 @@ describe('WorkflowStatusTracker – agent persistence', () => {
 
       const agents = tracker.spawnedAgents;
       expect(agents[0].taskId).toBe('task-42');
+    });
+
+    it('stores stepIndex when provided', () => {
+      tracker.recordAgentSpawn('agent-1', 'coder', 'implementing', 'task-42', 2);
+
+      const agents = tracker.spawnedAgents;
+      expect(agents[0].stepIndex).toBe(2);
+    });
+
+    it('stores stepIndex via object overload', () => {
+      tracker.recordAgentSpawn({
+        agentId: 'a1',
+        profile: 'coder',
+        phaseId: 'implementing',
+        taskId: 'task-42',
+        stepIndex: 3,
+      });
+
+      const agents = tracker.spawnedAgents;
+      expect(agents[0].stepIndex).toBe(3);
     });
 
     it('appends multiple records in order', () => {
@@ -151,7 +172,7 @@ describe('WorkflowStatusTracker – agent persistence', () => {
       expect(json.spawnedAgents[0]).toEqual({
         agentId: 'agent-1',
         profile: 'coder',
-        phase: 'scouting',
+        phaseId: 'scouting',
         taskId: 'task-1',
         completedAt: expect.any(String),
       });
@@ -161,7 +182,7 @@ describe('WorkflowStatusTracker – agent persistence', () => {
       tracker.recordAgentSpawn('agent-1', 'coder', 'scouting');
 
       const json = tracker.toJSON();
-      json.spawnedAgents.push({ agentId: 'fake', profile: 'p', phase: 'scouting' });
+      json.spawnedAgents.push({ agentId: 'fake', profile: 'p', phaseId: 'scouting' });
 
       expect(tracker.toJSON().spawnedAgents).toHaveLength(1);
     });
@@ -188,13 +209,13 @@ describe('WorkflowStatusTracker – agent persistence', () => {
       expect(agents).toHaveLength(2);
       expect(agents[0].agentId).toBe('agent-1');
       expect(agents[0].profile).toBe('coder');
-      expect(agents[0].phase).toBe('scouting');
+      expect(agents[0].phaseId).toBe('scouting');
       expect(agents[0].taskId).toBeUndefined();
       expect(agents[0].completedAt).toBeDefined();
 
       expect(agents[1].agentId).toBe('agent-2');
       expect(agents[1].profile).toBe('reviewer');
-      expect(agents[1].phase).toBe('scouting_review');
+      expect(agents[1].phaseId).toBe('scouting_review');
       expect(agents[1].taskId).toBe('task-5');
       expect(agents[1].completedAt).toBeUndefined();
     });
@@ -205,8 +226,8 @@ describe('WorkflowStatusTracker – agent persistence', () => {
       const stateFile = join(dir, '.engin-state.json');
       const legacyState = {
         taskPrompt: 'legacy prompt',
-        currentPhase: 'scouting',
-        completedPhases: [],
+        currentPhaseId: 'scouting',
+        completedPhaseIds: [],
         tasks: [],
         workflowData: {},
         stats: { totalTokens: 0, totalCost: 0, agentCount: 0 },
@@ -255,7 +276,7 @@ describe('WorkflowStatusTracker – agent persistence', () => {
 
       const restored = await WorkflowStatusTracker.load(dir);
       expect(restored.taskPrompt).toBe('Full state test');
-      expect(restored.currentPhase).toBe('implementing');
+      expect(restored.currentPhaseId).toBe('implementing');
       expect(restored.spawnedAgents).toHaveLength(2);
       expect(restored.stats.totalTokens).toBe(150);
     });
@@ -296,7 +317,7 @@ describe('WorkflowStatusTracker – agent persistence', () => {
       // Verify all fields exist with correct types
       expect(typeof record.agentId).toBe('string');
       expect(typeof record.profile).toBe('string');
-      expect(typeof record.phase).toBe('string');
+      expect(typeof record.phaseId).toBe('string');
       expect(typeof record.taskId).toBe('string');
       expect(record.completedAt).toBeUndefined();
 
@@ -321,7 +342,7 @@ describe('WorkflowStatusTracker – agent persistence', () => {
       for (const record of data.spawnedAgents) {
         expect(typeof record.agentId).toBe('string');
         expect(typeof record.profile).toBe('string');
-        expect(typeof record.phase).toBe('string');
+        expect(typeof record.phaseId).toBe('string');
         // taskId and completedAt are optional
         if (record.taskId !== undefined) {
           expect(typeof record.taskId).toBe('string');
@@ -337,19 +358,19 @@ describe('WorkflowStatusTracker – agent persistence', () => {
 
   describe('recordAgentSpawn – object overload', () => {
     it('accepts an object with all fields', () => {
-      tracker.recordAgentSpawn({ agentId: 'agent-obj-1', profile: 'coder', phase: 'scouting', taskId: 'task-99' });
+      tracker.recordAgentSpawn({ agentId: 'agent-obj-1', profile: 'coder', phaseId: 'scouting', taskId: 'task-99' });
 
       const agents = tracker.spawnedAgents;
       expect(agents).toHaveLength(1);
       expect(agents[0].agentId).toBe('agent-obj-1');
       expect(agents[0].profile).toBe('coder');
-      expect(agents[0].phase).toBe('scouting');
+      expect(agents[0].phaseId).toBe('scouting');
       expect(agents[0].taskId).toBe('task-99');
       expect(agents[0].completedAt).toBeUndefined();
     });
 
     it('accepts an object without optional taskId', () => {
-      tracker.recordAgentSpawn({ agentId: 'agent-obj-2', profile: 'reviewer', phase: 'planning' });
+      tracker.recordAgentSpawn({ agentId: 'agent-obj-2', profile: 'reviewer', phaseId: 'planning' });
 
       const agents = tracker.spawnedAgents;
       expect(agents).toHaveLength(1);
@@ -357,7 +378,7 @@ describe('WorkflowStatusTracker – agent persistence', () => {
     });
 
     it('persists via debounced auto-persist', async () => {
-      tracker.recordAgentSpawn({ agentId: 'agent-obj-3', profile: 'coder', phase: 'implementing' });
+      tracker.recordAgentSpawn({ agentId: 'agent-obj-3', profile: 'coder', phaseId: 'implementing' });
 
       await tracker.save();
 

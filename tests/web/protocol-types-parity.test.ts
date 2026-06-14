@@ -118,15 +118,17 @@ describe('ServerMessage – variant parity (sample objects)', () => {
       state: {
         seq: 42,
         taskPrompt: 'Build the thing',
-        currentPhase: 'coding',
-        completedPhases: ['scouting', 'planning'],
+        phases: [{ id: 'coding', label: 'Coding', icon: '💻', taskIds: ['t1'] }],
+        currentPhaseId: 'coding',
+        completedPhaseIds: ['scouting', 'planning'],
         tasks: {
           t1: {
             id: 't1',
             title: 'Implement API',
+            phaseId: 'coding',
             status: 'running',
-            phase: 'coding',
-            agentId: 'a1',
+            steps: [],
+            dependencies: [],
             startedAt: Date.now(),
           },
         },
@@ -135,7 +137,7 @@ describe('ServerMessage – variant parity (sample objects)', () => {
             uid: 'uid-1',
             agentId: 'a1',
             profile: 'coder',
-            phase: 'coding',
+            phaseId: 'coding',
             taskId: 't1',
             active: true,
             log: [
@@ -155,7 +157,6 @@ describe('ServerMessage – variant parity (sample objects)', () => {
         sidebar: {
           title: 'Engin',
           indicator: '🟢',
-          phases: [{ id: 'coding', label: 'Coding', icon: '💻' }],
         },
         status: 'running',
         stats: { totalTokens: 700, agentCount: 1 },
@@ -164,7 +165,7 @@ describe('ServerMessage – variant parity (sample objects)', () => {
     checkVariant(sample);
     expect(sample.type).toBe('snapshot');
     expect(sample.seq).toBe(42);
-    expect(sample.state.currentPhase).toBe('coding');
+    expect(sample.state.currentPhaseId).toBe('coding');
     expect(sample.state.status).toBe('running');
     expect(Object.keys(sample.state.tasks)).toHaveLength(1);
     expect(Object.keys(sample.state.agents)).toHaveLength(1);
@@ -181,7 +182,7 @@ describe('ServerMessage – variant parity (sample objects)', () => {
           data: { phase: 'coding' },
           metadata: {
             timestamp: new Date().toISOString(),
-            phase: 'coding',
+            phaseId: 'coding',
           },
         },
         {
@@ -191,7 +192,7 @@ describe('ServerMessage – variant parity (sample objects)', () => {
           metadata: {
             timestamp: new Date().toISOString(),
             agentId: 'a1',
-            phase: 'coding',
+            phaseId: 'coding',
           },
         },
       ],
@@ -229,8 +230,9 @@ describe('ServerMessage – variant parity (sample objects)', () => {
       state: {
         seq: 0,
         taskPrompt: '',
-        currentPhase: '',
-        completedPhases: [],
+        phases: [],
+        currentPhaseId: '',
+        completedPhaseIds: [],
         tasks: {},
         agents: {},
         sidebar: { title: '', indicator: '' },
@@ -285,16 +287,18 @@ describe('ClientMessage – variant parity (sample objects)', () => {
 
 // ─── Shared value types structural check ───────────────────────────────────
 //
-// Ensure the supporting types are also in sync.  PhaseDescriptor, LogEntry,
-// EventType, EventRecord, AgentEntity, TaskEntity, and WorkflowProjection are
-// the shared value/mirror types still used by both sides.
+// Ensure the supporting types are also in sync.  PhaseEntity, StepEntity,
+// LogEntry, EventType, EventRecord, AgentEntity, TaskEntity, and
+// WorkflowProjection are the shared value/mirror types used by both sides.
+// PhaseDescriptor has been replaced by PhaseEntity.
 
 import type {
   AgentEntity,
   EventRecord,
   EventType,
   LogEntry,
-  PhaseDescriptor,
+  PhaseEntity,
+  StepEntity,
   TaskEntity,
   WorkflowProjection,
 } from '../../src/web/protocol-types.ts';
@@ -303,12 +307,14 @@ import type {
   EventRecord as ClientEventRecord,
   EventType as ClientEventType,
   LogEntry as ClientLogEntry,
-  PhaseDescriptor as ClientPhaseDescriptor,
+  PhaseEntity as ClientPhaseEntity,
+  StepEntity as ClientStepEntity,
   TaskEntity as ClientTaskEntity,
   WorkflowProjection as ClientWorkflowProjection,
 } from '../../web/src/protocol-types.ts';
 
-assertEqual<Equal<PhaseDescriptor, ClientPhaseDescriptor>>('PhaseDescriptor');
+assertEqual<Equal<PhaseEntity, ClientPhaseEntity>>('PhaseEntity');
+assertEqual<Equal<StepEntity, ClientStepEntity>>('StepEntity');
 assertEqual<Equal<LogEntry, ClientLogEntry>>('LogEntry');
 assertEqual<Equal<EventType, ClientEventType>>('EventType');
 assertEqual<Equal<EventRecord, ClientEventRecord>>('EventRecord');
@@ -320,11 +326,18 @@ assertEqual<Equal<WorkflowProjection, ClientWorkflowProjection>>('WorkflowProjec
 // These functions will fail to compile if the types are not structurally
 // compatible in both directions.
 
-function phaseDescriptorAssignableFromServer(_p: PhaseDescriptor): ClientPhaseDescriptor {
+function phaseEntityAssignableFromServer(_p: PhaseEntity): ClientPhaseEntity {
   return _p;
 }
-function phaseDescriptorAssignableFromClient(_p: ClientPhaseDescriptor): PhaseDescriptor {
+function phaseEntityAssignableFromClient(_p: ClientPhaseEntity): PhaseEntity {
   return _p;
+}
+
+function stepEntityAssignableFromServer(_s: StepEntity): ClientStepEntity {
+  return _s;
+}
+function stepEntityAssignableFromClient(_s: ClientStepEntity): StepEntity {
+  return _s;
 }
 
 function logEntryAssignableFromServer(_e: LogEntry): ClientLogEntry {
@@ -366,8 +379,10 @@ function workflowProjectionAssignableFromClient(_w: ClientWorkflowProjection): W
 // Each function is referenced individually to prevent tree-shaking.
 void serverAssignableToClient;
 void clientAssignableToServer;
-void phaseDescriptorAssignableFromServer;
-void phaseDescriptorAssignableFromClient;
+void phaseEntityAssignableFromServer;
+void phaseEntityAssignableFromClient;
+void stepEntityAssignableFromServer;
+void stepEntityAssignableFromClient;
 void logEntryAssignableFromServer;
 void logEntryAssignableFromClient;
 void eventRecordAssignableFromServer;
@@ -390,15 +405,17 @@ describe('WorkflowProjection – JSON round-trip', () => {
     const projection: WorkflowProjection = {
       seq: 7,
       taskPrompt: 'Build the thing',
-      currentPhase: 'coding',
-      completedPhases: ['scouting', 'planning'],
+      phases: [{ id: 'coding', label: 'Coding', icon: '💻', taskIds: ['t1'] }],
+      currentPhaseId: 'coding',
+      completedPhaseIds: ['scouting', 'planning'],
       tasks: {
         t1: {
           id: 't1',
           title: 'Implement API',
+          phaseId: 'coding',
           status: 'running',
-          phase: 'coding',
-          agentId: 'a1',
+          steps: [],
+          dependencies: [],
           startedAt: 1700000000000,
         },
       },
@@ -407,7 +424,7 @@ describe('WorkflowProjection – JSON round-trip', () => {
           uid: 'uid-1',
           agentId: 'a1',
           profile: 'coder',
-          phase: 'coding',
+          phaseId: 'coding',
           taskId: 't1',
           active: true,
           log: [
@@ -428,7 +445,6 @@ describe('WorkflowProjection – JSON round-trip', () => {
       sidebar: {
         title: 'Engin',
         indicator: '🟢',
-        phases: [{ id: 'coding', label: 'Coding', icon: '💻' }],
       },
       status: 'running',
       stats: { totalTokens: 700, agentCount: 1 },
@@ -442,8 +458,9 @@ describe('WorkflowProjection – JSON round-trip', () => {
     const projection: WorkflowProjection = {
       seq: 1,
       taskPrompt: '',
-      currentPhase: '',
-      completedPhases: [],
+      phases: [],
+      currentPhaseId: '',
+      completedPhaseIds: [],
       tasks: {},
       agents: {},
       sidebar: { title: '', indicator: '' },
@@ -467,7 +484,7 @@ describe('WorkflowProjection – JSON round-trip', () => {
       metadata: {
         timestamp: '2025-01-01T00:00:00.000Z',
         agentId: 'a1',
-        phase: 'coding',
+        phaseId: 'coding',
       },
     };
 

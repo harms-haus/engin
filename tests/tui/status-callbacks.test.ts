@@ -25,20 +25,50 @@ function createMockDashboard() {
       lastProjection = proj;
     },
     phaseBar: {
-      setCurrentPhase: () => {},
-      setCompletedPhases: () => {},
       setPhases: () => {},
+      setCurrentPhaseId: () => {},
+      setCompletedPhaseIds: () => {},
       setIndicator: () => {},
       setSelectedPhase: () => {},
+      invalidate: () => {},
+      handleInput: () => {},
+      render: () => [''] as string[],
     },
-    lanePool: { updateLanes: () => {} },
+    taskList: {
+      updateTasks: () => {},
+      setSelectedTaskId: () => {},
+      getSelectedTaskId: () => null,
+      getVisibleTaskCount: () => 0,
+      invalidate: () => {},
+      handleInput: () => {},
+      render: () => [] as string[],
+    },
     agentLog: {
       setAgents: () => {},
-      setPhases: () => {},
-      setCurrentPhase: () => {},
+      setSteps: () => {},
+      setSelectedStepIndex: () => {},
+      setActiveStepIndex: () => {},
+      setSelectedAgentUid: () => {},
+      toggleExpand: () => {},
+      isExpanded: () => false,
+      getExpandedLineCount: () => 20,
+      getSelectedAgentUid: () => null,
       invalidate: () => {},
-      getCurrentPhase: () => null,
+      handleInput: () => {},
+      render: () => [] as string[],
     },
+    getSelection: () => ({
+      selectedPhaseId: null,
+      selectedTaskId: null,
+      selectedStepIndex: null,
+      userPinnedPhase: false,
+      userPinnedStep: false,
+    }),
+    forceReselect: () => {},
+    getComputedHeight: () => 25,
+    invalidate: () => {},
+    handleInput: () => {},
+    render: () => [] as string[],
     get lastSyncedProjection() {
       return lastProjection;
     },
@@ -111,13 +141,13 @@ describe('createStoreBackedTui', () => {
   describe('onWorkflowFailed', () => {
     it('adds expected line to eventLog', () => {
       const ctx = createTestDeps();
-      ctx.storeCallbacks.onWorkflowFailed!({ error: new Error('something broke'), phase: 'planning' });
+      ctx.storeCallbacks.onWorkflowFailed!({ error: new Error('something broke'), phaseId: 'planning' });
       expect(ctx.eventLog.lines).toEqual(['💥 Failed at planning: something broke']);
     });
 
     it('calls requestRender', () => {
       const ctx = createTestDeps();
-      ctx.storeCallbacks.onWorkflowFailed!({ error: new Error('x'), phase: 'p' });
+      ctx.storeCallbacks.onWorkflowFailed!({ error: new Error('x'), phaseId: 'p' });
       expect(ctx.renderCount).toBeGreaterThanOrEqual(1);
     });
   });
@@ -135,10 +165,57 @@ describe('createStoreBackedTui', () => {
       expect(ctx.renderCount).toBeGreaterThanOrEqual(1);
     });
 
-    it('syncs projection into dashboard', () => {
+    it('syncs projection into dashboard with structured fields', () => {
       const ctx = createTestDeps();
       ctx.storeCallbacks.onPhaseStart!({ phase: 'scouting', round: 1 });
-      expect(ctx.dashboard.lastSyncedProjection).toBeTruthy();
+      const proj = ctx.dashboard.lastSyncedProjection as any;
+      expect(proj).toBeTruthy();
+      expect(proj).toHaveProperty('phases');
+      expect(proj).toHaveProperty('currentPhaseId');
+      expect(proj).toHaveProperty('completedPhaseIds');
+      expect(proj).toHaveProperty('tasks');
+      expect(proj).toHaveProperty('agents');
+      expect(proj).toHaveProperty('sidebar');
+      expect(proj.sidebar).toHaveProperty('title');
+      expect(proj.sidebar).toHaveProperty('indicator');
+      expect(proj.currentPhaseId).toBe('scouting');
+    });
+  });
+
+  describe('onPhaseRegister', () => {
+    it('adds expected line to eventLog', () => {
+      const ctx = createTestDeps();
+      ctx.storeCallbacks.onPhaseRegister!({ id: 'scouting', label: 'Scouting', icon: '🔍' });
+      expect(ctx.eventLog.lines).toEqual(['📝 Phase registered: Scouting']);
+    });
+
+    it('phase appears in projection with all fields', () => {
+      const ctx = createTestDeps();
+      ctx.storeCallbacks.onPhaseRegister!({ id: 'planning', label: 'Planning', icon: '📋' });
+      const proj = ctx.store.getProjection();
+      expect(proj.phases).toHaveLength(1);
+      expect(proj.phases[0].id).toBe('planning');
+      expect(proj.phases[0].label).toBe('Planning');
+      expect(proj.phases[0].icon).toBe('📋');
+      expect(proj.phases[0].taskIds).toEqual([]);
+    });
+
+    it('accumulates multiple phases in insertion order', () => {
+      const ctx = createTestDeps();
+      ctx.storeCallbacks.onPhaseRegister!({ id: 'scouting', label: 'Scouting', icon: '🔍' });
+      ctx.storeCallbacks.onPhaseRegister!({ id: 'planning', label: 'Planning', icon: '📋' });
+      ctx.storeCallbacks.onPhaseRegister!({ id: 'implement', label: 'Implementation', icon: '⚙️' });
+      const proj = ctx.store.getProjection();
+      expect(proj.phases).toHaveLength(3);
+      expect(proj.phases[0].id).toBe('scouting');
+      expect(proj.phases[1].id).toBe('planning');
+      expect(proj.phases[2].id).toBe('implement');
+    });
+
+    it('calls requestRender', () => {
+      const ctx = createTestDeps();
+      ctx.storeCallbacks.onPhaseRegister!({ id: 'x', label: 'X', icon: '' });
+      expect(ctx.renderCount).toBeGreaterThanOrEqual(1);
     });
   });
 
@@ -157,7 +234,7 @@ describe('createStoreBackedTui', () => {
       ctx.storeCallbacks.onPhaseComplete!({ phase: 'planning', durationMs: 2000 });
 
       const proj = ctx.store.getProjection();
-      expect(proj.completedPhases).toEqual(['scouting', 'planning']);
+      expect(proj.completedPhaseIds).toEqual(['scouting', 'planning']);
     });
 
     it('calls requestRender', () => {
@@ -170,19 +247,19 @@ describe('createStoreBackedTui', () => {
   describe('onAgentSpawn', () => {
     it('adds expected line to eventLog', () => {
       const ctx = createTestDeps();
-      ctx.storeCallbacks.onAgentSpawn!({ agentId: 'a1', profile: 'scout', phase: 'scouting' });
+      ctx.storeCallbacks.onAgentSpawn!({ agentId: 'a1', profile: 'scout', phaseId: 'scouting' });
       expect(ctx.eventLog.lines).toEqual(['⏳ Agent a1 spawned (scout)']);
     });
 
     it('calls requestRender', () => {
       const ctx = createTestDeps();
-      ctx.storeCallbacks.onAgentSpawn!({ agentId: 'a1', profile: 'p', phase: 'x' });
+      ctx.storeCallbacks.onAgentSpawn!({ agentId: 'a1', profile: 'p', phaseId: 'x' });
       expect(ctx.renderCount).toBeGreaterThanOrEqual(1);
     });
 
     it('agent appears in projection', () => {
       const ctx = createTestDeps();
-      ctx.storeCallbacks.onAgentSpawn!({ agentId: 'a1', profile: 'coder', phase: 'implement' });
+      ctx.storeCallbacks.onAgentSpawn!({ agentId: 'a1', profile: 'coder', phaseId: 'implement' });
       const proj = ctx.store.getProjection();
       const agentKeys = Object.keys(proj.agents);
       expect(agentKeys.length).toBe(1);
@@ -191,10 +268,16 @@ describe('createStoreBackedTui', () => {
       expect(proj.agents[agentKeys[0]].active).toBe(true);
     });
 
-    it('applies taskTitle from a prior onTaskStart (production ordering)', () => {
+    it('applies taskTitle from a prior onTaskRegister (production ordering)', () => {
       const ctx = createTestDeps();
-      ctx.storeCallbacks.onTaskStart!({ taskId: 't1', title: 'Implement feature', agentId: 'a1' });
-      ctx.storeCallbacks.onAgentSpawn!({ agentId: 'a1', profile: 'coder', phase: 'implement', taskId: 't1' });
+      ctx.storeCallbacks.onTaskRegister!({
+        taskId: 't1',
+        phaseId: 'implement',
+        title: 'Implement feature',
+        dependencies: [],
+        steps: [],
+      });
+      ctx.storeCallbacks.onAgentSpawn!({ agentId: 'a1', profile: 'coder', phaseId: 'implement', taskId: 't1' });
       const proj = ctx.store.getProjection();
       const agent = Object.values(proj.agents).find((a) => a.agentId === 'a1')!;
       expect(agent.taskTitle).toBe('Implement feature');
@@ -204,15 +287,15 @@ describe('createStoreBackedTui', () => {
   describe('onAgentComplete', () => {
     it('adds expected line to eventLog', () => {
       const ctx = createTestDeps();
-      ctx.storeCallbacks.onAgentSpawn!({ agentId: 'a1', profile: 'scout', phase: 'scouting' });
-      ctx.storeCallbacks.onAgentComplete!({ agentId: 'a1', profile: 'scout', phase: 'scouting' });
+      ctx.storeCallbacks.onAgentSpawn!({ agentId: 'a1', profile: 'scout', phaseId: 'scouting' });
+      ctx.storeCallbacks.onAgentComplete!({ agentId: 'a1', profile: 'scout', phaseId: 'scouting' });
       expect(ctx.eventLog.lines).toContain('✅ Agent a1 complete');
     });
 
     it('marks agent as inactive in projection', () => {
       const ctx = createTestDeps();
-      ctx.storeCallbacks.onAgentSpawn!({ agentId: 'a1', profile: 'scout', phase: 'scouting' });
-      ctx.storeCallbacks.onAgentComplete!({ agentId: 'a1', profile: 'scout', phase: 'scouting' });
+      ctx.storeCallbacks.onAgentSpawn!({ agentId: 'a1', profile: 'scout', phaseId: 'scouting' });
+      ctx.storeCallbacks.onAgentComplete!({ agentId: 'a1', profile: 'scout', phaseId: 'scouting' });
       const proj = ctx.store.getProjection();
       const agent = Object.values(proj.agents).find((a) => a.agentId === 'a1')!;
       expect(agent.active).toBe(false);
@@ -220,7 +303,7 @@ describe('createStoreBackedTui', () => {
 
     it('calls requestRender', () => {
       const ctx = createTestDeps();
-      ctx.storeCallbacks.onAgentComplete!({ agentId: 'a1', profile: 'p', phase: 'x' });
+      ctx.storeCallbacks.onAgentComplete!({ agentId: 'a1', profile: 'p', phaseId: 'x' });
       expect(ctx.renderCount).toBeGreaterThanOrEqual(1);
     });
   });
@@ -234,11 +317,18 @@ describe('createStoreBackedTui', () => {
 
     it('task appears in projection', () => {
       const ctx = createTestDeps();
+      ctx.storeCallbacks.onTaskRegister!({
+        taskId: 't1',
+        phaseId: 'p1',
+        title: 'Task 1',
+        dependencies: [],
+        steps: [],
+      });
       ctx.storeCallbacks.onTaskStart!({ taskId: 't1', title: 'Task 1', agentId: 'a1' });
       const proj = ctx.store.getProjection();
       expect(proj.tasks['t1']).toBeDefined();
       expect(proj.tasks['t1'].title).toBe('Task 1');
-      expect(proj.tasks['t1'].status).toBe('implementing');
+      expect(proj.tasks['t1'].status).toBe('active');
     });
 
     it('calls requestRender', () => {
@@ -251,21 +341,42 @@ describe('createStoreBackedTui', () => {
   describe('onTaskComplete', () => {
     it('adds expected line to eventLog', () => {
       const ctx = createTestDeps();
+      ctx.storeCallbacks.onTaskRegister!({
+        taskId: 't1',
+        phaseId: 'p1',
+        title: 'Task 1',
+        dependencies: [],
+        steps: [],
+      });
       ctx.storeCallbacks.onTaskStart!({ taskId: 't1', title: 'Task 1', agentId: 'a1' });
       ctx.storeCallbacks.onTaskComplete!({ taskId: 't1', title: 'Task 1' });
       expect(ctx.eventLog.lines).toContain('✅ Task t1 complete');
     });
 
-    it('marks task as done in projection', () => {
+    it('marks task as complete in projection', () => {
       const ctx = createTestDeps();
+      ctx.storeCallbacks.onTaskRegister!({
+        taskId: 't1',
+        phaseId: 'p1',
+        title: 'Task 1',
+        dependencies: [],
+        steps: [],
+      });
       ctx.storeCallbacks.onTaskStart!({ taskId: 't1', title: 'Task 1', agentId: 'a1' });
       ctx.storeCallbacks.onTaskComplete!({ taskId: 't1', title: 'Task 1' });
       const proj = ctx.store.getProjection();
-      expect(proj.tasks['t1'].status).toBe('done');
+      expect(proj.tasks['t1'].status).toBe('complete');
     });
 
     it('calls requestRender', () => {
       const ctx = createTestDeps();
+      ctx.storeCallbacks.onTaskRegister!({
+        taskId: 't1',
+        phaseId: 'p1',
+        title: 'T',
+        dependencies: [],
+        steps: [],
+      });
       ctx.storeCallbacks.onTaskStart!({ taskId: 't1', title: 'T', agentId: 'a1' });
       ctx.resetRenderCount();
       ctx.storeCallbacks.onTaskComplete!({ taskId: 't1', title: 'T' });
@@ -293,13 +404,13 @@ describe('createStoreBackedTui', () => {
   describe('onError', () => {
     it('adds expected line to eventLog', () => {
       const ctx = createTestDeps();
-      ctx.storeCallbacks.onError!({ agentId: 'a1', error: 'crash', phase: 'planning' });
+      ctx.storeCallbacks.onError!({ agentId: 'a1', error: 'crash', phaseId: 'planning' });
       expect(ctx.eventLog.lines).toEqual(['⚠️ Error in a1: crash (planning)']);
     });
 
     it('calls requestRender', () => {
       const ctx = createTestDeps();
-      ctx.storeCallbacks.onError!({ agentId: 'a1', error: 'e', phase: 'p' });
+      ctx.storeCallbacks.onError!({ agentId: 'a1', error: 'e', phaseId: 'p' });
       expect(ctx.renderCount).toBeGreaterThanOrEqual(1);
     });
   });
@@ -321,7 +432,7 @@ describe('createStoreBackedTui', () => {
   describe('onTurnEnd', () => {
     it('processes text content blocks', () => {
       const ctx = createTestDeps();
-      ctx.storeCallbacks.onAgentSpawn!({ agentId: 'a1', profile: 'coder', phase: 'implement' });
+      ctx.storeCallbacks.onAgentSpawn!({ agentId: 'a1', profile: 'coder', phaseId: 'implement' });
       ctx.storeCallbacks.onTurnEnd!({
         agentId: 'a1',
         turn: 1,
@@ -336,7 +447,7 @@ describe('createStoreBackedTui', () => {
 
     it('updates token stats', () => {
       const ctx = createTestDeps();
-      ctx.storeCallbacks.onAgentSpawn!({ agentId: 'a1', profile: 'coder', phase: 'implement' });
+      ctx.storeCallbacks.onAgentSpawn!({ agentId: 'a1', profile: 'coder', phaseId: 'implement' });
       ctx.storeCallbacks.onTurnEnd!({
         agentId: 'a1',
         turn: 1,
@@ -369,7 +480,7 @@ describe('createStoreBackedTui', () => {
 
     it('increments toolCallCount in projection', () => {
       const ctx = createTestDeps();
-      ctx.storeCallbacks.onAgentSpawn!({ agentId: 'a1', profile: 'scout', phase: 'scouting' });
+      ctx.storeCallbacks.onAgentSpawn!({ agentId: 'a1', profile: 'scout', phaseId: 'scouting' });
       ctx.storeCallbacks.onToolCallStart!({
         agentId: 'a1',
         toolName: 'read',
@@ -421,28 +532,158 @@ describe('createStoreBackedTui', () => {
     });
   });
 
-  describe('onTasksAdded', () => {
+  describe('onTaskRegister', () => {
     it('tasks appear in projection', () => {
       const ctx = createTestDeps();
-      ctx.storeCallbacks.onTasksAdded!({
-        tasks: [
-          { id: 't1', title: 'Task A', status: 'blocked', dependencies: ['t2'] },
-          { id: 't2', title: 'Task B', status: 'ready', dependencies: [] },
-        ],
+      ctx.storeCallbacks.onTaskRegister!({
+        taskId: 't1',
+        phaseId: 'p1',
+        title: 'Task A',
+        dependencies: ['t2'],
+        steps: [],
+      });
+      ctx.storeCallbacks.onTaskRegister!({
+        taskId: 't2',
+        phaseId: 'p1',
+        title: 'Task B',
+        dependencies: [],
+        steps: [],
       });
       const proj = ctx.store.getProjection();
       expect(proj.tasks['t1']).toBeDefined();
       expect(proj.tasks['t2']).toBeDefined();
-      expect(proj.tasks['t1'].status).toBe('blocked');
+      expect(proj.tasks['t1'].status).toBe('ready');
       expect(proj.tasks['t2'].status).toBe('ready');
     });
 
-    it('no event log line added', () => {
+    it('registers steps with correct structure', () => {
       const ctx = createTestDeps();
-      ctx.storeCallbacks.onTasksAdded!({
-        tasks: [{ id: 't1', title: 'Task', status: 'ready', dependencies: [] }],
+      ctx.storeCallbacks.onTaskRegister!({
+        taskId: 't1',
+        phaseId: 'p1',
+        title: 'Multi-step task',
+        dependencies: [],
+        steps: [
+          { name: 'write-code', profileId: 'coder', isReadOnly: false },
+          { name: 'review', profileId: 'reviewer', isReadOnly: true },
+        ],
       });
-      expect(ctx.eventLog.lines).toEqual([]);
+      const proj = ctx.store.getProjection();
+      expect(proj.tasks['t1'].steps).toHaveLength(2);
+      expect(proj.tasks['t1'].steps[0].name).toBe('write-code');
+      expect(proj.tasks['t1'].steps[0].index).toBe(0);
+      expect(proj.tasks['t1'].steps[0].profile).toBe('coder');
+      expect(proj.tasks['t1'].steps[0].isReadOnly).toBe(false);
+      expect(proj.tasks['t1'].steps[0].agentKey).toBeUndefined();
+      expect(proj.tasks['t1'].steps[1].name).toBe('review');
+      expect(proj.tasks['t1'].steps[1].index).toBe(1);
+      expect(proj.tasks['t1'].steps[1].profile).toBe('reviewer');
+      expect(proj.tasks['t1'].steps[1].isReadOnly).toBe(true);
+    });
+
+    it('appends taskId to parent PhaseEntity.taskIds', () => {
+      const ctx = createTestDeps();
+      ctx.storeCallbacks.onPhaseRegister!({ id: 'p1', label: 'Phase 1', icon: '📦' });
+      ctx.storeCallbacks.onTaskRegister!({
+        taskId: 't1',
+        phaseId: 'p1',
+        title: 'Task 1',
+        dependencies: [],
+        steps: [],
+      });
+      ctx.storeCallbacks.onTaskRegister!({
+        taskId: 't2',
+        phaseId: 'p1',
+        title: 'Task 2',
+        dependencies: [],
+        steps: [],
+      });
+      const proj = ctx.store.getProjection();
+      const phase = proj.phases.find((p) => p.id === 'p1')!;
+      expect(phase.taskIds).toEqual(['t1', 't2']);
+    });
+
+    it('adds a line to eventLog', () => {
+      const ctx = createTestDeps();
+      ctx.storeCallbacks.onTaskRegister!({
+        taskId: 't1',
+        phaseId: 'p1',
+        title: 'Task',
+        dependencies: [],
+        steps: [],
+      });
+      expect(ctx.eventLog.lines).toHaveLength(1);
+      expect(ctx.eventLog.lines[0]).toContain('📋 Task registered');
+    });
+  });
+
+  describe('onStepStart', () => {
+    it('adds expected line to eventLog', () => {
+      const ctx = createTestDeps();
+      ctx.storeCallbacks.onTaskRegister!({
+        taskId: 't1',
+        phaseId: 'p1',
+        title: 'Test',
+        dependencies: [],
+        steps: [{ name: 'step1', profileId: 'coder', isReadOnly: false }],
+      });
+      ctx.storeCallbacks.onTaskStart!({ taskId: 't1', title: 'Test', agentId: 'a1' });
+      ctx.storeCallbacks.onStepStart!({ taskId: 't1', stepIndex: 0, stepName: 'step1', agentId: 'a1' });
+      expect(ctx.eventLog.lines).toContain('Step 0 started: step1 (task: t1, agent: a1)');
+    });
+
+    it('updates activeStepIndex in projection', () => {
+      const ctx = createTestDeps();
+      ctx.storeCallbacks.onTaskRegister!({
+        taskId: 't1',
+        phaseId: 'p1',
+        title: 'Test',
+        dependencies: [],
+        steps: [
+          { name: 'step1', profileId: 'coder', isReadOnly: false },
+          { name: 'step2', profileId: 'reviewer', isReadOnly: true },
+        ],
+      });
+      ctx.storeCallbacks.onTaskStart!({ taskId: 't1', title: 'Test', agentId: 'a1' });
+
+      // First step
+      ctx.storeCallbacks.onStepStart!({ taskId: 't1', stepIndex: 0, stepName: 'step1', agentId: 'a1' });
+      let proj = ctx.store.getProjection();
+      expect(proj.tasks['t1'].activeStepIndex).toBe(0);
+
+      // Advance to second step
+      ctx.storeCallbacks.onStepStart!({ taskId: 't1', stepIndex: 1, stepName: 'step2', agentId: 'a2' });
+      proj = ctx.store.getProjection();
+      expect(proj.tasks['t1'].activeStepIndex).toBe(1);
+    });
+
+    it('links spawned agent to step via agentKey', () => {
+      const ctx = createTestDeps();
+      ctx.storeCallbacks.onTaskRegister!({
+        taskId: 't1',
+        phaseId: 'p1',
+        title: 'Test',
+        dependencies: [],
+        steps: [{ name: 'code', profileId: 'coder', isReadOnly: false }],
+      });
+      ctx.storeCallbacks.onTaskStart!({ taskId: 't1', title: 'Test', agentId: 'a1' });
+
+      // Spawn agent for step 0
+      ctx.storeCallbacks.onAgentSpawn!({ agentId: 'a1', profile: 'coder', phaseId: 'p1', taskId: 't1', stepIndex: 0 });
+      ctx.storeCallbacks.onStepStart!({ taskId: 't1', stepIndex: 0, stepName: 'code', agentId: 'a1' });
+
+      const proj = ctx.store.getProjection();
+      const expectedKey = 'a1::t1';
+      expect(proj.tasks['t1'].steps[0].agentKey).toBe(expectedKey);
+      expect(proj.agents[expectedKey]).toBeDefined();
+      expect(proj.agents[expectedKey].agentId).toBe('a1');
+      expect(proj.agents[expectedKey].stepIndex).toBe(0);
+    });
+
+    it('calls requestRender', () => {
+      const ctx = createTestDeps();
+      ctx.storeCallbacks.onStepStart!({ taskId: 't1', stepIndex: 0, stepName: 's', agentId: 'a1' });
+      expect(ctx.renderCount).toBeGreaterThanOrEqual(1);
     });
   });
 
@@ -471,19 +712,18 @@ describe('createStoreBackedTui', () => {
 
       ctx.storeCallbacks.onWorkflowStart!({ taskPrompt: 't', resumed: false, workDir: '/tmp' });
       ctx.storeCallbacks.onWorkflowComplete!({ totalDurationMs: 1000, agentCount: 1 });
-      ctx.storeCallbacks.onWorkflowFailed!({ error: new Error('e'), phase: 'p' });
+      ctx.storeCallbacks.onWorkflowFailed!({ error: new Error('e'), phaseId: 'p' });
       ctx.storeCallbacks.onPhaseStart!({ phase: 'p', round: 1 });
       ctx.storeCallbacks.onPhaseComplete!({ phase: 'p', durationMs: 100 });
-      ctx.storeCallbacks.onAgentSpawn!({ agentId: 'a', profile: 'p', phase: 'x' });
-      ctx.storeCallbacks.onAgentComplete!({ agentId: 'a', profile: 'p', phase: 'x' });
+      ctx.storeCallbacks.onAgentSpawn!({ agentId: 'a', profile: 'p', phaseId: 'x' });
+      ctx.storeCallbacks.onAgentComplete!({ agentId: 'a', profile: 'p', phaseId: 'x' });
       ctx.storeCallbacks.onTaskStart!({ taskId: 't1', title: 'T', agentId: 'a1' });
       ctx.storeCallbacks.onTaskComplete!({ taskId: 't1', title: 'T' });
       ctx.storeCallbacks.onTaskRejected!({ taskId: 't1', title: 'T', reason: 'r' });
-      ctx.storeCallbacks.onError!({ agentId: 'a', error: 'e', phase: 'p' });
+      ctx.storeCallbacks.onError!({ agentId: 'a', error: 'e', phaseId: 'p' });
       ctx.storeCallbacks.onSidebarUpdate!({ title: 'Test' });
-      ctx.storeCallbacks.onTasksAdded!({ tasks: [] });
 
-      expect(ctx.renderCount).toBeGreaterThanOrEqual(13);
+      expect(ctx.renderCount).toBeGreaterThanOrEqual(12);
     });
   });
 

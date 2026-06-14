@@ -97,7 +97,8 @@ export class TaskTracker extends EventEmitter {
   }
 
   /**
-   * Returns up to `count` ready tasks whose status is set to `claimed`.
+   * Returns up to `count` ready tasks whose status is set to `active` and
+   * whose `assignedAgent` is set to `agentId`.
    *
    * **Mutable reference aliasing:** The returned array contains direct
    * references to the internal `Task` objects stored in this tracker — not
@@ -108,51 +109,30 @@ export class TaskTracker extends EventEmitter {
    *   review to persist all feedback entries across retries.
    *
    * All other task mutations (status transitions, `result`, `assignedAgent`)
-   * **must** go through the corresponding tracker methods (`startTask`,
-   * `submitForReview`, `completeTask`, `failTask`, `rejectTask`) to ensure
+   * **must** go through the corresponding tracker methods (`claimTasks`,
+   * `completeTask`, `failTask`, `rejectTask`, `cancelTask`) to ensure
    * correct state transitions, dependency recalculation, and event emission.
    */
-  claimTasks(count: number): Task[] {
+  claimTasks(count: number, agentId: string): Task[] {
     const ready = this.getReadyTasks();
     const toClaim = ready.slice(0, count);
 
     for (const task of toClaim) {
-      task.status = 'claimed';
+      task.status = 'active';
+      task.assignedAgent = agentId;
     }
 
     return toClaim;
   }
 
-  startTask(id: string, agentId: string): void {
-    const task = this.tasks.get(id);
-    if (!task) throw new Error(`Task "${id}" not found`);
-    if (task.status !== 'claimed') {
-      throw new Error(`Task "${id}" must be "claimed" to start, got "${task.status}"`);
-    }
-
-    task.status = 'implementing';
-    task.assignedAgent = agentId;
-  }
-
-  submitForReview(id: string, result: unknown): void {
-    const task = this.tasks.get(id);
-    if (!task) throw new Error(`Task "${id}" not found`);
-    if (task.status !== 'implementing') {
-      throw new Error(`Task "${id}" must be "implementing" to submit for review, got "${task.status}"`);
-    }
-
-    task.status = 'reviewing';
-    task.result = result;
-  }
-
   completeTask(id: string): void {
     const task = this.tasks.get(id);
     if (!task) throw new Error(`Task "${id}" not found`);
-    if (task.status !== 'reviewing') {
-      throw new Error(`Task "${id}" must be "reviewing" to complete, got "${task.status}"`);
+    if (task.status !== 'active') {
+      throw new Error(`Task "${id}" must be "active" to complete, got "${task.status}"`);
     }
 
-    task.status = 'done';
+    task.status = 'complete';
     this.recalculateStatuses(id);
     queueMicrotask(() => this.emit(TaskTracker.Events.TaskSettled));
   }
@@ -160,8 +140,8 @@ export class TaskTracker extends EventEmitter {
   failTask(id: string, result?: unknown): void {
     const task = this.tasks.get(id);
     if (!task) throw new Error(`Task "${id}" not found`);
-    if (task.status !== 'implementing' && task.status !== 'reviewing') {
-      throw new Error(`Task "${id}" must be "implementing" or "reviewing" to fail, got "${task.status}"`);
+    if (task.status !== 'active') {
+      throw new Error(`Task "${id}" must be "active" to fail, got "${task.status}"`);
     }
 
     task.status = 'failed';
@@ -174,14 +154,23 @@ export class TaskTracker extends EventEmitter {
   rejectTask(id: string, reason: string): void {
     const task = this.tasks.get(id);
     if (!task) throw new Error(`Task "${id}" not found`);
-    if (task.status !== 'reviewing') {
-      throw new Error(`Task "${id}" must be "reviewing" to reject, got "${task.status}"`);
+    if (task.status !== 'active') {
+      throw new Error(`Task "${id}" must be "active" to reject, got "${task.status}"`);
     }
 
-    task.status = 'ready';
     appendReviewFeedback(task, reason);
-    this.recalculateStatuses(id);
     queueMicrotask(() => this.emit(TaskTracker.Events.TaskReady));
+  }
+
+  cancelTask(id: string): void {
+    const task = this.tasks.get(id);
+    if (!task) throw new Error(`Task "${id}" not found`);
+    if (TaskTracker.isSettled(task.status)) {
+      throw new Error(`Task "${id}" is already settled (${task.status}) and cannot be cancelled`);
+    }
+
+    task.status = 'cancelled';
+    queueMicrotask(() => this.emit(TaskTracker.Events.TaskSettled));
   }
 
   resetFailedTasks(): void {
@@ -197,7 +186,7 @@ export class TaskTracker extends EventEmitter {
 
   resetStuckTasks(): void {
     for (const task of this.tasks.values()) {
-      if (task.status === 'claimed' || task.status === 'implementing' || task.status === 'reviewing') {
+      if (task.status === 'active') {
         task.status = 'ready';
         task.assignedAgent = undefined;
         task.result = undefined;
@@ -260,6 +249,34 @@ export class TaskTracker extends EventEmitter {
   }
 
   /**
+   * Returns all tasks whose `phaseId` matches the given value.
+   */
+  getTasksByPhase(phaseId: string): Task[] {
+    const result: Task[] = [];
+    for (const task of this.tasks.values()) {
+      if (task.phaseId === phaseId) {
+        result.push(task);
+      }
+    }
+    return result;
+  }
+
+  /**
+   * Returns the unique phase IDs in insertion order.
+   */
+  getPhases(): string[] {
+    const seen = new Set<string>();
+    const phases: string[] = [];
+    for (const task of this.tasks.values()) {
+      if (!seen.has(task.phaseId)) {
+        seen.add(task.phaseId);
+        phases.push(task.phaseId);
+      }
+    }
+    return phases;
+  }
+
+  /**
    * Validates referential integrity of all dependency references.
    *
    * Every id listed in each task's `dependencies` array must correspond to a
@@ -290,7 +307,7 @@ export class TaskTracker extends EventEmitter {
   /**
    * Single-pass check for the lane loop hot path.
    *
-   * Returns `true` when every task is settled (`done` / `failed`) or
+   * Returns `true` when every task is settled (`complete` / `failed` / `cancelled`) or
    * blocked with at least one missing dependency (deadlocked). An empty
    * tracker is considered done.
    */
@@ -317,7 +334,7 @@ export class TaskTracker extends EventEmitter {
   }
 
   private static isSettled(status: TaskStatus): boolean {
-    return status === 'done' || status === 'failed';
+    return status === 'complete' || status === 'failed' || status === 'cancelled';
   }
 
   private detectCycle(startId: string): void {

@@ -5,7 +5,7 @@ interface StoreLike {
   append(
     type: EventType,
     data: Record<string, unknown>,
-    metadata?: { agentId?: string; taskId?: string; phase?: string },
+    metadata?: { agentId?: string; taskId?: string; phaseId?: string; stepIndex?: number },
   ): unknown;
 }
 
@@ -17,22 +17,54 @@ interface StoreLike {
 export function createStoreCallbacks(store: StoreLike): StatusCallbacks {
   return {
     onWorkflowStart(info) {
-      store.append('workflow_started', { taskPrompt: info.taskPrompt, resumed: info.resumed, workDir: info.workDir });
+      store.append('workflow_started', {
+        taskPrompt: info.taskPrompt,
+        resumed: info.resumed,
+        workDir: info.workDir,
+      });
+    },
+
+    onPhaseRegister(info) {
+      store.append('phase_registered', { id: info.id, label: info.label, icon: info.icon }, { phaseId: info.id });
     },
 
     onPhaseStart(info) {
-      store.append('phase_started', { phase: info.phase, round: info.round }, { phase: info.phase });
+      store.append('phase_started', { phase: info.phase, round: info.round }, { phaseId: info.phase });
     },
 
     onPhaseComplete(info) {
-      store.append('phase_completed', { phase: info.phase, durationMs: info.durationMs }, { phase: info.phase });
+      store.append('phase_completed', { phase: info.phase, durationMs: info.durationMs }, { phaseId: info.phase });
+    },
+
+    onTaskRegister(info) {
+      store.append(
+        'task_registered',
+        {
+          taskId: info.taskId,
+          phaseId: info.phaseId,
+          title: info.title,
+          dependencies: info.dependencies,
+          steps: info.steps,
+        },
+        { taskId: info.taskId, phaseId: info.phaseId },
+      );
     },
 
     onAgentSpawn(info) {
       store.append(
         'agent_spawned',
-        { agentId: info.agentId, profile: info.profile, sessionId: info.sessionId, sessionPath: info.sessionPath },
-        { agentId: info.agentId, taskId: info.taskId, phase: info.phase },
+        {
+          agentId: info.agentId,
+          profile: info.profile,
+          sessionId: info.sessionId,
+          sessionPath: info.sessionPath,
+        },
+        {
+          agentId: info.agentId,
+          taskId: info.taskId,
+          phaseId: info.phaseId,
+          stepIndex: info.stepIndex,
+        },
       );
     },
 
@@ -40,23 +72,33 @@ export function createStoreCallbacks(store: StoreLike): StatusCallbacks {
       store.append(
         'agent_completed',
         { agentId: info.agentId, profile: info.profile, sessionId: info.sessionId },
-        { agentId: info.agentId, taskId: info.taskId, phase: info.phase },
+        { agentId: info.agentId, taskId: info.taskId, phaseId: info.phaseId },
       );
     },
 
     onTaskStart(info) {
       store.append(
         'task_started',
-        { taskId: info.taskId, title: info.title, agentId: info.agentId, startedAt: info.startedAt },
-        { agentId: info.agentId, taskId: info.taskId, phase: info.phase },
+        {
+          taskId: info.taskId,
+          title: info.title,
+          agentId: info.agentId,
+          startedAt: info.startedAt,
+        },
+        { agentId: info.agentId, taskId: info.taskId, phaseId: info.phaseId },
       );
     },
 
-    onTaskStepStart(info) {
+    onStepStart(info) {
       store.append(
-        'task_step_started',
-        { taskId: info.taskId, stepName: info.stepName, stepIndex: info.stepIndex, totalSteps: info.totalSteps },
-        { taskId: info.taskId },
+        'step_started',
+        {
+          taskId: info.taskId,
+          stepIndex: info.stepIndex,
+          stepName: info.stepName,
+          agentId: info.agentId,
+        },
+        { taskId: info.taskId, agentId: info.agentId },
       );
     },
 
@@ -81,11 +123,18 @@ export function createStoreCallbacks(store: StoreLike): StatusCallbacks {
     },
 
     onError(info) {
-      store.append('error', { error: info.error }, { agentId: info.agentId, taskId: info.taskId, phase: info.phase });
+      store.append(
+        'error',
+        { error: info.error },
+        { agentId: info.agentId, taskId: info.taskId, phaseId: info.phaseId },
+      );
     },
 
     onWorkflowComplete(info) {
-      store.append('workflow_completed', { totalDurationMs: info.totalDurationMs, agentCount: info.agentCount });
+      store.append('workflow_completed', {
+        totalDurationMs: info.totalDurationMs,
+        agentCount: info.agentCount,
+      });
     },
 
     onWorkflowFailed(info) {
@@ -96,16 +145,12 @@ export function createStoreCallbacks(store: StoreLike): StatusCallbacks {
         error: info.error.message,
         errorName: info.error.name,
         errorStack: info.error.stack,
-        phase: info.phase,
+        phase: info.phaseId,
       });
     },
 
-    onTasksAdded(info) {
-      store.append('tasks_added', { tasks: info.tasks });
-    },
-
     onSidebarUpdate(info) {
-      store.append('sidebar_updated', { title: info.title, indicator: info.indicator, phases: info.phases });
+      store.append('sidebar_updated', { title: info.title, indicator: info.indicator });
     },
 
     onTurnStart(info) {

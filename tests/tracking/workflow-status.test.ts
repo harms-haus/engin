@@ -20,8 +20,8 @@ describe('WorkflowStatusTracker', () => {
   describe('initial state', () => {
     it('starts with default values', () => {
       expect(tracker.taskPrompt).toBe('');
-      expect(tracker.currentPhase).toBe('');
-      expect(tracker.completedPhases).toEqual([]);
+      expect(tracker.currentPhaseId).toBe('');
+      expect(tracker.completedPhaseIds).toEqual([]);
       expect(tracker.workflowData).toEqual({});
       expect((tracker.workflowData as Record<string, unknown>).scoutingReports).toBeUndefined();
       expect((tracker.workflowData as Record<string, unknown>).plan).toBeUndefined();
@@ -35,6 +35,10 @@ describe('WorkflowStatusTracker', () => {
 
     it('exposes an auditLog instance', () => {
       expect(tracker.auditLog).toBeDefined();
+    });
+
+    it('phases getter returns empty array initially', () => {
+      expect(tracker.phases).toEqual([]);
     });
   });
 
@@ -56,11 +60,11 @@ describe('WorkflowStatusTracker', () => {
   // ── setPhase ───────────────────────────────────────────────────────
 
   describe('setPhase', () => {
-    it('pushes current phase to completedPhases and sets new phase', () => {
+    it('pushes current phase to completedPhaseIds and sets new phase', () => {
       tracker.setCurrentPhase('scouting');
       tracker.setPhase('planning');
-      expect(tracker.currentPhase).toBe('planning');
-      expect(tracker.completedPhases).toEqual(['scouting']);
+      expect(tracker.currentPhaseId).toBe('planning');
+      expect(tracker.completedPhaseIds).toEqual(['scouting']);
     });
 
     it('chains multiple transitions', () => {
@@ -68,37 +72,108 @@ describe('WorkflowStatusTracker', () => {
       tracker.setPhase('planning');
       tracker.setPhase('implementing');
       tracker.setPhase('review');
-      expect(tracker.currentPhase).toBe('review');
-      expect(tracker.completedPhases).toEqual(['scouting', 'planning', 'implementing']);
+      expect(tracker.currentPhaseId).toBe('review');
+      expect(tracker.completedPhaseIds).toEqual(['scouting', 'planning', 'implementing']);
     });
 
     it('accepts any string — no validation', () => {
       expect(() => tracker.setPhase('custom-phase')).not.toThrow();
-      expect(tracker.currentPhase).toBe('custom-phase');
+      expect(tracker.currentPhaseId).toBe('custom-phase');
     });
 
-    it('does not push empty string to completedPhases', () => {
-      // Fresh tracker has currentPhase="", so setPhase should skip pushing it
+    it('does not push empty string to completedPhaseIds', () => {
+      // Fresh tracker has currentPhaseId="", so setPhase should skip pushing it
       tracker.setPhase('scouting');
-      expect(tracker.completedPhases).toEqual([]);
-      expect(tracker.currentPhase).toBe('scouting');
+      expect(tracker.completedPhaseIds).toEqual([]);
+      expect(tracker.currentPhaseId).toBe('scouting');
     });
   });
 
   // ── setCurrentPhase ─────────────────────────────────────────────────
 
   describe('setCurrentPhase', () => {
-    it('sets the current phase without pushing to completedPhases', () => {
+    it('sets the current phase without pushing to completedPhaseIds', () => {
       tracker.setCurrentPhase('scouting');
-      expect(tracker.currentPhase).toBe('scouting');
-      expect(tracker.completedPhases).toEqual([]);
+      expect(tracker.currentPhaseId).toBe('scouting');
+      expect(tracker.completedPhaseIds).toEqual([]);
     });
 
     it('overwrites the current phase without history', () => {
       tracker.setCurrentPhase('scouting');
       tracker.setCurrentPhase('planning');
-      expect(tracker.currentPhase).toBe('planning');
-      expect(tracker.completedPhases).toEqual([]);
+      expect(tracker.currentPhaseId).toBe('planning');
+      expect(tracker.completedPhaseIds).toEqual([]);
+    });
+  });
+
+  // ── registerPhase ──────────────────────────────────────────────────
+
+  describe('registerPhase', () => {
+    it('stores a phase definition', () => {
+      tracker.registerPhase({ id: 'scouting', label: 'Scouting', icon: '🔍' });
+      expect(tracker.phases).toHaveLength(1);
+      expect(tracker.phases[0]).toEqual({ id: 'scouting', label: 'Scouting', icon: '🔍' });
+    });
+
+    it('stores multiple phase definitions', () => {
+      tracker.registerPhase({ id: 'scouting', label: 'Scouting', icon: '🔍' });
+      tracker.registerPhase({ id: 'planning', label: 'Planning', icon: '📋' });
+      tracker.registerPhase({ id: 'implementing', label: 'Implementing', icon: '💻' });
+      expect(tracker.phases).toHaveLength(3);
+    });
+
+    it('phases getter returns a defensive copy', () => {
+      tracker.registerPhase({ id: 'scouting', label: 'Scouting', icon: '🔍' });
+      const phases = tracker.phases;
+      phases.push({ id: 'fake', label: 'Fake', icon: '?' });
+      expect(tracker.phases).toHaveLength(1);
+    });
+
+    it('allows registering the same phase id multiple times (no dedup)', () => {
+      tracker.registerPhase({ id: 'scouting', label: 'Scouting', icon: '🔍' });
+      tracker.registerPhase({ id: 'scouting', label: 'Scouting v2', icon: '🔎' });
+      expect(tracker.phases).toHaveLength(2);
+    });
+
+    it('triggers auto-persist', async () => {
+      tracker.registerPhase({ id: 'scouting', label: 'Scouting', icon: '🔍' });
+      // Wait for debounced save
+      await new Promise((r) => setTimeout(r, 30));
+      const raw = await fs.readFile(path.join(dir, '.engin-state.json'), 'utf-8');
+      const data = JSON.parse(raw);
+      expect(data.taskPrompt).toBe('');
+    });
+  });
+
+  // ── registerTask ──────────────────────────────────────────────────
+
+  describe('registerTask', () => {
+    it('adds a task to the task tracker', () => {
+      tracker.registerTask({ taskId: 't1', phaseId: 'scouting', title: 'Scout the codebase', dependencies: [] });
+      const tasks = tracker.taskTracker.getAllTasks();
+      expect(tasks).toHaveLength(1);
+      expect(tasks[0].id).toBe('t1');
+      expect(tasks[0].phaseId).toBe('scouting');
+      expect(tasks[0].title).toBe('Scout the codebase');
+      expect(tasks[0].dependencies).toEqual([]);
+    });
+
+    it('adds a task with dependencies', () => {
+      tracker.registerTask({ taskId: 't1', phaseId: 'scouting', title: 'Task 1', dependencies: [] });
+      tracker.registerTask({ taskId: 't2', phaseId: 'planning', title: 'Task 2', dependencies: ['t1'] });
+      const tasks = tracker.taskTracker.getAllTasks();
+      expect(tasks).toHaveLength(2);
+      const t2 = tasks.find((t) => t.id === 't2')!;
+      expect(t2.dependencies).toEqual(['t1']);
+    });
+
+    it('triggers auto-persist', async () => {
+      tracker.registerTask({ taskId: 't1', phaseId: 'scouting', title: 'Scout', dependencies: [] });
+      await new Promise((r) => setTimeout(r, 30));
+      const raw = await fs.readFile(path.join(dir, '.engin-state.json'), 'utf-8');
+      const data = JSON.parse(raw);
+      expect(data.tasks).toHaveLength(1);
+      expect(data.tasks[0].id).toBe('t1');
     });
   });
 
@@ -211,8 +286,8 @@ describe('WorkflowStatusTracker', () => {
       const json = tracker.toJSON();
 
       expect(json.taskPrompt).toBe('my prompt');
-      expect(json.currentPhase).toBe('');
-      expect(json.completedPhases).toEqual([]);
+      expect(json.currentPhaseId).toBe('');
+      expect(json.completedPhaseIds).toEqual([]);
       expect(json.workflowData.scoutingReports).toEqual([{ note: 'hello' }]);
       expect(json.workflowData.plan).toEqual({ steps: [1, 2, 3] });
       expect(json.stats).toEqual({ totalTokens: 150, totalCost: 0, agentCount: 1 });
@@ -274,8 +349,8 @@ describe('WorkflowStatusTracker', () => {
       const restored = await WorkflowStatusTracker.load(dir);
 
       expect(restored.taskPrompt).toBe('Build something great');
-      expect(restored.currentPhase).toBe('planning');
-      expect(restored.completedPhases).toEqual(['scouting']);
+      expect(restored.currentPhaseId).toBe('planning');
+      expect(restored.completedPhaseIds).toEqual(['scouting']);
       const restoredData = restored.workflowData as Record<string, unknown>;
       expect(restoredData.scoutingReports).toEqual([{ summary: 'report 1' }, { summary: 'report 2' }]);
       expect(restoredData.plan).toEqual({ phases: ['a', 'b', 'c'] });
@@ -325,15 +400,13 @@ describe('WorkflowStatusTracker', () => {
       tracker.taskTracker.addTask(makeTask({ id: 'b', dependencies: ['a'] }));
 
       // Complete task a
-      const _claimed = tracker.taskTracker.claimTasks(1);
-      tracker.taskTracker.startTask('a', 'agent-1');
-      tracker.taskTracker.submitForReview('a', { done: true });
+      tracker.taskTracker.claimTasks(1, 'agent-1');
       tracker.taskTracker.completeTask('a');
 
       await tracker.save();
       const restored = await WorkflowStatusTracker.load(dir);
 
-      expect(restored.taskTracker.getTask('a')!.status).toBe('done');
+      expect(restored.taskTracker.getTask('a')!.status).toBe('complete');
       expect(restored.taskTracker.getTask('b')!.status).toBe('ready');
     });
 
@@ -360,15 +433,13 @@ describe('WorkflowStatusTracker', () => {
       tracker.setTaskPrompt('auto-persist-test');
       tracker.taskTracker.addTask(makeTask({ id: 't1' }));
 
-      const _claimed = tracker.taskTracker.claimTasks(1);
-      tracker.taskTracker.startTask('t1', 'agent-x');
-      tracker.taskTracker.submitForReview('t1', { ok: true });
+      tracker.taskTracker.claimTasks(1, 'agent-x');
       tracker.taskTracker.completeTask('t1');
 
       await tracker.save();
 
       const restored = await WorkflowStatusTracker.load(dir);
-      expect(restored.taskTracker.getTask('t1')!.status).toBe('done');
+      expect(restored.taskTracker.getTask('t1')!.status).toBe('complete');
       expect(restored.taskPrompt).toBe('auto-persist-test');
     });
 
@@ -376,8 +447,7 @@ describe('WorkflowStatusTracker', () => {
       tracker.setTaskPrompt('fail-persist-test');
       tracker.taskTracker.addTask(makeTask({ id: 't1' }));
 
-      const _claimed = tracker.taskTracker.claimTasks(1);
-      tracker.taskTracker.startTask('t1', 'agent-x');
+      tracker.taskTracker.claimTasks(1, 'agent-x');
       tracker.taskTracker.failTask('t1', { error: 'boom' });
 
       await tracker.save();
@@ -399,16 +469,14 @@ describe('WorkflowStatusTracker', () => {
       expect(restored.taskTracker.getTask('t1')!.status).toBe('ready');
 
       // Run the full lifecycle on the loaded tracker
-      const _claimed = restored.taskTracker.claimTasks(1);
-      restored.taskTracker.startTask('t1', 'agent-x');
-      restored.taskTracker.submitForReview('t1', { ok: true });
+      restored.taskTracker.claimTasks(1, 'agent-x');
       restored.taskTracker.completeTask('t1');
 
       await restored.save();
 
       // Reload from disk — should reflect the completed task
       const reloaded = await WorkflowStatusTracker.load(dir);
-      expect(reloaded.taskTracker.getTask('t1')!.status).toBe('done');
+      expect(reloaded.taskTracker.getTask('t1')!.status).toBe('complete');
     });
 
     it('auto-persist does not throw on disk error', async () => {
@@ -422,9 +490,7 @@ describe('WorkflowStatusTracker', () => {
         throw new Error('Simulated disk write failure');
       };
 
-      const _claimed = tracker.taskTracker.claimTasks(1);
-      tracker.taskTracker.startTask('t1', 'agent-x');
-      tracker.taskTracker.submitForReview('t1', { ok: true });
+      tracker.taskTracker.claimTasks(1, 'agent-x');
 
       // completeTask should not throw — save() is fire-and-forget with .catch()
       tracker.taskTracker.completeTask('t1');
@@ -432,7 +498,7 @@ describe('WorkflowStatusTracker', () => {
       await tracker.save().catch(() => {});
 
       // In-memory state is still correct despite the save failure
-      expect(tracker.taskTracker.getTask('t1')!.status).toBe('done');
+      expect(tracker.taskTracker.getTask('t1')!.status).toBe('complete');
       expect(saveWasCalled).toBe(true);
 
       // Restore original save method for cleanup
@@ -485,9 +551,7 @@ describe('WorkflowStatusTracker', () => {
       isolatedTracker.dispose();
 
       // Completing a task after dispose should NOT write to disk
-      const _claimed = isolatedTracker.taskTracker.claimTasks(1);
-      isolatedTracker.taskTracker.startTask('t1', 'agent-1');
-      isolatedTracker.taskTracker.submitForReview('t1', { done: true });
+      isolatedTracker.taskTracker.claimTasks(1, 'agent-1');
       isolatedTracker.taskTracker.completeTask('t1');
 
       // Load from disk — the task should still be 'ready' (pre-dispose state)
@@ -531,9 +595,7 @@ describe('WorkflowStatusTracker', () => {
       ac.abort();
 
       // Complete a task after abort — should NOT persist
-      const _claimed = signalTracker.taskTracker.claimTasks(1);
-      signalTracker.taskTracker.startTask('t1', 'agent-1');
-      signalTracker.taskTracker.submitForReview('t1', { done: true });
+      signalTracker.taskTracker.claimTasks(1, 'agent-1');
       signalTracker.taskTracker.completeTask('t1');
 
       // The original tracker never saved, so load should fail
@@ -610,6 +672,58 @@ describe('WorkflowStatusTracker', () => {
 
       expect(() => signalTracker.dispose()).not.toThrow();
     });
+
+    it('abort signal cancels active tasks before disposal', () => {
+      const ac = new AbortController();
+      const signalTracker = new WorkflowStatusTracker(dir, ac.signal);
+
+      // Add a task and set it to active
+      signalTracker.taskTracker.addTask(makeTask({ id: 'active-task' }));
+      signalTracker.taskTracker.claimTasks(1, 'agent-1');
+
+      expect(signalTracker.taskTracker.getTask('active-task')!.status).toBe('active');
+
+      // Abort should cancel it
+      ac.abort();
+
+      expect(signalTracker.taskTracker.getTask('active-task')!.status).toBe('cancelled');
+    });
+
+    it('abort signal only cancels active tasks, not ready/blocked ones', () => {
+      const ac = new AbortController();
+      const signalTracker = new WorkflowStatusTracker(dir, ac.signal);
+
+      signalTracker.taskTracker.addTask(makeTask({ id: 'active-task' }));
+      signalTracker.taskTracker.addTask(makeTask({ id: 'ready-task' }));
+      signalTracker.taskTracker.addTask({
+        ...makeTask({ id: 'blocked-task', dependencies: ['active-task'] }),
+        status: undefined,
+      });
+
+      // Claim and start the first task
+      signalTracker.taskTracker.claimTasks(1, 'agent-1');
+
+      expect(signalTracker.taskTracker.getTask('active-task')!.status).toBe('active');
+      expect(signalTracker.taskTracker.getTask('ready-task')!.status).toBe('ready');
+      // blocked-task should be blocked because active-task isn't settled yet
+      expect(signalTracker.taskTracker.getTask('blocked-task')!.status).toBe('blocked');
+
+      ac.abort();
+
+      // Only the active task should be cancelled
+      expect(signalTracker.taskTracker.getTask('active-task')!.status).toBe('cancelled');
+      expect(signalTracker.taskTracker.getTask('ready-task')!.status).toBe('ready');
+      expect(signalTracker.taskTracker.getTask('blocked-task')!.status).toBe('blocked');
+    });
+
+    it('abort with no active tasks still disposes cleanly', () => {
+      const ac = new AbortController();
+      const signalTracker = new WorkflowStatusTracker(dir, ac.signal);
+
+      // No tasks at all
+      expect(() => ac.abort()).not.toThrow();
+      expect(signalTracker.taskTracker.getAllTasks()).toEqual([]);
+    });
   });
 
   // ── edge cases ─────────────────────────────────────────────────────
@@ -618,18 +732,18 @@ describe('WorkflowStatusTracker', () => {
     it('setPhase works from a non-default starting point', () => {
       tracker.setCurrentPhase('scouting');
       tracker.setPhase('planning');
-      expect(tracker.currentPhase).toBe('planning');
-      expect(tracker.completedPhases).toEqual(['scouting']);
+      expect(tracker.currentPhaseId).toBe('planning');
+      expect(tracker.completedPhaseIds).toEqual(['scouting']);
     });
 
-    it('completedPhases only tracks setPhase transitions, not setCurrentPhase', () => {
+    it('completedPhaseIds only tracks setPhase transitions, not setCurrentPhase', () => {
       tracker.setCurrentPhase('scouting');
-      // completedPhases should still be empty since setCurrentPhase doesn't push
-      expect(tracker.completedPhases).toEqual([]);
+      // completedPhaseIds should still be empty since setCurrentPhase doesn't push
+      expect(tracker.completedPhaseIds).toEqual([]);
 
       tracker.setPhase('planning');
-      expect(tracker.currentPhase).toBe('planning');
-      expect(tracker.completedPhases).toEqual(['scouting']);
+      expect(tracker.currentPhaseId).toBe('planning');
+      expect(tracker.completedPhaseIds).toEqual(['scouting']);
     });
 
     it('auditLog points to workDir/audit', async () => {

@@ -23,7 +23,7 @@ export function createStatusCallbacks(verbose: boolean): StatusCallbacks {
       );
     },
     onWorkflowFailed: (info) => {
-      console.log(`${formatTime()} 💥 Workflow failed at phase ${info.phase}: ${info.error.message}`);
+      console.log(`${formatTime()} 💥 Workflow failed at phase ${info.phaseId}: ${info.error.message}`);
     },
     onPhaseStart: (info) => {
       console.log(`${formatTime()} 📦 Phase started: ${info.phase} (round ${info.round})`);
@@ -50,7 +50,7 @@ export function createStatusCallbacks(verbose: boolean): StatusCallbacks {
       console.log(`${formatTime()} 🤝 Decision by ${info.agentId}: ${info.decision}`);
     },
     onError: (info) => {
-      console.log(`${formatTime()} ⚠️ Error in ${info.agentId}: ${info.error} (phase: ${info.phase})`);
+      console.log(`${formatTime()} ⚠️ Error in ${info.agentId}: ${info.error} (phase: ${info.phaseId})`);
     },
   };
 

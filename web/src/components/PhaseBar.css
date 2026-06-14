@@ -19,6 +19,7 @@
   white-space: nowrap;
   min-width: 44px;
   min-height: 44px;
+  cursor: pointer;
 }
 
 .phase-bar__tab--completed {
@@ -31,6 +32,11 @@
   font-weight: bold;
   border-bottom: 2px solid var(--accent);
   opacity: 1;
+}
+
+.phase-bar__tab--selected {
+  background: var(--bg-tertiary, rgba(128, 128, 128, 0.15));
+  border-radius: 4px;
 }
 
 .phase-bar__icon {

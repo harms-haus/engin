@@ -600,7 +600,7 @@ describe('LanePool', () => {
         profilesDirs: ['/mock/profiles'],
         sessionBaseDir: '/tmp/sessions',
         cwd: '/tmp/project',
-        phase: 'implementing',
+        phaseId: 'implementing',
         taskTracker: createMockTaskTracker({
           claimTasks: mock(() => {
             claimCount++;
@@ -613,7 +613,7 @@ describe('LanePool', () => {
                     profile: 'coder',
                     files: [],
                     dependencies: [],
-                    status: 'claimed' as const,
+                    status: 'active' as const,
                   },
                 ]
               : (() => {
@@ -817,21 +817,41 @@ describe('LanePool', () => {
     });
   });
 
-  describe('onTasksAdded callback', () => {
-    it('fires onTasksAdded with all initial task statuses', async () => {
+  describe('onTaskRegister callback', () => {
+    it('fires onTaskRegister once per task with phaseId and steps', async () => {
       setupProfileMocks();
       setupHarnessMocks();
-      const onTasksAdded = mock(() => {});
+      const onTaskRegister = mock(() => {});
       const { pool, tracker } = createPoolAndTracker({
         tasks: [
           makeTask({ id: 'task-1', title: 'First', dependencies: [] }),
           { ...makeTask({ id: 'task-2', title: 'Second', dependencies: ['task-1'] }), status: undefined as const },
         ],
-        onStatus: { onTasksAdded },
+        onStatus: { onTaskRegister },
       });
       expect(tracker.getTask('task-2')!.status).toBe('blocked');
       await pool.run();
-      expect(onTasksAdded).toHaveBeenCalledTimes(1);
+      expect(onTaskRegister).toHaveBeenCalledTimes(2);
+      expect(onTaskRegister).toHaveBeenNthCalledWith(
+        1,
+        expect.objectContaining({
+          taskId: 'task-1',
+          phaseId: 'implementing',
+          title: 'First',
+          dependencies: [],
+          steps: [{ name: 'implement', profileId: 'coder', isReadOnly: false }],
+        }),
+      );
+      expect(onTaskRegister).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({
+          taskId: 'task-2',
+          phaseId: 'implementing',
+          title: 'Second',
+          dependencies: ['task-1'],
+          steps: [{ name: 'implement', profileId: 'coder', isReadOnly: false }],
+        }),
+      );
     });
   });
 
@@ -921,7 +941,7 @@ describe('LanePool', () => {
       const { pool, tracker } = createPoolAndTracker({ maxStepRetries: 2, getStepsForTask: () => sevSteps() });
       const result = await pool.run();
       expect(result.completedTasks).toBe(1);
-      expect(tracker.getTask('task-1')!.status).toBe('done');
+      expect(tracker.getTask('task-1')!.status).toBe('complete');
     });
 
     it('marks task as completed when severity is low after max retries', async () => {
@@ -934,7 +954,7 @@ describe('LanePool', () => {
       const { pool, tracker } = createPoolAndTracker({ maxStepRetries: 2, getStepsForTask: () => sevSteps() });
       const result = await pool.run();
       expect(result.completedTasks).toBe(1);
-      expect(tracker.getTask('task-1')!.status).toBe('done');
+      expect(tracker.getTask('task-1')!.status).toBe('complete');
     });
 
     it('marks task as failed when severity is high after max retries', async () => {
@@ -968,7 +988,7 @@ describe('LanePool', () => {
       });
       const result = await pool.run();
       expect(result.completedTasks).toBe(1);
-      expect(tracker.getTask('task-1')!.status).toBe('done');
+      expect(tracker.getTask('task-1')!.status).toBe('complete');
     });
 
     it('default maxStepRetries is now 5', async () => {
@@ -996,7 +1016,7 @@ describe('LanePool', () => {
       const result = await pool.run();
       expect(result.completedTasks).toBe(1);
       expect(mockPromptForStructured).toHaveBeenCalledTimes(5);
-      expect(tracker.getTask('task-1')!.status).toBe('done');
+      expect(tracker.getTask('task-1')!.status).toBe('complete');
     });
   });
 
@@ -1037,45 +1057,45 @@ describe('LanePool', () => {
       const result = await pool.run();
       expect(mockPromptForStructured).toHaveBeenCalledTimes(3);
       expect(result.completedTasks).toBe(1);
-      expect(tracker.getTask('task-1')!.status).toBe('done');
+      expect(tracker.getTask('task-1')!.status).toBe('complete');
     });
   });
 
-  describe('onTaskStepStart callback', () => {
-    it('fires onTaskStepStart with correct step info for each step', async () => {
+  describe('onStepStart callback', () => {
+    it('fires onStepStart with correct step info for each step', async () => {
       setupProfileMocks();
       setupHarnessMocks();
-      const onTaskStepStart = mock(() => {});
+      const onStepStart = mock(() => {});
       const { pool } = createPoolAndTracker({
         getStepsForTask: () => [
           { name: 'implement', profileId: 'coder', isReadOnly: false },
           { name: 'review', profileId: 'reviewer', isReadOnly: true },
         ],
-        onStatus: { onTaskStepStart },
+        onStatus: { onStepStart },
       });
       await pool.run();
-      expect(onTaskStepStart).toHaveBeenCalledTimes(2);
-      expect(onTaskStepStart).toHaveBeenNthCalledWith(
+      expect(onStepStart).toHaveBeenCalledTimes(2);
+      expect(onStepStart).toHaveBeenNthCalledWith(
         1,
         expect.objectContaining({
           taskId: 'task-1',
           stepName: 'implement',
           stepIndex: 0,
-          totalSteps: 2,
+          agentId: 'lane-0',
         }),
       );
-      expect(onTaskStepStart).toHaveBeenNthCalledWith(
+      expect(onStepStart).toHaveBeenNthCalledWith(
         2,
         expect.objectContaining({
           taskId: 'task-1',
           stepName: 'review',
           stepIndex: 1,
-          totalSteps: 2,
+          agentId: 'lane-0',
         }),
       );
     });
 
-    it('fires onTaskStepStart on retry (re-execution of same step)', async () => {
+    it('fires onStepStart on retry (re-execution of same step)', async () => {
       setupProfileMocks();
       setupHarnessMocks();
       let rc = 0;
@@ -1086,7 +1106,7 @@ describe('LanePool', () => {
             : { result: { approved: true, feedback: undefined }, attempts: 1 },
         ),
       );
-      const onTaskStepStart = mock(() => {});
+      const onStepStart = mock(() => {});
       const { pool } = createPoolAndTracker({
         maxStepRetries: 3,
         getStepsForTask: () => [
@@ -1098,27 +1118,27 @@ describe('LanePool', () => {
             schema: z.object({ approved: z.boolean(), feedback: z.string().optional() }),
           },
         ],
-        onStatus: { onTaskStepStart },
+        onStatus: { onStepStart },
       });
       await pool.run();
       // First pass: implement(0) + review(1). Review rejects, backing up to implement.
       // Second pass: implement(0) + review(1). Both approved.
-      expect(onTaskStepStart).toHaveBeenCalledTimes(4);
-      expect(onTaskStepStart).toHaveBeenNthCalledWith(
+      expect(onStepStart).toHaveBeenCalledTimes(4);
+      expect(onStepStart).toHaveBeenNthCalledWith(
         1,
-        expect.objectContaining({ stepName: 'implement', stepIndex: 0, totalSteps: 2 }),
+        expect.objectContaining({ stepName: 'implement', stepIndex: 0, agentId: 'lane-0' }),
       );
-      expect(onTaskStepStart).toHaveBeenNthCalledWith(
+      expect(onStepStart).toHaveBeenNthCalledWith(
         2,
-        expect.objectContaining({ stepName: 'review', stepIndex: 1, totalSteps: 2 }),
+        expect.objectContaining({ stepName: 'review', stepIndex: 1, agentId: 'lane-0' }),
       );
-      expect(onTaskStepStart).toHaveBeenNthCalledWith(
+      expect(onStepStart).toHaveBeenNthCalledWith(
         3,
-        expect.objectContaining({ stepName: 'implement', stepIndex: 0, totalSteps: 2 }),
+        expect.objectContaining({ stepName: 'implement', stepIndex: 0, agentId: 'lane-0' }),
       );
-      expect(onTaskStepStart).toHaveBeenNthCalledWith(
+      expect(onStepStart).toHaveBeenNthCalledWith(
         4,
-        expect.objectContaining({ stepName: 'review', stepIndex: 1, totalSteps: 2 }),
+        expect.objectContaining({ stepName: 'review', stepIndex: 1, agentId: 'lane-0' }),
       );
     });
   });
@@ -1188,7 +1208,7 @@ describe('LanePool', () => {
   });
 
   describe('task result output', () => {
-    it('includes last step output in task result for single non-structured step', async () => {
+    it('completes task and stores result via completeTask for single non-structured step', async () => {
       const scoutProfile = { ...defaultProfile, id: 'scout', name: 'Scout' };
       const map = new Map<string, typeof defaultProfile>();
       map.set('scout', scoutProfile);
@@ -1199,10 +1219,11 @@ describe('LanePool', () => {
         getStepsForTask: () => [{ name: 'scouting', profileId: 'scout', isReadOnly: true }],
       });
       await pool.run();
-      expect(tracker.getTask('task-1')?.result).toEqual({ completed: true, output: 'scout report: all clear' });
+      const task = tracker.getTask('task-1')!;
+      expect(task.status).toBe('complete');
     });
 
-    it('includes only last step output for multi-step pipeline', async () => {
+    it('completes task for multi-step pipeline with last step output', async () => {
       setupProfileMocks();
       let cc = 0;
       mockCreateHarness.mockImplementation(() => {
@@ -1220,7 +1241,8 @@ describe('LanePool', () => {
         ],
       });
       await pool.run();
-      expect(tracker.getTask('task-1')?.result).toMatchObject({ completed: true, output: 'review-result' });
+      const task = tracker.getTask('task-1')!;
+      expect(task.status).toBe('complete');
     });
   });
 });

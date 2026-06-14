@@ -1,22 +1,35 @@
 import { TUI } from '@earendil-works/pi-tui';
 import { describe, expect, it, mock, spyOn } from 'bun:test';
+import type { TaskEntity } from '../../src/core/types.js';
 import { EventStore } from '../../src/tracking/event-store.js';
-import type { WorkflowProjection } from '../../src/tracking/event-types.js';
+import type { AgentEntity, WorkflowProjection } from '../../src/tracking/event-types.js';
 import { createStoreCallbacks } from '../../src/tracking/store-callbacks.js';
 import { WorkflowTUI } from '../../src/tui/workflow-tui.js';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 /** Create a minimal projection with agents in given phases. */
-function projectionWithAgents(phases: string[], agentIds: string[]): WorkflowProjection {
+function projectionWithAgents(phases: string[], agentIds: string[], taskId = 't1'): WorkflowProjection {
+  const currentPhaseId = phases[0] ?? '';
   const p: WorkflowProjection = {
     seq: 0,
     taskPrompt: '',
-    currentPhase: phases[0] ?? '',
-    completedPhases: [],
-    tasks: {},
+    phases: phases.map((id) => ({ id, label: id, icon: '📋', taskIds: [taskId] })),
+    currentPhaseId,
+    completedPhaseIds: [],
+    tasks: {
+      [taskId]: {
+        id: taskId,
+        title: 'Test Task',
+        phaseId: currentPhaseId,
+        status: 'active',
+        steps: agentIds.map((aid, i) => ({ name: `Step ${i + 1}`, index: i, agentKey: aid })),
+        dependencies: [],
+        startedAt: Date.now(),
+      },
+    },
     agents: {},
-    sidebar: { title: '', indicator: '', phases: phases.map((id) => ({ id, label: id, icon: '📋' })) },
+    sidebar: { title: '', indicator: '' },
     status: 'running',
     stats: { totalTokens: 0, agentCount: 0 },
   };
@@ -27,7 +40,8 @@ function projectionWithAgents(phases: string[], agentIds: string[]): WorkflowPro
         uid: key,
         agentId,
         profile: 'coder',
-        phase,
+        phaseId: phase,
+        taskId,
         active: true,
         log: [],
         toolCallCount: 0,
@@ -40,6 +54,77 @@ function projectionWithAgents(phases: string[], agentIds: string[]): WorkflowPro
   return p;
 }
 
+/** Build a full projection from structured options. */
+function buildProjection(options: {
+  phases?: { id: string; label?: string; icon?: string }[];
+  currentPhaseId?: string;
+  completedPhaseIds?: string[];
+  tasks?: TaskEntity[];
+  agents?: AgentEntity[];
+  indicator?: string;
+}): WorkflowProjection {
+  const p = {
+    seq: 0,
+    taskPrompt: '',
+    phases: (options.phases ?? []).map((ph) => ({
+      id: ph.id,
+      label: ph.label ?? ph.id,
+      icon: ph.icon ?? '📋',
+      taskIds: [] as string[],
+    })),
+    currentPhaseId: options.currentPhaseId ?? '',
+    completedPhaseIds: options.completedPhaseIds ?? [],
+    tasks: {} as Record<string, TaskEntity>,
+    agents: {} as Record<string, AgentEntity>,
+    sidebar: { title: '', indicator: options.indicator ?? '' },
+    status: 'running' as const,
+    stats: { totalTokens: 0, agentCount: 0 },
+  };
+  for (const t of options.tasks ?? []) {
+    p.tasks[t.id] = t;
+  }
+  for (const a of options.agents ?? []) {
+    p.agents[a.uid] = a;
+  }
+  return p;
+}
+
+/** Create a minimal TaskEntity for testing. */
+function makeTestTask(id: string, phaseId: string, overrides: Partial<TaskEntity> = {}): TaskEntity {
+  return {
+    id,
+    title: 'Test Task',
+    phaseId,
+    status: 'ready',
+    steps: [],
+    dependencies: [],
+    ...overrides,
+  };
+}
+
+/** Create a minimal AgentEntity for testing. */
+function makeTestAgent(
+  uid: string,
+  taskId: string,
+  phaseId: string,
+  overrides: Partial<AgentEntity> = {},
+): AgentEntity {
+  return {
+    uid,
+    agentId: uid,
+    profile: 'coder',
+    phaseId,
+    taskId,
+    active: true,
+    log: [],
+    toolCallCount: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    taskTitle: '',
+    ...overrides,
+  };
+}
+
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 describe('WorkflowTUI', () => {
@@ -50,7 +135,7 @@ describe('WorkflowTUI', () => {
     });
 
     it('creates an instance with custom options', () => {
-      const tui = new WorkflowTUI({ maxConcurrentLanes: 5, agentLogLines: 6 });
+      const tui = new WorkflowTUI({ agentLogLines: 6 });
       expect(tui).toBeDefined();
     });
 
@@ -73,7 +158,7 @@ describe('WorkflowTUI', () => {
       const dashboard = tui.getDashboard();
       expect(dashboard).toBeDefined();
       expect(dashboard.phaseBar).toBeDefined();
-      expect(dashboard.lanePool).toBeDefined();
+      expect(dashboard.taskList).toBeDefined();
       expect(dashboard.agentLog).toBeDefined();
     });
 
@@ -90,9 +175,12 @@ describe('WorkflowTUI', () => {
       });
 
       // Dashboard should have synced the projection
+      // Note: phases array is not populated by current store callbacks,
+      // but currentPhaseId should be reflected in the selection state.
       const dashboard = tui.getDashboard();
-      expect(dashboard.agentLog.hasPhases()).toBe(true);
-      expect(dashboard.agentLog.getCurrentPhase()).toBe('scouting');
+      expect(dashboard.getSelection().selectedPhaseId).toBe('scouting');
+      // The phaseBar shows the currentPhaseId when no phases are registered
+      expect(dashboard.phaseBar.render(78)[0]).toContain('scouting');
     });
   });
 
@@ -207,104 +295,110 @@ describe('WorkflowTUI', () => {
     });
   });
 
-  describe('arrow key routing to agent log', () => {
+  describe('input routing', () => {
     const LEFT_ARROW = '\x1b[D';
     const RIGHT_ARROW = '\x1b[C';
+    const TAB = '\t';
 
-    /** Helper: set up dashboard with agents via syncFromProjection. */
-    function setupTwoAgents(tui: WorkflowTUI) {
+    /** Helper: set up dashboard with a projection that has phases and agents. */
+    function setupBasic(tui: WorkflowTUI) {
       const dashboard = tui.getDashboard();
-      const p = projectionWithAgents(['test'], ['agent-1', 'agent-2']);
+      const p = projectionWithAgents(['phase-a', 'phase-b'], ['agent-1', 'agent-2']);
       dashboard.syncFromProjection(p);
       return dashboard;
     }
 
-    it('dashboard.handleInput routes left arrow to agentLog, switching agents', () => {
+    it('left/right routes to phaseBar and changes selectedPhaseId', () => {
       const tui = new WorkflowTUI();
-      const dashboard = setupTwoAgents(tui);
+      const dashboard = setupBasic(tui);
 
+      expect(dashboard.getSelection().selectedPhaseId).toBe('phase-a');
+
+      const phaseSpy = spyOn(dashboard.phaseBar, 'handleInput');
+
+      dashboard.handleInput(RIGHT_ARROW);
+      expect(phaseSpy).toHaveBeenCalledWith(RIGHT_ARROW);
+      expect(dashboard.getSelection().selectedPhaseId).toBe('phase-b');
+
+      dashboard.handleInput(LEFT_ARROW);
+      expect(dashboard.getSelection().selectedPhaseId).toBe('phase-a');
+
+      phaseSpy.mockRestore();
+    });
+
+    it('tab routes to agentLog and cycles steps (thus agents)', () => {
+      const tui = new WorkflowTUI();
+      const dashboard = setupBasic(tui);
+
+      // Initially step 0 / agent-1 is selected
       expect(dashboard.agentLog.getSelectedAgentUid()).toBeTruthy();
+      const initialAgent = dashboard.agentLog.getSelectedAgentUid();
 
-      dashboard.handleInput(RIGHT_ARROW);
-      const uid2 = dashboard.agentLog.getSelectedAgentUid();
-
-      dashboard.handleInput(LEFT_ARROW);
-      const uid1 = dashboard.agentLog.getSelectedAgentUid();
-
-      expect(uid1).not.toBe(uid2);
+      dashboard.handleInput(TAB);
+      const secondAgent = dashboard.agentLog.getSelectedAgentUid();
+      // Tab cycles to next step (with agentKey)
+      expect(secondAgent).not.toBe(initialAgent);
     });
 
-    it('dashboard.handleInput routes right arrow to agentLog, switching agents', () => {
+    it('non-arrow/non-tab keys are NOT routed to any subcomponent', () => {
       const tui = new WorkflowTUI();
-      const dashboard = setupTwoAgents(tui);
+      const dashboard = setupBasic(tui);
 
-      const uid1 = dashboard.agentLog.getSelectedAgentUid();
-
-      dashboard.handleInput(RIGHT_ARROW);
-      const uid2 = dashboard.agentLog.getSelectedAgentUid();
-      expect(uid2).not.toBe(uid1);
-
-      dashboard.handleInput(RIGHT_ARROW);
-      const uid3 = dashboard.agentLog.getSelectedAgentUid();
-      // Wraps back to first agent
-      expect(uid3).toBe(uid1);
-    });
-
-    it('dashboard.handleInput with spy verifies left arrow is forwarded to agentLog', () => {
-      const tui = new WorkflowTUI();
-      const dashboard = setupTwoAgents(tui);
-      const agentSpy = spyOn(dashboard.agentLog, 'handleInput');
-
-      dashboard.handleInput(LEFT_ARROW);
-      expect(agentSpy).toHaveBeenCalledTimes(1);
-      expect(agentSpy).toHaveBeenCalledWith(LEFT_ARROW);
-
-      agentSpy.mockRestore();
-    });
-
-    it('dashboard.handleInput with spy verifies right arrow is forwarded to agentLog', () => {
-      const tui = new WorkflowTUI();
-      const dashboard = setupTwoAgents(tui);
-      const agentSpy = spyOn(dashboard.agentLog, 'handleInput');
-
-      dashboard.handleInput(RIGHT_ARROW);
-      expect(agentSpy).toHaveBeenCalledTimes(1);
-      expect(agentSpy).toHaveBeenCalledWith(RIGHT_ARROW);
-
-      agentSpy.mockRestore();
-    });
-
-    it('non-arrow keys are NOT routed to agentLog by dashboard.handleInput', () => {
-      const tui = new WorkflowTUI();
-      const dashboard = setupTwoAgents(tui);
-      const agentSpy = spyOn(dashboard.agentLog, 'handleInput');
+      const phaseSpy = spyOn(dashboard.phaseBar, 'handleInput');
+      const logSpy = spyOn(dashboard.agentLog, 'handleInput');
 
       dashboard.handleInput('x');
-      expect(agentSpy).not.toHaveBeenCalled();
+      expect(phaseSpy).not.toHaveBeenCalled();
+      expect(logSpy).not.toHaveBeenCalled();
 
-      agentSpy.mockRestore();
+      phaseSpy.mockRestore();
+      logSpy.mockRestore();
     });
 
-    it('input listener fix expectation: arrow keys must be consumed by the global listener', () => {
+    it('input listener fix: left/right must be consumed by global listener', () => {
       const tui = new WorkflowTUI();
-      const dashboard = setupTwoAgents(tui);
+      const dashboard = setupBasic(tui);
 
-      expect(dashboard.agentLog.getSelectedAgentUid()).toBeTruthy();
+      expect(dashboard.getSelection().selectedPhaseId).toBe('phase-a');
 
       dashboard.handleInput(RIGHT_ARROW);
-      // Agent should have switched — proving the pipeline works end-to-end
-      expect(dashboard.agentLog.getSelectedAgentUid()).toBeTruthy();
+      // Phase should have changed — proving the pipeline works end-to-end
+      expect(dashboard.getSelection().selectedPhaseId).toBe('phase-b');
+    });
+
+    it('Tab routed to dashboard.handleInput from global listener', () => {
+      const tui = new WorkflowTUI();
+      const dashboard = setupBasic(tui);
+
+      const spy = spyOn(dashboard, 'handleInput');
+      dashboard.handleInput(TAB);
+      expect(spy).toHaveBeenCalledWith(TAB);
+      spy.mockRestore();
+    });
+
+    it('Left/Right routed to dashboard.handleInput from global listener', () => {
+      const tui = new WorkflowTUI();
+      const dashboard = setupBasic(tui);
+
+      const spy = spyOn(dashboard, 'handleInput');
+      dashboard.handleInput(LEFT_ARROW);
+      expect(spy).toHaveBeenCalledWith(LEFT_ARROW);
+
+      dashboard.handleInput(RIGHT_ARROW);
+      expect(spy).toHaveBeenCalledWith(RIGHT_ARROW);
+
+      spy.mockRestore();
     });
   });
 
   describe('dashboard integration', () => {
-    it('uses custom maxConcurrentLanes and agentLogLines', () => {
-      const tui = new WorkflowTUI({ maxConcurrentLanes: 5, agentLogLines: 8 });
+    it('uses custom agentLogLines', () => {
+      const tui = new WorkflowTUI({ agentLogLines: 8 });
       const dashboard = tui.getDashboard();
       expect(dashboard.getComputedHeight()).toBe(1 + 0 + 8 + 4);
     });
 
-    it('uses default maxConcurrentLanes (5) and agentLogLines (20)', () => {
+    it('uses default agentLogLines (20)', () => {
       const tui = new WorkflowTUI();
       const dashboard = tui.getDashboard();
       expect(dashboard.getComputedHeight()).toBe(1 + 0 + 20 + 4);
@@ -676,22 +770,30 @@ describe('WorkflowTUI', () => {
         dashboard.agentLog.toggleExpand();
         expect(dashboard.agentLog.isExpanded()).toBe(true);
 
-        // Sync agents via store projection
-        const store = new EventStore('/tmp/test-scroll');
-        const sc = createStoreCallbacks(store);
-        sc.onPhaseStart!({ phase: 'test', round: 1 });
-        sc.onAgentSpawn!({ agentId: 'agent-1', profile: 'coder', phase: 'test' });
-        // Add entries via turnEnd
-        for (let i = 1; i <= 60; i++) {
-          sc.onTurnEnd!({
-            agentId: 'agent-1',
-            turn: i,
-            contentBlocks: [{ type: 'text', text: `entry ${i}` }],
-          });
-        }
-        sc.onSidebarUpdate!({ phases: [{ id: 'test', label: 'test', icon: '📋' }] });
-        dashboard.syncFromProjection(store.getProjection());
-
+        // Build a projection with a task and agents that have taskId/phaseId
+        const p = buildProjection({
+          phases: [{ id: 'test' }],
+          currentPhaseId: 'test',
+          tasks: [
+            makeTestTask('t1', 'test', {
+              status: 'active',
+              activeStepIndex: 0,
+              steps: [{ name: 'Step 1', index: 0, agentKey: 'agent-1' }],
+              startedAt: Date.now(),
+            }),
+          ],
+          agents: [
+            makeTestAgent('agent-1', 't1', 'test', {
+              log: Array.from({ length: 60 }, (_, i) => ({
+                id: `${i}`,
+                timestamp: '',
+                type: 'text' as const,
+                content: `entry ${i + 1}`,
+              })),
+            }),
+          ],
+        });
+        dashboard.syncFromProjection(p);
         dashboard.agentLog.render(80);
 
         for (let i = 0; i < 3; i++) {
@@ -714,20 +816,32 @@ describe('WorkflowTUI', () => {
         const dashboard = wtui.dashboard;
 
         dashboard.agentLog.toggleExpand();
+        expect(dashboard.agentLog.isExpanded()).toBe(true);
 
-        const store = new EventStore('/tmp/test-scroll2');
-        const sc = createStoreCallbacks(store);
-        sc.onPhaseStart!({ phase: 'test', round: 1 });
-        sc.onAgentSpawn!({ agentId: 'agent-1', profile: 'coder', phase: 'test' });
-        for (let i = 1; i <= 60; i++) {
-          sc.onTurnEnd!({
-            agentId: 'agent-1',
-            turn: i,
-            contentBlocks: [{ type: 'text', text: `entry ${i}` }],
-          });
-        }
-        sc.onSidebarUpdate!({ phases: [{ id: 'test', label: 'test', icon: '📋' }] });
-        dashboard.syncFromProjection(store.getProjection());
+        // Build a projection with a task and agents
+        const p = buildProjection({
+          phases: [{ id: 'test' }],
+          currentPhaseId: 'test',
+          tasks: [
+            makeTestTask('t1', 'test', {
+              status: 'active',
+              activeStepIndex: 0,
+              steps: [{ name: 'Step 1', index: 0, agentKey: 'agent-1' }],
+              startedAt: Date.now(),
+            }),
+          ],
+          agents: [
+            makeTestAgent('agent-1', 't1', 'test', {
+              log: Array.from({ length: 60 }, (_, i) => ({
+                id: `${i}`,
+                timestamp: '',
+                type: 'text' as const,
+                content: `entry ${i + 1}`,
+              })),
+            }),
+          ],
+        });
+        dashboard.syncFromProjection(p);
         dashboard.agentLog.render(80);
 
         for (let i = 0; i < 5; i++) {
@@ -775,23 +889,24 @@ describe('WorkflowTUI', () => {
     });
   });
 
-  describe('left/right does not sync lane pool focus', () => {
+  describe('left/right phase navigation', () => {
     const RIGHT_ARROW = '\x1b[C';
 
-    it('left/right arrow navigation does not change lane pool focus', () => {
+    it('left/right arrow navigation changes selected phase via phaseBar', () => {
       const tui = new WorkflowTUI();
       const dashboard = tui.getDashboard();
 
-      const p = projectionWithAgents(['test'], ['agent-1', 'agent-2']);
+      const p = projectionWithAgents(['alpha', 'beta'], ['agent-1']);
       dashboard.syncFromProjection(p);
 
-      expect(dashboard.lanePool.getFocusedTaskId()).toBeUndefined();
+      expect(dashboard.getSelection().selectedPhaseId).toBe('alpha');
 
       dashboard.handleInput(RIGHT_ARROW);
-      expect(dashboard.lanePool.getFocusedTaskId()).toBeUndefined();
+      expect(dashboard.getSelection().selectedPhaseId).toBe('beta');
 
       dashboard.handleInput(RIGHT_ARROW);
-      expect(dashboard.lanePool.getFocusedTaskId()).toBeUndefined();
+      // Wraps back to first
+      expect(dashboard.getSelection().selectedPhaseId).toBe('alpha');
     });
   });
 

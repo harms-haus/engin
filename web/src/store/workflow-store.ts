@@ -8,7 +8,7 @@ import type { Draft } from 'immer';
 import { create } from 'zustand';
 import { immer } from 'zustand/middleware/immer';
 import { useShallow } from 'zustand/react/shallow';
-import type { AgentEntity, EventRecord, PhaseDescriptor, TaskEntity, WorkflowProjection } from '../protocol-types';
+import type { AgentEntity, EventRecord, PhaseEntity, TaskEntity, WorkflowProjection } from '../protocol-types';
 import { evolveClient, MAX_AGENT_LOG } from './evolve-client';
 
 const MAX_WORKFLOW_EVENT_LOG = 1000;
@@ -20,8 +20,9 @@ function toProjection(s: WorkflowStoreState): WorkflowProjection {
   return {
     seq: s.seq,
     taskPrompt: s.taskPrompt,
-    currentPhase: s.currentPhase,
-    completedPhases: s.completedPhases,
+    phases: s.phases,
+    currentPhaseId: s.currentPhaseId,
+    completedPhaseIds: s.completedPhaseIds,
     tasks: s.tasksById,
     agents: s.agentsById,
     sidebar: s.sidebar,
@@ -49,14 +50,53 @@ function capAgentLogs(agents: Record<string, AgentEntity>): Record<string, Agent
 function writeProjectionToState(state: Draft<WorkflowStoreState>, p: WorkflowProjection): void {
   state.agentsById = capAgentLogs(p.agents);
   state.tasksById = { ...p.tasks };
-  state.currentPhase = p.currentPhase;
-  state.completedPhases = [...p.completedPhases];
+  state.phases = [...p.phases];
+  state.currentPhaseId = p.currentPhaseId;
+  state.completedPhaseIds = [...p.completedPhaseIds];
   state.sidebar = { ...p.sidebar };
   state.status = p.status;
   state.taskPrompt = p.taskPrompt;
   state.error = p.error;
   state.failedPhase = p.failedPhase;
   state.stats = { ...p.stats };
+}
+
+/**
+ * Reconcile selection state after projection updates (snapshot or events).
+ * Implements follow rules:
+ * - Phase follow: if selectedPhaseId not null, not completed, and differs from currentPhaseId → set to currentPhaseId.
+ * - Task follow: if selectedTaskId null or not in selected phase tasks → auto-select first active.
+ * - Step follow: if !userPinnedStep → sync with activeStepIndex of selected task.
+ */
+function reconcileSelection(state: Draft<WorkflowStoreState>): void {
+  // Phase follow
+  if (state.selectedPhaseId !== null && state.currentPhaseId) {
+    const isCompleted = state.completedPhaseIds.includes(state.selectedPhaseId);
+    if (!isCompleted && state.selectedPhaseId !== state.currentPhaseId) {
+      state.selectedPhaseId = state.currentPhaseId;
+      state.userPinnedPhase = false;
+    }
+  }
+
+  // Task follow
+  if (state.selectedPhaseId) {
+    const tasksInPhase = Object.values(state.tasksById).filter((t) => t.phaseId === state.selectedPhaseId);
+    if (state.selectedTaskId === null || !tasksInPhase.some((t) => t.id === state.selectedTaskId)) {
+      const firstActive = tasksInPhase.find((t) => t.status === 'active');
+      state.selectedTaskId = firstActive?.id ?? tasksInPhase[0]?.id ?? null;
+      // Reset step selection when task changes
+      state.selectedStepIndex = null;
+      state.userPinnedStep = false;
+    }
+  }
+
+  // Step follow
+  if (state.selectedTaskId !== null && !state.userPinnedStep) {
+    const task = state.tasksById[state.selectedTaskId];
+    if (task?.activeStepIndex !== undefined) {
+      state.selectedStepIndex = task.activeStepIndex;
+    }
+  }
 }
 
 // ─── Store state interface ──────────────────────────────────────────────────
@@ -70,12 +110,12 @@ export interface WorkflowStoreState {
   // Normalized projection fields
   agentsById: Record<string, AgentEntity>;
   tasksById: Record<string, TaskEntity>;
-  currentPhase: string;
-  completedPhases: string[];
+  phases: PhaseEntity[];
+  currentPhaseId: string;
+  completedPhaseIds: string[];
   sidebar: {
     title: string;
     indicator: string;
-    phases?: PhaseDescriptor[];
   };
   status: 'running' | 'complete' | 'failed';
   taskPrompt: string;
@@ -85,11 +125,22 @@ export interface WorkflowStoreState {
   stats: { totalTokens: number; agentCount: number };
   workflowEventLog: WorkflowEventLogEntry[];
 
+  // Selection state
+  selectedPhaseId: string | null;
+  selectedTaskId: string | null;
+  selectedStepIndex: number | null;
+  userPinnedPhase: boolean;
+  userPinnedStep: boolean;
+
   // Actions
   applySnapshot: (snapshot: WorkflowProjection, seq: number) => void;
   applyEvents: (events: EventRecord[]) => void;
   setStatus: (status: 'running' | 'complete' | 'failed') => void;
   setFailed: (error: string, failedPhase: string) => void;
+  selectPhase: (id: string | null) => void;
+  selectTask: (id: string | null) => void;
+  selectStep: (index: number | null) => void;
+  resetSelection: () => void;
 }
 
 // ─── Store creation ─────────────────────────────────────────────────────────
@@ -97,8 +148,9 @@ export interface WorkflowStoreState {
 const INITIAL_STATE = {
   agentsById: {} as Record<string, AgentEntity>,
   tasksById: {} as Record<string, TaskEntity>,
-  currentPhase: '',
-  completedPhases: [] as string[],
+  phases: [] as PhaseEntity[],
+  currentPhaseId: '',
+  completedPhaseIds: [] as string[],
   sidebar: { title: '', indicator: '' },
   status: 'running' as const,
   taskPrompt: '',
@@ -107,6 +159,11 @@ const INITIAL_STATE = {
   seq: 0,
   stats: { totalTokens: 0, agentCount: 0 },
   workflowEventLog: [] as WorkflowEventLogEntry[],
+  selectedPhaseId: null as string | null,
+  selectedTaskId: null as string | null,
+  selectedStepIndex: null as number | null,
+  userPinnedPhase: false,
+  userPinnedStep: false,
 };
 
 export const useWorkflowStore = create<WorkflowStoreState>()(
@@ -123,6 +180,7 @@ export const useWorkflowStore = create<WorkflowStoreState>()(
           state.workflowEventLog = [];
         }
         state.seq = seq;
+        reconcileSelection(state);
       }),
 
     applyEvents: (events) =>
@@ -134,6 +192,7 @@ export const useWorkflowStore = create<WorkflowStoreState>()(
         }
         writeProjectionToState(s, projection);
         s.seq = projection.seq;
+        reconcileSelection(s);
 
         // Build workflow-level event lines from this batch
         const collected: WorkflowEventLogEntry[] = [];
@@ -160,6 +219,43 @@ export const useWorkflowStore = create<WorkflowStoreState>()(
         state.error = error;
         state.failedPhase = failedPhase;
       }),
+
+    selectPhase: (id: string | null) =>
+      set((state) => {
+        state.selectedPhaseId = id;
+        // Pinned if a completed phase is explicitly selected
+        state.userPinnedPhase = id !== null && state.completedPhaseIds.includes(id);
+        // Reset task/step when phase changes
+        state.selectedTaskId = null;
+        state.selectedStepIndex = null;
+        state.userPinnedStep = false;
+        // Run follow rules to settle on initial task/step
+        reconcileSelection(state);
+      }),
+
+    selectTask: (id: string | null) =>
+      set((state) => {
+        state.selectedTaskId = id;
+        state.selectedStepIndex = null;
+        state.userPinnedStep = false;
+        // Run follow rules to settle on initial step
+        reconcileSelection(state);
+      }),
+
+    selectStep: (index: number | null) =>
+      set((state) => {
+        state.selectedStepIndex = index;
+        state.userPinnedStep = true;
+      }),
+
+    resetSelection: () =>
+      set((state) => {
+        state.selectedPhaseId = null;
+        state.selectedTaskId = null;
+        state.selectedStepIndex = null;
+        state.userPinnedPhase = false;
+        state.userPinnedStep = false;
+      }),
   })),
 );
 
@@ -175,9 +271,11 @@ export const useTaskById = (id: string) => useWorkflowStore((s) => s.tasksById[i
 
 export const useWorkflowEventLog = () => useWorkflowStore((s) => s.workflowEventLog);
 
-export const useCurrentPhase = () => useWorkflowStore((s) => s.currentPhase);
+export const useCurrentPhaseId = () => useWorkflowStore((s) => s.currentPhaseId);
 
-export const useCompletedPhases = () => useWorkflowStore((s) => s.completedPhases);
+export const useCompletedPhaseIds = () => useWorkflowStore((s) => s.completedPhaseIds);
+
+export const usePhases = () => useWorkflowStore((s) => s.phases);
 
 export const useSidebar = () => useWorkflowStore((s) => s.sidebar);
 
@@ -186,6 +284,12 @@ export const useStatus = () => useWorkflowStore((s) => s.status);
 export const useError = () => useWorkflowStore((s) => s.error);
 
 export const useFailedPhase = () => useWorkflowStore((s) => s.failedPhase);
+
+export const useSelectedPhaseId = () => useWorkflowStore((s) => s.selectedPhaseId);
+
+export const useSelectedTaskId = () => useWorkflowStore((s) => s.selectedTaskId);
+
+export const useSelectedStepIndex = () => useWorkflowStore((s) => s.selectedStepIndex);
 
 export const useHasSnapshot = () => useWorkflowStore((s) => s.seq > 0);
 

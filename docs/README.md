@@ -10,15 +10,27 @@ A script-based workflow engine for AI-driven development, built on top of [pi-co
 
 Workflows and profiles are loaded dynamically from config directories — you create your own workflows and agent profiles and place them in `~/.config/engin/` (or `.engin/` for per-project config). Agent profiles are plain markdown files with YAML frontmatter, so you can customize agent behavior without touching code.
 
+### Rigid Hierarchy: Workflow → Phases → Tasks → Steps
+
+engin models execution as a **rigid four-level hierarchy**:
+
+- A **Workflow** owns an ordered list of **Phases**. Phases execute one at a time; each phase must complete before the next begins.
+- A **Phase** owns an ordered list of **Tasks** (its `taskIds`). Within a phase, tasks may run concurrently (via a `LanePool`) or one at a time (via `runStepTask`).
+- A **Task** owns a linear sequence of **Steps** (its `steps`). Steps execute in order within a single task.
+- A **Step** is fulfilled by exactly one **Agent** — every agent in the system is a step-of-a-task. There are no free-floating agents.
+
+This structure is reflected everywhere: the event stream, the workflow projection, the TUI dashboard, and the web mirror all navigate the same hierarchy. A `PhaseEntity` lists its `taskIds`; a `TaskEntity` lists its `steps`; each `StepEntity` links to the `AgentEntity` that fulfils it via `agentKey`.
+
 Key properties:
 
+- **Rigid workflow → phases → tasks → steps hierarchy** — phases own ordered task lists; tasks own linear steps; every agent is a step-of-a-task. The hierarchy is enforced by the event model and the projection.
 - **Dynamic workflow loading** — workflows are discovered from global and local config directories, loaded at runtime by name.
 - **Layered config resolution** — profiles and workflows are resolved from `~/.config/engin/` (global) and `.engin/` (local), with local overriding global.
 - **Agent profiles** are defined as markdown files with YAML frontmatter, making it easy to add or modify agents without touching code.
 - **Structured output** is enforced via Zod schemas — every phase produces validated, typed data.
 - **Task dependency tracking** uses a DAG with cycle detection, so tasks execute in topological order with configurable concurrency.
 - **Full audit trail** — every agent start, end, decision, and error is logged to JSONL for post-hoc analysis.
-- **Resumable** — workflow state is persisted to disk so interrupted runs can resume from the last completed phase.
+- **Event-sourced status** — every status change is an append-only `EventRecord`; the in-memory `WorkflowProjection` is derived by a pure reducer. Both the TUI and web mirror subscribe to the same store.
 
 ---
 
@@ -27,7 +39,7 @@ Key properties:
 ### Prerequisites
 
 - **Bun** >= 1.2.0 (used as both runtime and package manager)
-- **API keys** for your configured provider(s); see [Configuration](#13-configuration) for details
+- **API keys** for your configured provider(s); see [Configuration](#12-configuration) for details
 
 ### Install
 
@@ -152,22 +164,25 @@ Creates the `workflows/` subdirectory inside the global config directory (`~/.co
 
 ### Example Output
 
-Default (non-verbose) output shows workflow-level and task-level events:
+Default (non-verbose) output shows workflow-level, phase-level, and task-level events:
 
 ```
 [09:14:32] 🚀 Workflow started: "Add input validation to all public API endpoints" (resumed: false)
-[09:14:32] 📦 Phase started: scouting (round 0)
-[09:14:33] ⏳ Agent spawned: scout-coordinator (profile: scout)
-[09:14:45] ✅ Agent complete: scout-coordinator
-[09:14:46] ⏳ Agent spawned: scout-0 (profile: scout)
-[09:15:02] ✅ Agent complete: scout-0
-[09:15:02] ✅ Phase completed: scouting (30.1s)
-[09:15:02] 📦 Phase started: scouting_review (round 0)
+[09:14:32] 📝 Phase registered: Scouting
+[09:14:32] 📦 Phase: scouting (round 0)
+[09:14:33] ⏳ Agent scout-coordinator spawned (profile: scout)
+[09:14:45] ✅ Agent scout-coordinator complete
+[09:14:46] ⏳ Agent scout-0 spawned (profile: scout)
+[09:15:02] ✅ Agent scout-0 complete
+[09:15:02] ✅ Phase scouting done (30.1s)
+[09:15:02] 📦 Phase: scouting_review (round 0)
 ...
-[09:22:18] 📋 Task started: task-1 - "Add input validation to user routes"
-[09:22:35] ✅ Task complete: task-1
+[09:22:18] 📋 Task registered: "Add input validation to user routes" (phase: implementing, 2 steps)
+[09:22:18] 📋 Task task-1: "Add input validation to user routes"
+[09:22:35] Step 0 started: implement (task: task-1, agent: task-1)
+[09:22:35] ✅ Task task-1 complete
 ...
-[09:31:44] 🎉 Workflow complete in 1032.4s (14 agents)
+[09:31:44] 🎉 Complete in 1032.4s (14 agents)
 ```
 
 With `--verbose`, agent-level events are also shown:
@@ -323,6 +338,14 @@ Profiles are user-created `.md` files placed in the config directories. There ar
 
 Workflows are JavaScript or TypeScript modules that export a `run` function. They are discovered by name from the config directories.
 
+A workflow orchestrates the **workflow → phases → tasks → steps** hierarchy using three core primitives:
+
+1. **Phase registration** — call `onStatus.onPhaseRegister({ id, label, icon })` at startup so the TUI and web mirror know which phases exist and in what order.
+2. **Single-agent tasks** — call `runStepTask(opts)` to run one agent as a one-step task. It fires the full lifecycle (`onTaskRegister` → `onTaskStart` → `onAgentSpawn` → `onStepStart` → run → `onAgentComplete` → `onTaskComplete`).
+3. **Concurrent multi-step tasks** — use a `LanePool` with a required `phaseId` and a `getStepsForTask` callback. Each claimed task runs its ordered steps; every step is one agent.
+
+Every agent in the system is a **step-of-a-task**. There are no free-floating agents.
+
 ### The `WorkflowModule` Interface
 
 ```typescript
@@ -346,55 +369,128 @@ Workflows are directories containing a `main.ts` entry point. The workflow name 
 
 Workflow names cannot contain `/`, `\`, or `..` — this prevents path traversal attacks. The loader throws an error for invalid names.
 
-### Example: Minimal Custom Workflow
+### Registering Phases
+
+At the top of your `run()` function, register every phase so the UI can render the phase bar before work begins. Pass `options.onStatus` (already wired by the engine to the [`EventStore`](#eventstore--event-sourced-status)):
 
 ```typescript
-// ~/.config/engin/workflows/my-workflow/main.ts
-import { createHarness, loadProfilesFromDirs, resolveProfilesDirs, promptForStructured } from '@harms-haus/engin';
-import { z } from 'zod';
+export async function run(taskPrompt: string, options: WorkflowRunOptions) {
+  const { onStatus } = options;
 
-export async function run(taskPrompt, options) {
-  const { cwd, workDir, apiKeys, onStatus } = options;
-  const profilesDirs = resolveProfilesDirs(cwd, 'my-workflow');
-  const profiles = await loadProfilesFromDirs(profilesDirs);
+  // Register phases in execution order
+  onStatus?.onPhaseRegister?.({ id: 'scouting', label: 'Scouting', icon: '🔍' });
+  onStatus?.onPhaseRegister?.({ id: 'planning', label: 'Planning', icon: '📋' });
+  onStatus?.onPhaseRegister?.({ id: 'implementing', label: 'Implementing', icon: '🔨' });
+  onStatus?.onPhaseRegister?.({ id: 'review', label: 'Review', icon: '✅' });
 
-  const profile = profiles.get('implementer');
-  if (!profile) throw new Error('implementer profile not found');
-
-  const { session, dispose } = await createHarness({ profile, cwd, apiKeys });
-  try {
-    await session.prompt(`Complete this task: ${taskPrompt}`);
-    console.log('Done:', session.getLastAssistantText());
-  } finally {
-    dispose();
-  }
+  // ... proceed to run each phase ...
 }
 ```
 
-### Example: Composing Phase Functions
+Each `onPhaseRegister` call appends a `phase_registered` event, which adds a `PhaseEntity` to the projection. The TUI `PhaseBar` and web `PhaseBar` render these as clickable tabs.
 
-You can import building blocks from `@harms-haus/engin` to compose a custom workflow pipeline. The library provides `createHarness`, `parallelAgents`, `promptForStructured`, `WorkflowStatusTracker`, `TaskTracker`, and other utilities — see [Programmatic API](#8-programmatic-api) for the full list.
+### Single-Agent Tasks: `runStepTask`
+
+`runStepTask` runs **one agent as a one-step task**. It is the simplest way to execute an agent that participates in the hierarchy — it fires `onTaskRegister` (with a single-step definition), `onTaskStart`, `onAgentSpawn`, `onStepStart`, runs the prompt, then `onAgentComplete` and `onTaskComplete`.
 
 ```typescript
-// ~/.config/engin/workflows/develop/main.ts
-import {
-  createHarness,
-  loadProfilesFromDirs,
-  resolveProfilesDirs,
-  promptForStructured,
-  WorkflowStatusTracker,
-  parallelAgents,
-} from '@harms-haus/engin';
+import { runStepTask, resolveProfilesDirs } from '@harms-haus/engin';
 import { z } from 'zod';
 
 export async function run(taskPrompt: string, options: WorkflowRunOptions) {
-  const tracker = new WorkflowStatusTracker(options.workDir);
-  const profilesDirs = resolveProfilesDirs(options.cwd, 'develop');
-  const profiles = await loadProfilesFromDirs(profilesDirs);
+  const { cwd, workDir, onStatus } = options;
+  const profilesDirs = resolveProfilesDirs(cwd, 'my-workflow');
 
-  // ... your custom orchestration logic using the library's building blocks
+  onStatus?.onPhaseRegister?.({ id: 'scouting', label: 'Scouting', icon: '🔍' });
+  onStatus?.onPhaseStart?.({ phase: 'scouting', round: 0 });
+
+  const ScoutSchema = z.object({
+    summary: z.string(),
+    relevantFiles: z.array(z.string()),
+  });
+
+  const result = await runStepTask({
+    profilesDirs,
+    phaseId: 'scouting',
+    taskId: 'scout-coordinator',
+    title: 'Scout the codebase',
+    stepName: 'scout',
+    profileId: 'scout',
+    cwd,
+    onStatus,
+    prompt: `Analyse the codebase for this task: ${taskPrompt}`,
+    schema: ScoutSchema,
+  });
+
+  onStatus?.onPhaseComplete?.({ phase: 'scouting', durationMs: 0 });
+  console.log('Scout result:', result);
 }
 ```
+
+`runStepTask` returns the validated structured output (when `schema` is provided) or the raw assistant text. On error it fires `onTaskRejected` before re-throwing. See [`RunStepTaskOptions`](#runsteptaskoptions) for all fields.
+
+### Concurrent Multi-Step Tasks: `LanePool`
+
+For phases that process multiple tasks in parallel, use a `LanePool`. The pool requires a `phaseId` (the phase whose tasks it processes) and a `getStepsForTask` callback that returns the ordered steps for each claimed task. **Every step is one agent.**
+
+```typescript
+import { LanePool, TaskTracker, resolveProfilesDirs } from '@harms-haus/engin';
+import { z } from 'zod';
+
+export async function run(taskPrompt: string, options: WorkflowRunOptions) {
+  const { cwd, workDir, onStatus, maxConcurrentTasks } = options;
+  const profilesDirs = resolveProfilesDirs(cwd, 'my-workflow');
+
+  // ... planning phase produces a list of tasks ...
+
+  onStatus?.onPhaseStart?.({ phase: 'implementing', round: 0 });
+
+  const taskTracker = new TaskTracker();
+  taskTracker.addTask({
+    id: 'task-1',
+    phaseId: 'implementing',
+    title: 'Add input validation to user routes',
+    prompt: '...',
+    profile: 'implementer',
+    files: ['src/routes/user.ts'],
+    dependencies: [],
+  });
+  // ... add more tasks ...
+
+  const ReviewSchema = z.object({
+    approved: z.boolean(),
+    feedback: z.string().optional(),
+  });
+
+  const pool = new LanePool({
+    maxConcurrentLanes: maxConcurrentTasks ?? 5,
+    profilesDirs,
+    sessionBaseDir: `${workDir}/sessions`,
+    cwd,
+    phaseId: 'implementing', // REQUIRED — the phase this pool serves
+    taskTracker,
+    getStepsForTask: (task) => [
+      { name: 'implement', profileId: 'implementer', isReadOnly: false },
+      {
+        name: 'review',
+        profileId: 'reviewer',
+        isReadOnly: true,
+        schema: ReviewSchema,
+      },
+    ],
+    onStatus,
+    maxStepRetries: 5,
+  });
+
+  const result = await pool.run();
+  onStatus?.onPhaseComplete?.({ phase: 'implementing', durationMs: 0 });
+  console.log(`Completed: ${result.completedTasks}, Failed: ${result.failedTasks}`);
+}
+```
+
+The `LanePool` fires `onTaskRegister` once per task (with the step definitions and `phaseId`) before spawning any agents, so the TUI and web mirror can render the full task layout immediately. Each step then fires `onStepStart` as it begins. On step rejection, the lane backs up to the previous step and retries (up to `maxStepRetries`); the review feedback is written to the task's `reviewFeedback` field and included in the next step's prompt.
+
+See [`LanePoolOptions`](#lanepooloptions) for all fields.
 
 ### TypeScript Workflows
 
@@ -568,9 +664,9 @@ Returns `{ createdDirs: string[] }` where `createdDirs` is `['workflows']` — t
 
 ### Structured Output
 
-#### `promptForStructured<T>(harness, prompt, schema, options?): Promise<T>`
+#### `promptForStructured<T>(harness, prompt, schema, options?): Promise<{ result: T; attempts: number }>`
 
-Prompt a harness (any object satisfying `PromptableHarness`) and parse the response through a Zod schema. The harness's `getLastAssistantText()` is used to extract the response text. Retries up to `maxRetries` (default 3) with error feedback appended to the prompt.
+Prompt a harness (any object satisfying `PromptableHarness`) and parse the response through a Zod schema. The harness's `getLastAssistantText()` is used to extract the response text. Retries up to `maxRetries` (default 3) with error feedback appended to the prompt. Returns `{ result: T; attempts: number }` — the Zod-validated data and the number of attempts made (1-based).
 
 #### `extractJsonFromText(text): string | null`
 
@@ -604,7 +700,7 @@ Creates sessions and runs prompts sequentially, one at a time. Each session is c
 
 Resolve from custom overrides (`customKeys[provider]`) or environment variables via `getEnvApiKey(provider)` from `@earendil-works/pi-ai`.
 
-> **Note:** These are standalone utilities for lightweight key resolution without creating an `AuthStorage` instance. They **do not** check `~/.pi/agent/auth.json` or handle OAuth tokens. For full credential resolution, `createHarness` delegates to `AuthStorage.create()` instead (see [Environment Variables](#environment-variables) above).
+> **Note:** These are standalone utilities for lightweight key resolution without creating an `AuthStorage` instance. They **do not** check `~/.pi/agent/auth.json` or handle OAuth tokens. For full credential resolution, `createHarness` delegates to `AuthStorage.create()` instead (see [Environment Variables](#environment-variables)).
 
 #### `resolveApiKeyOrThrow(provider, customKeys?): string`
 
@@ -623,6 +719,26 @@ The following are re-exported from `@earendil-works/pi-ai` (not re-exported by p
 The following are re-exported from `@earendil-works/pi-agent-core` (not re-exported by pi-coding-agent):
 
 - `ThinkingLevel` (type)
+
+### Single-Agent Task Primitive
+
+#### `runStepTask<T>(opts: RunStepTaskOptions): Promise<T>`
+
+Run one agent as a one-step task. Implements the full task lifecycle:
+
+1. Check abort signal (throws without callbacks if aborted).
+2. Fire `onTaskRegister` with the single-step definition (name, profileId, isReadOnly).
+3. Fire `onTaskStart`.
+4. Load and adjust profile (strip `write`/`edit` if `isReadOnly`).
+5. Create harness via `createHarness`.
+6. Fire `onAgentSpawn` (with `phaseId`, `taskId`, `stepIndex: 0`).
+7. Fire `onStepStart` (with `stepIndex: 0`).
+8. Run the prompt (structured via Zod, or free-form).
+9. In `finally`: fire `onAgentComplete`, dispose harness.
+10. On error: fire `onTaskRejected` before re-throwing.
+11. On success: fire `onTaskComplete` and return the result.
+
+When `schema` is provided, returns the validated structured output cast to `T`. Otherwise returns `getLastAssistantText()` cast to `T`.
 
 ### Tracking
 
@@ -644,78 +760,82 @@ JSONL-backed audit log. Events are cached in-memory after first read; the cache 
 #### `TaskTracker`
 
 ```typescript
-class TaskTracker {
+class TaskTracker extends EventEmitter {
+  static readonly Events: { TaskReady: 'taskReady'; TaskSettled: 'taskSettled' };
   addTask(task: Omit<Task, 'status'> & { status?: TaskStatus }): void;
   getTask(id: string): Task | undefined;
   getAllTasks(): Task[];
   getReadyTasks(): Task[];
-  claimTasks(count: number): Task[];
-  startTask(id: string, agentId: string): void;
-  submitForReview(id: string, result: unknown): void;
-  completeTask(id: string): void;
-  rejectTask(id: string, reason: string): void;
-  areAllDone(): boolean;
-  getBlockedWithMissingDeps(): Array<{ taskId: string; missingDepIds: string[] }>;
+  claimTasks(count: number, agentId: string): Task[]; // ready → active
+  completeTask(id: string): void; // active → complete
+  failTask(id: string, result?: unknown): void; // active → failed
+  rejectTask(id: string, reason: string): void; // active (stays), appends feedback
+  cancelTask(id: string): void; // any non-settled → cancelled
+  resetFailedTasks(): void; // failed → ready
+  resetStuckTasks(): void; // active → ready
+  resetForRetry(): void; // reset failed + stuck
   isPoolDone(): boolean;
-  recalculateStatuses(): void;
+  validateAllDependencies(): void;
+  getTasksByPhase(phaseId: string): Task[];
+  getPhases(): string[];
+  recalculateStatuses(hintTaskId?: string): void;
   toJSON(): { tasks: Task[] };
-  static fromJSON(data: { tasks: Task[] }): TaskTracker;
+  static fromJSON(data: { tasks: Task[] }, options?: { preserveState?: boolean }): TaskTracker;
 }
 ```
 
-Manages a DAG of tasks with enforced state transitions and cycle detection. `addTask` performs temporary insertion to check for cycles, rolling back if one is detected.
+Manages a DAG of tasks with enforced state transitions and cycle detection. `addTask` performs temporary insertion to check for cycles, rolling back if one is detected. Tasks require a `phaseId`.
 
-**Task lifecycle:**
+**Task lifecycle (executor-side `Task.status`):**
 
 ```
-blocked → ready → claimed → implementing → reviewing → done
-                                    ↑            ↓
-                                    └── rejected ←┘ (returns to "ready")
+blocked → ready → active → complete
+                    │
+                    ├─→ failed
+                    └─→ (rejectTask: stays active, appends feedback, retries)
 ```
 
-> **Note:** `rejected` is not a `TaskStatus` value. It represents the transition from `reviewing` back to `ready` via `rejectTask()`. The task's status is set to `ready`, not `rejected`.
+Any non-settled task can be cancelled (`→ cancelled`). Settled = `complete | failed | cancelled`.
 
-**Additional methods:**
-
-#### `getBlockedWithMissingDeps(): Array<{ taskId: string; missingDepIds: string[] }>`
-
-Returns tasks that are currently blocked and reference at least one dependency ID not present in the tracker. Useful for detecting configuration errors (e.g., typos in dependency IDs).
-
-#### `isPoolDone(): boolean`
-
-Single-pass check for the lane loop hot path. Returns `true` when every task is settled (`done` / `failed`) or blocked with at least one missing dependency (deadlocked). An empty tracker is considered done.
+> **Note:** `rejectTask` keeps the task `active` on the executor side (the lane already owns it and will retry). In the read-model projection, a `task_rejected` event maps to `failed`. These are two different views of the same lifecycle.
 
 #### `WorkflowStatusTracker`
 
 ```typescript
 class WorkflowStatusTracker {
-  constructor(workDir: string);
+  constructor(workDir: string, signal?: AbortSignal);
   // Getters
   get taskPrompt(): string;
-  get currentPhase(): string;
-  get completedPhases(): string[];
-  get scoutingReports(): unknown[];
-  get plan(): unknown;
-  get research(): string | undefined;
+  get currentPhaseId(): string;
+  get completedPhaseIds(): string[];
+  get phases(): { id: string; label: string; icon: string }[];
+  get workflowData(): Record<string, unknown>;
   get stats(): { totalTokens; totalCost; agentCount };
   get taskTracker(): TaskTracker;
   get auditLog(): AuditLog;
+  get spawnedAgents(): PersistedAgentRecord[];
+  get worktree(): WorktreeInfo | undefined;
   // Mutators
   setTaskPrompt(prompt: string): void;
-  setPhase(phase: string): void;
-  setScoutingReports(reports: unknown[]): void;
-  setPlan(plan: unknown): void;
-  setResearch(research: string): void;
-  addTokensToStats(tokens: { input: number; output: number }): void;
+  setPhase(phaseId: string): void;           // push current → completed, set new current
+  setCurrentPhase(phaseId: string): void;    // set current without completing previous
+  registerPhase(info: { id; label; icon }): void;
+  registerTask(info: { taskId; phaseId; title; dependencies }): void;
+  setWorkflowData(updates: Record<string, unknown>): void;
+  addTokensToStats(tokens: { input; output }): void;
   incrementAgentCount(): void;
+  setWorktree(info: WorktreeInfo): void;
+  recordAgentSpawn(...): void;
+  recordAgentComplete(agentId: string): void;
   // Persistence
   toJSON(): WorkflowState;
   save(): Promise<void>;
+  dispose(): void;
   static load(workDir: string): Promise<WorkflowStatusTracker>;
 }
 ```
 
-Top-level workflow state manager. Persists to `.engin-state.json` in the working directory.
+Top-level workflow state manager. Persists to `.engin-state.json` in the working directory. Auto-persists on task settled/ready events. Stores workflow-specific data (scouting reports, plan, research, etc.) in the generic `workflowData` bag.
 
 ### Task Pool
 
@@ -728,56 +848,22 @@ class LanePool {
 }
 ```
 
-Concurrent task processing pool where N independent "lanes" (workers) claim tasks from a shared [`TaskTracker`](#tasktracker) and process them through configurable sequential steps.
+Concurrent task processing pool where N independent "lanes" (workers) claim tasks from a shared [`TaskTracker`](#tasktracker) and process them through configurable sequential steps. Every step is fulfilled by one agent — there are no free-floating agents.
 
 **How it works:**
 
-1. Profiles are loaded once via [`loadProfilesFromDirs`](#loadprofilesdirsdirs) before spawning any lanes.
-2. `maxConcurrentLanes` workers are spawned in parallel via `Promise.allSettled` (lane failures are isolated and don't crash sibling lanes).
-3. Each lane runs a loop that claims a ready task from the shared [`TaskTracker`](#tasktracker) and processes it through the steps returned by `getStepsForTask`.
-4. On step rejection, the lane backs up to the previous step and retries (up to `maxStepRetries`). The review feedback is written to the task's `reviewFeedback` field and included in the next step's prompt.
-5. On agent crash (unhandled error), the lane fires `onError`, marks the task as failed, and moves on.
-6. When no tasks are available but not all are done, lanes back off with exponential delay (50ms initial, capped at 2000ms).
-7. All sessions are disposed in a `finally` block after each step completes.
+1. Fire `onTaskRegister` once per task (with `phaseId` and step definitions) so the UI gets the full task layout before any agents spawn.
+2. Profiles are loaded once via [`loadProfilesFromDirs`](#loadprofilesdirsdirs) before spawning any lanes.
+3. `maxConcurrentLanes` workers are spawned in parallel via `Promise.allSettled` (lane failures are isolated and don't crash sibling lanes).
+4. Each lane runs a loop that claims a ready task from the shared [`TaskTracker`](#tasktracker) and processes it through the steps returned by `getStepsForTask`.
+5. On step rejection, the lane backs up to the previous step and retries (up to `maxStepRetries`). The review feedback is written to the task's `reviewFeedback` field and included in the next step's prompt.
+6. On agent crash (unhandled error), the lane fires `onError`, marks the task as failed, and moves on.
+7. When no tasks are available but not all are done, lanes back off with exponential delay (50ms initial, capped at 2000ms).
+8. All sessions are disposed in a `finally` block after each step completes.
 
 Each step gets its own persisted session at `{sessionBaseDir}/{taskId}/{attempt}-{stepIndex}-{stepName}/`. Read-only steps automatically strip `write` and `edit` from the agent's toolset.
 
-**Usage example:**
-
-```typescript
-import { LanePool, TaskTracker, resolveProfilesDirs } from '@harms-haus/engin';
-import { z } from 'zod';
-
-const taskTracker = new TaskTracker();
-// ... populate taskTracker with tasks ...
-
-const ReviewSchema = z.object({
-  approved: z.boolean(),
-  feedback: z.string().optional(),
-});
-
-const pool = new LanePool({
-  maxConcurrentLanes: 3,
-  profilesDirs: resolveProfilesDirs(cwd, 'my-workflow'),
-  sessionBaseDir: `${workDir}/sessions`,
-  cwd,
-  phase: 'implementing',
-  taskTracker,
-  getStepsForTask: (task) => [
-    { name: 'implement', profileId: 'implementer', isReadOnly: false },
-    {
-      name: 'review',
-      profileId: 'reviewer',
-      isReadOnly: true,
-      schema: ReviewSchema,
-    },
-  ],
-  maxStepRetries: 5,
-});
-
-const result = await pool.run();
-console.log(`Completed: ${result.completedTasks}, Failed: ${result.failedTasks}`);
-```
+See [Concurrent Multi-Step Tasks: `LanePool`](#concurrent-multi-step-tasks-lanepool) for a usage example.
 
 ### TUI Dashboard
 
@@ -800,7 +886,7 @@ class WorkflowTUI {
 
 Top-level TUI lifecycle manager. Constructs the terminal, widget tree, and subscribes to an [`EventStore`](#eventstore--event-sourced-status) internally. The TUI does **not** expose `StatusCallbacks` — instead, the engine wires `createStoreCallbacks(store)` into the workflow's `onStatus`, and the TUI receives projection updates via store subscription.
 
-**`start()`** — Initialises a `ProcessTerminal`, builds the widget tree (EventLog → separator → Dashboard), sets up input handling (Ctrl+C for graceful abort, Tab for lane cycling), overrides `console.warn`/`error` to route through the event log (`console.log` passes through unchanged), and starts rendering. No-op if already running.
+**`start()`** — Initialises a `ProcessTerminal`, builds the widget tree (EventLog → separator → Dashboard), sets up input handling, overrides `console.warn`/`error` to route through the event log (`console.log` passes through unchanged), and starts rendering. No-op if already running.
 
 **`stop()`** — Restores original `console` methods, unsubscribes from input, and stops the TUI. Safe to call multiple times.
 
@@ -808,40 +894,39 @@ Top-level TUI lifecycle manager. Constructs the terminal, widget tree, and subsc
 
 **`showQrCode(url)`** — Generates (if needed) and displays the QR code overlay for the given observer URL.
 
-**`pauseForInspection(signal?)`** — Keeps the TUI alive after the workflow completes, allowing the user to inspect the final state. Resolves when `signal` fires or the observer sends a terminate request.
+**`pauseForInspection(signal?)`** — Keeps the TUI alive after the workflow completes, allowing the user to inspect the final state. Resolves when `signal` fires or Ctrl+C/Escape is pressed.
 
 **Keyboard shortcuts:**
 
-| Key         | Action                                                          |
-| ----------- | --------------------------------------------------------------- |
-| `Ctrl+C`    | First press: calls `abort()`; second: `process.exit`            |
-| `Tab`       | Cycle focused task lane                                         |
-| `Space`     | Expand/collapse agent log widget                                |
-| `↑` / `↓`   | Phase navigation when collapsed; scroll agent log when expanded |
-| `←` / `→`   | Cycle agents within the current phase                           |
-| `⇧↑` / `⇧↓` | Scroll agent log by 10 lines (expanded only)                    |
-| `PgUp`      | Scroll event log up                                             |
-| `PgDn`      | Scroll event log down                                           |
-| `Home`      | Jump to top of event log                                        |
-| `End`       | Jump to bottom (resume auto-scroll)                             |
+| Key             | Action                                                           |
+| --------------- | ---------------------------------------------------------------- |
+| `Ctrl+C`        | First press: calls `abort()`; second: `process.exit`             |
+| `←` / `→`       | Select phase (cycle through registered phases)                   |
+| `↑` / `↓`       | Select task (when collapsed) or scroll agent log (when expanded) |
+| `Tab` / `⇧Tab`  | Cycle steps/agents within the selected task (forward/backward)   |
+| `Space`         | Expand/collapse the agent log widget                             |
+| `⇧↑` / `⇧↓`     | Scroll agent log by 10 lines (expanded only)                     |
+| `PgUp` / `PgDn` | Scroll event log up / down                                       |
+| `Home` / `End`  | Jump to top / bottom of event log (resume auto-scroll)           |
+
+Input is dispatched centrally by `WorkflowTUI`: Left/Right route to the `Dashboard` → `PhaseBar`; Up/Down route to the `Dashboard` (which delegates to `TaskListWidget` when collapsed or `AgentLogWidget` when expanded); Tab/Shift+Tab route to the `Dashboard` → `AgentLogWidget`; Space toggles `AgentLogWidget` expand; Shift+Up/Down route to the `AgentLogWidget` when expanded; PgUp/PgDn/Home/End route to the `EventLog`.
 
 #### `WorkflowTUIOptions`
 
-| Field                | Type         | Default | Description                                                                                                                                                                           |
-| -------------------- | ------------ | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `maxConcurrentLanes` | `number`     | `5`     | Number of lane rows in the dashboard                                                                                                                                                  |
-| `agentLogLines`      | `number`     | `20`    | Collapsed height of the agent detail log (expanded shows 40 lines)                                                                                                                    |
-| `abort`              | `() => void` | —       | Callback invoked on first Ctrl+C; use to cancel the workflow run                                                                                                                      |
-| `store?`             | `EventStore` | —       | The canonical [`EventStore`](#eventstore--event-sourced-status). When provided, the TUI subscribes to it and syncs widgets from the live [`WorkflowProjection`](#workflowprojection). |
+| Field            | Type         | Default | Description                                                                                                                                                                           |
+| ---------------- | ------------ | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `agentLogLines?` | `number`     | `20`    | Collapsed height of the agent detail log (expanded shows 40 lines)                                                                                                                    |
+| `abort?`         | `() => void` | —       | Callback invoked on first Ctrl+C; use to cancel the workflow run                                                                                                                      |
+| `store?`         | `EventStore` | —       | The canonical [`EventStore`](#eventstore--event-sourced-status). When provided, the TUI subscribes to it and syncs widgets from the live [`WorkflowProjection`](#workflowprojection). |
 
 #### `createStoreBackedTui(deps): { dispose: () => void }`
 
-Factory that subscribes the TUI widgets to an [`EventStore`](#eventstore--event-sourced-status). It does **not** implement `StatusCallbacks` — instead, it subscribes to the store's projection via `store.subscribe()` and syncs all three dashboard widgets from the projection.
+Factory that subscribes the TUI widgets to an [`EventStore`](#eventstore--event-sourced-status). It does **not** implement `StatusCallbacks` — instead, it subscribes to the store's projection via `store.subscribe()` and syncs all dashboard widgets from the projection.
 
 On each store notification it:
 
-1. Reads new events via `store.getEventsSince(lastSeq)` and writes human-readable lines into the `EventLog` (workflow/phase/agent/task lifecycle and error events).
-2. Calls `dashboard.syncFromProjection(projection)` to push the current [`WorkflowProjection`](#workflowprojection) into the `PhaseBar`, `LanePoolWidget`, and `AgentLogWidget`.
+1. Reads new events via `store.getEventsSince(lastSeq)` and writes human-readable lines into the `EventLog` (workflow/phase/agent/task lifecycle and error events), formatted by `formatWorkflowEventLine`.
+2. Calls `dashboard.syncFromProjection(projection)` to push the current [`WorkflowProjection`](#workflowprojection) into the `PhaseBar`, `TaskListWidget`, and `AgentLogWidget`.
 3. Calls `requestRender()` to trigger a TUI repaint.
 
 Any events that were already in the store before subscription (e.g. from a resumed run's replay) are processed immediately on construction.
@@ -879,50 +964,51 @@ When scrolled up, the first visible line is replaced with a dim indicator: `↑ 
 
 Single-line phase progress indicator.
 
-| Method               | Signature                           | Description                                                                                  |
-| -------------------- | ----------------------------------- | -------------------------------------------------------------------------------------------- |
-| `setPhases`          | `(phases: PhaseDescriptor[]): void` | Set the ordered list of phase descriptors.                                                   |
-| `setCurrentPhase`    | `(id: string): void`                | Highlight the given phase as current (cyan `●`). Clears the selected phase.                  |
-| `setSelectedPhase`   | `(id: string): void`                | Underline the given phase (overlays the current highlight). Used by agent log phase cycling. |
-| `setCompletedPhases` | `(ids: string[]): void`             | Mark phases as completed (green `✓`).                                                        |
-| `setIndicator`       | `(icon: string): void`              | Prepend an icon (e.g. workflow emoji) before the phase segments.                             |
+| Method                 | Signature                       | Description                                                                 |
+| ---------------------- | ------------------------------- | --------------------------------------------------------------------------- |
+| `setPhases`            | `(phases: PhaseEntity[]): void` | Set the ordered list of phase entities.                                     |
+| `setCurrentPhaseId`    | `(id: string): void`            | Highlight the given phase as current (cyan `●`). Clears the selected phase. |
+| `setSelectedPhase`     | `(id: string): void`            | Underline the given phase (overlays the current highlight).                 |
+| `setCompletedPhaseIds` | `(ids: string[]): void`         | Mark phases as completed (green `✓`).                                       |
+| `setIndicator`         | `(icon: string): void`          | Prepend an icon (e.g. workflow emoji) before the phase segments.            |
+| `handleInput`          | `(data): void`                  | Processes ←/→ arrow keys for phase selection.                               |
 
 When no phases are set, renders just the indicator and/or current phase ID. Phase segments are joined with `│` separators.
 
-##### `LanePoolWidget`
+##### `TaskListWidget`
 
-Grid of task lanes, one row per concurrent worker. Lanes are sorted by status priority (active first, then `claimed`, `ready`, `blocked`, and finally `done`/`failed`).
+Grid of tasks in the current phase, one row per task. Tasks are sorted by status priority (active first, then `ready`, `blocked`, and finally `complete`/`failed`/`cancelled`).
 
-| Method                | Signature                   | Description                                                                             |
-| --------------------- | --------------------------- | --------------------------------------------------------------------------------------- |
-| `updateLanes`         | `(lanes: TaskLane[]): void` | Replace the full lane list. Clears focus if the focused lane is no longer present.      |
-| `setFocusedLaneById`  | `(id: string): void`        | Highlight a lane by task ID (bold). No-op if the ID doesn't exist. Used by Tab cycling. |
-| `getFocusedLaneIndex` | `(): number`                | Index of the focused lane in the sorted list (-1 if none).                              |
-| `getFocusedLane`      | `(): TaskLane \| undefined` | The focused lane from the sorted list.                                                  |
-| `getFocusedTaskId`    | `(): string \| undefined`   | Task ID of the focused lane.                                                            |
-| `getLanes`            | `(): TaskLane[]`            | Current lane data (unsorted).                                                           |
-| `getSortedLanes`      | `(): TaskLane[]`            | Lanes sorted by status priority (ascending).                                            |
-| `getVisibleLaneCount` | `(): number`                | Number of lanes (determines rendered row count).                                        |
-| `handleInput`         | `(data): void`              | Processes ↑/↓ arrow keys for lane focus navigation.                                     |
+| Method                | Signature                     | Description                                                                             |
+| --------------------- | ----------------------------- | --------------------------------------------------------------------------------------- |
+| `updateTasks`         | `(tasks: TaskEntity[]): void` | Replace the full task list. Clears selection if the selected task is no longer present. |
+| `setSelectedTaskId`   | `(id: string \| null): void`  | Highlight a task by ID (bold). No-op if the ID doesn't exist.                           |
+| `getSelectedTaskId`   | `(): string \| null`          | Task ID of the selected task.                                                           |
+| `getSelectedTask`     | `(): TaskEntity \| undefined` | The selected task from the sorted list.                                                 |
+| `getVisibleTaskCount` | `(): number`                  | Number of tasks (determines rendered row count).                                        |
+| `handleInput`         | `(data): void`                | Processes ↑/↓ arrow keys for task selection.                                            |
+
+Active tasks with a known `activeStepIndex` show a step annotation (e.g. `step 1/2: implement`). Elapsed time is shown for active/settled tasks that have a `startedAt`.
 
 ##### `AgentLogWidget`
 
-Detail view showing entries for agents in the current phase. The widget filters agents by the active phase, auto-switches away from completed agents (unless the user has manually navigated), and supports expand/collapse with scroll.
+Detail view showing the log entries for the agent fulfilling the selected step of the selected task. The widget renders a step **tab bar** at the bottom — each tab is a step, marked as done (`✓`), active (`▶`), or pending (`○`), and clickable/cyclable via Tab/Shift+Tab. Steps without an agent yet are dimmed.
 
-| Method                 | Signature                       | Description                                                            |
-| ---------------------- | ------------------------------- | ---------------------------------------------------------------------- |
-| `setAgents`            | `(agents: AgentEntity[]): void` | Replace the full agent list (filtered by current phase during render). |
-| `setCurrentPhase`      | `(phase: string): void`         | Set the active phase index, resetting selection and scroll.            |
-| `setPhases`            | `(phases: string[]): void`      | Set the ordered phase IDs for ↑/↓ cycling.                             |
-| `hasPhases`            | `(): boolean`                   | Whether any phase IDs have been set.                                   |
-| `getCurrentPhase`      | `(): string \| null`            | The currently selected phase ID.                                       |
-| `toggleExpand`         | `(): void`                      | Toggle between collapsed and expanded modes.                           |
-| `isExpanded`           | `(): boolean`                   | Whether the widget is expanded.                                        |
-| `getExpandedLineCount` | `(): number`                    | Rendered line count (collapsed: `agentLogLines`; expanded: 40).        |
-| `getSelectedAgentUid`  | `(): string \| null`            | UID of the currently selected agent in the active phase.               |
-| `invalidate`           | `(): void`                      | Mark the cached render as stale.                                       |
+| Method                 | Signature                       | Description                                                                |
+| ---------------------- | ------------------------------- | -------------------------------------------------------------------------- |
+| `setAgents`            | `(agents: AgentEntity[]): void` | Replace the full agent list (filtered to the selected task during render). |
+| `setSteps`             | `(steps: StepEntity[]): void`   | Set the ordered steps for the selected task.                               |
+| `setActiveStepIndex`   | `(index: number): void`         | Set which step is currently active (drives tab markers).                   |
+| `setSelectedStepIndex` | `(index: number): void`         | Select a step by index (updates the displayed agent + pins).               |
+| `setSelectedAgentUid`  | `(uid: string \| null): void`   | Select a step by its agent's uid.                                          |
+| `toggleExpand`         | `(): void`                      | Toggle between collapsed and expanded modes.                               |
+| `isExpanded`           | `(): boolean`                   | Whether the widget is expanded.                                            |
+| `getExpandedLineCount` | `(): number`                    | Rendered line count (collapsed: `agentLogLines`; expanded: 40).            |
+| `getSelectedAgentUid`  | `(): string \| null`            | uid of the agent for the selected step.                                    |
+| `handleInput`          | `(data): void`                  | Tab/Shift+Tab cycle steps; ↑/↓ and ⇧↑/⇧↓ scroll when expanded.             |
+| `invalidate`           | `(): void`                      | Mark the cached render as stale.                                           |
 
-Each entry is rendered with a type-specific icon and colour:
+Each log entry is rendered with a type-specific icon and colour:
 
 | Type              | Icon | Colour |
 | ----------------- | ---- | ------ |
@@ -935,17 +1021,26 @@ Each entry is rendered with a type-specific icon and colour:
 
 ##### `Dashboard`
 
-Composite widget containing `PhaseBar`, `LanePoolWidget`, and `AgentLogWidget`.
+Composite widget containing `PhaseBar`, `TaskListWidget`, and `AgentLogWidget`. Owns the **centralized selection model** — `selectedPhaseId`, `selectedTaskId`, `selectedStepIndex`, plus `userPinnedPhase` and `userPinnedStep` flags that govern the follow rules.
 
-| Method               | Signature                                | Description                                                                                              |
-| -------------------- | ---------------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| `phaseBar`           | (getter)                                 | The `PhaseBar` sub-widget.                                                                               |
-| `lanePool`           | (getter)                                 | The `LanePoolWidget` sub-widget.                                                                         |
-| `agentLog`           | (getter)                                 | The `AgentLogWidget` sub-widget.                                                                         |
-| `syncFromProjection` | `(projection: WorkflowProjection): void` | Push projection state into all child widgets (phases, lanes, agents). Called on each store notification. |
-| `getComputedHeight`  | `(): number`                             | Total rendered height: phase bar (1) + visible lanes + expanded agent log lines + 4 border lines.        |
+| Method               | Signature                                | Description                                                                                               |
+| -------------------- | ---------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `phaseBar`           | (getter)                                 | The `PhaseBar` sub-widget.                                                                                |
+| `taskList`           | (getter)                                 | The `TaskListWidget` sub-widget.                                                                          |
+| `agentLog`           | (getter)                                 | The `AgentLogWidget` sub-widget.                                                                          |
+| `getSelection`       | `(): DashboardSelection`                 | Returns the current selection state (`selectedPhaseId`, `selectedTaskId`, `selectedStepIndex`, pins).     |
+| `forceReselect`      | `(): void`                               | Reset task/step selection so the next sync picks fresh defaults. Phase selection is preserved.            |
+| `syncFromProjection` | `(projection: WorkflowProjection): void` | Push projection state into all child widgets and run the follow rules. Called on each store notification. |
+| `getComputedHeight`  | `(): number`                             | Total rendered height: phase bar (1) + visible tasks + expanded agent log lines + 4 border lines.         |
+| `handleInput`        | `(data): void`                           | Routes ←/→ to PhaseBar, ↑/↓ to TaskList (collapsed) or AgentLog (expanded), Tab/⇧Tab to AgentLog.         |
 
-Renders sub-widgets top-to-bottom: phase bar, then lane rows, then agent log.
+Renders sub-widgets top-to-bottom: phase bar, then task rows, then agent log, all inside a box-drawing border.
+
+**Follow rules** (implemented in `syncFromProjection`):
+
+- **Phase follow** — if the selected phase is not completed and differs from `currentPhaseId`, advance to `currentPhaseId`. If the selected phase is completed, leave it (reviewing history).
+- **Task follow** — if the selected task is null or no longer in the selected phase's tasks, auto-select the first `active` task (or the first task).
+- **Step follow** — if not user-pinned, sync `selectedStepIndex` to the task's `activeStepIndex`.
 
 #### Theme Functions
 
@@ -953,16 +1048,18 @@ Exported from `src/tui/theme.ts`. ANSI escape-sequence helpers for terminal styl
 
 **Foreground colours:**
 
-| Function  | Description            |
-| --------- | ---------------------- |
-| `cyan`    | Cyan foreground        |
-| `dim`     | Dimmed (low intensity) |
-| `bold`    | Bold (high intensity)  |
-| `green`   | Green foreground       |
-| `red`     | Red foreground         |
-| `yellow`  | Yellow foreground      |
-| `blue`    | Blue foreground        |
-| `magenta` | Magenta foreground     |
+| Function    | Description              |
+| ----------- | ------------------------ |
+| `cyan`      | Cyan foreground          |
+| `dim`       | Dimmed (low intensity)   |
+| `bold`      | Bold (high intensity)    |
+| `underline` | Underline                |
+| `green`     | Green foreground         |
+| `red`       | Red foreground           |
+| `yellow`    | Yellow foreground        |
+| `blue`      | Blue foreground          |
+| `magenta`   | Magenta foreground       |
+| `darkRed`   | 256-color foreground 131 |
 
 All foreground functions have the signature `(str: string) => string` — they wrap the input in ANSI codes and reset.
 
@@ -982,45 +1079,39 @@ All foreground functions have the signature `(str: string) => string` — they w
 
 **Status → colour/icon mapping:**
 
-| Status         | Colour  | Icon |
-| -------------- | ------- | ---- |
-| `done`         | green   | ✓    |
-| `failed`       | red     | ✗    |
-| `implementing` | yellow  | ⟳    |
-| `reviewing`    | magenta | ◎    |
-| `claimed`      | blue    | →    |
-| `ready`        | cyan    | ○    |
-| `blocked`      | dim     | ·    |
+| Status      | Colour  | Icon |
+| ----------- | ------- | ---- |
+| `active`    | yellow  | ▶    |
+| `complete`  | green   | ✓    |
+| `failed`    | red     | ✗    |
+| `cancelled` | dim     | ⊘    |
+| `ready`     | cyan    | ○    |
+| `blocked`   | darkRed | ·    |
 
-**Sanitisation:**
+**Other helpers:**
 
-| Function    | Signature               | Description                      |
-| ----------- | ----------------------- | -------------------------------- |
-| `stripAnsi` | `(str: string): string` | Strip all ANSI escape sequences. |
+| Function        | Signature                                   | Description                                    |
+| --------------- | ------------------------------------------- | ---------------------------------------------- |
+| `borderLine`    | `(left, fill, right, innerWidth) => string` | Build a horizontal box-drawing line.           |
+| `stripAnsi`     | `(str: string) => string`                   | Strip all ANSI escape sequences.               |
+| `formatElapsed` | `(ms: number) => string`                    | Format milliseconds as a short elapsed string. |
 
 #### Type Exports
 
-##### `PhaseDescriptor`
+##### `PhaseEntity`
 
-| Field   | Type     | Description                          |
-| ------- | -------- | ------------------------------------ |
-| `id`    | `string` | Phase identifier (e.g. `"scouting"`) |
-| `label` | `string` | Human-readable label for display     |
-| `icon`  | `string` | Emoji or icon for the phase          |
+Defined in `src/tracking/event-types.ts`.
+
+| Field     | Type       | Description                                      |
+| --------- | ---------- | ------------------------------------------------ |
+| `id`      | `string`   | Phase identifier (e.g. `"scouting"`)             |
+| `label`   | `string`   | Human-readable label for display                 |
+| `icon`    | `string`   | Emoji or icon for the phase                      |
+| `taskIds` | `string[]` | Ordered list of task IDs belonging to this phase |
 
 ##### `TaskLane`
 
-| Field          | Type         | Description                                                                    |
-| -------------- | ------------ | ------------------------------------------------------------------------------ |
-| `id`           | `string`     | Task identifier                                                                |
-| `title`        | `string`     | Short task description                                                         |
-| `status`       | `TaskStatus` | Current lifecycle state                                                        |
-| `agentId?`     | `string`     | ID of the assigned agent                                                       |
-| `profile?`     | `string`     | Profile name of the assigned agent                                             |
-| `stepInfo?`    | `string`     | Current step annotation (e.g. `"implementing"`)                                |
-| `phase?`       | `string`     | Phase identifier the task belongs to                                           |
-| `startedAt?`   | `number`     | Epoch milliseconds when the task was started                                   |
-| `completedAt?` | `number`     | Epoch milliseconds when the task was completed (used for elapsed-time display) |
+> **Note:** The TUI no longer exposes a `TaskLane` type. Task display now uses [`TaskEntity`](#taskentity) directly. If you see references to `TaskLane` in older code, it has been superseded by `TaskEntity`.
 
 ##### `AgentLogEntry`
 
@@ -1050,9 +1141,16 @@ src/
 │   ├── profile.ts               # Markdown profile parser, loader, and multi-dir merge
 │   ├── workflow-loader.ts       # Dynamic workflow module loading and listing
 │   ├── harness-factory.ts       # AgentSession construction from profiles
+│   ├── phase-tasks.ts           # runStepTask — single-agent one-step task primitive
 │   ├── structured-output.ts     # JSON extraction, Zod-validated prompting
 │   ├── agent-loop.ts            # Looping, parallel, and sequential agent patterns
-│   └── utils.ts                 # Shared utilities (validateWorkflowName, isEnoentError, safeErrorMessage, composeStatusCallbacks, DEFAULT_TOOLS)
+│   ├── schema-describe.ts       # Zod schema → human-readable description
+│   ├── title-generator.ts       # Task title generation
+│   ├── git.ts                   # Git utilities (worktree support)
+│   ├── network.ts               # LAN IP auto-detection
+│   ├── worktree-lifecycle.ts    # Worktree creation/branch/merge lifecycle
+│   ├── setup.ts                 # initDefaultConfig — first-time directory setup
+│   └── utils.ts                 # Shared utilities (validateWorkflowName, isEnoentError, safeErrorMessage, composeStatusCallbacks, forwardAgentStatus, DEFAULT_TOOLS)
 ├── cli/
 │   ├── commands.ts              # runCommand / resumeCommand / initCommand orchestration
 │   ├── parse-args.ts            # CLI argument parsing
@@ -1064,25 +1162,27 @@ src/
 │   └── slash-command-parser.ts  # Slash-command argument parsing
 ├── pool/
 │   ├── index.ts                 # Pool module re-exports
-│   ├── types.ts                 # StepDefinition, LanePoolOptions, LanePoolResult, StepResult types
-│   ├── lane-pool.ts             # Concurrent task processing pool (LanePool class)
+│   ├── types.ts                 # StepDefinition, LanePoolOptions, LanePoolResult, StepResult, TrackedSession types
+│   ├── lane-pool.ts             # Concurrent task processing pool (LanePool class) — the executor
 │   ├── prompt-builder.ts        # Builds prompt text with pre-loaded file contents
 │   ├── severity.ts              # Severity helpers
 │   ├── step-execution.ts        # Executes individual steps (profile load, session, approval)
-│   ├── task-processor.ts        # Runs a task's steps with retry
+│   ├── task-processor.ts        # Runs a task's steps with retry, fires onStepStart
 │   └── validation.ts            # Task/dependency validation
 ├── tracking/
 │   ├── audit-log.ts             # JSONL-based audit event log (legacy AuditLog)
 │   ├── event-store.ts           # Event-sourced status store (EventStore class)
-│   ├── event-types.ts           # EventType, EventRecord, WorkflowProjection, AgentEntity, TaskEntity, LogEntry
+│   ├── event-types.ts           # EventType, EventRecord, WorkflowProjection, AgentEntity, TaskEntity, PhaseEntity, StepEntity, LogEntry
 │   ├── evolve.ts                # Pure projection reducer (evolve function)
 │   ├── store-callbacks.ts       # createStoreCallbacks: StatusCallbacks → EventStore.append
 │   ├── task-status.ts           # Task DAG tracker with state transitions
+│   ├── workflow-serializer.ts   # Atomic JSON save/load with legacy migration
 │   └── workflow-status.ts       # Full workflow phase state (persisted to JSON)
 ├── tui/
 │   ├── index.ts                 # TUI module re-exports
 │   ├── composer.ts              # Composes the dashboard layout
 │   ├── format-tool-call.ts      # Formats tool-call args for display
+│   ├── format-workflow-event.ts # Maps EventRecord → human-readable event-log line
 │   ├── workflow-tui.ts          # TUI lifecycle manager (WorkflowTUI class)
 │   ├── status-callbacks.ts      # createStoreBackedTui: subscribes TUI widgets to EventStore
 │   ├── theme.ts                 # ANSI styling helpers and status mappings
@@ -1090,9 +1190,9 @@ src/
 │       ├── index.ts             # Component re-exports
 │       ├── event-log.ts         # Scrollable event log widget
 │       ├── phase-bar.ts         # Phase progress indicator widget
-│       ├── lane-pool-widget.ts  # Task lane grid widget
-│       ├── agent-log-widget.ts  # Agent detail log widget
-│       ├── dashboard.ts         # Composite dashboard container
+│       ├── task-list-widget.ts  # Task grid widget (replaces former lane-pool-widget)
+│       ├── agent-log-widget.ts  # Agent detail log widget with step tab bar
+│       ├── dashboard.ts         # Composite dashboard container with selection model
 │       └── qr-overlay.ts        # QR code overlay for mobile observer URL
 └── web/
     ├── observer-server.ts       # Bun HTTP + WebSocket server (static files + /ws)
@@ -1102,37 +1202,40 @@ src/
 
 ### Core Layer (`src/core/`)
 
-| Module                 | Responsibility                                                                                                                                                                                                                                           |
-| ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `types.ts`             | Re-exports from `pi-coding-agent`, `pi-agent-core`, and `pi-ai`; defines `AgentProfile`, `Task`, `WorkflowState`, `AuditEvent`, `WorkflowModule`, `WorkflowRunOptions`, and related types                                                                |
-| `config.ts`            | Resolves global (`~/.config/engin/`) and local (`.engin/`) config directories; provides default work directory paths                                                                                                                                     |
-| `profile.ts`           | Parses markdown files with YAML frontmatter into `AgentProfile` objects; loads all profiles from a directory or merges from multiple directories                                                                                                         |
-| `workflow-loader.ts`   | Dynamically loads workflow modules by name from config directories; discovers `main.ts` inside workflow subdirectories; caches loaded modules                                                                                                            |
-| `harness-factory.ts`   | Creates a fully-wired `AgentSession` from a profile: model resolution, `AuthStorage`, tool filtering, `DefaultResourceLoader`, and `createAgentSession` from `@earendil-works/pi-coding-agent`                                                           |
-| `structured-output.ts` | Extracts JSON from free-text model responses; prompts a session and validates output against a Zod schema with automatic retries                                                                                                                         |
-| `agent-loop.ts`        | Higher-level patterns: `agentLoopUntil`, `parallelAgents`, `sequentialAgents`. Uses `AgentSession` and `dispose()` for cleanup                                                                                                                           |
-| `utils.ts`             | Shared utilities: `validateWorkflowName` (path traversal prevention), `isEnoentError` (ENOENT detection), `safeErrorMessage` (safe error-to-string), `composeStatusCallbacks` (fan-out multiple callbacks), `DEFAULT_TOOLS` (default tool list constant) |
+| Module                 | Responsibility                                                                                                                                                                                                                                         |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `types.ts`             | Re-exports from `pi-coding-agent`, `pi-agent-core`, and `pi-ai`; defines `AgentProfile`, `Task`, `TaskEntity`, `StepEntity`, `TaskStatus`, `WorkflowState`, `AuditEvent`, `StatusCallbacks`, `WorkflowModule`, `WorkflowRunOptions`, and related types |
+| `config.ts`            | Resolves global (`~/.config/engin/`) and local (`.engin/`) config directories; provides default work directory paths                                                                                                                                   |
+| `profile.ts`           | Parses markdown files with YAML frontmatter into `AgentProfile` objects; loads all profiles from a directory or merges from multiple directories                                                                                                       |
+| `workflow-loader.ts`   | Dynamically loads workflow modules by name from config directories; discovers `main.ts` inside workflow subdirectories; caches loaded modules                                                                                                          |
+| `harness-factory.ts`   | Creates a fully-wired `AgentSession` from a profile: model resolution, `AuthStorage`, tool filtering, `DefaultResourceLoader`, and `createAgentSession` from `@earendil-works/pi-coding-agent`                                                         |
+| `phase-tasks.ts`       | `runStepTask` — runs one agent as a one-step task with the full lifecycle (`onTaskRegister` → `onTaskStart` → `onAgentSpawn` → `onStepStart` → run → `onAgentComplete` → `onTaskComplete`)                                                             |
+| `structured-output.ts` | Extracts JSON from free-text model responses; prompts a session and validates output against a Zod schema with automatic retries                                                                                                                       |
+| `agent-loop.ts`        | Higher-level patterns: `agentLoopUntil`, `parallelAgents`, `sequentialAgents`. Uses `AgentSession` and `dispose()` for cleanup                                                                                                                         |
+| `utils.ts`             | Shared utilities: `validateWorkflowName`, `isEnoentError`, `safeErrorMessage`, `composeStatusCallbacks`, `forwardAgentStatus`, `DEFAULT_TOOLS`                                                                                                         |
 
 ### Pool Layer (`src/pool/`)
 
-| Module              | Responsibility                                                                                                                                |
-| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| `types.ts`          | Defines `StepDefinition`, `StepResult`, `LanePoolOptions`, and `LanePoolResult` types for configuring the task processing pipeline            |
-| `lane-pool.ts`      | Concurrent task processing pool (`LanePool` class); N lanes claim tasks from a shared `TaskTracker` and execute configurable sequential steps |
-| `prompt-builder.ts` | Builds the prompt text for each step, including pre-loading file contents from `task.files` as fenced code blocks with syntax highlighting    |
-| `step-execution.ts` | Executes individual steps by loading the profile, creating a harness session, sending the prompt, and determining approval/rejection          |
+| Module              | Responsibility                                                                                                                                                                                      |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `types.ts`          | Defines `StepDefinition`, `StepResult`, `LanePoolOptions` (with required `phaseId`), `LanePoolResult`, `RunStepTaskOptions`, and `TrackedSession` types                                             |
+| `lane-pool.ts`      | Concurrent task processing pool (`LanePool` class); N lanes claim tasks from a shared `TaskTracker` and execute configurable sequential steps. Fires `onTaskRegister` once per task before spawning |
+| `prompt-builder.ts` | Builds the prompt text for each step, including pre-loading file contents from `task.files` as fenced code blocks with syntax highlighting                                                          |
+| `step-execution.ts` | Executes individual steps by loading the profile, creating a harness session, sending the prompt, and determining approval/rejection                                                                |
+| `task-processor.ts` | Runs a task's ordered steps with retry; fires `onStepStart` before each step and `onAgentSpawn`/`onAgentComplete` around each agent                                                                 |
 
 ### Tracking Layer (`src/tracking/`)
 
-| Module               | Responsibility                                                                                                                                                                                                      |
-| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `audit-log.ts`       | Appends `AuditEvent` records to a JSONL file; supports filtering by type or task ID; computes aggregate stats                                                                                                       |
-| `event-store.ts`     | Event-sourced status store — the single source of truth. Durable `events.jsonl` + in-memory `WorkflowProjection` evolved via `evolve()`. See [EventStore / Event-Sourced Status](#eventstore--event-sourced-status) |
-| `event-types.ts`     | Defines `EventType`, `EventRecord`, `WorkflowProjection`, `AgentEntity`, `TaskEntity`, `LogEntry`, and `createInitialProjection()`                                                                                  |
-| `evolve.ts`          | Pure, immutable reducer: `evolve(state, event) → WorkflowProjection`. Handles all 19 event types                                                                                                                    |
-| `store-callbacks.ts` | `createStoreCallbacks(store)` — a `StatusCallbacks` implementation that fans every callback into `store.append()`                                                                                                   |
-| `task-status.ts`     | Manages a collection of `Task` objects with a DAG of dependencies; enforces state transitions; detects cycles                                                                                                       |
-| `workflow-status.ts` | Top-level workflow state: current phase, completed phases, scouting reports, plan, stats, and task tracker; persists to `.engin-state.json`                                                                         |
+| Module                   | Responsibility                                                                                                                                                                                                      |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `audit-log.ts`           | Appends `AuditEvent` records to a JSONL file; supports filtering by type or task ID; computes aggregate stats                                                                                                       |
+| `event-store.ts`         | Event-sourced status store — the single source of truth. Durable `events.jsonl` + in-memory `WorkflowProjection` evolved via `evolve()`. See [EventStore / Event-Sourced Status](#eventstore--event-sourced-status) |
+| `event-types.ts`         | Defines `EventType`, `EventRecord`, `WorkflowProjection`, `PhaseEntity`, `AgentEntity`, `TaskEntity`, `StepEntity`, `LogEntry`, and `createInitialProjection()`                                                     |
+| `evolve.ts`              | Pure, immutable reducer: `evolve(state, event) → WorkflowProjection`. Handles all 20 event types                                                                                                                    |
+| `store-callbacks.ts`     | `createStoreCallbacks(store)` — a `StatusCallbacks` implementation that fans every callback into `store.append()`                                                                                                   |
+| `task-status.ts`         | Manages a collection of `Task` objects with a DAG of dependencies; enforces state transitions (`ready`/`blocked`/`active`/`complete`/`failed`/`cancelled`); detects cycles                                          |
+| `workflow-status.ts`     | Top-level workflow state: current phase, completed phases, workflow data bag, stats, and task tracker; persists to `.engin-state.json`                                                                              |
+| `workflow-serializer.ts` | Atomic save (temp file + rename) and load with legacy field migration                                                                                                                                               |
 
 ### CLI Layer (`src/cli/`)
 
@@ -1159,21 +1262,26 @@ src/
 
 | Module                           | Responsibility                                                                                                                                                    |
 | -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `workflow-tui.ts`                | Top-level TUI lifecycle: creates terminal, builds widget tree, subscribes to `EventStore`, overrides console, handles keyboard input (Ctrl+C, Tab, Space, arrows) |
+| `workflow-tui.ts`                | Top-level TUI lifecycle: creates terminal, builds widget tree, subscribes to `EventStore`, overrides console, handles keyboard input (Ctrl+C, arrows, Tab, Space) |
 | `status-callbacks.ts`            | `createStoreBackedTui(deps)` — subscribes TUI widgets to an `EventStore` and syncs from projection                                                                |
-| `theme.ts`                       | ANSI colour/style helpers (`cyan`, `dim`, `bold`, etc.), status-to-colour/icon mappings, and `stripAnsi` sanitisation                                             |
-| `components/event-log.ts`        | Scrollable event log widget with PgUp/PgDn navigation and auto-scroll                                                                                             |
+| `format-workflow-event.ts`       | Maps an `EventRecord` to a human-readable emoji line for the event-log widget; returns `null` for silent event types                                              |
+| `theme.ts`                       | ANSI colour/style helpers (`cyan`, `dim`, `bold`, etc.), status-to-colour/icon mappings, `borderLine`, and `stripAnsi` sanitisation                               |
+| `components/event-log.ts`        | Scrollable event log widget with PgUp/PgDn/Home/End navigation and auto-scroll                                                                                    |
 | `components/phase-bar.ts`        | Single-line phase progress bar with completed/current/selected/pending states                                                                                     |
-| `components/lane-pool-widget.ts` | Grid of task lanes with focus tracking (↑/↓/Tab), sorted by status priority                                                                                       |
-| `components/agent-log-widget.ts` | Detail view of agents in the current phase with expand/collapse and scroll                                                                                        |
-| `components/dashboard.ts`        | Composite container: PhaseBar + LanePoolWidget + AgentLogWidget with `syncFromProjection()`                                                                       |
+| `components/task-list-widget.ts` | Task grid with focus tracking (↑/↓), sorted by status priority (replaces former `lane-pool-widget.ts`)                                                            |
+| `components/agent-log-widget.ts` | Agent detail log with step tab bar, expand/collapse, and scroll                                                                                                   |
+| `components/dashboard.ts`        | Composite container: PhaseBar + TaskListWidget + AgentLogWidget with centralized selection model and `syncFromProjection()`                                       |
 | `components/qr-overlay.ts`       | QR code overlay rendering the mobile observer URL                                                                                                                 |
 
-This package is a **pure library** — it provides building blocks (harness creation, profile loading, structured output, agent loop patterns, task tracking, event-sourced status, audit logging, a TUI dashboard, and a WebSocket observer server) that user-managed workflow scripts compose into pipelines. It does not ship any built-in workflows or agent profiles.
+> **Note:** `src/pool/lane-pool.ts` (the `LanePool` executor) is unrelated to the former `src/tui/components/lane-pool-widget.ts`. The executor stays; the TUI widget has been renamed to `task-list-widget.ts` to reflect that it now renders `TaskEntity` rows rather than lane concepts.
+
+This package is a **pure library** — it provides building blocks (harness creation, profile loading, structured output, agent loop patterns, `runStepTask`, task tracking, event-sourced status, audit logging, a TUI dashboard, and a WebSocket observer server) that user-managed workflow scripts compose into pipelines. It does not ship any built-in workflows or agent profiles.
 
 ### EventStore / Event-Sourced Status
 
 The `EventStore` class (`src/tracking/event-store.ts`) is the single source of truth for workflow status. Instead of mutating a state object directly, every status change is recorded as an append-only `EventRecord` in `events.jsonl`, and an in-memory `WorkflowProjection` is derived by replaying events through the pure `evolve()` reducer.
+
+> **⚠️ Clean break from old runs:** The event model and projection shape were substantially reworked (new event types `phase_registered`, `task_registered`, `step_started`; removed `task_step_started`, `tasks_added`; new `PhaseEntity`/`StepEntity`/`TaskEntity` shapes; `TaskStatus` changed). **Old runs created with the previous event model will NOT resume correctly** — the `evolve()` reducer cannot interpret legacy events against the new projection shape. Delete or archive old `work/` directories from prior versions.
 
 #### `EventStore`
 
@@ -1183,7 +1291,7 @@ class EventStore {
   append(
     type: EventType,
     data: Record<string, unknown>,
-    metadata?: { agentId?: string; taskId?: string; phase?: string },
+    metadata?: { agentId?: string; taskId?: string; phaseId?: string; stepIndex?: number },
   ): EventRecord;
   getProjection(): WorkflowProjection;
   getSnapshot(): { state: WorkflowProjection; seq: number };
@@ -1211,22 +1319,66 @@ class EventStore {
 
 #### `createStoreCallbacks(store): StatusCallbacks`
 
-A `StatusCallbacks` implementation that fans every callback into `store.append()` with the appropriate `EventType` and argument mapping. This is what the CLI passes to a workflow's `onStatus`. See [store-callbacks.ts](#tracking-layer-srctracking) for the full mapping table.
+A `StatusCallbacks` implementation that fans every callback into `store.append()` with the appropriate `EventType` and argument mapping. This is what the CLI passes to a workflow's `onStatus`. The mapping is 1:1 — each callback method maps to exactly one event type:
+
+| Callback             | EventType            |
+| -------------------- | -------------------- |
+| `onWorkflowStart`    | `workflow_started`   |
+| `onPhaseRegister`    | `phase_registered`   |
+| `onPhaseStart`       | `phase_started`      |
+| `onPhaseComplete`    | `phase_completed`    |
+| `onAgentSpawn`       | `agent_spawned`      |
+| `onAgentComplete`    | `agent_completed`    |
+| `onTaskRegister`     | `task_registered`    |
+| `onTaskStart`        | `task_started`       |
+| `onStepStart`        | `step_started`       |
+| `onTaskComplete`     | `task_completed`     |
+| `onTaskRejected`     | `task_rejected`      |
+| `onDecision`         | `decision`           |
+| `onError`            | `error`              |
+| `onWorkflowComplete` | `workflow_completed` |
+| `onWorkflowFailed`   | `workflow_failed`    |
+| `onSidebarUpdate`    | `sidebar_updated`    |
+| `onTurnStart`        | `turn_started`       |
+| `onTurnEnd`          | `turn_ended`         |
+| `onToolCallStart`    | `tool_call_started`  |
+| `onToolCallEnd`      | `tool_call_ended`    |
 
 #### `evolve(state, event): WorkflowProjection`
 
-Pure, immutable reducer (`src/tracking/evolve.ts`). Returns a **new** projection reflecting the given event. Handles all 19 event types:
+Pure, immutable reducer (`src/tracking/evolve.ts`). Returns a **new** projection reflecting the given event. Handles all 20 event types:
 
 - **Workflow lifecycle** — `workflow_started`, `workflow_completed`, `workflow_failed`
-- **Phase lifecycle** — `phase_started`, `phase_completed`
-- **Agent lifecycle** — `agent_spawned` (upsert + agentCount increment on first spawn), `agent_completed`
-- **Task lifecycle** — `task_started`, `task_step_started`, `task_completed`, `task_rejected`, `tasks_added`
+- **Phase lifecycle** — `phase_registered` (upsert into `phases` array), `phase_started` (sets `currentPhaseId`), `phase_completed` (appends to `completedPhaseIds`)
+- **Agent lifecycle** — `agent_spawned` (upsert + `agentCount` increment on first spawn; links agent to task step via `stepIndex`), `agent_completed` (sets `active: false`)
+- **Task lifecycle** — `task_registered` (creates `TaskEntity` with `steps`; appends `taskId` to owning `PhaseEntity.taskIds`), `task_started` (→ `active`), `step_started` (sets `activeStepIndex`; links agent), `task_completed` (→ `complete`), `task_rejected` (→ `failed`)
 - **Agent log / decisions / errors** — `decision`, `error`, `turn_ended` (text + thinking blocks appended to agent log; token accumulation)
 - **Tool call lifecycle** — `tool_call_started` (increments `toolCallCount`), `tool_call_ended`
-- **Sidebar** — `sidebar_updated` (title, indicator, phase descriptors)
+- **Sidebar** — `sidebar_updated` (title, indicator only — phases are registered via `phase_registered`)
 - **No-ops** — `turn_started` (seq bump only)
 
 Agent logs are capped at 500 entries (oldest dropped). Agent entities are keyed by `agentId::taskId` (or just `agentId` when no task is associated), with fuzzy resolution when only `agentId` is available.
+
+#### `WorkflowProjection`
+
+The canonical read-model shape derived by `evolve()`:
+
+```typescript
+interface WorkflowProjection {
+  seq: number;
+  taskPrompt: string;
+  phases: PhaseEntity[]; // ordered list, each with taskIds
+  currentPhaseId: string;
+  completedPhaseIds: string[];
+  tasks: Record<string, TaskEntity>; // keyed by taskId
+  agents: Record<string, AgentEntity>; // keyed by agentKey (agentId::taskId)
+  sidebar: { title: string; indicator: string };
+  status: 'running' | 'complete' | 'failed';
+  error?: string;
+  failedPhase?: string;
+  stats: { totalTokens: number; agentCount: number };
+}
+```
 
 ### WebSocket Protocol (Snapshot/Delta)
 
@@ -1255,7 +1407,7 @@ The `ObserverServer` (`src/web/observer-server.ts`) is a Bun HTTP + WebSocket se
 Thin view over the `EventStore` that broadcasts `ServerMessage`s whenever the store changes:
 
 - **Late-joining clients** receive a full `{ type: 'snapshot' }` via `getSnapshot()`.
-- **Between snapshots**, changes are coalesced into a single `{ type: 'events' }` message per microtask tick, forwarding raw `EventRecord`s. The client replays them through its own `evolve()`.
+- **Between snapshots**, changes are coalesced into a single `{ type: 'events' }` message per microtask tick, forwarding raw `EventRecord`s. The client replays them through its own `evolveClient()`.
 - **Terminal transitions** (→ complete / → failed) are broadcast **immediately** via dedicated messages so clients can surface a status banner without waiting for the batch flush. The coalesced events batch also carries the terminal records (idempotent).
 - **Resync** — `handleResync(lastSeq)` attempts event catch-up if the ring buffer is contiguous (`events[0].seq === lastSeq + 1`); otherwise falls back to a full snapshot.
 
@@ -1265,78 +1417,67 @@ The server binds to `0.0.0.0` by default and auto-detects the LAN IP for display
 
 ---
 
-## 10. Authoring Workflows
+## 10. Web Mirror
 
-Workflows are user-managed scripts that use the library's building blocks to define multi-agent pipelines.
+The web frontend (`web/`) is a React + Zustand single-page application that mirrors the TUI dashboard in a browser. It connects to the `ObserverServer` via WebSocket and maintains its own copy of the `WorkflowProjection` by replaying events through `evolveClient()` — the same pure reducer logic as the server-side `evolve()`.
 
-### Recommended Pattern: Config + Shared Backbone
+### Components
 
-The recommended authoring pattern is **config-driven**: a workflow is a thin wrapper that defines a `WorkflowConfig` (phases, profiles, schemas, step definitions) plus a `profiles/` directory of agent profile `.md` files, then delegates execution to a shared SPIR backbone. The bundled `develop`, `improve`, and `debug` workflows in the [workflows config repo](https://www.npmjs.com/package/@harms-haus/engin) all use this pattern, importing the shared backbone from `~/.config/engin/workflows/.lib`.
+#### `PhaseBar`
 
-In this model, the workflow's `run()` function:
+Renders the registered phases as a horizontal row of **clickable tabs**. Each tab shows the phase `icon` and `label`, styled by state:
 
-1. Receives `options.onStatus` — already wired by the engine to an [`EventStore`](#eventstore--event-sourced-status) via `createStoreCallbacks(store)`. The workflow should pass this through to all agent spawns and harnesses so events flow into the canonical store.
-2. Loads profiles from config directories via `resolveProfilesDirs(cwd, workflowName)` and `loadProfilesFromDirs`.
-3. Delegates to the shared SPIR backbone (or composes its own pipeline using `LanePool`, `promptForStructured`, `TaskTracker`, etc.).
-4. Uses `options.signal` for cooperative cancellation.
+- **Completed** — green checkmark styling
+- **Current** — highlighted as the active phase
+- **Selected** — underlined/highlighted (overlays current)
 
-The engine (`src/cli/tui-setup.ts` `setupTuiAndObserver`) owns the `EventStore`, `StatusBridge`, `ObserverServer`, and `WorkflowTUI`. **Workflows should not create their own TUI** — the TUI subscribes to the store internally and stays in sync automatically.
+Clicking a tab calls `selectPhase(id)`. Selecting a completed phase pins the view to it (reviewing history); selecting a non-completed phase is subject to the follow rule (auto-advances when it becomes non-current).
 
-### Advanced Pattern: Manual Composition
+#### `TaskList`
 
-For workflows that need full control, the lower-level building blocks are still available:
+Renders the tasks belonging to the **selected phase**, filtered by `task.phaseId === selectedPhaseId`. Tasks are sorted by status priority (`active` → `ready` → `blocked` → settled). Each task row shows its title and (when active) a step annotation like `step 1/2: implement`. The left border is coloured by status.
 
-- `createHarness` / `createHarnessFromProfile` — spawn a single agent session
-- `parallelAgents` / `sequentialAgents` — run multiple agents
-- `promptForStructured` — Zod-validated structured output
-- `LanePool` — concurrent task processing with configurable steps
-- `TaskTracker` — DAG-based task dependency tracking
-- `AuditLog` — JSONL audit trail
+Clicking a task calls `selectTask(id)`, which drives the `AgentLog` below. If the selected phase has no tasks, an empty-state message is shown.
 
-See [Programmatic API](#8-programmatic-api) for the full list.
+#### `AgentLog`
 
-### Composing Status Callbacks
+Renders the log entries for the agent fulfilling the **selected step** of the selected task. At the bottom is a **step tab bar** — one button per step in the task, marked as done (`✓`), active (`▶`), or pending (`○`). Steps without an agent are dimmed and disabled. Clicking an enabled step tab calls `selectStep(index)`, which pins the view to that step (until the follow rules re-select).
 
-If a workflow needs both the engine-provided store callbacks and additional consumers (e.g. custom logging), use `composeStatusCallbacks`:
+The header shows the agent's profile, tool-call count, and input/output token totals. A terminate-workflow button (with confirmation) is shown while the workflow is running.
 
-```typescript
-import { composeStatusCallbacks } from '@harms-haus/engin';
+### Centralized Selection Model
 
-// options.onStatus is already wired to the EventStore by the engine.
-// Fan out to an additional consumer:
-const combined = composeStatusCallbacks([
-  options.onStatus!,
-  { onPhaseStart: (info) => console.log(`Phase: ${info.phase}`) },
-]);
-```
+Both the TUI and the web mirror use a **centralized selection model** with the same five pieces of state:
 
-See [Custom Workflows](#7-custom-workflows) for examples and [Programmatic API](#8-programmatic-api) for the full set of available building blocks.
+| State               | TUI (`Dashboard`)  | Web (`workflow-store`) | Description                              |
+| ------------------- | ------------------ | ---------------------- | ---------------------------------------- |
+| `selectedPhaseId`   | `_selection` field | store field            | The phase whose tasks are displayed      |
+| `selectedTaskId`    | `_selection` field | store field            | The task whose agent log is shown        |
+| `selectedStepIndex` | `_selection` field | store field            | The step tab highlighted in AgentLog     |
+| `userPinnedPhase`   | `_selection` field | store field            | True when user clicked a completed phase |
+| `userPinnedStep`    | `_selection` field | store field            | True when user clicked a specific step   |
 
-### File Pre-Loading
+**Follow rules** (run after every projection update):
 
-When a [`Task`](#task) has `files` entries, `buildPrompt()` reads each file and injects its contents into the prompt as markdown code blocks _before_ the task prompt text. Each file is rendered as a `### filepath` heading followed by a fenced code block with language-tagged syntax highlighting (e.g. ` ```typescript `). Binary files (images, fonts, archives, etc.) are automatically skipped. Files exceeding 10 KB are truncated with a `... (truncated)` marker, splitting safely at UTF-8 character boundaries. Files that don't exist or can't be read are silently skipped with a `console.warn`.
+- **Phase follow** — if `selectedPhaseId` is set, not completed, and differs from `currentPhaseId`, advance to `currentPhaseId` and clear the pin.
+- **Task follow** — if `selectedTaskId` is null or no longer in the selected phase's tasks, auto-select the first `active` task (or the first task). Reset step selection.
+- **Step follow** — if `userPinnedStep` is false, sync `selectedStepIndex` to the task's `activeStepIndex`.
 
-### TUI Integration
+These rules keep the UI focused on live activity while allowing the user to pin to a specific phase/step for inspection.
 
-The TUI dashboard is **owned by the engine**, not by workflows. When the CLI detects an interactive terminal (`process.stdout.isTTY`) without `--verbose`, it calls `setupTuiAndObserver()` which:
+### Web Architecture
 
-1. Creates an [`EventStore`](#eventstore--event-sourced-status) for the run's work directory (loading existing events on resume).
-2. Creates `createStoreCallbacks(store)` — a `StatusCallbacks` that appends every event into the store.
-3. Starts the [`ObserverServer`](#websocket-protocol-snapshotdelta) (HTTP + WebSocket for the web/mobile UI).
-4. Creates a `WorkflowTUI` with the `store` option, so it subscribes to projection updates internally.
-5. Passes `storeCallbacks` as `options.onStatus` to the workflow's `run()` function.
-
-**Workflows do not create a TUI.** They simply pass `options.onStatus` through to their agent spawns. The TUI and web observer receive status updates automatically via store subscription.
-
-In non-TUI mode (`--verbose` or non-TTY), the CLI composes both the store callbacks and console callbacks:
-
-```typescript
-const composed = composeStatusCallbacks([storeCallbacks, consoleCallbacks]);
-```
-
-This ensures the `EventStore` is always populated regardless of output mode.
-
-**Console capture:** While the TUI is running, `console.log` passes through to the original console (library noise is not routed to avoid flooding), while `console.warn` and `console.error` are routed into the event log widget with deduplication. Original methods are restored on `stop()`.
+| File                              | Responsibility                                                                       |
+| --------------------------------- | ------------------------------------------------------------------------------------ |
+| `web/src/App.tsx`                 | Top-level layout: connection status banner, EventLog, PhaseBar, TaskList, AgentLog   |
+| `web/src/components/PhaseBar.tsx` | Clickable phase tabs; calls `selectPhase`                                            |
+| `web/src/components/TaskList.tsx` | Phase-filtered, click-to-select task list                                            |
+| `web/src/components/AgentLog.tsx` | Agent detail log with step tab bar and terminate button                              |
+| `web/src/components/EventLog.tsx` | Scrollable workflow-level event log (from `formatWorkflowEventLine`)                 |
+| `web/src/store/workflow-store.ts` | Zustand store: holds the projection + selection state; implements follow rules       |
+| `web/src/store/evolve-client.ts`  | Client-side pure reducer (mirrors server `evolve`)                                   |
+| `web/src/hooks/useWebSocket.ts`   | WebSocket connection lifecycle: snapshot/events/terminal handling, resync, terminate |
+| `web/src/protocol-types.ts`       | Re-exports protocol + state types from `src/web/protocol-types.ts`                   |
 
 ---
 
@@ -1357,10 +1498,38 @@ Re-exported from `@earendil-works/pi-agent-core`.
 #### `TaskStatus`
 
 ```typescript
-type TaskStatus = 'blocked' | 'ready' | 'claimed' | 'implementing' | 'reviewing' | 'done' | 'failed';
+type TaskStatus = 'ready' | 'blocked' | 'active' | 'complete' | 'failed' | 'cancelled';
 ```
 
-See [Task lifecycle](#tasktracker) for valid transitions.
+See [TaskTracker](#tasktracker) for valid transitions. Settled statuses (`complete`, `failed`, `cancelled`) are terminal on the executor side.
+
+#### `EventType`
+
+The full union of event types recorded by `EventStore`:
+
+```typescript
+type EventType =
+  | 'workflow_started'
+  | 'phase_registered'
+  | 'phase_started'
+  | 'phase_completed'
+  | 'agent_spawned'
+  | 'agent_completed'
+  | 'task_registered'
+  | 'task_started'
+  | 'step_started'
+  | 'task_completed'
+  | 'task_rejected'
+  | 'decision'
+  | 'error'
+  | 'workflow_completed'
+  | 'workflow_failed'
+  | 'sidebar_updated'
+  | 'turn_started'
+  | 'turn_ended'
+  | 'tool_call_started'
+  | 'tool_call_ended';
+```
 
 ---
 
@@ -1381,6 +1550,8 @@ See [Task lifecycle](#tasktracker) for valid transitions.
 
 ### `Task`
 
+The executor-side (write-model) task. Carries `phaseId` and executor-only fields.
+
 | Field             | Type         | Description                                                                                                                                                                                      |
 | ----------------- | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `id`              | `string`     | Unique task identifier                                                                                                                                                                           |
@@ -1390,6 +1561,7 @@ See [Task lifecycle](#tasktracker) for valid transitions.
 | `files`           | `string[]`   | File paths whose contents are pre-loaded and injected as code blocks before the task prompt. Paths are resolved relative to `cwd`. Binary files are skipped. Large files are truncated at 10 KB. |
 | `dependencies`    | `string[]`   | Task IDs that must complete before this task                                                                                                                                                     |
 | `status`          | `TaskStatus` | Current lifecycle state                                                                                                                                                                          |
+| `phaseId`         | `string`     | **Required.** Phase identifier the task belongs to                                                                                                                                               |
 | `assignedAgent?`  | `string`     | ID of the agent currently working on this task                                                                                                                                                   |
 | `result?`         | `unknown`    | Implementation result submitted for review                                                                                                                                                       |
 | `reviewFeedback?` | `string[]`   | Accumulated feedback entries from reviewer rejections                                                                                                                                            |
@@ -1397,57 +1569,72 @@ See [Task lifecycle](#tasktracker) for valid transitions.
 
 ---
 
-### `AuditEvent`
+### `TaskEntity`
 
-A discriminated union logged by `AuditLog`. Each variant has an auto-generated `timestamp: string` field.
+The read-model (projection) shape for a task. Does **not** carry executor-only fields (`prompt`, `files`, `result`, `reviewFeedback`, `isCode`, `assignedAgent`, `profile`). Steps have no `status` field — their rendered state is **derived** from their index vs the task's `activeStepIndex`.
 
-#### `agent_start`
+| Field              | Type           | Description                                                 |
+| ------------------ | -------------- | ----------------------------------------------------------- |
+| `id`               | `string`       | Unique task identifier                                      |
+| `title`            | `string`       | Short description                                           |
+| `phaseId`          | `string`       | **Required.** Phase identifier the task belongs to          |
+| `status`           | `TaskStatus`   | Current lifecycle state                                     |
+| `steps`            | `StepEntity[]` | Ordered list of steps; state derived from `activeStepIndex` |
+| `activeStepIndex?` | `number`       | The single active step; `undefined` when none               |
+| `dependencies`     | `string[]`     | Task IDs that must complete before this task                |
+| `startedAt?`       | `number`       | Epoch milliseconds when the task was started                |
+| `completedAt?`     | `string`       | ISO timestamp when the task completed                       |
 
-| Field     | Type            | Description                      |
-| --------- | --------------- | -------------------------------- |
-| `type`    | `"agent_start"` | Discriminant                     |
-| `agentId` | `string`        | Identifier of the agent          |
-| `profile` | `AgentProfile`  | Profile used to create the agent |
-| `taskId?` | `string`        | Associated task, if applicable   |
-| `phase?`  | `string`        | Phase the agent belongs to       |
+---
 
-#### `agent_end`
+### `StepEntity`
 
-| Field     | Type          | Description                                                |
-| --------- | ------------- | ---------------------------------------------------------- |
-| `type`    | `"agent_end"` | Discriminant                                               |
-| `agentId` | `string`      | Identifier of the agent                                    |
-| `result`  | `unknown`     | The agent's final result (may include `cost` and `tokens`) |
-| `taskId?` | `string`      | Associated task, if applicable                             |
-| `phase?`  | `string`      | Phase the agent belongs to                                 |
+Projection shape for a step within a task. Steps have **no status** — their rendered state (done / active / pending) is derived from their `index` vs the owning task's `activeStepIndex`:
 
-#### `decision`
+- `index < activeStepIndex` → done
+- `index === activeStepIndex` → active
+- `index > activeStepIndex` → pending
 
-| Field       | Type         | Description                                                 |
-| ----------- | ------------ | ----------------------------------------------------------- |
-| `type`      | `"decision"` | Discriminant                                                |
-| `agentId`   | `string`     | Identifier of the deciding agent                            |
-| `decision`  | `string`     | Short decision label (e.g. `"approved"`, `"plan_rejected"`) |
-| `reasoning` | `string`     | Explanation for the decision                                |
-| `taskId?`   | `string`     | Associated task, if applicable                              |
+| Field         | Type      | Description                                                                       |
+| ------------- | --------- | --------------------------------------------------------------------------------- |
+| `name`        | `string`  | Human-readable step name (e.g. `"implement"`, `"review"`)                         |
+| `index`       | `number`  | 0-based position within the task                                                  |
+| `profile?`    | `string`  | Profile ID this step runs as                                                      |
+| `agentKey?`   | `string`  | Key into `projection.agents` once an agent is spawned (`undefined` until spawned) |
+| `isReadOnly?` | `boolean` | When true, write/edit tools are stripped                                          |
 
-#### `structured_output`
+---
 
-| Field     | Type                  | Description                       |
-| --------- | --------------------- | --------------------------------- |
-| `type`    | `"structured_output"` | Discriminant                      |
-| `agentId` | `string`              | Identifier of the producing agent |
-| `output`  | `unknown`             | The validated structured output   |
-| `taskId?` | `string`              | Associated task, if applicable    |
+### `PhaseEntity`
 
-#### `error`
+| Field     | Type       | Description                                      |
+| --------- | ---------- | ------------------------------------------------ |
+| `id`      | `string`   | Phase identifier (e.g. `"scouting"`)             |
+| `label`   | `string`   | Human-readable label for display                 |
+| `icon`    | `string`   | Emoji or icon for the phase                      |
+| `taskIds` | `string[]` | Ordered list of task IDs belonging to this phase |
 
-| Field     | Type      | Description                          |
-| --------- | --------- | ------------------------------------ |
-| `type`    | `"error"` | Discriminant                         |
-| `agentId` | `string`  | Identifier of the agent that errored |
-| `error`   | `string`  | Error description                    |
-| `taskId?` | `string`  | Associated task, if applicable       |
+---
+
+### `AgentEntity`
+
+| Field           | Type         | Description                                                   |
+| --------------- | ------------ | ------------------------------------------------------------- |
+| `uid`           | `string`     | Stable key (`agentId::taskId`, or just `agentId`)             |
+| `agentId`       | `string`     | Identifier of the agent                                       |
+| `profile`       | `string`     | Profile ID used to create the agent                           |
+| `phaseId`       | `string`     | Phase the agent belongs to                                    |
+| `stepIndex?`    | `number`     | Step index within the task (when associated with a task step) |
+| `taskId?`       | `string`     | Associated task, if applicable                                |
+| `sessionId?`    | `string`     | Session identifier                                            |
+| `sessionPath?`  | `string`     | Session storage path                                          |
+| `active`        | `boolean`    | Whether the agent is currently running                        |
+| `log`           | `LogEntry[]` | Agent log entries (capped at 500)                             |
+| `toolCallCount` | `number`     | Total tool calls made                                         |
+| `inputTokens`   | `number`     | Accumulated input tokens                                      |
+| `outputTokens`  | `number`     | Accumulated output tokens                                     |
+| `taskTitle`     | `string`     | Title of the associated task (empty if none)                  |
+| `completedAt?`  | `string`     | ISO timestamp when the agent completed                        |
 
 ---
 
@@ -1455,21 +1642,18 @@ A discriminated union logged by `AuditLog`. Each variant has an auto-generated `
 
 Serialized form of `WorkflowStatusTracker`. Written to `.engin-state.json` on `save()`.
 
-| Field                    | Type                                                                                             | Description                                         |
-| ------------------------ | ------------------------------------------------------------------------------------------------ | --------------------------------------------------- |
-| `taskPrompt`             | `string`                                                                                         | The original task prompt                            |
-| `currentPhase`           | `string`                                                                                         | Phase the workflow is currently in                  |
-| `completedPhases`        | `string[]`                                                                                       | Phases that have finished                           |
-| `tasks`                  | `Task[]`                                                                                         | All tasks in the plan                               |
-| `scoutingReports`        | `unknown[]`                                                                                      | Collected scouting reports                          |
-| `plan`                   | `unknown`                                                                                        | The validated implementation plan                   |
-| `research?`              | `string`                                                                                         | Synthesized research summary from scouting review   |
-| `planReviewFeedback?`    | `string`                                                                                         | Plan review feedback when a plan is rejected        |
-| `planReviewSuggestions?` | `string[]`                                                                                       | Specific improvement suggestions from plan reviewer |
-| `stats`                  | `{ totalTokens: number; totalCost: number; agentCount: number }`                                 | Aggregate statistics                                |
-| `spawnedAgents?`         | `PersistedAgentRecord[]`                                                                         | Persisted records of spawned agents                 |
-| `sidebar?`               | `{ title?: string; indicator?: string; phases?: { id: string; label: string; icon: string }[] }` | Persisted sidebar info for restoring UI state       |
-| `worktree?`              | `WorktreeInfo`                                                                                   | Git worktree information for isolated execution     |
+| Field               | Type                                                             | Description                                                                                             |
+| ------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `taskPrompt`        | `string`                                                         | The original task prompt                                                                                |
+| `currentPhaseId`    | `string`                                                         | Phase the workflow is currently in                                                                      |
+| `completedPhaseIds` | `string[]`                                                       | Phases that have finished                                                                               |
+| `tasks`             | `Task[]`                                                         | All tasks in the plan                                                                                   |
+| `workflowData`      | `Record<string, unknown>`                                        | Generic data bag — consumers store workflow-specific state (e.g. scouting reports, plan, research) here |
+| `stats`             | `{ totalTokens: number; totalCost: number; agentCount: number }` | Aggregate statistics                                                                                    |
+| `spawnedAgents?`    | `PersistedAgentRecord[]`                                         | Persisted records of spawned agents                                                                     |
+| `worktree?`         | `WorktreeInfo`                                                   | Git worktree information for isolated execution                                                         |
+
+> **Note:** The old `sidebar`, `scoutingReports`, `plan`, `research`, `planReviewFeedback`, and `planReviewSuggestions` top-level fields have been folded into `workflowData`. The serializer migrates legacy state files automatically on load.
 
 ---
 
@@ -1560,6 +1744,28 @@ Options for `sequentialAgents`.
 
 ---
 
+### `RunStepTaskOptions`
+
+Options for `runStepTask`. Runs one agent as a one-step task.
+
+| Field          | Type                     | Required | Description                                                                                  |
+| -------------- | ------------------------ | -------- | -------------------------------------------------------------------------------------------- |
+| `profilesDirs` | `string[]`               | **Yes**  | Directories containing `.md` agent profile files                                             |
+| `phaseId`      | `string`                 | **Yes**  | Phase identifier for status callbacks                                                        |
+| `taskId`       | `string`                 | **Yes**  | Unique task identifier                                                                       |
+| `title`        | `string`                 | **Yes**  | Human-readable task title                                                                    |
+| `stepName`     | `string`                 | **Yes**  | Name of the step (displayed in status callbacks)                                             |
+| `profileId`    | `string`                 | **Yes**  | Profile ID to load                                                                           |
+| `cwd`          | `string`                 | **Yes**  | Working directory for the agent                                                              |
+| `prompt`       | `string`                 | **Yes**  | Prompt to send to the agent                                                                  |
+| `apiKeys?`     | `Record<string, string>` | No       | Optional API key overrides by provider                                                       |
+| `onStatus?`    | `StatusCallbacks`        | No       | Status callback handlers                                                                     |
+| `isReadOnly?`  | `boolean`                | No       | When true, `write` and `edit` tools are stripped from the agent's toolset (default: `false`) |
+| `schema?`      | `ZodType<unknown>`       | No       | Zod schema for structured output. When absent, raw assistant text is returned                |
+| `signal?`      | `AbortSignal`            | No       | Abort signal for cooperative cancellation                                                    |
+
+---
+
 ### `StepDefinition<T>`
 
 A single step in the task processing pipeline. Each step maps to an agent profile.
@@ -1589,35 +1795,21 @@ type StepResult = { type: 'approved'; output: unknown } | { type: 'rejected'; fe
 
 Configuration for creating a `LanePool`.
 
-| Field                | Type                               | Required | Description                                                                                                          |
-| -------------------- | ---------------------------------- | -------- | -------------------------------------------------------------------------------------------------------------------- |
-| `maxConcurrentLanes` | `number`                           | **Yes**  | Maximum number of concurrent lanes (workers)                                                                         |
-| `profilesDirs`       | `string[]`                         | **Yes**  | Directories containing `.md` agent profile files. Searched in order, local overrides global                          |
-| `sessionBaseDir`     | `string`                           | **Yes**  | Base directory for persisted session storage. Sessions stored at `{base}/{taskId}/{attempt}-{stepIndex}-{stepName}/` |
-| `cwd`                | `string`                           | **Yes**  | Working directory for agent operations                                                                               |
-| `taskTracker`        | `TaskTracker`                      | **Yes**  | Shared task tracker — lanes claim tasks from here                                                                    |
-| `getStepsForTask`    | `(task: Task) => StepDefinition[]` | **Yes**  | Given a task, return the ordered list of steps to execute                                                            |
-| `apiKeys?`           | `Record<string, string>`           | No       | Optional API key overrides by provider                                                                               |
-| `onStatus?`          | `StatusCallbacks`                  | No       | Status callback handlers                                                                                             |
-| `auditLog?`          | `AuditLog`                         | No       | Audit log for recording events                                                                                       |
-| `maxStepRetries?`    | `number`                           | No       | Maximum retries per step on rejection (default: `5`)                                                                 |
-| `laneWaitTimeoutMs?` | `number`                           | No       | Maximum time (ms) a lane waits for new work before polling again (default: `60000`)                                  |
-| `signal?`            | `AbortSignal`                      | No       | Abort signal for cooperative cancellation                                                                            |
-| `phase?`             | `string`                           | No       | Phase identifier for the TUI lane pool widget badge (default: `"implementing"`). See note below.                     |
-
-> **Phase badge for TUI lane pool**  
-> To show the current phase badge (e.g. `📦 scouting`) next to active tasks in the TUI lane pool widget, pass the `phase` option to the `LanePool` constructor. Common values are: `"scouting"`, `"planning"`, `"implementing"`, `"review"`. The phase value is propagated to all agent spawn/complete callbacks, audit events, and error reports.
->
-> ```typescript
-> const pool = new LanePool({
->   // ... other options ...
->   phase: 'implementing',
-> });
-> ```
->
-> **Without this parameter**, the phase defaults to `"implementing"` and the TUI phase badge will not render — the phase bar shows only the workflow indicator icon, no phase segments.
->
-> **Workflow authors:** Workflow files are loaded from external config directories at runtime and are not part of the engin source tree. If your workflow creates a `LanePool`, you must add (or update) the `phase` option in your workflow's `main.ts` to see the phase badge in the TUI.
+| Field                | Type                               | Required | Description                                                                                                                           |
+| -------------------- | ---------------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `maxConcurrentLanes` | `number`                           | **Yes**  | Maximum number of concurrent lanes (workers)                                                                                          |
+| `profilesDirs`       | `string[]`                         | **Yes**  | Directories containing `.md` agent profile files. Searched in order, local overrides global                                           |
+| `sessionBaseDir`     | `string`                           | **Yes**  | Base directory for persisted session storage. Sessions stored at `{base}/{taskId}/{attempt}-{stepIndex}-{stepName}/`                  |
+| `cwd`                | `string`                           | **Yes**  | Working directory for agent operations                                                                                                |
+| `taskTracker`        | `TaskTracker`                      | **Yes**  | Shared task tracker — lanes claim tasks from here                                                                                     |
+| `getStepsForTask`    | `(task: Task) => StepDefinition[]` | **Yes**  | Given a task, return the ordered list of steps to execute                                                                             |
+| `phaseId`            | `string`                           | **Yes**  | Phase identifier — the phase this pool serves. Propagated to all agent spawn/complete callbacks, task registration, and error reports |
+| `apiKeys?`           | `Record<string, string>`           | No       | Optional API key overrides by provider                                                                                                |
+| `onStatus?`          | `StatusCallbacks`                  | No       | Status callback handlers                                                                                                              |
+| `auditLog?`          | `AuditLog`                         | No       | Audit log for recording events                                                                                                        |
+| `maxStepRetries?`    | `number`                           | No       | Maximum retries per step on rejection (default: `5`)                                                                                  |
+| `laneWaitTimeoutMs?` | `number`                           | No       | Maximum time (ms) a lane waits for new work before polling again (default: `60000`)                                                   |
+| `signal?`            | `AbortSignal`                      | No       | Abort signal for cooperative cancellation                                                                                             |
 
 ---
 
@@ -1667,25 +1859,26 @@ type StatusCallbacks = WorkflowStatusCallbacks & AgentStatusCallbacks;
 
 #### `WorkflowStatusCallbacks`
 
-| Method               | Parameter Shape                                                                                                  | Fired when                             |
-| -------------------- | ---------------------------------------------------------------------------------------------------------------- | -------------------------------------- |
-| `onWorkflowStart`    | `{ taskPrompt: string; resumed: boolean; workDir: string }`                                                      | The `run()` orchestrator starts        |
-| `onPhaseStart`       | `{ phase: string; round: number }`                                                                               | A phase begins execution               |
-| `onPhaseComplete`    | `{ phase: string; durationMs: number }`                                                                          | A phase finishes                       |
-| `onAgentSpawn`       | `{ agentId: string; profile: string; phase: string; taskId?: string; sessionId?: string; sessionPath?: string }` | An agent session is created            |
-| `onAgentComplete`    | `{ agentId: string; profile: string; phase: string; taskId?: string; sessionId?: string }`                       | An agent finishes its prompt           |
-| `onTaskStart`        | `{ taskId: string; title: string; agentId: string; phase?: string; startedAt?: number }`                         | A task is claimed and dispatched       |
-| `onTaskStepStart`    | `{ taskId: string; stepName: string; stepIndex: number; totalSteps: number }`                                    | A task step begins execution           |
-| `onTaskComplete`     | `{ taskId: string; title: string }`                                                                              | A task passes review                   |
-| `onTaskRejected`     | `{ taskId: string; title: string; reason: string }`                                                              | A task fails review                    |
-| `onDecision`         | `{ agentId: string; decision: string; reasoning: string; taskId?: string }`                                      | A reviewer makes a decision            |
-| `onError`            | `{ agentId: string; error: string; phase: string; taskId?: string }`                                             | An agent encounters an error           |
-| `onWorkflowComplete` | `{ totalDurationMs: number; agentCount: number }`                                                                | The workflow finishes successfully     |
-| `onWorkflowFailed`   | `{ error: Error; phase: string }`                                                                                | The workflow throws an unhandled error |
-| `onTasksAdded`       | `{ tasks: { id: string; title: string; status: TaskStatus; dependencies: string[]; phase?: string }[] }`         | Tasks are added to the tracker         |
-| `onSidebarUpdate`    | `{ title?: string; indicator?: string; phases?: { id: string; label: string; icon: string }[] }`                 | Sidebar UI metadata is updated         |
+| Method               | Parameter Shape                                                                                                                                 | Fired when                                |
+| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------- |
+| `onWorkflowStart`    | `{ taskPrompt: string; resumed: boolean; workDir: string }`                                                                                     | The `run()` orchestrator starts           |
+| `onPhaseRegister`    | `{ id: string; label: string; icon: string }`                                                                                                   | A phase is registered at startup          |
+| `onPhaseStart`       | `{ phase: string; round: number }`                                                                                                              | A phase begins execution                  |
+| `onPhaseComplete`    | `{ phase: string; durationMs: number }`                                                                                                         | A phase finishes                          |
+| `onAgentSpawn`       | `{ agentId: string; profile: string; phaseId: string; taskId?: string; stepIndex?: number; sessionId?: string; sessionPath?: string }`          | An agent session is created               |
+| `onAgentComplete`    | `{ agentId: string; profile: string; phaseId: string; taskId?: string; sessionId?: string }`                                                    | An agent finishes its prompt              |
+| `onTaskStart`        | `{ taskId: string; title: string; agentId: string; phaseId?: string; startedAt?: number }`                                                      | A task is claimed and dispatched          |
+| `onTaskRegister`     | `{ taskId: string; phaseId: string; title: string; dependencies: string[]; steps: { name: string; profileId: string; isReadOnly: boolean }[] }` | A task is registered with its step layout |
+| `onStepStart`        | `{ taskId: string; stepIndex: number; stepName: string; agentId: string }`                                                                      | A step begins execution                   |
+| `onTaskComplete`     | `{ taskId: string; title: string }`                                                                                                             | A task passes review                      |
+| `onTaskRejected`     | `{ taskId: string; title: string; reason: string }`                                                                                             | A task fails review                       |
+| `onDecision`         | `{ agentId: string; decision: string; reasoning: string; taskId?: string }`                                                                     | A reviewer makes a decision               |
+| `onError`            | `{ agentId: string; error: string; phaseId: string; taskId?: string }`                                                                          | An agent encounters an error              |
+| `onWorkflowComplete` | `{ totalDurationMs: number; agentCount: number }`                                                                                               | The workflow finishes successfully        |
+| `onWorkflowFailed`   | `{ error: Error; phaseId: string }`                                                                                                             | The workflow throws an unhandled error    |
+| `onSidebarUpdate`    | `{ title?: string; indicator?: string }`                                                                                                        | Sidebar UI metadata is updated            |
 
-All methods are optional.
+All methods are optional. Phases are registered via `onPhaseRegister`; tasks are registered via `onTaskRegister`; steps begin via `onStepStart`.
 
 #### `AgentStatusCallbacks`
 
@@ -1779,6 +1972,8 @@ API keys are resolved by `AuthStorage.getApiKey()` in this priority order:
 
 If `.engin-state.json` exists in `workDir`, the `run()` function loads it and resumes from the last saved phase.
 
+> **⚠️ Clean break:** The event model and `WorkflowProjection` shape were substantially reworked in this version. **Old runs created with the previous event model will NOT resume correctly** — the `evolve()` reducer cannot interpret legacy events (`task_step_started`, `tasks_added`) against the new projection shape (`TaskEntity` with `steps`, `PhaseEntity` with `taskIds`, etc.). Delete or archive old `work/` directories from prior versions before running new workflows.
+
 ---
 
 ## 13. Development
@@ -1856,9 +2051,12 @@ bun run typecheck && bun run lint && bun run format:check && bun test
 ```
 engin/
 ├── src/                # Source code
-│   ├── core/           # Core layer (sessions, profiles, auth, config)
-│   ├── pool/           # Pool layer (concurrent task processing)
-│   └── tracking/       # Tracking layer (audit, tasks, workflow state)
+│   ├── core/           # Core layer (sessions, profiles, auth, config, runStepTask)
+│   ├── pool/           # Pool layer (concurrent task processing — LanePool executor)
+│   ├── tracking/       # Tracking layer (audit, tasks, workflow state, event store)
+│   ├── tui/            # TUI layer (terminal dashboard widgets)
+│   └── web/            # Web layer (observer server + protocol)
+├── web/                # React web mirror frontend
 ├── tests/              # Test files mirroring src/ structure
 ├── docs/               # Documentation
 ├── package.json
@@ -1877,7 +2075,7 @@ tests/
 │   ├── agent-loop.test.ts
 │   ├── config.test.ts
 │   ├── harness-factory.test.ts
-│   ├── harness-factory.subscribe.test.ts
+│   ├── phase-tasks.test.ts
 │   ├── profile.test.ts
 │   ├── structured-output.test.ts
 │   └── workflow-loader.test.ts
@@ -1886,10 +2084,15 @@ tests/
 │   └── types.test.ts
 ├── tracking/
 │   ├── audit-log.test.ts
+│   ├── event-store.test.ts
+│   ├── evolve.test.ts
 │   ├── task-status.test.ts
 │   └── workflow-status.test.ts
-├── cli.test.ts
-└── setup.test.ts
+├── tui/
+│   └── components/
+│       ├── task-list-widget.test.ts
+│       └── dashboard.test.ts
+└── ...
 ```
 
 ### Adding New Profiles
@@ -1903,7 +2106,9 @@ tests/
 
 1. Create a directory in `~/.config/engin/workflows/` or `.engin/workflows/` (e.g. `my-workflow/`).
 2. Add a `main.ts` file inside that directory exporting a `run(taskPrompt, options)` function.
-3. Reference it by directory name on the CLI:
+3. Register your phases via `options.onStatus.onPhaseRegister(...)`.
+4. Use `runStepTask` for single-agent tasks or `LanePool` (with `phaseId`) for concurrent multi-step tasks.
+5. Reference it by directory name on the CLI:
 
 ```bash
 engin my-workflow "Do the thing"

@@ -28,8 +28,8 @@ describe('workflow-serializer', () => {
       const state = serializeWorkflowState(tracker);
 
       expect(state.taskPrompt).toBe('');
-      expect(state.currentPhase).toBe('');
-      expect(state.completedPhases).toEqual([]);
+      expect(state.currentPhaseId).toBe('');
+      expect(state.completedPhaseIds).toEqual([]);
       expect(state.workflowData).toEqual({});
       expect(state.stats).toEqual({ totalTokens: 0, totalCost: 0, agentCount: 0 });
       expect(state.tasks).toEqual([]);
@@ -54,13 +54,12 @@ describe('workflow-serializer', () => {
         branchName: 'main',
         originalCwd: '/home/user',
       });
-      tracker.setSidebar({ title: 'My Workflow' });
 
       const state = serializeWorkflowState(tracker);
 
       expect(state.taskPrompt).toBe('Build a thing');
-      expect(state.currentPhase).toBe('implementing');
-      expect(state.completedPhases).toEqual([]);
+      expect(state.currentPhaseId).toBe('implementing');
+      expect(state.completedPhaseIds).toEqual([]);
       expect(state.workflowData.scoutingReports).toEqual([{ summary: 'done' }]);
       expect(state.workflowData.plan).toEqual({ steps: ['a', 'b'] });
       expect(state.workflowData.research).toBe('research notes');
@@ -71,8 +70,6 @@ describe('workflow-serializer', () => {
       expect(state.spawnedAgents![0].agentId).toBe('agent-1');
       expect(state.worktree).toBeDefined();
       expect(state.worktree!.branchName).toBe('main');
-      expect(state.sidebar).toBeDefined();
-      expect(state.sidebar!.title).toBe('My Workflow');
     });
 
     it('includes tasks from the task tracker', () => {
@@ -94,19 +91,18 @@ describe('workflow-serializer', () => {
       state.taskPrompt = 'mutated';
       state.workflowData.plan = { key: 'mutated' };
       state.stats.totalTokens = 999;
-      state.spawnedAgents!.push({ agentId: 'fake', profile: 'p', phase: 'scouting' });
-      state.completedPhases.push('fake-phase');
+      state.spawnedAgents!.push({ agentId: 'fake', profile: 'p', phaseId: 'scouting' });
+      state.completedPhaseIds.push('fake-phase');
 
       expect(tracker.taskPrompt).toBe('original');
       expect((tracker.workflowData as Record<string, unknown>).plan).toEqual({ key: 'value' });
       expect(tracker.stats.totalTokens).toBe(0);
       expect(tracker.spawnedAgents).toHaveLength(1);
-      expect(tracker.completedPhases).toEqual([]);
+      expect(tracker.completedPhaseIds).toEqual([]);
     });
 
-    it('returns undefined sidebar and worktree when not set', () => {
+    it('returns undefined worktree when not set', () => {
       const state = serializeWorkflowState(tracker);
-      expect(state.sidebar).toBeUndefined();
       expect(state.worktree).toBeUndefined();
     });
 
@@ -190,8 +186,8 @@ describe('workflow-serializer', () => {
       // Write a state file manually in the new format (workflowData)
       const state: WorkflowState = {
         taskPrompt: 'loaded',
-        currentPhase: 'scouting',
-        completedPhases: [],
+        currentPhaseId: 'scouting',
+        completedPhaseIds: [],
         tasks: [],
         workflowData: {
           scoutingReports: [],
@@ -201,8 +197,7 @@ describe('workflow-serializer', () => {
           planReviewSuggestions: ['Suggestion 1'],
         },
         stats: { totalTokens: 100, totalCost: 0, agentCount: 1 },
-        spawnedAgents: [{ agentId: 'a1', profile: 'coder', phase: 'scouting' }],
-        sidebar: { title: 'Sidebar' },
+        spawnedAgents: [{ agentId: 'a1', profile: 'coder', phaseId: 'scouting' }],
         worktree: { worktreePath: '/tmp/wt', branchName: 'main', originalCwd: '/home/user' },
       };
 
@@ -212,7 +207,7 @@ describe('workflow-serializer', () => {
       const loaded = await loadWorkflowState(dir);
 
       expect(loaded.taskPrompt).toBe('loaded');
-      expect(loaded.currentPhase).toBe('scouting');
+      expect(loaded.currentPhaseId).toBe('scouting');
       expect(loaded.workflowData.plan).toEqual({ version: 2 });
       expect(loaded.workflowData.research).toBe('research notes');
       expect(loaded.workflowData.planReviewFeedback).toBe('Feedback');
@@ -220,8 +215,6 @@ describe('workflow-serializer', () => {
       expect(loaded.stats).toEqual({ totalTokens: 100, totalCost: 0, agentCount: 1 });
       expect(loaded.spawnedAgents).toHaveLength(1);
       expect(loaded.spawnedAgents![0].agentId).toBe('a1');
-      expect(loaded.sidebar).toBeDefined();
-      expect(loaded.sidebar!.title).toBe('Sidebar');
       expect(loaded.worktree).toBeDefined();
       expect(loaded.worktree!.branchName).toBe('main');
     });
@@ -240,8 +233,8 @@ describe('workflow-serializer', () => {
     it('loads a minimal state file with only required fields', async () => {
       const minimal: WorkflowState = {
         taskPrompt: '',
-        currentPhase: '',
-        completedPhases: [],
+        currentPhaseId: '',
+        completedPhaseIds: [],
         tasks: [],
         workflowData: {},
         stats: { totalTokens: 0, totalCost: 0, agentCount: 0 },
@@ -254,7 +247,6 @@ describe('workflow-serializer', () => {
       expect(loaded.taskPrompt).toBe('');
       expect(loaded.workflowData).toEqual({});
       expect(loaded.spawnedAgents).toBeUndefined();
-      expect(loaded.sidebar).toBeUndefined();
       expect(loaded.worktree).toBeUndefined();
     });
   });
@@ -282,7 +274,6 @@ describe('workflow-serializer', () => {
         branchName: 'feature/branch',
         originalCwd: '/home/user',
       });
-      tracker.setSidebar({ title: 'My Workflow', indicator: 'running' });
       tracker.taskTracker.addTask(makeTask({ id: 'task-roundtrip' }));
 
       // Save using standalone function
@@ -292,8 +283,8 @@ describe('workflow-serializer', () => {
       const loaded = await loadWorkflowState(dir);
 
       expect(loaded.taskPrompt).toBe('Round trip');
-      expect(loaded.currentPhase).toBe('review');
-      expect(loaded.completedPhases).toEqual(['implementing']);
+      expect(loaded.currentPhaseId).toBe('review');
+      expect(loaded.completedPhaseIds).toEqual(['implementing']);
       expect(loaded.workflowData.scoutingReports).toEqual([{ summary: 'Done' }]);
       expect(loaded.workflowData.plan).toEqual({ tasks: ['t1'] });
       expect(loaded.workflowData.research).toBe('Some research');
@@ -305,9 +296,6 @@ describe('workflow-serializer', () => {
       expect(loaded.spawnedAgents![0].completedAt).toBeDefined();
       expect(loaded.worktree).toBeDefined();
       expect(loaded.worktree!.branchName).toBe('feature/branch');
-      expect(loaded.sidebar).toBeDefined();
-      expect(loaded.sidebar!.title).toBe('My Workflow');
-      expect(loaded.sidebar!.indicator).toBe('running');
       expect(loaded.tasks).toHaveLength(1);
       expect(loaded.tasks[0].id).toBe('task-roundtrip');
     });

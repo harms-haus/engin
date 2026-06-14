@@ -111,8 +111,9 @@ function resetStore(): void {
   useWorkflowStore.setState({
     agentsById: {},
     tasksById: {},
-    currentPhase: '',
-    completedPhases: [],
+    phases: [],
+    currentPhaseId: '',
+    completedPhaseIds: [],
     sidebar: { title: '', indicator: '' },
     status: 'running',
     taskPrompt: '',
@@ -121,6 +122,11 @@ function resetStore(): void {
     seq: 0,
     stats: { totalTokens: 0, agentCount: 0 },
     workflowEventLog: [],
+    selectedPhaseId: null,
+    selectedTaskId: null,
+    selectedStepIndex: null,
+    userPinnedPhase: false,
+    userPinnedStep: false,
   });
 }
 
@@ -295,5 +301,67 @@ describe('App – status banner', () => {
     expect(banner).toBeInTheDocument();
     expect(banner).toHaveTextContent('Workflow complete');
     expect(banner).toHaveAttribute('aria-live', 'polite');
+  });
+});
+
+describe('App – layout', () => {
+  it('renders EventLog as a flat sibling', async () => {
+    const { App } = await import('./App');
+    const { container } = render(<App />);
+
+    const eventLog = container.querySelector('.event-log');
+    expect(eventLog).toBeInTheDocument();
+  });
+
+  it('renders PhaseBar as a flat sibling', async () => {
+    const { App } = await import('./App');
+    const { container } = render(<App />);
+
+    const phaseBar = container.querySelector('.phase-bar');
+    expect(phaseBar).toBeInTheDocument();
+  });
+
+  it('renders TaskList as a flat sibling', async () => {
+    const { App } = await import('./App');
+    const { container } = render(<App />);
+
+    const taskList = container.querySelector('.task-list');
+    expect(taskList).toBeInTheDocument();
+  });
+
+  it('renders AgentLog as a flat sibling', async () => {
+    const { App } = await import('./App');
+    const { container } = render(<App />);
+
+    const agentLog = container.querySelector('.agent-log');
+    expect(agentLog).toBeInTheDocument();
+  });
+
+  it('all four main sections are direct children of .app', async () => {
+    const { App } = await import('./App');
+    const { container } = render(<App />);
+
+    const appDiv = container.querySelector('.app');
+    expect(appDiv).toBeInTheDocument();
+
+    const children = appDiv?.children;
+    // The .app div contains: connection-status, status-banner (conditional),
+    // EventLog, PhaseBar, TaskList, AgentLog
+    // We just verify that at least the four main components are present
+    const eventLog = appDiv?.querySelector('.event-log');
+    const phaseBar = appDiv?.querySelector('.phase-bar');
+    const taskList = appDiv?.querySelector('.task-list');
+    const agentLog = appDiv?.querySelector('.agent-log');
+
+    expect(eventLog).toBeInTheDocument();
+    expect(phaseBar).toBeInTheDocument();
+    expect(taskList).toBeInTheDocument();
+    expect(agentLog).toBeInTheDocument();
+
+    // Confirm they are direct children
+    expect(eventLog?.parentElement).toBe(appDiv);
+    expect(phaseBar?.parentElement).toBe(appDiv);
+    expect(taskList?.parentElement).toBe(appDiv);
+    expect(agentLog?.parentElement).toBe(appDiv);
   });
 });

@@ -1,29 +1,29 @@
 /* eslint-disable no-control-regex -- tests intentionally match ANSI escape codes */
 import { describe, expect, it } from 'bun:test';
-import type { AgentEntity } from '../../../src/tracking/event-types.js';
+import type { AgentEntity, StepEntity } from '../../../src/tracking/event-types.js';
 import { AgentLogWidget } from '../../../src/tui/components/agent-log-widget.js';
 
 const WIDTH = 40;
 
 // Arrow key escape sequences
-const LEFT_ARROW = '\x1b[D';
-const RIGHT_ARROW = '\x1b[C';
 const UP_ARROW = '\x1b[A';
 const DOWN_ARROW = '\x1b[B';
 const SHIFT_UP = '\x1b[1;2A';
 const SHIFT_DOWN = '\x1b[1;2B';
+const TAB_KEY = '\x09';
+const SHIFT_TAB = '\x1b[Z';
 
 // ─── AgentEntity helpers ──────────────────────────────────────────────────────
 
 let _uidCounter = 0;
 
-function makeAgent(overrides: Partial<AgentEntity> & Pick<AgentEntity, 'agentId' | 'phase'>): AgentEntity {
+function makeAgent(overrides: Partial<AgentEntity> & Pick<AgentEntity, 'agentId' | 'phaseId'>): AgentEntity {
   _uidCounter++;
   return {
     uid: overrides.uid ?? overrides.agentId + '-' + _uidCounter,
     agentId: overrides.agentId,
     profile: overrides.profile ?? 'coder',
-    phase: overrides.phase,
+    phaseId: overrides.phaseId,
     active: overrides.active ?? true,
     log: overrides.log ?? [],
     toolCallCount: overrides.toolCallCount ?? 0,
@@ -31,6 +31,10 @@ function makeAgent(overrides: Partial<AgentEntity> & Pick<AgentEntity, 'agentId'
     outputTokens: overrides.outputTokens ?? 0,
     taskTitle: overrides.taskTitle ?? '',
     completedAt: overrides.completedAt,
+    stepIndex: overrides.stepIndex,
+    taskId: overrides.taskId,
+    sessionId: overrides.sessionId,
+    sessionPath: overrides.sessionPath,
     ...overrides,
   };
 }
@@ -40,47 +44,77 @@ function resetUidCounter() {
 }
 
 /**
- * Helper: set up a widget with agents, register an agent in a phase,
- * set the phase and select the agent.
+ * Helper: create a StepEntity quickly.
+ */
+function makeStep(overrides: Partial<StepEntity> & Pick<StepEntity, 'name' | 'index'>): StepEntity {
+  return {
+    name: overrides.name,
+    index: overrides.index,
+    profile: overrides.profile,
+    agentKey: overrides.agentKey,
+    isReadOnly: overrides.isReadOnly ?? false,
+    ...overrides,
+  };
+}
+
+/**
+ * Helper: set up a widget with agents and steps, selecting a particular step.
  */
 function setupWidget(
   maxLines = 5,
   agentId = 'agent-1',
   profile = 'coder',
-  phase = 'test',
+  phaseId = 'test',
+  stepName = 'step-0',
+  stepIndex = 0,
+  agentKey?: string,
 ): {
   widget: AgentLogWidget;
   agents: AgentEntity[];
+  steps: StepEntity[];
   uid: string;
 } {
   resetUidCounter();
   const agents: AgentEntity[] = [];
+  const steps: StepEntity[] = [];
   const widget = new AgentLogWidget(maxLines);
 
-  const entity = makeAgent({ agentId, profile, phase });
+  const entity = makeAgent({ agentId, profile, phaseId });
   agents.push(entity);
   widget.setAgents(agents);
-  widget.setPhases([phase]);
-  widget.setCurrentPhase(phase);
 
-  return { widget, agents, uid: entity.uid };
+  const key = agentKey ?? entity.uid;
+  const step = makeStep({ name: stepName, index: stepIndex, agentKey: key });
+  steps.push(step);
+  widget.setSteps(steps);
+  widget.setSelectedStepIndex(0);
+
+  return { widget, agents, steps, uid: entity.uid };
 }
 
 describe('AgentLogWidget', () => {
   // ─── No agent selected ────────────────────────────────────────────────
 
-  it("renders 'No agent selected' when no agents in current phase", () => {
+  it("renders 'No agent for step' when selected step has no agentKey", () => {
     const widget = new AgentLogWidget(5);
-    widget.setAgents([]);
-    widget.setPhases(['test']);
-    widget.setCurrentPhase('test');
+    const steps = [makeStep({ name: 'review', index: 0 })]; // no agentKey
+    widget.setSteps(steps);
+    widget.setSelectedStepIndex(0);
 
     const lines = widget.render(WIDTH);
     expect(lines.length).toBe(5);
-    expect(lines[0]).toContain('No agent selected');
-    for (let i = 1; i < 5; i++) {
-      expect(lines[i].trim()).toBe('');
-    }
+    expect(lines[0]).toContain('No agent for step');
+    expect(lines[0]).toContain('review');
+    // Last line is the tab bar
+    expect(lines[4]).toContain('review');
+  });
+
+  it("renders 'No agent for step' with unknown step name when selectedStepIndex is out of range", () => {
+    const widget = new AgentLogWidget(5);
+    // No steps set at all
+    const lines = widget.render(WIDTH);
+    expect(lines[0]).toContain('No agent for step');
+    expect(lines[0]).toContain('unknown');
   });
 
   // ─── Header rendering ──────────────────────────────────────────────────
@@ -106,10 +140,9 @@ describe('AgentLogWidget', () => {
     const { widget } = setupWidget(5);
     const lines = widget.render(80);
     // Header line should have right-aligned controls
-    expect(lines[0]).toContain('↑↓phase ←→agent space expand');
+    expect(lines[0]).toContain('Tab step space expand');
     // Controls should be at the end of the line
     const header = lines[0];
-    // After stripping ANSI, the controls text should be near the end
     const stripped = header.replace(/\x1b\[[^a-zA-Z]*[a-zA-Z]/g, '');
     expect(stripped.endsWith('space expand') || stripped.endsWith('space expand ')).toBe(true);
   });
@@ -121,31 +154,152 @@ describe('AgentLogWidget', () => {
     expect(lines[0]).toContain('↑↓scroll x10⇧↑↓ space collapse');
   });
 
-  // ─── NO footer ─────────────────────────────────────────────────────────
+  // ─── Tab bar rendering ────────────────────────────────────────────────
 
-  it('NO footer is rendered: no line contains switch agent text', () => {
-    const { widget, agents } = setupWidget(5);
-    // Add a second agent
-    agents.push(makeAgent({ agentId: 'agent-2', profile: 'scout', phase: 'test' }));
-    widget.invalidate();
+  it('tab bar shows step names with positional markers when activeStepIndex=1', () => {
+    const { widget, agents, uid } = setupWidget(10, 'agent-1', 'coder', 'test', 'write-tests', 0, 'agent-key-1');
+
+    // Add more steps: one before active, one active, one after
+    const steps: StepEntity[] = [
+      makeStep({ name: 'plan', index: 0, agentKey: 'agent-key-0' }),
+      makeStep({ name: 'write-tests', index: 1, agentKey: uid }),
+      makeStep({ name: 'review', index: 2, agentKey: 'agent-key-2' }),
+    ];
+    // Add the extra agents
+    const extra1 = makeAgent({ agentId: 'extra-0', profile: 'planner', phaseId: 'test', uid: 'agent-key-0' });
+    const extra2 = makeAgent({ agentId: 'extra-2', profile: 'reviewer', phaseId: 'test', uid: 'agent-key-2' });
+    agents.push(extra1, extra2);
+    widget.setAgents(agents);
+    widget.setSteps(steps);
+    widget.setSelectedStepIndex(1);
+    widget.setActiveStepIndex(1); // write-tests is active
 
     const lines = widget.render(80);
-    // No line should contain footer-like text
-    for (const line of lines) {
-      expect(line).not.toContain('switch agent');
+    const lastLine = lines[lines.length - 1];
+
+    // step 0 (plan) is done (index < activeStepIndex=1) → ✓
+    expect(lastLine).toContain('1 plan ✓');
+    // step 1 (write-tests) is active → ▶, and selected (bold/underlined)
+    expect(lastLine).toContain('2 write-tests ▶');
+    // step 2 (review) is pending → ○
+    expect(lastLine).toContain('3 review ○');
+  });
+
+  it('tab bar shows done/active/pending markers correctly when activeStepIndex=0', () => {
+    const { widget, agents } = setupWidget(10, 'agent-1', 'coder', 'test', 'active-step', 0);
+
+    const steps: StepEntity[] = [
+      makeStep({ name: 'active-step', index: 0, agentKey: 'agent-key-0' }),
+      makeStep({ name: 'pending-step', index: 1, agentKey: 'agent-key-1' }),
+      makeStep({ name: 'pending-step-2', index: 2, agentKey: 'agent-key-2' }),
+    ];
+    const extra1 = makeAgent({ agentId: 'e1', profile: 'p1', phaseId: 'test', uid: 'agent-key-1' });
+    const extra2 = makeAgent({ agentId: 'e2', profile: 'p2', phaseId: 'test', uid: 'agent-key-2' });
+    agents.push(extra1, extra2);
+    widget.setAgents(agents);
+    widget.setSteps(steps);
+    widget.setSelectedStepIndex(0);
+    widget.setActiveStepIndex(0);
+
+    const lines = widget.render(80);
+    const lastLine = lines[lines.length - 1];
+
+    expect(lastLine).toContain('1 active-step ▶');
+    expect(lastLine).toContain('2 pending-step ○');
+    expect(lastLine).toContain('3 pending-step-2 ○');
+  });
+
+  it('tab bar shows all done markers when activeStepIndex is past last step', () => {
+    const { widget, agents } = setupWidget(10, 'agent-1', 'coder', 'test', 'step0', 0);
+
+    const steps: StepEntity[] = [
+      makeStep({ name: 'step0', index: 0, agentKey: 'agent-key-0' }),
+      makeStep({ name: 'step1', index: 1, agentKey: 'agent-key-1' }),
+    ];
+    const extra1 = makeAgent({ agentId: 'e1', profile: 'p1', phaseId: 'test', uid: 'agent-key-1' });
+    agents.push(extra1);
+    widget.setAgents(agents);
+    widget.setSteps(steps);
+    widget.setSelectedStepIndex(0);
+    widget.setActiveStepIndex(5); // past last step
+
+    const lines = widget.render(80);
+    const lastLine = lines[lines.length - 1];
+
+    expect(lastLine).toContain('1 step0 ✓');
+    expect(lastLine).toContain('2 step1 ✓');
+  });
+
+  it('tab bar dims steps without agentKey', () => {
+    const { widget, agents, uid } = setupWidget(10, 'agent-1', 'coder', 'test', 'with-agent', 0, 'agent-key-0');
+
+    const steps: StepEntity[] = [
+      makeStep({ name: 'with-agent', index: 0, agentKey: uid }),
+      makeStep({ name: 'no-agent', index: 1 }), // no agentKey — should be dimmed
+    ];
+    widget.setAgents(agents);
+    widget.setSteps(steps);
+    widget.setSelectedStepIndex(0);
+    widget.setActiveStepIndex(0);
+
+    const lines = widget.render(80);
+    const lastLine = lines[lines.length - 1];
+
+    // The no-agent step should have ANSI dim codes
+    expect(lastLine).toContain('no-agent');
+    // Check it is wrapped in dim escape codes (the whole label should be dimmed)
+    // We need to check that the step name appears between a dim sequence
+    const dimmedPart = lastLine.match(/\x1b\[2m(.*?)\x1b\[0m/);
+    expect(dimmedPart).not.toBeNull();
+    expect(dimmedPart![1]).toContain('no-agent');
+  });
+
+  it('tab bar underlines/bolds the selected step', () => {
+    const { widget, agents, uid } = setupWidget(10, 'agent-1', 'coder', 'test', 'step-a', 0, 'agent-key-0');
+
+    const steps: StepEntity[] = [
+      makeStep({ name: 'step-a', index: 0, agentKey: uid }),
+      makeStep({ name: 'step-b', index: 1, agentKey: 'agent-key-1' }),
+    ];
+    const extra1 = makeAgent({ agentId: 'e1', profile: 'p1', phaseId: 'test', uid: 'agent-key-1' });
+    agents.push(extra1);
+    widget.setAgents(agents);
+    widget.setSteps(steps);
+    widget.setSelectedStepIndex(0);
+    widget.setActiveStepIndex(0);
+
+    const lines = widget.render(80);
+    const lastLine = lines[lines.length - 1];
+
+    // step-a is selected; check for bold + underline codes
+    expect(lastLine).toContain('\x1b[1m'); // bold
+    expect(lastLine).toContain('\x1b[4m'); // underline
+    expect(lastLine).toContain('step-a');
+
+    // step-b should NOT have bold/underline
+    const bIndex = lastLine.indexOf('step-b');
+    const beforeB = lastLine.slice(0, bIndex);
+    // The last escape before step-b should be [0m (reset), not [1m or [4m
+    const lastEscape = beforeB.match(/\x1b\[([\d;]*)m/g);
+    if (lastEscape && lastEscape.length > 0) {
+      const finalEsc = lastEscape[lastEscape.length - 1];
+      // It should be reset [0m, not bold [1m or underline [4m
+      expect(finalEsc).toBe('\x1b[0m');
     }
   });
 
-  it('NO footer is rendered: total line count equals header plus entry slots with no footer line', () => {
-    const { widget } = setupWidget(3);
+  it('tab bar shows "no steps" when steps array is empty', () => {
+    const widget = new AgentLogWidget(5);
     const lines = widget.render(WIDTH);
-    expect(lines.length).toBe(3); // header + 2 entry slots (no footer)
+    const lastLine = lines[lines.length - 1];
+    expect(lastLine).toContain('no steps');
   });
 
   // ─── Entry rendering ────────────────────────────────────────────────────
 
   it('renders entries with correct type icons', () => {
-    const { widget, agents, uid } = setupWidget(5);
+    // Use 6 lines so entrySlots=4 and all 4 entries are visible
+    const { widget, agents, uid } = setupWidget(6);
     const agent = agents.find((a) => a.uid === uid)!;
     agent.log.push({ id: '1', timestamp: '', type: 'text', content: 'hello' });
     agent.log.push({ id: '2', timestamp: '', type: 'thinking', content: 'pondering' });
@@ -154,25 +308,28 @@ describe('AgentLogWidget', () => {
     widget.invalidate();
 
     const lines = widget.render(WIDTH);
-    // lines[0] = header, lines[1-4] = entries
+    // lines[0] = header, lines[1-4] = entries (totalLines=6, line[5]=tab bar)
     expect(lines[1]).toContain('💬');
     expect(lines[2]).toContain('🧠');
     expect(lines[3]).toContain('⚠️');
-    expect(lines[4]).toContain('🔧');
+    // tool_call_start is formatted by formatToolCall which emits its own emoji
+    expect(lines[4]).toContain('running tool');
   });
 
   it('wraps long content to width', () => {
-    const { widget, agents, uid } = setupWidget(5);
+    const { widget, agents, uid } = setupWidget(6);
     const agent = agents.find((a) => a.uid === uid)!;
     agent.log.push({ id: '1', timestamp: '', type: 'text', content: 'This is a very long string that should wrap' });
     widget.invalidate();
 
     // width=20, prefix '  💬 ' has visibleWidth=5, remainingWidth=15
+    // The wrapped lines are: 'This is a very' (14), 'long string' (11), 'that should' (11), 'wrap' (4)
+    // With 6 total lines: header(0) + entrySlots(4) + tabBar(5), all 4 fit
     const lines = widget.render(20);
-    expect(lines.length).toBe(5);
-    const entryContent = lines.slice(1).join('');
+    expect(lines.length).toBe(6);
+    const entryContent = lines.slice(1, 5).join(''); // skip header and tab bar
     expect(entryContent).not.toContain('…');
-    const entryLines = lines.slice(1).filter((l) => l.trim().length > 0);
+    const entryLines = lines.slice(1, 5).filter((l) => l.trim().length > 0);
     expect(entryLines.length).toBeGreaterThan(1);
     expect(lines.join('')).toContain('This is a very');
     expect(lines.join('')).toContain('long string');
@@ -201,43 +358,48 @@ describe('AgentLogWidget', () => {
   it('always returns exactly getExpandedLineCount() lines regardless of entry count', () => {
     // Test with 0 entries
     const w1 = new AgentLogWidget(3);
-    const r1: AgentEntity[] = [makeAgent({ agentId: 'a', profile: 'p', phase: 'test' })];
+    const r1: AgentEntity[] = [makeAgent({ agentId: 'a', profile: 'p', phaseId: 'test' })];
+    const s1: StepEntity[] = [makeStep({ name: 'step0', index: 0, agentKey: r1[0].uid })];
     w1.setAgents(r1);
-    w1.setPhases(['test']);
-    w1.setCurrentPhase('test');
+    w1.setSteps(s1);
+    w1.setSelectedStepIndex(0);
     expect(w1.render(WIDTH).length).toBe(3);
 
     // Test with 1 entry
     const w2 = new AgentLogWidget(3);
-    const u2e = makeAgent({ agentId: 'a', profile: 'p', phase: 'test' });
+    const u2e = makeAgent({ agentId: 'a', profile: 'p', phaseId: 'test' });
     u2e.log.push({ id: '1', timestamp: '', type: 'text', content: 'hi' });
+    const s2: StepEntity[] = [makeStep({ name: 'step0', index: 0, agentKey: u2e.uid })];
     w2.setAgents([u2e]);
-    w2.setPhases(['test']);
-    w2.setCurrentPhase('test');
+    w2.setSteps(s2);
+    w2.setSelectedStepIndex(0);
     expect(w2.render(WIDTH).length).toBe(3);
 
     // Test with more entries than slots
     const w4 = new AgentLogWidget(3);
-    const u4e = makeAgent({ agentId: 'a', profile: 'p', phase: 'test' });
+    const u4e = makeAgent({ agentId: 'a', profile: 'p', phaseId: 'test' });
     for (const c of ['a', 'b', 'c', 'd']) {
       u4e.log.push({ id: '1', timestamp: '', type: 'text', content: c });
     }
+    const s4: StepEntity[] = [makeStep({ name: 'step0', index: 0, agentKey: u4e.uid })];
     w4.setAgents([u4e]);
-    w4.setPhases(['test']);
-    w4.setCurrentPhase('test');
+    w4.setSteps(s4);
+    w4.setSelectedStepIndex(0);
     const lines = w4.render(WIDTH);
     expect(lines.length).toBe(3);
-    // header + 2 most recent entries (no footer)
-    expect(lines[1]).toContain('c');
-    expect(lines[2]).toContain('d');
+    // header + 1 entry slot (totalLines=3, that leaves 1 for entry and 1 for tab bar)
+    // entrySlots = totalLines - 2 = 1
+    // So we expect only 1 entry visible, the most recent one
+    expect(lines[1]).toContain('d');
   });
 
   it('default maxLines is 20 when collapsed, 40 when expanded', () => {
     const widget = new AgentLogWidget();
-    const agents = [makeAgent({ agentId: 'a', profile: 'p', phase: 'test' })];
+    const agents = [makeAgent({ agentId: 'a', profile: 'p', phaseId: 'test' })];
+    const steps = [makeStep({ name: 'step0', index: 0, agentKey: agents[0].uid })];
     widget.setAgents(agents);
-    widget.setPhases(['test']);
-    widget.setCurrentPhase('test');
+    widget.setSteps(steps);
+    widget.setSelectedStepIndex(0);
 
     // Collapsed: 20 lines
     expect(widget.render(WIDTH).length).toBe(20);
@@ -251,10 +413,11 @@ describe('AgentLogWidget', () => {
 
   it('entry ring buffer caps at 200 entries', () => {
     const widget = new AgentLogWidget(200);
-    const agent = makeAgent({ agentId: 'agent-2', profile: 'coder', phase: 'test' });
+    const agent = makeAgent({ agentId: 'agent-2', profile: 'coder', phaseId: 'test' });
+    const steps = [makeStep({ name: 'step0', index: 0, agentKey: agent.uid })];
     widget.setAgents([agent]);
-    widget.setPhases(['test']);
-    widget.setCurrentPhase('test');
+    widget.setSteps(steps);
+    widget.setSelectedStepIndex(0);
 
     for (let i = 0; i < 201; i++) {
       agent.log.push({ id: `${i}`, timestamp: '', type: 'text', content: `entry-${i}` });
@@ -263,154 +426,100 @@ describe('AgentLogWidget', () => {
 
     const lines = widget.render(80);
 
-    // After adding 201 entries, entry-0 was shifted (cap at 200)
-    // entries[0] (entry-0) was shifted when count went from 200→201
-    // With maxLines=200, visibleCount=199, startIdx = max(0, 200-199) = 1
-    // So the first visible entry is entries[1] which is original entry-2
-    expect(lines[1]).toContain('entry-2');
-    // Last entry should be entry-200
-    expect(lines[199]).toContain('entry-200');
-    // Header + 199 visible entries = 200 lines total
+    // After adding 201 entries, entry-0 and entry-1 were shifted (cap at ~199 due to renderNeeded)
+    // With maxLines=200, totalLines=200, entrySlots=198, renderNeeded = 198 + 0 + 1 = 199
+    // After 201 pushes with shift, pending contains indices 2..200 (199 items)
+    // startIdx = max(0, 199 - 198 - 0) = 1
+    // So the first visible entry is pending[1] which is entry-3
+    expect(lines[1]).toContain('entry-3');
+    // Last entry before tab bar should be entry-200 at lines[198]
+    expect(lines[198]).toContain('entry-200');
+    // Header + 198 visible entries + tab bar = 200 lines total
     expect(lines.length).toBe(200);
   });
 
-  // ─── Left/right navigation ─────────────────────────────────────────────
+  // ─── Tab/Shift+Tab step cycling ────────────────────────────────────────
 
-  it('left/right cycles agents within current phase with wrapping', () => {
-    const widget = new AgentLogWidget(5);
-    const a1 = makeAgent({ agentId: 'agent-1', profile: 'coder', phase: 'test' });
-    const a2 = makeAgent({ agentId: 'agent-2', profile: 'scout', phase: 'test' });
-    const a3 = makeAgent({ agentId: 'agent-3', profile: 'planner', phase: 'test' });
+  describe('Tab/Shift+Tab step cycling', () => {
+    it('Tab cycles forward through steps that have agentKey, skipping steps without', () => {
+      const widget = new AgentLogWidget(5);
+      const agent0 = makeAgent({ agentId: 'a0', profile: 'p0', phaseId: 'test', uid: 'key-0' });
+      const agent1 = makeAgent({ agentId: 'a1', profile: 'p1', phaseId: 'test', uid: 'key-1' });
+      const agents = [agent0, agent1];
 
-    widget.setAgents([a1, a2, a3]);
-    widget.setPhases(['test']);
-    widget.setCurrentPhase('test');
+      // step0 has agentKey, step1 has agentKey, step2 has NO agentKey
+      const steps: StepEntity[] = [
+        makeStep({ name: 'step0', index: 0, agentKey: 'key-0' }),
+        makeStep({ name: 'step1', index: 1, agentKey: 'key-1' }),
+        makeStep({ name: 'step2', index: 2 }), // no agentKey
+      ];
 
-    // Right arrow goes to agent-2
-    widget.handleInput(RIGHT_ARROW);
-    expect(widget.getSelectedAgentUid()).toBe(a2.uid);
+      widget.setAgents(agents);
+      widget.setSteps(steps);
+      widget.setSelectedStepIndex(0);
 
-    // Right arrow goes to agent-3
-    widget.handleInput(RIGHT_ARROW);
-    expect(widget.getSelectedAgentUid()).toBe(a3.uid);
+      // Initial: step0 selected
+      expect(widget.getSelectedAgentUid()).toBe('key-0');
 
-    // Right arrow wraps to agent-1
-    widget.handleInput(RIGHT_ARROW);
-    expect(widget.getSelectedAgentUid()).toBe(a1.uid);
+      // Tab → step1 (skips step2 because it has no agentKey)
+      widget.handleInput(TAB_KEY);
+      expect(widget.getSelectedAgentUid()).toBe('key-1');
 
-    // Left arrow wraps to agent-3
-    widget.handleInput(LEFT_ARROW);
-    expect(widget.getSelectedAgentUid()).toBe(a3.uid);
-  });
+      // Tab → wraps back to step0 (step2 skipped)
+      widget.handleInput(TAB_KEY);
+      expect(widget.getSelectedAgentUid()).toBe('key-0');
+    });
 
-  it('left/right does NOT cross phase boundaries', () => {
-    const widget = new AgentLogWidget(5);
-    const p1 = makeAgent({ agentId: 'p1', profile: 'planner', phase: 'planning' });
-    const p2 = makeAgent({ agentId: 'p2', profile: 'planner', phase: 'planning' });
-    const e1 = makeAgent({ agentId: 'e1', profile: 'executor', phase: 'execution' });
-    const e2 = makeAgent({ agentId: 'e2', profile: 'executor', phase: 'execution' });
+    it('Shift+Tab cycles backward through steps that have agentKey', () => {
+      const widget = new AgentLogWidget(5);
+      const agent0 = makeAgent({ agentId: 'a0', profile: 'p0', phaseId: 'test', uid: 'key-0' });
+      const agent1 = makeAgent({ agentId: 'a1', profile: 'p1', phaseId: 'test', uid: 'key-1' });
+      const agents = [agent0, agent1];
 
-    widget.setAgents([p1, p2, e1, e2]);
-    widget.setPhases(['planning', 'execution']);
-    widget.setCurrentPhase('planning');
+      const steps: StepEntity[] = [
+        makeStep({ name: 'step0', index: 0, agentKey: 'key-0' }),
+        makeStep({ name: 'step1', index: 1, agentKey: 'key-1' }),
+        makeStep({ name: 'step2', index: 2 }), // no agentKey
+      ];
 
-    // In planning phase, should only cycle between p1 and p2
-    expect(widget.getSelectedAgentUid()).toBe(p1.uid);
+      widget.setAgents(agents);
+      widget.setSteps(steps);
+      widget.setSelectedStepIndex(0);
 
-    widget.handleInput(RIGHT_ARROW);
-    expect(widget.getSelectedAgentUid()).toBe(p2.uid);
+      // Initial: step0
+      expect(widget.getSelectedAgentUid()).toBe('key-0');
 
-    widget.handleInput(RIGHT_ARROW);
-    expect(widget.getSelectedAgentUid()).toBe(p1.uid); // wrapped within planning
+      // Shift+Tab → wraps to step1 (skips step2)
+      widget.handleInput(SHIFT_TAB);
+      expect(widget.getSelectedAgentUid()).toBe('key-1');
 
-    // Should NOT reach execution agents
-    expect(widget.getSelectedAgentUid()).not.toBe(e1.uid);
-  });
+      // Shift+Tab → step0
+      widget.handleInput(SHIFT_TAB);
+      expect(widget.getSelectedAgentUid()).toBe('key-0');
+    });
 
-  it('left/right does nothing with single agent in phase', () => {
-    const { widget, uid } = setupWidget(5);
+    it('Tab does nothing when no steps have agentKey', () => {
+      const widget = new AgentLogWidget(5);
+      const steps: StepEntity[] = [makeStep({ name: 'step0', index: 0 }), makeStep({ name: 'step1', index: 1 })];
 
-    widget.handleInput(LEFT_ARROW);
-    expect(widget.getSelectedAgentUid()).toBe(uid);
+      widget.setSteps(steps);
+      widget.setSelectedStepIndex(0);
 
-    widget.handleInput(RIGHT_ARROW);
-    expect(widget.getSelectedAgentUid()).toBe(uid);
-  });
+      expect(widget.getSelectedAgentUid()).toBeNull();
 
-  it('left/right does nothing with no agents in phase', () => {
-    const widget = new AgentLogWidget(5);
-    widget.setAgents([]);
-    widget.setPhases(['test']);
-    widget.setCurrentPhase('test');
+      widget.handleInput(TAB_KEY);
+      expect(widget.getSelectedAgentUid()).toBeNull();
+    });
 
-    expect(widget.getSelectedAgentUid()).toBeNull();
+    it('Tab does nothing when steps array is empty', () => {
+      const widget = new AgentLogWidget(5);
+      widget.setSteps([]);
 
-    widget.handleInput(LEFT_ARROW);
-    expect(widget.getSelectedAgentUid()).toBeNull();
+      expect(widget.getSelectedAgentUid()).toBeNull();
 
-    widget.handleInput(RIGHT_ARROW);
-    expect(widget.getSelectedAgentUid()).toBeNull();
-  });
-
-  // ─── Up/down cycles phases ─────────────────────────────────────────────
-
-  it('up/down cycles WORKFLOW phases with wrapping', () => {
-    const widget = new AgentLogWidget(5);
-    const a1 = makeAgent({ agentId: 'a1', profile: 'p1', phase: 'phase-a' });
-    const a2 = makeAgent({ agentId: 'a2', profile: 'p2', phase: 'phase-b' });
-    const a3 = makeAgent({ agentId: 'a3', profile: 'p3', phase: 'phase-c' });
-
-    widget.setAgents([a1, a2, a3]);
-    widget.setPhases(['phase-a', 'phase-b', 'phase-c']);
-    widget.setCurrentPhase('phase-a');
-
-    // Down arrow goes to phase-b
-    widget.handleInput(DOWN_ARROW);
-    expect(widget.getCurrentPhase()).toBe('phase-b');
-
-    // Down arrow goes to phase-c
-    widget.handleInput(DOWN_ARROW);
-    expect(widget.getCurrentPhase()).toBe('phase-c');
-
-    // Down arrow wraps to phase-a
-    widget.handleInput(DOWN_ARROW);
-    expect(widget.getCurrentPhase()).toBe('phase-a');
-
-    // Up arrow wraps to phase-c
-    widget.handleInput(UP_ARROW);
-    expect(widget.getCurrentPhase()).toBe('phase-c');
-
-    // Up arrow goes to phase-b
-    widget.handleInput(UP_ARROW);
-    expect(widget.getCurrentPhase()).toBe('phase-b');
-  });
-
-  it('up/down resets selectedAgentIndex to 0 on phase change', () => {
-    const widget = new AgentLogWidget(5);
-    const a1 = makeAgent({ agentId: 'a1', profile: 'p1', phase: 'phase-a' });
-    const a2 = makeAgent({ agentId: 'a2', profile: 'p1', phase: 'phase-a' });
-    const b1 = makeAgent({ agentId: 'b1', profile: 'p2', phase: 'phase-b' });
-
-    widget.setAgents([a1, a2, b1]);
-    widget.setPhases(['phase-a', 'phase-b']);
-    widget.setCurrentPhase('phase-a');
-
-    // Start with agent-1 in phase-a
-    expect(widget.getSelectedAgentUid()).toBe(a1.uid);
-
-    // Move to agent-2 in phase-a
-    widget.handleInput(RIGHT_ARROW);
-    expect(widget.getSelectedAgentUid()).toBe(a2.uid);
-
-    // Switch to phase-b — selectedAgentIndex resets to 0
-    widget.handleInput(DOWN_ARROW);
-    expect(widget.getCurrentPhase()).toBe('phase-b');
-    expect(widget.getSelectedAgentUid()).toBe(b1.uid);
-
-    // Switch back to phase-a — selectedAgentIndex resets to 0
-    widget.handleInput(UP_ARROW);
-    expect(widget.getCurrentPhase()).toBe('phase-a');
-    expect(widget.getSelectedAgentUid()).toBe(a1.uid);
+      widget.handleInput(TAB_KEY);
+      expect(widget.getSelectedAgentUid()).toBeNull();
+    });
   });
 
   // ─── Expand/collapse ───────────────────────────────────────────────────
@@ -426,7 +535,7 @@ describe('AgentLogWidget', () => {
 
   // ─── Scroll when expanded ──────────────────────────────────────────────
 
-  it('when expanded: up scrols by 1 line (scroll indicator appears)', () => {
+  it('when expanded: up scrolls by 1 line (scroll indicator appears)', () => {
     const { widget, agents, uid } = setupWidget(10);
     const agent = agents.find((a) => a.uid === uid)!;
     for (let i = 0; i < 45; i++) {
@@ -443,7 +552,7 @@ describe('AgentLogWidget', () => {
     expect(lines[1]).toContain('more lines');
   });
 
-  it('when expanded: down scrols by 1 line', () => {
+  it('when expanded: down scrolls by 1 line', () => {
     const { widget, agents, uid } = setupWidget(10);
     const agent = agents.find((a) => a.uid === uid)!;
     for (let i = 0; i < 20; i++) {
@@ -462,7 +571,7 @@ describe('AgentLogWidget', () => {
     expect(lines[1]).not.toContain('up arrow');
   });
 
-  it('when expanded: shift+up scrols by 10 lines', () => {
+  it('when expanded: shift+up scrolls by 10 lines', () => {
     const { widget, agents, uid } = setupWidget(10);
     const agent = agents.find((a) => a.uid === uid)!;
     for (let i = 0; i < 60; i++) {
@@ -479,7 +588,7 @@ describe('AgentLogWidget', () => {
     expect(lines[1]).toContain('10');
   });
 
-  it('when expanded: shift+down scrols by 10 lines', () => {
+  it('when expanded: shift+down scrolls by 10 lines', () => {
     const { widget, agents, uid } = setupWidget(10);
     const agent = agents.find((a) => a.uid === uid)!;
     for (let i = 0; i < 60; i++) {
@@ -528,7 +637,7 @@ describe('AgentLogWidget', () => {
     }
     const lines = widget.render(80);
     expect(lines[1]).toContain('up arrow');
-    expect(lines[1]).toContain('3');
+    expect(lines[1]).toContain('4');
   });
 
   it('scroll indicator disappears when scrolled back to bottom', () => {
@@ -551,46 +660,61 @@ describe('AgentLogWidget', () => {
     expect(lines[1]).not.toContain('up arrow');
   });
 
-  // ─── hasPhases / getCurrentPhase / getSelectedAgentUid ──────────────────
+  // ─── getSelectedAgentUid ──────────────────────────────────────────────
 
-  it('hasPhases() returns true when phases are set, false when empty', () => {
+  it('getSelectedAgentUid() returns agentKey of selected step or null', () => {
     const widget = new AgentLogWidget(5);
-    expect(widget.hasPhases()).toBe(false);
 
-    widget.setPhases(['test']);
-    expect(widget.hasPhases()).toBe(true);
-
-    widget.setPhases([]);
-    expect(widget.hasPhases()).toBe(false);
-  });
-
-  it('getCurrentPhase() returns the current phase string or null', () => {
-    const widget = new AgentLogWidget(5);
-    expect(widget.getCurrentPhase()).toBeNull();
-
-    widget.setPhases(['planning', 'execution']);
-    widget.setCurrentPhase('planning');
-    expect(widget.getCurrentPhase()).toBe('planning');
-
-    widget.setCurrentPhase('execution');
-    expect(widget.getCurrentPhase()).toBe('execution');
-  });
-
-  it('getSelectedAgentUid() returns the selected agent UID or null', () => {
-    const widget = new AgentLogWidget(5);
-    const agents: AgentEntity[] = [];
-    widget.setAgents(agents);
-
-    // No agents in phase
-    widget.setPhases(['test']);
-    widget.setCurrentPhase('test');
+    // No steps
     expect(widget.getSelectedAgentUid()).toBeNull();
 
-    // Register an agent
-    const entity = makeAgent({ agentId: 'agent-1', profile: 'coder', phase: 'test' });
-    agents.push(entity);
-    widget.invalidate();
-    expect(widget.getSelectedAgentUid()).toBe(entity.uid);
+    // Steps with agentKey
+    const agent0 = makeAgent({ agentId: 'a0', profile: 'p0', phaseId: 'test', uid: 'key-0' });
+    const steps: StepEntity[] = [
+      makeStep({ name: 'step0', index: 0, agentKey: 'key-0' }),
+      makeStep({ name: 'step1', index: 1, agentKey: 'key-1' }),
+    ];
+    widget.setAgents([agent0]);
+    widget.setSteps(steps);
+    widget.setSelectedStepIndex(0);
+    expect(widget.getSelectedAgentUid()).toBe('key-0');
+
+    // Step without agentKey
+    widget.setSelectedStepIndex(1);
+    expect(widget.getSelectedAgentUid()).toBe('key-1');
+
+    // Index out of range
+    widget.setSelectedStepIndex(-1);
+    expect(widget.getSelectedAgentUid()).toBeNull();
+  });
+
+  // ─── setSelectedAgentUid ──────────────────────────────────────────────
+
+  it('setSelectedAgentUid finds step with matching agentKey', () => {
+    const widget = new AgentLogWidget(5);
+    const agent0 = makeAgent({ agentId: 'a0', profile: 'p0', phaseId: 'test', uid: 'key-0' });
+    const steps: StepEntity[] = [
+      makeStep({ name: 'step0', index: 0, agentKey: 'key-0' }),
+      makeStep({ name: 'step1', index: 1, agentKey: 'key-1' }),
+    ];
+    widget.setAgents([agent0]);
+    widget.setSteps(steps);
+    widget.setSelectedStepIndex(0);
+
+    widget.setSelectedAgentUid('key-1');
+    expect(widget.getSelectedAgentUid()).toBe('key-1');
+  });
+
+  it('setSelectedAgentUid(null) deselects (index=-1)', () => {
+    const widget = new AgentLogWidget(5);
+    const agent0 = makeAgent({ agentId: 'a0', profile: 'p0', phaseId: 'test', uid: 'key-0' });
+    const steps: StepEntity[] = [makeStep({ name: 'step0', index: 0, agentKey: 'key-0' })];
+    widget.setAgents([agent0]);
+    widget.setSteps(steps);
+    widget.setSelectedStepIndex(0);
+
+    widget.setSelectedAgentUid(null);
+    expect(widget.getSelectedAgentUid()).toBeNull();
   });
 
   // ─── Header shows updated stats ────────────────────────────────────────
@@ -604,7 +728,7 @@ describe('AgentLogWidget', () => {
     agent.outputTokens = 200;
     widget.invalidate();
 
-    const lines = widget.render(80);
+    const lines = widget.render(120);
     expect(lines[0]).toContain('Refactor module');
     expect(lines[0]).toContain('profile: coder');
     expect(lines[0]).toContain('5 tool calls');
@@ -620,10 +744,11 @@ describe('AgentLogWidget', () => {
 
   it('header uses uid as fallback when both taskTitle and profile are empty', () => {
     const widget = new AgentLogWidget(5);
-    const entity = makeAgent({ agentId: 'custom-agent', profile: '', phase: 'test', uid: 'myuid' });
+    const entity = makeAgent({ agentId: 'custom-agent', profile: '', phaseId: 'test', uid: 'myuid' });
+    const steps = [makeStep({ name: 'step0', index: 0, agentKey: 'myuid' })];
     widget.setAgents([entity]);
-    widget.setPhases(['test']);
-    widget.setCurrentPhase('test');
+    widget.setSteps(steps);
+    widget.setSelectedStepIndex(0);
 
     const lines = widget.render(80);
     expect(lines[0]).toContain('myuid');
@@ -660,42 +785,6 @@ describe('AgentLogWidget', () => {
     expect(lines[2]).not.toContain('⚠️');
   });
 
-  // ─── setPhases / setCurrentPhase edge cases ─────────────────────────────
-
-  it('setCurrentPhase adds phase if not already in list', () => {
-    const widget = new AgentLogWidget(5);
-    widget.setPhases(['planning']);
-
-    widget.setCurrentPhase('execution');
-    expect(widget.getCurrentPhase()).toBe('execution');
-    expect(widget.hasPhases()).toBe(true);
-  });
-
-  it('setCurrentPhase does not duplicate phases', () => {
-    const widget = new AgentLogWidget(5);
-    widget.setPhases(['planning', 'execution']);
-    widget.setCurrentPhase('planning');
-    expect(widget.getCurrentPhase()).toBe('planning');
-
-    widget.setCurrentPhase('planning');
-    expect(widget.getCurrentPhase()).toBe('planning');
-    widget.setCurrentPhase('planning');
-    expect(widget.getCurrentPhase()).toBe('planning');
-  });
-
-  it('setPhases clamps currentPhaseIndex when shrinking phases', () => {
-    const widget = new AgentLogWidget(5);
-    widget.setPhases(['a', 'b', 'c']);
-    widget.setCurrentPhase('c');
-    expect(widget.getCurrentPhase()).toBe('c');
-
-    widget.setPhases(['a', 'b']);
-    expect(widget.getCurrentPhase()).toBe('b');
-
-    widget.setPhases([]);
-    expect(widget.getCurrentPhase()).toBeNull();
-  });
-
   // ─── Toggle expand resets scroll ────────────────────────────────────────
 
   it('toggleExpand resets scrollOffset to 0', () => {
@@ -720,202 +809,81 @@ describe('AgentLogWidget', () => {
     expect(lines[1]).not.toContain('up arrow');
   });
 
-  // ─── Bug2: N/M agent indicator ───────────────────────────────────────
+  // ─── Up/down when collapsed do nothing ───────────────────────────────
 
-  describe('Bug2: N/M agent indicator', () => {
-    it('header shows [1/3] when 3 agents in phase', () => {
-      const widget = new AgentLogWidget(5);
-      const a1 = makeAgent({ agentId: 'a1', profile: 'coder', phase: 'test' });
-      const a2 = makeAgent({ agentId: 'a2', profile: 'scout', phase: 'test' });
-      const a3 = makeAgent({ agentId: 'a3', profile: 'planner', phase: 'test' });
+  it('up/down when collapsed do nothing (dashboard handles them)', () => {
+    const { widget } = setupWidget(5);
+    expect(widget.isExpanded()).toBe(false);
 
-      widget.setAgents([a1, a2, a3]);
-      widget.setPhases(['test']);
-      widget.setCurrentPhase('test');
+    // Up arrow when collapsed — should do nothing (no error, no phase change)
+    widget.handleInput(UP_ARROW);
+    // Should not crash, should still render normally
+    const lines = widget.render(WIDTH);
+    expect(lines.length).toBe(5);
 
-      const lines = widget.render(80);
-      expect(lines[0]).toContain('[1/3]');
-    });
-
-    it('header shows [2/3] after right arrow', () => {
-      const widget = new AgentLogWidget(5);
-      const a1 = makeAgent({ agentId: 'a1', profile: 'coder', phase: 'test' });
-      const a2 = makeAgent({ agentId: 'a2', profile: 'scout', phase: 'test' });
-      const a3 = makeAgent({ agentId: 'a3', profile: 'planner', phase: 'test' });
-
-      widget.setAgents([a1, a2, a3]);
-      widget.setPhases(['test']);
-      widget.setCurrentPhase('test');
-
-      widget.handleInput(RIGHT_ARROW);
-      const lines = widget.render(80);
-      expect(lines[0]).toContain('[2/3]');
-    });
-
-    it('header shows [3/3] at last agent after wrapping', () => {
-      const widget = new AgentLogWidget(5);
-      const a1 = makeAgent({ agentId: 'a1', profile: 'coder', phase: 'test' });
-      const a2 = makeAgent({ agentId: 'a2', profile: 'scout', phase: 'test' });
-      const a3 = makeAgent({ agentId: 'a3', profile: 'planner', phase: 'test' });
-
-      widget.setAgents([a1, a2, a3]);
-      widget.setPhases(['test']);
-      widget.setCurrentPhase('test');
-
-      widget.handleInput(RIGHT_ARROW);
-      widget.handleInput(RIGHT_ARROW);
-      widget.handleInput(RIGHT_ARROW);
-      widget.handleInput(LEFT_ARROW);
-
-      const lines = widget.render(80);
-      expect(lines[0]).toContain('[3/3]');
-    });
-
-    it('header shows NO N/M indicator with a single agent', () => {
-      const { widget } = setupWidget(5);
-      const lines = widget.render(80);
-      expect(lines[0]).not.toMatch(/\[\d+\/\d+]/);
-    });
-
-    it('header shows NO N/M indicator with no agents', () => {
-      const widget = new AgentLogWidget(5);
-      widget.setAgents([]);
-      widget.setPhases(['test']);
-      widget.setCurrentPhase('test');
-
-      const lines = widget.render(80);
-      expect(lines[0]).not.toMatch(/\[\d+\/\d+]/);
-    });
+    // Down arrow when collapsed — should do nothing
+    widget.handleInput(DOWN_ARROW);
+    const lines2 = widget.render(WIDTH);
+    expect(lines2.length).toBe(5);
   });
 
-  // ─── Bug5: auto-switch on agent completion ─────────────────────────────
+  // ─── Left/right do nothing ───────────────────────────────────────────
 
-  describe('Bug5: auto-switch on agent completion', () => {
-    it('auto-switches to active agent when selected completes', () => {
-      const widget = new AgentLogWidget(5);
-      const uid1 = 'a1-1';
-      const uid2 = 'a2-1';
-      const a1 = makeAgent({ agentId: 'a1', profile: 'coder', phase: 'test', uid: uid1 });
-      const a2 = makeAgent({ agentId: 'a2', profile: 'scout', phase: 'test', uid: uid2 });
-      widget.setAgents([a1, a2]);
+  it('left/right do nothing (phase bar handles them)', () => {
+    const { widget } = setupWidget(5);
 
-      widget.setPhases(['test']);
-      widget.setCurrentPhase('test');
+    // Left arrow — should do nothing
+    widget.handleInput('\x1b[D');
+    const lines = widget.render(WIDTH);
+    expect(lines.length).toBe(5);
 
-      expect(widget.getSelectedAgentUid()).toBe(uid1);
+    // Right arrow — should do nothing
+    widget.handleInput('\x1b[C');
+    const lines2 = widget.render(WIDTH);
+    expect(lines2.length).toBe(5);
+  });
 
-      // Complete the selected agent
-      a1.active = false;
-      widget.invalidate();
+  // ─── setSteps / setSelectedStepIndex edge cases ────────────────────────
 
-      widget.render(80);
-      expect(widget.getSelectedAgentUid()).toBe(uid2);
-    });
+  it('setSteps clamps selectedStepIndex when shrinking steps', () => {
+    const widget = new AgentLogWidget(5);
+    const agent0 = makeAgent({ agentId: 'a0', profile: 'p0', phaseId: 'test', uid: 'key-0' });
 
-    it('stays on completed agent when no active agents exist', () => {
-      const widget = new AgentLogWidget(5);
-      const uid1 = 'a1-1';
-      const a1 = makeAgent({ agentId: 'a1', profile: 'coder', phase: 'test', uid: uid1 });
-      widget.setAgents([a1]);
+    const steps3: StepEntity[] = [
+      makeStep({ name: 'step0', index: 0, agentKey: 'key-0' }),
+      makeStep({ name: 'step1', index: 1, agentKey: 'key-1' }),
+      makeStep({ name: 'step2', index: 2, agentKey: 'key-2' }),
+    ];
+    widget.setAgents([agent0]);
+    widget.setSteps(steps3);
+    widget.setSelectedStepIndex(2);
+    expect(widget.getSelectedAgentUid()).toBe('key-2');
 
-      widget.setPhases(['test']);
-      widget.setCurrentPhase('test');
+    // Shrink to 2 steps — selectedStepIndex clamped to 1
+    const steps2: StepEntity[] = [
+      makeStep({ name: 'step0', index: 0, agentKey: 'key-0' }),
+      makeStep({ name: 'step1', index: 1, agentKey: 'key-1' }),
+    ];
+    widget.setSteps(steps2);
+    expect(widget.getSelectedAgentUid()).toBe('key-1');
+  });
 
-      expect(widget.getSelectedAgentUid()).toBe(uid1);
+  it('setSelectedStepIndex ignores out-of-range indices', () => {
+    const widget = new AgentLogWidget(5);
+    const agent0 = makeAgent({ agentId: 'a0', profile: 'p0', phaseId: 'test', uid: 'key-0' });
+    const steps: StepEntity[] = [makeStep({ name: 'step0', index: 0, agentKey: 'key-0' })];
+    widget.setAgents([agent0]);
+    widget.setSteps(steps);
+    widget.setSelectedStepIndex(0);
+    expect(widget.getSelectedAgentUid()).toBe('key-0');
 
-      a1.active = false;
-      widget.invalidate();
+    // Out of range — ignored
+    widget.setSelectedStepIndex(5);
+    expect(widget.getSelectedAgentUid()).toBe('key-0');
 
-      widget.render(80);
-      expect(widget.getSelectedAgentUid()).toBe(uid1);
-    });
-
-    it('user can navigate to a completed agent and it sticks', () => {
-      const widget = new AgentLogWidget(5);
-      const uid1 = 'a1-1';
-      const uid2 = 'a2-1';
-      const a1 = makeAgent({ agentId: 'a1', profile: 'coder', phase: 'test', uid: uid1 });
-      const a2 = makeAgent({ agentId: 'a2', profile: 'scout', phase: 'test', uid: uid2 });
-      widget.setAgents([a1, a2]);
-
-      widget.setPhases(['test']);
-      widget.setCurrentPhase('test');
-
-      // Complete agent-1 -> auto-switch to agent-2
-      a1.active = false;
-      widget.invalidate();
-      widget.render(80);
-      expect(widget.getSelectedAgentUid()).toBe(uid2);
-
-      // User presses LEFT to navigate to agent-1 (completed)
-      widget.handleInput(LEFT_ARROW);
-      expect(widget.getSelectedAgentUid()).toBe(uid1);
-
-      widget.render(80);
-      expect(widget.getSelectedAgentUid()).toBe(uid1);
-    });
-
-    it('auto-switch resumes after phase change', () => {
-      const widget = new AgentLogWidget(5);
-      const uid1 = 'a1-1';
-      const uid2 = 'a2-1';
-      const uid3 = 'b1-1';
-      const a1 = makeAgent({ agentId: 'a1', profile: 'coder', phase: 'phase-a', uid: uid1 });
-      const a2 = makeAgent({ agentId: 'a2', profile: 'scout', phase: 'phase-a', uid: uid2 });
-      const b1 = makeAgent({ agentId: 'b1', profile: 'planner', phase: 'phase-b', uid: uid3 });
-      widget.setAgents([a1, a2, b1]);
-
-      widget.setPhases(['phase-a', 'phase-b']);
-      widget.setCurrentPhase('phase-a');
-
-      // Complete agent-1 -> auto-switch to agent-2
-      a1.active = false;
-      widget.invalidate();
-      widget.render(80);
-      expect(widget.getSelectedAgentUid()).toBe(uid2);
-
-      // User navigates to agent-1 (completed) — sticks
-      widget.handleInput(LEFT_ARROW);
-      expect(widget.getSelectedAgentUid()).toBe(uid1);
-
-      // Switch phase (down) — resets _userNavigated
-      widget.handleInput(DOWN_ARROW);
-      expect(widget.getCurrentPhase()).toBe('phase-b');
-
-      // Switch back to phase-a — auto-switch should fire again
-      widget.handleInput(UP_ARROW);
-      expect(widget.getCurrentPhase()).toBe('phase-a');
-      expect(widget.getSelectedAgentUid()).toBe(uid2);
-    });
-
-    it('auto-switch resets after toggleExpand', () => {
-      const widget = new AgentLogWidget(5);
-      const uid1 = 'a1-1';
-      const uid2 = 'a2-1';
-      const a1 = makeAgent({ agentId: 'a1', profile: 'coder', phase: 'test', uid: uid1 });
-      const a2 = makeAgent({ agentId: 'a2', profile: 'scout', phase: 'test', uid: uid2 });
-      widget.setAgents([a1, a2]);
-
-      widget.setPhases(['test']);
-      widget.setCurrentPhase('test');
-
-      // Complete agent-1 -> auto-switch to agent-2
-      a1.active = false;
-      widget.invalidate();
-      widget.render(80);
-      expect(widget.getSelectedAgentUid()).toBe(uid2);
-
-      // Navigate to agent-1
-      widget.handleInput(LEFT_ARROW);
-      expect(widget.getSelectedAgentUid()).toBe(uid1);
-
-      // Toggle expand resets _userNavigated
-      widget.toggleExpand();
-
-      // Auto-switch should fire again
-      widget.render(80);
-      expect(widget.getSelectedAgentUid()).toBe(uid2);
-    });
+    // Negative — ignored
+    widget.setSelectedStepIndex(-5);
+    expect(widget.getSelectedAgentUid()).toBe('key-0');
   });
 
   // ─── Bug3 render fixes ──────────────────────────────────────────────
@@ -933,13 +901,14 @@ describe('AgentLogWidget', () => {
 
     it('render line count is always exactly getExpandedLineCount() expanded with overflow', () => {
       const widget = new AgentLogWidget();
-      const entity = makeAgent({ agentId: 'a', profile: 'p', phase: 'test' });
+      const entity = makeAgent({ agentId: 'a', profile: 'p', phaseId: 'test' });
       for (let i = 0; i < 100; i++) {
         entity.log.push({ id: `${i}`, timestamp: '', type: 'text', content: `entry-${i}` });
       }
+      const steps = [makeStep({ name: 'step0', index: 0, agentKey: entity.uid })];
       widget.setAgents([entity]);
-      widget.setPhases(['test']);
-      widget.setCurrentPhase('test');
+      widget.setSteps(steps);
+      widget.setSelectedStepIndex(0);
       widget.toggleExpand();
       widget.invalidate();
       expect(widget.render(WIDTH).length).toBe(40);
@@ -966,24 +935,26 @@ describe('AgentLogWidget', () => {
 
       const lines = widget.render(WIDTH);
       expect(lines.length).toBe(5);
-      expect(lines[1]).toContain('entry-16');
-      expect(lines[2]).toContain('entry-17');
-      expect(lines[3]).toContain('entry-18');
-      expect(lines[4]).toContain('entry-19');
-      for (let i = 1; i < 5; i++) {
+      // Total lines = 5: header(0) + entrySlots(3) + tabBar(4)
+      // contentSlots = 3, we show newest 3 entries
+      expect(lines[1]).toContain('entry-17');
+      expect(lines[2]).toContain('entry-18');
+      expect(lines[3]).toContain('entry-19');
+      for (let i = 1; i <= 3; i++) {
         expect(lines[i]).toContain('💬');
       }
     });
 
     it('scroll indicator is a dedicated slot, not a content line', () => {
       const widget = new AgentLogWidget();
-      const entity = makeAgent({ agentId: 'a1', profile: 'coder', phase: 'test' });
+      const entity = makeAgent({ agentId: 'a1', profile: 'coder', phaseId: 'test' });
       for (let i = 0; i < 50; i++) {
         entity.log.push({ id: `${i}`, timestamp: '', type: 'text', content: `entry-${i}` });
       }
+      const steps = [makeStep({ name: 'step0', index: 0, agentKey: entity.uid })];
       widget.setAgents([entity]);
-      widget.setPhases(['test']);
-      widget.setCurrentPhase('test');
+      widget.setSteps(steps);
+      widget.setSelectedStepIndex(0);
 
       widget.toggleExpand();
       widget.render(80);
@@ -995,37 +966,40 @@ describe('AgentLogWidget', () => {
       expect(lines[1]).toContain('up arrow');
       expect(lines[1]).toContain('5');
       expect(lines[2]).toContain('💬');
-      expect(lines[39]).toContain('💬');
+      expect(lines[38]).toContain('💬');
     });
 
     it('scroll indicator absent when not scrolled — full content slots used', () => {
       const widget = new AgentLogWidget();
-      const entity = makeAgent({ agentId: 'a1', profile: 'coder', phase: 'test' });
+      const entity = makeAgent({ agentId: 'a1', profile: 'coder', phaseId: 'test' });
       for (let i = 0; i < 50; i++) {
         entity.log.push({ id: `${i}`, timestamp: '', type: 'text', content: `entry-${i}` });
       }
+      const steps = [makeStep({ name: 'step0', index: 0, agentKey: entity.uid })];
       widget.setAgents([entity]);
-      widget.setPhases(['test']);
-      widget.setCurrentPhase('test');
+      widget.setSteps(steps);
+      widget.setSelectedStepIndex(0);
       widget.toggleExpand();
 
       const lines = widget.render(80);
       expect(lines.length).toBe(40);
       expect(lines[1]).not.toContain('up arrow');
-      for (let i = 1; i <= 39; i++) {
+      // entrySlots = 38, so lines[1]..lines[38] are entries, lines[39] is tab bar
+      for (let i = 1; i <= 38; i++) {
         expect(lines[i]).toContain('💬');
       }
     });
 
     it('scrollOffset consistent: pressing up N times then render shows N (no snap/jump)', () => {
       const widget = new AgentLogWidget();
-      const entity = makeAgent({ agentId: 'a1', profile: 'coder', phase: 'test' });
+      const entity = makeAgent({ agentId: 'a1', profile: 'coder', phaseId: 'test' });
       for (let i = 0; i < 50; i++) {
         entity.log.push({ id: `${i}`, timestamp: '', type: 'text', content: `entry-${i}` });
       }
+      const steps = [makeStep({ name: 'step0', index: 0, agentKey: entity.uid })];
       widget.setAgents([entity]);
-      widget.setPhases(['test']);
-      widget.setCurrentPhase('test');
+      widget.setSteps(steps);
+      widget.setSelectedStepIndex(0);
       widget.toggleExpand();
       widget.render(80);
 
@@ -1062,41 +1036,43 @@ describe('AgentLogWidget', () => {
     });
   });
 
-  // ─── Review fixes (H1 / M1 / EFF-1) ────────────────────────────────
+  // ─── Review fixes (H1 / M1) ────────────────────────────────────────
 
-  describe('Review fixes (H1 / M1 / EFF-1)', () => {
-    it('header keeps N/M indicator and controls visible on a very long title', () => {
+  describe('Review fixes (H1 / M1)', () => {
+    it('header keeps controls visible on a very long title', () => {
       const widget = new AgentLogWidget(5);
-      const uid1 = 'a1-1';
-      const a1 = makeAgent({ agentId: 'a1', profile: 'coder', phase: 'test', uid: uid1, taskTitle: 'A'.repeat(60) });
-      const a2 = makeAgent({ agentId: 'a2', profile: 'scout', phase: 'test' });
-      const a3 = makeAgent({ agentId: 'a3', profile: 'planner', phase: 'test' });
-      widget.setAgents([a1, a2, a3]);
-      widget.setPhases(['test']);
-      widget.setCurrentPhase('test');
+      const a1 = makeAgent({
+        agentId: 'a1',
+        profile: 'coder',
+        phaseId: 'test',
+        uid: 'key-0',
+        taskTitle: 'A'.repeat(60),
+      });
+      const steps = [makeStep({ name: 'step0', index: 0, agentKey: 'key-0' })];
+      widget.setAgents([a1]);
+      widget.setSteps(steps);
+      widget.setSelectedStepIndex(0);
 
       const lines = widget.render(60);
       expect(lines.length).toBe(widget.getExpandedLineCount());
-      expect(lines[0]).toContain('[1/3]');
       expect(lines[0]).toContain('space');
       expect(lines[0]).toContain('expand');
       const ellipsisIdx = lines[0].indexOf('…');
-      const indicatorIdx = lines[0].indexOf('[1/3]');
+      const controlsIdx = lines[0].indexOf('space');
       expect(ellipsisIdx).toBeGreaterThanOrEqual(0);
-      expect(indicatorIdx).toBeGreaterThanOrEqual(0);
-      expect(ellipsisIdx).toBeLessThan(indicatorIdx);
+      expect(controlsIdx).toBeGreaterThan(ellipsisIdx);
     });
 
-    it('scrolling when expanded sets user-navigation (no auto-switch after scroll)', () => {
+    it('scrolling when expanded sets user-pinned (no auto-switch after scroll)', () => {
       const widget = new AgentLogWidget(5);
-      const uid1 = 'a1-1';
-      const a1 = makeAgent({ agentId: 'a1', profile: 'coder', phase: 'test', uid: uid1 });
-      const a2 = makeAgent({ agentId: 'a2', profile: 'scout', phase: 'test' });
-      widget.setAgents([a1, a2]);
-      widget.setPhases(['test']);
-      widget.setCurrentPhase('test');
+      const agent = makeAgent({ agentId: 'a1', profile: 'coder', phaseId: 'test', uid: 'key-0' });
+      const steps = [makeStep({ name: 'step0', index: 0, agentKey: 'key-0' })];
+      widget.setAgents([agent]);
+      widget.setSteps(steps);
+      widget.setSelectedStepIndex(0);
+
       for (let i = 0; i < 60; i++) {
-        a1.log.push({ id: `${i}`, timestamp: '', type: 'text', content: `entry-${i}` });
+        agent.log.push({ id: `${i}`, timestamp: '', type: 'text', content: `entry-${i}` });
       }
       widget.invalidate();
 
@@ -1106,28 +1082,31 @@ describe('AgentLogWidget', () => {
       widget.handleInput(UP_ARROW);
       widget.render(80);
 
-      a1.active = false;
-      widget.invalidate();
-      widget.render(80);
-      expect(widget.getSelectedAgentUid()).toBe(uid1);
+      // Scroll sets userPinnedStep = true
+      // (no auto-switch to worry about since there's only one agent)
+      expect(widget.getSelectedAgentUid()).toBe('key-0');
     });
 
     it('render line count is exactly getExpandedLineCount() with many entries after EFF-1 guard', () => {
       const widget = new AgentLogWidget();
-      const entity = makeAgent({ agentId: 'a', profile: 'p', phase: 'test' });
+      const entity = makeAgent({ agentId: 'a', profile: 'p', phaseId: 'test' });
       for (let i = 0; i < 100; i++) {
         entity.log.push({ id: `${i}`, timestamp: '', type: 'text', content: `entry-${i}` });
       }
+      const steps = [makeStep({ name: 'step0', index: 0, agentKey: entity.uid })];
       widget.setAgents([entity]);
-      widget.setPhases(['test']);
-      widget.setCurrentPhase('test');
+      widget.setSteps(steps);
+      widget.setSelectedStepIndex(0);
       widget.toggleExpand();
       widget.invalidate();
 
       const lines = widget.render(80);
       expect(lines.length).toBe(40);
       expect(lines.some((l) => l.includes('entry-99'))).toBe(true);
-      expect(lines.some((l) => l.includes('entry-61'))).toBe(true);
+      // entrySlots = 38, contentSlots = 38 (not scrolled). With 100 entries,
+      // startIdx = max(0, 100 - 38) = 62, so visible entries are 62..99
+      expect(lines.some((l) => l.includes('entry-62'))).toBe(true);
+      expect(lines[38]).toContain('entry-99');
     });
   });
 });

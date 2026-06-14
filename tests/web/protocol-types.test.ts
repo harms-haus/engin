@@ -24,8 +24,9 @@ describe('ServerMessage – retained variants', () => {
       state: {
         seq: 10,
         taskPrompt: 'Build it',
-        currentPhase: 'coding',
-        completedPhases: ['scouting'],
+        phases: [],
+        currentPhaseId: 'coding',
+        completedPhaseIds: ['scouting'],
         tasks: {},
         agents: {},
         sidebar: { title: 'Engin', indicator: '🟢' },
@@ -35,7 +36,7 @@ describe('ServerMessage – retained variants', () => {
     };
     expect(msg.type).toBe('snapshot');
     expect(msg.seq).toBe(10);
-    expect(msg.state.currentPhase).toBe('coding');
+    expect(msg.state.currentPhaseId).toBe('coding');
   });
 
   it('events variant', () => {
@@ -47,7 +48,7 @@ describe('ServerMessage – retained variants', () => {
           seq: 3,
           type: 'phase_started',
           data: { phase: 'coding' },
-          metadata: { timestamp: new Date().toISOString(), phase: 'coding' },
+          metadata: { timestamp: new Date().toISOString(), phaseId: 'coding' },
         },
       ],
     };

@@ -1,22 +1,44 @@
 import { type Component, Key, matchesKey, truncateToWidth } from '@earendil-works/pi-tui';
-import type { TaskStatus } from '../../core/types.js';
 import type { WorkflowProjection } from '../../tracking/event-types.js';
 import { borderLine } from '../theme.js';
 import { AgentLogWidget } from './agent-log-widget.js';
-import { LanePoolWidget } from './lane-pool-widget.js';
 import { PhaseBar } from './phase-bar.js';
+import { TaskListWidget } from './task-list-widget.js';
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+export interface DashboardSelection {
+  selectedPhaseId: string | null;
+  selectedTaskId: string | null;
+  selectedStepIndex: number | null;
+  userPinnedPhase: boolean;
+  userPinnedStep: boolean;
+}
 
 // ─── Dashboard Component ────────────────────────────────────────────────────
 
 export class Dashboard implements Component {
   private readonly _phaseBar: PhaseBar;
-  private readonly _lanePool: LanePoolWidget;
+  private readonly _taskList: TaskListWidget;
   private readonly _agentLog: AgentLogWidget;
-  private _lastSyncedPhase: string | null = null;
+
+  private _selection: DashboardSelection = {
+    selectedPhaseId: null,
+    selectedTaskId: null,
+    selectedStepIndex: null,
+    userPinnedPhase: false,
+    userPinnedStep: false,
+  };
+
+  /** Cached ordered phase IDs used for keyboard navigation. */
+  private _phaseIds: string[] = [];
+
+  /** Cached step entities for the currently selected task (needed for tab navigation). */
+  private _steps: { index: number; agentKey?: string }[] = [];
 
   constructor(agentLogLines = 20) {
     this._phaseBar = new PhaseBar();
-    this._lanePool = new LanePoolWidget();
+    this._taskList = new TaskListWidget();
     this._agentLog = new AgentLogWidget(agentLogLines);
   }
 
@@ -24,18 +46,32 @@ export class Dashboard implements Component {
     return this._phaseBar;
   }
 
-  get lanePool(): LanePoolWidget {
-    return this._lanePool;
+  get taskList(): TaskListWidget {
+    return this._taskList;
   }
 
   get agentLog(): AgentLogWidget {
     return this._agentLog;
   }
 
+  getSelection(): Readonly<DashboardSelection> {
+    return { ...this._selection };
+  }
+
+  /**
+   * Force-reset task/step selection so the next sync picks fresh defaults.
+   * Phase selection is preserved.
+   */
+  forceReselect(): void {
+    this._selection.selectedTaskId = null;
+    this._selection.selectedStepIndex = null;
+    this._selection.userPinnedStep = false;
+  }
+
   getComputedHeight(): number {
     // PhaseBar always renders exactly 1 line; no need to call render()
     const phaseBarLines = 1;
-    const contentLines = phaseBarLines + this._lanePool.getVisibleLaneCount() + this._agentLog.getExpandedLineCount();
+    const contentLines = phaseBarLines + this._taskList.getVisibleTaskCount() + this._agentLog.getExpandedLineCount();
     // +4 border lines: top + 2 separators + bottom
     return contentLines + 4;
   }
@@ -43,52 +79,107 @@ export class Dashboard implements Component {
   /**
    * Push projection state into all child widgets. Called on every store
    * notification so the TUI reflects the latest workflow state.
+   *
+   * Implements the "follow" rules from PART 4e:
+   *   - PHASE FOLLOW: auto-advance to currentPhaseId unless user pinned to a
+   *     completed phase.
+   *   - TASK FOLLOW: auto-select the first active task in the current phase.
+   *   - STEP FOLLOW: auto-advance to activeStepIndex unless user pinned.
    */
   syncFromProjection(projection: WorkflowProjection): void {
     // ── Phase bar ──
-    this._phaseBar.setCurrentPhase(projection.currentPhase);
-    this._phaseBar.setCompletedPhases(projection.completedPhases);
-    if (projection.sidebar.phases) {
-      this._phaseBar.setPhases(projection.sidebar.phases);
-    }
+    this._phaseBar.setPhases(projection.phases);
+    this._phaseBar.setCurrentPhaseId(projection.currentPhaseId);
+    this._phaseBar.setCompletedPhaseIds(projection.completedPhaseIds);
     if (projection.sidebar.indicator) {
       this._phaseBar.setIndicator(projection.sidebar.indicator);
     }
 
-    // ── Lane pool — derive TaskLane[] from projection.tasks ──
-    const lanes = Object.values(projection.tasks).map((t) => ({
-      id: t.id,
-      title: t.title,
-      status: t.status as TaskStatus,
-      agentId: t.agentId,
-      phase: t.phase,
-      startedAt: t.startedAt,
-      stepInfo: t.stepInfo,
-      completedAt: t.completedAt ? new Date(t.completedAt).getTime() : undefined,
-    }));
-    this._lanePool.updateLanes(lanes);
+    // Cache phase IDs for keyboard navigation
+    this._phaseIds = projection.phases.map((p) => p.id);
 
-    // ── Agent log — push all agents, widget filters by current phase ──
-    const agentEntities = Object.values(projection.agents);
-    this._agentLog.setAgents(agentEntities);
-    if (projection.sidebar.phases) {
-      this._agentLog.setPhases(projection.sidebar.phases.map((p) => p.id));
+    // Reset steps cache; will be populated below when we find selected task
+    this._steps = [];
+
+    // ── PHASE FOLLOW ──
+    const completedSet = new Set(projection.completedPhaseIds);
+    if (
+      this._selection.selectedPhaseId !== null &&
+      !completedSet.has(this._selection.selectedPhaseId) &&
+      this._selection.selectedPhaseId !== projection.currentPhaseId
+    ) {
+      // User was on a non-completed phase that is no longer current → follow current
+      this._selection.selectedPhaseId = projection.currentPhaseId;
+      this._selection.selectedTaskId = null;
+      this._selection.selectedStepIndex = null;
+      this._selection.userPinnedStep = false;
+    } else if (this._selection.selectedPhaseId === null) {
+      this._selection.selectedPhaseId = projection.currentPhaseId;
     }
-    this._agentLog.setCurrentPhase(projection.currentPhase);
+    // If selectedPhaseId is in completedPhaseIds → leave it (reviewing history)
+
+    // ── Filter tasks by selected phase ──
+    const effectivePhaseId = this._selection.selectedPhaseId ?? projection.currentPhaseId;
+    const phaseTasks = Object.values(projection.tasks).filter((t) => t.phaseId === effectivePhaseId);
+    this._taskList.updateTasks(phaseTasks);
+
+    // ── TASK FOLLOW ──
+    const currentSelectedTaskId = this._selection.selectedTaskId;
+    if (currentSelectedTaskId === null || !phaseTasks.some((t) => t.id === currentSelectedTaskId)) {
+      // Auto-select first active task; if none, first task; if none, null
+      const activeTask = phaseTasks.find((t) => t.status === 'active');
+      this._selection.selectedTaskId = activeTask?.id ?? phaseTasks[0]?.id ?? null;
+    }
+    // else keep selected task
+
+    // ── STEP FOLLOW ──
+    const selectedTask = phaseTasks.find((t) => t.id === this._selection.selectedTaskId);
+    if (selectedTask) {
+      const activeStepIndex = selectedTask.activeStepIndex ?? 0;
+      const steps = selectedTask.steps ?? [];
+
+      // Cache steps for tab navigation
+      this._steps = steps;
+
+      if (this._selection.selectedStepIndex === null) {
+        this._selection.selectedStepIndex = activeStepIndex;
+      } else if (!this._selection.userPinnedStep) {
+        // Not pinned → follow the (possibly changed) activeStepIndex
+        this._selection.selectedStepIndex = activeStepIndex;
+      }
+      // If userPinnedStep → leave as-is
+
+      // Push steps to agentLog
+      this._agentLog.setSteps(steps);
+      this._agentLog.setActiveStepIndex(activeStepIndex);
+      if (this._selection.selectedStepIndex !== null) {
+        this._agentLog.setSelectedStepIndex(this._selection.selectedStepIndex);
+      }
+
+      // Filter agents by selected task and phase
+      const stepAgents = Object.values(projection.agents).filter(
+        (a) => a.taskId === selectedTask.id && a.phaseId === effectivePhaseId,
+      );
+      this._agentLog.setAgents(stepAgents);
+    } else {
+      this._steps = [];
+      this._agentLog.setSteps([]);
+      this._agentLog.setAgents([]);
+    }
+
+    // ── Sync selection state to widgets ──
+    this._phaseBar.setSelectedPhase(this._selection.selectedPhaseId ?? projection.currentPhaseId);
+    this._taskList.setSelectedTaskId(this._selection.selectedTaskId);
+
+    // ── Invalidate all ──
+    this._phaseBar.invalidate();
+    this._taskList.invalidate();
     this._agentLog.invalidate();
-
-    // ── Phase bar underline sync from agent log navigation ──
-    // If agent log has been user-navigated to a different phase, sync that back.
-    const cycled = this._agentLog.getCurrentPhase();
-    if (cycled !== null && cycled !== this._lastSyncedPhase) {
-      this._phaseBar.setSelectedPhase(cycled);
-      this._lastSyncedPhase = cycled;
-    }
   }
 
   invalidate(): void {
     this._phaseBar.invalidate();
-    this._lanePool.invalidate();
+    this._taskList.invalidate();
     this._agentLog.invalidate();
   }
 
@@ -107,8 +198,8 @@ export class Dashboard implements Component {
     // Separator
     lines.push(borderLine('├', '─', '┤', innerWidth));
 
-    // Lane pool content
-    for (const line of this._lanePool.render(innerWidth)) {
+    // Task list content
+    for (const line of this._taskList.render(innerWidth)) {
       lines.push('│' + truncateToWidth(line, innerWidth, undefined, true) + '│');
     }
 
@@ -127,21 +218,88 @@ export class Dashboard implements Component {
   }
 
   handleInput(data: string): void {
-    if (
-      matchesKey(data, 'up') ||
-      matchesKey(data, 'down') ||
-      matchesKey(data, 'left') ||
-      matchesKey(data, 'right') ||
-      matchesKey(data, Key.shift('up')) ||
-      matchesKey(data, Key.shift('down'))
-    ) {
-      this._agentLog.handleInput(data);
-      const cycled = this._agentLog.getCurrentPhase();
-      if (cycled !== null && cycled !== this._lastSyncedPhase) {
-        this._phaseBar.setSelectedPhase(cycled);
-        this._lastSyncedPhase = cycled;
+    // ── Left / Right → PhaseBar (phase navigation) ──
+    if (matchesKey(data, 'left') || matchesKey(data, 'right')) {
+      // Let PhaseBar update its internal selectedPhaseId
+      this._phaseBar.handleInput(data);
+
+      // Compute new selectedPhaseId from direction + cached phase IDs
+      if (this._phaseIds.length > 0) {
+        const currentId = this._selection.selectedPhaseId ?? this._phaseIds[0];
+        const currentIdx = this._phaseIds.indexOf(currentId);
+        let newIdx: number;
+        if (matchesKey(data, 'left')) {
+          newIdx = currentIdx <= 0 ? this._phaseIds.length - 1 : currentIdx - 1;
+        } else {
+          newIdx = currentIdx < 0 || currentIdx >= this._phaseIds.length - 1 ? 0 : currentIdx + 1;
+        }
+        this._selection.selectedPhaseId = this._phaseIds[newIdx];
+        // Sync PhaseBar selection
+        this._phaseBar.setSelectedPhase(this._selection.selectedPhaseId);
       }
+
+      // Mark as user-pinned so syncFromProjection won't override if this is a
+      // completed phase (reviewing history). The follow rule in syncFromProjection
+      // will override if the selected phase is NOT completed.
+      this._selection.userPinnedPhase = true;
+
+      // On phase change reset task/step selection
+      this._selection.selectedTaskId = null;
+      this._selection.selectedStepIndex = null;
+      this._selection.userPinnedStep = false;
+      return;
     }
-    // All other input is ignored (lane pool is display-only)
+
+    // ── Up / Down → TaskList (collapsed) or AgentLog (expanded) ──
+    if (matchesKey(data, 'up') || matchesKey(data, 'down')) {
+      if (this._agentLog.isExpanded()) {
+        // Route to agent log for scrolling
+        this._agentLog.handleInput(data);
+        // AgentLog sets userPinnedStep internally when scrolling
+        // Sync selectedStepIndex from agentLog? AgentLog doesn't expose it...
+        // We'll rely on the agentLog to maintain its own scroll state.
+      } else {
+        // Route to task list for navigation
+        this._taskList.handleInput(data);
+        const newTaskId = this._taskList.getSelectedTaskId();
+        if (newTaskId !== this._selection.selectedTaskId) {
+          this._selection.selectedTaskId = newTaskId;
+          // On task change reset step selection
+          this._selection.selectedStepIndex = null;
+          this._selection.userPinnedStep = false;
+        }
+      }
+      return;
+    }
+
+    // ── Shift+Up / Shift+Down (expanded) → AgentLog ──
+    if (matchesKey(data, Key.shift('up')) || matchesKey(data, Key.shift('down'))) {
+      if (this._agentLog.isExpanded()) {
+        this._agentLog.handleInput(data);
+      }
+      return;
+    }
+
+    // ── Tab / Shift+Tab → AgentLog (step cycling) ──
+    if (matchesKey(data, 'tab') || matchesKey(data, Key.shift('tab'))) {
+      this._agentLog.handleInput(data);
+      this._selection.userPinnedStep = true;
+      // Compute new selectedStepIndex based on direction, mirroring AgentLog logic
+      const agentStepIndices = this._steps.map((s, i) => (s.agentKey !== undefined ? i : -1)).filter((i) => i >= 0);
+      if (agentStepIndices.length > 0) {
+        const currentPos = agentStepIndices.indexOf(this._selection.selectedStepIndex ?? -1);
+        if (matchesKey(data, 'tab')) {
+          const nextPos = (currentPos + 1) % agentStepIndices.length;
+          this._selection.selectedStepIndex = agentStepIndices[nextPos];
+        } else {
+          // Shift+Tab
+          const prevPos = (currentPos - 1 + agentStepIndices.length) % agentStepIndices.length;
+          this._selection.selectedStepIndex = agentStepIndices[prevPos];
+        }
+      }
+      return;
+    }
+
+    // All other input is ignored
   }
 }

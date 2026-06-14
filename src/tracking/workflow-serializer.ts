@@ -10,13 +10,12 @@ import type { WorkflowStatusTracker } from './workflow-status.js';
 export function serializeWorkflowState(tracker: WorkflowStatusTracker): WorkflowState {
   return {
     taskPrompt: tracker.taskPrompt,
-    currentPhase: tracker.currentPhase,
-    completedPhases: tracker.completedPhases,
+    currentPhaseId: tracker.currentPhaseId,
+    completedPhaseIds: tracker.completedPhaseIds,
     tasks: tracker.taskTracker.getAllTasks(),
     workflowData: tracker.workflowData,
     stats: { ...tracker.stats },
     spawnedAgents: tracker.spawnedAgents.length > 0 ? tracker.spawnedAgents.map((a) => ({ ...a })) : [],
-    sidebar: tracker.sidebar,
     worktree: tracker.worktree,
   };
 }
@@ -57,30 +56,10 @@ export async function loadWorkflowState(workDir: string): Promise<WorkflowState>
     }
     throw new Error('Failed to load workflow state', { cause: err });
   }
-  let parsed = JSON.parse(raw) as Record<string, unknown>;
-  // Backward-compat migration: old state files have top-level SPIR fields.
-  // If workflowData is absent but any old fields exist, migrate them into workflowData.
-  if (!parsed.workflowData) {
-    const spirFields = ['scoutingReports', 'plan', 'research', 'planReviewFeedback', 'planReviewSuggestions'] as const;
-    const migrated: Record<string, unknown> = {};
-    let hasAny = false;
-    for (const field of spirFields) {
-      if (parsed[field] !== undefined) {
-        migrated[field] = parsed[field];
-        hasAny = true;
-      }
-    }
-    if (hasAny) {
-      const {
-        scoutingReports: _sr,
-        plan: _p,
-        research: _r,
-        planReviewFeedback: _pf,
-        planReviewSuggestions: _ps,
-        ...rest
-      } = parsed;
-      parsed = { ...rest, workflowData: migrated };
-    }
-  }
+  const parsed = JSON.parse(raw) as Record<string, unknown>;
+  // NOTE: This is a clean break — old run state files (pre hierarchy refactor)
+  // are NOT migrated. Callers that find a state file with an unexpected shape
+  // should reset to a pristine state rather than resume. See
+  // WorkflowStatusTracker.load for the reject/reset handling.
   return parsed as unknown as WorkflowState;
 }

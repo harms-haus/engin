@@ -1,39 +1,35 @@
 import { useEffect, useState } from 'react';
 import { useAutoScroll } from '../hooks/useAutoScroll';
 import { useWebSocket } from '../hooks/useWebSocket';
-import { useAgentById, useAgentIds, useHasSnapshot, useStatus } from '../store/workflow-store';
+import type { StepEntity } from '../protocol-types';
+import { useHasSnapshot, useSelectedStepIndex, useStatus, useWorkflowStore } from '../store/workflow-store';
 import { formatEntryContent, shouldRenderEntry } from '../utils/format-entry';
 import './AgentLog.css';
 
 export function AgentLog() {
-  const keys = useAgentIds();
   const status = useStatus();
   const hasSnapshot = useHasSnapshot();
   const { send, connected } = useWebSocket();
-  const [selectedIndex, setSelectedIndex] = useState(0);
   const [confirming, setConfirming] = useState(false);
 
-  // Reset selection when agents change
-  useEffect(() => {
-    if (selectedIndex >= keys.length) {
-      setSelectedIndex(Math.max(0, keys.length - 1));
-    }
-  }, [keys.length, selectedIndex]);
+  // Selection state from the store
+  const selectedPhaseId = useWorkflowStore((s) => s.selectedPhaseId);
+  const selectedTaskId = useWorkflowStore((s) => s.selectedTaskId);
+  const selectedStepIndex = useSelectedStepIndex();
+  const tasksById = useWorkflowStore((s) => s.tasksById);
+  const agentsById = useWorkflowStore((s) => s.agentsById);
+  const selectStep = useWorkflowStore((s) => s.selectStep);
 
-  const selectedKey = keys[selectedIndex] ?? null;
-  const agent = useAgentById(selectedKey ?? '__nonexistent__');
+  // Derive task, steps, and agent from selection state
+  const task = selectedTaskId ? (tasksById[selectedTaskId] ?? null) : null;
+  const steps: StepEntity[] = task?.steps ?? [];
+  const activeStepIndex = task?.activeStepIndex;
+  const selectedStep = steps[selectedStepIndex ?? -1] ?? null;
+  const agent = selectedStep?.agentKey ? (agentsById[selectedStep.agentKey] ?? null) : null;
 
   // Auto-scroll on new log entries – only when the user is already at/near
   // the bottom so we don't yank them away from content they're reading.
   const { scrollRef, handleScroll } = useAutoScroll(agent?.log);
-
-  const handlePrev = () => {
-    setSelectedIndex((prev) => (prev > 0 ? prev - 1 : keys.length - 1));
-  };
-
-  const handleNext = () => {
-    setSelectedIndex((prev) => (prev < keys.length - 1 ? prev + 1 : 0));
-  };
 
   const handleTerminateClick = () => {
     if (!confirming) {
@@ -83,18 +79,55 @@ export function AgentLog() {
         )}
       </div>
 
-      {/* Navigation */}
-      {keys.length > 0 && (
-        <div className="agent-log__nav">
-          <button className="agent-log__nav-btn" onClick={handlePrev} aria-label="Previous agent">
-            ←
-          </button>
-          <span className="agent-log__nav-info">
-            {selectedIndex + 1} / {keys.length}
-          </span>
-          <button className="agent-log__nav-btn" onClick={handleNext} aria-label="Next agent">
-            →
-          </button>
+      {/* Step tab bar */}
+      {steps.length > 0 && (
+        <div className="agent-log__step-bar" role="tablist" aria-label="Task steps">
+          {steps.map((step, index) => {
+            const isSelected = index === selectedStepIndex;
+            const hasAgent = step.agentKey !== undefined;
+            const isActive = index === activeStepIndex;
+            const isDone = activeStepIndex !== undefined && index < activeStepIndex;
+            const isPending = activeStepIndex !== undefined && index > activeStepIndex;
+
+            let marker: string;
+            let markerLabel: string;
+            if (isDone) {
+              marker = '✓';
+              markerLabel = 'done';
+            } else if (isActive) {
+              marker = '▶';
+              markerLabel = 'active';
+            } else {
+              marker = '○';
+              markerLabel = 'pending';
+            }
+
+            return (
+              <button
+                key={index}
+                role="tab"
+                aria-selected={isSelected}
+                aria-label={`Step ${index + 1}: ${step.name} (${markerLabel})${!hasAgent ? ', no agent assigned' : ''}`}
+                className={
+                  `agent-log__step-tab` +
+                  (isSelected ? ' agent-log__step-tab--selected' : '') +
+                  (!hasAgent ? ' agent-log__step-tab--dimmed' : '') +
+                  (isDone ? ' agent-log__step-tab--done' : '') +
+                  (isActive ? ' agent-log__step-tab--active' : '') +
+                  (isPending ? ' agent-log__step-tab--pending' : '')
+                }
+                onClick={() => {
+                  if (hasAgent) {
+                    selectStep(index);
+                  }
+                }}
+                disabled={!hasAgent}
+              >
+                <span className="agent-log__step-marker">{marker}</span>
+                <span className="agent-log__step-name">{step.name}</span>
+              </button>
+            );
+          })}
         </div>
       )}
 

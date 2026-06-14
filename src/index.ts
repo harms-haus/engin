@@ -3,6 +3,7 @@ export * from './core/agent-loop.js';
 export * from './core/config.js';
 export * from './core/git.js';
 export * from './core/harness-factory.js';
+export * from './core/phase-tasks.js';
 export * from './core/profile.js';
 export * from './core/schema-describe.js';
 export * from './core/setup.js';

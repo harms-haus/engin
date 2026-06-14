@@ -21,11 +21,10 @@ export const bgStatusBar = (str: string): string => `\x1b[48;5;237m${str}\x1b[0m
 // ─── Status Mappings ─────────────────────────────────────────────────────────
 
 const statusColorMap: Record<TaskStatus, (s: string) => string> = {
-  done: green,
+  active: yellow,
+  complete: green,
   failed: red,
-  implementing: yellow,
-  reviewing: magenta,
-  claimed: blue,
+  cancelled: dim,
   ready: cyan,
   blocked: darkRed,
 };
@@ -33,13 +32,12 @@ const statusColorMap: Record<TaskStatus, (s: string) => string> = {
 export const statusColor = (status: TaskStatus): ((s: string) => string) => statusColorMap[status];
 
 const statusIconMap: Record<TaskStatus, string> = {
-  done: '✓',
+  active: '▶',
+  complete: '✓',
   failed: '✗',
-  implementing: '⟳',
-  reviewing: '◎',
-  claimed: '→',
+  cancelled: '⊘',
   ready: '○',
-  blocked: '⊘',
+  blocked: '·',
 };
 
 export const statusIcon = (status: TaskStatus): string => statusIconMap[status];

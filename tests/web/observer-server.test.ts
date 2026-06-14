@@ -110,17 +110,18 @@ describe('observer-server', () => {
       state: {
         seq: 1,
         taskPrompt: 'Build it',
-        currentPhase: 'scouting',
-        completedPhases: ['setup'],
+        phases: [],
+        currentPhaseId: 'scouting',
+        completedPhaseIds: ['setup'],
         tasks: {
-          t1: { id: 't1', title: 'Task 1', status: 'done' },
+          t1: { id: 't1', title: 'Task 1', phaseId: 'p1', status: 'done', steps: [], dependencies: [] },
         },
         agents: {
           a1: {
             uid: 'uid-1',
             agentId: 'a1',
             profile: 'scout',
-            phase: 'scouting',
+            phaseId: 'scouting',
             active: false,
             log: [],
             toolCallCount: 0,
@@ -146,8 +147,8 @@ describe('observer-server', () => {
     try {
       const msg = (await firstMessage) as any;
       expect(msg.type).toBe('snapshot');
-      expect(msg.state.currentPhase).toBe('scouting');
-      expect(msg.state.completedPhases).toEqual(['setup']);
+      expect(msg.state.currentPhaseId).toBe('scouting');
+      expect(msg.state.completedPhaseIds).toEqual(['setup']);
       expect(Object.keys(msg.state.tasks)).toHaveLength(1);
       expect(msg.state.tasks.t1.id).toBe('t1');
       expect(Object.keys(msg.state.agents)).toHaveLength(1);
@@ -168,8 +169,9 @@ describe('observer-server', () => {
       state: {
         seq: 0,
         taskPrompt: '',
-        currentPhase: '',
-        completedPhases: [] as string[],
+        phases: [],
+        currentPhaseId: '',
+        completedPhaseIds: [] as string[],
         tasks: {},
         agents: {},
         sidebar: { title: '', indicator: '' },
@@ -435,8 +437,9 @@ describe('observer-server', () => {
         state: {
           seq: 0,
           taskPrompt: '',
-          currentPhase: '',
-          completedPhases: [] as string[],
+          phases: [],
+          currentPhaseId: '',
+          completedPhaseIds: [] as string[],
           tasks: {},
           agents: {},
           sidebar: { title: '', indicator: '' },

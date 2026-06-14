@@ -1,4 +1,4 @@
-.lane-pool {
+.task-list {
   background: var(--bg-secondary);
   padding: 4px 0;
   flex: 0 1 auto;
@@ -6,14 +6,14 @@
   overflow-y: auto;
 }
 
-.lane-pool--empty {
+.task-list--empty {
   padding: 12px;
   font-size: 13px;
   color: var(--text-muted);
   text-align: center;
 }
 
-.lane-pool__lane {
+.task-list__task {
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -21,9 +21,27 @@
   border-left: 4px solid var(--text-muted);
   font-size: 13px;
   color: var(--text-secondary);
+  cursor: pointer;
 }
 
-.lane-pool__status {
+.task-list__task--selected {
+  background: var(--bg-selected, rgba(255, 255, 255, 0.05));
+}
+
+.task-list__body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.task-list__title {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.task-list__step {
   font-size: 10px;
   color: var(--text-muted);
   text-transform: uppercase;

@@ -1,4 +1,11 @@
-import type { AgentEntity, EventRecord, TaskEntity, WorkflowProjection } from './event-types.js';
+import type {
+  AgentEntity,
+  EventRecord,
+  PhaseEntity,
+  StepEntity,
+  TaskEntity,
+  WorkflowProjection,
+} from './event-types.js';
 
 export const MAX_AGENT_LOG = 500;
 
@@ -64,22 +71,44 @@ export function evolve(state: WorkflowProjection, event: EventRecord): WorkflowP
       return clone(state, {
         status: 'failed' as const,
         error: typeof event.data.error === 'string' ? event.data.error : String(event.data.error ?? ''),
-        failedPhase: typeof event.data.phase === 'string' ? event.data.phase : undefined,
+        failedPhase:
+          typeof event.data.phaseId === 'string'
+            ? event.data.phaseId
+            : typeof event.data.phase === 'string'
+              ? event.data.phase
+              : undefined,
         seq: event.seq,
       });
 
     // ── Phase lifecycle ────────────────────────────────────────────
+    case 'phase_registered': {
+      const id = String(event.data.id ?? '');
+      if (!id) return clone(state, { seq: event.seq });
+      // No-op if phase already registered
+      if (state.phases.some((p) => p.id === id)) return clone(state, { seq: event.seq });
+      const entity: PhaseEntity = {
+        id,
+        label: String(event.data.label ?? id),
+        icon: String(event.data.icon ?? ''),
+        taskIds: [],
+      };
+      return clone(state, {
+        phases: [...state.phases, entity],
+        seq: event.seq,
+      });
+    }
+
     case 'phase_started':
       return clone(state, {
-        currentPhase: String(event.data.phase ?? ''),
+        currentPhaseId: String(event.data.phase ?? event.metadata.phaseId ?? state.currentPhaseId),
         seq: event.seq,
       });
 
     case 'phase_completed': {
-      const phase = String(event.data.phase ?? state.currentPhase);
-      if (phase && !state.completedPhases.includes(phase)) {
+      const phaseId = String(event.data.phase ?? state.currentPhaseId);
+      if (phaseId && !state.completedPhaseIds.includes(phaseId)) {
         return clone(state, {
-          completedPhases: [...state.completedPhases, phase],
+          completedPhaseIds: [...state.completedPhaseIds, phaseId],
           seq: event.seq,
         });
       }
@@ -90,6 +119,7 @@ export function evolve(state: WorkflowProjection, event: EventRecord): WorkflowP
     case 'agent_spawned': {
       const agentId = String(event.metadata.agentId ?? event.data.agentId ?? '');
       const taskId = event.metadata.taskId;
+      const stepIndex = event.metadata.stepIndex;
       const key = agentKey(agentId, taskId);
       const existing = state.agents[key];
       // If this agent is associated with a task, copy the task's title.
@@ -100,15 +130,30 @@ export function evolve(state: WorkflowProjection, event: EventRecord): WorkflowP
         const entity: AgentEntity = {
           ...existing,
           profile: String(event.data.profile ?? existing.profile),
-          phase: String(event.metadata.phase ?? existing.phase),
+          phaseId: String(event.metadata.phaseId ?? event.data.phaseId ?? existing.phaseId ?? ''),
+          stepIndex: stepIndex ?? existing.stepIndex,
           sessionId: typeof event.data.sessionId === 'string' ? event.data.sessionId : existing.sessionId,
           sessionPath: typeof event.data.sessionPath === 'string' ? event.data.sessionPath : existing.sessionPath,
           active: true,
           completedAt: undefined,
           taskTitle: existingTask?.title ?? existing.taskTitle,
         };
+        const newAgents = { ...state.agents, [key]: entity };
+
+        // Link agent to task step if applicable
+        let newTasks = state.tasks;
+        if (taskId !== undefined && stepIndex !== undefined && newTasks[taskId]) {
+          const task = newTasks[taskId];
+          if (task.steps[stepIndex]) {
+            const newSteps = [...task.steps];
+            newSteps[stepIndex] = { ...newSteps[stepIndex], agentKey: key };
+            newTasks = { ...newTasks, [taskId]: { ...task, steps: newSteps } };
+          }
+        }
+
         return clone(state, {
-          agents: { ...state.agents, [key]: entity },
+          agents: newAgents,
+          tasks: newTasks,
           // Do NOT increment agentCount — this agent was already counted.
           seq: event.seq,
         });
@@ -119,7 +164,8 @@ export function evolve(state: WorkflowProjection, event: EventRecord): WorkflowP
         uid: key,
         agentId,
         profile: String(event.data.profile ?? ''),
-        phase: String(event.metadata.phase ?? ''),
+        phaseId: String(event.metadata.phaseId ?? event.data.phaseId ?? ''),
+        stepIndex,
         taskId,
         sessionId: typeof event.data.sessionId === 'string' ? event.data.sessionId : undefined,
         sessionPath: typeof event.data.sessionPath === 'string' ? event.data.sessionPath : undefined,
@@ -130,8 +176,22 @@ export function evolve(state: WorkflowProjection, event: EventRecord): WorkflowP
         outputTokens: 0,
         taskTitle: existingTask?.title ?? '',
       };
+      const newAgents = { ...state.agents, [key]: entity };
+
+      // Link agent to task step if applicable
+      let newTasks = state.tasks;
+      if (taskId !== undefined && stepIndex !== undefined && newTasks[taskId]) {
+        const task = newTasks[taskId];
+        if (task.steps[stepIndex]) {
+          const newSteps = [...task.steps];
+          newSteps[stepIndex] = { ...newSteps[stepIndex], agentKey: key };
+          newTasks = { ...newTasks, [taskId]: { ...task, steps: newSteps } };
+        }
+      }
+
       return clone(state, {
-        agents: { ...state.agents, [key]: entity },
+        agents: newAgents,
+        tasks: newTasks,
         stats: { ...state.stats, agentCount: state.stats.agentCount + 1 },
         seq: event.seq,
       });
@@ -153,32 +213,97 @@ export function evolve(state: WorkflowProjection, event: EventRecord): WorkflowP
     }
 
     // ── Task lifecycle ─────────────────────────────────────────────
-    case 'task_started': {
-      const taskId = String(event.data.taskId ?? event.metadata.taskId ?? '');
-      const existing = state.tasks[taskId];
+    case 'task_registered': {
+      const taskId = String(event.data.taskId ?? event.data.id ?? '');
+      if (!taskId) return clone(state, { seq: event.seq });
+      if (state.tasks[taskId]) return clone(state, { seq: event.seq }); // already exists
+
+      const rawSteps = Array.isArray(event.data.steps) ? (event.data.steps as Record<string, unknown>[]) : [];
+      const steps: StepEntity[] = rawSteps.map((s, i) => ({
+        name: String(s.name ?? s.profileId ?? ''),
+        index: i,
+        profile: String(s.profileId ?? s.profile ?? ''),
+        isReadOnly: s.isReadOnly === true,
+        agentKey: undefined,
+      }));
+
+      const rawDeps = Array.isArray(event.data.dependencies) ? (event.data.dependencies as string[]) : [];
+
       const entity: TaskEntity = {
         id: taskId,
-        title: String(event.data.title ?? existing?.title ?? ''),
-        status: 'implementing',
-        phase: event.metadata.phase ?? existing?.phase,
-        agentId: String(event.data.agentId ?? event.metadata.agentId ?? existing?.agentId ?? ''),
-        startedAt: typeof event.data.startedAt === 'number' ? event.data.startedAt : existing?.startedAt,
-        stepInfo: existing?.stepInfo,
+        title: String(event.data.title ?? ''),
+        phaseId: String(event.data.phaseId ?? ''),
+        status: 'ready',
+        steps,
+        activeStepIndex: undefined,
+        dependencies: rawDeps,
+        startedAt: undefined,
+        completedAt: undefined,
       };
+
+      const newTasks = { ...state.tasks, [taskId]: entity };
+
+      // Append taskId to the owning PhaseEntity.taskIds
+      const phaseId = entity.phaseId;
+      let newPhases = state.phases;
+      if (phaseId) {
+        const phaseIdx = newPhases.findIndex((p) => p.id === phaseId);
+        if (phaseIdx !== -1 && !newPhases[phaseIdx].taskIds.includes(taskId)) {
+          newPhases = newPhases.map((p, i) => (i === phaseIdx ? { ...p, taskIds: [...p.taskIds, taskId] } : p));
+        }
+      }
+
       return clone(state, {
-        tasks: { ...state.tasks, [taskId]: entity },
+        tasks: newTasks,
+        phases: newPhases,
         seq: event.seq,
       });
     }
 
-    case 'task_step_started': {
+    case 'task_started': {
       const taskId = String(event.data.taskId ?? event.metadata.taskId ?? '');
       const existing = state.tasks[taskId];
       if (!existing) return clone(state, { seq: event.seq });
       return clone(state, {
         tasks: {
           ...state.tasks,
-          [taskId]: clone(existing, { stepInfo: String(event.data.stepName ?? '') }),
+          [taskId]: clone(existing, {
+            status: 'active' as const,
+            startedAt: typeof event.data.startedAt === 'number' ? event.data.startedAt : existing.startedAt,
+          }),
+        },
+        seq: event.seq,
+      });
+    }
+
+    case 'step_started': {
+      const taskId = String(event.data.taskId ?? event.metadata.taskId ?? '');
+      const existing = state.tasks[taskId];
+      if (!existing) return clone(state, { seq: event.seq });
+      const stepIndex = event.data.stepIndex as number | undefined;
+      if (typeof stepIndex !== 'number') return clone(state, { seq: event.seq });
+
+      // Set activeStepIndex
+      const update: Partial<TaskEntity> = {
+        activeStepIndex: stepIndex,
+      };
+
+      // If the agent exists, link it
+      const agentId = String(event.metadata.agentId ?? event.data.agentId ?? '');
+      if (agentId) {
+        const taskIdForAgent = event.metadata.taskId ?? taskId;
+        const resolved = resolveAgent(state.agents, agentId, taskIdForAgent);
+        if (resolved && existing.steps[stepIndex]) {
+          const newSteps = [...existing.steps];
+          newSteps[stepIndex] = { ...newSteps[stepIndex], agentKey: resolved.key };
+          update.steps = newSteps;
+        }
+      }
+
+      return clone(state, {
+        tasks: {
+          ...state.tasks,
+          [taskId]: clone(existing, update),
         },
         seq: event.seq,
       });
@@ -192,9 +317,8 @@ export function evolve(state: WorkflowProjection, event: EventRecord): WorkflowP
         tasks: {
           ...state.tasks,
           [taskId]: clone(existing, {
-            status: 'done',
+            status: 'complete' as const,
             completedAt: event.metadata.timestamp,
-            stepInfo: undefined,
           }),
         },
         seq: event.seq,
@@ -208,31 +332,10 @@ export function evolve(state: WorkflowProjection, event: EventRecord): WorkflowP
       return clone(state, {
         tasks: {
           ...state.tasks,
-          [taskId]: clone(existing, { status: 'failed' }),
+          [taskId]: clone(existing, { status: 'failed' as const }),
         },
         seq: event.seq,
       });
-    }
-
-    case 'tasks_added': {
-      const incoming = Array.isArray(event.data.tasks) ? (event.data.tasks as Record<string, unknown>[]) : [];
-      const tasks = { ...state.tasks };
-      for (const t of incoming) {
-        const id = String(t.id ?? '');
-        if (!id) continue;
-        if (!tasks[id]) {
-          tasks[id] = {
-            id,
-            title: String(t.title ?? ''),
-            status: String(t.status ?? 'ready'),
-            phase: typeof t.phase === 'string' ? t.phase : undefined,
-            agentId: typeof t.agentId === 'string' ? t.agentId : undefined,
-            startedAt: typeof t.startedAt === 'number' ? t.startedAt : undefined,
-            stepInfo: typeof t.stepInfo === 'string' ? t.stepInfo : undefined,
-          };
-        }
-      }
-      return clone(state, { tasks, seq: event.seq });
     }
 
     // ── Agent log / decisions / errors ─────────────────────────────
@@ -391,9 +494,7 @@ export function evolve(state: WorkflowProjection, event: EventRecord): WorkflowP
       const sidebar = { ...state.sidebar };
       if (event.data.title !== undefined) sidebar.title = String(event.data.title);
       if (event.data.indicator !== undefined) sidebar.indicator = String(event.data.indicator);
-      if (event.data.phases !== undefined) {
-        sidebar.phases = event.data.phases as WorkflowProjection['sidebar']['phases'];
-      }
+      // NOTE: phases is no longer updated via sidebar_updated; use phase_registered instead.
       return clone(state, { sidebar, seq: event.seq });
     }
 

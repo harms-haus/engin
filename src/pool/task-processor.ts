@@ -21,7 +21,7 @@ export interface TaskProcessorContext {
   options: LanePoolOptions;
   activeSessions: Set<{ abort(): Promise<void> }>;
   /** Phase identifier set by the workflow orchestrator. */
-  phase?: string;
+  phaseId: string;
 }
 
 // ─── Task Processing ─────────────────────────────────────────────────────
@@ -50,7 +50,7 @@ export async function processTask(
     taskId: task.id,
     title: task.title,
     agentId,
-    phase: ctx.phase ?? options.phase,
+    phaseId: ctx.phaseId ?? options.phaseId,
     startedAt: Date.now(),
   });
 
@@ -80,19 +80,19 @@ export async function processTask(
     apiKeys: options.apiKeys,
     onStatus: options.onStatus,
     activeSessions: ctx.activeSessions,
-    phase: ctx.phase ?? options.phase,
+    phaseId: ctx.phaseId ?? options.phaseId,
   };
 
   try {
     while (currentStepIndex < steps.length) {
       const step = steps[currentStepIndex];
 
-      // Fire onTaskStepStart before executing the step
-      options.onStatus?.onTaskStepStart?.({
+      // Fire onStepStart before executing the step
+      options.onStatus?.onStepStart?.({
         taskId: task.id,
-        stepName: step.name,
         stepIndex: currentStepIndex,
-        totalSteps: steps.length,
+        stepName: step.name,
+        agentId,
       });
 
       const currentAttempt = stepAttempts.get(currentStepIndex) ?? 0;
@@ -226,9 +226,8 @@ export async function processTask(
  * Safely submit a task for review and complete it. Catches and logs
  * errors from invalid state transitions.
  */
-export function safeSubmitAndComplete(taskId: string, result: unknown, ctx: TaskProcessorContext): boolean {
+export function safeSubmitAndComplete(taskId: string, _result: unknown, ctx: TaskProcessorContext): boolean {
   try {
-    ctx.options.taskTracker.submitForReview(taskId, result);
     ctx.options.taskTracker.completeTask(taskId);
     return true;
   } catch (err) {
@@ -259,13 +258,13 @@ export function safeFailTask(taskId: string, result: unknown, ctx: TaskProcessor
 export function reportError(
   agentId: string,
   error: string,
-  phase?: string,
+  phaseId?: string,
   taskId?: string,
   ctx?: TaskProcessorContext,
 ): void {
-  const effectivePhase = phase ?? ctx?.options.phase ?? ctx?.phase ?? 'implementing';
+  const effectivePhaseId = phaseId ?? ctx?.options.phaseId ?? ctx?.phaseId ?? 'implementing';
   if (ctx?.options.onStatus?.onError) {
-    ctx.options.onStatus.onError({ agentId, error, phase: effectivePhase, taskId });
+    ctx.options.onStatus.onError({ agentId, error, phaseId: effectivePhaseId, taskId });
   } else {
     console.error(`[${agentId}] ${error}`);
   }

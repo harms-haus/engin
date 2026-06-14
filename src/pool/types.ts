@@ -1,23 +1,8 @@
-import type { ZodType } from 'zod';
-import type { StatusCallbacks, Task } from '../core/types.js';
+import type { StatusCallbacks, StepDefinition, Task } from '../core/types.js';
 import type { AuditLog } from '../tracking/audit-log.js';
 import type { TaskTracker } from '../tracking/task-status.js';
 
-/** A single step in the task processing pipeline. Each step maps to an agent profile. */
-export interface StepDefinition<T = unknown> {
-  /** Human-readable step name (e.g. "write-tests", "execute", "review") */
-  name: string;
-  /** Profile ID to load from the profiles directories */
-  profileId: string;
-  /** When true, write/edit tools are stripped from the agent's toolset */
-  isReadOnly: boolean;
-  /** Zod schema for structured output steps (reviews). When absent, raw assistant text is used. */
-  schema?: ZodType<T>;
-  /** Determines approval from structured output. Defaults to checking result.approved === true. */
-  isApproved?: (result: T) => boolean;
-  /** Extracts rejection feedback from structured output. Defaults to result.feedback ?? 'No feedback provided'. */
-  getFeedback?: (result: T) => string;
-}
+export type { StepDefinition } from '../core/types.js';
 
 /** Result from executing a single step. */
 export type StepResult =
@@ -50,8 +35,8 @@ export interface LanePoolOptions {
   laneWaitTimeoutMs?: number;
   /** Abort signal for cooperative cancellation */
   signal?: AbortSignal;
-  /** Phase identifier set by the workflow orchestrator */
-  phase?: string;
+  /** Phase identifier set by the workflow orchestrator — required */
+  phaseId: string;
 }
 
 /** Distributive Omit that preserves discriminated union structure. */

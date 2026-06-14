@@ -1,6 +1,10 @@
 import { visibleWidth } from '@earendil-works/pi-tui';
 import { describe, expect, it } from 'bun:test';
-import { PhaseBar } from '../../../src/tui/components/phase-bar.js';
+import { PhaseBar, type PhaseEntity } from '../../../src/tui/components/phase-bar.js';
+
+// Arrow key escape sequences
+const LEFT_ARROW = '\x1b[D';
+const RIGHT_ARROW = '\x1b[C';
 
 describe('PhaseBar', () => {
   // ── Empty state ────────────────────────────────────────────────────
@@ -16,12 +20,12 @@ describe('PhaseBar', () => {
   it('renders phases with correct markers (completed ✓, current ●, pending ·)', () => {
     const bar = new PhaseBar();
     bar.setPhases([
-      { id: 'plan', label: 'Plan', icon: '📋' },
-      { id: 'implement', label: 'Implement', icon: '⚙️' },
-      { id: 'review', label: 'Review', icon: '🔍' },
+      { id: 'plan', label: 'Plan', icon: '📋', taskIds: [] },
+      { id: 'implement', label: 'Implement', icon: '⚙️', taskIds: [] },
+      { id: 'review', label: 'Review', icon: '🔍', taskIds: [] },
     ]);
-    bar.setCompletedPhases(['plan']);
-    bar.setCurrentPhase('implement');
+    bar.setCompletedPhaseIds(['plan']);
+    bar.setCurrentPhaseId('implement');
 
     const lines = bar.render(80);
     expect(lines).toHaveLength(1);
@@ -44,12 +48,12 @@ describe('PhaseBar', () => {
   it('truncates to width', () => {
     const bar = new PhaseBar();
     bar.setPhases([
-      { id: 'one', label: 'Phase One', icon: '1' },
-      { id: 'two', label: 'Phase Two', icon: '2' },
-      { id: 'three', label: 'Phase Three', icon: '3' },
-      { id: 'four', label: 'Phase Four', icon: '4' },
+      { id: 'one', label: 'Phase One', icon: '1', taskIds: [] },
+      { id: 'two', label: 'Phase Two', icon: '2', taskIds: [] },
+      { id: 'three', label: 'Phase Three', icon: '3', taskIds: [] },
+      { id: 'four', label: 'Phase Four', icon: '4', taskIds: [] },
     ]);
-    bar.setCurrentPhase('two');
+    bar.setCurrentPhaseId('two');
 
     const lines = bar.render(20);
     expect(lines).toHaveLength(1);
@@ -60,8 +64,8 @@ describe('PhaseBar', () => {
   it('renders with indicator prefix', () => {
     const bar = new PhaseBar();
     bar.setIndicator('▶');
-    bar.setPhases([{ id: 'plan', label: 'Plan', icon: '📋' }]);
-    bar.setCurrentPhase('plan');
+    bar.setPhases([{ id: 'plan', label: 'Plan', icon: '📋', taskIds: [] }]);
+    bar.setCurrentPhaseId('plan');
 
     const lines = bar.render(60);
     expect(lines).toHaveLength(1);
@@ -69,7 +73,7 @@ describe('PhaseBar', () => {
   });
 
   // ── State updates ──────────────────────────────────────────────────
-  it('setPhases/setCurrentPhase/setCompletedPhases update output', () => {
+  it('setPhases/setCurrentPhaseId/setCompletedPhaseIds update output', () => {
     const bar = new PhaseBar();
 
     // Initially empty
@@ -78,10 +82,10 @@ describe('PhaseBar', () => {
 
     // Set phases
     bar.setPhases([
-      { id: 'a', label: 'Alpha', icon: 'A' },
-      { id: 'b', label: 'Beta', icon: 'B' },
+      { id: 'a', label: 'Alpha', icon: 'A', taskIds: [] },
+      { id: 'b', label: 'Beta', icon: 'B', taskIds: [] },
     ]);
-    bar.setCurrentPhase('a');
+    bar.setCurrentPhaseId('a');
     lines = bar.render(60);
     expect(lines[0]).toContain('●');
     expect(lines[0]).toContain('Alpha');
@@ -89,14 +93,14 @@ describe('PhaseBar', () => {
     expect(lines[0]).toContain('Beta');
 
     // Complete phase a, move to b
-    bar.setCompletedPhases(['a']);
-    bar.setCurrentPhase('b');
+    bar.setCompletedPhaseIds(['a']);
+    bar.setCurrentPhaseId('b');
     lines = bar.render(60);
     expect(lines[0]).toContain('✓');
     expect(lines[0]).toContain('●');
 
     // Complete all
-    bar.setCompletedPhases(['a', 'b']);
+    bar.setCompletedPhaseIds(['a', 'b']);
     lines = bar.render(60);
     expect(lines[0]).toContain('✓');
     expect(lines[0]).not.toContain('●');
@@ -105,8 +109,8 @@ describe('PhaseBar', () => {
   // ── Caching ────────────────────────────────────────────────────────
   it('caches output when render is called with same width and no changes', () => {
     const bar = new PhaseBar();
-    bar.setPhases([{ id: 'x', label: 'X', icon: 'X' }]);
-    bar.setCurrentPhase('x');
+    bar.setPhases([{ id: 'x', label: 'X', icon: 'X', taskIds: [] }]);
+    bar.setCurrentPhaseId('x');
 
     const first = bar.render(60);
     const second = bar.render(60);
@@ -117,12 +121,12 @@ describe('PhaseBar', () => {
 
   it('busts cache when state changes', () => {
     const bar = new PhaseBar();
-    bar.setPhases([{ id: 'x', label: 'X', icon: 'X' }]);
-    bar.setCurrentPhase('x');
+    bar.setPhases([{ id: 'x', label: 'X', icon: 'X', taskIds: [] }]);
+    bar.setCurrentPhaseId('x');
 
     const first = bar.render(60);
 
-    bar.setCurrentPhase('y');
+    bar.setCurrentPhaseId('y');
     const second = bar.render(60);
 
     // Different arrays (cache was busted)
@@ -131,7 +135,7 @@ describe('PhaseBar', () => {
 
   it('busts cache when width changes', () => {
     const bar = new PhaseBar();
-    bar.setPhases([{ id: 'x', label: 'X', icon: 'X' }]);
+    bar.setPhases([{ id: 'x', label: 'X', icon: 'X', taskIds: [] }]);
 
     const first = bar.render(60);
     const second = bar.render(40);
@@ -145,7 +149,7 @@ describe('PhaseBar', () => {
   it('renders indicator and currentPhaseId when no phases', () => {
     const bar = new PhaseBar();
     bar.setIndicator('⚙');
-    bar.setCurrentPhase('custom-phase');
+    bar.setCurrentPhaseId('custom-phase');
 
     const lines = bar.render(40);
     expect(lines[0]).toContain('⚙');
@@ -168,11 +172,11 @@ describe('PhaseBar underline selection', () => {
   it('setSelectedPhase underlines the correct phase label', () => {
     const bar = new PhaseBar();
     bar.setPhases([
-      { id: 'a', label: 'Alpha', icon: 'A' },
-      { id: 'b', label: 'Beta', icon: 'B' },
-      { id: 'c', label: 'Gamma', icon: 'C' },
+      { id: 'a', label: 'Alpha', icon: 'A', taskIds: [] },
+      { id: 'b', label: 'Beta', icon: 'B', taskIds: [] },
+      { id: 'c', label: 'Gamma', icon: 'C', taskIds: [] },
     ]);
-    bar.setCurrentPhase('a');
+    bar.setCurrentPhaseId('a');
     bar.setSelectedPhase('b');
 
     const lines = bar.render(80);
@@ -189,10 +193,10 @@ describe('PhaseBar underline selection', () => {
   it('when selectedPhaseId is null, underline follows currentPhaseId', () => {
     const bar = new PhaseBar();
     bar.setPhases([
-      { id: 'a', label: 'Alpha', icon: 'A' },
-      { id: 'b', label: 'Beta', icon: 'B' },
+      { id: 'a', label: 'Alpha', icon: 'A', taskIds: [] },
+      { id: 'b', label: 'Beta', icon: 'B', taskIds: [] },
     ]);
-    bar.setCurrentPhase('a');
+    bar.setCurrentPhaseId('a');
     // Do NOT call setSelectedPhase → selectedPhaseId remains null
 
     const lines = bar.render(80);
@@ -205,22 +209,22 @@ describe('PhaseBar underline selection', () => {
     expect(underlineCount).toBe(1);
   });
 
-  it('setCurrentPhase resets selection (setSelectedPhase then setCurrentPhase)', () => {
+  it('setCurrentPhaseId resets selection (setSelectedPhase then setCurrentPhaseId)', () => {
     const bar = new PhaseBar();
     bar.setPhases([
-      { id: 'a', label: 'Alpha', icon: 'A' },
-      { id: 'b', label: 'Beta', icon: 'B' },
-      { id: 'c', label: 'Gamma', icon: 'C' },
+      { id: 'a', label: 'Alpha', icon: 'A', taskIds: [] },
+      { id: 'b', label: 'Beta', icon: 'B', taskIds: [] },
+      { id: 'c', label: 'Gamma', icon: 'C', taskIds: [] },
     ]);
-    bar.setCurrentPhase('a');
+    bar.setCurrentPhaseId('a');
     bar.setSelectedPhase('b');
 
     // Verify 'b' is underlined
     let lines = bar.render(80);
     expect(lines[0]).toContain('\x1b[4m');
 
-    // Now setCurrentPhase('c') should reset selection to null
-    bar.setCurrentPhase('c');
+    // Now setCurrentPhaseId('c') should reset selection to null
+    bar.setCurrentPhaseId('c');
     lines = bar.render(80);
     const line = lines[0];
 
@@ -235,12 +239,12 @@ describe('PhaseBar underline selection', () => {
   it('a completed phase that is also selected shows both ✓ and underline', () => {
     const bar = new PhaseBar();
     bar.setPhases([
-      { id: 'a', label: 'Alpha', icon: 'A' },
-      { id: 'b', label: 'Beta', icon: 'B' },
-      { id: 'c', label: 'Gamma', icon: 'C' },
+      { id: 'a', label: 'Alpha', icon: 'A', taskIds: [] },
+      { id: 'b', label: 'Beta', icon: 'B', taskIds: [] },
+      { id: 'c', label: 'Gamma', icon: 'C', taskIds: [] },
     ]);
-    bar.setCompletedPhases(['a']);
-    bar.setCurrentPhase('b');
+    bar.setCompletedPhaseIds(['a']);
+    bar.setCurrentPhaseId('b');
     bar.setSelectedPhase('a'); // Select the completed phase
 
     const lines = bar.render(80);
@@ -258,10 +262,10 @@ describe('PhaseBar underline selection', () => {
   it('invalidate() cache-busts after setSelectedPhase', () => {
     const bar = new PhaseBar();
     bar.setPhases([
-      { id: 'a', label: 'Alpha', icon: 'A' },
-      { id: 'b', label: 'Beta', icon: 'B' },
+      { id: 'a', label: 'Alpha', icon: 'A', taskIds: [] },
+      { id: 'b', label: 'Beta', icon: 'B', taskIds: [] },
     ]);
-    bar.setCurrentPhase('a');
+    bar.setCurrentPhaseId('a');
 
     const first = bar.render(60);
 
@@ -275,11 +279,11 @@ describe('PhaseBar underline selection', () => {
   it('selected pending phase label is underlined and NOT dimmed', () => {
     const bar = new PhaseBar();
     bar.setPhases([
-      { id: 'a', label: 'Alpha', icon: 'A' },
-      { id: 'b', label: 'Beta', icon: 'B' },
-      { id: 'c', label: 'Gamma', icon: 'C' },
+      { id: 'a', label: 'Alpha', icon: 'A', taskIds: [] },
+      { id: 'b', label: 'Beta', icon: 'B', taskIds: [] },
+      { id: 'c', label: 'Gamma', icon: 'C', taskIds: [] },
     ]);
-    bar.setCurrentPhase('a'); // Alpha is running
+    bar.setCurrentPhaseId('a'); // Alpha is running
     bar.setSelectedPhase('b'); // Beta is pending + selected
 
     const lines = bar.render(80);
@@ -300,5 +304,204 @@ describe('PhaseBar underline selection', () => {
 
     // Phase c (Gamma) is pending + not selected: should show dim ·
     expect(line).toContain('\x1b[2m·\x1b[0m');
+  });
+});
+
+// ─── handleInput navigation ────────────────────────────────────────────
+
+describe('PhaseBar handleInput navigation', () => {
+  const phases: PhaseEntity[] = [
+    { id: 'a', label: 'Alpha', icon: 'A', taskIds: [] },
+    { id: 'b', label: 'Beta', icon: 'B', taskIds: [] },
+    { id: 'c', label: 'Gamma', icon: 'C', taskIds: [] },
+  ];
+
+  it('Right arrow moves selection to next phase', () => {
+    const bar = new PhaseBar();
+    bar.setPhases(phases);
+    bar.setCurrentPhaseId('b');
+
+    bar.handleInput(RIGHT_ARROW);
+    const lines = bar.render(80);
+    // After Right arrow, selectedPhaseId should be 'c' (Gamma)
+    expect(lines[0]).toContain('\x1b[4m');
+    // Gamma is pending (not current) so underline is directly on label
+    expect(lines[0]).toContain('\x1b[4mGamma\x1b[0m');
+  });
+
+  it('Left arrow moves selection to previous phase', () => {
+    const bar = new PhaseBar();
+    bar.setPhases(phases);
+    bar.setCurrentPhaseId('b');
+
+    bar.handleInput(LEFT_ARROW);
+    const lines = bar.render(80);
+    // Alpha is current (running), so underline wraps bold: \x1b[4m\x1b[1mAlpha\x1b[0m\x1b[0m
+    expect(lines[0]).toContain('\x1b[4m');
+    expect(lines[0]).toContain('Alpha');
+  });
+
+  it('Right arrow wraps from last phase to first', () => {
+    const bar = new PhaseBar();
+    bar.setPhases(phases);
+    bar.setCurrentPhaseId('c');
+
+    bar.handleInput(RIGHT_ARROW);
+    const lines = bar.render(80);
+    // selectedPhaseId should be 'a' (wrap to first), also current, so bold+underline
+    expect(lines[0]).toContain('\x1b[4m');
+    expect(lines[0]).toContain('Alpha');
+  });
+
+  it('Left arrow wraps from first phase to last', () => {
+    const bar = new PhaseBar();
+    bar.setPhases(phases);
+    bar.setCurrentPhaseId('a');
+
+    bar.handleInput(LEFT_ARROW);
+    const lines = bar.render(80);
+    // selectedPhaseId should be 'c' (wrap to last), pending so direct underline
+    expect(lines[0]).toContain('\x1b[4mGamma\x1b[0m');
+  });
+
+  it('handleInput is a no-op when phases are empty', () => {
+    const bar = new PhaseBar();
+    // No phases set
+    expect(() => {
+      bar.handleInput(RIGHT_ARROW);
+      bar.handleInput(LEFT_ARROW);
+    }).not.toThrow();
+  });
+
+  it('multiple Right arrows cycle through all phases', () => {
+    const bar = new PhaseBar();
+    bar.setPhases(phases);
+    bar.setCurrentPhaseId('a');
+
+    // Right: a→b (b is pending, so direct underline)
+    bar.handleInput(RIGHT_ARROW);
+    expect(bar.render(80)[0]).toContain('\x1b[4mBeta\x1b[0m');
+
+    // Right: b→c
+    bar.handleInput(RIGHT_ARROW);
+    expect(bar.render(80)[0]).toContain('\x1b[4mGamma\x1b[0m');
+
+    // Right: c→a (wrap, a is current so bold+underline)
+    bar.handleInput(RIGHT_ARROW);
+    const line = bar.render(80)[0];
+    expect(line).toContain('\x1b[4m');
+    expect(line).toContain('Alpha');
+    // Gamma marker should be pending (·) and Gamma label dimmed
+    expect(line).toContain('\x1b[2m·\x1b[0m');
+    expect(line).toContain('\x1b[2mGamma\x1b[0m');
+  });
+
+  it('multiple Left arrows cycle backwards through all phases', () => {
+    const bar = new PhaseBar();
+    bar.setPhases(phases);
+    bar.setCurrentPhaseId('c');
+
+    // Left: c→b (b is pending, direct underline)
+    bar.handleInput(LEFT_ARROW);
+    expect(bar.render(80)[0]).toContain('\x1b[4mBeta\x1b[0m');
+
+    // Left: b→a (a is pending, direct underline)
+    bar.handleInput(LEFT_ARROW);
+    expect(bar.render(80)[0]).toContain('\x1b[4mAlpha\x1b[0m');
+
+    // Left: a→c (wrap, c is current so bold+underline)
+    bar.handleInput(LEFT_ARROW);
+    const line = bar.render(80)[0];
+    expect(line).toContain('\x1b[4m');
+    expect(line).toContain('Gamma');
+  });
+
+  it('Left and Right arrows interleave correctly', () => {
+    const bar = new PhaseBar();
+    bar.setPhases(phases);
+    bar.setCurrentPhaseId('b');
+
+    // Right: b→c (c is pending, direct underline)
+    bar.handleInput(RIGHT_ARROW);
+    expect(bar.render(80)[0]).toContain('\x1b[4mGamma\x1b[0m');
+
+    // Left: c→b (b is current, bold+underline)
+    bar.handleInput(LEFT_ARROW);
+    const line1 = bar.render(80)[0];
+    expect(line1).toContain('\x1b[4m');
+    expect(line1).toContain('Beta');
+
+    // Left: b→a (a is pending, direct underline)
+    bar.handleInput(LEFT_ARROW);
+    expect(bar.render(80)[0]).toContain('\x1b[4mAlpha\x1b[0m');
+
+    // Right: a→b (b is current, bold+underline)
+    bar.handleInput(RIGHT_ARROW);
+    const line2 = bar.render(80)[0];
+    expect(line2).toContain('\x1b[4m');
+    expect(line2).toContain('Beta');
+  });
+
+  it('handleInput respects selectedPhaseId as starting point', () => {
+    const bar = new PhaseBar();
+    bar.setPhases(phases);
+    bar.setCurrentPhaseId('a');
+    bar.setSelectedPhase('c'); // start selection on 'c'
+
+    // Right from 'c' should wrap to 'a' (a is current, bold+underline)
+    bar.handleInput(RIGHT_ARROW);
+    const lines = bar.render(80);
+    expect(lines[0]).toContain('\x1b[4m');
+    expect(lines[0]).toContain('Alpha');
+
+    // Left from 'a' should wrap to 'c' (c is pending, direct underline)
+    bar.handleInput(LEFT_ARROW);
+    expect(bar.render(80)[0]).toContain('\x1b[4mGamma\x1b[0m');
+  });
+
+  it('handleInput busts the render cache', () => {
+    const bar = new PhaseBar();
+    bar.setPhases(phases);
+    bar.setCurrentPhaseId('a');
+
+    const first = bar.render(80);
+    bar.handleInput(RIGHT_ARROW);
+    const second = bar.render(80);
+
+    expect(second).not.toBe(first);
+  });
+
+  it('non-arrow keys do not change selection', () => {
+    const bar = new PhaseBar();
+    bar.setPhases(phases);
+    bar.setCurrentPhaseId('a');
+
+    bar.handleInput('x');
+    const lines = bar.render(80);
+    // Should still have underline on 'a' (current, bold+underline)
+    expect(lines[0]).toContain('\x1b[4m');
+    expect(lines[0]).toContain('Alpha');
+
+    bar.handleInput('\r');
+    const lines2 = bar.render(80);
+    expect(lines2[0]).toContain('\x1b[4m');
+    expect(lines2[0]).toContain('Alpha');
+  });
+
+  it('handleInput on single-phase list does nothing', () => {
+    const bar = new PhaseBar();
+    bar.setPhases([{ id: 'only', label: 'Only', icon: 'O', taskIds: [] }]);
+    bar.setCurrentPhaseId('only');
+
+    bar.handleInput(RIGHT_ARROW);
+    // Should still be on 'only' (current, bold+underline)
+    const lines = bar.render(80);
+    expect(lines[0]).toContain('\x1b[4m');
+    expect(lines[0]).toContain('Only');
+
+    bar.handleInput(LEFT_ARROW);
+    const lines2 = bar.render(80);
+    expect(lines2[0]).toContain('\x1b[4m');
+    expect(lines2[0]).toContain('Only');
   });
 });

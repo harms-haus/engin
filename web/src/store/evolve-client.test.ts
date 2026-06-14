@@ -17,8 +17,9 @@ function blankProjection(overrides?: Partial<WorkflowProjection>): WorkflowProje
   return {
     seq: 0,
     taskPrompt: '',
-    currentPhase: '',
-    completedPhases: [],
+    phases: [],
+    currentPhaseId: '',
+    completedPhaseIds: [],
     tasks: {},
     agents: {},
     sidebar: { title: '', indicator: '' },
@@ -58,33 +59,82 @@ describe('evolveClient – workflow lifecycle', () => {
     expect(s.seq).toBe(6);
   });
 
-  it('workflow_failed sets status, error, and failedPhase', () => {
-    const s = evolveClient(blankProjection(), event('workflow_failed', { error: 'boom', phase: 'planning' }, {}, 1));
+  it('workflow_failed sets status, error, and failedPhase (from phaseId)', () => {
+    const s = evolveClient(blankProjection(), event('workflow_failed', { error: 'boom', phaseId: 'planning' }, {}, 1));
     expect(s.status).toBe('failed');
     expect(s.error).toBe('boom');
     expect(s.failedPhase).toBe('planning');
+  });
+
+  it('workflow_falled falls back to phase field', () => {
+    const s = evolveClient(blankProjection(), event('workflow_failed', { error: 'boom', phase: 'scouting' }, {}, 1));
+    expect(s.failedPhase).toBe('scouting');
   });
 });
 
 // ─── Phase lifecycle ───────────────────────────────────────────────────────
 
 describe('evolveClient – phase lifecycle', () => {
-  it('phase_started sets currentPhase', () => {
-    const s = evolveClient(blankProjection(), event('phase_started', { phase: 'scouting' }, {}, 1));
-    expect(s.currentPhase).toBe('scouting');
+  it('phase_registered creates a new PhaseEntity and adds to phases array', () => {
+    const s = evolveClient(
+      blankProjection(),
+      event('phase_registered', { id: 'exec', label: 'Execution', icon: '🚀' }, {}, 1),
+    );
+    expect(s.phases).toHaveLength(1);
+    expect(s.phases[0]).toEqual({
+      id: 'exec',
+      label: 'Execution',
+      icon: '🚀',
+      taskIds: [],
+    });
+    expect(s.seq).toBe(1);
   });
 
-  it('phase_completed adds to completedPhases (no duplicate)', () => {
+  it('phase_registered is a no-op when phase already registered', () => {
+    let s = evolveClient(blankProjection(), event('phase_registered', { id: 'exec', label: 'Execution' }, {}, 1));
+    s = evolveClient(s, event('phase_registered', { id: 'exec', label: 'Duplicate' }, {}, 2));
+    expect(s.phases).toHaveLength(1);
+    expect(s.phases[0].label).toBe('Execution');
+    expect(s.seq).toBe(2);
+  });
+
+  it('phase_registered ordering: phases appear in registration order', () => {
+    const s = evolveClient(
+      evolveClient(blankProjection(), event('phase_registered', { id: 'scout', label: 'Scouting', icon: '🔍' }, {}, 1)),
+      event('phase_registered', { id: 'exec', label: 'Execution', icon: '🚀' }, {}, 2),
+    );
+    expect(s.phases).toHaveLength(2);
+    expect(s.phases[0].id).toBe('scout');
+    expect(s.phases[1].id).toBe('exec');
+  });
+
+  it('phase_started sets currentPhaseId', () => {
+    const s = evolveClient(blankProjection(), event('phase_started', { phase: 'scouting' }, {}, 1));
+    expect(s.currentPhaseId).toBe('scouting');
+  });
+
+  it('phase_started uses metadata.phaseId when data.phase absent', () => {
+    const s = evolveClient(blankProjection(), event('phase_started', {}, { phaseId: 'exec' }, 1));
+    expect(s.currentPhaseId).toBe('exec');
+  });
+
+  it('phase_completed adds to completedPhaseIds (no duplicate)', () => {
     let s = evolveClient(blankProjection(), event('phase_completed', { phase: 'scouting' }, {}, 1));
-    expect(s.completedPhases).toEqual(['scouting']);
+    expect(s.completedPhaseIds).toEqual(['scouting']);
 
     // Same phase again — should not duplicate
     s = evolveClient(s, event('phase_completed', { phase: 'scouting' }, {}, 2));
-    expect(s.completedPhases).toEqual(['scouting']);
+    expect(s.completedPhaseIds).toEqual(['scouting']);
 
     // Different phase
     s = evolveClient(s, event('phase_completed', { phase: 'planning' }, {}, 3));
-    expect(s.completedPhases).toEqual(['scouting', 'planning']);
+    expect(s.completedPhaseIds).toEqual(['scouting', 'planning']);
+  });
+
+  it('phase_completed defaults to currentPhaseId when no phase given', () => {
+    let s = evolveClient(blankProjection(), event('phase_started', { phase: 'exec' }, {}, 1));
+    s = evolveClient(s, event('phase_completed', {}, {}, 2));
+    expect(s.completedPhaseIds).toEqual(['exec']);
   });
 });
 
@@ -94,12 +144,13 @@ describe('evolveClient – agent lifecycle', () => {
   it('agent_spawned creates a new agent and increments agentCount', () => {
     const s = evolveClient(
       blankProjection(),
-      event('agent_spawned', { profile: 'coder' }, { agentId: 'a1', taskId: 't1' }, 1),
+      event('agent_spawned', { profile: 'coder' }, { agentId: 'a1', taskId: 't1', phaseId: 'exec' }, 1),
     );
     expect(Object.keys(s.agents)).toHaveLength(1);
     expect(s.agents['a1::t1']).toBeDefined();
     expect(s.agents['a1::t1'].agentId).toBe('a1');
     expect(s.agents['a1::t1'].profile).toBe('coder');
+    expect(s.agents['a1::t1'].phaseId).toBe('exec');
     expect(s.agents['a1::t1'].active).toBe(true);
     expect(s.agents['a1::t1'].toolCallCount).toBe(0);
     expect(s.agents['a1::t1'].inputTokens).toBe(0);
@@ -120,7 +171,6 @@ describe('evolveClient – agent lifecycle', () => {
       blankProjection(),
       event('agent_spawned', { profile: 'coder' }, { agentId: 'a1', taskId: 't1' }, 1),
     );
-    const agent = s.agents['a1::t1'];
 
     // 2. Accumulate some state (simulating turn/tool events)
     s = evolveClient(
@@ -154,10 +204,20 @@ describe('evolveClient – agent lifecycle', () => {
   });
 
   it('agent_spawned preserves taskTitle from existing task', () => {
-    // 1. Add a task
+    // 1. Register a task
     let s = evolveClient(
       blankProjection(),
-      event('tasks_added', { tasks: [{ id: 't1', title: 'My Task', status: 'ready' }] }, {}, 1),
+      event(
+        'task_registered',
+        {
+          taskId: 't1',
+          title: 'My Task',
+          phaseId: 'exec',
+          steps: [{ name: 'write-tests', profileId: 'coder' }],
+        },
+        {},
+        1,
+      ),
     );
 
     // 2. Spawn agent for that task
@@ -192,71 +252,246 @@ describe('evolveClient – agent lifecycle', () => {
 // ─── Task lifecycle ─────────────────────────────────────────────────────
 
 describe('evolveClient – task lifecycle', () => {
-  it('tasks_added inserts new tasks', () => {
+  it('task_registered inserts a new task with steps, phaseId, and dependencies', () => {
     const s = evolveClient(
       blankProjection(),
-      event('tasks_added', { tasks: [{ id: 't1', title: 'Task 1', status: 'ready' }] }, {}, 1),
+      event(
+        'task_registered',
+        {
+          taskId: 't1',
+          title: 'Task 1',
+          phaseId: 'exec',
+          steps: [
+            { name: 'write', profileId: 'coder' },
+            { name: 'review', profileId: 'reviewer', isReadOnly: true },
+          ],
+          dependencies: ['t0'],
+        },
+        {},
+        1,
+      ),
     );
     expect(Object.keys(s.tasks)).toHaveLength(1);
     expect(s.tasks['t1'].title).toBe('Task 1');
+    expect(s.tasks['t1'].phaseId).toBe('exec');
     expect(s.tasks['t1'].status).toBe('ready');
+    expect(s.tasks['t1'].steps).toHaveLength(2);
+    expect(s.tasks['t1'].steps[0].name).toBe('write');
+    expect(s.tasks['t1'].steps[0].profile).toBe('coder');
+    expect(s.tasks['t1'].steps[0].isReadOnly).toBeFalsy();
+    expect(s.tasks['t1'].steps[1].name).toBe('review');
+    expect(s.tasks['t1'].steps[1].profile).toBe('reviewer');
+    expect(s.tasks['t1'].steps[1].isReadOnly).toBe(true);
+    expect(s.tasks['t1'].dependencies).toEqual(['t0']);
+    expect(s.tasks['t1'].activeStepIndex).toBeUndefined();
   });
 
-  it('tasks_added does not overwrite existing tasks', () => {
+  it('task_registered does not overwrite existing tasks', () => {
     let s = evolveClient(
       blankProjection(),
-      event('tasks_added', { tasks: [{ id: 't1', title: 'Original', status: 'ready' }] }, {}, 1),
+      event(
+        'task_registered',
+        {
+          taskId: 't1',
+          title: 'Original',
+          phaseId: 'exec',
+          steps: [{ name: 'write', profileId: 'coder' }],
+        },
+        {},
+        1,
+      ),
     );
-    s = evolveClient(s, event('tasks_added', { tasks: [{ id: 't1', title: 'New', status: 'done' }] }, {}, 2));
+    s = evolveClient(
+      s,
+      event(
+        'task_registered',
+        {
+          taskId: 't1',
+          title: 'New',
+          phaseId: 'other',
+          steps: [{ name: 'write', profileId: 'coder' }],
+        },
+        {},
+        2,
+      ),
+    );
     expect(s.tasks['t1'].title).toBe('Original');
-    expect(s.tasks['t1'].status).toBe('ready');
+    expect(s.tasks['t1'].phaseId).toBe('exec');
   });
 
-  it('task_started sets status to implementing', () => {
-    let s = evolveClient(
-      blankProjection(),
-      event('tasks_added', { tasks: [{ id: 't1', title: 'Task', status: 'ready' }] }, {}, 1),
+  it('task_registered appends taskId to owning PhaseEntity.taskIds', () => {
+    let s = evolveClient(blankProjection(), event('phase_registered', { id: 'exec', label: 'Exec' }, {}, 1));
+    s = evolveClient(
+      s,
+      event(
+        'task_registered',
+        {
+          taskId: 't1',
+          title: 'Task',
+          phaseId: 'exec',
+          steps: [{ name: 'write', profileId: 'coder' }],
+        },
+        {},
+        2,
+      ),
     );
-    s = evolveClient(s, event('task_started', { taskId: 't1', title: 'Task', agentId: 'a1' }, { phase: 'exec' }, 2));
-    expect(s.tasks['t1'].status).toBe('implementing');
-    expect(s.tasks['t1'].agentId).toBe('a1');
-    expect(s.tasks['t1'].phase).toBe('exec');
+    expect(s.phases).toHaveLength(1);
+    expect(s.phases[0].taskIds).toEqual(['t1']);
   });
 
-  it('task_started creates task if it does not exist', () => {
-    const s = evolveClient(blankProjection(), event('task_started', { taskId: 't-new', title: 'New Task' }, {}, 1));
-    expect(s.tasks['t-new']).toBeDefined();
-    expect(s.tasks['t-new'].title).toBe('New Task');
-    expect(s.tasks['t-new'].status).toBe('implementing');
+  it('task_registered with data.id as fallback key', () => {
+    const s = evolveClient(
+      blankProjection(),
+      event(
+        'task_registered',
+        {
+          id: 't-fallback',
+          title: 'Fallback',
+          phaseId: 'exec',
+          steps: [{ name: 'write', profileId: 'coder' }],
+        },
+        {},
+        1,
+      ),
+    );
+    expect(s.tasks['t-fallback']).toBeDefined();
+    expect(s.tasks['t-fallback'].title).toBe('Fallback');
   });
 
-  it('task_step_started updates stepInfo', () => {
+  it('task_started sets status to active', () => {
     let s = evolveClient(
       blankProjection(),
-      event('tasks_added', { tasks: [{ id: 't1', title: 'T', status: 'ready' }] }, {}, 1),
+      event(
+        'task_registered',
+        {
+          taskId: 't1',
+          title: 'Task',
+          phaseId: 'exec',
+          steps: [{ name: 'write', profileId: 'coder' }],
+        },
+        {},
+        1,
+      ),
+    );
+    s = evolveClient(s, event('task_started', { taskId: 't1', title: 'Task', agentId: 'a1' }, {}, 2));
+    expect(s.tasks['t1'].status).toBe('active');
+  });
+
+  it('task_started is a no-op when task does not exist', () => {
+    const s = evolveClient(blankProjection(), event('task_started', { taskId: 'ghost', title: 'Ghost' }, {}, 1));
+    expect(s.tasks['ghost']).toBeUndefined();
+    expect(s.seq).toBe(1);
+  });
+
+  it('step_started sets activeStepIndex on the task', () => {
+    let s = evolveClient(
+      blankProjection(),
+      event(
+        'task_registered',
+        {
+          taskId: 't1',
+          title: 'T',
+          phaseId: 'exec',
+          steps: [
+            { name: 'write', profileId: 'coder' },
+            { name: 'review', profileId: 'reviewer' },
+          ],
+        },
+        {},
+        1,
+      ),
+    );
+    s = evolveClient(s, event('step_started', { taskId: 't1', stepIndex: 1 }, {}, 2));
+    expect(s.tasks['t1'].activeStepIndex).toBe(1);
+  });
+
+  it('step_started links agentKey when agentId provided in metadata', () => {
+    let s = evolveClient(
+      blankProjection(),
+      event(
+        'task_registered',
+        {
+          taskId: 't1',
+          title: 'T',
+          phaseId: 'exec',
+          steps: [
+            { name: 'write', profileId: 'coder' },
+            { name: 'review', profileId: 'reviewer' },
+          ],
+        },
+        {},
+        1,
+      ),
+    );
+    // Spawn agent for step 0
+    s = evolveClient(s, event('agent_spawned', { profile: 'coder' }, { agentId: 'a1', taskId: 't1', stepIndex: 0 }, 2));
+    // Start step 0 with agent link
+    s = evolveClient(s, event('step_started', { taskId: 't1', stepIndex: 0, agentId: 'a1' }, { taskId: 't1' }, 3));
+    expect(s.tasks['t1'].activeStepIndex).toBe(0);
+    expect(s.tasks['t1'].steps[0].agentKey).toBe('a1::t1');
+  });
+
+  it('step_started is a no-op when task does not exist', () => {
+    const s = evolveClient(blankProjection(), event('step_started', { taskId: 'ghost', stepIndex: 0 }, {}, 1));
+    expect(s.seq).toBe(1);
+  });
+
+  it('step_started is a no-op when stepIndex is not a number', () => {
+    let s = evolveClient(
+      blankProjection(),
+      event(
+        'task_registered',
+        {
+          taskId: 't1',
+          title: 'T',
+          phaseId: 'exec',
+          steps: [{ name: 'write', profileId: 'coder' }],
+        },
+        {},
+        1,
+      ),
+    );
+    s = evolveClient(s, event('step_started', { taskId: 't1', stepIndex: 'invalid' }, {}, 2));
+    expect(s.tasks['t1'].activeStepIndex).toBeUndefined();
+  });
+
+  it('task_completed sets status to complete and clears activeStepIndex', () => {
+    let s = evolveClient(
+      blankProjection(),
+      event(
+        'task_registered',
+        {
+          taskId: 't1',
+          title: 'T',
+          phaseId: 'exec',
+          steps: [{ name: 'write', profileId: 'coder' }],
+        },
+        {},
+        1,
+      ),
     );
     s = evolveClient(s, event('task_started', { taskId: 't1', title: 'T' }, {}, 2));
-    s = evolveClient(s, event('task_step_started', { taskId: 't1', stepName: 'review' }, {}, 3));
-    expect(s.tasks['t1'].stepInfo).toBe('review');
-  });
-
-  it('task_completed sets status done and clears stepInfo', () => {
-    let s = evolveClient(
-      blankProjection(),
-      event('tasks_added', { tasks: [{ id: 't1', title: 'T', status: 'ready' }] }, {}, 1),
-    );
-    s = evolveClient(s, event('task_started', { taskId: 't1', title: 'T' }, {}, 2));
-    s = evolveClient(s, event('task_step_started', { taskId: 't1', stepName: 'review' }, {}, 3));
+    s = evolveClient(s, event('step_started', { taskId: 't1', stepIndex: 0 }, {}, 3));
     s = evolveClient(s, event('task_completed', { taskId: 't1' }, { timestamp: '2025-01-01' }, 4));
-    expect(s.tasks['t1'].status).toBe('done');
-    expect(s.tasks['t1'].stepInfo).toBeUndefined();
+    expect(s.tasks['t1'].status).toBe('complete');
     expect(s.tasks['t1'].completedAt).toBe('2025-01-01');
+    // activeStepIndex is NOT automatically cleared by task_completed (handled by consumer)
   });
 
   it('task_rejected sets status failed', () => {
     let s = evolveClient(
       blankProjection(),
-      event('tasks_added', { tasks: [{ id: 't1', title: 'T', status: 'ready' }] }, {}, 1),
+      event(
+        'task_registered',
+        {
+          taskId: 't1',
+          title: 'T',
+          phaseId: 'exec',
+          steps: [{ name: 'write', profileId: 'coder' }],
+        },
+        {},
+        1,
+      ),
     );
     s = evolveClient(s, event('task_started', { taskId: 't1', title: 'T' }, {}, 2));
     s = evolveClient(s, event('task_rejected', { taskId: 't1' }, {}, 3));
@@ -383,13 +618,19 @@ describe('evolveClient – tool call lifecycle', () => {
 // ─── Sidebar ────────────────────────────────────────────────────────────
 
 describe('evolveClient – sidebar', () => {
-  it('sidebar_updated patches title, indicator, phases', () => {
-    let s = evolveClient(blankProjection(), event('sidebar_updated', { title: 'My App', indicator: 'green' }, {}, 1));
+  it('sidebar_updated patches title and indicator', () => {
+    const s = evolveClient(blankProjection(), event('sidebar_updated', { title: 'My App', indicator: 'green' }, {}, 1));
     expect(s.sidebar.title).toBe('My App');
     expect(s.sidebar.indicator).toBe('green');
+  });
 
-    s = evolveClient(s, event('sidebar_updated', { phases: [{ id: 'p1', label: 'Phase 1', icon: '🚀' }] }, {}, 2));
-    expect(s.sidebar.phases).toEqual([{ id: 'p1', label: 'Phase 1', icon: '🚀' }]);
+  it('sidebar_updated no longer updates phases (use phase_registered)', () => {
+    const s = evolveClient(
+      blankProjection(),
+      event('sidebar_updated', { phases: [{ id: 'p1', label: 'Phase 1' }] }, {}, 1),
+    );
+    // phases should NOT be present on sidebar; they live on projection.phases
+    expect((s.sidebar as Record<string, unknown>).phases).toBeUndefined();
   });
 });
 
@@ -424,20 +665,33 @@ describe('evolveClient – full sequence parity', () => {
 
     // 2. phase_started
     s = evolveClient(s, event('phase_started', { phase: 'exec' }, {}, 2));
-    expect(s.currentPhase).toBe('exec');
+    expect(s.currentPhaseId).toBe('exec');
 
-    // 3. tasks_added
-    s = evolveClient(s, event('tasks_added', { tasks: [{ id: 't1', title: 'Task 1', status: 'ready' }] }, {}, 3));
+    // 3. task_registered
+    s = evolveClient(
+      s,
+      event(
+        'task_registered',
+        {
+          taskId: 't1',
+          title: 'Task 1',
+          phaseId: 'exec',
+          steps: [{ name: 'write', profileId: 'coder' }],
+        },
+        {},
+        3,
+      ),
+    );
     expect(s.tasks['t1'].title).toBe('Task 1');
 
     // 4. task_started
     s = evolveClient(s, event('task_started', { taskId: 't1', title: 'Task 1', agentId: 'a1' }, { phase: 'exec' }, 4));
-    expect(s.tasks['t1'].status).toBe('implementing');
+    expect(s.tasks['t1'].status).toBe('active');
 
     // 5. agent_spawned
     s = evolveClient(
       s,
-      event('agent_spawned', { profile: 'coder' }, { agentId: 'a1', taskId: 't1', phase: 'exec' }, 5),
+      event('agent_spawned', { profile: 'coder' }, { agentId: 'a1', taskId: 't1', phaseId: 'exec' }, 5),
     );
     expect(s.agents['a1::t1'].active).toBe(true);
     expect(s.stats.agentCount).toBe(1);
@@ -486,11 +740,11 @@ describe('evolveClient – full sequence parity', () => {
 
     // 11. task_completed
     s = evolveClient(s, event('task_completed', { taskId: 't1' }, { timestamp: '2025-01-01' }, 11));
-    expect(s.tasks['t1'].status).toBe('done');
+    expect(s.tasks['t1'].status).toBe('complete');
 
     // 12. phase_completed
     s = evolveClient(s, event('phase_completed', { phase: 'exec' }, {}, 12));
-    expect(s.completedPhases).toEqual(['exec']);
+    expect(s.completedPhaseIds).toEqual(['exec']);
 
     // 13. workflow_completed
     s = evolveClient(s, event('workflow_completed', {}, {}, 13));
