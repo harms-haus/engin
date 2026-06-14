@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useHasSnapshot, useRecentLogEntries } from '../store/workflow-store';
-import { formatEntryContent } from '../utils/format-entry';
+import { formatEntryContent, shouldRenderEntry } from '../utils/format-entry';
 import './EventLog.css';
 
 function entryClass(type: string): string {
@@ -66,7 +66,7 @@ export function EventLog() {
           {hasSnapshot ? 'Waiting for activity…' : 'Connecting to workflow…'}
         </div>
       ) : (
-        entries.map((entry) => (
+        entries.filter(shouldRenderEntry).map((entry) => (
           <div key={entry.id} className={entryClass(entry.type)}>
             {entryPrefix(entry.type)}
             {formatEntryContent(entry)}

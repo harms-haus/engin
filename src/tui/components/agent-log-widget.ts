@@ -243,6 +243,10 @@ export class AgentLogWidget implements Component {
       let totalEntryLineCount = 0;
 
       for (const entry of selectedAgent.log) {
+        // tool_call_end is a redundant completion marker (the tool_call_start
+        // entry already shows the call). Keep it in the underlying data; hide
+        // it from the rendered log to avoid clutter.
+        if (entry.type === 'tool_call_end') continue;
         const colorFn = typeColorMap[entry.type];
         // tool_call_start/tool_call carry structured args in metadata; render a
         // human-readable summary (e.g. `read → ./path`) via formatToolCall.

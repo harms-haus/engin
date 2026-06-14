@@ -334,14 +334,15 @@ describe('EventLog – entry-type CSS and prefixes', () => {
     expect(entry?.textContent).toContain('[TOOL]');
   });
 
-  it('applies tool modifier class and [TOOL ✓] prefix for tool_call_end', () => {
+  it('hides tool_call_end entries from the rendered log', () => {
     seedStoreAct([makeLogEntry('read', 'tool_call_end')]);
 
     const { container } = render(<EventLog />);
 
-    const entry = container.querySelector('.event-log__entry');
-    expect(entry).toHaveClass('event-log__entry--tool');
-    expect(entry?.textContent).toContain('[TOOL ✓]');
+    // tool_call_end is a redundant completion marker (the start entry already
+    // shows the call); it stays in the store but is not rendered.
+    const toolEntries = container.querySelectorAll('.event-log__entry--tool');
+    expect(toolEntries).toHaveLength(0);
   });
 
   it('applies thinking modifier class and [THINKING] prefix', () => {

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { useAgentById, useAgentIds, useHasSnapshot, useStatus } from '../store/workflow-store';
-import { formatEntryContent } from '../utils/format-entry';
+import { formatEntryContent, shouldRenderEntry } from '../utils/format-entry';
 import './AgentLog.css';
 
 export function AgentLog() {
@@ -86,7 +86,7 @@ export function AgentLog() {
       {/* Log entries */}
       <div className="agent-log__entries" ref={scrollRef} onScroll={handleScroll}>
         {agent ? (
-          agent.log.map((entry) => (
+          agent.log.filter(shouldRenderEntry).map((entry) => (
             <div key={entry.id} className={`agent-log__entry agent-log__entry--${entry.type}`}>
               {formatEntryContent(entry)}
             </div>
