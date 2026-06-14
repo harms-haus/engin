@@ -56,7 +56,28 @@ function createPastRunDir(tempDir: string, dirName: string) {
 }
 
 /**
- * Starts runCommand and waits one tick so the SIGINT handler is registered.
+ * Poll until the SIGINT handler is registered on the `process.on` spy.
+ *
+ * The async chain runCommand/resumeCommand → loadWorkflow → setupSigintHandler
+ * → process.on('SIGINT', …) may take more than a single event-loop tick under
+ * load or in CI, so a fixed `setTimeout(0)` wait is flaky. Polling (with a
+ * timeout) makes handler capture deterministic.
+ */
+async function waitForSigintHandler(
+  onSpy: ReturnType<typeof spyOn>,
+  timeoutMs = 2000,
+): Promise<(() => void) | undefined> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const sigintCall = onSpy.mock.calls.find((call) => call[0] === 'SIGINT');
+    if (sigintCall) return sigintCall[1] as (() => void) | undefined;
+    await new Promise((r) => setTimeout(r, 0));
+  }
+  return onSpy.mock.calls.find((call) => call[0] === 'SIGINT')?.[1] as (() => void) | undefined;
+}
+
+/**
+ * Starts runCommand and waits for the SIGINT handler to be registered.
  * Returns the inner promise, captured handler, resolve function, and signal.
  */
 async function startRunCommand(
@@ -79,11 +100,7 @@ async function startRunCommand(
   });
 
   const promise = runCommand(makeRunOptions());
-  // Give the event-loop a tick: loadWorkflow resolves → SIGINT handler is registered
-  await new Promise((r) => setTimeout(r, 0));
-
-  const sigintCall = onSpy.mock.calls.find((call) => call[0] === 'SIGINT');
-  const handler = sigintCall?.[1] as (() => void) | undefined;
+  const handler = await waitForSigintHandler(onSpy);
 
   return {
     runPromise: promise,
@@ -360,10 +377,7 @@ describe('SIGINT handler (resumeCommand)', () => {
     };
 
     const promise = resumeCommand(options);
-    await new Promise((r) => setTimeout(r, 0));
-
-    const sigintCall = onSpy.mock.calls.find((call) => call[0] === 'SIGINT');
-    const handler = sigintCall?.[1] as (() => void) | undefined;
+    const handler = await waitForSigintHandler(onSpy);
 
     return {
       runPromise: promise,
