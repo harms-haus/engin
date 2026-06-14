@@ -113,6 +113,7 @@ function resetStore(): void {
     failedPhase: undefined,
     seq: 0,
     stats: { totalTokens: 0, agentCount: 0 },
+    workflowEventLog: [],
   });
 }
 
@@ -160,6 +161,61 @@ describe('useWebSocket – URL derivation', () => {
     (window as any).__WS_ENDPOINT__ = 'ws://my-server:9999/ws';
     renderHook(() => useWebSocket());
     expect(MockWebSocket.instances[0].url).toBe('ws://my-server:9999/ws');
+  });
+});
+
+// ─── Singleton connection (no duplication) ──────────────────────────────────
+
+describe('useWebSocket – singleton connection', () => {
+  it('shares a single connection across multiple concurrent callers', () => {
+    // Two components consuming the hook must NOT open two sockets — otherwise
+    // every event is applied twice (doubled agent-log entries).
+    renderHook(() => useWebSocket());
+    renderHook(() => useWebSocket());
+
+    act(() => {
+      MockWebSocket.simulateOpen();
+    });
+
+    expect(MockWebSocket.instances).toHaveLength(1);
+    expect(MockWebSocket.instances[0].sentMessages).toHaveLength(1);
+  });
+
+  it('does not duplicate event application across concurrent callers', () => {
+    renderHook(() => useWebSocket());
+    renderHook(() => useWebSocket());
+
+    act(() => {
+      MockWebSocket.simulateOpen();
+    });
+
+    act(() => {
+      MockWebSocket.simulateMessage({
+        type: 'events',
+        seq: 1,
+        events: [{ seq: 1, type: 'workflow_started', data: { taskPrompt: 'x' }, metadata: { timestamp: '' } }],
+      });
+    });
+
+    // A single workflow_started event must produce exactly one event-log line,
+    // not two (which would happen if two sockets each applied it).
+    expect(useWorkflowStore.getState().workflowEventLog).toHaveLength(1);
+  });
+
+  it('creates a fresh connection when the last consumer unmounts and a new one mounts', () => {
+    const { unmount: unmountFirst } = renderHook(() => useWebSocket());
+    act(() => {
+      MockWebSocket.simulateOpen();
+    });
+    expect(MockWebSocket.instances).toHaveLength(1);
+
+    // Last consumer gone → teardown.
+    unmountFirst();
+    expect(MockWebSocket.instances).toHaveLength(1);
+
+    // A new consumer starts fresh.
+    renderHook(() => useWebSocket());
+    expect(MockWebSocket.instances).toHaveLength(2);
   });
 });
 

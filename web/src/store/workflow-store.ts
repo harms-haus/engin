@@ -3,18 +3,15 @@
  * Uses Immer middleware for safe structural updates.
  */
 
+import { formatWorkflowEventLine } from '@engin/tui/format-workflow-event';
+import type { Draft } from 'immer';
 import { create } from 'zustand';
 import { immer } from 'zustand/middleware/immer';
 import { useShallow } from 'zustand/react/shallow';
-import type {
-  AgentEntity,
-  EventRecord,
-  LogEntry,
-  PhaseDescriptor,
-  TaskEntity,
-  WorkflowProjection,
-} from '../protocol-types';
+import type { AgentEntity, EventRecord, PhaseDescriptor, TaskEntity, WorkflowProjection } from '../protocol-types';
 import { evolveClient, MAX_AGENT_LOG } from './evolve-client';
+
+const MAX_WORKFLOW_EVENT_LOG = 1000;
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -48,7 +45,26 @@ function capAgentLogs(agents: Record<string, AgentEntity>): Record<string, Agent
   return out;
 }
 
+/** Write every normalized projection field into the Immer draft (except seq). Uses defensive copies for externally-sourced collections. */
+function writeProjectionToState(state: Draft<WorkflowStoreState>, p: WorkflowProjection): void {
+  state.agentsById = capAgentLogs(p.agents);
+  state.tasksById = { ...p.tasks };
+  state.currentPhase = p.currentPhase;
+  state.completedPhases = [...p.completedPhases];
+  state.sidebar = { ...p.sidebar };
+  state.status = p.status;
+  state.taskPrompt = p.taskPrompt;
+  state.error = p.error;
+  state.failedPhase = p.failedPhase;
+  state.stats = { ...p.stats };
+}
+
 // ─── Store state interface ──────────────────────────────────────────────────
+
+export interface WorkflowEventLogEntry {
+  seq: number;
+  line: string;
+}
 
 export interface WorkflowStoreState {
   // Normalized projection fields
@@ -67,6 +83,7 @@ export interface WorkflowStoreState {
   failedPhase?: string;
   seq: number;
   stats: { totalTokens: number; agentCount: number };
+  workflowEventLog: WorkflowEventLogEntry[];
 
   // Actions
   applySnapshot: (snapshot: WorkflowProjection, seq: number) => void;
@@ -89,6 +106,7 @@ const INITIAL_STATE = {
   failedPhase: undefined as string | undefined,
   seq: 0,
   stats: { totalTokens: 0, agentCount: 0 },
+  workflowEventLog: [] as WorkflowEventLogEntry[],
 };
 
 export const useWorkflowStore = create<WorkflowStoreState>()(
@@ -97,36 +115,38 @@ export const useWorkflowStore = create<WorkflowStoreState>()(
 
     applySnapshot: (snapshot, seq) =>
       set((state) => {
-        state.agentsById = capAgentLogs(snapshot.agents);
-        state.tasksById = { ...snapshot.tasks };
-        state.currentPhase = snapshot.currentPhase;
-        state.completedPhases = [...snapshot.completedPhases];
-        state.sidebar = { ...snapshot.sidebar };
-        state.status = snapshot.status;
-        state.taskPrompt = snapshot.taskPrompt;
-        state.error = snapshot.error;
-        state.failedPhase = snapshot.failedPhase;
+        writeProjectionToState(state, snapshot);
+        // Only clear the event log on a genuine fresh start (first connect) or
+        // server reset (seq went backwards). On reconnection, preserve accumulated
+        // event lines — they are immutable seq-keyed facts.
+        if (state.seq === 0 || seq < state.seq) {
+          state.workflowEventLog = [];
+        }
         state.seq = seq;
-        state.stats = { ...snapshot.stats };
       }),
 
     applyEvents: (events) =>
       set((s) => {
+        if (events.length === 0) return;
         let projection = toProjection(s);
         for (const event of events) {
           projection = evolveClient(projection, event);
         }
-        s.agentsById = capAgentLogs(projection.agents);
-        s.tasksById = projection.tasks;
-        s.currentPhase = projection.currentPhase;
-        s.completedPhases = projection.completedPhases;
-        s.sidebar = projection.sidebar;
-        s.status = projection.status;
-        s.taskPrompt = projection.taskPrompt;
-        s.error = projection.error;
-        s.failedPhase = projection.failedPhase;
+        writeProjectionToState(s, projection);
         s.seq = projection.seq;
-        s.stats = projection.stats;
+
+        // Build workflow-level event lines from this batch
+        const collected: WorkflowEventLogEntry[] = [];
+        for (const event of events) {
+          const line = formatWorkflowEventLine(event);
+          if (line !== null) {
+            collected.push({ seq: event.seq, line });
+          }
+        }
+        if (collected.length > 0) {
+          const combined = [...s.workflowEventLog, ...collected];
+          s.workflowEventLog = combined.slice(combined.length - MAX_WORKFLOW_EVENT_LOG);
+        }
       }),
 
     setStatus: (status) =>
@@ -153,25 +173,7 @@ export const useTaskIds = () => useWorkflowStore(useShallow((s) => Object.keys(s
 
 export const useTaskById = (id: string) => useWorkflowStore((s) => s.tasksById[id]);
 
-/**
- * Flatten all agent logs into a single timestamp-sorted LogEntry[]
- * (oldest-first, matching EventLog's auto-scroll-bottom behavior),
- * capped at `limit` entries. Memoized via useShallow to avoid
- * re-renders when the derived array hasn't changed.
- */
-export const useRecentLogEntries = (limit = 100): LogEntry[] =>
-  useWorkflowStore(
-    useShallow((s) => {
-      const all: LogEntry[] = [];
-      for (const agent of Object.values(s.agentsById)) {
-        all.push(...agent.log);
-      }
-      // ISO-8601 timestamps sort lexicographically; direct `<`/`>` is faster
-      // than localeCompare and yields the same ordering.
-      all.sort((a, b) => (a.timestamp < b.timestamp ? -1 : a.timestamp > b.timestamp ? 1 : 0));
-      return all.length > limit ? all.slice(all.length - limit) : all;
-    }),
-  );
+export const useWorkflowEventLog = () => useWorkflowStore((s) => s.workflowEventLog);
 
 export const useCurrentPhase = () => useWorkflowStore((s) => s.currentPhase);
 

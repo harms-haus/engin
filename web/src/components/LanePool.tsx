@@ -35,8 +35,13 @@ const Lane = React.memo(function Lane({ taskId }: { taskId: string }) {
   const task = useTaskById(taskId);
   if (!task) return null;
   return (
-    <div className="lane-pool__lane" style={{ borderLeftColor: getStatusColor(task.status) }}>
+    <div
+      className="lane-pool__lane"
+      style={{ borderLeftColor: getStatusColor(task.status) }}
+      aria-label={`${task.title} — ${task.status}`}
+    >
       <span className="lane-pool__title">{task.title}</span>
+      <span className="lane-pool__status">{task.status}</span>
     </div>
   );
 });

@@ -1,6 +1,8 @@
 .agent-log {
   display: flex;
   flex-direction: column;
+  flex: 0 0 auto;
+  height: 320px;
   background: var(--bg-secondary);
   border-top: 1px solid var(--border);
 }
@@ -150,5 +152,11 @@
 @media (max-width: 768px) {
   .agent-log__entries {
     font-size: 13px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-log__terminate--confirm {
+    animation: none;
   }
 }

@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
+import { useAutoScroll } from '../hooks/useAutoScroll';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { useAgentById, useAgentIds, useHasSnapshot, useStatus } from '../store/workflow-store';
 import { formatEntryContent, shouldRenderEntry } from '../utils/format-entry';
@@ -10,9 +11,7 @@ export function AgentLog() {
   const hasSnapshot = useHasSnapshot();
   const { send, connected } = useWebSocket();
   const [selectedIndex, setSelectedIndex] = useState(0);
-  const [autoScroll, setAutoScroll] = useState(true);
   const [confirming, setConfirming] = useState(false);
-  const scrollRef = useRef<HTMLDivElement>(null);
 
   // Reset selection when agents change
   useEffect(() => {
@@ -26,19 +25,7 @@ export function AgentLog() {
 
   // Auto-scroll on new log entries – only when the user is already at/near
   // the bottom so we don't yank them away from content they're reading.
-  const handleScroll = () => {
-    if (scrollRef.current) {
-      const { scrollTop, scrollHeight, clientHeight } = scrollRef.current;
-      const isNearBottom = scrollHeight - scrollTop - clientHeight < 30;
-      setAutoScroll(isNearBottom);
-    }
-  };
-
-  useEffect(() => {
-    if (autoScroll && scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    }
-  }, [autoScroll, agent?.log]);
+  const { scrollRef, handleScroll } = useAutoScroll(agent?.log);
 
   const handlePrev = () => {
     setSelectedIndex((prev) => (prev > 0 ? prev - 1 : keys.length - 1));

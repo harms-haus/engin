@@ -20,25 +20,6 @@
   font-style: italic;
 }
 
-.event-log__entry--thinking {
-  color: var(--text-muted);
-  font-style: italic;
-}
-
-.event-log__entry--tool {
-  color: var(--accent);
-}
-
-.event-log__entry--decision {
-  color: var(--accent);
-  font-weight: bold;
-}
-
-.event-log__entry--error {
-  color: var(--error);
-  font-weight: bold;
-}
-
 @media (max-width: 768px) {
   .event-log__entry {
     font-size: 13px;

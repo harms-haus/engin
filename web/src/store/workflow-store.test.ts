@@ -55,6 +55,7 @@ beforeEach(() => {
     failedPhase: undefined,
     seq: 0,
     stats: { totalTokens: 0, agentCount: 0 },
+    workflowEventLog: [],
   });
 });
 
@@ -318,5 +319,95 @@ describe('store – selectors', () => {
     expect(getSeq()).toBe(0);
     useWorkflowStore.getState().applyEvents([evt('workflow_started', {}, {}, 7)]);
     expect(getSeq()).toBe(7);
+  });
+});
+
+// ─── workflowEventLog ─────────────────────────────────────────────────────
+
+describe('store – workflowEventLog', () => {
+  it('populates workflowEventLog with lifecycle event lines', () => {
+    useWorkflowStore
+      .getState()
+      .applyEvents([
+        evt('workflow_started', { taskPrompt: 'build', resumed: false }, {}, 1),
+        evt('phase_started', { phase: 'scouting', round: 1 }, {}, 2),
+      ]);
+
+    const log = useWorkflowStore.getState().workflowEventLog;
+    expect(log).toHaveLength(2);
+    expect(log[0]).toEqual({
+      seq: 1,
+      line: '🚀 Workflow started: "build" (resumed: false)',
+    });
+    expect(log[1]).toEqual({
+      seq: 2,
+      line: '📦 Phase: scouting (round 1)',
+    });
+  });
+
+  it('does NOT add entries for verbose events (decision, tool_call_started, turn_ended)', () => {
+    useWorkflowStore
+      .getState()
+      .applyEvents([
+        evt('workflow_started', { taskPrompt: 'x' }, {}, 1),
+        evt('decision', { decision: 'proceed' }, { agentId: 'a1' }, 2),
+        evt('tool_call_started', { toolName: 'read' }, { agentId: 'a1' }, 3),
+        evt('turn_ended', { tokens: { input: 10, output: 5 } }, { agentId: 'a1' }, 4),
+      ]);
+
+    const log = useWorkflowStore.getState().workflowEventLog;
+    expect(log).toHaveLength(1);
+    expect(log[0].seq).toBe(1);
+  });
+
+  it('caps workflowEventLog at 1000 entries (oldest dropped)', () => {
+    const store = useWorkflowStore.getState();
+
+    // Push 1001 workflow_started events
+    const events: EventRecord[] = [];
+    for (let i = 1; i <= 1001; i++) {
+      events.push(evt('workflow_started', { taskPrompt: `run-${i}` }, {}, i));
+    }
+    store.applyEvents(events);
+
+    const log = useWorkflowStore.getState().workflowEventLog;
+    expect(log).toHaveLength(1000);
+    // Oldest (seq 1) should be dropped; first entry is seq 2
+    expect(log[0].seq).toBe(2);
+    expect(log[0].line).toContain('run-2');
+    // Last entry is seq 1001
+    expect(log[999].seq).toBe(1001);
+    expect(log[999].line).toContain('run-1001');
+  });
+
+  it('applySnapshot resets workflowEventLog to empty on a fresh start (state.seq === 0)', () => {
+    // Seed a stale event log directly while keeping seq=0 (pre-first-snapshot).
+    useWorkflowStore.setState({
+      workflowEventLog: [{ seq: 1, line: '🚀 Workflow started: "stale"' }],
+    });
+    expect(useWorkflowStore.getState().workflowEventLog).toHaveLength(1);
+
+    // Apply the first snapshot — state.seq === 0 → clear the log
+    useWorkflowStore.getState().applySnapshot(blankProjection(), 5);
+
+    expect(useWorkflowStore.getState().workflowEventLog).toHaveLength(0);
+    expect(useWorkflowStore.getState().seq).toBe(5);
+  });
+
+  it('applySnapshot does NOT clear workflowEventLog on reconnection (state.seq > 0, new seq >= state.seq)', () => {
+    // Seed the store with an accumulated event line and seq=5 (prior snapshot received).
+    useWorkflowStore.setState({
+      seq: 5,
+      workflowEventLog: [{ seq: 1, line: '🚀 Workflow started: "build"' }],
+    });
+    expect(useWorkflowStore.getState().workflowEventLog).toHaveLength(1);
+
+    // A reconnection snapshot arrives at seq=6 (>= current seq) — log preserved
+    useWorkflowStore.getState().applySnapshot(blankProjection({ taskPrompt: 'build' }), 6);
+
+    const log = useWorkflowStore.getState().workflowEventLog;
+    expect(log).toHaveLength(1);
+    expect(log[0]).toEqual({ seq: 1, line: '🚀 Workflow started: "build"' });
+    expect(useWorkflowStore.getState().seq).toBe(6);
   });
 });

@@ -1,8 +1,8 @@
 .lane-pool {
   background: var(--bg-secondary);
   padding: 4px 0;
-  flex: 1;
-  min-height: 0;
+  flex: 0 1 auto;
+  max-height: 50vh;
   overflow-y: auto;
 }
 
@@ -14,8 +14,18 @@
 }
 
 .lane-pool__lane {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
   padding: 4px 12px;
   border-left: 4px solid var(--text-muted);
   font-size: 13px;
   color: var(--text-secondary);
+}
+
+.lane-pool__status {
+  font-size: 10px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
 }

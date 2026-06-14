@@ -1,56 +1,56 @@
 /**
- * Tests for EventLog – auto-scroll behavior.
+ * Tests for EventLog – workflow-level event line rendering.
  *
  * Verifies:
- * - Auto-scrolls to bottom when new entries arrive and user is near bottom
- * - Does NOT auto-scroll when the user has scrolled up
- * - Re-enables auto-scroll when the user scrolls back to the bottom
- * - Multiple new entries maintain auto-scroll position when at bottom
- * - Boundary tests for the 30px near-bottom threshold
+ * - Workflow-lifecycle events render their emoji lines (via formatWorkflowEventLine)
+ * - Verbose events (tool_call_*, decision, turn_*, tasks_added, task_step_started)
+ *   produce NO rendered lines
+ * - Empty-state messages for pre-snapshot and post-snapshot-but-no-events
+ * - Auto-scroll behavior (near bottom → auto-scroll, away → no scroll, etc.)
  *
- * The component now self-subscribes to the store via useRecentLogEntries().
- * Tests seed the store with agent log entries directly.
+ * The component self-subscribes to the store via useWorkflowEventLog().
+ * Tests seed the store with EventRecord[] via applyEvents().
  */
 
 import '@testing-library/jest-dom/vitest';
 
 import { act, fireEvent, render } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { AgentEntity, LogEntry } from '../protocol-types';
+import type { EventRecord } from '../protocol-types';
 import { useWorkflowStore } from '../store/workflow-store';
 import { EventLog } from './EventLog';
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
 
-let entryCounter = 0;
-
-function makeLogEntry(content: string, type: LogEntry['type'] = 'text'): LogEntry {
-  entryCounter += 1;
+/** Create an EventRecord with sensible defaults. */
+function mkEvent(
+  seq: number,
+  type: EventRecord['type'],
+  data: Record<string, unknown> = {},
+  meta: Partial<EventRecord['metadata']> = {},
+): EventRecord {
   return {
-    id: `log-${entryCounter}`,
-    timestamp: new Date().toISOString(),
+    seq,
     type,
-    content,
+    data,
+    metadata: { timestamp: `2025-01-01T00:00:${String(seq).padStart(2, '0')}Z`, ...meta },
   };
 }
 
-function makeAgentEntity(agentId: string, log: LogEntry[]): AgentEntity {
-  return {
-    uid: agentId,
-    agentId,
-    profile: 'test',
-    phase: '',
-    active: true,
-    log,
-    toolCallCount: 0,
-    inputTokens: 0,
-    outputTokens: 0,
-    taskTitle: '',
-  };
+/** Seed the store via applyEvents so workflowEventLog is populated. */
+function pushEvents(events: EventRecord[]): void {
+  useWorkflowStore.getState().applyEvents(events);
 }
 
-/** Seed the store with a single agent holding the given log entries. */
-function seedStore(logs: LogEntry[]): void {
+/** Push events wrapped in act() so React flushes the re-render. */
+function pushEventsAct(events: EventRecord[]): void {
+  act(() => {
+    pushEvents(events);
+  });
+}
+
+/** Seed an empty snapshot so hasSnapshot=true but workflowEventLog is empty. */
+function seedEmptySnapshot(): void {
   useWorkflowStore.getState().applySnapshot(
     {
       seq: 1,
@@ -58,20 +58,13 @@ function seedStore(logs: LogEntry[]): void {
       currentPhase: '',
       completedPhases: [],
       tasks: {},
-      agents: { 'agent-1': makeAgentEntity('agent-1', logs) },
+      agents: {},
       sidebar: { title: '', indicator: '' },
       status: 'running',
-      stats: { totalTokens: 0, agentCount: 1 },
+      stats: { totalTokens: 0, agentCount: 0 },
     },
     1,
   );
-}
-
-/** Seed the store wrapped in act() so React flushes the re-render. */
-function seedStoreAct(logs: LogEntry[]): void {
-  act(() => {
-    seedStore(logs);
-  });
 }
 
 /** Helper: mock scrollHeight and clientHeight on a div. */
@@ -109,62 +102,230 @@ function resetStore(): void {
     failedPhase: undefined,
     seq: 0,
     stats: { totalTokens: 0, agentCount: 0 },
+    workflowEventLog: [],
   });
 }
 
 // ─── Tests ─────────────────────────────────────────────────────────────────
 
-describe('EventLog – auto-scroll behavior', () => {
+describe('EventLog – workflow-level event rendering', () => {
   beforeEach(() => {
-    entryCounter = 0;
     vi.restoreAllMocks();
     resetStore();
   });
 
-  it('auto-scrolls to bottom when new entries arrive and user is at bottom', () => {
-    const entries = [makeLogEntry('a'), makeLogEntry('b'), makeLogEntry('c')];
-    seedStoreAct(entries);
+  it('renders workflow_started with emoji line', () => {
+    pushEventsAct([mkEvent(1, 'workflow_started', { taskPrompt: 'build', resumed: false })]);
+
+    const { container } = render(<EventLog />);
+    expect(container.textContent).toContain('🚀 Workflow started: "build" (resumed: false)');
+  });
+
+  it('renders phase_started with emoji line', () => {
+    pushEventsAct([mkEvent(1, 'phase_started', { phase: 'scouting', round: 1 })]);
+
+    const { container } = render(<EventLog />);
+    expect(container.textContent).toContain('📦 Phase: scouting (round 1)');
+  });
+
+  it('renders task_started with emoji line', () => {
+    pushEventsAct([mkEvent(1, 'task_started', { taskId: 't1', title: 'T' }, { taskId: 't1' })]);
+
+    const { container } = render(<EventLog />);
+    expect(container.textContent).toContain('📋 Task t1: "T"');
+  });
+
+  it('renders error with emoji line', () => {
+    pushEventsAct([mkEvent(1, 'error', { error: 'crash' }, { agentId: 'a1', phase: 'planning' })]);
+
+    const { container } = render(<EventLog />);
+    expect(container.textContent).toContain('⚠️ Error in a1: crash (planning)');
+  });
+
+  it('renders phase_completed with emoji line', () => {
+    pushEventsAct([mkEvent(1, 'phase_completed', { phase: 'plan', durationMs: 3000 })]);
+
+    const { container } = render(<EventLog />);
+    expect(container.textContent).toContain('✅ Phase plan done (3.0s)');
+  });
+
+  it('renders workflow_completed with emoji line', () => {
+    pushEventsAct([mkEvent(1, 'workflow_completed', { totalDurationMs: 12500, agentCount: 3 })]);
+
+    const { container } = render(<EventLog />);
+    expect(container.textContent).toContain('🎉 Complete in 12.5s (3 agents)');
+  });
+
+  it('renders workflow_failed with emoji line', () => {
+    pushEventsAct([mkEvent(1, 'workflow_failed', { phase: 'exec', error: 'timeout' })]);
+
+    const { container } = render(<EventLog />);
+    expect(container.textContent).toContain('💥 Failed at exec: timeout');
+  });
+
+  it('renders agent_spawned with emoji line', () => {
+    pushEventsAct([mkEvent(1, 'agent_spawned', { profile: 'coder' }, { agentId: 'a1' })]);
+
+    const { container } = render(<EventLog />);
+    expect(container.textContent).toContain('⏳ Agent a1 spawned (coder)');
+  });
+
+  it('renders agent_completed with emoji line', () => {
+    pushEventsAct([mkEvent(1, 'agent_completed', {}, { agentId: 'a1' })]);
+
+    const { container } = render(<EventLog />);
+    expect(container.textContent).toContain('✅ Agent a1 complete');
+  });
+
+  it('renders task_completed with emoji line', () => {
+    pushEventsAct([mkEvent(1, 'task_completed', { taskId: 't1' }, { taskId: 't1' })]);
+
+    const { container } = render(<EventLog />);
+    expect(container.textContent).toContain('✅ Task t1 complete');
+  });
+
+  it('renders task_rejected with emoji line', () => {
+    pushEventsAct([mkEvent(1, 'task_rejected', { taskId: 't1', reason: 'stale' }, { taskId: 't1' })]);
+
+    const { container } = render(<EventLog />);
+    expect(container.textContent).toContain('❌ Task t1 rejected: stale');
+  });
+
+  it('renders sidebar_updated with emoji line when title is set', () => {
+    pushEventsAct([mkEvent(1, 'sidebar_updated', { title: 'My App', indicator: 'green' })]);
+
+    const { container } = render(<EventLog />);
+    expect(container.textContent).toContain('📌 My App');
+  });
+
+  it('does NOT render sidebar_updated when title is empty', () => {
+    pushEventsAct([mkEvent(1, 'sidebar_updated', { indicator: 'green' })]);
+
+    const { container } = render(<EventLog />);
+    // sidebar_updated with no title returns null → no rendered line
+    expect(container.textContent).toContain('Waiting for activity…');
+  });
+
+  it('does NOT render verbose events (tool_call_started, decision, turn_ended, tasks_added)', () => {
+    pushEventsAct([
+      mkEvent(1, 'workflow_started', { taskPrompt: 'hello' }),
+      mkEvent(2, 'tool_call_started', { toolName: 'read' }, { agentId: 'a1' }),
+      mkEvent(3, 'decision', { decision: 'proceed' }, { agentId: 'a1' }),
+      mkEvent(4, 'turn_ended', { tokens: { input: 10, output: 5 } }, { agentId: 'a1' }),
+      mkEvent(5, 'tasks_added', { tasks: [{ id: 't1', title: 'T' }] }),
+      mkEvent(6, 'task_step_started', { taskId: 't1', stepName: 'step1' }, { taskId: 't1' }),
+      mkEvent(7, 'turn_started', {}, { agentId: 'a1' }),
+    ]);
+
+    const { container } = render(<EventLog />);
+
+    const lines = container.querySelectorAll('.event-log__entry');
+    // Only workflow_started should render — all verbose events return null
+    expect(lines).toHaveLength(1);
+    expect(lines[0].textContent).toContain('🚀 Workflow started: "hello"');
+  });
+
+  it('renders multiple lifecycle events in order', () => {
+    pushEventsAct([
+      mkEvent(1, 'workflow_started', { taskPrompt: 'build' }),
+      mkEvent(2, 'phase_started', { phase: 'plan', round: 1 }),
+      mkEvent(3, 'phase_completed', { phase: 'plan', durationMs: 2000 }),
+    ]);
+
+    const { container } = render(<EventLog />);
+    const text = container.textContent ?? '';
+    const idx1 = text.indexOf('🚀');
+    const idx2 = text.indexOf('📦');
+    const idx3 = text.indexOf('✅ Phase plan done');
+    expect(idx1).toBeLessThan(idx2);
+    expect(idx2).toBeLessThan(idx3);
+  });
+});
+
+describe('EventLog – empty state', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    resetStore();
+  });
+
+  it('shows "Connecting to workflow…" when no snapshot has arrived', () => {
+    const { container } = render(<EventLog />);
+    expect(container.textContent).toContain('Connecting to workflow…');
+  });
+
+  it('shows "Waiting for activity…" when snapshot arrived but no events', () => {
+    act(() => {
+      seedEmptySnapshot();
+    });
+
+    const { container } = render(<EventLog />);
+    expect(container.textContent).toContain('Waiting for activity…');
+  });
+
+  it('does not show empty state when events exist', () => {
+    pushEventsAct([mkEvent(1, 'workflow_started', { taskPrompt: 'hello' })]);
+
+    const { container } = render(<EventLog />);
+    expect(container.textContent).not.toContain('Waiting for activity…');
+    expect(container.textContent).not.toContain('Connecting to workflow…');
+    expect(container.textContent).toContain('🚀');
+  });
+});
+
+describe('EventLog – auto-scroll behavior', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    resetStore();
+  });
+
+  it('auto-scrolls to bottom when new events arrive and user is at bottom', () => {
+    // Seed initial events so the store has seq > 0
+    pushEventsAct([
+      mkEvent(1, 'workflow_started', { taskPrompt: 'a' }),
+      mkEvent(2, 'phase_started', { phase: 'p1', round: 1 }),
+    ]);
 
     const { container } = render(<EventLog />);
 
     const scrollDiv = container.querySelector('.event-log') as HTMLDivElement;
     expect(scrollDiv).toBeInTheDocument();
 
-    // Mock geometry BEFORE triggering the effect with new entries
+    // Mock geometry BEFORE triggering the effect with new events
     mockScrollGeometry(scrollDiv, 1000, 200);
 
-    // Add a new entry — wrapped in act so React flushes the re-render
-    seedStoreAct([...entries, makeLogEntry('d')]);
+    // Add new events — wrapped in act so React flushes the re-render
+    pushEventsAct([mkEvent(3, 'phase_completed', { phase: 'p1', durationMs: 1000 })]);
 
     expect(scrollDiv.scrollTop).toBe(1000);
   });
 
   it('does NOT auto-scroll when user has scrolled away from the bottom', () => {
-    const entries = [makeLogEntry('a'), makeLogEntry('b'), makeLogEntry('c')];
-    seedStoreAct(entries);
+    pushEventsAct([
+      mkEvent(1, 'workflow_started', { taskPrompt: 'a' }),
+      mkEvent(2, 'phase_started', { phase: 'p1', round: 1 }),
+    ]);
 
     const { container } = render(<EventLog />);
 
     const scrollDiv = container.querySelector('.event-log') as HTMLDivElement;
     mockScrollGeometry(scrollDiv, 1000, 200);
 
-    // Trigger initial auto-scroll with new entries
-    seedStoreAct([...entries, makeLogEntry('d')]);
+    // Trigger initial auto-scroll with new events
+    pushEventsAct([mkEvent(3, 'phase_completed', { phase: 'p1', durationMs: 1000 })]);
     expect(scrollDiv.scrollTop).toBe(1000);
 
     // Simulate user scrolling up – far from bottom
     scrollTo(scrollDiv, 100);
 
-    // Add another entry while scrolled up
-    seedStoreAct([makeLogEntry('a'), makeLogEntry('b'), makeLogEntry('c'), makeLogEntry('d'), makeLogEntry('e')]);
+    // Add more events while scrolled up
+    pushEventsAct([mkEvent(4, 'phase_started', { phase: 'p2', round: 2 })]);
 
     // autoScroll is false, so scrollTop should NOT change.
     expect(scrollDiv.scrollTop).toBe(100);
   });
 
   it('re-enables auto-scroll when user scrolls back to the bottom', () => {
-    const entries = [makeLogEntry('a'), makeLogEntry('b')];
-    seedStoreAct(entries);
+    pushEventsAct([mkEvent(1, 'workflow_started', { taskPrompt: 'a' })]);
 
     const { container } = render(<EventLog />);
 
@@ -172,28 +333,27 @@ describe('EventLog – auto-scroll behavior', () => {
     mockScrollGeometry(scrollDiv, 1000, 200);
 
     // Trigger initial auto-scroll
-    seedStoreAct([...entries, makeLogEntry('c')]);
+    pushEventsAct([mkEvent(2, 'phase_started', { phase: 'p1', round: 1 })]);
     expect(scrollDiv.scrollTop).toBe(1000);
 
     // User scrolls up (disables auto-scroll)
     scrollTo(scrollDiv, 100);
     expect(scrollDiv.scrollTop).toBe(100);
 
-    // Add entries while scrolled up – should NOT scroll
-    seedStoreAct([makeLogEntry('a'), makeLogEntry('b'), makeLogEntry('c'), makeLogEntry('d')]);
+    // Add events while scrolled up – should NOT scroll
+    pushEventsAct([mkEvent(3, 'phase_completed', { phase: 'p1', durationMs: 500 })]);
     expect(scrollDiv.scrollTop).toBe(100);
 
     // Scroll back to bottom (within 30px threshold)
     scrollTo(scrollDiv, 970);
 
-    // Add another entry – should auto-scroll now
-    seedStoreAct([makeLogEntry('a'), makeLogEntry('b'), makeLogEntry('c'), makeLogEntry('d'), makeLogEntry('e')]);
+    // Add another event – should auto-scroll now
+    pushEventsAct([mkEvent(4, 'phase_started', { phase: 'p2', round: 2 })]);
     expect(scrollDiv.scrollTop).toBe(1000);
   });
 
-  it('maintains auto-scroll when new entries arrive and user is already at bottom', () => {
-    const entries = [makeLogEntry('a'), makeLogEntry('b')];
-    seedStoreAct(entries);
+  it('maintains auto-scroll when new events arrive and user is already at bottom', () => {
+    pushEventsAct([mkEvent(1, 'workflow_started', { taskPrompt: 'a' })]);
 
     const { container } = render(<EventLog />);
 
@@ -201,17 +361,14 @@ describe('EventLog – auto-scroll behavior', () => {
     mockScrollGeometry(scrollDiv, 1000, 200);
 
     // Trigger initial auto-scroll
-    seedStoreAct([...entries, makeLogEntry('c')]);
+    pushEventsAct([mkEvent(2, 'phase_started', { phase: 'p1', round: 1 })]);
     expect(scrollDiv.scrollTop).toBe(1000);
 
-    // User is at bottom; multiple new entries arrive
-    seedStoreAct([
-      makeLogEntry('a'),
-      makeLogEntry('b'),
-      makeLogEntry('c'),
-      makeLogEntry('d'),
-      makeLogEntry('e'),
-      makeLogEntry('f'),
+    // Multiple new events arrive while user is at bottom
+    pushEventsAct([
+      mkEvent(3, 'phase_completed', { phase: 'p1', durationMs: 500 }),
+      mkEvent(4, 'phase_started', { phase: 'p2', round: 2 }),
+      mkEvent(5, 'phase_completed', { phase: 'p2', durationMs: 300 }),
     ]);
 
     // Should still be at bottom (auto-scrolled each time)
@@ -219,8 +376,7 @@ describe('EventLog – auto-scroll behavior', () => {
   });
 
   it('does not auto-scroll when user is at the threshold boundary (30px away)', () => {
-    const entries = [makeLogEntry('a'), makeLogEntry('b')];
-    seedStoreAct(entries);
+    pushEventsAct([mkEvent(1, 'workflow_started', { taskPrompt: 'a' })]);
 
     const { container } = render(<EventLog />);
 
@@ -228,22 +384,21 @@ describe('EventLog – auto-scroll behavior', () => {
     mockScrollGeometry(scrollDiv, 1000, 200);
 
     // Trigger initial auto-scroll
-    seedStoreAct([...entries, makeLogEntry('c')]);
+    pushEventsAct([mkEvent(2, 'phase_started', { phase: 'p1', round: 1 })]);
     expect(scrollDiv.scrollTop).toBe(1000);
 
     // Scroll to exactly 770 → isNearBottom = 1000 - 770 - 200 = 30 → not < 30 → false
     scrollTo(scrollDiv, 770);
 
-    // Add new entries
-    seedStoreAct([makeLogEntry('a'), makeLogEntry('b'), makeLogEntry('c'), makeLogEntry('d')]);
+    // Add new events
+    pushEventsAct([mkEvent(3, 'phase_completed', { phase: 'p1', durationMs: 500 })]);
 
     // Should NOT auto-scroll because user is exactly at the threshold boundary
     expect(scrollDiv.scrollTop).toBe(770);
   });
 
   it('auto-scrolls when user is just within the threshold (29px away)', () => {
-    const entries = [makeLogEntry('a'), makeLogEntry('b')];
-    seedStoreAct(entries);
+    pushEventsAct([mkEvent(1, 'workflow_started', { taskPrompt: 'a' })]);
 
     const { container } = render(<EventLog />);
 
@@ -251,116 +406,16 @@ describe('EventLog – auto-scroll behavior', () => {
     mockScrollGeometry(scrollDiv, 1000, 200);
 
     // Trigger initial auto-scroll
-    seedStoreAct([...entries, makeLogEntry('c')]);
+    pushEventsAct([mkEvent(2, 'phase_started', { phase: 'p1', round: 1 })]);
     expect(scrollDiv.scrollTop).toBe(1000);
 
     // Scroll to 771 → isNearBottom = 1000 - 771 - 200 = 29 < 30 → true
     scrollTo(scrollDiv, 771);
 
-    // Add new entries
-    seedStoreAct([makeLogEntry('a'), makeLogEntry('b'), makeLogEntry('c'), makeLogEntry('d')]);
+    // Add new events
+    pushEventsAct([mkEvent(3, 'phase_completed', { phase: 'p1', durationMs: 500 })]);
 
     // Should auto-scroll because user is within the 30px threshold
     expect(scrollDiv.scrollTop).toBe(1000);
-  });
-});
-
-describe('EventLog – empty state', () => {
-  beforeEach(() => {
-    entryCounter = 0;
-    vi.restoreAllMocks();
-    resetStore();
-  });
-
-  it('shows "Connecting to workflow…" when no snapshot has arrived', () => {
-    // Store is in initial state (seq=0 → no snapshot)
-    const { container } = render(<EventLog />);
-    expect(container.textContent).toContain('Connecting to workflow…');
-  });
-
-  it('shows "Waiting for activity…" when snapshot arrived but no entries', () => {
-    // Seed an empty snapshot with seq>0
-    seedStoreAct([]);
-
-    const { container } = render(<EventLog />);
-    expect(container.textContent).toContain('Waiting for activity…');
-  });
-
-  it('does not show empty state when entries exist', () => {
-    seedStoreAct([makeLogEntry('hello')]);
-
-    const { container } = render(<EventLog />);
-    expect(container.textContent).not.toContain('Waiting for activity…');
-    expect(container.textContent).not.toContain('Connecting to workflow…');
-    expect(container.textContent).toContain('hello');
-  });
-});
-
-describe('EventLog – entry-type CSS and prefixes', () => {
-  beforeEach(() => {
-    entryCounter = 0;
-    vi.restoreAllMocks();
-    resetStore();
-  });
-
-  it('applies error modifier class and [ERROR] prefix to error entries', () => {
-    seedStoreAct([makeLogEntry('boom', 'error')]);
-
-    const { container } = render(<EventLog />);
-
-    const entry = container.querySelector('.event-log__entry');
-    expect(entry).toHaveClass('event-log__entry--error');
-    expect(entry?.textContent).toContain('[ERROR]');
-    expect(entry?.textContent).toContain('boom');
-  });
-
-  it('applies decision modifier class and [DECISION] prefix', () => {
-    seedStoreAct([makeLogEntry('proceed', 'decision')]);
-
-    const { container } = render(<EventLog />);
-
-    const entry = container.querySelector('.event-log__entry');
-    expect(entry).toHaveClass('event-log__entry--decision');
-    expect(entry?.textContent).toContain('[DECISION]');
-  });
-
-  it('applies tool modifier class and [TOOL] prefix for tool_call_start', () => {
-    seedStoreAct([makeLogEntry('read', 'tool_call_start')]);
-
-    const { container } = render(<EventLog />);
-
-    const entry = container.querySelector('.event-log__entry');
-    expect(entry).toHaveClass('event-log__entry--tool');
-    expect(entry?.textContent).toContain('[TOOL]');
-  });
-
-  it('hides tool_call_end entries from the rendered log', () => {
-    seedStoreAct([makeLogEntry('read', 'tool_call_end')]);
-
-    const { container } = render(<EventLog />);
-
-    // tool_call_end is a redundant completion marker (the start entry already
-    // shows the call); it stays in the store but is not rendered.
-    const toolEntries = container.querySelectorAll('.event-log__entry--tool');
-    expect(toolEntries).toHaveLength(0);
-  });
-
-  it('applies thinking modifier class and [THINKING] prefix', () => {
-    seedStoreAct([makeLogEntry('hmm', 'thinking')]);
-
-    const { container } = render(<EventLog />);
-
-    const entry = container.querySelector('.event-log__entry');
-    expect(entry).toHaveClass('event-log__entry--thinking');
-    expect(entry?.textContent).toContain('[THINKING]');
-  });
-
-  it('does not add a prefix to plain text entries', () => {
-    seedStoreAct([makeLogEntry('just text', 'text')]);
-
-    const { container } = render(<EventLog />);
-
-    const entry = container.querySelector('.event-log__entry');
-    expect(entry?.textContent).toBe('just text');
   });
 });

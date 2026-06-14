@@ -3,8 +3,8 @@
 A Vite + React web client that observes a running engin workflow in real time
 over WebSocket. It connects to the engine's [`ObserverServer`](../src/web/observer-server.ts),
 receives an initial **snapshot** followed by incremental **event batches**, and
-renders a live view of phases, the task lane pool, per-agent logs, and a merged
-event feed.
+renders a live view of phases, the task lane pool, per-agent logs, and a
+workflow-level event feed.
 
 This package ships as the static frontend served by the engine's observer
 server (built output goes to `web/dist/`). It can also run standalone against a
@@ -112,28 +112,30 @@ then spreads the result back into Immer-drafted state.
 fine-grained selector hooks so a single-entity update re-renders only the
 affected component:
 
-| Hook                              | Returns                                                         |
-| --------------------------------- | --------------------------------------------------------------- |
-| `useAgentIds()`                   | `string[]` (stable via `useShallow`)                            |
-| `useAgentById(id)`                | `AgentEntity \| undefined`                                      |
-| `useTaskIds()`                    | `string[]` (stable via `useShallow`)                            |
-| `useTaskById(id)`                 | `TaskEntity \| undefined`                                       |
-| `useCurrentPhase()`               | `string`                                                        |
-| `useCompletedPhases()`            | `string[]`                                                      |
-| `useSidebar()`                    | sidebar object                                                  |
-| `useStatus()`                     | status string                                                   |
-| `useError()` / `useFailedPhase()` | error / failed phase                                            |
-| `useHasSnapshot()`                | `boolean` — `seq > 0`                                           |
-| `useSeq()`                        | `number`                                                        |
-| `useRecentLogEntries(limit=100)`  | merged, timestamp-sorted `LogEntry[]` (stable via `useShallow`) |
+| Hook                              | Returns                                                          |
+| --------------------------------- | ---------------------------------------------------------------- |
+| `useAgentIds()`                   | `string[]` (stable via `useShallow`)                             |
+| `useAgentById(id)`                | `AgentEntity \| undefined`                                       |
+| `useTaskIds()`                    | `string[]` (stable via `useShallow`)                             |
+| `useTaskById(id)`                 | `TaskEntity \| undefined`                                        |
+| `useCurrentPhase()`               | `string`                                                         |
+| `useCompletedPhases()`            | `string[]`                                                       |
+| `useSidebar()`                    | sidebar object                                                   |
+| `useStatus()`                     | status string                                                    |
+| `useError()` / `useFailedPhase()` | error / failed phase                                             |
+| `useHasSnapshot()`                | `boolean` — `seq > 0`                                            |
+| `useSeq()`                        | `number`                                                         |
+| `useWorkflowEventLog()`           | `{ seq, line }[]` of workflow-level event lines (emoji-prefixed) |
 
 ID-list and derived-array selectors wrap their selector in `useShallow` so the
 returned array reference is stable across renders unless the underlying content
 actually changed — this prevents cascading re-renders.
 
-`useRecentLogEntries` flattens every agent's `log` array into one list, sorts
-by ISO-8601 timestamp (oldest-first, matching the event log's auto-scroll-bottom
-behavior), and caps at `limit` entries.
+`useWorkflowEventLog` returns the workflow-level event lines produced by
+`formatWorkflowEventLine` (imported from the engine via `@engin`). Each entry
+contains a `seq` number and a pre-formatted `line` string with emoji prefix.
+Verbose events (tool calls, decisions, turns) are filtered out by
+`formatWorkflowEventLine` and never appear in this log.
 
 A non-hook helper is also exported:
 
@@ -389,12 +391,12 @@ fine-grained selector hooks — they receive **no data props**. This keeps the
 component tree decoupled from the store shape and limits re-renders to the
 slices each component actually reads.
 
-| Component                                 | Selectors used                                                                                 | Renders                                                                                                                                                   |
-| ----------------------------------------- | ---------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [`EventLog`](src/components/EventLog.tsx) | `useRecentLogEntries(100)`, `useHasSnapshot`                                                   | Merged, timestamp-sorted feed of all agent log entries (text, thinking, tool calls, decisions, errors); auto-scrolls to bottom unless the user scrolls up |
-| [`PhaseBar`](src/components/PhaseBar.tsx) | `useSidebar`, `useCurrentPhase`, `useCompletedPhases`                                          | Horizontal phase tabs with completed/current highlighting from sidebar phase descriptors                                                                  |
-| [`LanePool`](src/components/LanePool.tsx) | `useTaskIds`, `useHasSnapshot`, `useTaskById` (per lane), `useWorkflowStore(s => s.tasksById)` | Sorted task lanes by status priority; each `Lane` is `React.memo`'d for re-render isolation                                                               |
-| [`AgentLog`](src/components/AgentLog.tsx) | `useAgentIds`, `useAgentById`, `useHasSnapshot`, `useStatus`, `useWebSocket`                   | Selected agent's detail log with token/tool-call stats, prev/next navigation, and a two-click terminate control                                           |
+| Component                                 | Selectors used                                                                                 | Renders                                                                                                         |
+| ----------------------------------------- | ---------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| [`EventLog`](src/components/EventLog.tsx) | `useWorkflowEventLog`, `useHasSnapshot`                                                        | Workflow-level event lines (emoji-prefixed); auto-scrolls to bottom unless the user scrolls up                  |
+| [`PhaseBar`](src/components/PhaseBar.tsx) | `useSidebar`, `useCurrentPhase`, `useCompletedPhases`                                          | Horizontal phase tabs with completed/current highlighting from sidebar phase descriptors                        |
+| [`LanePool`](src/components/LanePool.tsx) | `useTaskIds`, `useHasSnapshot`, `useTaskById` (per lane), `useWorkflowStore(s => s.tasksById)` | Sorted task lanes by status priority; each `Lane` is `React.memo`'d for re-render isolation                     |
+| [`AgentLog`](src/components/AgentLog.tsx) | `useAgentIds`, `useAgentById`, `useHasSnapshot`, `useStatus`, `useWebSocket`                   | Selected agent's detail log with token/tool-call stats, prev/next navigation, and a two-click terminate control |
 
 `App.tsx` additionally subscribes to `useStatus`, `useError`, and
 `useFailedPhase` to render the connection-status indicator and the

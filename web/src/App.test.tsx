@@ -120,6 +120,7 @@ function resetStore(): void {
     failedPhase: undefined,
     seq: 0,
     stats: { totalTokens: 0, agentCount: 0 },
+    workflowEventLog: [],
   });
 }
 
