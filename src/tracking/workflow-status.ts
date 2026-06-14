@@ -21,6 +21,7 @@ export class WorkflowStatusTracker {
   private _signal: AbortSignal | null = null;
   private _onTaskSettled: (() => void) | undefined;
   private _onTaskReady: (() => void) | undefined;
+  private _onTaskClaimed: (() => void) | undefined;
   private _pendingSave = false;
   private _queuedSave = false;
   private _saveLock: Promise<void> = Promise.resolve();
@@ -85,8 +86,12 @@ export class WorkflowStatusTracker {
     this._onTaskReady = () => {
       this.persistState();
     };
+    this._onTaskClaimed = () => {
+      this.persistState();
+    };
     this._taskTracker.on(TaskTracker.Events.TaskSettled, this._onTaskSettled);
     this._taskTracker.on(TaskTracker.Events.TaskReady, this._onTaskReady);
+    this._taskTracker.on(TaskTracker.Events.TaskClaimed, this._onTaskClaimed);
   }
 
   dispose(): void {
@@ -97,6 +102,10 @@ export class WorkflowStatusTracker {
     if (this._onTaskReady) {
       this._taskTracker.removeListener(TaskTracker.Events.TaskReady, this._onTaskReady);
       this._onTaskReady = undefined;
+    }
+    if (this._onTaskClaimed) {
+      this._taskTracker.removeListener(TaskTracker.Events.TaskClaimed, this._onTaskClaimed);
+      this._onTaskClaimed = undefined;
     }
     this._pendingSave = false;
     this._queuedSave = false;
@@ -288,7 +297,12 @@ export class WorkflowStatusTracker {
 
     // Rebuild TaskTracker from saved tasks
     if (data.tasks && data.tasks.length > 0) {
-      tracker._taskTracker = TaskTracker.fromJSON({ tasks: data.tasks });
+      // preserveState skips fromJSON's default resetForRetry (which would also
+      // re-arm failed tasks). On resume we only want to re-arm tasks that were
+      // in-flight (active) when the run was interrupted — completed and failed
+      // tasks keep their settled status so they are NOT re-run.
+      tracker._taskTracker = TaskTracker.fromJSON({ tasks: data.tasks }, { preserveState: true });
+      tracker._taskTracker.resetStuckTasks();
       tracker.attachAutoPersist();
     }
 

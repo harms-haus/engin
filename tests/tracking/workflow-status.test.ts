@@ -453,8 +453,10 @@ describe('WorkflowStatusTracker', () => {
       await tracker.save();
 
       const restored = await WorkflowStatusTracker.load(dir);
-      // On resume, failed tasks are reset to 'ready' for retry
-      expect(restored.taskTracker.getTask('t1')!.status).toBe('ready');
+      // On resume, failed tasks keep their settled status — only in-flight
+      // ('active') tasks are re-armed. A failed task already ran; it is not
+      // retried automatically on resume.
+      expect(restored.taskTracker.getTask('t1')!.status).toBe('failed');
       expect(restored.taskPrompt).toBe('fail-persist-test');
     });
 

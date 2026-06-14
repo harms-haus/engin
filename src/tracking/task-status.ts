@@ -6,6 +6,7 @@ export class TaskTracker extends EventEmitter {
   static readonly Events = {
     TaskReady: 'taskReady' as const,
     TaskSettled: 'taskSettled' as const,
+    TaskClaimed: 'taskClaimed' as const,
   };
 
   private static readonly EMPTY_SET: ReadonlySet<string> = new Set();
@@ -120,6 +121,13 @@ export class TaskTracker extends EventEmitter {
     for (const task of toClaim) {
       task.status = 'active';
       task.assignedAgent = agentId;
+    }
+
+    if (toClaim.length > 0) {
+      // Persist the 'active' status so an interrupted run can be resumed —
+      // without this, in-flight tasks show as 'ready' on disk and the resume
+      // path can't tell them apart from never-started tasks.
+      queueMicrotask(() => this.emit(TaskTracker.Events.TaskClaimed));
     }
 
     return toClaim;
