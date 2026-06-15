@@ -72,11 +72,11 @@
     "pre-commit": "bunx lint-staged"
   },
   "lint-staged": {
-    "*.{ts}": [
+    "*.{ts,tsx}": [
       "eslint --fix",
       "prettier --write"
     ],
-    "*.{json,md}": [
+    "*.{css,json,md}": [
       "prettier --write"
     ]
   }
