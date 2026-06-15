@@ -67,7 +67,8 @@ engin apidoc "Generate API docs" \
 | `--verbose`                | Verbose console output. Disables the TUI dashboard when stdout is a TTY.     |
 | `--worktree`               | Run the workflow inside a git worktree.                                      |
 | `--api-key <provider=key>` | Provider → API key override (repeatable). Visible in process listings.       |
-| `--host <host>`            | Web server bind host (default: auto-detect LAN IP).                          |
+| `--host <host>`            | Web server bind host (default: 127.0.0.1, localhost only).                   |
+| `--lan`                    | Bind on all interfaces for LAN/QR access (default: off).                     |
 | `--port <port>`            | Web server port (default: `3619`).                                           |
 
 See the [CLI reference](../reference/cli.md) for the full command list and exit codes.

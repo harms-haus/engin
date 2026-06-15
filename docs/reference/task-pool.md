@@ -141,9 +141,9 @@ consecutive timeouts.
 
 ## Step execution and retries
 
-Source: `src/pool/task-processor.ts` and `src/pool/step-execution.ts`.
+Source: `src/pool/linear-steps-runner.ts` and `src/pool/step-execution.ts`.
 
-### `processTask(task, agentId, profiles, ctx)`
+### Linear step execution (linearStepsRunner)
 
 Runs a task's ordered steps. Defaults: `maxStepRetries = options.maxStepRetries ?? 5`. If there
 are no steps, the task fails with `'No steps defined for task'`.
@@ -153,7 +153,7 @@ Per-step state maps track the rejection count (`stepAttempts`), execution count
 
 The loop:
 
-1. Fire `onTaskStart` once at the start (with `phaseId`).
+1. The LanePool fires `onTaskStart` once before calling the runner (the runner itself does not fire it).
 2. For the current step, fire `onStepStart`, then `runStep(...)`. Any existing session for the
    step is passed in as `existingSessionPath` for resume; after the run, the old session is
    disposed and replaced.
@@ -172,8 +172,8 @@ The loop:
    - Otherwise → `currentStepIndex = Math.max(0, currentStepIndex - 1)`: **back up exactly one
      step** (clamped at 0) so the previous step re-runs with the feedback appended to its
      prompt.
-5. **All steps approved** — dispose sessions, submit as complete. On success fire
-   `onTaskComplete`; on failure fail the task.
+5. **All steps approved** — dispose sessions, submit as complete. On success the LanePool fires
+   `onTaskComplete`; on failure it fires `onTaskRejected`.
 
 ### `runStep(task, step, agentId, ctx, profiles, execCtx, existingSessionPath?)`
 
@@ -325,17 +325,17 @@ reviewer feedback loops.
 
 ---
 
-#### `councilRunner(workers, synthesizer)`
+#### `councilRunner(options)`
 
 ```typescript
 import { councilRunner } from '../pool/council-runner.js';
 
 const runner = councilRunner({
   workers: [
-    { name: 'architect', profileId: 'architect' },
-    { name: 'engineer', profileId: 'engineer' },
+    { name: 'architect', profileId: 'architect', isReadOnly: true },
+    { name: 'engineer', profileId: 'engineer', isReadOnly: false },
   ],
-  synthesizer: { name: 'merge', profileId: 'synthesizer', schema: mergeSchema },
+  synthesizer: { name: 'merge', profileId: 'synthesizer', isReadOnly: true, schema: mergeSchema },
 });
 ```
 
@@ -351,14 +351,14 @@ coherent result.
 
 ---
 
-#### `reflectionRunner(draftStep, criticStep, maxRounds?)`
+#### `reflectionRunner(options)`
 
 ```typescript
 import { reflectionRunner } from '../pool/reflection-runner.js';
 
 const runner = reflectionRunner({
-  draftStep: { name: 'generate', profileId: 'writer' },
-  criticStep: { name: 'critique', profileId: 'critic', schema: reviewSchema },
+  draftStep: { name: 'generate', profileId: 'writer', isReadOnly: false },
+  criticStep: { name: 'critique', profileId: 'critic', isReadOnly: true, schema: reviewSchema },
   maxRounds: 5,
 });
 ```
@@ -376,14 +376,14 @@ workflow.
 
 ---
 
-#### `mapRunner(items, step, concurrency?)`
+#### `mapRunner(options)`
 
 ```typescript
 import { mapRunner } from '../pool/map-runner.js';
 
 const runner = mapRunner({
   items: (task) => task.files ?? [],
-  step: { name: 'process-file', profileId: 'file-processor' },
+  step: { name: 'process-file', profileId: 'file-processor', isReadOnly: false },
   concurrency: 3,
 });
 ```
@@ -400,7 +400,7 @@ agent logic.
 
 ---
 
-#### `branchRunner(branches, default?)`
+#### `branchRunner(options)`
 
 ```typescript
 import { branchRunner } from '../pool/branch-runner.js';
@@ -409,14 +409,14 @@ const runner = branchRunner({
   branches: [
     {
       condition: (task) => task.prompt.includes('fix'),
-      step: { name: 'fix-bug', profileId: 'fixer' },
+      step: { name: 'fix-bug', profileId: 'fixer', isReadOnly: false },
     },
     {
       condition: (task) => task.prompt.includes('feature'),
-      step: { name: 'implement', profileId: 'developer' },
+      step: { name: 'implement', profileId: 'developer', isReadOnly: false },
     },
   ],
-  default: { name: 'triage', profileId: 'triage' },
+  default: { name: 'triage', profileId: 'triage', isReadOnly: true },
 });
 ```
 

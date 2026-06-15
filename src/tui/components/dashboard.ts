@@ -1,7 +1,7 @@
 import { type Component, Key, matchesKey, truncateToWidth } from '@earendil-works/pi-tui';
 import type { WorkflowProjection } from '../../tracking/event-types.js';
 import { borderLine } from '../theme.js';
-import { AgentLogWidget } from './agent-log-widget.js';
+import { AgentLogWidget, computeNextAgentStepIndex } from './agent-log-widget.js';
 import { PhaseBar } from './phase-bar.js';
 import { TaskListWidget } from './task-list-widget.js';
 
@@ -285,9 +285,9 @@ export class Dashboard implements Component {
       if (this._agentLog.isExpanded()) {
         // Route to agent log for scrolling
         this._agentLog.handleInput(data);
-        // AgentLog sets userPinnedStep internally when scrolling
-        // Sync selectedStepIndex from agentLog? AgentLog doesn't expose it...
-        // We'll rely on the agentLog to maintain its own scroll state.
+        // Only invalidate the agent log — do NOT call _applySelectionToWidgets()
+        // which would reset the scroll offset via setSelectedStepIndex().
+        this._agentLog.invalidate();
       } else {
         // Route to task list for navigation
         this._taskList.handleInput(data);
@@ -298,10 +298,10 @@ export class Dashboard implements Component {
           this._selection.selectedStepIndex = null;
           this._selection.userPinnedStep = false;
         }
+        // Re-push the selected task's steps / agents to the agent log and
+        // invalidate all widgets so task navigation re-renders immediately.
+        this._applySelectionToWidgets();
       }
-      // Re-push the selected task's steps / agents to the agent log and
-      // invalidate all widgets so task navigation re-renders immediately.
-      this._applySelectionToWidgets();
       return;
     }
 
@@ -316,21 +316,15 @@ export class Dashboard implements Component {
 
     // ── Tab / Shift+Tab → AgentLog (step cycling) ──
     if (matchesKey(data, 'tab') || matchesKey(data, Key.shift('tab'))) {
-      this._agentLog.handleInput(data);
       this._selection.userPinnedStep = true;
-      // Compute new selectedStepIndex based on direction, mirroring AgentLog logic
-      const agentStepIndices = this._steps.map((s, i) => (s.agentKey !== undefined ? i : -1)).filter((i) => i >= 0);
-      if (agentStepIndices.length > 0) {
-        const currentPos = agentStepIndices.indexOf(this._selection.selectedStepIndex ?? -1);
-        if (matchesKey(data, 'tab')) {
-          const nextPos = (currentPos + 1) % agentStepIndices.length;
-          this._selection.selectedStepIndex = agentStepIndices[nextPos];
-        } else {
-          // Shift+Tab
-          const prevPos = (currentPos - 1 + agentStepIndices.length) % agentStepIndices.length;
-          this._selection.selectedStepIndex = agentStepIndices[prevPos];
-        }
+      const dir = matchesKey(data, 'tab') ? 'forward' : 'backward';
+      const currentIdx = this._selection.selectedStepIndex ?? -1;
+      const nextIndex = computeNextAgentStepIndex(this._steps, currentIdx, dir);
+      if (nextIndex !== currentIdx) {
+        this._selection.selectedStepIndex = nextIndex;
       }
+      // Push the updated selection to child widgets and invalidate for re-render
+      this._applySelectionToWidgets();
       return;
     }
 

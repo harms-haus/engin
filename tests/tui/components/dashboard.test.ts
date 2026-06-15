@@ -1,6 +1,6 @@
 /* eslint-disable no-control-regex -- tests intentionally match ANSI escape codes */
 import { describe, expect, it, spyOn } from 'bun:test';
-import type { AgentEntity, TaskEntity, WorkflowProjection } from '../../../src/tracking/event-types.js';
+import type { AgentEntity, LogEntry, TaskEntity, WorkflowProjection } from '../../../src/tracking/event-types.js';
 import { createInitialProjection } from '../../../src/tracking/event-types.js';
 import { Dashboard } from '../../../src/tui/components/dashboard.js';
 import { stripAnsi } from '../../../src/tui/theme.js';
@@ -156,7 +156,7 @@ describe('Dashboard', () => {
         ],
       });
       d.syncFromProjection(p);
-      // t1 is first (sorted by status priority: ready < complete)
+      // t1 is first in creation order
       expect(d.getSelection().selectedTaskId).toBe('t1');
     });
 
@@ -174,9 +174,9 @@ describe('Dashboard', () => {
       // auto-selects t2 (active) because it's the first active task
       expect(d.getSelection().selectedTaskId).toBe('t2');
 
-      // Navigate down to t1 via handleInput (down arrow collapses to taskList)
-      // Sorted order: [t2 (active), t1 (ready)], so down goes to t1
-      d.handleInput('\x1b[B');
+      // Navigate up to t1 via handleInput (up arrow collapses to taskList).
+      // Creation order: [t1 (ready), t2 (active)]; t2 is at index 1, so up goes to t1
+      d.handleInput('\x1b[A');
       expect(d.getSelection().selectedTaskId).toBe('t1');
 
       // Re-sync with same tasks — should keep t1 since it's still in phaseTasks
@@ -727,6 +727,54 @@ describe('Dashboard', () => {
       logSpy.mockRestore();
     });
 
+    it('up/down when expanded scrolls agent log without resetting scroll offset', () => {
+      const d = new Dashboard(10);
+
+      // Build a projection with one phase, one active task with 50+ log entries
+      const logEntries: LogEntry[] = [];
+      for (let i = 0; i < 50; i++) {
+        logEntries.push({ id: `${i}`, timestamp: '', type: 'text', content: `entry-${i}` });
+      }
+
+      const p = buildProjection({
+        phases: [{ id: 'phase-a' }],
+        currentPhaseId: 'phase-a',
+        tasks: [
+          makeTask({
+            id: 't1',
+            phaseId: 'phase-a',
+            status: 'active',
+            activeStepIndex: 0,
+            steps: [{ name: 'Step 1', index: 0, agentKey: 'a1' }],
+            startedAt: Date.now(),
+          }),
+        ],
+        agents: [
+          makeAgent('a1', 't1', 'phase-a', {
+            log: logEntries,
+          }),
+        ],
+      });
+      d.syncFromProjection(p);
+
+      // Toggle expand
+      d.agentLog.toggleExpand();
+      expect(d.agentLog.isExpanded()).toBe(true);
+
+      // Render once to initialize _lastTotalEntryLines
+      d.agentLog.render(80);
+
+      // Press up arrow — should increment scroll offset to 1
+      d.handleInput('\x1b[A');
+      const lines1 = d.agentLog.render(80);
+      expect(lines1[1]).toContain('up arrow');
+
+      // Press up arrow again — should increment scroll offset to 2
+      d.handleInput('\x1b[A');
+      const lines2 = d.agentLog.render(80);
+      expect(lines2[1]).toContain('up arrow 2');
+    });
+
     it('routes shift+up/shift+down to agentLog only when expanded', () => {
       const d = new Dashboard(4);
       const p = buildProjection({
@@ -776,7 +824,7 @@ describe('Dashboard', () => {
       logSpy.mockRestore();
     });
 
-    it('routes tab/shift+tab to agentLog', () => {
+    it('tab cycles agent step and updates agentLog selection', () => {
       const d = new Dashboard(4);
       const p = buildProjection({
         phases: [{ id: 'phase-a' }],
@@ -798,18 +846,23 @@ describe('Dashboard', () => {
       });
       d.syncFromProjection(p);
 
-      const logSpy = spyOn(d.agentLog, 'handleInput');
+      // Initial selection follows activeStepIndex 0 → agent a1
+      expect(d.agentLog.getSelectedAgentUid()).toBe('a1');
 
-      d.handleInput('\t'); // tab
-      expect(logSpy).toHaveBeenCalledTimes(1);
-      expect(logSpy).toHaveBeenCalledWith('\t');
+      // Tab → cycle to next step (index 1) → agent a2
+      d.handleInput('\t');
+      expect(d.agentLog.getSelectedAgentUid()).toBe('a2');
+      expect(d.getSelection().selectedStepIndex).toBe(1);
 
-      logSpy.mockClear();
+      // Tab again → wrap around to step index 0 → agent a1
+      d.handleInput('\t');
+      expect(d.agentLog.getSelectedAgentUid()).toBe('a1');
+      expect(d.getSelection().selectedStepIndex).toBe(0);
 
-      d.handleInput('\x1b[Z'); // shift+tab (commonly)
-      expect(logSpy).toHaveBeenCalledTimes(1);
-
-      logSpy.mockRestore();
+      // Shift+Tab → backward to step index 1 → agent a2
+      d.handleInput('\x1b[Z');
+      expect(d.agentLog.getSelectedAgentUid()).toBe('a2');
+      expect(d.getSelection().selectedStepIndex).toBe(1);
     });
 
     it('tab sets userPinnedStep to true', () => {
@@ -891,17 +944,13 @@ describe('Dashboard', () => {
       });
       d.syncFromProjection(p);
 
-      // TaskList sorts by priority: active(0) first, then ready(1).
-      // Sorted order: [t2 (active), t1 (ready), t3 (ready)]
+      // Creation/registration order: [t1 (ready), t2 (active), t3 (ready)].
+      // Task-follow auto-selects the first active task (t2) at index 1.
 
-      // Initially selects t2 (first active, which is first in sorted order)
+      // Initially selects t2 (first active task in creation order)
       expect(d.getSelection().selectedTaskId).toBe('t2');
 
-      // Down → t1 (second in sorted order)
-      d.handleInput('\x1b[B');
-      expect(d.getSelection().selectedTaskId).toBe('t1');
-
-      // Down → t3 (third in sorted order)
+      // Down → t3 (index 2)
       d.handleInput('\x1b[B');
       expect(d.getSelection().selectedTaskId).toBe('t3');
 
@@ -909,17 +958,17 @@ describe('Dashboard', () => {
       d.handleInput('\x1b[B');
       expect(d.getSelection().selectedTaskId).toBe('t3');
 
-      // Up → t1
+      // Up → t2 (index 1)
+      d.handleInput('\x1b[A');
+      expect(d.getSelection().selectedTaskId).toBe('t2');
+
+      // Up → t1 (index 0)
       d.handleInput('\x1b[A');
       expect(d.getSelection().selectedTaskId).toBe('t1');
 
-      // Up → t2
+      // Up stays at t1 (first)
       d.handleInput('\x1b[A');
-      expect(d.getSelection().selectedTaskId).toBe('t2');
-
-      // Up stays at t2 (first)
-      d.handleInput('\x1b[A');
-      expect(d.getSelection().selectedTaskId).toBe('t2');
+      expect(d.getSelection().selectedTaskId).toBe('t1');
     });
 
     it('task change via up/down resets step selection', () => {

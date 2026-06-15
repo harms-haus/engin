@@ -306,7 +306,8 @@ type StepResult = { type: 'approved'; output: unknown } | { type: 'rejected'; fe
 | `sessionBaseDir`     | **Yes**  | Base directory for persisted sessions (`{base}/{taskId}/{execCount}-{stepIndex}-{stepName}/`). |
 | `cwd`                | **Yes**  | Working directory.                                                                             |
 | `taskTracker`        | **Yes**  | Shared `TaskTracker` lanes claim from.                                                         |
-| `getStepsForTask`    | **Yes**  | `(task) => StepDefinition[]`.                                                                  |
+| `getStepsForTask`    | No       | `(task) => StepDefinition[]`.                                                                  |
+| `getRunnerForTask`   | No       | `(task) => TaskRunner`. Takes precedence over `getStepsForTask`.                               |
 | `phaseId`            | **Yes**  | The phase this pool serves.                                                                    |
 | `apiKeys?`           | No       | Provider → API key overrides.                                                                  |
 | `onStatus?`          | No       | Status callbacks.                                                                              |

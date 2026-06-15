@@ -337,31 +337,34 @@ describe('App – layout', () => {
     expect(agentLog).toBeInTheDocument();
   });
 
-  it('all four main sections are direct children of .app', async () => {
+  it('all four main sections are inside a main landmark', async () => {
     const { App } = await import('./App');
     const { container } = render(<App />);
 
     const appDiv = container.querySelector('.app');
     expect(appDiv).toBeInTheDocument();
 
-    const children = appDiv?.children;
-    // The .app div contains: connection-status, status-banner (conditional),
-    // EventLog, PhaseBar, TaskList, AgentLog
-    // We just verify that at least the four main components are present
-    const eventLog = appDiv?.querySelector('.event-log');
-    const phaseBar = appDiv?.querySelector('.phase-bar');
-    const taskList = appDiv?.querySelector('.task-list');
-    const agentLog = appDiv?.querySelector('.agent-log');
+    const mainEl = appDiv?.querySelector('main');
+    expect(mainEl).toBeInTheDocument();
+
+    const eventLog = mainEl?.querySelector('.event-log');
+    const phaseBar = mainEl?.querySelector('.phase-bar');
+    const taskList = mainEl?.querySelector('.task-list');
+    const agentLog = mainEl?.querySelector('.agent-log');
 
     expect(eventLog).toBeInTheDocument();
     expect(phaseBar).toBeInTheDocument();
     expect(taskList).toBeInTheDocument();
     expect(agentLog).toBeInTheDocument();
 
-    // Confirm they are direct children
-    expect(eventLog?.parentElement).toBe(appDiv);
-    expect(phaseBar?.parentElement).toBe(appDiv);
-    expect(taskList?.parentElement).toBe(appDiv);
-    expect(agentLog?.parentElement).toBe(appDiv);
+    // EventLog, TaskList, AgentLog are direct children of <main>
+    expect(eventLog?.parentElement).toBe(mainEl);
+    expect(taskList?.parentElement).toBe(mainEl);
+    expect(agentLog?.parentElement).toBe(mainEl);
+
+    // PhaseBar is inside a <nav> with aria-label
+    const nav = mainEl?.querySelector('nav[aria-label="Workflow phases"]');
+    expect(nav).toBeInTheDocument();
+    expect(phaseBar?.parentElement).toBe(nav);
   });
 });

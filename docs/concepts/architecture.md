@@ -36,10 +36,15 @@ src/
 │   └── slash-command-parser.ts  # Interactive-composer slash parsing
 ├── pool/                        # Concurrent task execution
 │   ├── index.ts                 # Re-exports
-│   ├── types.ts                 # StepDefinition, LanePoolOptions, etc.
+│   ├── types.ts                 # StepDefinition, LanePoolOptions, TaskRunner, etc.
 │   ├── lane-pool.ts             # LanePool — the executor
-│   ├── task-processor.ts        # Runs a task's steps with retry
+│   ├── task-processor.ts        # Shared task error/audit helpers
 │   ├── step-execution.ts        # Runs one step (profile, session, approval)
+│   ├── linear-steps-runner.ts   # linearStepsRunner - sequential steps with retry
+│   ├── branch-runner.ts         # branchRunner - conditional step routing
+│   ├── council-runner.ts        # councilRunner - parallel workers and synthesizer
+│   ├── map-runner.ts            # mapRunner - fan-out over a collection
+│   ├── reflection-runner.ts     # reflectionRunner - draft/critic loop
 │   ├── prompt-builder.ts        # Builds prompt text with file contents
 │   ├── severity.ts              # Severity helpers
 │   └── validation.ts            # Task/step name validation
@@ -68,14 +73,14 @@ src/
 
 ## Layers at a glance
 
-| Layer        | Path                        | Responsibility                                                                                                                                   |
-| ------------ | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **Core**     | `src/core/`                 | Profiles, config, the agent harness, structured output, and the `runStepTask` primitive. The reusable building blocks.                           |
-| **Pool**     | `src/pool/`                 | Concurrent task execution. `LanePool` claims tasks from a `TaskTracker` and runs each through a sequence of steps, with reviewer feedback loops. |
-| **Tracking** | `src/tracking/`             | The event-sourced status store (`EventStore`), the pure reducer (`evolve`), the write-model `TaskTracker`, and persisted workflow state.         |
-| **CLI**      | `src/cli/` and `src/cli.ts` | Argument parsing, command orchestration, TUI-vs-console detection, SIGINT handling, resume, and worktree post-actions.                           |
-| **TUI**      | `src/tui/`                  | The terminal dashboard: widget tree, keyboard input, console interception, and the QR overlay for mobile.                                        |
-| **Web**      | `src/web/`                  | The observer server: static file serving, `/ws` upgrade, and the snapshot/delta broadcast bridge.                                                |
+| Layer        | Path                        | Responsibility                                                                                                                                                                                           |
+| ------------ | --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Core**     | `src/core/`                 | Profiles, config, the agent harness, structured output, and the `runStepTask` primitive. The reusable building blocks.                                                                                   |
+| **Pool**     | `src/pool/`                 | Concurrent task execution. `LanePool` claims tasks from a `TaskTracker` and dispatches each to a composable `TaskRunner` (linear steps, branch, council, map, reflection), with reviewer feedback loops. |
+| **Tracking** | `src/tracking/`             | The event-sourced status store (`EventStore`), the pure reducer (`evolve`), the write-model `TaskTracker`, and persisted workflow state.                                                                 |
+| **CLI**      | `src/cli/` and `src/cli.ts` | Argument parsing, command orchestration, TUI-vs-console detection, SIGINT handling, resume, and worktree post-actions.                                                                                   |
+| **TUI**      | `src/tui/`                  | The terminal dashboard: widget tree, keyboard input, console interception, and the QR overlay for mobile.                                                                                                |
+| **Web**      | `src/web/`                  | The observer server: static file serving, `/ws` upgrade, and the snapshot/delta broadcast bridge.                                                                                                        |
 
 The React frontend that consumes the web layer lives under `web/` (a sibling of `src/`).
 

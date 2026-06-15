@@ -2,17 +2,6 @@ import { type Component, matchesKey, truncateToWidth } from '@earendil-works/pi-
 import type { TaskEntity } from '../../tracking/event-types.js';
 import { bold, dim, formatElapsed, statusColor, statusIcon } from '../theme.js';
 
-// ─── Status Priority ────────────────────────────────────────────────────────
-
-const statusPriority: Record<string, number> = {
-  active: 0,
-  ready: 1,
-  blocked: 2,
-  complete: 3,
-  failed: 3,
-  cancelled: 3,
-};
-
 // ─── Task List Widget ───────────────────────────────────────────────────────
 
 export class TaskListWidget implements Component {
@@ -21,19 +10,22 @@ export class TaskListWidget implements Component {
   private dirty = true;
   private cachedWidth = -1;
   private cachedLines: string[] = [];
-  private sortedCache: TaskEntity[] | null = null;
+  private orderedCache: TaskEntity[] | null = null;
 
-  /** Lazily computes and caches the sorted task list. */
-  private ensureSorted(): TaskEntity[] {
-    if (this.sortedCache === null) {
-      this.sortedCache = [...this.tasks].sort((a, b) => statusPriority[a.status] - statusPriority[b.status]);
+  /**
+   * Lazily computes and caches the task list in creation/registration order
+   * (i.e. the order tasks arrive via updateTasks, which is registration order).
+   */
+  private ensureOrdered(): TaskEntity[] {
+    if (this.orderedCache === null) {
+      this.orderedCache = [...this.tasks];
     }
-    return this.sortedCache;
+    return this.orderedCache;
   }
 
-  /** Clears the sorted cache (call whenever tasks or selection change). */
+  /** Clears the ordered cache (call whenever tasks or selection change). */
   private invalidateCache(): void {
-    this.sortedCache = null;
+    this.orderedCache = null;
     this.dirty = true;
   }
 
@@ -58,7 +50,7 @@ export class TaskListWidget implements Component {
 
   getSelectedTask(): TaskEntity | undefined {
     if (this.selectedTaskId === null) return undefined;
-    return this.ensureSorted().find((t) => t.id === this.selectedTaskId);
+    return this.ensureOrdered().find((t) => t.id === this.selectedTaskId);
   }
 
   getVisibleTaskCount(): number {
@@ -74,10 +66,10 @@ export class TaskListWidget implements Component {
       return this.cachedLines;
     }
 
-    const sorted = this.ensureSorted();
+    const ordered = this.ensureOrdered();
     const lines: string[] = [];
 
-    for (const task of sorted) {
+    for (const task of ordered) {
       let text: string;
 
       const iconTitle = statusIcon(task.status) + ' ' + statusColor(task.status)(task.title);
@@ -123,14 +115,14 @@ export class TaskListWidget implements Component {
   }
 
   handleInput(data: string): void {
-    const sorted = this.ensureSorted();
-    const currentIndex = this.selectedTaskId !== null ? sorted.findIndex((t) => t.id === this.selectedTaskId) : -1;
+    const ordered = this.ensureOrdered();
+    const currentIndex = this.selectedTaskId !== null ? ordered.findIndex((t) => t.id === this.selectedTaskId) : -1;
 
     if (matchesKey(data, 'up') && currentIndex > 0) {
-      this.selectedTaskId = sorted[currentIndex - 1].id;
+      this.selectedTaskId = ordered[currentIndex - 1].id;
       this.invalidate();
-    } else if (matchesKey(data, 'down') && currentIndex < sorted.length - 1) {
-      this.selectedTaskId = sorted[currentIndex + 1].id;
+    } else if (matchesKey(data, 'down') && currentIndex < ordered.length - 1) {
+      this.selectedTaskId = ordered[currentIndex + 1].id;
       this.invalidate();
     }
   }

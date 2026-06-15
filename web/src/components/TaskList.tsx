@@ -10,15 +10,6 @@ import {
 } from '../store/workflow-store';
 import './TaskList.css';
 
-const STATUS_PRIORITY: Record<string, number> = {
-  active: 0,
-  ready: 1,
-  blocked: 2,
-  complete: 3,
-  failed: 3,
-  cancelled: 3,
-};
-
 function getStatusColor(status: string): string {
   switch (status) {
     case 'active':
@@ -84,14 +75,6 @@ export function TaskList() {
     return taskIds.filter((id) => tasksById[id]?.phaseId === selectedPhaseId);
   }, [taskIds, tasksById, selectedPhaseId]);
 
-  const sortedIds = useMemo(() => {
-    return [...filteredIds].sort((a, b) => {
-      const sa = STATUS_PRIORITY[tasksById[a]?.status] ?? 99;
-      const sb = STATUS_PRIORITY[tasksById[b]?.status] ?? 99;
-      return sa - sb;
-    });
-  }, [filteredIds, tasksById]);
-
   if (!hasSnapshot) {
     return <div className="task-list task-list--empty">Connecting to workflow…</div>;
   }
@@ -100,13 +83,13 @@ export function TaskList() {
     return <div className="task-list task-list--empty">No phase selected</div>;
   }
 
-  if (sortedIds.length === 0) {
+  if (filteredIds.length === 0) {
     return <div className="task-list task-list--empty">No tasks in this phase</div>;
   }
 
   return (
     <div className="task-list">
-      {sortedIds.map((id) => (
+      {filteredIds.map((id) => (
         <Task key={id} taskId={id} />
       ))}
     </div>

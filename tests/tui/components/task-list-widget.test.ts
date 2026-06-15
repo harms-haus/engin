@@ -75,14 +75,14 @@ describe('TaskListWidget', () => {
 
       expect(lines).toHaveLength(3);
 
-      // After sorting: active (t2) first, then blocked (t3), then complete (t1)
-      const expected0 = statusIcon('active') + ' ' + statusColor('active')('Task B');
+      // Creation order: complete (t1), active (t2), blocked (t3)
+      const expected0 = statusIcon('complete') + ' ' + statusColor('complete')('Task A');
       expect(lines[0].startsWith(expected0)).toBe(true);
 
-      const expected1 = statusIcon('blocked') + ' ' + statusColor('blocked')('Task C');
+      const expected1 = statusIcon('active') + ' ' + statusColor('active')('Task B');
       expect(lines[1].startsWith(expected1)).toBe(true);
 
-      const expected2 = statusIcon('complete') + ' ' + statusColor('complete')('Task A');
+      const expected2 = statusIcon('blocked') + ' ' + statusColor('blocked')('Task C');
       expect(lines[2].startsWith(expected2)).toBe(true);
     });
 
@@ -104,7 +104,7 @@ describe('TaskListWidget', () => {
         makeTask({ id: 't1', title: 'First', status: 'ready' }),
         makeTask({ id: 't2', title: 'Second', status: 'complete' }),
       ]);
-      // Sorted order: ready (t1) at index 0, complete (t2) at index 1
+      // Creation order: ready (t1) at index 0, complete (t2) at index 1
       widget.setSelectedTaskId('t2');
       const lines = widget.render(WIDTH);
 
@@ -206,7 +206,7 @@ describe('TaskListWidget', () => {
         makeTask({ id: 't2', title: 'B', status: 'complete' }),
         makeTask({ id: 't3', title: 'C', status: 'active' }),
       ]);
-      // Sorted: t3 (active), t1 (ready), t2 (complete)
+      // Creation order: t1 (ready), t2 (complete), t3 (active)
       widget.setSelectedTaskId('t1');
       const task = widget.getSelectedTask();
       expect(task).toBeDefined();
@@ -312,8 +312,8 @@ describe('TaskListWidget', () => {
     });
   });
 
-  describe('sorting', () => {
-    it('tasks are sorted by status priority: active before ready before blocked before complete', () => {
+  describe('ordering', () => {
+    it('tasks are listed in creation/registration order, NOT grouped by status', () => {
       const widget = new TaskListWidget();
       widget.updateTasks([
         makeTask({ id: 't1', title: 'Complete Task', status: 'complete' }),
@@ -325,21 +325,21 @@ describe('TaskListWidget', () => {
 
       expect(lines).toHaveLength(4);
 
-      // Order: active (0), ready (1), blocked (2), complete (3)
-      const expected0 = statusIcon('active') + ' ' + statusColor('active')('Active Task');
+      // Order is exactly the insertion/registration order, regardless of status
+      const expected0 = statusIcon('complete') + ' ' + statusColor('complete')('Complete Task');
       expect(lines[0].startsWith(expected0)).toBe(true);
 
-      const expected1 = statusIcon('ready') + ' ' + statusColor('ready')('Ready Task');
+      const expected1 = statusIcon('blocked') + ' ' + statusColor('blocked')('Blocked Task');
       expect(lines[1].startsWith(expected1)).toBe(true);
 
-      const expected2 = statusIcon('blocked') + ' ' + statusColor('blocked')('Blocked Task');
+      const expected2 = statusIcon('active') + ' ' + statusColor('active')('Active Task');
       expect(lines[2].startsWith(expected2)).toBe(true);
 
-      const expected3 = statusIcon('complete') + ' ' + statusColor('complete')('Complete Task');
+      const expected3 = statusIcon('ready') + ' ' + statusColor('ready')('Ready Task');
       expect(lines[3].startsWith(expected3)).toBe(true);
     });
 
-    it('failed and cancelled sort with complete (priority 3)', () => {
+    it('failed, cancelled, and complete appear in creation order, not grouped', () => {
       const widget = new TaskListWidget();
       widget.updateTasks([
         makeTask({ id: 't1', title: 'Failed', status: 'failed' }),
@@ -347,11 +347,35 @@ describe('TaskListWidget', () => {
         makeTask({ id: 't3', title: 'Complete', status: 'complete' }),
         makeTask({ id: 't4', title: 'Active', status: 'active' }),
       ]);
-      // Sorted: active (0), then complete/failed/cancelled (3) in original order
-      const sorted = widget.render(WIDTH);
-      expect(sorted).toHaveLength(4);
-      const expected0 = statusIcon('active') + ' ' + statusColor('active')('Active');
-      expect(sorted[0].startsWith(expected0)).toBe(true);
+      const lines = widget.render(WIDTH);
+      expect(lines).toHaveLength(4);
+      // Creation order preserved: failed, cancelled, complete, active
+      expect(lines[0].startsWith(statusIcon('failed') + ' ' + statusColor('failed')('Failed'))).toBe(true);
+      expect(lines[1].startsWith(statusIcon('cancelled') + ' ' + statusColor('cancelled')('Cancelled'))).toBe(true);
+      expect(lines[2].startsWith(statusIcon('complete') + ' ' + statusColor('complete')('Complete'))).toBe(true);
+      expect(lines[3].startsWith(statusIcon('active') + ' ' + statusColor('active')('Active'))).toBe(true);
+    });
+
+    it('newly registered tasks are appended at the bottom', () => {
+      const widget = new TaskListWidget();
+      widget.updateTasks([
+        makeTask({ id: 't1', title: 'First', status: 'ready' }),
+        makeTask({ id: 't2', title: 'Second', status: 'complete' }),
+      ]);
+      let lines = widget.render(WIDTH);
+      expect(lines[0].startsWith(statusIcon('ready') + ' ' + statusColor('ready')('First'))).toBe(true);
+      expect(lines[1].startsWith(statusIcon('complete') + ' ' + statusColor('complete')('Second'))).toBe(true);
+
+      // A later-registered active task is appended, not promoted to the top
+      widget.updateTasks([
+        makeTask({ id: 't1', title: 'First', status: 'ready' }),
+        makeTask({ id: 't2', title: 'Second', status: 'complete' }),
+        makeTask({ id: 't3', title: 'Third', status: 'active' }),
+      ]);
+      lines = widget.render(WIDTH);
+      expect(lines[0].startsWith(statusIcon('ready') + ' ' + statusColor('ready')('First'))).toBe(true);
+      expect(lines[1].startsWith(statusIcon('complete') + ' ' + statusColor('complete')('Second'))).toBe(true);
+      expect(lines[2].startsWith(statusIcon('active') + ' ' + statusColor('active')('Third'))).toBe(true);
     });
   });
 
@@ -363,7 +387,7 @@ describe('TaskListWidget', () => {
         makeTask({ id: 't2', title: 'B', status: 'complete' }),
         makeTask({ id: 't3', title: 'C', status: 'blocked' }),
       ]);
-      // Sorted order: ready(t1) idx 0, blocked(t3) idx 1, complete(t2) idx 2
+      // Creation order: ready(t1) idx 0, complete(t2) idx 1, blocked(t3) idx 2
       widget.setSelectedTaskId('t3'); // blocked
       expect(widget.getSelectedTaskId()).toBe('t3');
 
@@ -394,33 +418,33 @@ describe('TaskListWidget', () => {
   });
 
   describe('selection tracking by task ID', () => {
-    it('selected task tracks by ID after re-sort', () => {
+    it('selected task tracks by ID after task list changes', () => {
       const widget = new TaskListWidget();
       widget.updateTasks([
         makeTask({ id: 't1', title: 'Task A', status: 'ready' }),
         makeTask({ id: 't2', title: 'Task B', status: 'complete' }),
       ]);
-      // Sorted: ready(t1) index 0, complete(t2) index 1
+      // Creation order: ready(t1) index 0, complete(t2) index 1
       widget.setSelectedTaskId('t2');
       expect(widget.getSelectedTaskId()).toBe('t2');
 
-      // Add an active task — it goes to sorted index 0, pushing others down
+      // Add an active task — appended at the end (creation order)
       widget.updateTasks([
         makeTask({ id: 't1', title: 'Task A', status: 'ready' }),
         makeTask({ id: 't2', title: 'Task B', status: 'complete' }),
         makeTask({ id: 't3', title: 'Task C', status: 'active' }),
       ]);
 
-      // Selection should still be on t2, now at sorted index 2
+      // Selection should still be on t2 (index 1 in creation order)
       expect(widget.getSelectedTaskId()).toBe('t2');
       const lines = widget.render(WIDTH);
-      // t2 (complete) should be bold in the last position (sorted index 2)
+      // t2 (complete) should be bold at creation-order index 1
       const focusedContent = statusIcon('complete') + ' ' + statusColor('complete')('Task B');
-      expect(lines[2]).toContain('\x1b[1m');
-      expect(lines[2]).toContain(focusedContent);
+      expect(lines[1]).toContain('\x1b[1m');
+      expect(lines[1]).toContain(focusedContent);
       // Other lines should not be bold
       expect(lines[0]).not.toContain('\x1b[1m');
-      expect(lines[1]).not.toContain('\x1b[1m');
+      expect(lines[2]).not.toContain('\x1b[1m');
     });
   });
 

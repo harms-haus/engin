@@ -76,6 +76,8 @@ function reconcileSelection(state: Draft<WorkflowStoreState>): void {
       state.selectedPhaseId = state.currentPhaseId;
       state.userPinnedPhase = false;
     }
+  } else if (state.selectedPhaseId === null && state.currentPhaseId) {
+    state.selectedPhaseId = state.currentPhaseId;
   }
 
   // Task follow

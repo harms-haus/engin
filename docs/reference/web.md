@@ -47,8 +47,7 @@ interface ObserverServer {
 - Existing files are served with a MIME from a small `MIME_MAP` (`.html`, `.css`, `.js`,
   `.mjs`, `.json`, images, fonts, `.map`).
 - For `index.html` specifically, the `{{WS_ENDPOINT}}` placeholder is replaced with the
-  appropriate `ws://` or `wss://` URL (`wss` when `x-forwarded-proto === 'https'` or the
-  request is HTTPS).
+  appropriate `ws://` or `wss://` URL (`wss` when the request URL protocol is HTTPS).
 - Missing files fall back to `index.html` (SPA fallback), or to a built-in placeholder page if
   `index.html` is absent. The placeholder also gets `{{WS_ENDPOINT}}` substituted.
 
@@ -60,12 +59,12 @@ interface ObserverServer {
   `[::1]`.
 - If `Origin` is present **and** the host is **not** localhost: parse the origin URL
   (non-http/https schemes like `capacitor://`, `file://`, `ionic://` are **allowed**), then
-  compare hostname (and port, when both are present) against `x-forwarded-host || host`.
+  compare hostname (and port, when both are present) against the request `Host` header.
 - If `Origin` is absent **or** the host is localhost: **allowed**.
 
 > **Known limitation.** Clients without an `Origin` header (curl, scripts) bypass the check
 > entirely. The primary protection is the default localhost binding; exposing the server
-> broadly is opt-in via `--host`.
+> broadly is opt-in via `--host` or `--lan`.
 
 ## Protocol
 

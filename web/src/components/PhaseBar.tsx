@@ -26,7 +26,7 @@ export function PhaseBar() {
         if (isCurrent(phase.id)) className += ' phase-bar__tab--current';
         if (isSelected(phase.id)) className += ' phase-bar__tab--selected';
         return (
-          <button key={phase.id} type="button" className={className} onClick={() => selectPhase(phase.id)}>
+          <button key={phase.id} type="button" className={className} onClick={() => selectPhase(phase.id)} aria-current={isCurrent(phase.id) ? 'step' : undefined}>
             <span className="phase-bar__icon">{phase.icon}</span>
             <span className="phase-bar__label">{phase.label}</span>
           </button>

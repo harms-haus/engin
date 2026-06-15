@@ -41,6 +41,35 @@ const padToWidth = (line: string, width: number): string => {
   return truncateToWidth(line, width, undefined, true);
 };
 
+// ─── Shared step-cycling helper ──────────────────────────────────────────────
+
+/**
+ * Compute the next step index in the given direction, cycling only through
+ * steps that have an `agentKey`.  Returns the *unchanged* `currentIndex` when
+ * no agent steps exist (so callers can no-op).
+ *
+ * Used by both AgentLogWidget (collapsed tab bar) and Dashboard (top-level
+ * keyboard routing) so the algorithm lives in exactly one place.
+ */
+export function computeNextAgentStepIndex(
+  steps: { agentKey?: string }[],
+  currentIndex: number,
+  direction: 'forward' | 'backward',
+): number {
+  const agentStepIndices = steps.map((s, i) => (s.agentKey !== undefined ? i : -1)).filter((i) => i >= 0);
+
+  if (agentStepIndices.length === 0) return currentIndex;
+
+  const currentPos = agentStepIndices.indexOf(currentIndex);
+  if (direction === 'forward') {
+    const nextPos = (currentPos + 1) % agentStepIndices.length;
+    return agentStepIndices[nextPos];
+  } else {
+    const prevPos = (currentPos - 1 + agentStepIndices.length) % agentStepIndices.length;
+    return agentStepIndices[prevPos];
+  }
+}
+
 // ─── AgentLogWidget ──────────────────────────────────────────────────────────
 
 export class AgentLogWidget implements Component {
@@ -353,27 +382,11 @@ export class AgentLogWidget implements Component {
     }
 
     // ─── Tab/Shift+Tab cycle steps that have agentKey ─────────
-    // Build list of step indices that have agentKey set
-    const agentStepIndices = this._steps.map((s, i) => (s.agentKey !== undefined ? i : -1)).filter((i) => i >= 0);
-
-    if (agentStepIndices.length === 0) return;
-
-    if (matchesKey(data, 'tab')) {
-      // Find next step with agentKey (forward cycle)
-      const currentPos = agentStepIndices.indexOf(this._selectedStepIndex);
-      const nextPos = (currentPos + 1) % agentStepIndices.length;
-      this._selectedStepIndex = agentStepIndices[nextPos];
-      this._scrollOffset = 0;
-      this._userPinnedStep = true;
-      this.dirty = true;
-      return;
-    }
-
-    if (matchesKey(data, Key.shift('tab'))) {
-      // Find previous step with agentKey (backward cycle)
-      const currentPos = agentStepIndices.indexOf(this._selectedStepIndex);
-      const prevPos = (currentPos - 1 + agentStepIndices.length) % agentStepIndices.length;
-      this._selectedStepIndex = agentStepIndices[prevPos];
+    if (matchesKey(data, 'tab') || matchesKey(data, Key.shift('tab'))) {
+      const dir = matchesKey(data, 'tab') ? 'forward' : 'backward';
+      const nextIndex = computeNextAgentStepIndex(this._steps, this._selectedStepIndex, dir);
+      if (nextIndex === this._selectedStepIndex) return; // no agent steps
+      this._selectedStepIndex = nextIndex;
       this._scrollOffset = 0;
       this._userPinnedStep = true;
       this.dirty = true;

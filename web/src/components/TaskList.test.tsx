@@ -3,7 +3,7 @@
  *
  * Verifies:
  * - Filters tasks by selectedPhaseId
- * - Sorts by status priority: active=0, ready=1, blocked=2, complete/failed/cancelled=3
+ * - Lists tasks in creation/registration order (NOT grouped by status)
  * - Status colors via CSS variables (active→current, complete→completed, ready→ready,
  *   blocked→blocked, failed→error, cancelled→muted)
  * - Active step display: "step X/Y: stepName"
@@ -216,13 +216,13 @@ describe('TaskList – task filtering and rendering', () => {
   });
 });
 
-describe('TaskList – sorting by status priority', () => {
+describe('TaskList – creation/registration order', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     resetStore();
   });
 
-  it('sorts tasks: active first, then ready, blocked, then settled (complete/failed/cancelled)', () => {
+  it('lists tasks in registration order, NOT grouped by status', () => {
     const tasks: Record<string, TaskEntity> = {
       't-blocked': makeTask({ id: 't-blocked', title: 'Blocked', phaseId: 'phase-1', status: 'blocked' }),
       't-active': makeTask({ id: 't-active', title: 'Active', phaseId: 'phase-1', status: 'active' }),
@@ -238,12 +238,8 @@ describe('TaskList – sorting by status priority', () => {
     const taskRows = container.querySelectorAll('.task-list__task');
     const titles = Array.from(taskRows).map((row) => row.querySelector('.task-list__title')?.textContent);
 
-    // Expected order: active, ready, blocked, then complete/failed/cancelled (stable sort)
-    expect(titles[0]).toBe('Active');
-    expect(titles[1]).toBe('Ready');
-    expect(titles[2]).toBe('Blocked');
-    // Settled group (priority 3) order depends on insertion order
-    expect(titles.slice(3)).toEqual(['Complete', 'Failed', 'Cancelled']);
+    // Expected order: the registration/insertion order of the tasks map
+    expect(titles).toEqual(['Blocked', 'Active', 'Ready', 'Complete', 'Failed', 'Cancelled']);
   });
 
   it('renders a single task correctly', () => {

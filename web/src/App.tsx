@@ -40,10 +40,14 @@ export function App() {
         </div>
       )}
 
-      <EventLog />
-      <PhaseBar />
-      <TaskList />
-      <AgentLog />
+      <main>
+        <EventLog />
+        <nav aria-label="Workflow phases">
+          <PhaseBar />
+        </nav>
+        <TaskList />
+        <AgentLog />
+      </main>
     </div>
   );
 }

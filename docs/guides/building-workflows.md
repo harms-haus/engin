@@ -284,21 +284,22 @@ provided'`) to the task's `reviewFeedback`, fire an `onDecision` event, and **ba
 
 ### `LanePoolOptions` reference
 
-| Field                | Required | Description                                               |
-| -------------------- | -------- | --------------------------------------------------------- |
-| `maxConcurrentLanes` | **Yes**  | Number of concurrent lanes (workers).                     |
-| `profilesDirs`       | **Yes**  | Directories to load profiles from.                        |
-| `sessionBaseDir`     | **Yes**  | Base directory for persisted sessions.                    |
-| `cwd`                | **Yes**  | Working directory for agent operations.                   |
-| `taskTracker`        | **Yes**  | Shared `TaskTracker` lanes claim from.                    |
-| `getStepsForTask`    | **Yes**  | `(task) => StepDefinition[]` returning the ordered steps. |
-| `phaseId`            | **Yes**  | The phase this pool serves. Propagated to every callback. |
-| `onStatus?`          | No       | Status callbacks.                                         |
-| `apiKeys?`           | No       | Provider → API key overrides.                             |
-| `auditLog?`          | No       | Audit log for events.                                     |
-| `maxStepRetries?`    | No       | Max retries per step on rejection (default `5`).          |
-| `laneWaitTimeoutMs?` | No       | Lane idle poll interval (default `60000`).                |
-| `signal?`            | No       | Abort signal.                                             |
+| Field                | Required | Description                                                                                          |
+| -------------------- | -------- | ---------------------------------------------------------------------------------------------------- |
+| `maxConcurrentLanes` | **Yes**  | Number of concurrent lanes (workers).                                                                |
+| `profilesDirs`       | **Yes**  | Directories to load profiles from.                                                                   |
+| `sessionBaseDir`     | **Yes**  | Base directory for persisted sessions.                                                               |
+| `cwd`                | **Yes**  | Working directory for agent operations.                                                              |
+| `taskTracker`        | **Yes**  | Shared `TaskTracker` lanes claim from.                                                               |
+| `getStepsForTask`    | No       | `(task) => StepDefinition[]` returning the ordered steps. The pool wraps these in linearStepsRunner. |
+| `getRunnerForTask`   | No       | `(task) => TaskRunner`. Custom runner; takes precedence over `getStepsForTask`.                      |
+| `phaseId`            | **Yes**  | The phase this pool serves. Propagated to every callback.                                            |
+| `onStatus?`          | No       | Status callbacks.                                                                                    |
+| `apiKeys?`           | No       | Provider → API key overrides.                                                                        |
+| `auditLog?`          | No       | Audit log for events.                                                                                |
+| `maxStepRetries?`    | No       | Max retries per step on rejection (default `5`).                                                     |
+| `laneWaitTimeoutMs?` | No       | Lane idle poll interval (default `60000`).                                                           |
+| `signal?`            | No       | Abort signal.                                                                                        |
 
 `pool.run()` returns `{ completedTasks: number; failedTasks: number }`.
 

@@ -31,16 +31,17 @@ TUI or verbose console output, and calls the workflow's `run(taskPrompt, options
 
 ### Flags
 
-| Flag                       | Default                              | Description                                                                |
-| -------------------------- | ------------------------------------ | -------------------------------------------------------------------------- |
-| `--cwd <path>`             | `process.cwd()`                      | Project working directory.                                                 |
-| `--work-dir <path>`        | `.engin/work/<timestamp>-<workflow>` | Directory for workflow state persistence.                                  |
-| `--max-concurrent <n>`     | `5`                                  | Maximum parallel agents. Must be a positive integer.                       |
-| `--verbose`                | off                                  | Verbose console output. Disables the TUI when stdout is a TTY.             |
-| `--worktree`               | off                                  | Run the workflow in a git worktree.                                        |
-| `--api-key <provider=key>` | —                                    | Provider → API key override (repeatable). **Visible in process listings.** |
-| `--host <host>`            | auto-detect LAN IP                   | Web server bind host.                                                      |
-| `--port <port>`            | `3619`                               | Web server port (integer in 1–65535).                                      |
+| Flag                       | Default                              | Description                                                                      |
+| -------------------------- | ------------------------------------ | -------------------------------------------------------------------------------- |
+| `--cwd <path>`             | `process.cwd()`                      | Project working directory.                                                       |
+| `--work-dir <path>`        | `.engin/work/<timestamp>-<workflow>` | Directory for workflow state persistence.                                        |
+| `--max-concurrent <n>`     | `5`                                  | Maximum parallel agents. Must be a positive integer.                             |
+| `--verbose`                | off                                  | Verbose console output. Disables the TUI when stdout is a TTY.                   |
+| `--worktree`               | off                                  | Run the workflow in a git worktree.                                              |
+| `--api-key <provider=key>` | —                                    | Provider → API key override (repeatable). **Visible in process listings.**       |
+| `--host <host>`            | `127.0.0.1`                          | Web server bind host.                                                            |
+| `--lan`                    | off                                  | Bind on all interfaces (0.0.0.0) and auto-detect the LAN IP for QR code display. |
+| `--port <port>`            | `3619`                               | Web server port (integer in 1–65535).                                            |
 
 A value beginning with `--` (e.g. `--port --verbose`) is rejected as a missing value. Unknown
 flags throw. `--help`/`-h` and `--version`/`-v` short-circuit before flag validation.
