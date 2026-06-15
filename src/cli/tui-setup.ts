@@ -17,8 +17,10 @@ import { StatusBridge } from '../web/status-bridge.js';
 export interface TuiSetupOptions {
   /** HTTP port for the observer web server (default 3619). */
   port?: number;
-  /** Bind host for the observer web server. If not set, binds to 0.0.0.0 and auto-detects LAN IP for display. */
+  /** Bind host for the observer web server. Defaults to '127.0.0.1' (localhost only). Pass '0.0.0.0' or set `lan: true` to bind on all interfaces. */
   host?: string;
+  /** When true and no explicit `host` is set, binds to 0.0.0.0 and auto-detects the LAN IP for QR code display. */
+  lan?: boolean;
   /** Work directory used to instantiate the {@link EventStore} (canonical event log). */
   workDir: string;
   /**
@@ -72,10 +74,14 @@ export async function setupTuiAndObserver(options: TuiSetupOptions): Promise<Tui
     // User specified a host — use it for both bind and display
     bindHost = options.host;
     displayHost = undefined; // startObserverServer will use server.hostname
-  } else {
-    // Auto-detect: bind to all interfaces, display the LAN IP
+  } else if (options.lan) {
+    // Explicit opt-in: bind to all interfaces, display the LAN IP
     bindHost = '0.0.0.0';
     displayHost = getLocalNetworkIP() ?? '127.0.0.1';
+  } else {
+    // Default: localhost only — not reachable from other devices
+    bindHost = '127.0.0.1';
+    displayHost = '127.0.0.1';
   }
 
   // ── EventStore (canonical status writer) ────────────────────────────────

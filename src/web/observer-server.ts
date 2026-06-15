@@ -64,8 +64,9 @@ export interface ObserverServer {
  * do not send an Origin header, so they bypass this check. The terminate_server
  * command remains accessible to any client that can reach the WebSocket endpoint
  * without an Origin header. A future enhancement should require authentication
- * tokens for destructive commands like terminate_server. The primary protection
- * is the default localhost binding.
+ * tokens for destructive commands like terminate_server. The default binding is
+ * localhost (127.0.0.1); bind to 0.0.0.0 only when the user explicitly opts in
+ * via --host or --lan.
  *
  * @returns true if the request should be allowed, false to reject with 403.
  */
@@ -90,10 +91,9 @@ function validateWebSocketOrigin(req: Request): boolean {
         return true;
       }
 
-      // Determine the comparison target hostname.
-      // If X-Forwarded-Host is present, use it instead of the Host header.
-      const xForwardedHost = req.headers.get('x-forwarded-host') || '';
-      const targetHost = xForwardedHost || host;
+      // Use only the actual Host header — do not trust client-controlled
+      // X-Forwarded-Host, which an attacker can spoof to bypass Origin checks.
+      const targetHost = host;
 
       // Extract hostname and port from the target host string.
       const targetParts = targetHost.split(':');
@@ -217,18 +217,12 @@ export async function startObserverServer(options: {
 
 /**
  * Determine the appropriate WebSocket scheme (ws or wss) based on the
- * incoming request and the URL being served.
+ * incoming request URL.
  *
- * Priority:
- * 1. If the X-Forwarded-Proto header is 'https', return 'wss'.
- * 2. If the URL protocol is 'https:', return 'wss'.
- * 3. Otherwise return 'ws'.
+ * Uses only the URL protocol — does not trust client-controlled
+ * X-Forwarded-Proto headers, which an attacker can spoof.
  */
-function getWsScheme(req: Request, url: URL): string {
-  const xForwardedProto = req.headers.get('x-forwarded-proto');
-  if (xForwardedProto === 'https') {
-    return 'wss';
-  }
+function getWsScheme(_req: Request, url: URL): string {
   if (url.protocol === 'https:') {
     return 'wss';
   }

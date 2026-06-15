@@ -107,15 +107,19 @@ class LanePool {
 1. **Early-out** on `signal?.aborted` (returns zeros) or an empty tracker (returns zeros
    **without loading profiles or spawning lanes**).
 2. **Register tasks.** Fire `onTaskRegister` **once per task**, **before** profile loading and
-   before spawning any lanes. For each task it computes the steps via `getStepsForTask` and
-   maps them to `{ name, profileId, isReadOnly }`. This lets the UI render the full task
-   layout immediately.
+   before spawning any lanes. For each task it calls `getStepsForTask` (if provided) and maps
+   the steps to `{ name, profileId, isReadOnly }`. This lets the UI render the full task
+   layout immediately. When only `getRunnerForTask` is provided (no `getStepsForTask`), the
+   steps array will be empty; the runner is resolved later when the lane claims the task.
 3. **Load profiles.** `clearProfileCache()` then `loadProfilesFromDirs(profilesDirs)` — loaded
    fresh on every `run()`.
 4. **Register an abort listener** on the signal that aborts every active session.
 5. **Spawn lanes.** `maxConcurrentLanes` workers run in parallel via `Promise.allSettled`. Lane
    failures are isolated and reported via `onError` (agentId `lane-<index>`).
-6. **Result counts.** Filter `getAllTasks()` by `status === 'complete'` and `=== 'failed'`.
+6. **Resolve runners.** For each claimed task, `resolveRunner(task)` picks a `TaskRunner`:
+   `getRunnerForTask` takes precedence; otherwise `getStepsForTask` is wrapped in
+   `linearStepsRunner`; if neither is provided, a runtime error is thrown.
+7. **Result counts.** Filter `getAllTasks()` by `status === 'complete'` and `=== 'failed'`.
 
 ### How a lane works
 
@@ -191,6 +195,248 @@ the per-step **execution count**, not the rejection attempt.
 - On exception, the session is disposed (errors logged, not re-thrown) and the original error
   re-thrown. In `finally`, the session is removed from `activeSessions` and `onAgentComplete`
   fires **always**.
+
+## Task runners — polymorphic task bodies
+
+The body of a task — what actually executes when a lane claims it — is now
+represented by a `TaskRunner` function. This replaces the old hard-coded linear
+step loop with a pluggable interface, enabling different execution topologies
+while keeping the pool, DAG, event store, and TUI unchanged.
+
+### `TaskRunner` interface
+
+Source: `src/pool/types.ts`.
+
+```typescript
+type TaskRunner = (ctx: TaskRunnerContext) => Promise<TaskOutcome>;
+```
+
+A runner receives a `TaskRunnerContext` and returns a `TaskOutcome`. Runners
+**must not re-throw** — all errors are caught internally and surfaced via
+`ctx.failTask` / the returned outcome. The `LanePool` catch block is a safety
+net for truly unexpected errors.
+
+### `getRunnerForTask` vs `getStepsForTask`
+
+`LanePoolOptions` supports two optional fields (at least one is required):
+
+- **`getStepsForTask?: (task: Task) => StepDefinition[]`** — The original
+  interface. Returns a flat list of steps. The pool wraps them in
+  `linearStepsRunner` automatically. Kept for backward compatibility.
+- **`getRunnerForTask?: (task: Task) => TaskRunner`** — Returns a custom runner
+  that controls the full execution of the task. When provided, takes precedence
+  over `getStepsForTask`.
+
+If neither is provided, the lane throws at runtime.
+
+### `TaskRunnerContext`
+
+Source: `src/pool/types.ts`.
+
+```typescript
+interface TaskRunnerContext {
+  task: Task;
+  agentId: string;
+  profiles: Map<string, AgentProfile>;
+  onStatus: StatusCallbacks | undefined;
+  activeSessions: Set<{ abort(): Promise<void> }>;
+  phaseId: string;
+  sessionBaseDir: string;
+  cwd: string;
+  apiKeys?: Record<string, string>;
+  maxStepRetries: number;
+  /** Safely settle the task as complete. Returns true on success. */
+  completeTask: () => boolean;
+  /** Safely settle the task as failed. */
+  failTask: (result?: unknown) => void;
+}
+```
+
+- **`completeTask()`** — Calls `taskTracker.completeTask(id)` safely. Returns
+  `true` if the settlement succeeded, `false` if the tracker threw (e.g. invalid
+  state transition).
+- **`failTask(result?)`** — Calls `taskTracker.failTask(id, result)` safely.
+  The `result` can carry `{ completed, error, feedback, severity }`.
+
+### `TaskOutcome`
+
+Source: `src/pool/types.ts`.
+
+```typescript
+type TaskOutcome = { status: 'completed'; output?: unknown } | { status: 'failed'; error?: string; feedback?: string };
+```
+
+The `LanePool` dispatches lifecycle events based on the outcome:
+
+- `{ status: 'completed' }` → fires `onTaskComplete`.
+- `{ status: 'failed', feedback }` → fires `onTaskRejected`.
+- `{ status: 'failed', error }` → reports via `onError` / `console.error`.
+
+### Lifecycle event ownership
+
+Responsibilities are split between the pool and runners to avoid duplication:
+
+| Event                              | Owner     | When                                                 |
+| ---------------------------------- | --------- | ---------------------------------------------------- |
+| `onTaskRegister`                   | LanePool  | Before any task starts (during `run()`)              |
+| `onTaskStart`                      | LanePool  | After claiming, before calling the runner            |
+| `onStepStart`                      | Runner    | Before each step execution                           |
+| `onDecision`                       | Runner    | On rejection (with retry reason)                     |
+| `onAgentSpawn` / `onAgentComplete` | `runStep` | Before / after each agent session                    |
+| `onTaskComplete`                   | LanePool  | When runner returns `{ status: 'completed' }`        |
+| `onTaskRejected`                   | LanePool  | When runner returns `{ status: 'failed', feedback }` |
+
+Runners fire `onStepStart` and `onDecision` during execution. `runStep` fires
+`onAgentSpawn` and `onAgentComplete`. The `LanePool` fires `onTaskStart`,
+`onTaskComplete`, and `onTaskRejected`.
+
+### Session management
+
+All built-in runners track their `TrackedSession` objects and call `dispose()`
+on every exit path (success, failure, error). Sessions are also registered on
+`activeSessions` so an abort signal can cancel in-progress LLM calls.
+
+### Built-in runners
+
+All factories are in `src/pool/`.
+
+---
+
+#### `linearStepsRunner(steps)`
+
+```typescript
+import { linearStepsRunner } from '../pool/linear-steps-runner.js';
+
+const runner = linearStepsRunner([
+  { name: 'code', profileId: 'coder', isReadOnly: false, schema: undefined },
+  { name: 'review', profileId: 'reviewer', isReadOnly: true, schema: reviewSchema },
+]);
+```
+
+**Description.** Sequential steps with reviewer back-up retry and severity-based
+fail/approve. Reproduces the exact pre-runner behavior of `processTask`. The
+loop runs each step in order; if a step is rejected, the runner backs up one
+step (clamped at 0) and retries, up to `maxStepRetries` per step. When retries
+are exhausted, `isFailingSeverity` decides whether to fail the task or accept
+it with caveats.
+
+**When to use.** Default for any task that needs a linear pipeline with
+reviewer feedback loops.
+
+---
+
+#### `councilRunner(workers, synthesizer)`
+
+```typescript
+import { councilRunner } from '../pool/council-runner.js';
+
+const runner = councilRunner({
+  workers: [
+    { name: 'architect', profileId: 'architect' },
+    { name: 'engineer', profileId: 'engineer' },
+  ],
+  synthesizer: { name: 'merge', profileId: 'synthesizer', schema: mergeSchema },
+});
+```
+
+**Description.** Runs N worker agents in parallel, then passes all worker
+outputs to a synthesizer step that merges them into a single result. Useful
+for ensembles, multi-perspective analysis, council voting, or any pattern
+where independent agents contribute and a single output is needed. Workers
+that fail individually are recorded — only if **all** workers fail does the
+task fail outright.
+
+**When to use.** Multiple perspectives that need to be merged into one
+coherent result.
+
+---
+
+#### `reflectionRunner(draftStep, criticStep, maxRounds?)`
+
+```typescript
+import { reflectionRunner } from '../pool/reflection-runner.js';
+
+const runner = reflectionRunner({
+  draftStep: { name: 'generate', profileId: 'writer' },
+  criticStep: { name: 'critique', profileId: 'critic', schema: reviewSchema },
+  maxRounds: 5,
+});
+```
+
+**Description.** Draft-critique loop that extracts the reviewer-loop pattern
+into a reusable primitive. The `draftStep` produces work; the `criticStep`
+reviews it. If the critic rejects, feedback is appended to the task and the
+draft runs again (with session resume). The loop continues until the critic
+approves or `maxRounds` (default 3) is exhausted. When rounds are exhausted,
+severity-based fail/approve follows the same logic as `linearStepsRunner`.
+
+**When to use.** Iterative refinement where a critic reviews drafts and
+requests changes — code review, content editing, any generate-then-critique
+workflow.
+
+---
+
+#### `mapRunner(items, step, concurrency?)`
+
+```typescript
+import { mapRunner } from '../pool/map-runner.js';
+
+const runner = mapRunner({
+  items: (task) => task.files ?? [],
+  step: { name: 'process-file', profileId: 'file-processor' },
+  concurrency: 3,
+});
+```
+
+**Description.** Fan-out over a collection. Extracts items from the task at
+runtime via the `items(task)` function, then runs one step per item. When
+`concurrency` is set, at most that many items run in parallel; otherwise all
+items run simultaneously. Each item is injected into the task prompt. The
+output is an array of results; partial failures are collected and reported.
+
+**When to use.** Processing a list of independent items — files in a
+directory, database records, search results — where each item runs the same
+agent logic.
+
+---
+
+#### `branchRunner(branches, default?)`
+
+```typescript
+import { branchRunner } from '../pool/branch-runner.js';
+
+const runner = branchRunner({
+  branches: [
+    {
+      condition: (task) => task.prompt.includes('fix'),
+      step: { name: 'fix-bug', profileId: 'fixer' },
+    },
+    {
+      condition: (task) => task.prompt.includes('feature'),
+      step: { name: 'implement', profileId: 'developer' },
+    },
+  ],
+  default: { name: 'triage', profileId: 'triage' },
+});
+```
+
+**Description.** Conditional routing. Evaluates `branches` in order; the first
+whose `condition(task)` returns true wins and its step runs. If no branch
+matches and a `default` step is provided, that step runs instead. If no match
+and no default, the task fails immediately.
+
+**When to use.** Routing tasks to different agents based on task metadata —
+prompt content, title, file types, or any other property.
+
+### Decision guide
+
+| Pattern                                          | Runner                        |
+| ------------------------------------------------ | ----------------------------- |
+| Linear pipeline with review cycles               | `linearStepsRunner` (default) |
+| Multiple perspectives merged into one            | `councilRunner`               |
+| Iterative refinement with critic feedback        | `reflectionRunner`            |
+| Process a list of items independently            | `mapRunner`                   |
+| Route to different agents based on task metadata | `branchRunner`                |
 
 ## Prompt builder
 

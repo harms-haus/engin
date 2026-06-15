@@ -1,4 +1,4 @@
-import type { StatusCallbacks, StepDefinition, Task } from '../core/types.js';
+import type { AgentProfile, StatusCallbacks, StepDefinition, Task } from '../core/types.js';
 import type { AuditLog } from '../tracking/audit-log.js';
 import type { TaskTracker } from '../tracking/task-status.js';
 
@@ -28,7 +28,9 @@ export interface LanePoolOptions {
   /** Shared task tracker — lanes claim tasks from here */
   taskTracker: TaskTracker;
   /** Given a task, return the ordered list of steps to execute */
-  getStepsForTask: (task: Task) => StepDefinition[];
+  getStepsForTask?: (task: Task) => StepDefinition[];
+  /** Given a task, return a TaskRunner that handles all step execution. When provided, takes precedence over getStepsForTask. */
+  getRunnerForTask?: (task: Task) => TaskRunner;
   /** Maximum retries per step on agent crash. Default: 5 */
   maxStepRetries?: number;
   /** Maximum time (ms) a lane waits for new work before polling again. Default: 60000 */
@@ -55,6 +57,32 @@ export interface TrackedSession {
   dispose: () => void;
   sessionPath: string;
 }
+
+/** Discriminated union representing the outcome of a task execution. */
+export type TaskOutcome =
+  | { status: 'completed'; output?: unknown }
+  | { status: 'failed'; error?: string; feedback?: string };
+
+/** Context passed to every TaskRunner function. */
+export interface TaskRunnerContext {
+  task: Task;
+  agentId: string;
+  profiles: Map<string, AgentProfile>;
+  onStatus: StatusCallbacks | undefined;
+  activeSessions: Set<{ abort(): Promise<void> }>;
+  phaseId: string;
+  sessionBaseDir: string;
+  cwd: string;
+  apiKeys?: Record<string, string>;
+  maxStepRetries: number;
+  /** Safely settle the task as complete. Returns true on success. */
+  completeTask: () => boolean;
+  /** Safely settle the task as failed. */
+  failTask: (result?: unknown) => void;
+}
+
+/** Function signature for executing a task within a lane. */
+export type TaskRunner = (ctx: TaskRunnerContext) => Promise<TaskOutcome>;
 
 /** Aggregate result from running the pool. */
 export interface LanePoolResult {

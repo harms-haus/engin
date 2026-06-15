@@ -26,10 +26,10 @@ export function PhaseBar() {
         if (isCurrent(phase.id)) className += ' phase-bar__tab--current';
         if (isSelected(phase.id)) className += ' phase-bar__tab--selected';
         return (
-          <div key={phase.id} className={className} onClick={() => selectPhase(phase.id)} role="button" tabIndex={0}>
+          <button key={phase.id} type="button" className={className} onClick={() => selectPhase(phase.id)}>
             <span className="phase-bar__icon">{phase.icon}</span>
             <span className="phase-bar__label">{phase.label}</span>
-          </div>
+          </button>
         );
       })}
     </div>

@@ -1,11 +1,13 @@
 // ─── Lane Pool ──────────────────────────────────────────────────────────────
 import { clearProfileCache, loadProfilesFromDirs } from '../core/profile.js';
-import type { AgentProfile } from '../core/types.js';
+import type { AgentProfile, Task } from '../core/types.js';
 import { safeErrorMessage } from '../core/utils.js';
 import { TaskTracker } from '../tracking/task-status.js';
 // buildPrompt is used via prompt-builder module directly
-import { processTask, reportError, safeFailTask } from './task-processor.js';
-import type { LanePoolOptions, LanePoolResult } from './types.js';
+import { linearStepsRunner } from './linear-steps-runner.js';
+import type { TaskProcessorContext } from './task-processor.js';
+import { reportError, safeCompleteTask, safeFailTask } from './task-processor.js';
+import type { LanePoolOptions, LanePoolResult, TaskOutcome, TaskRunner, TaskRunnerContext } from './types.js';
 
 // ─── LanePool ───────────────────────────────────────────────────────────────
 
@@ -30,6 +32,26 @@ export class LanePool {
     this.options = options;
   }
 
+  // ── Runner Resolution ──────────────────────────────────────────────────
+
+  /**
+   * Resolve a TaskRunner for the given task.
+   *
+   * Priority:
+   * 1. If `getRunnerForTask` is provided, use it.
+   * 2. Otherwise, if `getStepsForTask` is provided, wrap it in `linearStepsRunner`.
+   * 3. Otherwise, throw.
+   */
+  private resolveRunner(task: Task): TaskRunner {
+    if (this.options.getRunnerForTask) {
+      return this.options.getRunnerForTask(task);
+    }
+    if (this.options.getStepsForTask) {
+      return linearStepsRunner(this.options.getStepsForTask(task));
+    }
+    throw new Error(`No runner or steps provided for task "${task.id}"`);
+  }
+
   // ── Public API ──────────────────────────────────────────────────────────
 
   /**
@@ -52,11 +74,12 @@ export class LanePool {
     // Fire onTaskRegister once per task so the TUI gets the initial task layout
     // with phaseId and step definitions before any profile loading or agent spawning.
     for (const task of taskTracker.getAllTasks()) {
-      const steps = this.options.getStepsForTask(task).map((s) => ({
-        name: s.name,
-        profileId: s.profileId,
-        isReadOnly: s.isReadOnly,
-      }));
+      const steps =
+        this.options.getStepsForTask?.(task)?.map((s) => ({
+          name: s.name,
+          profileId: s.profileId,
+          isReadOnly: s.isReadOnly,
+        })) ?? [];
       this.options.onStatus?.onTaskRegister?.({
         taskId: task.id,
         phaseId: this.options.phaseId,
@@ -187,31 +210,51 @@ export class LanePool {
         consecutiveTimeouts = 0; // Reset stall counter on successful claim
         const task = claimed[0];
 
+        // Fire onTaskStart BEFORE calling the runner
+        this.options.onStatus?.onTaskStart?.({
+          taskId: task.id,
+          title: task.title,
+          agentId,
+          phaseId: this.options.phaseId,
+          startedAt: Date.now(),
+        });
+
+        const processorCtx: TaskProcessorContext = {
+          options: this.options,
+          activeSessions: this.activeSessions,
+          phaseId: this.options.phaseId,
+        };
+
         try {
-          await processTask(task, agentId, profiles, {
-            options: this.options,
+          const runner = this.resolveRunner(task);
+          const runnerCtx: TaskRunnerContext = {
+            task,
+            agentId,
+            profiles,
+            onStatus: this.options.onStatus,
             activeSessions: this.activeSessions,
             phaseId: this.options.phaseId,
-          });
+            sessionBaseDir: this.options.sessionBaseDir,
+            cwd: this.options.cwd,
+            apiKeys: this.options.apiKeys,
+            maxStepRetries: this.options.maxStepRetries ?? 5,
+            completeTask: () => safeCompleteTask(task.id, processorCtx),
+            failTask: (result?: unknown) => safeFailTask(task.id, result ?? { completed: false }, processorCtx),
+          };
+
+          const outcome: TaskOutcome = await runner(runnerCtx);
+          if (outcome.status === 'completed') {
+            this.options.onStatus?.onTaskComplete?.({ taskId: task.id, title: task.title });
+          } else if (outcome.feedback) {
+            this.options.onStatus?.onTaskRejected?.({ taskId: task.id, title: task.title, reason: outcome.feedback });
+          } else if (outcome.error) {
+            // Runner returned a failed outcome with an error message; report it
+            reportError(agentId, outcome.error, undefined, task.id, processorCtx);
+          }
         } catch (err) {
-          // Fire onError callback on task processing error
           const error = safeErrorMessage(err);
-          reportError(agentId, error, undefined, task.id, {
-            options: this.options,
-            activeSessions: this.activeSessions,
-            phaseId: this.options.phaseId,
-          });
-          // Error during task processing — mark as failed to prevent the lane
-          // from getting stuck.
-          safeFailTask(
-            task.id,
-            { completed: false, error: true },
-            {
-              options: this.options,
-              activeSessions: this.activeSessions,
-              phaseId: this.options.phaseId,
-            },
-          );
+          reportError(agentId, error, undefined, task.id, processorCtx);
+          safeFailTask(task.id, { completed: false, error: true }, processorCtx);
         }
         continue;
       }

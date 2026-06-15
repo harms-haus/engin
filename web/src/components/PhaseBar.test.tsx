@@ -270,7 +270,7 @@ describe('PhaseBar – accessibility', () => {
     resetStore();
   });
 
-  it('renders tabs with role="button"', () => {
+  it('renders tabs as native <button> elements', () => {
     const phases = [makePhase({ id: 'plan', label: 'Plan' }), makePhase({ id: 'exec', label: 'Execute' })];
     seedStoreAct(phases);
 
@@ -278,20 +278,32 @@ describe('PhaseBar – accessibility', () => {
 
     const tabs = container.querySelectorAll('.phase-bar__tab');
     tabs.forEach((tab) => {
-      expect(tab).toHaveAttribute('role', 'button');
+      expect(tab.tagName).toBe('BUTTON');
     });
   });
 
-  it('renders tabs with tabIndex={0}', () => {
+  it('activates phase via click on a focused tab (Enter/Space handled natively by <button>)', () => {
     const phases = [makePhase({ id: 'plan', label: 'Plan' }), makePhase({ id: 'exec', label: 'Execute' })];
     seedStoreAct(phases);
 
     const { container } = render(<PhaseBar />);
 
-    const tabs = container.querySelectorAll('.phase-bar__tab');
-    tabs.forEach((tab) => {
-      expect(tab).toHaveAttribute('tabindex', '0');
-    });
+    const tab = container.querySelectorAll('.phase-bar__tab')[1];
+    // In a real browser, Enter/Space on a <button> fires its click event.
+    // Verify the button's click handler fires as expected.
+    fireEvent.click(tab);
+    expect(useWorkflowStore.getState().selectedPhaseId).toBe('exec');
+  });
+
+  it('activates phase via click on a different focused tab', () => {
+    const phases = [makePhase({ id: 'plan', label: 'Plan' }), makePhase({ id: 'exec', label: 'Execute' })];
+    seedStoreAct(phases);
+
+    const { container } = render(<PhaseBar />);
+
+    const tab = container.querySelectorAll('.phase-bar__tab')[0];
+    fireEvent.click(tab);
+    expect(useWorkflowStore.getState().selectedPhaseId).toBe('plan');
   });
 });
 

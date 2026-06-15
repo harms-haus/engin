@@ -183,7 +183,14 @@ describe('resumeCommand — TUI/web/QR/pause integration', () => {
     writeFileSync(join(runDir, '.engin-state.json'), JSON.stringify(state));
   }
 
-  function makeResumeOptions(overrides: { cwd: string; sessionName: string; apiKeys?: Record<string, string> }) {
+  function makeResumeOptions(overrides: {
+    cwd: string;
+    sessionName: string;
+    apiKeys?: Record<string, string>;
+    lan?: boolean;
+    host?: string;
+    port?: number;
+  }) {
     return {
       command: 'resume' as const,
       sessionName: overrides.sessionName,
@@ -193,8 +200,9 @@ describe('resumeCommand — TUI/web/QR/pause integration', () => {
       worktree: false,
       apiKeys: overrides.apiKeys ?? {},
       warnings: [],
-      host: undefined,
-      port: undefined,
+      host: overrides.host,
+      lan: overrides.lan,
+      port: overrides.port,
     };
   }
 
@@ -293,7 +301,7 @@ describe('resumeCommand — TUI/web/QR/pause integration', () => {
   // ─── Non-worktree resume with TUI ─────────────────────────────────────
 
   describe('non-worktree resume with TUI', () => {
-    it('starts observer server with default auto-detected LAN host', async () => {
+    it('defaults to localhost-only binding when no host/lan given', async () => {
       const ts = Date.now();
       const dirName = `${ts}-my-workflow`;
       const tempDir = getDir();
@@ -304,7 +312,23 @@ describe('resumeCommand — TUI/web/QR/pause integration', () => {
       expect(mockStartObserverServer).toHaveBeenCalledTimes(1);
       const opts = capturedObserverServerOptions as Record<string, unknown> | null;
       expect(opts).not.toBeNull();
-      // When no --host given, bind to 0.0.0.0 and pass the LAN IP as displayHost
+      // Default is localhost only — not reachable from other devices
+      expect(opts!.host).toBe('127.0.0.1');
+      expect(opts!.port).toBe(3619);
+      expect(opts!.displayHost).toBe('127.0.0.1');
+      // getLocalNetworkIP should not even be consulted in the default path
+      expect(mockGetLocalNetworkIP).not.toHaveBeenCalled();
+    });
+
+    it('binds to 0.0.0.0 and uses LAN IP for display when --lan is given', async () => {
+      const ts = Date.now();
+      const dirName = `${ts}-my-workflow`;
+      const tempDir = getDir();
+      createPastRunDir(tempDir, dirName, { taskPrompt: 'resumed task' });
+
+      await resumeCommand(makeResumeOptions({ cwd: tempDir, sessionName: dirName, lan: true }));
+
+      const opts = capturedObserverServerOptions as Record<string, unknown> | null;
       expect(opts!.host).toBe('0.0.0.0');
       expect(opts!.port).toBe(3619);
       expect(opts!.displayHost).toBe('192.168.1.42');
@@ -327,7 +351,7 @@ describe('resumeCommand — TUI/web/QR/pause integration', () => {
       expect(serverOpts!.displayHost).toBeUndefined();
     });
 
-    it('falls back to 127.0.0.1 for display when getLocalNetworkIP returns null', async () => {
+    it('falls back to 127.0.0.1 for display when --lan given and getLocalNetworkIP returns null', async () => {
       mockGetLocalNetworkIP.mockReturnValue(null);
 
       const ts = Date.now();
@@ -335,7 +359,7 @@ describe('resumeCommand — TUI/web/QR/pause integration', () => {
       const tempDir = getDir();
       createPastRunDir(tempDir, dirName, { taskPrompt: 'resumed task' });
 
-      await resumeCommand(makeResumeOptions({ cwd: tempDir, sessionName: dirName }));
+      await resumeCommand(makeResumeOptions({ cwd: tempDir, sessionName: dirName, lan: true }));
 
       const opts = capturedObserverServerOptions as Record<string, unknown> | null;
       expect(opts!.host).toBe('0.0.0.0');

@@ -468,6 +468,24 @@ describe('TaskList – click-to-select', () => {
     expect(selectTaskSpy).toHaveBeenCalledWith('t-1');
   });
 
+  it('calls selectTask when Enter key is pressed on a focused task button', () => {
+    const selectTaskSpy = vi.spyOn(useWorkflowStore.getState(), 'selectTask');
+
+    const tasks: Record<string, TaskEntity> = {
+      't-1': makeTask({ id: 't-1', title: 'Keyboard Me', phaseId: 'phase-1', status: 'ready' }),
+    };
+
+    seedStoreAct(tasks, 'phase-1');
+
+    const { container } = render(<TaskList />);
+    const taskButton = container.querySelector('.task-list__task') as HTMLButtonElement;
+
+    fireEvent.keyDown(taskButton, { key: 'Enter' });
+
+    expect(selectTaskSpy).toHaveBeenCalledTimes(1);
+    expect(selectTaskSpy).toHaveBeenCalledWith('t-1');
+  });
+
   it('calls selectTask with different ids for different tasks', () => {
     const selectTaskSpy = vi.spyOn(useWorkflowStore.getState(), 'selectTask');
 
@@ -582,7 +600,7 @@ describe('TaskList – accessibility', () => {
     expect(taskRow).toHaveAttribute('aria-label', 'My Task — active');
   });
 
-  it('adds role="list" to the task container and role="listitem" to each task', () => {
+  it('renders task buttons instead of roles for keyboard accessibility', () => {
     const tasks: Record<string, TaskEntity> = {
       't-1': makeTask({ id: 't-1', title: 'Task 1', phaseId: 'phase-1', status: 'active' }),
       't-2': makeTask({ id: 't-2', title: 'Task 2', phaseId: 'phase-1', status: 'ready' }),
@@ -591,11 +609,11 @@ describe('TaskList – accessibility', () => {
     seedStoreAct(tasks, 'phase-1');
 
     const { container } = render(<TaskList />);
-    const list = container.querySelector('[role="list"]');
+    const list = container.querySelector('.task-list');
     expect(list).toBeInTheDocument();
-    expect(list).toHaveClass('task-list');
+    expect(list).not.toHaveAttribute('role');
 
-    const items = container.querySelectorAll('[role="listitem"]');
+    const items = container.querySelectorAll('button.task-list__task');
     expect(items).toHaveLength(2);
   });
 

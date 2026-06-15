@@ -73,6 +73,7 @@ export async function runCommand(options: CliOptions): Promise<void> {
     const tuiResult = await setupTuiAndObserver({
       port: options.port,
       host: options.host,
+      lan: options.lan,
       workDir,
       onTerminate: () => controller.abort(),
     });
@@ -240,6 +241,7 @@ export async function resumeCommand(options: CliOptions): Promise<void> {
     const tuiResult = await setupTuiAndObserver({
       port: options.port,
       host: options.host,
+      lan: options.lan,
       workDir,
       onTerminate: () => controller.abort(),
     });

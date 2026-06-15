@@ -37,9 +37,9 @@ mock.module('../../src/core/structured-output.ts', () => ({
 
 // ─── Imports that resolve through the mocks above ─────────────────────────
 
-import type { Task } from '../../src/core/types.js';
+import type { AgentProfile, Task } from '../../src/core/types.js';
 import { LanePool } from '../../src/pool/lane-pool.ts';
-import type { StepDefinition } from '../../src/pool/types.js';
+import type { StepDefinition, TaskRunner, TaskRunnerContext } from '../../src/pool/types.js';
 import { TaskTracker } from '../../src/tracking/task-status.js';
 import { makeMockSession } from '../helpers/make-session.js';
 import { makeTask as _makeTask } from '../helpers/make-task.js';
@@ -120,6 +120,7 @@ export interface PoolOptions {
   maxConcurrentLanes?: number;
   maxStepRetries?: number;
   getStepsForTask?: (task: Task) => StepDefinition[];
+  getRunnerForTask?: (task: Task) => TaskRunner;
   tasks?: Task[];
   signal?: AbortSignal;
   laneWaitTimeoutMs?: number;
@@ -147,6 +148,7 @@ export function createPoolAndTracker(overrides?: PoolOptions) {
     phaseId: 'implementing',
     taskTracker: tracker,
     getStepsForTask,
+    getRunnerForTask: overrides?.getRunnerForTask,
     maxStepRetries: overrides?.maxStepRetries,
     onStatus: overrides?.onStatus as unknown as undefined,
     auditLog: overrides?.auditLog as unknown as undefined,
@@ -202,4 +204,29 @@ export function restorePoolMocks() {
   mock.module('../../src/core/harness-factory.ts', () => realHarnessFactory);
   mock.module('../../src/core/profile.ts', () => realProfile);
   mock.module('../../src/core/structured-output.ts', () => realStructuredOutput);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// createRunnerContext — convenience factory for TaskRunnerContext
+// ═══════════════════════════════════════════════════════════════════════════
+
+export function createRunnerContext(overrides?: Partial<TaskRunnerContext>): TaskRunnerContext {
+  const profiles = new Map<string, AgentProfile>();
+  profiles.set('coder', defaultProfile);
+  profiles.set('reviewer', reviewerProfile);
+
+  return {
+    task: _makeTask(),
+    agentId: 'lane-0',
+    profiles,
+    onStatus: undefined,
+    activeSessions: new Set(),
+    phaseId: 'implementing',
+    sessionBaseDir: '/tmp/sessions',
+    cwd: '/tmp/project',
+    maxStepRetries: 5,
+    completeTask: mock(() => true) as () => boolean,
+    failTask: mock(() => {}) as (result?: unknown) => void,
+    ...overrides,
+  };
 }

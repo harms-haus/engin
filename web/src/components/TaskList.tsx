@@ -58,18 +58,18 @@ const Task = React.memo(function Task({ taskId }: { taskId: string }) {
   const label = stepLabel(task);
 
   return (
-    <div
+    <button
+      type="button"
       className={`task-list__task${isSelected ? ' task-list__task--selected' : ''}`}
       style={{ borderLeftColor: getStatusColor(task.status) }}
       aria-label={`${task.title} — ${task.status}`}
-      role="listitem"
       onClick={() => selectTask(task.id)}
     >
       <div className="task-list__body">
         <span className="task-list__title">{task.title}</span>
         {task.status === 'active' && label && <span className="task-list__step">{label}</span>}
       </div>
-    </div>
+    </button>
   );
 });
 
@@ -105,7 +105,7 @@ export function TaskList() {
   }
 
   return (
-    <div className="task-list" role="list">
+    <div className="task-list">
       {sortedIds.map((id) => (
         <Task key={id} taskId={id} />
       ))}

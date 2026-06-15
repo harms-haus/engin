@@ -253,13 +253,24 @@ describe('runCommand — TUI/web/QR/pause integration', () => {
   // ─── Server startup ─────────────────────────────────────────────────────
 
   describe('observer server startup', () => {
-    it('starts the observer server with default auto-detected LAN host', async () => {
+    it('defaults to localhost-only binding when no host/lan given', async () => {
       await runCommand(makeOptions());
 
       expect(mockStartObserverServer).toHaveBeenCalledTimes(1);
       const opts = capturedObserverServerOptions as Record<string, unknown> | null;
       expect(opts).not.toBeNull();
-      // When no --host given, bind to 0.0.0.0 and pass the LAN IP as displayHost
+      // Default is localhost only — not reachable from other devices
+      expect(opts!.host).toBe('127.0.0.1');
+      expect(opts!.port).toBe(3619);
+      expect(opts!.displayHost).toBe('127.0.0.1');
+      // getLocalNetworkIP should not even be consulted in the default path
+      expect(mockGetLocalNetworkIP).not.toHaveBeenCalled();
+    });
+
+    it('binds to 0.0.0.0 and uses LAN IP for display when --lan is given', async () => {
+      await runCommand(makeOptions({ lan: true }));
+
+      const opts = capturedObserverServerOptions as Record<string, unknown> | null;
       expect(opts!.host).toBe('0.0.0.0');
       expect(opts!.port).toBe(3619);
       expect(opts!.displayHost).toBe('192.168.1.42');
@@ -274,9 +285,9 @@ describe('runCommand — TUI/web/QR/pause integration', () => {
       expect(opts!.displayHost).toBeUndefined();
     });
 
-    it('falls back to 127.0.0.1 for display when getLocalNetworkIP returns null', async () => {
+    it('falls back to 127.0.0.1 for display when --lan given and getLocalNetworkIP returns null', async () => {
       mockGetLocalNetworkIP.mockReturnValue(null);
-      await runCommand(makeOptions());
+      await runCommand(makeOptions({ lan: true }));
 
       const opts = capturedObserverServerOptions as Record<string, unknown> | null;
       expect(opts!.host).toBe('0.0.0.0');

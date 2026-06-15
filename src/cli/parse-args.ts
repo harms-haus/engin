@@ -13,8 +13,10 @@ export interface CliOptions {
   warnings: string[];
   /** Session name for the resume command (the directory name under .engin/work/) */
   sessionName?: string;
-  /** Web server bind host. When omitted, binds to 0.0.0.0 and auto-detects LAN IP for QR code display. */
+  /** Web server bind host. Defaults to '127.0.0.1' (localhost only). */
   host?: string;
+  /** When true, binds to 0.0.0.0 and auto-detects the LAN IP for QR code display. */
+  lan?: boolean;
   /** Web server port (default: 3619) */
   port?: number;
 }
@@ -37,7 +39,8 @@ Options:
   --verbose               Enable verbose logging
   --worktree              Run workflow in a git worktree
   --api-key <provider=key>  API key (repeatable)
-  --host <host>           Web server bind host (default: auto-detect LAN IP)
+  --host <host>           Web server bind host (default: 127.0.0.1)
+  --lan                   Bind on all interfaces for LAN/QR access (default: localhost only)
   --port <port>           Web server port (default: 3619)
   --help, -h              Show this help message
   --version, -v           Show version`;
@@ -56,6 +59,7 @@ export function parseArgs(argv: string[]): CliOptions {
       apiKeys: {},
       warnings: [],
       host: undefined,
+      lan: undefined,
       port: undefined,
     };
   }
@@ -71,6 +75,7 @@ export function parseArgs(argv: string[]): CliOptions {
       apiKeys: {},
       warnings: [],
       host: undefined,
+      lan: undefined,
       port: undefined,
     };
   }
@@ -115,6 +120,8 @@ export function parseArgs(argv: string[]): CliOptions {
         throw new Error(`Missing value for ${arg}\n${USAGE}`);
       }
       flags.push(arg, val);
+    } else if (arg === '--lan') {
+      flags.push(arg);
     } else if (arg === '--port') {
       const val = argv[++i];
       if (val === undefined || val.startsWith('--')) {
@@ -139,6 +146,7 @@ export function parseArgs(argv: string[]): CliOptions {
   let workDir: string | undefined;
   let maxConcurrent = 5;
   let host: string | undefined;
+  let lan: boolean | undefined;
   let port: number | undefined;
 
   for (let j = 0; j < flags.length; j++) {
@@ -160,6 +168,8 @@ export function parseArgs(argv: string[]): CliOptions {
       worktree = true;
     } else if (flag === '--host') {
       host = flags[++j];
+    } else if (flag === '--lan') {
+      lan = true;
     } else if (flag === '--port') {
       const raw = flags[++j];
       const parsed = Number(raw);
@@ -196,6 +206,7 @@ export function parseArgs(argv: string[]): CliOptions {
       apiKeys,
       warnings,
       host,
+      lan,
       port,
     };
   }
@@ -206,7 +217,7 @@ export function parseArgs(argv: string[]): CliOptions {
     if (positionals.length > 1) {
       throw new Error(`Unexpected argument: "${positionals[1]}"\n${USAGE}`);
     }
-    return { command: 'init', cwd, verbose, worktree, maxConcurrent, apiKeys, warnings, host, port };
+    return { command: 'init', cwd, verbose, worktree, maxConcurrent, apiKeys, warnings, host, lan, port };
   }
 
   if (command === 'resume') {
@@ -225,6 +236,7 @@ export function parseArgs(argv: string[]): CliOptions {
       warnings,
       sessionName,
       host,
+      lan,
       port,
     };
   }
@@ -249,6 +261,7 @@ export function parseArgs(argv: string[]): CliOptions {
     apiKeys,
     warnings,
     host,
+    lan,
     port,
   };
 }

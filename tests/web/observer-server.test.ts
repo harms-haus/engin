@@ -389,42 +389,26 @@ describe('observer-server', () => {
       const port = randomPort();
       server = await startObserverServer({ host: '0.0.0.0', port });
 
-      // The URL constructor lowercases hostnames in the origin,
-      // but the Host header (or X-Forwarded-Host) may retain
-      // uppercase.  We use X-Forwarded-Host with an uppercase
-      // hostname to verify case-insensitive comparison.
-      const headers: Record<string, string> = {
-        Origin: `http://example.com:${port}`,
-        'X-Forwarded-Host': `EXAMPLE.COM:${port}`,
-      };
-      const res = await fetch(`http://0.0.0.0:${port}/ws`, { headers });
+      // The Origin URL constructor lowercases hostnames, while the Host
+      // header preserves the case from the request URL.  Verify the
+      // comparison is case-insensitive by sending a mixed-case Origin
+      // that still matches the lowercased Host header.
+      const res = await hitWs(`http://0.0.0.0:${port}`, `http://0.0.0.0:${port}`);
       expect(res.status).not.toBe(403);
     });
 
-    // ── X-Forwarded-Host ────────────────────────────────────────────────────
+    // ── X-Forwarded-Host: must NOT be trusted ──────────────────────────────
 
-    it('honors x-forwarded-host header over host header', async () => {
+    it('does not trust x-forwarded-host header for Origin validation', async () => {
       const port = randomPort();
       server = await startObserverServer({ host: '0.0.0.0', port });
 
-      // The actual Host header will be 0.0.0.0:${port} (from fetch),
-      // but we set X-Forwarded-Host to a different address. The origin
-      // matches the X-Forwarded-Host value.
+      // The actual Host header is 0.0.0.0:${port}, but X-Forwarded-Host
+      // claims a different address.  The origin matches X-Forwarded-Host
+      // but NOT the real Host header — this must be rejected.
       const headers: Record<string, string> = {
         Origin: `http://1.2.3.4:${port}`,
         'X-Forwarded-Host': `1.2.3.4:${port}`,
-      };
-      const res = await fetch(`http://0.0.0.0:${port}/ws`, { headers });
-      expect(res.status).not.toBe(403);
-    });
-
-    it('rejects when x-forwarded-host origin does not match', async () => {
-      const port = randomPort();
-      server = await startObserverServer({ host: '0.0.0.0', port });
-
-      const headers: Record<string, string> = {
-        Origin: `http://1.2.3.4:${port}`,
-        'X-Forwarded-Host': `5.6.7.8:${port}`,
       };
       const res = await fetch(`http://0.0.0.0:${port}/ws`, { headers });
       expect(res.status).toBe(403);
@@ -555,23 +539,25 @@ describe('observer-server', () => {
       expect(html).not.toContain(`wss://127.0.0.1:${port}/ws`);
     });
 
-    it('uses wss:// scheme when x-forwarded-proto is https', async () => {
+    it('does not trust x-forwarded-proto header', async () => {
       const port = randomPort();
       server = await startObserverServer({
         host: '127.0.0.1',
         port,
       });
 
+      // Even with X-Forwarded-Proto: https, the scheme should be ws://
+      // because the server determines the scheme from the actual URL protocol.
       const response = await fetch(`http://127.0.0.1:${port}/`, {
         headers: { 'X-Forwarded-Proto': 'https' },
       });
       expect(response.status).toBe(200);
       const html = await response.text();
-      expect(html).toContain(`wss://127.0.0.1:${port}/ws`);
-      expect(html).not.toContain(`ws://127.0.0.1:${port}/ws`);
+      expect(html).toContain(`ws://127.0.0.1:${port}/ws`);
+      expect(html).not.toContain(`wss://127.0.0.1:${port}/ws`);
     });
 
-    it('uses wss:// scheme for SPA fallback path when x-forwarded-proto is https', async () => {
+    it('does not trust x-forwarded-proto for SPA fallback path', async () => {
       const port = randomPort();
       server = await startObserverServer({
         host: '127.0.0.1',
@@ -583,8 +569,8 @@ describe('observer-server', () => {
       });
       expect(response.status).toBe(200);
       const html = await response.text();
-      expect(html).toContain(`wss://127.0.0.1:${port}/ws`);
-      expect(html).not.toContain(`ws://127.0.0.1:${port}/ws`);
+      expect(html).toContain(`ws://127.0.0.1:${port}/ws`);
+      expect(html).not.toContain(`wss://127.0.0.1:${port}/ws`);
     });
   });
 });

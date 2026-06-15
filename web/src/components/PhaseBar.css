@@ -20,6 +20,16 @@
   min-width: 44px;
   min-height: 44px;
   cursor: pointer;
+  background: none;
+  border: none;
+  font: inherit;
+  text-align: left;
+  width: auto;
+}
+
+.phase-bar__tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 
 .phase-bar__tab--completed {
