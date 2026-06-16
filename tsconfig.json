@@ -6,17 +6,16 @@
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
+    "jsx": "react-jsx",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "lib": ["ES2024", "DOM", "DOM.Iterable"],
     "baseUrl": ".",
     "paths": {
       "@engin/shared": ["./packages/shared/src/index.ts"],
-      "@engin/shared/*": ["./packages/shared/src/*"]
+      "@engin/shared/*": ["./packages/shared/src/*"],
+      "@app/*": ["./packages/web/src/*"]
     }
   },
-  "files": [],
-  "references": [
-    { "path": "./packages/shared" },
-    { "path": "./packages/engine" },
-    { "path": "./packages/tui" },
-    { "path": "./packages/cli" }
-  ]
+  "include": ["packages/*/src"]
 }

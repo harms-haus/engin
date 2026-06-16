@@ -22,7 +22,7 @@
     "test": "bun test && bun run --cwd packages/web test",
     "test:coverage": "bun test --coverage",
     "test:watch": "bun test --watch",
-    "typecheck": "tsc -b packages/shared && tsc --noEmit",
+    "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",

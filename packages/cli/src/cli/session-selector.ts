@@ -108,7 +108,7 @@ function statusLabel(status: RunSummary['status']): string {
     case 'failed':
       return 'FAILED';
     default:
-      return status.toUpperCase();
+      return 'UNKNOWN';
   }
 }
 

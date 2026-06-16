@@ -48,6 +48,43 @@ describe('session-selector module exports', () => {
   });
 });
 
+// ─── queryActiveRuns ───────────────────────────────────────────────────────
+//
+// queryActiveRuns is the server-source used by the resume positional path:
+// if `engin resume <runId>` matches an active runId, the CLI attaches rather
+// than re-starting. It must degrade gracefully (return []) whenever the
+// client is absent or the server call fails, and forward the server's run
+// list otherwise.
+
+describe('queryActiveRuns', () => {
+  it('returns [] when client is null', async () => {
+    const result = await sessionSelector.queryActiveRuns(null);
+    expect(result).toEqual([]);
+  });
+
+  it('returns [] when client is undefined', async () => {
+    const result = await sessionSelector.queryActiveRuns(undefined);
+    expect(result).toEqual([]);
+  });
+
+  it('returns runs from client.requestRuns()', async () => {
+    const runs = [createMockRunSummary({ runId: 'active-1' }), createMockRunSummary({ runId: 'active-2' })];
+    const client = { requestRuns: async () => runs } as any;
+    const result = await sessionSelector.queryActiveRuns(client);
+    expect(result).toEqual(runs);
+  });
+
+  it('returns [] when requestRuns throws', async () => {
+    const client = {
+      requestRuns: async () => {
+        throw new Error('server down');
+      },
+    } as any;
+    const result = await sessionSelector.queryActiveRuns(client);
+    expect(result).toEqual([]);
+  });
+});
+
 // ─── formatRelativeTime ────────────────────────────────────────────────────
 
 describe('formatRelativeTime', () => {

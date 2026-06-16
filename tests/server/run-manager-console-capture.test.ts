@@ -6,19 +6,21 @@
 //
 // Contract under test (see task spec):
 //
-//   Before the `try` block in executeWorkflow, the original console.warn,
-//   console.error, and console.info are saved and replaced with wrappers
-//   that:
+//   Capture is routed per-run via AsyncLocalStorage (see console-capture.ts):
+//   the global console.warn/error/info are replaced ONCE (idempotent) with
+//   wrappers that, when an active run context exists:
 //     1. ALWAYS call the original method (so the server log file still
 //        captures them), AND
-//     2. append a `log` event to the run's EventStore with the matching
-//        level (`warn` / `error` / `info`).
+//     2. append a `log` event to the CURRENT run's EventStore with the
+//        matching level (`warn` / `error` / `info`).
 //
 //   console.log is intentionally NOT overridden (library noise like dotenv
-//   is ignored).
-//
-//   In the `finally` block, the original console methods are ALWAYS restored
-//   — even on error or abort.
+//   is ignored). Outside any run context the wrappers are inert and behave
+//   exactly like the originals — so after a run settles, the observable
+//   behavior is the same as the old save/restore: global console is the
+//   original, with no per-run mutation of the process-global `console`.
+//   This makes concurrent-run capture concurrency-safe (deferred item
+//   CQ-H3).
 //
 //   The appended `log` events feed through the normal EventStore → evolve →
 //   StatusBridge → subscriber pipeline; evolve's `log` case appends a
@@ -95,6 +97,45 @@ export async function run(taskPrompt, options) {
   console.log('LOG-BEFORE-FAIL-NOT-CAPTURED');
   try { writeFileSync(join(workDir, 'started.marker'), '1'); } catch (e) {}
   throw new Error('logger workflow exploded');
+}
+`;
+
+// `logger-concurrent` — the same blocking shape as `logger`, but emits markers
+// derived from `taskPrompt` so two simultaneously-running instances log
+// DISTINCT, identifiable output (run A logs `WARN-A`, run B logs `WARN-B`).
+// Used by the concurrent-isolation regression test for CQ-H3: under the old
+// process-global console mutation, run B's override clobbered run A's, so A's
+// console output could land in B's store. With AsyncLocalStorage routing each
+// run must capture ONLY its own markers.
+
+const LOGGER_CONCURRENT_SOURCE = `import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+
+export async function run(taskPrompt, options) {
+  const workDir = options.workDir;
+  try { mkdirSync(workDir, { recursive: true }); } catch (e) {}
+  if (options.onStatus && options.onStatus.onWorkflowStart) {
+    options.onStatus.onWorkflowStart({ taskPrompt: taskPrompt, resumed: false, workDir: workDir });
+  }
+  // Per-run markers derived from taskPrompt so two concurrent runs log
+  // distinct, identifiable output.
+  console.warn('WARN-' + taskPrompt);
+  console.error('ERROR-' + taskPrompt);
+  console.info('INFO-' + taskPrompt);
+  // console.log should NOT be captured (library noise is ignored).
+  console.log('LOG-' + taskPrompt);
+  try { writeFileSync(join(workDir, 'started.marker'), '1'); } catch (e) {}
+  const releasePath = join(workDir, 'release.marker');
+  const signal = options.signal;
+  await new Promise(function (resolve, reject) {
+    function check() {
+      if (existsSync(releasePath)) { resolve(undefined); return true; }
+      if (signal && signal.aborted) { reject(new DOMException('Aborted', 'AbortError')); return true; }
+      return false;
+    }
+    if (check()) return;
+    const iv = setInterval(function () { if (check()) clearInterval(iv); }, 5);
+  });
 }
 `;
 
@@ -186,6 +227,8 @@ describe('RunManager — console capture', () => {
     await writeFile(join(globalWorkflowDir, 'logger', 'main.ts'), LOGGER_SOURCE);
     await mkdir(join(globalWorkflowDir, 'logger-fail'), { recursive: true });
     await writeFile(join(globalWorkflowDir, 'logger-fail', 'main.ts'), LOGGER_FAIL_SOURCE);
+    await mkdir(join(globalWorkflowDir, 'logger-concurrent'), { recursive: true });
+    await writeFile(join(globalWorkflowDir, 'logger-concurrent', 'main.ts'), LOGGER_CONCURRENT_SOURCE);
 
     clearWorkflowCache();
     managers.length = 0;
@@ -330,8 +373,10 @@ describe('RunManager — console capture', () => {
       await mkdir(workDir, { recursive: true });
 
       // Install spies that record their arguments AND delegate to the real
-      // methods. The implementation captures these spies as the "originals"
-      // and wraps them, so a workflow console call reaches the spy.
+      // methods. The spies are layered ON TOP of the (already-installed)
+      // capture wrapper, so a workflow console call reaches the spy, which
+      // forwards to the wrapper (which appends to the store and calls the
+      // pristine original).
       const warnCalls: string[][] = [];
       const errorCalls: string[][] = [];
       const infoCalls: string[][] = [];
@@ -363,9 +408,15 @@ describe('RunManager — console capture', () => {
   });
 
   // ─── restoration ─────────────────────────────────────────────────────────
+  //
+  // The global console methods are replaced ONCE at install time and are
+  // NEVER reassigned per run — capture routing is purely via AsyncLocalStorage.
+  // So after a run settles (success / failure / abort) the global console.warn /
+  // error / info references are unchanged: they are still the same wrapper,
+  // and outside any run context the wrapper behaves exactly like the original.
 
   describe('restoration', () => {
-    it('restores the original console methods after a successful run', async () => {
+    it('leaves global console methods stable after a successful run', async () => {
       const { manager } = createManager();
       const workDir = makeWorkDir('restore-ok');
       await mkdir(workDir, { recursive: true });
@@ -378,13 +429,14 @@ describe('RunManager — console capture', () => {
       await manager.startRun({ workflowName: 'logger', taskPrompt: 't', cwd, workDir } as any);
       await waitFor(() => manager.listRuns()[0]?.status === 'complete');
 
-      // The finally block restored the exact original references.
+      // console methods are never reassigned per run, so the references are
+      // unchanged once the run settles.
       expect(console.warn).toBe(origWarn);
       expect(console.error).toBe(origError);
       expect(console.info).toBe(origInfo);
     });
 
-    it('restores the original console methods after a failed run', async () => {
+    it('leaves global console methods stable after a failed run', async () => {
       const { manager } = createManager();
       const workDir = makeWorkDir('restore-fail');
       await mkdir(workDir, { recursive: true });
@@ -396,13 +448,14 @@ describe('RunManager — console capture', () => {
       await manager.startRun({ workflowName: 'logger-fail', taskPrompt: 't', cwd, workDir } as any);
       await waitFor(() => manager.listRuns()[0]?.status === 'failed');
 
-      // Even on error the finally block restored the originals.
+      // console methods are never reassigned per run, so the references are
+      // unchanged even after a failure.
       expect(console.warn).toBe(origWarn);
       expect(console.error).toBe(origError);
       expect(console.info).toBe(origInfo);
     });
 
-    it('restores the original console methods after cancellation (abort)', async () => {
+    it('leaves global console methods stable after cancellation (abort)', async () => {
       const { manager } = createManager();
       const workDir = makeWorkDir('restore-abort');
       await mkdir(workDir, { recursive: true });
@@ -418,10 +471,110 @@ describe('RunManager — console capture', () => {
       manager.cancelRun(result.runId);
       await waitFor(() => manager.listRuns()[0]?.status === 'failed');
 
-      // Even on abort the finally block restored the originals.
+      // console methods are never reassigned per run, so the references are
+      // unchanged even after an abort.
       expect(console.warn).toBe(origWarn);
       expect(console.error).toBe(origError);
       expect(console.info).toBe(origInfo);
+    });
+  });
+
+  // ─── post-run inertness ────────────────────────────────────────────────────
+  //
+  // The install is permanent, but the wrappers are inert outside any run
+  // context: a plain console call made with no active run must NOT append to
+  // any store (it just forwards to the original).
+
+  describe('post-run inertness', () => {
+    it('console.warn outside any run does not append to a store and leaves the reference stable', async () => {
+      const { manager } = createManager();
+      const workDir = makeWorkDir('inert');
+      await mkdir(workDir, { recursive: true });
+
+      const beforeWarn = console.warn;
+
+      await writeFile(join(workDir, 'release.marker'), '1');
+      await manager.startRun({ workflowName: 'logger', taskPrompt: 't', cwd, workDir } as any);
+      await waitFor(() => manager.listRuns()[0]?.status === 'complete');
+
+      // The global console.warn reference is unchanged once the run settles.
+      expect(console.warn).toBe(beforeWarn);
+
+      // A console.warn call made OUTSIDE any run context is inert: it forwards
+      // to the original but does NOT append a log event to the settled store.
+      console.warn('POST-RUN-NOISE');
+      const logEvents = await readLogEvents(workDir);
+      const stray = logEvents.find((e) => String(e.data.message).includes('POST-RUN-NOISE'));
+      expect(stray).toBeUndefined();
+    });
+  });
+
+  // ─── concurrent isolation (CQ-H3 regression) ───────────────────────────────
+  //
+  // Two runs logging simultaneously must each capture ONLY their own console
+  // output. Under the old process-global console mutation, run B's override
+  // clobbered run A's, so A's console calls could be appended to B's store.
+  // With AsyncLocalStorage routing each run resolves its own store from the
+  // async context, so there is no cross-contamination.
+
+  describe('concurrent isolation', () => {
+    it('two simultaneous runs capture only their own console output (no cross-contamination)', async () => {
+      const { manager } = createManager();
+      const workDirA = makeWorkDir('conc-a');
+      const workDirB = makeWorkDir('conc-b');
+      await mkdir(workDirA, { recursive: true });
+      await mkdir(workDirB, { recursive: true });
+
+      // Start BOTH runs with no release marker yet, so each emits its console
+      // output then blocks. This guarantees the two runs' console calls overlap
+      // in time — the exact condition that corrupted capture under the old
+      // global mutation.
+      const resultA = await manager.startRun({
+        workflowName: 'logger-concurrent',
+        taskPrompt: 'A',
+        cwd,
+        workDir: workDirA,
+      } as any);
+      const resultB = await manager.startRun({
+        workflowName: 'logger-concurrent',
+        taskPrompt: 'B',
+        cwd,
+        workDir: workDirB,
+      } as any);
+
+      // Wait until BOTH runs have made their (distinct) console calls while
+      // both are still blocked/running.
+      await waitFor(() => existsSync(join(workDirA, 'started.marker')));
+      await waitFor(() => existsSync(join(workDirB, 'started.marker')));
+      expect(manager.getRun(resultA.runId)?.status).toBe('running');
+      expect(manager.getRun(resultB.runId)?.status).toBe('running');
+
+      // Release both and let them terminate.
+      await writeFile(join(workDirA, 'release.marker'), '1');
+      await writeFile(join(workDirB, 'release.marker'), '1');
+      await waitFor(() => manager.getRun(resultA.runId)?.status === 'complete');
+      await waitFor(() => manager.getRun(resultB.runId)?.status === 'complete');
+
+      const eventsA = await readLogEvents(workDirA);
+      const eventsB = await readLogEvents(workDirB);
+      const messagesA = eventsA.map((e) => String(e.data.message));
+      const messagesB = eventsB.map((e) => String(e.data.message));
+
+      // Each run captured its own three markers.
+      expect(messagesA).toContain('WARN-A');
+      expect(messagesA).toContain('ERROR-A');
+      expect(messagesA).toContain('INFO-A');
+      expect(messagesB).toContain('WARN-B');
+      expect(messagesB).toContain('ERROR-B');
+      expect(messagesB).toContain('INFO-B');
+
+      // No cross-contamination: A's store has NO '-B' markers, B's has no '-A'.
+      expect(messagesA.some((m) => m.includes('-B'))).toBe(false);
+      expect(messagesB.some((m) => m.includes('-A'))).toBe(false);
+
+      // console.log output must never have been captured by either store.
+      expect(messagesA.some((m) => m.includes('LOG-A'))).toBe(false);
+      expect(messagesB.some((m) => m.includes('LOG-B'))).toBe(false);
     });
   });
 });

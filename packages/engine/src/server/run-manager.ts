@@ -24,7 +24,16 @@ import {
 } from '../core/worktree-lifecycle.js';
 import { EventStore } from '../tracking/event-store.js';
 import { createStoreCallbacks } from '../tracking/store-callbacks.js';
+import { installConsoleCapture, runWithConsoleCapture } from './console-capture.js';
 import { StatusBridge } from './status-bridge.js';
+
+// Install the global console capture ONCE at module load. The wrappers route
+// per-run console.warn/error/info output to the active run's store via
+// AsyncLocalStorage (see console-capture.ts). Idempotent and inert outside any
+// run context, so it is safe to call at import time. Replacing the per-run
+// save/restore of the process-global `console` with async-context routing
+// fixes the concurrent-run capture corruption (deferred item CQ-H3).
+installConsoleCapture();
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -241,72 +250,54 @@ export class RunManager {
       options.apiKeys = msg.apiKeys;
     }
 
-    // Scoped console capture for this run: override console.warn/error/info so
-    // their output is ALSO appended to the store as `log` events (feeding
-    // through the normal EventStore → evolve → StatusBridge → subscriber
-    // pipeline; evolve's `log` case appends to the projection runLog). The
-    // originals are ALWAYS still called so the server log file captures them.
-    // console.log is intentionally NOT overridden — library noise like dotenv
-    // is ignored. The originals are restored in the `finally` block below, even
-    // on error or abort. Dedup is handled client-side.
-    const originalWarn = console.warn;
-    const originalError = console.error;
-    const originalInfo = console.info;
-    console.warn = (...args: unknown[]): void => {
-      originalWarn(...args);
-      store.append('log', { level: 'warn', message: args.join(' ') });
-    };
-    console.error = (...args: unknown[]): void => {
-      originalError(...args);
-      store.append('log', { level: 'error', message: args.join(' ') });
-    };
-    console.info = (...args: unknown[]): void => {
-      originalInfo(...args);
-      store.append('log', { level: 'info', message: args.join(' ') });
-    };
+    // Run the workflow inside an async-local console capture context. Any
+    // console.warn/error/info call made during execution — including the
+    // flush/terminal/finally teardown below — is routed to THIS run's store as
+    // a `log` event by the globally-installed console wrappers (see
+    // console-capture.ts). This is concurrency-safe: concurrent runs each
+    // capture their own output with no per-run mutation of the process-global
+    // `console` object. console.log is intentionally not captured and the
+    // originals are always forwarded to (so the server log file still gets
+    // them). The context exits automatically when this scope settles, so no
+    // save/restore is needed.
+    await runWithConsoleCapture(store, async () => {
+      try {
+        await workflow.run(handle.taskPrompt, options);
 
-    try {
-      await workflow.run(handle.taskPrompt, options);
+        // Durability: flush BEFORE flipping status so the terminal event
+        // records are on disk by the time clients see "complete".
+        await store.flush();
 
-      // Durability: flush BEFORE flipping status so the terminal event
-      // records are on disk by the time clients see "complete".
-      await store.flush();
+        handle.status = 'complete';
+        handle.summary.status = 'complete';
+        bridge.broadcastTerminal({ type: 'run_complete', runId });
+      } catch (err: unknown) {
+        // Flush even on error so partial events are durable.
+        await store.flush();
 
-      handle.status = 'complete';
-      handle.summary.status = 'complete';
-      bridge.broadcastTerminal({ type: 'run_complete', runId });
-    } catch (err: unknown) {
-      // Flush even on error so partial events are durable.
-      await store.flush();
+        // Distinguish AbortError (from controller.abort()) from genuine errors.
+        const isAbort = err instanceof Error && err.name === 'AbortError';
+        const message = isAbort ? 'Run cancelled' : err instanceof Error ? err.message : String(err);
 
-      // Distinguish AbortError (from controller.abort()) from genuine errors.
-      const isAbort = err instanceof Error && err.name === 'AbortError';
-      const message = isAbort ? 'Run cancelled' : err instanceof Error ? err.message : String(err);
+        handle.status = 'failed';
+        handle.summary.status = 'failed';
 
-      handle.status = 'failed';
-      handle.summary.status = 'failed';
+        const phaseId = store.getProjection().currentPhaseId;
+        bridge.broadcastTerminal({ type: 'run_failed', runId, error: message, phase: phaseId });
+      } finally {
+        this.onRunsChanged();
 
-      const phaseId = store.getProjection().currentPhaseId;
-      bridge.broadcastTerminal({ type: 'run_failed', runId, error: message, phase: phaseId });
-    } finally {
-      // ALWAYS restore the original console methods — even on error or abort —
-      // so the override does not leak beyond this run's scope.
-      console.warn = originalWarn;
-      console.error = originalError;
-      console.info = originalInfo;
-
-      this.onRunsChanged();
-
-      // Schedule a reaper: once the run is no longer 'running', dispose the
-      // bridge and remove the handle from the registry after 60 s.
-      setTimeout(() => {
-        if (handle.status !== 'running') {
-          bridge.dispose();
-          this.runs.delete(runId);
-          this.onRunsChanged();
-        }
-      }, 60_000);
-    }
+        // Schedule a reaper: once the run is no longer 'running', dispose the
+        // bridge and remove the handle from the registry after 60 s.
+        setTimeout(() => {
+          if (handle.status !== 'running') {
+            bridge.dispose();
+            this.runs.delete(runId);
+            this.onRunsChanged();
+          }
+        }, 60_000);
+      }
+    });
   }
 
   // ─── cancelRun ────────────────────────────────────────────────────────────

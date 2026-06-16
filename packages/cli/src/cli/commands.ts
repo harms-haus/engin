@@ -22,7 +22,7 @@ import { formatTime, shouldUseTui } from './console-status.js';
 import type { CliOptions } from './parse-args.js';
 import { promptPostWorktreeAction } from './post-worktree.js';
 import type { PickerSelection } from './session-selector.js';
-import { interactiveSelectRun, resolveSessionName } from './session-selector.js';
+import { interactiveSelectRun, queryActiveRuns, resolveSessionName } from './session-selector.js';
 import { setupNonTtySigintHandler } from './sigint.js';
 
 // ─── Init Command ───────────────────────────────────────────────────────────
@@ -41,18 +41,27 @@ const DEFAULT_SERVER_PORT = 3619;
 /** Default bind host when none is specified. */
 const DEFAULT_SERVER_HOST = '127.0.0.1';
 
+/** Optional async callback invoked after the run reaches a terminal state
+ *  and the TUI (if any) has been stopped — e.g. the worktree post-action. */
+type PostTerminalAction = (ctx: PostTerminalContext) => Promise<void>;
+
 /**
- * The result of the async {@link DaemonClientOptions.setup} callback.
+ * The result of the async {@link DaemonClientOptions.setup} callback, as a
+ * discriminated union on `mode`:
+ *
+ *  - `mode: 'start'`  — start a fresh (or resumed-from-disk) run by sending
+ *    `start_run`. This is the historical behavior used by {@link runCommand}
+ *    and the disk-resume path of {@link resumeCommand}.
+ *  - `mode: 'attach'` — attach to a run that is ALREADY active on the server.
+ *    No `start_run` is sent; the client only `subscribe`s + `resync`s and
+ *    blocks until the run reaches a terminal state.
+ *
  * If `setup` returns `null`, the command exits early (e.g. user cancelled
  * the interactive session picker).
  */
-interface SetupResult {
-  /** The `start_run` message to send once the daemon is reachable. */
-  startRunMessage: ClientMessage;
-  /** Optional async callback invoked after the run reaches a terminal state
-   *  and the TUI (if any) has been stopped — e.g. the worktree post-action. */
-  postTerminalAction?: (ctx: PostTerminalContext) => Promise<void>;
-}
+type SetupResult =
+  | { mode: 'start'; startRunMessage: ClientMessage; postTerminalAction?: PostTerminalAction }
+  | { mode: 'attach'; runId: string; postTerminalAction?: PostTerminalAction };
 
 /** Context passed to {@link SetupResult.postTerminalAction}. */
 interface PostTerminalContext {
@@ -161,25 +170,48 @@ async function executeViaDaemon(opts: DaemonClientOptions): Promise<void> {
     url: `ws://127.0.0.1:${port}/ws`,
     ...(serverToken !== null ? { authToken: serverToken } : {}),
   });
+
+  /**
+   * Attach the client to a run: set the local `runId`, `subscribe`, propagate
+   * the runId to the TUI, and (in non-TTY mode) install the cooperative
+   * SIGINT handler. When `resync` is set, also request a full snapshot (no
+   * `lastSeq`) so the server replays the run's state — routed into the
+   * ClientStore by the `snapshot`/`events` handlers below.
+   *
+   * Shared by the `run_started` handler (start mode) and the explicit
+   * attach-mode entry point so the two paths behave identically. Mirrors the
+   * bookkeeping the `run_started` handler used to do inline. Start mode opts
+   * OUT of `resync` (the server already pushes an initial snapshot on
+   * `run_started`); attach mode opts IN (there is no `start_run` to trigger
+   * one, so the client must fetch the snapshot explicitly).
+   */
+  const attachToRun = (id: string, options: { resync?: boolean } = {}): void => {
+    runId = id;
+    engineClient.subscribe(id);
+    // No lastSeq → the server replies with a full snapshot, which the
+    // snapshot/events handlers below already route into the ClientStore.
+    if (options.resync) {
+      engineClient.resync(id);
+    }
+    // Propagate the runId to the TUI so the detach/kill prompt can display it.
+    tuiInstance?.setRunId(id);
+    // Non-TTY mode: wire the client-side SIGINT handler now that runId is known.
+    // (TTY mode uses the TUI's onDetach/onKill instead — sigint.ts is not used there.)
+    if (!useTui) {
+      sigintDispose = setupNonTtySigintHandler(id, engineClient).dispose;
+    }
+  };
+
   engineClient.connect({
     onMessage: (msg: ServerMessage) => {
       switch (msg.type) {
         case 'run_started':
           if (runId !== undefined) break; // idempotent — ignore duplicate run_started (e.g. on WS reconnect)
-          runId = msg.runId;
           // T33: Capture worktree info so postTerminalAction can use it later.
           if (msg.summary?.worktree) capturedWorktree = msg.summary.worktree;
-          // Track for reconnection replay (the server also auto-subscribes
-          // on start_run, but this ensures resubscribe after a WS drop).
-          engineClient.subscribe(runId);
-          // Propagate the runId to the TUI so the detach/kill prompt can
-          // display it.
-          tuiInstance?.setRunId(runId);
-          // Non-TTY mode: wire the client-side SIGINT handler now that runId is known.
-          // (TTY mode uses the TUI's onDetach/onKill instead — sigint.ts is not used there.)
-          if (!useTui) {
-            sigintDispose = setupNonTtySigintHandler(runId, engineClient).dispose;
-          }
+          // Start mode: the server pushes an initial snapshot on run_started,
+          // so no explicit resync is needed here.
+          attachToRun(msg.runId);
           break;
         case 'snapshot':
           if (msg.runId === runId) clientStore.applySnapshot(msg.state, msg.seq);
@@ -277,9 +309,13 @@ async function executeViaDaemon(opts: DaemonClientOptions): Promise<void> {
       // Early exit (e.g. user cancelled interactive session picker).
       return;
     }
-    const { startRunMessage, postTerminalAction } = setupResult;
+    const postTerminalAction = setupResult.postTerminalAction;
 
     // ── Daemon probe + auto-start ────────────────────────────────────────
+    // Runs for BOTH modes. For attach mode the probe is best-effort: if the
+    // server is down there is nothing active to attach to, but auto-starting
+    // a fresh server is harmless (the target run simply won't be there and
+    // the client will wait for a terminal that won't arrive this session).
     if (!(await isServerAlive(port))) {
       await startDaemon({ port, host });
       // Confirm readiness (best-effort — startDaemon already probes /health
@@ -289,15 +325,28 @@ async function executeViaDaemon(opts: DaemonClientOptions): Promise<void> {
       }
     }
 
-    // ── Send start_run (guarded by socket readiness) ───────────────────
-    // Queue the message first, then send directly only if the socket is
-    // already OPEN. If it is not open yet, the onConnected callback wired
-    // above will flush pendingStartRun once the handshake completes —
-    // preventing an indefinite hang when EngineClient.send() would silently
-    // drop the message.
-    pendingStartRun = startRunMessage;
-    if (engineClient.isConnected()) {
-      engineClient.send(startRunMessage);
+    // ── Dispatch on mode ─────────────────────────────────────────────────
+    if (setupResult.mode === 'attach') {
+      // Attach to an already-active run: subscribe + resync only. Do NOT
+      // send start_run (the run is already executing on the server). The
+      // runId is now set, so the snapshot/events/terminal handlers below
+      // route messages for this run correctly. `resync: true` requests a
+      // full snapshot since there was no start_run to trigger one.
+      attachToRun(setupResult.runId, { resync: true });
+      // pendingStartRun stays undefined → onConnected will NOT flush a
+      // start_run on a (re)connect.
+    } else {
+      // Start mode: queue + send start_run (guarded by socket readiness).
+      // Queue the message first, then send directly only if the socket is
+      // already OPEN. If it is not open yet, the onConnected callback wired
+      // above will flush pendingStartRun once the handshake completes —
+      // preventing an indefinite hang when EngineClient.send() would silently
+      // drop the message.
+      const { startRunMessage } = setupResult;
+      pendingStartRun = startRunMessage;
+      if (engineClient.isConnected()) {
+        engineClient.send(startRunMessage);
+      }
     }
 
     // ── Start TUI ───────────────────────────────────────────────────────
@@ -391,12 +440,115 @@ export async function runCommand(options: CliOptions): Promise<void> {
           });
         };
       }
-      return { startRunMessage, postTerminalAction };
+      return { mode: 'start', startRunMessage, postTerminalAction };
     },
   });
 }
 
 // ─── Resume Command ─────────────────────────────────────────────────────────
+
+/**
+ * Build a `start`-mode {@link SetupResult} for resuming a run from its on-disk
+ * state file. Reads `.engin-state.json` to recover the `taskPrompt` (and
+ * optional worktree info), validates the workflow name, prints a resumption
+ * banner, and wires the optional worktree post-terminal action.
+ *
+ * Shared by the positional and interactive-picker historical paths of
+ * {@link resumeCommand} so both send `start_run` against the recovered state.
+ */
+async function buildResumeStartResult(
+  options: CliOptions,
+  run: PastRunEntry,
+): Promise<Extract<SetupResult, { mode: 'start' }>> {
+  if (!run.hasStateFile) {
+    throw new Error(
+      `Run "${run.dirName}" does not have a resumable state file. It may have been manually cleaned up or interrupted before saving state.`,
+    );
+  }
+
+  // ── Read the state file to recover taskPrompt + optional worktree ──
+  const statePath = join(run.fullPath, '.engin-state.json');
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(statePath, 'utf-8'));
+  } catch (err) {
+    throw new Error(
+      `Run "${run.dirName}" has a corrupt or unreadable state file: ${err instanceof Error ? err.message : String(err)}`,
+      { cause: err },
+    );
+  }
+  const state = parsed as {
+    taskPrompt: string;
+    currentPhase?: string;
+    completedPhases?: string[];
+    tasks?: {
+      id: string;
+      title: string;
+      status: string;
+      assignedAgent?: string;
+      phase?: string;
+    }[];
+    sidebar?: { title?: string; indicator?: string; phases?: { id: string; label: string; icon: string }[] };
+    worktree?: WorktreeInfo;
+    spawnedAgents?: {
+      agentId: string;
+      profile: string;
+      phase: string;
+      taskId?: string;
+      completedAt?: string;
+    }[];
+  };
+  const taskPrompt = state.taskPrompt;
+  const worktreeInfo = state.worktree;
+
+  if (!taskPrompt) {
+    throw new Error(`Run "${run.dirName}" has no task prompt in its state file. Cannot resume.`);
+  }
+
+  const workDir = run.fullPath;
+  const workflowName = run.workflowName;
+
+  if (worktreeInfo) {
+    console.log(`${formatTime()} Resuming in worktree: ${worktreeInfo.branchName}`);
+  }
+
+  console.log(`${formatTime()} 🔄 Resuming run: ${run.dirName}`);
+  console.log(`${formatTime()}    Workflow: ${workflowName}`);
+  console.log(`${formatTime()}    Prompt:   ${taskPrompt}`);
+  console.log();
+
+  validateWorkflowName(workflowName);
+
+  // ── Build the start_run message ────────────────────────────────────
+  const startRunMessage: ClientMessage = {
+    type: 'start_run',
+    workflowName,
+    taskPrompt,
+    cwd: options.cwd,
+    workDir,
+    maxConcurrent: options.maxConcurrent,
+    ...(Object.keys(options.apiKeys).length > 0 ? { apiKeys: options.apiKeys } : {}),
+    ...(worktreeInfo ? { worktree: true } : {}),
+  };
+
+  // ── Post-terminal worktree action ──────────────────────────────────
+  let postTerminalAction: ((ctx: PostTerminalContext) => Promise<void>) | undefined;
+  if (worktreeInfo) {
+    postTerminalAction = async ({ runId, engineClient }) => {
+      await promptPostWorktreeAction({
+        worktreePath: worktreeInfo.worktreePath,
+        branchName: worktreeInfo.branchName,
+        taskPrompt,
+        runId,
+        sendDecision: async (action) => {
+          engineClient.send({ type: 'worktree_action', runId, action });
+        },
+      });
+    };
+  }
+
+  return { mode: 'start', startRunMessage, postTerminalAction };
+}
 
 export async function resumeCommand(options: CliOptions): Promise<void> {
   const port = options.port ?? DEFAULT_SERVER_PORT;
@@ -408,123 +560,40 @@ export async function resumeCommand(options: CliOptions): Promise<void> {
     host,
     useTui,
     setup: async (engineClient) => {
-      // ── Session resolution ─────────────────────────────────────────────
-      let run: PastRunEntry;
-
+      // ── Positional path: `engin resume <runId>` ─────────────────────────
       if (options.sessionName) {
-        run = await resolveSessionName(options.sessionName, options.cwd);
-      } else {
-        const selected: PickerSelection | undefined = await interactiveSelectRun(options.cwd, engineClient);
-        if (!selected) {
-          // User cancelled the interactive picker — exit gracefully.
-          return null;
+        // §9: if the runId is in the server's active registry, subscribe +
+        // attach to the live run instead of starting it again. Query the
+        // server BEFORE falling back to the disk scan — resolveSessionName
+        // only scans disk and would miss server-tracked active runs.
+        const activeRuns = await queryActiveRuns(engineClient);
+        const activeMatch = activeRuns.find((r) => r.runId === options.sessionName);
+        if (activeMatch) {
+          // Active run — attach only (subscribe + resync). Worktree
+          // post-action is intentionally skipped: an attached-to-active run
+          // did not go through this client's start_run, so we have no
+          // captured worktree context to act on.
+          return { mode: 'attach' as const, runId: activeMatch.runId };
         }
-        if (selected.type === 'active') {
-          // User selected an active (server-tracked) run.  Subscribe + attach
-          // to the existing run rather than starting a new one.
-          // TODO: wire attach-to-active-run flow (subscribe only).
-          // For now, fall through to the historical resume path by constructing
-          // a minimal PastRunEntry from the RunSummary.
-          run = {
-            dirName: selected.runSummary.runId,
-            fullPath: '',
-            workflowName: selected.runSummary.workflowName,
-            timestamp: new Date(selected.runSummary.startedAt).getTime(),
-            hasStateFile: false,
-          };
-        } else {
-          run = selected.pastRun;
-        }
+        // Not active — historical resume from the on-disk state file.
+        const run = await resolveSessionName(options.sessionName, options.cwd);
+        return buildResumeStartResult(options, run);
       }
 
-      if (!run.hasStateFile) {
-        throw new Error(
-          `Run "${run.dirName}" does not have a resumable state file. It may have been manually cleaned up or interrupted before saving state.`,
-        );
+      // ── Interactive picker path ─────────────────────────────────────────
+      const selected: PickerSelection | undefined = await interactiveSelectRun(options.cwd, engineClient);
+      if (!selected) {
+        // User cancelled the interactive picker — exit gracefully.
+        return null;
       }
-
-      // ── Read the state file to recover taskPrompt + optional worktree ──
-      const statePath = join(run.fullPath, '.engin-state.json');
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(readFileSync(statePath, 'utf-8'));
-      } catch (err) {
-        throw new Error(
-          `Run "${run.dirName}" has a corrupt or unreadable state file: ${err instanceof Error ? err.message : String(err)}`,
-          { cause: err },
-        );
+      if (selected.type === 'active') {
+        // §9: an active (server-tracked) run — subscribe + attach only.
+        // (interactiveSelectRun already de-dupes active vs. disk runs, so an
+        // active run appears only in the active section.)
+        return { mode: 'attach' as const, runId: selected.runSummary.runId };
       }
-      const state = parsed as {
-        taskPrompt: string;
-        currentPhase?: string;
-        completedPhases?: string[];
-        tasks?: {
-          id: string;
-          title: string;
-          status: string;
-          assignedAgent?: string;
-          phase?: string;
-        }[];
-        sidebar?: { title?: string; indicator?: string; phases?: { id: string; label: string; icon: string }[] };
-        worktree?: WorktreeInfo;
-        spawnedAgents?: {
-          agentId: string;
-          profile: string;
-          phase: string;
-          taskId?: string;
-          completedAt?: string;
-        }[];
-      };
-      const taskPrompt = state.taskPrompt;
-      const worktreeInfo = state.worktree;
-
-      if (!taskPrompt) {
-        throw new Error(`Run "${run.dirName}" has no task prompt in its state file. Cannot resume.`);
-      }
-
-      const workDir = run.fullPath;
-      const workflowName = run.workflowName;
-
-      if (worktreeInfo) {
-        console.log(`${formatTime()} Resuming in worktree: ${worktreeInfo.branchName}`);
-      }
-
-      console.log(`${formatTime()} 🔄 Resuming run: ${run.dirName}`);
-      console.log(`${formatTime()}    Workflow: ${workflowName}`);
-      console.log(`${formatTime()}    Prompt:   ${taskPrompt}`);
-      console.log();
-
-      validateWorkflowName(workflowName);
-
-      // ── Build the start_run message ────────────────────────────────────
-      const startRunMessage: ClientMessage = {
-        type: 'start_run',
-        workflowName,
-        taskPrompt,
-        cwd: options.cwd,
-        workDir,
-        maxConcurrent: options.maxConcurrent,
-        ...(Object.keys(options.apiKeys).length > 0 ? { apiKeys: options.apiKeys } : {}),
-        ...(worktreeInfo ? { worktree: true } : {}),
-      };
-
-      // ── Post-terminal worktree action ──────────────────────────────────
-      let postTerminalAction: ((ctx: PostTerminalContext) => Promise<void>) | undefined;
-      if (worktreeInfo) {
-        postTerminalAction = async ({ runId, engineClient }) => {
-          await promptPostWorktreeAction({
-            worktreePath: worktreeInfo.worktreePath,
-            branchName: worktreeInfo.branchName,
-            taskPrompt,
-            runId,
-            sendDecision: async (action) => {
-              engineClient.send({ type: 'worktree_action', runId, action });
-            },
-          });
-        };
-      }
-
-      return { startRunMessage, postTerminalAction };
+      // Historical (disk) run — resume from its state file via start_run.
+      return buildResumeStartResult(options, selected.pastRun);
     },
   });
 }

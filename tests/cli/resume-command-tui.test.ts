@@ -60,6 +60,7 @@ const mockEngineClientConnect = mock<(callbacks: unknown) => void>();
 const mockEngineClientDisconnect = mock<() => void>();
 const mockEngineClientSend = mock<(msg: unknown) => void>();
 const mockEngineClientSubscribe = mock<(runId: string) => void>();
+const mockEngineClientResync = mock<(runId: string) => void>();
 
 // ClientStore spies
 const mockApplySnapshot = mock<(snapshot: unknown, seq: number) => void>();
@@ -77,6 +78,7 @@ const mockPromptPostWorktreeAction = mock<(options: Record<string, unknown>) => 
 // Session selector spies
 const mockResolveSessionName = mock<(sessionName: string, cwd: string) => Promise<unknown>>();
 const mockInteractiveSelectRun = mock<(cwd: string) => Promise<unknown>>();
+const mockQueryActiveRuns = mock<(client: unknown) => Promise<unknown[]>>();
 
 // Config spies
 const mockResolveProfilesDirs = mock<(cwd: string, workflowName?: string) => string[]>();
@@ -166,6 +168,9 @@ mock.module('@engin/shared/engine-client', () => ({
     subscribe(runId: string) {
       mockEngineClientSubscribe(runId);
     }
+    resync(runId: string) {
+      mockEngineClientResync(runId);
+    }
     unsubscribe(_runId: string) {}
     isConnected() {
       return true;
@@ -221,6 +226,7 @@ mock.module('../../packages/engine/src/core/worktree-lifecycle.js', () => ({
 mock.module('../../packages/cli/src/cli/session-selector.js', () => ({
   interactiveSelectRun: mockInteractiveSelectRun,
   resolveSessionName: mockResolveSessionName,
+  queryActiveRuns: mockQueryActiveRuns,
 }));
 
 mock.module('../../packages/cli/src/cli/post-worktree.js', () => ({
@@ -296,6 +302,20 @@ async function deliverAndAwait(commandPromise: Promise<void>, messages: Record<s
  *  that deliver messages directly (not via deliverAndAwait) must wait. */
 async function waitForEngineClient(): Promise<void> {
   while (!capturedEngineClientCallbacks) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+}
+
+/** Yield to the event loop until `predicate` is true (or `timeoutMs` elapses).
+ *  Used by the attach-mode tests to wait until `attachToRun` has run (i.e.
+ *  the client has subscribed → the local runId is set) before injecting
+ *  snapshot/terminal messages for that runId. */
+async function flushUntil(predicate: () => boolean, timeoutMs = 2000): Promise<void> {
+  const start = Date.now();
+  while (!predicate()) {
+    if (Date.now() - start > timeoutMs) {
+      throw new Error('flushUntil timed out waiting for condition');
+    }
     await new Promise((resolve) => setTimeout(resolve, 0));
   }
 }
@@ -389,6 +409,7 @@ describe('resumeCommand — daemon-client integration (T27)', () => {
     mockEngineClientDisconnect.mockReset();
     mockEngineClientSend.mockReset();
     mockEngineClientSubscribe.mockReset();
+    mockEngineClientResync.mockReset();
     mockApplySnapshot.mockReset();
     mockApplyEvents.mockReset();
     mockClientStoreGetState.mockReset();
@@ -398,6 +419,7 @@ describe('resumeCommand — daemon-client integration (T27)', () => {
     mockPromptPostWorktreeAction.mockReset();
     mockResolveSessionName.mockReset();
     mockInteractiveSelectRun.mockReset();
+    mockQueryActiveRuns.mockReset();
     mockResolveProfilesDirs.mockReset();
 
     capturedTuiOptions = null;
@@ -428,6 +450,10 @@ describe('resumeCommand — daemon-client integration (T27)', () => {
       `/local/profiles/${wf}`,
       `/global/profiles/${wf}`,
     ]);
+
+    // Default: no active runs on the server. The positional resume path then
+    // falls through to the disk scan (historical start_run resume).
+    mockQueryActiveRuns.mockResolvedValue([]);
   });
 
   afterEach(() => {
@@ -1005,6 +1031,178 @@ describe('resumeCommand — daemon-client integration (T27)', () => {
       // (The exact assertion depends on the implementation.)
       // For now, verify the mock was available.
       expect(mockInteractiveSelectRun).toBeDefined();
+    });
+  });
+
+  // ─── Attach to an already-active run (subscribe only, NO start_run) ────
+  //
+  // §9 contract: `engin resume <runId>` against a run that is active in the
+  // server's registry must subscribe + resync and block until terminal — it
+  // must NOT send start_run (the run is already executing). Selecting an
+  // active run in the interactive picker behaves identically.
+
+  describe('attach to active run (subscribe only, no start_run)', () => {
+    it('positional: sessionName matching an active runId subscribes + resyncs, never sends start_run', async () => {
+      const activeRunId = '1789-active-attach-run';
+      mockQueryActiveRuns.mockResolvedValue([
+        makeRunSummary(activeRunId, { workflowName: 'active-wf', status: 'running' }),
+      ]);
+
+      const tempDir = getDir();
+      const opts = makeResumeOptions({ cwd: tempDir, sessionName: activeRunId });
+
+      const cmd = resumeCommand(opts);
+      // Wait until attachToRun has subscribed (local runId is now set), so the
+      // injected snapshot/terminal messages route for the correct runId.
+      await flushUntil(() => mockEngineClientSubscribe.mock.calls.length > 0);
+
+      capturedEngineClientCallbacks?.onMessage({
+        type: 'snapshot',
+        runId: activeRunId,
+        seq: 1,
+        state: { seq: 1 },
+      });
+      capturedEngineClientCallbacks?.onMessage({ type: 'run_complete', runId: activeRunId });
+      await cmd;
+
+      expect(mockQueryActiveRuns).toHaveBeenCalledTimes(1);
+      expect(mockEngineClientSubscribe).toHaveBeenCalledWith(activeRunId);
+      expect(mockEngineClientResync).toHaveBeenCalledWith(activeRunId);
+      // CRITICAL: an already-active run must never be started again.
+      const startRunSent = capturedSentMessages.some((m) => (m as Record<string, unknown>).type === 'start_run');
+      expect(startRunSent).toBe(false);
+      // The resync snapshot was forwarded into the store.
+      expect(mockApplySnapshot).toHaveBeenCalled();
+      // Clean teardown.
+      expect(mockEngineClientDisconnect).toHaveBeenCalledTimes(1);
+    });
+
+    it('picker: selecting an active run subscribes + resyncs, never sends start_run', async () => {
+      const activeRunId = 'picker-active-run';
+      const activeSummary = makeRunSummary(activeRunId, { workflowName: 'picker-wf', status: 'running' });
+      mockInteractiveSelectRun.mockResolvedValue({ type: 'active', runSummary: activeSummary });
+
+      const tempDir = getDir();
+      const opts = {
+        command: 'resume' as const,
+        cwd: tempDir,
+        maxConcurrent: 3,
+        verbose: false,
+        worktree: false,
+        apiKeys: {},
+        warnings: [],
+      };
+
+      const cmd = resumeCommand(opts);
+      await flushUntil(() => mockEngineClientSubscribe.mock.calls.length > 0);
+
+      capturedEngineClientCallbacks?.onMessage({ type: 'run_complete', runId: activeRunId });
+      await cmd;
+
+      expect(mockInteractiveSelectRun).toHaveBeenCalledTimes(1);
+      expect(mockEngineClientSubscribe).toHaveBeenCalledWith(activeRunId);
+      expect(mockEngineClientResync).toHaveBeenCalledWith(activeRunId);
+      const startRunSent = capturedSentMessages.some((m) => (m as Record<string, unknown>).type === 'start_run');
+      expect(startRunSent).toBe(false);
+      expect(mockEngineClientDisconnect).toHaveBeenCalledTimes(1);
+    });
+
+    it('attach path blocks until a terminal event for the attached runId', async () => {
+      const activeRunId = 'blocking-active-run';
+      mockQueryActiveRuns.mockResolvedValue([makeRunSummary(activeRunId)]);
+
+      const tempDir = getDir();
+      const opts = makeResumeOptions({ cwd: tempDir, sessionName: activeRunId });
+
+      let resolved = false;
+      const cmd = resumeCommand(opts).then(() => {
+        resolved = true;
+      });
+
+      await flushUntil(() => mockEngineClientSubscribe.mock.calls.length > 0);
+
+      // Attached but no terminal yet — the command must still be pending.
+      await new Promise((r) => setTimeout(r, 30));
+      expect(resolved).toBe(false);
+
+      // A terminal for a DIFFERENT run must not resolve it.
+      capturedEngineClientCallbacks?.onMessage({ type: 'run_complete', runId: 'someone-else' });
+      await new Promise((r) => setTimeout(r, 30));
+      expect(resolved).toBe(false);
+
+      capturedEngineClientCallbacks?.onMessage({
+        type: 'run_failed',
+        runId: activeRunId,
+        error: 'boom',
+        phase: 'dev',
+      });
+      await cmd;
+      expect(resolved).toBe(true);
+      expect(mockEngineClientDisconnect).toHaveBeenCalledTimes(1);
+    });
+
+    it('positional: sessionName NOT matching an active run falls back to disk resume (start_run)', async () => {
+      mockQueryActiveRuns.mockResolvedValue([]);
+      const { make } = setupRun({ taskPrompt: 'disk resume prompt' }, '1700000000000-disk-only');
+
+      const cmd = resumeCommand(make());
+      await deliverAndAwait(cmd, [
+        { type: 'run_started', runId: 'r1', summary: makeRunSummary('r1') },
+        { type: 'run_complete', runId: 'r1' },
+      ]);
+
+      // queryActiveRuns was consulted before the disk fallback.
+      expect(mockQueryActiveRuns).toHaveBeenCalledTimes(1);
+      const startRunMsg = capturedSentMessages.find((m) => (m as Record<string, unknown>).type === 'start_run');
+      expect(startRunMsg).toBeDefined();
+    });
+
+    it('forwards snapshot/events for the attached runId into the ClientStore', async () => {
+      const activeRunId = 'attach-forward-run';
+      mockQueryActiveRuns.mockResolvedValue([makeRunSummary(activeRunId)]);
+
+      const tempDir = getDir();
+      const opts = makeResumeOptions({ cwd: tempDir, sessionName: activeRunId });
+
+      const cmd = resumeCommand(opts);
+      await flushUntil(() => mockEngineClientSubscribe.mock.calls.length > 0);
+
+      const snapshotState = { seq: 5, status: 'running' };
+      const events = [{ seq: 6, type: 'phase_start' }];
+      capturedEngineClientCallbacks?.onMessage({
+        type: 'snapshot',
+        runId: activeRunId,
+        seq: 5,
+        state: snapshotState,
+      });
+      capturedEngineClientCallbacks?.onMessage({ type: 'events', runId: activeRunId, seq: 6, events });
+      capturedEngineClientCallbacks?.onMessage({ type: 'run_complete', runId: activeRunId });
+      await cmd;
+
+      expect(mockApplySnapshot).toHaveBeenCalledWith(snapshotState, 5);
+      expect(mockApplyEvents).toHaveBeenCalledWith(events);
+    });
+
+    it('ignores snapshot messages for a runId other than the attached one', async () => {
+      const activeRunId = 'attach-filter-run';
+      mockQueryActiveRuns.mockResolvedValue([makeRunSummary(activeRunId)]);
+
+      const tempDir = getDir();
+      const opts = makeResumeOptions({ cwd: tempDir, sessionName: activeRunId });
+
+      const cmd = resumeCommand(opts);
+      await flushUntil(() => mockEngineClientSubscribe.mock.calls.length > 0);
+
+      capturedEngineClientCallbacks?.onMessage({
+        type: 'snapshot',
+        runId: 'other-run',
+        seq: 1,
+        state: { wrong: true },
+      });
+      capturedEngineClientCallbacks?.onMessage({ type: 'run_complete', runId: activeRunId });
+      await cmd;
+
+      expect(mockApplySnapshot).not.toHaveBeenCalled();
     });
   });
 });
