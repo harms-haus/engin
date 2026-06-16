@@ -18,8 +18,8 @@
   ],
   "scripts": {
     "build": "tsc -b packages/shared",
-    "setup": "bun run build && bun packages/cli/dist/cli.js init",
-    "test": "bun test",
+    "setup": "bun run build && bun packages/cli/src/cli.ts init",
+    "test": "bun test && bun run --cwd packages/web test",
     "test:coverage": "bun test --coverage",
     "test:watch": "bun test --watch",
     "typecheck": "tsc -b packages/shared && tsc --noEmit",

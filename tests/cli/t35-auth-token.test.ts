@@ -17,6 +17,10 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, mock, spyOn } fr
 
 const realAuth = Object.assign({}, await import('../../packages/engine/src/server/auth.js'));
 const realDaemon = Object.assign({}, await import('../../packages/engine/src/server/daemon.js'));
+// EngineClient is mocked below (auto-completing a run); capture the real module
+// so it can be restored in afterAll. Without this, the mock leaks into
+// tests/shared/engine-client.test.ts and breaks its MockWebSocket assertions.
+const realEngineClient = Object.assign({}, await import('@engin/shared/engine-client'));
 
 // ─── T35 mocks ──────────────────────────────────────────────────────────────
 
@@ -92,6 +96,7 @@ import { runCommand } from '../../packages/cli/src/cli/commands.js';
 afterAll(() => {
   mock.module('../../packages/engine/src/server/auth.js', () => realAuth);
   mock.module('../../packages/engine/src/server/daemon.js', () => realDaemon);
+  mock.module('@engin/shared/engine-client', () => realEngineClient);
 });
 
 // ─── Test suite ──────────────────────────────────────────────────────────────

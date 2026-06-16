@@ -40,6 +40,15 @@ afterAll(() => {
   mock.module('../../packages/engine/src/server/daemon.js', () => realDaemon);
 });
 
+// Several command paths exercised here set `process.exitCode = 1` as a
+// production side effect (the T35 --lan refusal hard gate). Reset it after each
+// test so it does not leak to sibling test files in the same `bun test` run;
+// the global preload (tests/helpers/reset-exit-code.ts) is the final backstop.
+// NOTE: bun only honours `process.exitCode = 0` as a reset (not `undefined`).
+afterEach(() => {
+  process.exitCode = 0;
+});
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // parseArgs — server command
 // ═══════════════════════════════════════════════════════════════════════════════

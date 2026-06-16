@@ -364,9 +364,10 @@ function getWsScheme(_req: Request, url: URL): string {
 /**
  * Resolve the frontend bundle directory (web/dist) once at module load.
  *
- * Tries candidate locations in priority order:
- *   1. Dev working copy — src/web → ../../web/dist
- *   2. Monorepo/workspace layout — src/web → ../../packages/web/dist
+ * This module lives at packages/engine/src/server/, so the repo root is four
+ * directories up. Tries candidate locations in priority order:
+ *   1. Monorepo workspace layout — packages/web/dist (dev working copy)
+ *   2. Legacy flat layout — web/dist at the repo root
  *   3. Global install — sibling of the Bun binary at <bun>/../web/dist
  *
  * Returns the first candidate for which `existsSync` is true, or `null` when
@@ -375,8 +376,8 @@ function getWsScheme(_req: Request, url: URL): string {
  */
 function resolveWebDistDir(): string | null {
   const candidates = [
-    join(import.meta.dir, '..', '..', 'web', 'dist'),
-    join(import.meta.dir, '..', '..', 'packages', 'web', 'dist'),
+    join(import.meta.dir, '..', '..', '..', '..', 'packages', 'web', 'dist'),
+    join(import.meta.dir, '..', '..', '..', '..', 'web', 'dist'),
     join(dirname(process.execPath), '..', 'web', 'dist'),
   ];
   for (const candidate of candidates) {

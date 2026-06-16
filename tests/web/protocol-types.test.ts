@@ -10,7 +10,7 @@ import { describe, expect, it } from 'bun:test';
 // After the snapshot/delta refactor (kb-13–17) the protocol only carries:
 //   - snapshot          (full WorkflowProjection on connect / full resync)
 //   - events            (batched EventRecord deltas)
-//   - workflow_complete / workflow_failed  (top-level lifecycle signals)
+//   - run_complete / run_failed      (run-scoped terminal lifecycle signals)
 //
 // The old per-event WS message types (init, workflow_phase, agent_spawned,
 // agent_log, agent_complete, agent_stats, tasks_updated, workflow_sidebar)
@@ -67,18 +67,21 @@ describe('ServerMessage – retained variants', () => {
     expect(msg.events).toHaveLength(0);
   });
 
-  it('workflow_complete variant works unchanged', () => {
-    const msg: ServerMessage = { type: 'workflow_complete' };
-    expect(msg.type).toBe('workflow_complete');
+  it('run_complete variant works unchanged', () => {
+    const msg: ServerMessage = { type: 'run_complete', runId: 'r1' };
+    expect(msg.type).toBe('run_complete');
+    expect(msg.runId).toBe('r1');
   });
 
-  it('workflow_failed variant works unchanged', () => {
+  it('run_failed variant works unchanged', () => {
     const msg: ServerMessage = {
-      type: 'workflow_failed',
+      type: 'run_failed',
+      runId: 'r1',
       error: 'something broke',
       phase: 'planning',
     };
     expect(msg.error).toBe('something broke');
     expect(msg.phase).toBe('planning');
+    expect(msg.runId).toBe('r1');
   });
 });

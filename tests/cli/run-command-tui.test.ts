@@ -26,6 +26,7 @@ const realWorkflowTUI = Object.assign({}, await import('../../packages/tui/src/w
 const realEngineClient = Object.assign({}, await import('@engin/shared/engine-client'));
 const realClientStore = Object.assign({}, await import('@engin/shared/client-store'));
 const realDaemon = Object.assign({}, await import('../../packages/engine/src/server/daemon.js'));
+const realAuth = Object.assign({}, await import('../../packages/engine/src/server/auth.js'));
 const realConfig = Object.assign({}, await import('../../packages/engine/src/core/config.js'));
 const realPostWorktree = Object.assign({}, await import('../../packages/cli/src/cli/post-worktree.js'));
 const realTuiSetup = Object.assign({}, await import('../../packages/cli/src/cli/tui-setup.js'));
@@ -103,14 +104,19 @@ mock.module('../../packages/cli/src/cli/console-status.js', () => ({
 }));
 
 mock.module('../../packages/engine/src/server/daemon.js', () => ({
+  ...realDaemon,
   isServerAlive: mockIsServerAlive,
   startDaemon: mockStartDaemon,
   stopDaemon: mockStopDaemon,
 }));
 
 // T35: mock readServerToken so commands.ts doesn't do real filesystem I/O.
-// Returns null (no token) — T27 tests don't test auth token wiring.
+// Returns null (no token) — T27 tests don't test auth token wiring. Spread
+// ...realAuth so the other auth exports (writeServerToken/validateToken/...)
+// remain real, and restore auth.js in afterAll so the mock does not leak into
+// tests/server/auth.test.ts (which exercises the real functions).
 mock.module('../../packages/engine/src/server/auth.js', () => ({
+  ...realAuth,
   readServerToken: async () => null,
 }));
 
@@ -218,12 +224,6 @@ mock.module('../../packages/cli/src/cli/post-worktree.js', () => ({
   promptPostWorktreeAction: mockPromptPostWorktreeAction,
 }));
 
-mock.module('../../packages/engine/src/core/config.js', () => ({
-  ...realConfig,
-  getDefaultWorkDir: (_cwd: string, wf: string) => `/tmp/test-engin/work/${Date.now()}-${wf}`,
-  resolveProfilesDirs: mockResolveProfilesDirs,
-}));
-
 // ─── Import SUT after mocks ──────────────────────────────────────────────
 
 import { runCommand } from '../../packages/cli/src/cli.ts';
@@ -235,6 +235,7 @@ afterAll(() => {
   mock.module('../../packages/engine/src/core/utils.js', () => realUtils);
   mock.module('../../packages/cli/src/cli/console-status.js', () => realConsoleStatus);
   mock.module('../../packages/engine/src/server/daemon.js', () => realDaemon);
+  mock.module('../../packages/engine/src/server/auth.js', () => realAuth);
   mock.module('../../packages/tui/src/workflow-tui.js', () => realWorkflowTUI);
   mock.module('@engin/shared/engine-client', () => realEngineClient);
   mock.module('@engin/shared/client-store', () => realClientStore);
@@ -246,7 +247,6 @@ afterAll(() => {
   mock.module('../../packages/engine/src/core/worktree-lifecycle.js', () => realWorktreeLifecycle);
   mock.module('../../packages/cli/src/cli/session-selector.js', () => realSessionSelector);
   mock.module('../../packages/cli/src/cli/post-worktree.js', () => realPostWorktree);
-  mock.module('../../packages/engine/src/core/config.js', () => realConfig);
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -364,6 +364,10 @@ describe('runCommand — daemon-client integration (T27)', () => {
     // Clean up any SIGINT listeners left on the process
     const listeners = process.listeners('SIGINT');
     for (const l of listeners) process.removeListener('SIGINT', l as any);
+
+    // executeViaDaemon sets process.exitCode = 1 when a run fails; reset it so
+    // it does not leak into sibling test files (bun ignores `= undefined`).
+    process.exitCode = 0;
 
     logSpy.mockRestore();
     warnSpy.mockRestore();

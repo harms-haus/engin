@@ -34,6 +34,7 @@ const realWorkflowTUI = Object.assign({}, await import('../../packages/tui/src/w
 const realEngineClient = Object.assign({}, await import('@engin/shared/engine-client'));
 const realClientStore = Object.assign({}, await import('@engin/shared/client-store'));
 const realDaemon = Object.assign({}, await import('../../packages/engine/src/server/daemon.js'));
+const realAuth = Object.assign({}, await import('../../packages/engine/src/server/auth.js'));
 const realTuiSetup = Object.assign({}, await import('../../packages/cli/src/cli/tui-setup.js'));
 const realEventStore = Object.assign({}, await import('../../packages/engine/src/tracking/event-store.js'));
 const realStoreCallbacks = Object.assign({}, await import('../../packages/engine/src/tracking/store-callbacks.js'));
@@ -114,6 +115,7 @@ mock.module('../../packages/cli/src/cli/console-status.js', () => ({
 }));
 
 mock.module('../../packages/engine/src/server/daemon.js', () => ({
+  ...realDaemon,
   isServerAlive: mockIsServerAlive,
   startDaemon: mockStartDaemon,
   stopDaemon: mockStopDaemon,
@@ -122,6 +124,7 @@ mock.module('../../packages/engine/src/server/daemon.js', () => ({
 // T35: mock readServerToken so commands.ts doesn't do real filesystem I/O.
 // Returns null (no token) — T27 tests don't test auth token wiring.
 mock.module('../../packages/engine/src/server/auth.js', () => ({
+  ...realAuth,
   readServerToken: async () => null,
 }));
 
@@ -250,6 +253,7 @@ afterAll(() => {
   mock.module('../../packages/engine/src/core/utils.js', () => realUtils);
   mock.module('../../packages/cli/src/cli/console-status.js', () => realConsoleStatus);
   mock.module('../../packages/engine/src/server/daemon.js', () => realDaemon);
+  mock.module('../../packages/engine/src/server/auth.js', () => realAuth);
   mock.module('../../packages/tui/src/workflow-tui.js', () => realWorkflowTUI);
   mock.module('@engin/shared/engine-client', () => realEngineClient);
   mock.module('@engin/shared/client-store', () => realClientStore);
@@ -439,6 +443,10 @@ describe('resumeCommand — daemon-client integration (T27)', () => {
   afterEach(() => {
     const listeners = process.listeners('SIGINT');
     for (const l of listeners) process.removeListener('SIGINT', l as any);
+
+    // executeViaDaemon sets process.exitCode = 1 when a run fails; reset it so
+    // it does not leak into sibling test files (bun ignores `= undefined`).
+    process.exitCode = 0;
 
     logSpy.mockRestore();
     warnSpy.mockRestore();

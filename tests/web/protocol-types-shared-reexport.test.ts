@@ -110,13 +110,14 @@ describe('@engin/shared/protocol-types — canonical exports', () => {
     }
   });
 
-  it('ServerMessage workflow_complete / workflow_failed variants', () => {
-    const complete: ServerMessage = { type: 'workflow_complete' };
-    const failed: ServerMessage = { type: 'workflow_failed', error: 'boom', phase: 'coding' };
-    expect(complete.type).toBe('workflow_complete');
-    if (failed.type === 'workflow_failed') {
+  it('ServerMessage run_complete / run_failed variants', () => {
+    const complete: ServerMessage = { type: 'run_complete', runId: 'r1' };
+    const failed: ServerMessage = { type: 'run_failed', runId: 'r1', error: 'boom', phase: 'coding' };
+    expect(complete.type).toBe('run_complete');
+    if (failed.type === 'run_failed') {
       expect(failed.error).toBe('boom');
       expect(failed.phase).toBe('coding');
+      expect(failed.runId).toBe('r1');
     }
   });
 
@@ -183,12 +184,12 @@ describe('isServerMessage type guard — runtime behaviour', () => {
     expect(isServerMessage(eventsMsg())).toBe(true);
   });
 
-  it('accepts the workflow_complete variant', () => {
-    expect(isServerMessage({ type: 'workflow_complete' })).toBe(true);
+  it('accepts the run_complete variant', () => {
+    expect(isServerMessage({ type: 'run_complete', runId: 'r1' })).toBe(true);
   });
 
-  it('accepts the workflow_failed variant', () => {
-    expect(isServerMessage({ type: 'workflow_failed', error: 'e', phase: 'p' })).toBe(true);
+  it('accepts the run_failed variant', () => {
+    expect(isServerMessage({ type: 'run_failed', runId: 'r1', error: 'e', phase: 'p' })).toBe(true);
   });
 
   it('rejects null', () => {
@@ -214,12 +215,12 @@ describe('isServerMessage type guard — runtime behaviour', () => {
   });
 
   it('narrows unknown → ServerMessage for a valid variant', () => {
-    const data: unknown = { type: 'workflow_complete' };
+    const data: unknown = { type: 'run_complete', runId: 'r1' };
     expect(isServerMessage(data)).toBe(true);
     // Type-level proof: after the guard, `data` is assignable to ServerMessage.
     if (isServerMessage(data)) {
       const narrowed: ServerMessage = data;
-      expect(narrowed.type).toBe('workflow_complete');
+      expect(narrowed.type).toBe('run_complete');
     }
   });
 });

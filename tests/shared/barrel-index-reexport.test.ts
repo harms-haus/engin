@@ -322,7 +322,7 @@ describe('@engin/shared barrel — behaviour smoke tests', () => {
 
   it('isServerMessage recognises valid and rejects invalid payloads', () => {
     expect(isServerMessage({ type: 'snapshot', seq: 0, state: createInitialProjection() })).toBe(true);
-    expect(isServerMessage({ type: 'workflow_complete' })).toBe(true);
+    expect(isServerMessage({ type: 'run_complete', runId: 'r1' })).toBe(true);
     expect(isServerMessage({ type: 'nope' })).toBe(false);
     expect(isServerMessage(null)).toBe(false);
     expect(isServerMessage(undefined)).toBe(false);

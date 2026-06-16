@@ -1,4 +1,11 @@
 # Bun configuration for engin
 [test]
 root = "."
-pathIgnorePatterns = ["web/**"]
+# The web package's tests are React/jsdom and run under vitest (see
+# packages/web/vitest.config.ts + the root `test` script). Exclude them from
+# `bun test` so they aren't run under bun's runner (which has no DOM globals).
+pathIgnorePatterns = ["web/**", "packages/web/**"]
+# Preload a beforeExit hook that clears `process.exitCode` set by CLI error-path
+# tests (see tests/helpers/reset-exit-code.ts), so `bun test` exits 0 when all
+# tests pass.
+preload = ["./tests/helpers/reset-exit-code.ts"]

@@ -747,7 +747,7 @@ describe('observer-server', () => {
   });
 
   it('serves static assets from dist when available', async () => {
-    const distDir = join(import.meta.dir, '../../web/dist');
+    const distDir = join(import.meta.dir, '../../packages/web/dist');
     if (!existsSync(distDir)) return;
 
     const port = randomPort();

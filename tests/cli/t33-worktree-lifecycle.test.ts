@@ -97,6 +97,9 @@ import {
 afterAll(() => {
   mock.module('../../packages/engine/src/core/git.ts', () => realGit);
   mock.module('../../packages/engine/src/core/worktree-lifecycle.ts', () => realWorktreeLifecycle);
+  // §3 observer-server section mocks the authorize chokepoint — restore auth
+  // too so it does not leak into tests/server/auth.test.ts.
+  mock.module('../../packages/engine/src/server/auth.js', () => realAuth);
 });
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────

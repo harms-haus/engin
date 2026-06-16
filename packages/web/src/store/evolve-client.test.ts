@@ -822,7 +822,7 @@ interface ParityScenario {
 }
 
 const scenarios: ParityScenario[] = JSON.parse(
-  readFileSync(resolve(__dirname, '../../../tests/fixtures/evolve-parity.json'), 'utf-8'),
+  readFileSync(resolve(__dirname, '../../../../tests/fixtures/evolve-parity.json'), 'utf-8'),
 );
 
 /**

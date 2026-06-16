@@ -8,7 +8,7 @@ export default defineConfig({
     alias: {
       '@app': path.resolve(__dirname, 'src'),
       '@engin/shared': path.resolve(__dirname, '..', 'shared', 'src'),
-      '@engin': path.resolve(__dirname, '..', 'src'),
+      '@engin/shared/*': path.resolve(__dirname, '..', 'shared', 'src', '*'),
     },
   },
   test: {
