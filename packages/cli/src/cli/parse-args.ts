@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+
 // ─── CLI Options ────────────────────────────────────────────────────────────
 
 export interface CliOptions {
@@ -27,7 +30,25 @@ export interface CliOptions {
 
 // ─── Constants ─────────────────────────────────────────────────────────────
 
-export const VERSION = '0.1.0';
+/**
+ * The CLI's own version, read once at module load from the nearest
+ * `package.json` (the `cli` package manifest, two directories up from this
+ * file). This keeps `engin --version` in lockstep with the published package
+ * instead of being a hardcoded string that drifts. Falls back to a sentinel
+ * if the file is missing/unreadable so `--version` never throws.
+ */
+export const VERSION: string = (() => {
+  try {
+    const pkgPath = join(import.meta.dir, '..', '..', 'package.json');
+    const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8')) as { version?: unknown };
+    if (typeof pkg.version === 'string' && pkg.version.length > 0) {
+      return pkg.version;
+    }
+  } catch {
+    // Missing/unreadable package.json — fall through to the sentinel.
+  }
+  return '0.0.0-unknown';
+})();
 
 export const USAGE = `Usage: engin <command> [options]
 
@@ -235,6 +256,24 @@ export function parseArgs(argv: string[]): CliOptions {
   }
 
   const command = positionals[0];
+
+  // `engin help` / `engin version` (bare subcommands) behave exactly like
+  // `--help` / `--version`. Without this they fall through to the implicit
+  // `run` path and wrongly report "Missing required <task-prompt>".
+  if (command === 'help' || command === 'version') {
+    return {
+      command,
+      cwd,
+      maxConcurrent,
+      verbose,
+      worktree,
+      apiKeys,
+      warnings,
+      host,
+      lan,
+      port,
+    };
+  }
 
   if (command === 'init') {
     if (positionals.length > 1) {

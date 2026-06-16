@@ -1,32 +1,47 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ─── Install @harms-haus/engin globally via bun (workspace layout) ───────────
+# ─── Install @harms-haus/engin globally via bun (server-based workspace) ───
 #
-# The repo is now a 5-package bun workspace. The public CLI lives in
+# The repo is a 5-package bun workspace. The public CLI lives in
 # packages/cli (@harms-haus/engin); its `bin` runs the TypeScript entrypoint
 # directly (`src/cli.ts`, `#!/usr/bin/env bun`), and its workspace deps
 # (@harms-haus/engin-engine/-shared/-tui) resolve from the hoisted root
 # node_modules (module resolution is relative to the script file, so it works
 # regardless of the caller's cwd).
 #
+# Since the server-based refactor, `engin` is a client of a long-lived daemon
+# (`engin server up` / auto-started by `engin run`). That daemon is spawned by
+# the engine package and serves the web UI, so a correct install must verify
+# not just the bin + package import, but that the daemon can actually come up.
+#
 # This script:
-#   1. Verifies the CLI entrypoints are present
-#   2. Registers @harms-haus/engin globally via `bun link` (this both exposes
-#      the `engin` bin and makes `import { ... } from '@harms-haus/engin'`
-#      resolvable from workflow scripts)
+#   1. Verifies the CLI entrypoints, the daemon entrypoint, and the web bundle
+#      are present (the bits the server needs, not just the CLI).
+#   2. Registers @harms-haus/engin globally via `bun link` (exposes the
+#      `engin` bin and makes `import { ... } from '@harms-haus/engin'`
+#      resolvable from workflow scripts).
 #   3. Falls back to a manual ~/.bun/bin/engin symlink if `bun link` did not
-#      place the bin on PATH
-#   4. Verifies the `engin` command runs and the package imports cleanly
+#      place the bin on PATH.
+#   4. Verifies the `engin` command runs and the package imports cleanly.
+#   5. Detects an orphan daemon squatting on the port with no pidfile (a
+#      leftover from the pre-server-layout engin that `server down` cannot
+#      find) and warns with remediation.
+#   6. Smoke-tests the daemon lifecycle: `server up` → probe /health →
+#      `server down`. This is the real proof the server-based install works.
 #
 # Usage:
-#   ./install-global.sh            # (re)install / link from this repo
+#   ./install-global.sh            # (re)install / link + daemon smoke test
 #   ./install-global.sh --force    # force re-link
+#   ./install-global.sh --skip-smoke   # skip the daemon lifecycle smoke test
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CLI_DIR="$SCRIPT_DIR/packages/cli"
+ENGINE_DIR="$SCRIPT_DIR/packages/engine"
+WEB_DIST_DIR="$SCRIPT_DIR/packages/web/dist"
 PKG_NAME="@harms-haus/engin"
 BUN_BIN_DIR="$HOME/.bun/bin"
+DEFAULT_PORT=3619
 
 # ─── Colors ──────────────────────────────────────────────────────────────────
 GREEN='\033[0;32m'
@@ -40,18 +55,35 @@ error() { echo -e "${RED}[engin]${NC} $*" >&2; exit 1; }
 
 # ─── Pre-flight checks ──────────────────────────────────────────────────────
 command -v bun &>/dev/null || error "bun is not installed. Install it from https://bun.sh"
+command -v curl &>/dev/null || error "curl is required for the daemon smoke test."
 
 FORCE=false
+SKIP_SMOKE=false
 for arg in "$@"; do
     case "$arg" in
         --force|-f) FORCE=true ;;
+        --skip-smoke) SKIP_SMOKE=true ;;
     esac
 done
 
-# ─── Step 1: Verify the CLI entrypoints are present ──────────────────────────
-info "Verifying CLI entrypoints..."
-[ -f "$CLI_DIR/src/cli.ts" ]   || error "CLI entrypoint not found: packages/cli/src/cli.ts"
+# ─── Step 1: Verify the CLI + server entrypoints and web bundle ─────────────
+# The CLI is only half the story now: `engin run`/`server up` spawn the daemon
+# from packages/engine/src/server/server-entry.ts, and the daemon serves the
+# web UI from packages/web/dist. If either is missing the install is broken in
+# a way the old checks (bin + import) would never catch.
+info "Verifying CLI + server entrypoints..."
+[ -f "$CLI_DIR/src/cli.ts" ] || error "CLI entrypoint not found: packages/cli/src/cli.ts"
 [ -f "$CLI_DIR/src/index.ts" ] || error "Public API entrypoint not found: packages/cli/src/index.ts"
+[ -f "$ENGINE_DIR/src/server/server-entry.ts" ] \
+    || error "Daemon entrypoint not found: packages/engine/src/server/server-entry.ts"
+
+if [ ! -f "$WEB_DIST_DIR/index.html" ]; then
+    error "Web UI bundle not found: packages/web/dist/index.html
+  The daemon serves the web UI from this directory. Build it first:
+      bun run --cwd packages/web build
+  Then re-run ./install-global.sh."
+fi
+info "✓ CLI entrypoint, daemon entrypoint, and web bundle all present."
 
 # ─── Step 2: Remove any previous global link/bin ─────────────────────────────
 # A stale symlink left over from a prior (single-package) install can shadow
@@ -114,6 +146,82 @@ RESULT=$(bun -e "$VERIFY_SCRIPT" 2>&1) || {
     error "Package import verification failed:\n$RESULT"
 }
 info "✓ $RESULT"
+
+# ─── Step 7: Detect an orphan daemon on the port ────────────────────────────
+# A daemon from the pre-server-layout engin can squat on :3619 with NO pidfile
+# in the new global config dir. `engin server down` then fails ("No server
+# pidfile found") and `engin server up` silently no-ops with pid 0 while the
+# orphan keeps serving. Detect and warn (do not auto-kill — that's the user's
+# call) so the install doesn't report success over a broken state.
+PIDFILE_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/engin"
+PIDFILE="$PIDFILE_DIR/server.pid"
+if curl -sf "http://127.0.0.1:$DEFAULT_PORT/health" >/dev/null 2>&1; then
+    if [ ! -f "$PIDFILE" ]; then
+        warn "An engine server is responding on port $DEFAULT_PORT but no pidfile was found at:"
+        warn "  $PIDFILE"
+        warn "This is usually a leftover daemon from the older (pre-server) engin layout that"
+        warn "'engin server down' cannot manage. The smoke test below will skip starting a"
+        warn "server to avoid a false positive. To clear it, find and stop that process, e.g.:"
+        warn "    lsof -ti tcp:$DEFAULT_PORT | xargs -r kill"
+        warn "    # then: ./install-global.sh"
+        ORPHAN_DETECTED=true
+    else
+        ORPHAN_DETECTED=false
+    fi
+else
+    ORPHAN_DETECTED=false
+fi
+
+# ─── Step 8: Smoke-test the daemon lifecycle ────────────────────────────────
+# The whole point of the server-based transition is that the daemon comes up,
+# answers /health, and can be torn down. This is the one check that actually
+# exercises the spawn path; without it a broken daemon would pass "install".
+if [ "$SKIP_SMOKE" = true ]; then
+    info "Skipping daemon smoke test (--skip-smoke)."
+elif [ "${ORPHAN_DETECTED:-false}" = true ]; then
+    warn "Skipping daemon smoke test because an orphan is squatting on port $DEFAULT_PORT (see above)."
+else
+    info "Smoke-testing daemon lifecycle (server up → /health → server down)..."
+
+    # If a managed server is already up, leave it running and just verify it
+    # responds — don't tear down a server the user is actively using.
+    PREEXISTING=false
+    if curl -sf "http://127.0.0.1:$DEFAULT_PORT/health" >/dev/null 2>&1; then
+        PREEXISTING=true
+    fi
+
+    if [ "$PREEXISTING" = true ]; then
+        info "✓ A managed server is already up on port $DEFAULT_PORT; /health responded. (Leaving it running.)"
+    else
+        if ! engin server up >/dev/null 2>&1; then
+            error "Daemon failed to start (engin server up). Check logs: $PIDFILE_DIR/logs/server.log"
+        fi
+
+        # Probe /health with retries (the daemon's own readiness loop already
+        # waited, but a short retry here makes a flaky CI host fail loudly
+        # instead of silently).
+        HEALTH_OK=false
+        for _ in $(seq 1 20); do
+            if curl -sf "http://127.0.0.1:$DEFAULT_PORT/health" >/dev/null 2>&1; then
+                HEALTH_OK=true
+                break
+            fi
+            sleep 0.5
+        done
+        if [ "$HEALTH_OK" != true ]; then
+            error "Daemon started but /health never responded on port $DEFAULT_PORT.
+  Check logs: $PIDFILE_DIR/logs/server.log"
+        fi
+        info "✓ /health responded from the freshly-started daemon."
+
+        # Tear down the server we started so the install leaves a clean state.
+        if ! engin server down -y >/dev/null 2>&1; then
+            warn "'engin server down' did not report success; the daemon may still be running."
+        else
+            info "✓ Daemon stopped cleanly."
+        fi
+    fi
+fi
 
 # ─── Done ────────────────────────────────────────────────────────────────────
 info "✅ $PKG_NAME linked globally."

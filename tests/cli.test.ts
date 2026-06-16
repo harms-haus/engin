@@ -1,12 +1,23 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { CliOptions } from '../packages/cli/src/cli.js';
-import { main, parseArgs } from '../packages/cli/src/cli.js';
+import { main, parseArgs, VERSION } from '../packages/cli/src/cli.js';
 import { useEnvSandbox } from './helpers/env-sandbox.js';
 import { useTempDir } from './helpers/use-temp-dir.js';
 
 // ─── parseArgs ──────────────────────────────────────────────────────────────
+
+describe('VERSION', () => {
+  it("is derived from the cli package.json (not the stale hardcoded '0.1.0')", () => {
+    // Regression guard: VERSION used to be a hardcoded '0.1.0' string that
+    // drifted from packages/cli/package.json. It must now match the manifest.
+    const pkgPath = join(import.meta.dir, '..', 'packages', 'cli', 'package.json');
+    const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8')) as { version: string };
+    expect(VERSION).toBe(pkg.version);
+    expect(VERSION).not.toBe('0.1.0');
+  });
+});
 
 describe('parseArgs', () => {
   it('parses run command with workflowName and taskPrompt', () => {
@@ -220,6 +231,25 @@ describe('parseArgs', () => {
       const result = parseArgs(['develop', 'task', '--help']);
       expect(result.command).toBe('help');
     });
+
+    it("bare 'help' subcommand returns { command: 'help' }", () => {
+      const result = parseArgs(['help']);
+      expect(result.command).toBe('help');
+    });
+
+    it("bare 'version' subcommand returns { command: 'version' }", () => {
+      const result = parseArgs(['version']);
+      expect(result.command).toBe('version');
+    });
+
+    it("'version' positional does not fall through to run", () => {
+      // Regression guard: `engin version` used to hit the implicit-`run`
+      // path and throw "Missing required <task-prompt>".
+      expect(() => parseArgs(['version'])).not.toThrow();
+      expect(parseArgs(['version']).command).toBe('version');
+      expect(() => parseArgs(['help'])).not.toThrow();
+      expect(parseArgs(['help']).command).toBe('help');
+    });
   });
 
   describe('main() handles help and version', () => {
@@ -236,6 +266,19 @@ describe('parseArgs', () => {
     afterEach(() => {
       exitSpy.mockRestore();
       stdoutSpy.mockRestore();
+    });
+
+    it("main() prints version for bare 'version' subcommand", async () => {
+      const originalArgv = process.argv;
+      process.argv = ['node', 'cli.ts', 'version'];
+      try {
+        await expect(main()).rejects.toThrow('process.exit(0)');
+      } finally {
+        process.argv = originalArgv;
+      }
+      expect(exitSpy).toHaveBeenCalledWith(0);
+      const output = stdoutSpy.mock.calls[0][0] as string;
+      expect(output).toContain('engin v');
     });
 
     it('main() calls process.exit(0) for --help', async () => {

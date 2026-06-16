@@ -16,7 +16,17 @@ import { parseArgs, USAGE, VERSION } from './cli/parse-args.js';
 
 // ─── Re-export for backward compatibility ───────────────────────────────────
 
-export { initCommand, parseArgs, resumeCommand, runCommand, serverDownCommand, serverStatusCommand, serverUpCommand };
+export {
+  initCommand,
+  parseArgs,
+  resumeCommand,
+  runCommand,
+  serverDownCommand,
+  serverStatusCommand,
+  serverUpCommand,
+  USAGE,
+  VERSION,
+};
 export type { CliOptions };
 
 // ─── Main Entry Point ───────────────────────────────────────────────────────
