@@ -1,7 +1,7 @@
 // ─── RunManager — test-first specification ───────────────────────────────────
 //
 // Test-first specification for `src/server/run-manager.ts`, the orchestrator
-// that owns the lifecycle of concurrent workflow runs in the observer server.
+// that owns the lifecycle of concurrent workflow runs in the control server.
 //
 // Contract under test (see server-refactor.prompt.md):
 //

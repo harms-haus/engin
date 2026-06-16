@@ -28,9 +28,6 @@ engin <command> [options]
 > arguments is treated as `run` with no workflow name, which errors with a usage
 > message.
 
-> **Removed.** The interactive composer (formerly launched with no arguments in a
-> TTY) has been deleted. The only run entry is `engin <wf> <task>`.
-
 ## `run`
 
 ```bash

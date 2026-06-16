@@ -8,7 +8,7 @@
 //   - Post-worktree prompt (`promptPostWorktreeAction`) performs local git
 //     operations directly (merge, PR, remove worktree) via git.ts.
 //   - The `worktree_action` ClientMessage type already exists in protocol-types.ts
-//     but the observer-server handler is a no-op stub.
+//     but the control-server handler is a no-op stub.
 //   - `RunManager` has no worktree handling methods.
 //   - `run_started` message does not carry worktree info.
 //
@@ -97,7 +97,7 @@ import {
 afterAll(() => {
   mock.module('../../packages/engine/src/core/git.ts', () => realGit);
   mock.module('../../packages/engine/src/core/worktree-lifecycle.ts', () => realWorktreeLifecycle);
-  // §3 observer-server section mocks the authorize chokepoint — restore auth
+  // §3 control-server section mocks the authorize chokepoint — restore auth
   // too so it does not leak into tests/server/auth.test.ts.
   mock.module('../../packages/engine/src/server/auth.js', () => realAuth);
 });
@@ -451,7 +451,7 @@ describe('T33: worktree_action ClientMessage type', () => {
 // §3. Server-side: routeMessage handles worktree_action
 // ═══════════════════════════════════════════════════════════════════════════════
 //
-// These tests verify that the observer-server's routeMessage handler calls
+// These tests verify that the control-server's routeMessage handler calls
 // a new `RunManager.handleWorktreeAction(runId, action)` method when it
 // receives a `worktree_action` ClientMessage.
 //
@@ -460,7 +460,7 @@ describe('T33: worktree_action ClientMessage type', () => {
 
 // ─── RunManager mock (for server-side tests) ────────────────────────────────
 
-import { startObserverServer, type ObserverServer } from '@harms-haus/engin-engine';
+import { startControlServer, type ControlServer } from '@harms-haus/engin-engine';
 import { RunManager, type StartRunMessage } from '../../packages/engine/src/server/run-manager.ts';
 
 // ─── Mock the authorize chokepoint (always allow) ──────────────────────────
@@ -618,7 +618,7 @@ function randomPort(): number {
 // ─── Server-side tests ─────────────────────────────────────────────────────
 
 describe('T33: routeMessage — worktree_action routing', () => {
-  let server: ObserverServer | undefined;
+  let server: ControlServer | undefined;
 
   afterEach(async () => {
     if (server) {
@@ -645,7 +645,7 @@ describe('T33: routeMessage — worktree_action routing', () => {
     (runManager as any).handleWorktreeAction = mock((_runId: string, _action: string): void => {});
 
     const port = randomPort();
-    server = await startObserverServer({ host: '127.0.0.1', port, runManager });
+    server = await startControlServer({ host: '127.0.0.1', port, runManager });
 
     const { ws, collector } = await connect(port);
     try {
@@ -674,7 +674,7 @@ describe('T33: routeMessage — worktree_action routing', () => {
     (runManager as any).handleWorktreeAction = mock((_runId: string, _action: string): void => {});
 
     const port = randomPort();
-    server = await startObserverServer({ host: '127.0.0.1', port, runManager });
+    server = await startControlServer({ host: '127.0.0.1', port, runManager });
 
     const { ws, collector } = await connect(port);
     try {
@@ -699,7 +699,7 @@ describe('T33: routeMessage — worktree_action routing', () => {
     (runManager as any).handleWorktreeAction = mock((_runId: string, _action: string): void => {});
 
     const port = randomPort();
-    server = await startObserverServer({ host: '127.0.0.1', port, runManager });
+    server = await startControlServer({ host: '127.0.0.1', port, runManager });
 
     const { ws, collector } = await connect(port);
     try {
@@ -724,7 +724,7 @@ describe('T33: routeMessage — worktree_action routing', () => {
     (runManager as any).handleWorktreeAction = mock((_runId: string, _action: string): void => {});
 
     const port = randomPort();
-    server = await startObserverServer({ host: '127.0.0.1', port, runManager });
+    server = await startControlServer({ host: '127.0.0.1', port, runManager });
 
     const { ws, collector } = await connect(port);
     try {
@@ -749,7 +749,7 @@ describe('T33: routeMessage — worktree_action routing', () => {
     (runManager as any).handleWorktreeAction = mock((_runId: string, _action: string): void => {});
 
     const port = randomPort();
-    server = await startObserverServer({ host: '127.0.0.1', port, runManager });
+    server = await startControlServer({ host: '127.0.0.1', port, runManager });
 
     const { ws, collector } = await connect(port);
     try {
@@ -1148,7 +1148,7 @@ describe('T33: contract summary — exact types and fields', () => {
   });
 
   it('routeMessage must call runManager.handleWorktreeAction (not just tolerate the stub)', () => {
-    // Currently the observer-server has:
+    // Currently the control-server has:
     //   case 'worktree_action':
     //     // Stub — tolerated; no crash, no protocol error.
     //     break;

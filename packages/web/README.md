@@ -1,12 +1,12 @@
 # @harms-haus/engin-web
 
 A Vite + React web client that observes a running engin workflow in real time
-over WebSocket. It connects to the engine's [`ObserverServer`](../packages/engine/src/server/observer-server.ts),
+over WebSocket. It connects to the engine's [`ControlServer`](../packages/engine/src/server/control-server.ts),
 receives an initial **snapshot** followed by incremental **event batches**, and
 renders a live view of phases, the task lane pool, per-agent logs, and a
 workflow-level event feed.
 
-This package ships as the static frontend served by the engine's observer
+This package ships as the static frontend served by the engine's control
 server (built output goes to `web/dist/`). It can also run standalone against a
 dev Vite proxy during development.
 
@@ -35,7 +35,7 @@ the WebSocket protocol defined in [`src/protocol-types.ts`](src/protocol-types.t
 ```
  Browser (React + Zustand)                  Engine (Bun)
  ┌─────────────────────────┐               ┌──────────────────────────┐
- │  useWebSocket ── ws ────┼───────────────┼── ObserverServer (/ws)   │
+ │  useWebSocket ── ws ────┼───────────────┼── ControlServer (/ws)   │
  │      │                  │  resync       │      │                    │
  │      ▼ snapshot/events  │ ◀─────────────┤   StatusBridge           │
  │  WorkflowStore (Zustand)│               │      │                    │
@@ -300,8 +300,8 @@ closes the socket — guaranteeing no reconnect fires after teardown.
 2. Otherwise derive from `window.location`: `wss:` if the page is `https:`,
    else `ws:`, followed by `//{host}/ws`.
 
-The placeholder is injected by the engine's observer server at serve time (see
-[`observer-server.ts`](../packages/engine/src/server/observer-server.ts) `serveStatic`), which
+The placeholder is injected by the engine's control server at serve time (see
+[`control-server.ts`](../packages/engine/src/server/control-server.ts) `serveStatic`), which
 replaces `{{WS_ENDPOINT}}` in `index.html` with a real `ws://`/`wss://` URL.
 
 ---
@@ -378,7 +378,7 @@ ring buffer to evict the intervening events will transparently re-snapshot.
 > **Cross-reference:** for the server-side implementation of this protocol
 > (snapshot construction, event coalescing, terminal broadcast), see the
 > engine's `RunManager` in `run-manager.ts`
-> and `ObserverServer` in [`observer-server.ts`](../packages/engine/src/server/observer-server.ts).
+> and `ControlServer` in [`control-server.ts`](../packages/engine/src/server/control-server.ts).
 
 ---
 
@@ -448,7 +448,7 @@ const TaskCard = React.memo(function TaskCard({ taskId }: { taskId: string }) {
 
 ### WebSocket endpoint
 
-The dev Vite config proxies `/ws` to the engine's observer server:
+The dev Vite config proxies `/ws` to the engine's control server:
 
 ```ts
 // vite.config.ts
@@ -458,15 +458,15 @@ server: {
 }
 ```
 
-In production, the engine's observer server replaces the `{{WS_ENDPOINT}}`
+In production, the engine's control server replaces the `{{WS_ENDPOINT}}`
 placeholder in `index.html` with the real `ws://` or `wss://` URL (see
-[`observer-server.ts`](../packages/engine/src/server/observer-server.ts) `serveStatic` /
+[`control-server.ts`](../packages/engine/src/server/control-server.ts) `serveStatic` /
 `getWsScheme`). The client's `deriveWsUrl()` picks this up from
 `window.__WS_ENDPOINT__`.
 
 ### Running against a live workflow
 
-1. Start the engine with the web observer enabled (it serves `web/dist/` and
+1. Start the engine with the web control server enabled (it serves `web/dist/` and
    the `/ws` endpoint).
 2. For dev iteration, run `npm run dev` in this directory and start the engine
    separately — the Vite proxy forwards WebSocket traffic to `localhost:3619`.

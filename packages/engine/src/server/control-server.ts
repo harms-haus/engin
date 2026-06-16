@@ -31,7 +31,7 @@ const PLACEHOLDER_HTML = `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
-<title>engin observer</title>
+<title>engin server</title>
 <script>window.__WS_ENDPOINT__ = '{{WS_ENDPOINT}}';</script>
 <style>
 body{margin:0;font-family:system-ui,sans-serif;background:#0d1117;color:#c9d1d9;display:grid;place-items:center;min-height:100vh}
@@ -42,15 +42,15 @@ p{color:#8b949e}
 </head>
 <body>
 <div class="status">
-<h1>engin observer</h1>
+<h1>engin server</h1>
 <p>WebSocket server running. Frontend build not found.</p>
 </div>
 </body>
 </html>`;
 
-// ─── ObserverServer interface ───────────────────────────────────────────────
+// ─── ControlServer interface ───────────────────────────────────────────────
 
-export interface ObserverServer {
+export interface ControlServer {
   server: ReturnType<typeof Bun.serve>;
   broadcast: (msg: ServerMessage) => void;
   url: string;
@@ -63,10 +63,7 @@ export interface ObserverServer {
  * Validate the Origin header for a WebSocket upgrade request.
  *
  * Non-browser clients such as curl or custom scripts that connect via WebSocket
- * do not send an Origin header, so they bypass this check. The terminate_server
- * command remains accessible to any client that can reach the WebSocket endpoint
- * without an Origin header. A future enhancement should require authentication
- * tokens for destructive commands like terminate_server. The default binding is
+ * do not send an Origin header, so they bypass this check. The default binding is
  * localhost (127.0.0.1); bind to 0.0.0.0 only when the user explicitly opts in
  * via --host or --lan.
  *
@@ -132,23 +129,23 @@ function validateWebSocketOrigin(req: Request): boolean {
   return true;
 }
 
-// ─── startObserverServer ────────────────────────────────────────────────────
+// ─── startControlServer ────────────────────────────────────────────────────
 
-export async function startObserverServer(options: {
+export async function startControlServer(options: {
   host: string;
   port: number;
   displayHost?: string;
   /** Owns the run registry and per-run bridges; routes WS messages to it. */
   runManager: RunManager;
   /**
-   * Optional async hook invoked by {@link ObserverServer.stop} BEFORE the
+   * Optional async hook invoked by {@link ControlServer.stop} BEFORE the
    * underlying Bun server is stopped. Typically `() => runManager.shutdownAll()`
    * so active runs are cooperatively cancelled and their stores flushed before
    * the process exits. When omitted, `stop()` behaves exactly as before
    * (backward compatible).
    */
   onShutdown?: () => Promise<void>;
-}): Promise<ObserverServer> {
+}): Promise<ControlServer> {
   const clients = new Set<ServerWebSocket>();
   const runManager = options.runManager;
   const onShutdown = options.onShutdown;

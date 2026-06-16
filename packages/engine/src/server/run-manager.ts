@@ -79,7 +79,7 @@ export interface StartRunResult {
 // ─── RunManager ──────────────────────────────────────────────────────────────
 
 /**
- * Owns the lifecycle of concurrent workflow runs in the observer server.
+ * Owns the lifecycle of concurrent workflow runs in the control server.
  *
  * Each run is identified by its `runId` (the work-directory basename). The
  * manager registers a {@link RunHandle} in an in-memory map, launches the

@@ -1,5 +1,5 @@
 import type { ClientMessage, RunSummary, ServerMessage, WorkflowProjection } from '@engin/shared/protocol-types';
-import { startObserverServer, type ObserverServer } from '@harms-haus/engin-engine';
+import { startControlServer, type ControlServer } from '@harms-haus/engin-engine';
 import type { ServerWebSocket } from 'bun';
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { existsSync, readdirSync } from 'node:fs';
@@ -8,9 +8,9 @@ import { RunManager, type StartRunMessage } from '../../packages/engine/src/serv
 
 // ─── T35: authorize chokepoint mock ────────────────────────────────────────
 //
-// observer-server.ts will import `authorize` from auth.ts and call it for
+// control-server.ts will import `authorize` from auth.ts and call it for
 // every inbound ClientMessage. We mock it here so we can spy on calls and
-// simulate rejection. Currently RED: observer-server.ts does NOT call
+// simulate rejection. Currently RED: control-server.ts does NOT call
 // authorize yet.
 
 const realAuth = Object.assign({}, await import('../../packages/engine/src/server/auth.js'));
@@ -30,11 +30,11 @@ mock.module('../../packages/engine/src/server/auth.js', () => ({
 
 // ─── Contract under test ────────────────────────────────────────────────────
 //
-// `startObserverServer` is being generalized from a single-run snapshot server
+// `startControlServer` is being generalized from a single-run snapshot server
 // to a multi-run WebSocket control server backed by a `RunManager`. The new
 // options shape is:
 //
-//   startObserverServer({
+//   startControlServer({
 //     host, port, displayHost?,
 //     runManager: RunManager,   // NEW — owns the run registry + per-run bridges
 //   })
@@ -240,8 +240,8 @@ function randomPort(): number {
 
 // ─── Tests ──────────────────────────────────────────────────────────────────
 
-describe('observer-server', () => {
-  let server: ObserverServer | undefined;
+describe('control-server', () => {
+  let server: ControlServer | undefined;
 
   // afterEach (not afterAll) so every test's server is torn down immediately.
   // Tests reassign the shared `server` variable, so a single afterAll would
@@ -250,7 +250,7 @@ describe('observer-server', () => {
   // server is stopped right after its owning test.
   //
   // Use the RAW Bun server's `stop(true)` (force-close active connections)
-  // rather than `ObserverServer.stop()`. Failing tests leave WebSockets open;
+  // rather than `ControlServer.stop()`. Failing tests leave WebSockets open;
   // a plain `stop()` waits for them to drain and hangs until the hook timeout.
   // `stop(true)` mirrors the teardown pattern in tests/server/daemon.test.ts.
   afterEach(async () => {
@@ -266,7 +266,7 @@ describe('observer-server', () => {
   // ── lifecycle ───────────────────────────────────────────────────────────
 
   it('starts and can be stopped', async () => {
-    server = await startObserverServer({
+    server = await startControlServer({
       host: '127.0.0.1',
       port: randomPort(),
       runManager: createMockRunManager(),
@@ -288,7 +288,7 @@ describe('observer-server', () => {
     runManager.listRuns = mock(() => runs);
 
     const port = randomPort();
-    server = await startObserverServer({ host: '127.0.0.1', port, runManager });
+    server = await startControlServer({ host: '127.0.0.1', port, runManager });
 
     const { ws, collector } = await connect(port);
     try {
@@ -306,7 +306,7 @@ describe('observer-server', () => {
 
   it('sends an empty runs list when the registry is empty', async () => {
     const port = randomPort();
-    server = await startObserverServer({ host: '127.0.0.1', port, runManager: createMockRunManager() });
+    server = await startControlServer({ host: '127.0.0.1', port, runManager: createMockRunManager() });
 
     const { ws, collector } = await connect(port);
     try {
@@ -326,7 +326,7 @@ describe('observer-server', () => {
       runManager.listRuns = mock(() => runs);
 
       const port = randomPort();
-      server = await startObserverServer({ host: '127.0.0.1', port, runManager });
+      server = await startControlServer({ host: '127.0.0.1', port, runManager });
 
       const { ws, collector } = await connect(port);
       try {
@@ -347,7 +347,7 @@ describe('observer-server', () => {
       runManager.startRun = mock(async (_msg: StartRunMessage) => ({ runId: 'run-started', summary }));
 
       const port = randomPort();
-      server = await startObserverServer({ host: '127.0.0.1', port, runManager });
+      server = await startControlServer({ host: '127.0.0.1', port, runManager });
 
       const { ws, collector } = await connect(port);
       try {
@@ -391,7 +391,7 @@ describe('observer-server', () => {
       }));
 
       const port = randomPort();
-      server = await startObserverServer({ host: '127.0.0.1', port, runManager });
+      server = await startControlServer({ host: '127.0.0.1', port, runManager });
 
       const { ws, collector } = await connect(port);
       try {
@@ -433,7 +433,7 @@ describe('observer-server', () => {
       });
 
       const port = randomPort();
-      server = await startObserverServer({ host: '127.0.0.1', port, runManager });
+      server = await startControlServer({ host: '127.0.0.1', port, runManager });
 
       const { ws, collector } = await connect(port);
       try {
@@ -465,7 +465,7 @@ describe('observer-server', () => {
       });
 
       const port = randomPort();
-      server = await startObserverServer({ host: '127.0.0.1', port, runManager });
+      server = await startControlServer({ host: '127.0.0.1', port, runManager });
 
       const { ws, collector } = await connect(port);
       try {
@@ -494,7 +494,7 @@ describe('observer-server', () => {
       runManager.handleResync = mock(() => {});
 
       const port = randomPort();
-      server = await startObserverServer({ host: '127.0.0.1', port, runManager });
+      server = await startControlServer({ host: '127.0.0.1', port, runManager });
 
       const { ws, collector } = await connect(port);
       try {
@@ -519,7 +519,7 @@ describe('observer-server', () => {
     it('unsubscribe calls runManager.unsubscribe for the runId', async () => {
       const runManager = createMockRunManager();
       const port = randomPort();
-      server = await startObserverServer({ host: '127.0.0.1', port, runManager });
+      server = await startControlServer({ host: '127.0.0.1', port, runManager });
 
       const { ws, collector } = await connect(port);
       try {
@@ -544,7 +544,7 @@ describe('observer-server', () => {
       });
 
       const port = randomPort();
-      server = await startObserverServer({ host: '127.0.0.1', port, runManager });
+      server = await startControlServer({ host: '127.0.0.1', port, runManager });
 
       const { ws, collector } = await connect(port);
       try {
@@ -571,7 +571,7 @@ describe('observer-server', () => {
       });
 
       const port = randomPort();
-      server = await startObserverServer({ host: '127.0.0.1', port, runManager });
+      server = await startControlServer({ host: '127.0.0.1', port, runManager });
 
       const { ws, collector } = await connect(port);
       try {
@@ -593,7 +593,7 @@ describe('observer-server', () => {
     it('cancel_run calls runManager.cancelRun for the runId', async () => {
       const runManager = createMockRunManager();
       const port = randomPort();
-      server = await startObserverServer({ host: '127.0.0.1', port, runManager });
+      server = await startControlServer({ host: '127.0.0.1', port, runManager });
 
       const { ws, collector } = await connect(port);
       try {
@@ -614,7 +614,7 @@ describe('observer-server', () => {
     it('worktree_action is tolerated (stub) without crashing or erroring', async () => {
       const runManager = createMockRunManager();
       const port = randomPort();
-      server = await startObserverServer({ host: '127.0.0.1', port, runManager });
+      server = await startControlServer({ host: '127.0.0.1', port, runManager });
 
       const { ws, collector } = await connect(port);
       try {
@@ -633,7 +633,7 @@ describe('observer-server', () => {
     it('auth is a no-op (connection stays alive)', async () => {
       const runManager = createMockRunManager();
       const port = randomPort();
-      server = await startObserverServer({ host: '127.0.0.1', port, runManager });
+      server = await startControlServer({ host: '127.0.0.1', port, runManager });
 
       const { ws, collector } = await connect(port);
       try {
@@ -651,7 +651,7 @@ describe('observer-server', () => {
     it('ignores invalid JSON without crashing', async () => {
       const runManager = createMockRunManager();
       const port = randomPort();
-      server = await startObserverServer({ host: '127.0.0.1', port, runManager });
+      server = await startControlServer({ host: '127.0.0.1', port, runManager });
 
       const { ws, collector } = await connect(port);
       try {
@@ -669,7 +669,7 @@ describe('observer-server', () => {
     it('ignores unknown message types without crashing', async () => {
       const runManager = createMockRunManager();
       const port = randomPort();
-      server = await startObserverServer({ host: '127.0.0.1', port, runManager });
+      server = await startControlServer({ host: '127.0.0.1', port, runManager });
 
       const { ws, collector } = await connect(port);
       try {
@@ -690,7 +690,7 @@ describe('observer-server', () => {
   it('close calls runManager.unsubscribeAll for the disconnecting ws', async () => {
     const runManager = createMockRunManager();
     const port = randomPort();
-    server = await startObserverServer({ host: '127.0.0.1', port, runManager });
+    server = await startControlServer({ host: '127.0.0.1', port, runManager });
 
     const { ws } = await connect(port);
     try {
@@ -708,7 +708,7 @@ describe('observer-server', () => {
 
   it('broadcast delivers a message to all connected clients', async () => {
     const port = randomPort();
-    server = await startObserverServer({ host: '127.0.0.1', port, runManager: createMockRunManager() });
+    server = await startControlServer({ host: '127.0.0.1', port, runManager: createMockRunManager() });
 
     const c1 = await connect(port);
     const c2 = await connect(port);
@@ -736,7 +736,7 @@ describe('observer-server', () => {
 
   it('serves index.html with WS_ENDPOINT replaced', async () => {
     const port = randomPort();
-    server = await startObserverServer({ host: '127.0.0.1', port, runManager: createMockRunManager() });
+    server = await startControlServer({ host: '127.0.0.1', port, runManager: createMockRunManager() });
 
     const response = await fetch(`http://127.0.0.1:${port}/`);
     expect(response.status).toBe(200);
@@ -751,7 +751,7 @@ describe('observer-server', () => {
     if (!existsSync(distDir)) return;
 
     const port = randomPort();
-    server = await startObserverServer({ host: '127.0.0.1', port, runManager: createMockRunManager() });
+    server = await startControlServer({ host: '127.0.0.1', port, runManager: createMockRunManager() });
 
     const assetsDir = join(distDir, 'assets');
     const files = readdirSync(assetsDir);
@@ -765,7 +765,7 @@ describe('observer-server', () => {
 
   it('SPA fallback serves index.html for unknown paths', async () => {
     const port = randomPort();
-    server = await startObserverServer({ host: '127.0.0.1', port, runManager: createMockRunManager() });
+    server = await startControlServer({ host: '127.0.0.1', port, runManager: createMockRunManager() });
 
     const response = await fetch(`http://127.0.0.1:${port}/some/unknown/path`);
     expect(response.status).toBe(200);
@@ -790,7 +790,7 @@ describe('observer-server', () => {
 
     it('rejects mismatched Origin on non-localhost', async () => {
       const port = randomPort();
-      server = await startObserverServer({ host: '0.0.0.0', port, runManager: createMockRunManager() });
+      server = await startControlServer({ host: '0.0.0.0', port, runManager: createMockRunManager() });
       const res = await hitWs(`http://0.0.0.0:${port}`, 'https://evil.com');
       expect(res.status).toBe(403);
       expect(await res.text()).toBe('Forbidden');
@@ -798,77 +798,77 @@ describe('observer-server', () => {
 
     it('allows missing Origin on non-localhost', async () => {
       const port = randomPort();
-      server = await startObserverServer({ host: '0.0.0.0', port, runManager: createMockRunManager() });
+      server = await startControlServer({ host: '0.0.0.0', port, runManager: createMockRunManager() });
       const res = await hitWs(`http://0.0.0.0:${port}`);
       expect(res.status).not.toBe(403);
     });
 
     it('rejects matching Origin while auth is disabled (browser-originated connections blocked)', async () => {
       const port = randomPort();
-      server = await startObserverServer({ host: '0.0.0.0', port, runManager: createMockRunManager() });
+      server = await startControlServer({ host: '0.0.0.0', port, runManager: createMockRunManager() });
       const res = await hitWs(`http://0.0.0.0:${port}`, `http://0.0.0.0:${port}`);
       expect(res.status).toBe(403);
     });
 
     it('rejects any Origin when connecting via 127.0.0.1 while auth is disabled', async () => {
       const port = randomPort();
-      server = await startObserverServer({ host: '127.0.0.1', port, runManager: createMockRunManager() });
+      server = await startControlServer({ host: '127.0.0.1', port, runManager: createMockRunManager() });
       const res = await hitWs(`http://127.0.0.1:${port}`, 'https://evil.com');
       expect(res.status).toBe(403);
     });
 
     it('rejects any Origin when connecting via localhost while auth is disabled', async () => {
       const port = randomPort();
-      server = await startObserverServer({ host: '127.0.0.1', port, runManager: createMockRunManager() });
+      server = await startControlServer({ host: '127.0.0.1', port, runManager: createMockRunManager() });
       const res = await hitWs(`http://localhost:${port}`, 'https://evil.com');
       expect(res.status).toBe(403);
     });
 
     it('allows missing Origin on localhost', async () => {
       const port = randomPort();
-      server = await startObserverServer({ host: '127.0.0.1', port, runManager: createMockRunManager() });
+      server = await startControlServer({ host: '127.0.0.1', port, runManager: createMockRunManager() });
       const res = await hitWs(`http://127.0.0.1:${port}`);
       expect(res.status).not.toBe(403);
     });
 
     it('rejects capacitor://localhost origin while auth is disabled', async () => {
       const port = randomPort();
-      server = await startObserverServer({ host: '0.0.0.0', port, runManager: createMockRunManager() });
+      server = await startControlServer({ host: '0.0.0.0', port, runManager: createMockRunManager() });
       const res = await hitWs(`http://0.0.0.0:${port}`, 'capacitor://localhost');
       expect(res.status).toBe(403);
     });
 
     it('rejects file:// origin while auth is disabled', async () => {
       const port = randomPort();
-      server = await startObserverServer({ host: '0.0.0.0', port, runManager: createMockRunManager() });
+      server = await startControlServer({ host: '0.0.0.0', port, runManager: createMockRunManager() });
       const res = await hitWs(`http://0.0.0.0:${port}`, 'file://');
       expect(res.status).toBe(403);
     });
 
     it('rejects Origin with omitted port while auth is disabled', async () => {
       const port = randomPort();
-      server = await startObserverServer({ host: '0.0.0.0', port, runManager: createMockRunManager() });
+      server = await startControlServer({ host: '0.0.0.0', port, runManager: createMockRunManager() });
       const res = await hitWs(`http://0.0.0.0:${port}`, `http://0.0.0.0`);
       expect(res.status).toBe(403);
     });
 
     it('rejects genuinely mismatched hostname', async () => {
       const port = randomPort();
-      server = await startObserverServer({ host: '0.0.0.0', port, runManager: createMockRunManager() });
+      server = await startControlServer({ host: '0.0.0.0', port, runManager: createMockRunManager() });
       const res = await hitWs(`http://0.0.0.0:${port}`, 'http://evil.com');
       expect(res.status).toBe(403);
     });
 
     it('rejects Origin with case-insensitive hostname while auth is disabled', async () => {
       const port = randomPort();
-      server = await startObserverServer({ host: '0.0.0.0', port, runManager: createMockRunManager() });
+      server = await startControlServer({ host: '0.0.0.0', port, runManager: createMockRunManager() });
       const res = await hitWs(`http://0.0.0.0:${port}`, `http://0.0.0.0:${port}`);
       expect(res.status).toBe(403);
     });
 
     it('does not trust x-forwarded-host header for Origin validation', async () => {
       const port = randomPort();
-      server = await startObserverServer({ host: '0.0.0.0', port, runManager: createMockRunManager() });
+      server = await startControlServer({ host: '0.0.0.0', port, runManager: createMockRunManager() });
       const headers: Record<string, string> = {
         Origin: `http://1.2.3.4:${port}`,
         'X-Forwarded-Host': `1.2.3.4:${port}`,
@@ -879,7 +879,7 @@ describe('observer-server', () => {
 
     it('still allows real WebSocket connections from browser on localhost', async () => {
       const port = randomPort();
-      server = await startObserverServer({ host: '127.0.0.1', port, runManager: createMockRunManager() });
+      server = await startControlServer({ host: '127.0.0.1', port, runManager: createMockRunManager() });
       const { ws, collector } = await connect(port);
       try {
         // In the multi-run model a fresh connection receives a `runs` message.
@@ -894,7 +894,7 @@ describe('observer-server', () => {
   // ── displayHost (preserved) ─────────────────────────────────────────────
 
   it('uses server.hostname in URL when displayHost is not provided (backward compat)', async () => {
-    server = await startObserverServer({
+    server = await startControlServer({
       host: '127.0.0.1',
       port: 0,
       runManager: createMockRunManager(),
@@ -905,7 +905,7 @@ describe('observer-server', () => {
   });
 
   it('uses displayHost in URL when provided, replacing server.hostname', async () => {
-    server = await startObserverServer({
+    server = await startControlServer({
       host: '0.0.0.0',
       port: 0,
       displayHost: '192.168.1.50',
@@ -918,7 +918,7 @@ describe('observer-server', () => {
   });
 
   it('displayHost works with localhost host', async () => {
-    server = await startObserverServer({
+    server = await startControlServer({
       host: '127.0.0.1',
       port: 0,
       displayHost: 'myhost.local',
@@ -930,7 +930,7 @@ describe('observer-server', () => {
   });
 
   it('displayHost preserves port in URL', async () => {
-    server = await startObserverServer({
+    server = await startControlServer({
       host: '0.0.0.0',
       port: 0,
       displayHost: 'example.com',
@@ -941,8 +941,8 @@ describe('observer-server', () => {
     server = undefined;
   });
 
-  it('startObserverServer with host 0.0.0.0, port 0, and displayHost 192.168.1.50 returns a URL containing 192.168.1.50 not 0.0.0.0', async () => {
-    server = await startObserverServer({
+  it('startControlServer with host 0.0.0.0, port 0, and displayHost 192.168.1.50 returns a URL containing 192.168.1.50 not 0.0.0.0', async () => {
+    server = await startControlServer({
       host: '0.0.0.0',
       port: 0,
       displayHost: '192.168.1.50',
@@ -960,7 +960,7 @@ describe('observer-server', () => {
   describe('WS scheme detection', () => {
     it('uses ws:// scheme when serving over plain HTTP (no x-forwarded-proto)', async () => {
       const port = randomPort();
-      server = await startObserverServer({ host: '127.0.0.1', port, runManager: createMockRunManager() });
+      server = await startControlServer({ host: '127.0.0.1', port, runManager: createMockRunManager() });
       const response = await fetch(`http://127.0.0.1:${port}/`);
       expect(response.status).toBe(200);
       const html = await response.text();
@@ -970,7 +970,7 @@ describe('observer-server', () => {
 
     it('does not trust x-forwarded-proto header', async () => {
       const port = randomPort();
-      server = await startObserverServer({ host: '127.0.0.1', port, runManager: createMockRunManager() });
+      server = await startControlServer({ host: '127.0.0.1', port, runManager: createMockRunManager() });
       const response = await fetch(`http://127.0.0.1:${port}/`, {
         headers: { 'X-Forwarded-Proto': 'https' },
       });
@@ -982,7 +982,7 @@ describe('observer-server', () => {
 
     it('does not trust x-forwarded-proto for SPA fallback path', async () => {
       const port = randomPort();
-      server = await startObserverServer({ host: '127.0.0.1', port, runManager: createMockRunManager() });
+      server = await startControlServer({ host: '127.0.0.1', port, runManager: createMockRunManager() });
       const response = await fetch(`http://127.0.0.1:${port}/some/random/path`, {
         headers: { 'X-Forwarded-Proto': 'https' },
       });
@@ -998,7 +998,7 @@ describe('observer-server', () => {
   describe('GET /health', () => {
     it('returns 200 with JSON containing pid, port, and activeRuns', async () => {
       const port = randomPort();
-      server = await startObserverServer({ host: '127.0.0.1', port, runManager: createMockRunManager() });
+      server = await startControlServer({ host: '127.0.0.1', port, runManager: createMockRunManager() });
 
       const response = await fetch(`http://127.0.0.1:${port}/health`);
       expect(response.status).toBe(200);
@@ -1018,7 +1018,7 @@ describe('observer-server', () => {
       runManager.listRuns = mock(() => [makeRunSummary('run-a'), makeRunSummary('run-b'), makeRunSummary('run-c')]);
 
       const port = randomPort();
-      server = await startObserverServer({ host: '127.0.0.1', port, runManager });
+      server = await startControlServer({ host: '127.0.0.1', port, runManager });
 
       const response = await fetch(`http://127.0.0.1:${port}/health`);
       expect(response.status).toBe(200);
@@ -1029,7 +1029,7 @@ describe('observer-server', () => {
 
     it('returns activeRuns of 0 when no runs exist', async () => {
       const port = randomPort();
-      server = await startObserverServer({ host: '127.0.0.1', port, runManager: createMockRunManager() });
+      server = await startControlServer({ host: '127.0.0.1', port, runManager: createMockRunManager() });
 
       const response = await fetch(`http://127.0.0.1:${port}/health`);
       const body = await response.json();
@@ -1038,21 +1038,21 @@ describe('observer-server', () => {
 
     it('does not serve HTML placeholder when web/dist is absent', async () => {
       const port = randomPort();
-      server = await startObserverServer({ host: '127.0.0.1', port, runManager: createMockRunManager() });
+      server = await startControlServer({ host: '127.0.0.1', port, runManager: createMockRunManager() });
 
       const response = await fetch(`http://127.0.0.1:${port}/health`);
       expect(response.status).toBe(200);
       const text = await response.text();
       // Must be JSON, not the placeholder HTML
       expect(text).not.toContain('<!doctype html>');
-      expect(text).not.toContain('engin observer');
+      expect(text).not.toContain('engin server');
       const body = JSON.parse(text);
       expect(body).toHaveProperty('pid');
     });
 
     it('returns a valid JSON structure with all required fields', async () => {
       const port = randomPort();
-      server = await startObserverServer({ host: '127.0.0.1', port, runManager: createMockRunManager() });
+      server = await startControlServer({ host: '127.0.0.1', port, runManager: createMockRunManager() });
 
       const response = await fetch(`http://127.0.0.1:${port}/health`);
       const body = await response.json();
@@ -1063,7 +1063,7 @@ describe('observer-server', () => {
 
     it('serves /health even when a query string is present (exact path match)', async () => {
       const port = randomPort();
-      server = await startObserverServer({ host: '127.0.0.1', port, runManager: createMockRunManager() });
+      server = await startControlServer({ host: '127.0.0.1', port, runManager: createMockRunManager() });
 
       // A query string should not prevent /health from matching.
       const response = await fetch(`http://127.0.0.1:${port}/health?foo=bar`);
@@ -1079,7 +1079,7 @@ describe('observer-server', () => {
     it('calls onShutdown when stop() is invoked', async () => {
       const onShutdown = mock(async () => {});
       const port = randomPort();
-      server = await startObserverServer({
+      server = await startControlServer({
         host: '127.0.0.1',
         port,
         runManager: createMockRunManager(),
@@ -1100,7 +1100,7 @@ describe('observer-server', () => {
         order.push('onShutdown');
       });
       const port = randomPort();
-      server = await startObserverServer({
+      server = await startControlServer({
         host: '127.0.0.1',
         port,
         runManager: createMockRunManager(),
@@ -1117,7 +1117,7 @@ describe('observer-server', () => {
 
     it('does not crash when onShutdown is not provided', async () => {
       const port = randomPort();
-      server = await startObserverServer({
+      server = await startControlServer({
         host: '127.0.0.1',
         port,
         runManager: createMockRunManager(),
@@ -1138,7 +1138,7 @@ describe('observer-server', () => {
       });
 
       const port = randomPort();
-      server = await startObserverServer({
+      server = await startControlServer({
         host: '127.0.0.1',
         port,
         runManager,
@@ -1159,7 +1159,7 @@ describe('observer-server', () => {
   // from auth.ts. If authorize returns `{ authorized: false }`, the server
   // must reply with `{ type: 'auth_required' }` and close the WebSocket.
   //
-  // Currently RED: observer-server.ts does NOT call authorize.
+  // Currently RED: control-server.ts does NOT call authorize.
 
   describe('T35: authorize chokepoint', () => {
     beforeEach(() => {
@@ -1170,7 +1170,7 @@ describe('observer-server', () => {
     it('calls authorize() for every inbound ClientMessage', async () => {
       const runManager = createMockRunManager();
       const port = randomPort();
-      server = await startObserverServer({ host: '127.0.0.1', port, runManager });
+      server = await startControlServer({ host: '127.0.0.1', port, runManager });
 
       const { ws, collector } = await connect(port);
       try {
@@ -1193,7 +1193,7 @@ describe('observer-server', () => {
     it('calls authorize() for subscribe messages', async () => {
       const runManager = createMockRunManager();
       const port = randomPort();
-      server = await startObserverServer({ host: '127.0.0.1', port, runManager });
+      server = await startControlServer({ host: '127.0.0.1', port, runManager });
 
       const { ws, collector } = await connect(port);
       try {
@@ -1216,7 +1216,7 @@ describe('observer-server', () => {
     it('calls authorize() for start_run messages', async () => {
       const runManager = createMockRunManager();
       const port = randomPort();
-      server = await startObserverServer({ host: '127.0.0.1', port, runManager });
+      server = await startControlServer({ host: '127.0.0.1', port, runManager });
 
       const { ws, collector } = await connect(port);
       try {
@@ -1242,7 +1242,7 @@ describe('observer-server', () => {
     it('calls authorize() for cancel_run messages', async () => {
       const runManager = createMockRunManager();
       const port = randomPort();
-      server = await startObserverServer({ host: '127.0.0.1', port, runManager });
+      server = await startControlServer({ host: '127.0.0.1', port, runManager });
 
       const { ws, collector } = await connect(port);
       try {
@@ -1262,7 +1262,7 @@ describe('observer-server', () => {
     it('passes the ws object as the second argument to authorize()', async () => {
       const runManager = createMockRunManager();
       const port = randomPort();
-      server = await startObserverServer({ host: '127.0.0.1', port, runManager });
+      server = await startControlServer({ host: '127.0.0.1', port, runManager });
 
       const { ws, collector } = await connect(port);
       try {
@@ -1289,7 +1289,7 @@ describe('observer-server', () => {
 
       const runManager = createMockRunManager();
       const port = randomPort();
-      server = await startObserverServer({ host: '127.0.0.1', port, runManager });
+      server = await startControlServer({ host: '127.0.0.1', port, runManager });
 
       const { ws, collector } = await connect(port);
       try {
@@ -1310,7 +1310,7 @@ describe('observer-server', () => {
 
       const runManager = createMockRunManager();
       const port = randomPort();
-      server = await startObserverServer({ host: '127.0.0.1', port, runManager });
+      server = await startControlServer({ host: '127.0.0.1', port, runManager });
 
       const { ws, collector } = await connect(port);
       try {
@@ -1339,7 +1339,7 @@ describe('observer-server', () => {
 
       const runManager = createMockRunManager();
       const port = randomPort();
-      server = await startObserverServer({ host: '127.0.0.1', port, runManager });
+      server = await startControlServer({ host: '127.0.0.1', port, runManager });
 
       const { ws, collector } = await connect(port);
       try {
@@ -1362,7 +1362,7 @@ describe('observer-server', () => {
 
       const runManager = createMockRunManager();
       const port = randomPort();
-      server = await startObserverServer({ host: '127.0.0.1', port, runManager });
+      server = await startControlServer({ host: '127.0.0.1', port, runManager });
 
       const { ws, collector } = await connect(port);
       try {
@@ -1396,7 +1396,7 @@ describe('observer-server', () => {
 
       const runManager = createMockRunManager();
       const port = randomPort();
-      server = await startObserverServer({ host: '127.0.0.1', port, runManager });
+      server = await startControlServer({ host: '127.0.0.1', port, runManager });
 
       const { ws, collector } = await connect(port);
       try {

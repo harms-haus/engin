@@ -35,10 +35,9 @@ const realEngineClient = Object.assign({}, await import('@engin/shared/engine-cl
 const realClientStore = Object.assign({}, await import('@engin/shared/client-store'));
 const realDaemon = Object.assign({}, await import('../../packages/engine/src/server/daemon.js'));
 const realAuth = Object.assign({}, await import('../../packages/engine/src/server/auth.js'));
-const realTuiSetup = Object.assign({}, await import('../../packages/cli/src/cli/tui-setup.js'));
 const realEventStore = Object.assign({}, await import('../../packages/engine/src/tracking/event-store.js'));
 const realStoreCallbacks = Object.assign({}, await import('../../packages/engine/src/tracking/store-callbacks.js'));
-const realObserverServer = Object.assign({}, await import('../../packages/engine/src/server/control-server.js'));
+const realControlServer = Object.assign({}, await import('../../packages/engine/src/server/control-server.js'));
 const realStatusBridge = Object.assign({}, await import('../../packages/engine/src/server/status-bridge.js'));
 const realSessionSelector = Object.assign({}, await import('../../packages/cli/src/cli/session-selector.js'));
 const realWorktreeLifecycle = Object.assign({}, await import('../../packages/engine/src/core/worktree-lifecycle.js'));
@@ -68,10 +67,9 @@ const mockApplyEvents = mock<(events: unknown[]) => void>();
 const mockClientStoreGetState = mock<() => Record<string, unknown>>();
 
 // "NOT called" spies
-const mockSetupTuiAndObserver = mock<() => Promise<unknown>>();
 const mockEventStoreLoad = mock<() => Promise<unknown>>();
 const mockCreateStoreCallbacks = mock<() => unknown>();
-const mockStartObserverServer = mock<() => Promise<unknown>>();
+const mockStartControlServer = mock<() => Promise<unknown>>();
 
 // Post-worktree spy
 const mockPromptPostWorktreeAction = mock<(options: Record<string, unknown>) => Promise<void>>();
@@ -110,7 +108,6 @@ mock.module('../../packages/engine/src/core/utils.js', () => ({
 
 mock.module('../../packages/cli/src/cli/console-status.js', () => ({
   formatTime: () => '[00:00:00]',
-  createStatusCallbacks: () => ({}),
   shouldUseTui: () => true,
 }));
 
@@ -196,11 +193,6 @@ mock.module('@engin/shared/client-store', () => ({
   },
 }));
 
-// Prevent complex side effects
-mock.module('../../packages/cli/src/cli/tui-setup.js', () => ({
-  setupTuiAndObserver: mockSetupTuiAndObserver,
-}));
-
 mock.module('../../packages/engine/src/tracking/event-store.js', () => ({
   EventStore: class {
     constructor() {}
@@ -215,7 +207,7 @@ mock.module('../../packages/engine/src/tracking/store-callbacks.js', () => ({
 }));
 
 mock.module('../../packages/engine/src/server/control-server.js', () => ({
-  startObserverServer: mockStartObserverServer,
+  startControlServer: mockStartControlServer,
 }));
 
 mock.module('../../packages/engine/src/server/status-bridge.js', () => ({
@@ -257,10 +249,9 @@ afterAll(() => {
   mock.module('../../packages/tui/src/workflow-tui.js', () => realWorkflowTUI);
   mock.module('@engin/shared/engine-client', () => realEngineClient);
   mock.module('@engin/shared/client-store', () => realClientStore);
-  mock.module('../../packages/cli/src/cli/tui-setup.js', () => realTuiSetup);
   mock.module('../../packages/engine/src/tracking/event-store.js', () => realEventStore);
   mock.module('../../packages/engine/src/tracking/store-callbacks.js', () => realStoreCallbacks);
-  mock.module('../../packages/engine/src/server/control-server.js', () => realObserverServer);
+  mock.module('../../packages/engine/src/server/control-server.js', () => realControlServer);
   mock.module('../../packages/engine/src/server/status-bridge.js', () => realStatusBridge);
   mock.module('../../packages/engine/src/core/worktree-lifecycle.js', () => realWorktreeLifecycle);
   mock.module('../../packages/cli/src/cli/session-selector.js', () => realSessionSelector);
@@ -401,10 +392,9 @@ describe('resumeCommand — daemon-client integration (T27)', () => {
     mockApplySnapshot.mockReset();
     mockApplyEvents.mockReset();
     mockClientStoreGetState.mockReset();
-    mockSetupTuiAndObserver.mockReset();
     mockEventStoreLoad.mockReset();
     mockCreateStoreCallbacks.mockReset();
-    mockStartObserverServer.mockReset();
+    mockStartControlServer.mockReset();
     mockPromptPostWorktreeAction.mockReset();
     mockResolveSessionName.mockReset();
     mockInteractiveSelectRun.mockReset();
@@ -953,7 +943,7 @@ describe('resumeCommand — daemon-client integration (T27)', () => {
   // ─── Negative assertions: T27 must NOT use in-process server ───────────
 
   describe('must NOT use in-process server infrastructure', () => {
-    it('does NOT call setupTuiAndObserver', async () => {
+    it('does NOT call startControlServer', async () => {
       const { make } = setupRun({ taskPrompt: 'resumed task' });
 
       const cmd = resumeCommand(make());
@@ -962,19 +952,7 @@ describe('resumeCommand — daemon-client integration (T27)', () => {
         { type: 'run_complete', runId: 'r1' },
       ]);
 
-      expect(mockSetupTuiAndObserver).not.toHaveBeenCalled();
-    });
-
-    it('does NOT call startObserverServer', async () => {
-      const { make } = setupRun({ taskPrompt: 'resumed task' });
-
-      const cmd = resumeCommand(make());
-      await deliverAndAwait(cmd, [
-        { type: 'run_started', runId: 'r1', summary: makeRunSummary('r1') },
-        { type: 'run_complete', runId: 'r1' },
-      ]);
-
-      expect(mockStartObserverServer).not.toHaveBeenCalled();
+      expect(mockStartControlServer).not.toHaveBeenCalled();
     });
 
     it('does NOT create an in-process EventStore', async () => {

@@ -74,8 +74,7 @@ engin apidoc "Generate API docs" \
 ### Starting runs
 
 The only way to start a run is explicitly: `engin run <workflow-name> <task prompt>`.
-The former interactive composer has been removed. See the
-[CLI reference](../reference/cli.md) for the full command list (including
+See the [CLI reference](../reference/cli.md) for the full command list (including
 `engin server up/down/status`) and exit codes.
 
 ## Programmatic quick start

@@ -74,7 +74,7 @@ export class StatusBridge {
   /**
    * Handle a resync request from a client. Returns the appropriate
    * `runId`-tagged message to send back to the requesting WebSocket (via the
-   * broadcast callback from the observer server).
+   * broadcast callback from the control server).
    */
   handleResync(lastSeq?: number): Extract<ServerMessage, { type: 'snapshot' | 'events' }> {
     if (lastSeq !== undefined && lastSeq >= 0) {

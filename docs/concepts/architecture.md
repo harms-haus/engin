@@ -98,12 +98,11 @@ packages/
 │   └─ cli/
 │       ├─ parse-args.ts     CliOptions, USAGE, parseArgs
 │       ├─ commands.ts       runCommand / resumeCommand / serverUp/Down/Status + executeViaDaemon
-│       ├─ console-status.ts formatTime, shouldUseTui, (legacy) createStatusCallbacks
+│       ├─ console-status.ts formatTime, shouldUseTui
 │       ├─ stdout-renderer.ts   non-TTY WS-consuming event renderer (replaces callback path)
 │       ├─ sigint.ts         non-TTY cooperative SIGINT (cancel_run / force-exit)
 │       ├─ session-selector.ts  interactive resume picker (active runs first, then disk)
-│       ├─ post-worktree.ts  interactive merge/PR/discard prompt → worktree_action to server
-│       └─ tui-setup.ts      transitional in-process TUI/observer wiring (retained for setupTuiAndObserver)
+│       └─ post-worktree.ts  interactive merge/PR/discard prompt → worktree_action to server
 │
 └── web/       @harms-haus/engin-web  (PRIVATE — REACT CLIENT)
     Depends on shared only. Vite-built; output served by the engine.

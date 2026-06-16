@@ -122,10 +122,10 @@ subscriber` pipeline. Both clients render `log` entries into their event log (wa
 Source: `packages/engine/src/server/control-server.ts`. A Bun HTTP + WebSocket
 server (this absorbed the former `observer-server.ts`).
 
-### `startObserverServer(options)`
+### `startControlServer(options)`
 
 ```typescript
-interface ObserverServer {
+interface ControlServer {
   server: ReturnType<typeof Bun.serve>;
   broadcast: (msg: ServerMessage) => void;
   url: string;

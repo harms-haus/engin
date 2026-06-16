@@ -7,6 +7,9 @@
 // RED — failing on contract assertions, not import/syntax errors.
 
 import { afterAll, afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
+import { mkdir, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 // ─── Capture real modules before mocking ─────────────────────────────────────
 
@@ -423,10 +426,28 @@ describe('serverDownCommand', () => {
 describe('serverStatusCommand', () => {
   let logSpy: ReturnType<typeof spyOn>;
   let stderrSpy: ReturnType<typeof spyOn>;
+  let fetchSpy: ReturnType<typeof spyOn>;
+  let savedXdg: string | undefined;
+  let tempConfigDir: string;
 
   beforeEach(() => {
     logSpy = spyOn(console, 'log').mockImplementation(() => {});
     stderrSpy = spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    // Sandbox XDG_CONFIG_HOME so getGlobalConfigDir() (and therefore the
+    // pidfile/log paths) resolve to a clean temp dir — deterministic log path
+    // and no stray pidfile from the host machine.
+    savedXdg = process.env.XDG_CONFIG_HOME;
+    tempConfigDir = join(tmpdir(), `engin-status-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    process.env.XDG_CONFIG_HOME = tempConfigDir;
+
+    // Default: the /health fetch returns a rich payload. Individual tests
+    // override this for the down / unreachable cases. A fresh Response is
+    // built per call so the body is never double-consumed across tests.
+    fetchSpy = spyOn(globalThis, 'fetch').mockImplementation(
+      async () => new Response(JSON.stringify({ pid: 4242, port: 3619, activeRuns: 3 }), { status: 200 }),
+    );
+
     mockStartDaemon.mockReset();
     mockStopDaemon.mockReset();
     mockIsServerAlive.mockReset();
@@ -435,6 +456,9 @@ describe('serverStatusCommand', () => {
   afterEach(() => {
     logSpy.mockRestore();
     stderrSpy.mockRestore();
+    fetchSpy.mockRestore();
+    if (savedXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = savedXdg;
   });
 
   /** Helper to call the real serverStatusCommand or throw if T26 is not implemented. */
@@ -470,18 +494,55 @@ describe('serverStatusCommand', () => {
     expect(mockIsServerAlive).toHaveBeenCalledTimes(1);
   });
 
-  it('reports "running" when /health returns true', async () => {
+  it('reports running with pid, port, host, activeRuns, log path, and web URL when /health responds', async () => {
     mockIsServerAlive.mockResolvedValue(true);
     await callServerStatus(baseOptions());
     const allOutput = logSpy.mock.calls.map((c) => String(c[0])).join('\n');
-    expect(allOutput).toMatch(/running|ok|up|alive/i);
+    expect(allOutput).toMatch(/running/i);
+    expect(allOutput).toContain('4242'); // pid
+    expect(allOutput).toMatch(/port:\s*3619/i); // port
+    expect(allOutput).toMatch(/host:\s*127\.0\.0\.1/i); // bind host (default)
+    expect(allOutput).toMatch(/active runs:\s*3/i); // active-run count
+    expect(allOutput).toContain('server.log'); // log path token
+    expect(allOutput).toMatch(/http:\/\/127\.0\.0\.1:3619/); // web URL
+  });
+
+  it('still reports running (with a note) when /health is unreachable', async () => {
+    mockIsServerAlive.mockResolvedValue(true);
+    fetchSpy.mockRejectedValue(new Error('ECONNREFUSED'));
+    await callServerStatus(baseOptions());
+    const allOutput = logSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(allOutput).toMatch(/running/i);
+    expect(allOutput).toMatch(/host:\s*127\.0\.0\.1/i); // still reports the known host
+    expect(allOutput).toMatch(/port:\s*3619/i); // still reports the known port
+    expect(allOutput).toMatch(/unavailable|unknown/i); // tolerant note
   });
 
   it('reports "not running" when /health returns false', async () => {
     mockIsServerAlive.mockResolvedValue(false);
     await callServerStatus(baseOptions());
     const allOutput = logSpy.mock.calls.map((c) => String(c[0])).join('\n');
-    expect(allOutput).toMatch(/not running|stopped|down|offline|not found/i);
+    expect(allOutput).toMatch(/not running/i);
+  });
+
+  it('notes a possibly-stale pidfile when down and a pidfile exists', async () => {
+    mockIsServerAlive.mockResolvedValue(false);
+    // Drop a pidfile into the sandboxed global config dir.
+    const enginDir = join(tempConfigDir, 'engin');
+    await mkdir(enginDir, { recursive: true });
+    await writeFile(join(enginDir, 'server.pid'), JSON.stringify({ pid: 9999, port: 3619 }));
+    await callServerStatus(baseOptions());
+    const allOutput = logSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(allOutput).toMatch(/not running/i);
+    expect(allOutput).toMatch(/stale|pidfile|pid\s*9999/i);
+  });
+
+  it('does not crash when down and no pidfile exists', async () => {
+    mockIsServerAlive.mockResolvedValue(false);
+    await expect(callServerStatus(baseOptions())).resolves.toBeUndefined();
+    const allOutput = logSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(allOutput).toMatch(/not running/i);
+    expect(allOutput).not.toMatch(/stale|pidfile/i);
   });
 });
 

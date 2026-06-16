@@ -3,8 +3,6 @@
     "target": "ES2024",
     "module": "ESNext",
     "moduleResolution": "bundler",
-    "outDir": "dist",
-    "rootDir": "src",
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
@@ -12,14 +10,9 @@
     "paths": {
       "@engin/shared": ["./packages/shared/src/index.ts"],
       "@engin/shared/*": ["./packages/shared/src/*"]
-    },
-    "declaration": true,
-    "declarationMap": true,
-    "sourceMap": true,
-    "types": ["bun-types"]
+    }
   },
-  "include": ["src"],
-  "exclude": ["node_modules", "dist", "tests"],
+  "files": [],
   "references": [
     { "path": "./packages/shared" },
     { "path": "./packages/engine" },

@@ -3,12 +3,12 @@
 //
 // Invoked by `startDaemon` (see daemon.ts) as a detached process. This module
 // is the in-daemon process: it parses its port/host from argv, starts the
-// observer server (HTTP control + WebSocket multi-run protocol + static
+// starts the control server (HTTP control + WebSocket multi-run protocol + static
 // frontend serving) with a RunManager that owns concurrent workflow runs,
 // writes its own pidfile, installs SIGTERM/SIGINT handlers for graceful
 // shutdown, and keeps the process alive.
 
-import { startObserverServer } from './control-server.js';
+import { startControlServer } from './control-server.js';
 import { removeStalePidfile, writePidfile } from './daemon.js';
 import { RunManager } from './run-manager.js';
 
@@ -64,17 +64,17 @@ async function main(): Promise<void> {
   // daemon re-asserts ownership on startup.
   await writePidfile(process.pid, port);
 
-  // ── RunManager + Observer Server ─────────────────────────────────────────
+  // ── RunManager + Control Server ─────────────────────────────────────────
   // The RunManager owns the lifecycle of concurrent workflow runs. The
-  // onRunsChanged callback is wired to the observer server's broadcast so
+  // onRunsChanged callback is wired to the control server's broadcast so
   // that all connected WS clients receive the updated active-run list
   // whenever a run starts, completes, fails, or is reaped.
   let broadcastRuns: () => void = () => {
-    /* placeholder until the observer server wires the real broadcast below */
+    /* placeholder until the control server wires the real broadcast below */
   };
   const runManager = new RunManager(() => broadcastRuns());
 
-  const observerServer = await startObserverServer({
+  const controlServer = await startControlServer({
     host,
     port,
     runManager,
@@ -83,10 +83,10 @@ async function main(): Promise<void> {
     onShutdown: () => runManager.shutdownAll(),
   });
 
-  // Wire the runs-changed callback to the observer server's broadcast so
+  // Wire the runs-changed callback to the control server's broadcast so
   // connected clients are notified whenever the active-run set changes.
   broadcastRuns = () => {
-    observerServer.broadcast({ type: 'runs', runs: runManager.listRuns() });
+    controlServer.broadcast({ type: 'runs', runs: runManager.listRuns() });
   };
 
   let shuttingDown = false;
@@ -95,10 +95,10 @@ async function main(): Promise<void> {
     if (shuttingDown) return;
     shuttingDown = true;
     process.stderr.write(`server-entry: received ${signal}, shutting down\n`);
-    // Stop the observer server — its onShutdown hook cancels active runs,
+    // Stop the control server — its onShutdown hook cancels active runs,
     // flushes stores, and disposes bridges BEFORE closing the socket.
     try {
-      await observerServer.stop();
+      await controlServer.stop();
     } catch {
       // Best effort — already stopped.
     }
@@ -110,7 +110,7 @@ async function main(): Promise<void> {
   process.on('SIGTERM', () => void shutdown('SIGTERM'));
   process.on('SIGINT', () => void shutdown('SIGINT'));
 
-  process.stderr.write(`server-entry: listening on ${observerServer.url} (pid ${process.pid})\n`);
+  process.stderr.write(`server-entry: listening on ${controlServer.url} (pid ${process.pid})\n`);
 
   // The Bun.serve handle keeps the event loop alive on its own; this keepalive
   // interval is a belt-and-braces guard so a future refactor that stops the

@@ -4,8 +4,11 @@ import type { ClientMessage, ServerMessage } from '@engin/shared/protocol-types'
 import type { PastRunEntry, WorktreeInfo } from '@harms-haus/engin-engine';
 import {
   getGlobalConfigDir,
+  getServerLogPath,
+  getServerPidfilePath,
   initDefaultConfig,
   isServerAlive,
+  readPidfile,
   readServerToken,
   startDaemon,
   stopDaemon,
@@ -619,17 +622,77 @@ export async function serverDownCommand(options: CliOptions): Promise<void> {
 }
 
 /**
+ * Shape of the daemon's `/health` JSON response.
+ *
+ * Defined loosely (all-optional) so a partial/legacy payload still type-checks
+ * when {@link serverStatusCommand} reads it defensively.
+ */
+interface HealthResponse {
+  pid?: number;
+  port?: number;
+  activeRuns?: number;
+}
+
+/**
+ * Fetches `/health` from the running daemon and parses its JSON body.
+ *
+ * Tolerant of every failure mode: a network error, a non-200 status, or a
+ * body that is not valid JSON all resolve to `undefined` so the caller can
+ * still report "running" with the details it already knows.
+ */
+async function fetchHealth(host: string, port: number): Promise<HealthResponse | undefined> {
+  try {
+    const response = await fetch(`http://${host}:${port}/health`);
+    if (!response.ok) return undefined;
+    return (await response.json()) as HealthResponse;
+  } catch {
+    // Connection refused, abort, DNS failure, or non-JSON body — treat as
+    // "health unavailable" rather than crashing the status command.
+    return undefined;
+  }
+}
+
+/**
  * Shows the engine server status.
  *
- * Probes `/health` via `isServerAlive` and prints whether the server is
- * running.
+ * Probes the daemon via {@link isServerAlive}. When it is up, fetches
+ * `/health` for runtime details and prints a multi-line report covering the
+ * DoD §18 fields: status, pid, port, bind host, active-run count, log path,
+ * and web URL. Tolerant of `/health` being unreachable or non-JSON — it still
+ * reports "running" with whatever it knows plus a note. When down, notes a
+ * stale pidfile if one is present (never crashes on a missing/unreadable
+ * pidfile).
  */
 export async function serverStatusCommand(options: CliOptions): Promise<void> {
   const port = options.port ?? DEFAULT_SERVER_PORT;
+  const host = options.host ?? DEFAULT_SERVER_HOST;
+  const logPath = getServerLogPath();
+
   const alive = await isServerAlive(port);
-  if (alive) {
-    console.log(`Server is running on port ${port}.`);
-  } else {
-    console.log('Server is not running.');
+  if (!alive) {
+    console.log(`${formatTime()} 🔴 Server is not running.`);
+    // Best-effort stale-pidfile notice. readPidfile() never throws — it
+    // resolves `null` when the pidfile is absent, empty, or malformed.
+    const pidfile = await readPidfile();
+    if (pidfile) {
+      console.log(
+        `${formatTime()}    ⚠️ A pidfile exists at ${getServerPidfilePath()} (pid ${pidfile.pid}) — it may be stale.`,
+      );
+    }
+    return;
+  }
+
+  // Server is alive — enrich with /health details when available.
+  const health = await fetchHealth(host, port);
+
+  console.log(`${formatTime()} 🟢 Server is running`);
+  console.log(`${formatTime()}    PID:          ${health?.pid ?? 'unknown'}`);
+  console.log(`${formatTime()}    Port:         ${port}`);
+  console.log(`${formatTime()}    Host:         ${host}`);
+  console.log(`${formatTime()}    Active runs:  ${health?.activeRuns ?? 'unknown'}`);
+  console.log(`${formatTime()}    Log:          ${logPath}`);
+  console.log(`${formatTime()}    Web URL:      http://${host}:${port}/`);
+  if (!health) {
+    console.log(`${formatTime()}    ⚠️ Health endpoint unavailable; some details are unknown.`);
   }
 }

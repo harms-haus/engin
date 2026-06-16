@@ -178,7 +178,7 @@ export default ts.config(
 
   // Enforce Web package boundary — web depends only on shared.
   {
-    files: ['packages/web/src/**/*.ts'],
+    files: ['packages/web/src/**/*.ts', 'packages/web/src/**/*.tsx'],
     rules: {
       'no-restricted-imports': [
         'error',
@@ -204,7 +204,7 @@ export default ts.config(
 
   // Global ignores (node_modules is auto-ignored in flat config)
   {
-    ignores: ['dist/', 'coverage/', 'web/', 'packages/*/dist/**', 'packages/*/node_modules/**'],
+    ignores: ['dist/', 'coverage/', 'packages/*/dist/**', 'packages/*/node_modules/**'],
   },
 
   // Prettier compatibility — MUST be last to disable conflicting rules

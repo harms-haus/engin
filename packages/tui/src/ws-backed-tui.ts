@@ -6,12 +6,9 @@ import type { EventLog } from './components/event-log.js';
 // ─── Factory ─────────────────────────────────────────────────────────────────
 
 /**
- * WS-backed TUI adapter — the WebSocket-era replacement for the old
- * `createStoreBackedTui` (status-callbacks.ts) pattern. Instead of subscribing
- * to a local in-process `EventStore` driven by `StatusCallbacks`, it subscribes
- * to a `ClientStore` (from `@engin/shared/client-store`): the plain-TS
- * projection store that mirrors what the web client consumes over the
- * WebSocket.
+ * WS-backed TUI adapter. Subscribes to a `ClientStore` (from
+ * `@engin/shared/client-store`): the plain-TS projection store that mirrors
+ * what the web client consumes over the WebSocket.
  *
  * On creation AND on every `clientStore` notification the adapter:
  *   1. Drains new entries from `state.workflowEventLog` whose `seq` is greater

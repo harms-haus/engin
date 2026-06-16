@@ -276,5 +276,5 @@ From `@earendil-works/pi-agent-core`: the `ThinkingLevel` type.
 
 ## TUI and web
 
-The TUI (`WorkflowTUI`, widgets, theme helpers) and web (`ObserverServer`, `StatusBridge`,
+The TUI (`WorkflowTUI`, widgets, theme helpers) and web (`ControlServer`, `StatusBridge`,
 protocol types) are also exported. See [TUI reference](tui.md) and [Web reference](web.md).
