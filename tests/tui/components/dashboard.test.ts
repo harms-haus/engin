@@ -475,13 +475,8 @@ describe('Dashboard', () => {
       });
       d.syncFromProjection(p);
 
-      // Simulate pinning
-      d.agentLog.setSelectedStepIndex(0);
-
-      const sel = d.getSelection();
-      sel.selectedTaskId = 't1';
-      sel.selectedStepIndex = 0;
-      sel.userPinnedStep = true;
+      // Tab to pin the step (sets userPinnedStep = true)
+      d.handleInput('\t');
 
       d.forceReselect();
 
@@ -641,13 +636,14 @@ describe('Dashboard', () => {
         phases: [{ id: 'alpha' }, { id: 'beta' }],
         currentPhaseId: 'alpha',
       });
-      d.syncFromProjection(p);
-
-      // Set some task/step state
-      const sel = d.getSelection();
-      sel.selectedTaskId = 'some-task';
-      sel.selectedStepIndex = 2;
-      sel.userPinnedStep = true;
+      // Set up task/step state via projection + tab pin
+      const pWithTask = buildProjection({
+        phases: [{ id: 'alpha' }, { id: 'beta' }],
+        currentPhaseId: 'alpha',
+        tasks: [makeTask({ id: 'some-task', phaseId: 'alpha', status: 'ready' })],
+      });
+      d.syncFromProjection(pWithTask);
+      d.handleInput('\t'); // pin step
 
       d.handleInput('\x1b[C'); // right → beta
 
@@ -1001,12 +997,6 @@ describe('Dashboard', () => {
       expect(d.getSelection().selectedTaskId).toBe('t1');
       expect(d.getSelection().selectedStepIndex).toBe(0);
 
-      // Set a different step index
-      d.agentLog.setSelectedStepIndex(0);
-      const sel = d.getSelection();
-      sel.userPinnedStep = false;
-      sel.selectedStepIndex = 0;
-
       // Down to t2
       d.handleInput('\x1b[B');
 
@@ -1116,7 +1106,6 @@ describe('Dashboard ANSI-aware border padding', () => {
           status: 'active',
           activeStepIndex: 0,
           steps: [{ name: 'Step 1', index: 0, agentKey: 'a1' }],
-          log: [{ id: '1', timestamp: '', type: 'error' as const, content: 'something failed' }],
           startedAt: Date.now(),
         }),
       ],

@@ -14,7 +14,7 @@ import {
   mockPromptForStructured,
   setupHarnessMocks,
   setupProfileMocks,
-} from './helpers.ts';
+} from './helpers.js';
 
 beforeEach(() => {
   clearPoolMocks();
@@ -153,7 +153,7 @@ describe('LanePool', () => {
             profileId: 'reviewer',
             isReadOnly: true,
             schema: reviewSchema,
-            isApproved: (result: z.infer<typeof reviewSchema>) => result.approved === true,
+            isApproved: (result: unknown) => (result as z.infer<typeof reviewSchema>).approved === true,
           },
         ],
       });
@@ -182,8 +182,9 @@ describe('LanePool', () => {
             profileId: 'reviewer',
             isReadOnly: true,
             schema: reviewSchema,
-            isApproved: (result: z.infer<typeof reviewSchema>) => result.approved === true,
-            getFeedback: (result: z.infer<typeof reviewSchema>) => result.feedback ?? 'No feedback provided',
+            isApproved: (result: unknown) => (result as z.infer<typeof reviewSchema>).approved === true,
+            getFeedback: (result: unknown) =>
+              (result as z.infer<typeof reviewSchema>).feedback ?? 'No feedback provided',
           },
         ],
       });
@@ -822,12 +823,19 @@ describe('LanePool', () => {
       setupProfileMocks();
       setupHarnessMocks();
       const onTaskRegister = mock(() => {});
-      const { pool, tracker } = createPoolAndTracker({
-        tasks: [
-          makeTask({ id: 'task-1', title: 'First', dependencies: [] }),
-          { ...makeTask({ id: 'task-2', title: 'Second', dependencies: ['task-1'] }), status: undefined as const },
-        ],
-        onStatus: { onTaskRegister },
+      const tracker = new TaskTracker();
+      tracker.addTask(makeTask({ id: 'task-1', title: 'First', dependencies: [] }));
+      const { status: _, ...task2Base } = makeTask({ id: 'task-2', title: 'Second', dependencies: ['task-1'] });
+      tracker.addTask(task2Base);
+      const pool = new LanePool({
+        maxConcurrentLanes: 1,
+        profilesDirs: ['/mock/profiles'],
+        sessionBaseDir: '/tmp/sessions',
+        cwd: '/tmp/project',
+        phaseId: 'implementing',
+        taskTracker: tracker,
+        getStepsForTask: () => [{ name: 'implement', profileId: 'coder', isReadOnly: false }],
+        onStatus: { onTaskRegister } as unknown as undefined,
       });
       expect(tracker.getTask('task-2')!.status).toBe('blocked');
       await pool.run();
@@ -871,12 +879,18 @@ describe('LanePool', () => {
           dispose: mock(() => {}),
         };
       });
-      const { pool, tracker } = createPoolAndTracker({
-        tasks: [
-          makeTask({ id: 'task-1', prompt: 'Do first' }),
-          { ...makeTask({ id: 'task-2', prompt: 'Do second', dependencies: ['task-1'] }), status: undefined as const },
-        ],
+      const tracker = new TaskTracker();
+      tracker.addTask(makeTask({ id: 'task-1', prompt: 'Do first' }));
+      const { status: _s, ...task2Base } = makeTask({ id: 'task-2', prompt: 'Do second', dependencies: ['task-1'] });
+      tracker.addTask(task2Base);
+      const pool = new LanePool({
         maxConcurrentLanes: 1,
+        profilesDirs: ['/mock/profiles'],
+        sessionBaseDir: '/tmp/sessions',
+        cwd: '/tmp/project',
+        phaseId: 'implementing',
+        taskTracker: tracker,
+        getStepsForTask: () => [{ name: 'implement', profileId: 'coder', isReadOnly: false }],
       });
       expect(tracker.getTask('task-2')!.status).toBe('blocked');
       const result = await pool.run();
@@ -912,8 +926,8 @@ describe('LanePool', () => {
           profileId: 'reviewer',
           isReadOnly: true,
           schema: sevSchema,
-          isApproved: (r: z.infer<typeof sevSchema>) => r.approved === true,
-          getFeedback: (r: z.infer<typeof sevSchema>) => r.feedback ?? 'No feedback provided',
+          isApproved: (r: unknown) => (r as z.infer<typeof sevSchema>).approved === true,
+          getFeedback: (r: unknown) => (r as z.infer<typeof sevSchema>).feedback ?? 'No feedback provided',
         },
       ];
     }
@@ -1170,8 +1184,8 @@ describe('LanePool', () => {
             profileId: 'reviewer',
             isReadOnly: true,
             schema: RS,
-            isApproved: (r: z.infer<typeof RS>) => r.approved === true,
-            getFeedback: (r: z.infer<typeof RS>) => r.feedback,
+            isApproved: (r: unknown) => (r as z.infer<typeof RS>).approved === true,
+            getFeedback: (r: unknown) => (r as z.infer<typeof RS>).feedback,
           },
         ],
       });

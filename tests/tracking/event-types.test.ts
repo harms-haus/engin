@@ -397,6 +397,7 @@ describe('WorkflowProjection', () => {
       sidebar: { title: 'Workflow', indicator: 'Running…' },
       status: 'running',
       stats: { totalTokens: 500, agentCount: 2 },
+      runLog: [],
     };
     expect(proj.seq).toBe(5);
     expect(proj.taskPrompt).toBe('Build it');
@@ -421,6 +422,7 @@ describe('WorkflowProjection', () => {
       sidebar: { title: '', indicator: '' },
       status: 'running',
       stats: { totalTokens: 0, agentCount: 0 },
+      runLog: [],
     };
     // @ts-expect-error - currentPhase no longer exists
     const _cp: undefined = (proj as { currentPhase?: string }).currentPhase;

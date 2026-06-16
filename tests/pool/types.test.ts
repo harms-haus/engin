@@ -15,6 +15,7 @@ describe('getStepsForTask with TaskTracker', () => {
       profile: 'coder',
       files: ['src/login.ts'],
       dependencies: [],
+      phaseId: 'phase-1',
     });
 
     const task = tracker.getTask('t1')!;
@@ -44,6 +45,7 @@ describe('getStepsForTask with TaskTracker', () => {
       profile: 'db-admin',
       files: ['db/schema.sql'],
       dependencies: [],
+      phaseId: 'phase-1',
     });
     tracker.addTask({
       id: 't2',
@@ -52,6 +54,7 @@ describe('getStepsForTask with TaskTracker', () => {
       profile: 'coder',
       files: ['src/api.ts'],
       dependencies: ['t1'],
+      phaseId: 'phase-1',
     });
 
     // t2 is blocked because t1 is not done
@@ -77,9 +80,33 @@ describe('getStepsForTask with TaskTracker', () => {
     const tracker = new TaskTracker();
 
     // Add tasks with dependencies
-    tracker.addTask({ id: 'a', title: 'A', prompt: 'Do A', profile: 'scout', files: [], dependencies: [] });
-    tracker.addTask({ id: 'b', title: 'B', prompt: 'Do B', profile: 'coder', files: [], dependencies: ['a'] });
-    tracker.addTask({ id: 'c', title: 'C', prompt: 'Do C', profile: 'coder', files: [], dependencies: ['a'] });
+    tracker.addTask({
+      id: 'a',
+      title: 'A',
+      prompt: 'Do A',
+      profile: 'scout',
+      files: [],
+      dependencies: [],
+      phaseId: 'phase-1',
+    });
+    tracker.addTask({
+      id: 'b',
+      title: 'B',
+      prompt: 'Do B',
+      profile: 'coder',
+      files: [],
+      dependencies: ['a'],
+      phaseId: 'phase-1',
+    });
+    tracker.addTask({
+      id: 'c',
+      title: 'C',
+      prompt: 'Do C',
+      profile: 'coder',
+      files: [],
+      dependencies: ['a'],
+      phaseId: 'phase-1',
+    });
 
     // Initially only 'a' is ready
     expect(tracker.getReadyTasks().map((t) => t.id)).toEqual(['a']);
@@ -121,7 +148,15 @@ describe('getStepsForTask with TaskTracker', () => {
 describe('TaskTracker failed status and reset', () => {
   it('failTask transitions active → failed', () => {
     const tracker = new TaskTracker();
-    tracker.addTask({ id: 't1', title: 'T1', prompt: 'Do it', profile: 'coder', files: [], dependencies: [] });
+    tracker.addTask({
+      id: 't1',
+      title: 'T1',
+      prompt: 'Do it',
+      profile: 'coder',
+      files: [],
+      dependencies: [],
+      phaseId: 'phase-1',
+    });
     tracker.claimTasks(1, 'agent-1');
 
     tracker.failTask('t1', { error: 'timeout' });
@@ -133,7 +168,15 @@ describe('TaskTracker failed status and reset', () => {
 
   it('failTask throws on invalid status', () => {
     const tracker = new TaskTracker();
-    tracker.addTask({ id: 't1', title: 'T1', prompt: 'Do it', profile: 'coder', files: [], dependencies: [] });
+    tracker.addTask({
+      id: 't1',
+      title: 'T1',
+      prompt: 'Do it',
+      profile: 'coder',
+      files: [],
+      dependencies: [],
+      phaseId: 'phase-1',
+    });
 
     // t1 is ready — failTask should throw
     expect(() => tracker.failTask('t1')).toThrow();
@@ -141,7 +184,15 @@ describe('TaskTracker failed status and reset', () => {
 
   it('resetFailedTasks resets failed tasks to ready', () => {
     const tracker = new TaskTracker();
-    tracker.addTask({ id: 't1', title: 'T1', prompt: 'Do it', profile: 'coder', files: [], dependencies: [] });
+    tracker.addTask({
+      id: 't1',
+      title: 'T1',
+      prompt: 'Do it',
+      profile: 'coder',
+      files: [],
+      dependencies: [],
+      phaseId: 'phase-1',
+    });
     tracker.claimTasks(1, 'agent-1');
     tracker.failTask('t1', 'oops');
 
@@ -157,8 +208,24 @@ describe('TaskTracker failed status and reset', () => {
 
   it('resetFailedTasks does not touch complete tasks', () => {
     const tracker = new TaskTracker();
-    tracker.addTask({ id: 't1', title: 'T1', prompt: 'Do it', profile: 'coder', files: [], dependencies: [] });
-    tracker.addTask({ id: 't2', title: 'T2', prompt: 'Do it too', profile: 'coder', files: [], dependencies: [] });
+    tracker.addTask({
+      id: 't1',
+      title: 'T1',
+      prompt: 'Do it',
+      profile: 'coder',
+      files: [],
+      dependencies: [],
+      phaseId: 'phase-1',
+    });
+    tracker.addTask({
+      id: 't2',
+      title: 'T2',
+      prompt: 'Do it too',
+      profile: 'coder',
+      files: [],
+      dependencies: [],
+      phaseId: 'phase-1',
+    });
 
     // Complete t1
     tracker.claimTasks(1, 'agent-1');
@@ -177,7 +244,15 @@ describe('TaskTracker failed status and reset', () => {
 
   it('resetStuckTasks resets active tasks to ready', () => {
     const tracker = new TaskTracker();
-    tracker.addTask({ id: 't1', title: 'T1', prompt: 'Do it', profile: 'coder', files: [], dependencies: [] });
+    tracker.addTask({
+      id: 't1',
+      title: 'T1',
+      prompt: 'Do it',
+      profile: 'coder',
+      files: [],
+      dependencies: [],
+      phaseId: 'phase-1',
+    });
     tracker.claimTasks(1, 'agent-1');
 
     expect(tracker.getTask('t1')!.status).toBe('active');
@@ -190,9 +265,33 @@ describe('TaskTracker failed status and reset', () => {
 
   it('resetStuckTasks does not touch ready/complete/failed tasks', () => {
     const tracker = new TaskTracker();
-    tracker.addTask({ id: 'ready1', title: 'R', prompt: '...', profile: 'coder', files: [], dependencies: [] });
-    tracker.addTask({ id: 'done1', title: 'D', prompt: '...', profile: 'coder', files: [], dependencies: [] });
-    tracker.addTask({ id: 'failed1', title: 'F', prompt: '...', profile: 'coder', files: [], dependencies: [] });
+    tracker.addTask({
+      id: 'ready1',
+      title: 'R',
+      prompt: '...',
+      profile: 'coder',
+      files: [],
+      dependencies: [],
+      phaseId: 'phase-1',
+    });
+    tracker.addTask({
+      id: 'done1',
+      title: 'D',
+      prompt: '...',
+      profile: 'coder',
+      files: [],
+      dependencies: [],
+      phaseId: 'phase-1',
+    });
+    tracker.addTask({
+      id: 'failed1',
+      title: 'F',
+      prompt: '...',
+      profile: 'coder',
+      files: [],
+      dependencies: [],
+      phaseId: 'phase-1',
+    });
     tracker.addTask({
       id: 'blocked1',
       title: 'B',
@@ -200,6 +299,7 @@ describe('TaskTracker failed status and reset', () => {
       profile: 'coder',
       files: [],
       dependencies: ['done1'],
+      phaseId: 'phase-1',
     });
 
     // Complete done1 so blocked1 stays blocked
@@ -231,9 +331,33 @@ describe('TaskTracker failed status and reset', () => {
 
   it('fromJSON resets failed and stuck tasks', () => {
     const tracker = new TaskTracker();
-    tracker.addTask({ id: 'done1', title: 'D', prompt: '...', profile: 'coder', files: [], dependencies: [] });
-    tracker.addTask({ id: 'impl1', title: 'I', prompt: '...', profile: 'coder', files: [], dependencies: [] });
-    tracker.addTask({ id: 'fail1', title: 'F', prompt: '...', profile: 'coder', files: [], dependencies: [] });
+    tracker.addTask({
+      id: 'done1',
+      title: 'D',
+      prompt: '...',
+      profile: 'coder',
+      files: [],
+      dependencies: [],
+      phaseId: 'phase-1',
+    });
+    tracker.addTask({
+      id: 'impl1',
+      title: 'I',
+      prompt: '...',
+      profile: 'coder',
+      files: [],
+      dependencies: [],
+      phaseId: 'phase-1',
+    });
+    tracker.addTask({
+      id: 'fail1',
+      title: 'F',
+      prompt: '...',
+      profile: 'coder',
+      files: [],
+      dependencies: [],
+      phaseId: 'phase-1',
+    });
 
     // Complete done1
     tracker.claimTasks(1, 'agent-1');
@@ -259,8 +383,24 @@ describe('TaskTracker failed status and reset', () => {
 
   it('isPoolDone returns true when all are complete or failed', () => {
     const tracker = new TaskTracker();
-    tracker.addTask({ id: 't1', title: 'T1', prompt: '...', profile: 'coder', files: [], dependencies: [] });
-    tracker.addTask({ id: 't2', title: 'T2', prompt: '...', profile: 'coder', files: [], dependencies: [] });
+    tracker.addTask({
+      id: 't1',
+      title: 'T1',
+      prompt: '...',
+      profile: 'coder',
+      files: [],
+      dependencies: [],
+      phaseId: 'phase-1',
+    });
+    tracker.addTask({
+      id: 't2',
+      title: 'T2',
+      prompt: '...',
+      profile: 'coder',
+      files: [],
+      dependencies: [],
+      phaseId: 'phase-1',
+    });
 
     // Complete t1
     tracker.claimTasks(1, 'agent-1');
@@ -278,8 +418,24 @@ describe('TaskTracker failed status and reset', () => {
 
   it('isPoolDone handles failed as terminal', () => {
     const tracker = new TaskTracker();
-    tracker.addTask({ id: 't1', title: 'T1', prompt: '...', profile: 'coder', files: [], dependencies: [] });
-    tracker.addTask({ id: 't2', title: 'T2', prompt: '...', profile: 'coder', files: [], dependencies: [] });
+    tracker.addTask({
+      id: 't1',
+      title: 'T1',
+      prompt: '...',
+      profile: 'coder',
+      files: [],
+      dependencies: [],
+      phaseId: 'phase-1',
+    });
+    tracker.addTask({
+      id: 't2',
+      title: 'T2',
+      prompt: '...',
+      profile: 'coder',
+      files: [],
+      dependencies: [],
+      phaseId: 'phase-1',
+    });
 
     // Complete t1
     tracker.claimTasks(1, 'agent-1');
@@ -297,8 +453,24 @@ describe('TaskTracker failed status and reset', () => {
 
   it('recalculateStatuses unblocks when deps are failed', () => {
     const tracker = new TaskTracker();
-    tracker.addTask({ id: 'a', title: 'A', prompt: '...', profile: 'coder', files: [], dependencies: [] });
-    tracker.addTask({ id: 'b', title: 'B', prompt: '...', profile: 'coder', files: [], dependencies: ['a'] });
+    tracker.addTask({
+      id: 'a',
+      title: 'A',
+      prompt: '...',
+      profile: 'coder',
+      files: [],
+      dependencies: [],
+      phaseId: 'phase-1',
+    });
+    tracker.addTask({
+      id: 'b',
+      title: 'B',
+      prompt: '...',
+      profile: 'coder',
+      files: [],
+      dependencies: ['a'],
+      phaseId: 'phase-1',
+    });
 
     // b should be blocked
     expect(tracker.getTask('b')!.status).toBe('blocked');

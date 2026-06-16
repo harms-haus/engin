@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { CliOptions } from '../packages/cli/src/cli.ts';
-import { main, parseArgs } from '../packages/cli/src/cli.ts';
+import type { CliOptions } from '../packages/cli/src/cli.js';
+import { main, parseArgs } from '../packages/cli/src/cli.js';
 import { useEnvSandbox } from './helpers/env-sandbox.js';
 import { useTempDir } from './helpers/use-temp-dir.js';
 
@@ -586,7 +586,7 @@ describe('parseArgs', () => {
   });
 
   it('webCommand is no longer exported from cli.ts', async () => {
-    const cliModule = await import('../packages/cli/src/cli.ts');
+    const cliModule = await import('../packages/cli/src/cli.js');
     expect((cliModule as Record<string, unknown>).webCommand).toBeUndefined();
   });
 });

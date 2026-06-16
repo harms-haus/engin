@@ -10,7 +10,7 @@ import {
   mockPromptForStructured,
   setupHarnessMocks,
   setupProfileMocks,
-} from './helpers.ts';
+} from './helpers.js';
 
 beforeEach(() => {
   clearPoolMocks();
@@ -109,7 +109,7 @@ describe('approve on round 1', () => {
     const outcome = await runner(ctx);
 
     expect(outcome.status).toBe('completed');
-    expect(outcome.output).toEqual(criticOutput);
+    expect(outcome).toHaveProperty('output', criticOutput);
   });
 });
 

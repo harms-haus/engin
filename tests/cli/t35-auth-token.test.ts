@@ -104,11 +104,11 @@ afterAll(() => {
 describe('T35: CLI reads server token for EngineClient auth', () => {
   let logSpy: ReturnType<typeof spyOn>;
   let stderrSpy: ReturnType<typeof spyOn>;
-  let prevExitCode: number | undefined;
+  let prevExitCode: number | string | null | undefined;
 
   beforeEach(() => {
     prevExitCode = process.exitCode;
-    process.exitCode = undefined as unknown as number;
+    process.exitCode = undefined;
     logSpy = spyOn(console, 'log').mockImplementation(() => {});
     stderrSpy = spyOn(process.stderr, 'write').mockImplementation(() => true);
     mockReadServerToken.mockReset();

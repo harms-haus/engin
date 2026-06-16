@@ -39,11 +39,11 @@
 | Check                                      | Result                                                        |
 | ------------------------------------------ | ------------------------------------------------------------- |
 | `bun install`                              | ✅ clean (448 installs, no changes)                           |
-| `bun run typecheck`                        | ✅ 0 errors (`tsc -b packages/shared && tsc --noEmit`)        |
+| `bun run typecheck`                        | ✅ 0 errors (`tsc --noEmit` over `packages/*/src` + `tests/`) |
 | `bun run lint`                             | ✅ 0 errors (`eslint .`)                                      |
 | `bun run format`                           | ✅ clean (102 files formatted)                                |
 | `bun run format:check`                     | ✅ all files use Prettier                                     |
-| `bun test` (full suite)                    | ✅ 2784 pass / 0 fail across 92 files (6355 `expect()` calls) |
+| `bun test` (full suite)                    | ✅ 2796 pass / 0 fail across 92 files (6371 `expect()` calls) |
 | `cd packages/web && bun run test` (vitest) | ✅ 16 files, 389 pass / 0 fail                                |
 | `cd packages/web && bun run build`         | ✅ built in 567ms                                             |
 | Package surface (`@harms-haus/engin`)      | ✅ 126 exports, all key APIs present                          |
@@ -81,8 +81,9 @@ returns fresh data` in `tests/tracking/audit-log.test.ts` — that intermittentl
 - **Renamed for consistency:** `startObserverServer` → `startControlServer` and the
   `ObserverServer` interface → `ControlServer` (across engine, tests, docs); served
   placeholder HTML title `engin observer` → `engin server`; removed a stale doc
-  comment referencing the deleted `terminate_server` protocol message; fixed a broken
-  `packages/web/README.md` link (`observer-server.ts` → `control-server.ts`).
+  comment referencing the deleted `terminate_server` protocol message; removed the
+  now-stale `packages/web/README.md` entirely (it documented the removed single-run
+  protocol / `terminate_server` and was superseded by `docs/reference/web.md`).
 - **Closed DoD §18 gap:** `engin server status` now reports pid, port, host,
   active-run count, log path, and web URL (previously only printed port).
 - **Config fixes:** removed the dead `'web/'` entry from eslint `ignores`; extended
@@ -90,6 +91,21 @@ returns fresh data` in `tests/tracking/audit-log.test.ts` — that intermittentl
   converted the root `tsconfig.json` to an honest pure-coordinator config
   (`"files": []`, removed the bogus `include`/`rootDir`/`outDir` pointing at a
   nonexistent `src/`).
+- **Typecheck now covers `tests/` (leftover-artifact sweep):** wired the root
+  `tsconfig.json` `include` to also include `tests/` (was `packages/*/src` only).
+  This surfaced **515 type errors across 58 test files** — overwhelmingly leftover
+  artifacts of the refactor, now fully resolved. Dominant root causes: stale
+  single-run protocol literals (`terminate_server`, unscoped `resync`, pre-`runId`
+  `snapshot`/`events`, `workflow_complete` as a `ServerMessage`); `WorkflowProjection`
+  literals missing the new `runLog` field; `Task` literals missing the new `phaseId`;
+  `.ts` relative imports (normalized to `.js`, the repo convention); and a genuine
+  **source-level** bug where `Omit<AuditEvent, 'timestamp'>` failed to distribute
+  over the discriminated union in `packages/engine/src/tracking/audit-log.ts`
+  (fixed with a distributive `Omit` — a one-line source fix that collapsed ~75 test
+  errors). Root `tsc --noEmit` is now green over `packages/*/src` **and** `tests/`.
+  Also pruned two orphaned git worktrees (`engin-cli-interactive-tui`,
+  `lane-pool-details`) whose checkouts were missing and still referenced the
+  pre-rename `workflow-harness` path.
 
 ### Still open
 
@@ -97,12 +113,12 @@ returns fresh data` in `tests/tracking/audit-log.test.ts` — that intermittentl
   currently throws instead of attaching (see the
   `TODO: wire attach-to-active-run flow` at `packages/cli/src/cli/commands.ts`
   ~line 425). Historical runs resume fine.
-- **Build/typecheck coverage limitation:** the root `typecheck` script only compiles
-  `packages/shared`; `packages/engine`, `tui`, and `cli` are typechecked at runtime
-  by Bun (transpiled per-file) but **not** by the `tsc` script. Checked directly,
-  `packages/engine` has unresolved `rootDir`/TS6059 errors from `@engin/shared/*`
-  path imports. A full `tsc -b` across all packages needs proper project `references`
-  setup.
+- **Build-emission coverage limitation (typecheck itself is now full):** the root
+  `typecheck` script (`tsc --noEmit`) now typechecks `packages/*/src` **and** `tests/`
+  and is fully green. The separate `build` script (`tsc -b packages/shared`) only
+  **emits** `packages/shared`; `packages/engine`, `tui`, and `cli` are not emitted by
+  `tsc` and rely on Bun's per-file transpilation at runtime. A full multi-package
+  `tsc -b` with project `references` (so every package emits) is still TODO.
 - **Auth plumbed but disabled (by design this iteration):** `--lan`/wildcard binding
   is refused. Runtime zod validation of `ClientMessage`s, a cwd/workDir allowlist, and
   per-run authorization remain deferred future work (see Code Review Fixes below).

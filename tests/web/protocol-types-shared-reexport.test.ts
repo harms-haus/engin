@@ -54,6 +54,7 @@ assertEqual<Equal<TaskEntity, CanonicalTaskEntity>>('TaskEntity sourced from ./e
 function snapshotMsg(): ServerMessage {
   return {
     type: 'snapshot',
+    runId: 'test-run',
     seq: 1,
     state: {
       seq: 1,
@@ -66,6 +67,7 @@ function snapshotMsg(): ServerMessage {
       sidebar: { title: 'Engin', indicator: '🟢' },
       status: 'running',
       stats: { totalTokens: 0, agentCount: 0 },
+      runLog: [],
     },
   };
 }
@@ -73,6 +75,7 @@ function snapshotMsg(): ServerMessage {
 function eventsMsg(): ServerMessage {
   return {
     type: 'events',
+    runId: 'test-run',
     seq: 2,
     events: [
       {
@@ -122,9 +125,9 @@ describe('@engin/shared/protocol-types — canonical exports', () => {
   });
 
   it('ClientMessage variants are constructible', () => {
-    const terminate: ClientMessage = { type: 'terminate_server' };
-    const resync: ClientMessage = { type: 'resync', lastSeq: 42 };
-    expect(terminate.type).toBe('terminate_server');
+    const cancel: ClientMessage = { type: 'cancel_run', runId: 'r1' };
+    const resync: ClientMessage = { type: 'resync', runId: 'r1', lastSeq: 42 };
+    expect(cancel.type).toBe('cancel_run');
     expect(resync.type).toBe('resync');
   });
 
@@ -170,8 +173,11 @@ describe('@engin/shared/protocol-types — canonical exports', () => {
     expect(event.seq).toBe(1);
     expect(et).toBe('workflow_started');
     // WorkflowProjection is exercised structurally by snapshotMsg() above.
-    const proj: WorkflowProjection = snapshotMsg().state;
-    expect(proj.status).toBe('running');
+    const raw = snapshotMsg();
+    if (raw.type === 'snapshot') {
+      const proj: WorkflowProjection = raw.state;
+      expect(proj.status).toBe('running');
+    }
   });
 });
 

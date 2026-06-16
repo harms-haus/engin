@@ -169,7 +169,7 @@ describe('WorkflowStatusTracker – agent persistence', () => {
       const json = tracker.toJSON();
 
       expect(json.spawnedAgents).toHaveLength(1);
-      expect(json.spawnedAgents[0]).toEqual({
+      expect(json.spawnedAgents![0]).toEqual({
         agentId: 'agent-1',
         profile: 'coder',
         phaseId: 'scouting',
@@ -182,7 +182,7 @@ describe('WorkflowStatusTracker – agent persistence', () => {
       tracker.recordAgentSpawn('agent-1', 'coder', 'scouting');
 
       const json = tracker.toJSON();
-      json.spawnedAgents.push({ agentId: 'fake', profile: 'p', phaseId: 'scouting' });
+      json.spawnedAgents!.push({ agentId: 'fake', profile: 'p', phaseId: 'scouting' });
 
       expect(tracker.toJSON().spawnedAgents).toHaveLength(1);
     });

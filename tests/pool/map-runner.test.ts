@@ -18,7 +18,6 @@ export const mockRunStep = mock() as ReturnType<typeof mock> & ((...args: unknow
 
 mock.module('../../packages/engine/src/pool/step-execution.js', () => ({
   runStep: (...args: unknown[]) => mockRunStep(...args),
-  StepExecutionContext: realStepExecution.StepExecutionContext,
 }));
 
 // ─── Imports after mock.module ─────────────────────────────────────────────
@@ -26,8 +25,8 @@ mock.module('../../packages/engine/src/pool/step-execution.js', () => ({
 import type { AgentProfile, Task } from '../../packages/engine/src/core/types.js';
 import { mapRunner } from '../../packages/engine/src/pool/map-runner.js';
 import type { StepDefinition, TaskRunnerContext } from '../../packages/engine/src/pool/types.js';
-import { makeMockSession } from '../helpers/make-session.ts';
-import { makeTask } from '../helpers/make-task.ts';
+import { makeMockSession } from '../helpers/make-session.js';
+import { makeTask } from '../helpers/make-task.js';
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
 
@@ -54,7 +53,7 @@ function defaultTask(overrides?: Partial<Task>): Task {
 
 interface MockTrackedSession {
   session: ReturnType<typeof makeMockSession>['session'];
-  dispose: ReturnType<typeof mock>;
+  dispose: () => void;
   sessionPath: string;
 }
 

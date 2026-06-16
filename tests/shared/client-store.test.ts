@@ -237,7 +237,7 @@ describe('ClientStore – applySnapshot', () => {
       currentPhaseId: 'exec',
       completedPhaseIds: ['plan'],
       tasks: {
-        t1: { id: 't1', title: 'Task 1', status: 'done', phaseId: 'plan', steps: [], dependencies: [] },
+        t1: { id: 't1', title: 'Task 1', status: 'complete', phaseId: 'plan', steps: [], dependencies: [] },
         t2: { id: 't2', title: 'Task 2', status: 'active', phaseId: 'exec', steps: [], dependencies: [] },
       },
       agents: {
@@ -258,6 +258,7 @@ describe('ClientStore – applySnapshot', () => {
       sidebar: { title: 'My App', indicator: 'green' },
       status: 'running',
       stats: { totalTokens: 1500, agentCount: 1 },
+      runLog: [],
     };
 
     store.applySnapshot(snapshot, 42);
@@ -270,7 +271,7 @@ describe('ClientStore – applySnapshot', () => {
     expect(s.phases).toHaveLength(1);
     expect(s.phases[0].id).toBe('plan');
     expect(Object.keys(s.tasks)).toHaveLength(2);
-    expect(s.tasks['t1'].status).toBe('done');
+    expect(s.tasks['t1'].status).toBe('complete');
     expect(Object.keys(s.agents)).toHaveLength(1);
     expect(s.agents['a1::t1'].toolCallCount).toBe(5);
     expect(s.sidebar.title).toBe('My App');
@@ -1226,7 +1227,9 @@ describe('ClientStore – workflowEventLog building', () => {
     store.applyEvents([ev('workflow_started', { taskPrompt: 'seq-check' }, {}, 77)]);
     const log = store.getState().workflowEventLog;
     expect(log[0].seq).toBe(77);
-    expect(log[0].line).toBe(formatWorkflowEventLine(ev('workflow_started', { taskPrompt: 'seq-check' }, {}, 77)));
+    const expectedLine = formatWorkflowEventLine(ev('workflow_started', { taskPrompt: 'seq-check' }, {}, 77));
+    expect(expectedLine).not.toBeNull();
+    expect(log[0].line).toBe(expectedLine!);
   });
 
   it('accumulates across multiple applyEvents calls in seq order', () => {

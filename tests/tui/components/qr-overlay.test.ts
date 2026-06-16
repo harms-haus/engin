@@ -65,9 +65,9 @@ describe('QrOverlayComponent', () => {
   it('handleInput does nothing (non-capturing)', async () => {
     const { component } = await createQrOverlayComponent('https://example.com');
     // Should not throw regardless of input
-    expect(() => component.handleInput('x')).not.toThrow();
-    expect(() => component.handleInput('\x1b[A')).not.toThrow();
-    expect(() => component.handleInput('')).not.toThrow();
+    expect(() => component.handleInput?.('x')).not.toThrow();
+    expect(() => component.handleInput?.('\x1b[A')).not.toThrow();
+    expect(() => component.handleInput?.('')).not.toThrow();
   });
 
   it('truncates to narrower width', async () => {

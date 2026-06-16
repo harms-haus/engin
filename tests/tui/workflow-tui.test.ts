@@ -502,7 +502,12 @@ describe('WorkflowTUI', () => {
         unfocus: mock(() => {}),
         isFocused: mock(() => false),
       };
-      const showOverlayMock = mock(() => overlayHandle);
+      const showOverlayMock = mock(
+        (
+          _component: { render: (w: number) => string[]; handleInput: (d: string) => void },
+          _options: Record<string, unknown>,
+        ) => overlayHandle,
+      );
       let capturedCallback: ((data: string) => any) | null = null;
 
       const addListenerSpy = spyOn(TUI.prototype, 'addInputListener').mockImplementation(function (
@@ -941,7 +946,7 @@ describe('WorkflowTUI', () => {
 
       return {
         wtui,
-        capturedCallback,
+        callback: capturedCallback!,
         requestRenderMock,
         cleanup: () => {
           wtui.stop();
@@ -953,10 +958,9 @@ describe('WorkflowTUI', () => {
     }
 
     it('calls requestRender when Tab key is handled', () => {
-      const { capturedCallback, requestRenderMock, cleanup } = setupTest();
+      const { callback, requestRenderMock, cleanup } = setupTest();
       try {
-        expect(capturedCallback).not.toBeNull();
-        capturedCallback!(TAB);
+        callback(TAB);
         expect(requestRenderMock).toHaveBeenCalled();
       } finally {
         cleanup();
@@ -964,10 +968,9 @@ describe('WorkflowTUI', () => {
     });
 
     it('calls requestRender when Left arrow key is handled', () => {
-      const { capturedCallback, requestRenderMock, cleanup } = setupTest();
+      const { callback, requestRenderMock, cleanup } = setupTest();
       try {
-        expect(capturedCallback).not.toBeNull();
-        capturedCallback!(LEFT_ARROW);
+        callback(LEFT_ARROW);
         expect(requestRenderMock).toHaveBeenCalled();
       } finally {
         cleanup();
@@ -975,10 +978,9 @@ describe('WorkflowTUI', () => {
     });
 
     it('calls requestRender when Right arrow key is handled', () => {
-      const { capturedCallback, requestRenderMock, cleanup } = setupTest();
+      const { callback, requestRenderMock, cleanup } = setupTest();
       try {
-        expect(capturedCallback).not.toBeNull();
-        capturedCallback!(RIGHT_ARROW);
+        callback(RIGHT_ARROW);
         expect(requestRenderMock).toHaveBeenCalled();
       } finally {
         cleanup();
@@ -986,10 +988,9 @@ describe('WorkflowTUI', () => {
     });
 
     it('calls requestRender when Ctrl+C is handled (regression)', () => {
-      const { capturedCallback, requestRenderMock, cleanup } = setupTest();
+      const { callback, requestRenderMock, cleanup } = setupTest();
       try {
-        expect(capturedCallback).not.toBeNull();
-        capturedCallback!(CTRL_C);
+        callback(CTRL_C);
         expect(requestRenderMock).toHaveBeenCalled();
       } finally {
         cleanup();
@@ -997,10 +998,9 @@ describe('WorkflowTUI', () => {
     });
 
     it('calls requestRender when Space key toggles expand', () => {
-      const { capturedCallback, requestRenderMock, cleanup } = setupTest();
+      const { callback, requestRenderMock, cleanup } = setupTest();
       try {
-        expect(capturedCallback).not.toBeNull();
-        capturedCallback!(SPACE);
+        callback(SPACE);
         expect(requestRenderMock).toHaveBeenCalled();
       } finally {
         cleanup();
@@ -1008,13 +1008,13 @@ describe('WorkflowTUI', () => {
     });
 
     it('consumes Up arrow and calls requestRender when agent log is expanded', () => {
-      const { capturedCallback, requestRenderMock, wtui, cleanup } = setupTest();
+      const { callback, requestRenderMock, wtui, cleanup } = setupTest();
       try {
-        expect(capturedCallback).not.toBeNull();
-        wtui.dashboard.agentLog.toggleExpand();
-        expect(wtui.dashboard.agentLog.isExpanded()).toBe(true);
+        const dashboard = wtui.getDashboard();
+        dashboard.agentLog.toggleExpand();
+        expect(dashboard.agentLog.isExpanded()).toBe(true);
 
-        const result = capturedCallback!(UP_ARROW);
+        const result = callback(UP_ARROW);
         expect(result).toEqual({ consume: true });
         expect(requestRenderMock).toHaveBeenCalled();
       } finally {
@@ -1023,13 +1023,13 @@ describe('WorkflowTUI', () => {
     });
 
     it('consumes Down arrow and calls requestRender when agent log is expanded', () => {
-      const { capturedCallback, requestRenderMock, wtui, cleanup } = setupTest();
+      const { callback, requestRenderMock, wtui, cleanup } = setupTest();
       try {
-        expect(capturedCallback).not.toBeNull();
-        wtui.dashboard.agentLog.toggleExpand();
-        expect(wtui.dashboard.agentLog.isExpanded()).toBe(true);
+        const dashboard = wtui.getDashboard();
+        dashboard.agentLog.toggleExpand();
+        expect(dashboard.agentLog.isExpanded()).toBe(true);
 
-        const result = capturedCallback!(DOWN_ARROW);
+        const result = callback(DOWN_ARROW);
         expect(result).toEqual({ consume: true });
         expect(requestRenderMock).toHaveBeenCalled();
       } finally {
@@ -1038,10 +1038,9 @@ describe('WorkflowTUI', () => {
     });
 
     it('consumes Up arrow even when agent log is NOT expanded', () => {
-      const { capturedCallback, requestRenderMock, cleanup } = setupTest();
+      const { callback, requestRenderMock, cleanup } = setupTest();
       try {
-        expect(capturedCallback).not.toBeNull();
-        const result = capturedCallback!(UP_ARROW);
+        const result = callback(UP_ARROW);
         expect(result).toEqual({ consume: true });
         expect(requestRenderMock).toHaveBeenCalled();
       } finally {
@@ -1050,10 +1049,9 @@ describe('WorkflowTUI', () => {
     });
 
     it('consumes Down arrow even when agent log is NOT expanded', () => {
-      const { capturedCallback, requestRenderMock, cleanup } = setupTest();
+      const { callback, requestRenderMock, cleanup } = setupTest();
       try {
-        expect(capturedCallback).not.toBeNull();
-        const result = capturedCallback!(DOWN_ARROW);
+        const result = callback(DOWN_ARROW);
         expect(result).toEqual({ consume: true });
         expect(requestRenderMock).toHaveBeenCalled();
       } finally {
@@ -1062,15 +1060,14 @@ describe('WorkflowTUI', () => {
     });
 
     it('existing Left/Right handler still works after adding new handlers', () => {
-      const { capturedCallback, requestRenderMock, cleanup } = setupTest();
+      const { callback, requestRenderMock, cleanup } = setupTest();
       try {
-        expect(capturedCallback).not.toBeNull();
-        const leftResult = capturedCallback!(LEFT_ARROW);
+        const leftResult = callback(LEFT_ARROW);
         expect(leftResult).toEqual({ consume: true });
         expect(requestRenderMock).toHaveBeenCalled();
 
         requestRenderMock.mockClear();
-        const rightResult = capturedCallback!(RIGHT_ARROW);
+        const rightResult = callback(RIGHT_ARROW);
         expect(rightResult).toEqual({ consume: true });
         expect(requestRenderMock).toHaveBeenCalled();
       } finally {
@@ -1079,10 +1076,9 @@ describe('WorkflowTUI', () => {
     });
 
     it('existing Tab handler still works after adding new handlers', () => {
-      const { capturedCallback, requestRenderMock, cleanup } = setupTest();
+      const { callback, requestRenderMock, cleanup } = setupTest();
       try {
-        expect(capturedCallback).not.toBeNull();
-        const result = capturedCallback!(TAB);
+        const result = callback(TAB);
         expect(result).toEqual({ consume: true });
         expect(requestRenderMock).toHaveBeenCalled();
       } finally {
@@ -1091,10 +1087,9 @@ describe('WorkflowTUI', () => {
     });
 
     it('existing Ctrl+C handler still works after adding new handlers', () => {
-      const { capturedCallback, requestRenderMock, cleanup } = setupTest();
+      const { callback, requestRenderMock, cleanup } = setupTest();
       try {
-        expect(capturedCallback).not.toBeNull();
-        const result = capturedCallback!(CTRL_C);
+        const result = callback(CTRL_C);
         expect(result).toEqual({ consume: true });
         expect(requestRenderMock).toHaveBeenCalled();
       } finally {
@@ -1105,15 +1100,14 @@ describe('WorkflowTUI', () => {
     // ─── Scroll key routing (PgUp/PgDn/Home/End) ───────────────────────
 
     it('routes pageUp key to eventLog.handleInput and consumes it', () => {
-      const { capturedCallback, requestRenderMock, wtui, cleanup } = setupTest();
+      const { callback, requestRenderMock, wtui, cleanup } = setupTest();
       try {
-        expect(capturedCallback).not.toBeNull();
         for (let i = 1; i <= 10; i++) {
           wtui.getEventLog().addLine(`line ${i}`);
         }
         expect(wtui.getEventLog().isScrolledUp).toBe(false);
 
-        const result = capturedCallback!('\x1b[5~');
+        const result = callback('\x1b[5~');
         expect(result).toEqual({ consume: true });
         expect(requestRenderMock).toHaveBeenCalled();
         expect(wtui.getEventLog().isScrolledUp).toBe(true);
@@ -1123,17 +1117,16 @@ describe('WorkflowTUI', () => {
     });
 
     it('routes pageDown key to eventLog.handleInput and consumes it', () => {
-      const { capturedCallback, requestRenderMock, wtui, cleanup } = setupTest();
+      const { callback, requestRenderMock, wtui, cleanup } = setupTest();
       try {
-        expect(capturedCallback).not.toBeNull();
         for (let i = 1; i <= 10; i++) {
           wtui.getEventLog().addLine(`line ${i}`);
         }
-        capturedCallback!('\x1b[5~');
+        callback('\x1b[5~');
         expect(wtui.getEventLog().isScrolledUp).toBe(true);
         requestRenderMock.mockClear();
 
-        const result = capturedCallback!('\x1b[6~');
+        const result = callback('\x1b[6~');
         expect(result).toEqual({ consume: true });
         expect(requestRenderMock).toHaveBeenCalled();
       } finally {
@@ -1142,15 +1135,14 @@ describe('WorkflowTUI', () => {
     });
 
     it('routes home key to eventLog.handleInput and consumes it', () => {
-      const { capturedCallback, requestRenderMock, wtui, cleanup } = setupTest();
+      const { callback, requestRenderMock, wtui, cleanup } = setupTest();
       try {
-        expect(capturedCallback).not.toBeNull();
         for (let i = 1; i <= 10; i++) {
           wtui.getEventLog().addLine(`line ${i}`);
         }
         expect(wtui.getEventLog().isScrolledUp).toBe(false);
 
-        const result = capturedCallback!('\x1b[H');
+        const result = callback('\x1b[H');
         expect(result).toEqual({ consume: true });
         expect(requestRenderMock).toHaveBeenCalled();
         expect(wtui.getEventLog().isScrolledUp).toBe(true);
@@ -1160,17 +1152,16 @@ describe('WorkflowTUI', () => {
     });
 
     it('routes end key to eventLog.handleInput and consumes it', () => {
-      const { capturedCallback, requestRenderMock, wtui, cleanup } = setupTest();
+      const { callback, requestRenderMock, wtui, cleanup } = setupTest();
       try {
-        expect(capturedCallback).not.toBeNull();
         for (let i = 1; i <= 10; i++) {
           wtui.getEventLog().addLine(`line ${i}`);
         }
-        capturedCallback!('\x1b[5~');
+        callback('\x1b[5~');
         expect(wtui.getEventLog().isScrolledUp).toBe(true);
         requestRenderMock.mockClear();
 
-        const result = capturedCallback!('\x1b[F');
+        const result = callback('\x1b[F');
         expect(result).toEqual({ consume: true });
         expect(requestRenderMock).toHaveBeenCalled();
         expect(wtui.getEventLog().isScrolledUp).toBe(false);
@@ -1180,15 +1171,14 @@ describe('WorkflowTUI', () => {
     });
 
     it('routes pageDown to bottom enables autoScroll on eventLog', () => {
-      const { capturedCallback, wtui, cleanup } = setupTest();
+      const { callback, wtui, cleanup } = setupTest();
       try {
-        expect(capturedCallback).not.toBeNull();
         for (let i = 1; i <= 10; i++) {
           wtui.getEventLog().addLine(`line ${i}`);
         }
-        capturedCallback!('\x1b[5~');
+        callback('\x1b[5~');
         expect(wtui.getEventLog().isScrolledUp).toBe(true);
-        capturedCallback!('\x1b[6~');
+        callback('\x1b[6~');
 
         wtui.getEventLog().addLine('bottom line');
         expect(wtui.getEventLog().isScrolledUp).toBe(false);
@@ -1198,35 +1188,33 @@ describe('WorkflowTUI', () => {
     });
 
     it('scroll keys do not interfere with other key handlers', () => {
-      const { capturedCallback, requestRenderMock, cleanup } = setupTest();
+      const { callback, requestRenderMock, cleanup } = setupTest();
       try {
-        expect(capturedCallback).not.toBeNull();
-
-        let result = capturedCallback!('\t');
+        let result = callback('\t');
         expect(result).toEqual({ consume: true });
 
         requestRenderMock.mockClear();
-        result = capturedCallback!('\x1b[D');
+        result = callback('\x1b[D');
         expect(result).toEqual({ consume: true });
 
         requestRenderMock.mockClear();
-        result = capturedCallback!('\x1b[C');
+        result = callback('\x1b[C');
         expect(result).toEqual({ consume: true });
 
         requestRenderMock.mockClear();
-        result = capturedCallback!('\x1b[5~');
+        result = callback('\x1b[5~');
         expect(result).toEqual({ consume: true });
 
         requestRenderMock.mockClear();
-        result = capturedCallback!('\x1b[6~');
+        result = callback('\x1b[6~');
         expect(result).toEqual({ consume: true });
 
         requestRenderMock.mockClear();
-        result = capturedCallback!('\x1b[H');
+        result = callback('\x1b[H');
         expect(result).toEqual({ consume: true });
 
         requestRenderMock.mockClear();
-        result = capturedCallback!('\x1b[F');
+        result = callback('\x1b[F');
         expect(result).toEqual({ consume: true });
       } finally {
         cleanup();
@@ -1234,13 +1222,12 @@ describe('WorkflowTUI', () => {
     });
 
     it('requests render for each scroll key', () => {
-      const { capturedCallback, requestRenderMock, cleanup } = setupTest();
+      const { callback, requestRenderMock, cleanup } = setupTest();
       try {
-        expect(capturedCallback).not.toBeNull();
         const scrollKeys = ['\x1b[5~', '\x1b[6~', '\x1b[H', '\x1b[F'];
         for (const key of scrollKeys) {
           requestRenderMock.mockClear();
-          capturedCallback!(key);
+          callback(key);
           expect(requestRenderMock).toHaveBeenCalled();
         }
       } finally {
@@ -1249,13 +1236,12 @@ describe('WorkflowTUI', () => {
     });
 
     it('scroll keys set autoscroll to false when scrolling up', () => {
-      const { capturedCallback, wtui, cleanup } = setupTest();
+      const { callback, wtui, cleanup } = setupTest();
       try {
-        expect(capturedCallback).not.toBeNull();
         for (let i = 1; i <= 10; i++) {
           wtui.getEventLog().addLine(`line ${i}`);
         }
-        capturedCallback!('\x1b[5~');
+        callback('\x1b[5~');
         wtui.getEventLog().addLine('new line');
         expect(wtui.getEventLog().isScrolledUp).toBe(true);
       } finally {
@@ -1266,10 +1252,9 @@ describe('WorkflowTUI', () => {
     // ─── Shift+Up/Shift+Down scroll by 10 ───────────────────────────
 
     it('shift+up scrolls by 10 when expanded', () => {
-      const { capturedCallback, requestRenderMock, wtui, cleanup } = setupTest();
+      const { callback, requestRenderMock, wtui, cleanup } = setupTest();
       try {
-        expect(capturedCallback).not.toBeNull();
-        const dashboard = wtui.dashboard;
+        const dashboard = wtui.getDashboard();
 
         dashboard.agentLog.toggleExpand();
         expect(dashboard.agentLog.isExpanded()).toBe(true);
@@ -1301,7 +1286,7 @@ describe('WorkflowTUI', () => {
         dashboard.agentLog.render(80);
 
         for (let i = 0; i < 3; i++) {
-          capturedCallback!(SHIFT_UP);
+          callback(SHIFT_UP);
         }
 
         const lines = dashboard.agentLog.render(80);
@@ -1314,10 +1299,9 @@ describe('WorkflowTUI', () => {
     });
 
     it('shift+down scrolls by 10 when expanded', () => {
-      const { capturedCallback, requestRenderMock, wtui, cleanup } = setupTest();
+      const { callback, requestRenderMock, wtui, cleanup } = setupTest();
       try {
-        expect(capturedCallback).not.toBeNull();
-        const dashboard = wtui.dashboard;
+        const dashboard = wtui.getDashboard();
 
         dashboard.agentLog.toggleExpand();
         expect(dashboard.agentLog.isExpanded()).toBe(true);
@@ -1349,11 +1333,11 @@ describe('WorkflowTUI', () => {
         dashboard.agentLog.render(80);
 
         for (let i = 0; i < 5; i++) {
-          capturedCallback!(SHIFT_UP);
+          callback(SHIFT_UP);
         }
         requestRenderMock.mockClear();
 
-        capturedCallback!(SHIFT_DOWN);
+        callback(SHIFT_DOWN);
 
         const lines = dashboard.agentLog.render(80);
         const joined = lines.join('\n');
@@ -1365,12 +1349,11 @@ describe('WorkflowTUI', () => {
     });
 
     it('shift+up falls through when NOT expanded', () => {
-      const { capturedCallback, requestRenderMock, wtui, cleanup } = setupTest();
+      const { callback, requestRenderMock, wtui, cleanup } = setupTest();
       try {
-        expect(capturedCallback).not.toBeNull();
-        expect(wtui.dashboard.agentLog.isExpanded()).toBe(false);
+        expect(wtui.getDashboard().agentLog.isExpanded()).toBe(false);
 
-        const result = capturedCallback!(SHIFT_UP);
+        const result = callback(SHIFT_UP);
         expect(result).toBeUndefined();
         expect(requestRenderMock).not.toHaveBeenCalled();
       } finally {
@@ -1379,12 +1362,11 @@ describe('WorkflowTUI', () => {
     });
 
     it('shift+down falls through when NOT expanded', () => {
-      const { capturedCallback, requestRenderMock, wtui, cleanup } = setupTest();
+      const { callback, requestRenderMock, wtui, cleanup } = setupTest();
       try {
-        expect(capturedCallback).not.toBeNull();
-        expect(wtui.dashboard.agentLog.isExpanded()).toBe(false);
+        expect(wtui.getDashboard().agentLog.isExpanded()).toBe(false);
 
-        const result = capturedCallback!(SHIFT_DOWN);
+        const result = callback(SHIFT_DOWN);
         expect(result).toBeUndefined();
         expect(requestRenderMock).not.toHaveBeenCalled();
       } finally {
@@ -1426,7 +1408,9 @@ describe('WorkflowTUI', () => {
         isFocused: mock(() => false),
       };
 
-      const mockShowOverlay = mock(() => overlayHandle);
+      const mockShowOverlay = mock(
+        (_c: { render: (w: number) => string[] }, _o: Record<string, unknown>) => overlayHandle,
+      );
       const mockRequestRender = mock(() => {});
 
       const wtui = new WorkflowTUI();
@@ -1462,7 +1446,9 @@ describe('WorkflowTUI', () => {
         isFocused: mock(() => false),
       };
 
-      const mockShowOverlay = mock(() => overlayHandle1);
+      const mockShowOverlay = mock(
+        (_c: { render: (w: number) => string[] }, _o: Record<string, unknown>) => overlayHandle1,
+      );
       const mockRequestRender = mock(() => {});
 
       const wtui = new WorkflowTUI();
@@ -1510,7 +1496,9 @@ describe('WorkflowTUI', () => {
         unfocus: mock(() => {}),
         isFocused: mock(() => false),
       };
-      const mockShowOverlay = mock(() => overlayHandle);
+      const mockShowOverlay = mock(
+        (_c: { render: (w: number) => string[] }, _o: Record<string, unknown>) => overlayHandle,
+      );
       const addListenerSpy = spyOn(TUI.prototype, 'addInputListener').mockImplementation(function (this: any) {
         this.requestRender = () => {};
         this.showOverlay = mockShowOverlay;
@@ -1564,7 +1552,7 @@ describe('WorkflowTUI', () => {
 
   describe('pauseForInspection', () => {
     function setupPauseTest() {
-      const addInputMock = mock(() => () => {});
+      const addInputMock = mock((_listener: (data: string) => any) => () => {});
       const requestRenderMock = mock(() => {});
       const addLineMock = mock(() => {});
 

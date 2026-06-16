@@ -374,7 +374,7 @@ describe('composeStatusCallbacks', () => {
     const info = { taskPrompt: 'test', resumed: false, workDir: '/tmp' };
 
     const originalError = console.error;
-    const consoleSpy = mock(() => {});
+    const consoleSpy = mock((_msg: string, _err: Error) => {});
     console.error = consoleSpy;
     try {
       composed.onWorkflowStart?.(info);

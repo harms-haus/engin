@@ -255,8 +255,8 @@ describe('createStdoutRenderer', () => {
         ),
       ]);
 
-      const calls = logSpy.mock.calls.map((c) => String(c[0]));
-      const textLine = calls.find((l) => l.includes('💬'));
+      const calls = logSpy.mock.calls.map((c: unknown[]) => String(c[0]));
+      const textLine = calls.find((l: string) => l.includes('💬'));
       expect(textLine).toBeDefined();
       expect(textLine).toContain('Hello world');
       expect(textLine).toContain(`[${FIXED_TIMESTAMP}]`);
@@ -287,8 +287,8 @@ describe('createStdoutRenderer', () => {
         ),
       ]);
 
-      const calls = logSpy.mock.calls.map((c) => String(c[0]));
-      const thinkLine = calls.find((l) => l.includes('🧠'));
+      const calls = logSpy.mock.calls.map((c: unknown[]) => String(c[0]));
+      const thinkLine = calls.find((l: string) => l.includes('🧠'));
       expect(thinkLine).toBeDefined();
       expect(thinkLine).toContain('Let me think...');
       dispose();
@@ -319,8 +319,8 @@ describe('createStdoutRenderer', () => {
         ),
       ]);
 
-      const calls = logSpy.mock.calls.map((c) => String(c[0]));
-      const toolLine = calls.find((l) => l.includes('🔧'));
+      const calls = logSpy.mock.calls.map((c: unknown[]) => String(c[0]));
+      const toolLine = calls.find((l: string) => l.includes('🔧'));
       expect(toolLine).toBeDefined();
       expect(toolLine).toContain('read_file');
       expect(toolLine).toContain('/foo.ts');
@@ -345,8 +345,8 @@ describe('createStdoutRenderer', () => {
         ev('tool_call_ended', { toolName: 'read_file', isError: false }, { agentId: 'a1', taskId: 't1' }, 3),
       ]);
 
-      const calls = logSpy.mock.calls.map((c) => String(c[0]));
-      const toolLine = calls.find((l) => l.includes('Tool result'));
+      const calls = logSpy.mock.calls.map((c: unknown[]) => String(c[0]));
+      const toolLine = calls.find((l: string) => l.includes('Tool result'));
       expect(toolLine).toBeDefined();
       expect(toolLine).toContain('✅');
       expect(toolLine).toContain('read_file');
@@ -371,8 +371,8 @@ describe('createStdoutRenderer', () => {
         ev('tool_call_ended', { toolName: 'write_file', isError: true }, { agentId: 'a1', taskId: 't1' }, 3),
       ]);
 
-      const calls = logSpy.mock.calls.map((c) => String(c[0]));
-      const toolLine = calls.find((l) => l.includes('Tool error'));
+      const calls = logSpy.mock.calls.map((c: unknown[]) => String(c[0]));
+      const toolLine = calls.find((l: string) => l.includes('Tool error'));
       expect(toolLine).toBeDefined();
       expect(toolLine).toContain('❌');
       expect(toolLine).toContain('write_file');
@@ -404,8 +404,8 @@ describe('createStdoutRenderer', () => {
         ),
       ]);
 
-      const calls = logSpy.mock.calls.map((c) => String(c[0]));
-      const tokenLine = calls.find((l) => l.includes('📊'));
+      const calls = logSpy.mock.calls.map((c: unknown[]) => String(c[0]));
+      const tokenLine = calls.find((l: string) => l.includes('📊'));
       expect(tokenLine).toBeDefined();
       expect(tokenLine).toContain('100 in');
       expect(tokenLine).toContain('50 out');
@@ -427,8 +427,8 @@ describe('createStdoutRenderer', () => {
 
       store.applyEvents([ev('decision', { decision: 'proceed' }, { agentId: 'a1', taskId: 't1' }, 3)]);
 
-      const calls = logSpy.mock.calls.map((c) => String(c[0]));
-      const decisionLine = calls.find((l) => l.includes('🤝 Decision'));
+      const calls = logSpy.mock.calls.map((c: unknown[]) => String(c[0]));
+      const decisionLine = calls.find((l: string) => l.includes('🤝 Decision'));
       expect(decisionLine).toBeDefined();
       expect(decisionLine).toContain('Decision by a1');
       expect(decisionLine).toContain('proceed');
@@ -448,8 +448,8 @@ describe('createStdoutRenderer', () => {
 
       store.appendRunLog('warn', 'disk space low', ISO_NOW);
 
-      const calls = logSpy.mock.calls.map((c) => String(c[0]));
-      const warnLine = calls.find((l) => l.includes('⚠️'));
+      const calls = logSpy.mock.calls.map((c: unknown[]) => String(c[0]));
+      const warnLine = calls.find((l: string) => l.includes('⚠️'));
       expect(warnLine).toBeDefined();
       expect(warnLine).toContain('disk space low');
       dispose();
@@ -464,8 +464,8 @@ describe('createStdoutRenderer', () => {
 
       store.appendRunLog('error', 'connection failed', ISO_NOW);
 
-      const calls = logSpy.mock.calls.map((c) => String(c[0]));
-      const errorLine = calls.find((l) => l.includes('❌'));
+      const calls = logSpy.mock.calls.map((c: unknown[]) => String(c[0]));
+      const errorLine = calls.find((l: string) => l.includes('❌'));
       expect(errorLine).toBeDefined();
       expect(errorLine).toContain('connection failed');
       dispose();
@@ -669,7 +669,7 @@ describe('createStdoutRenderer', () => {
       ]);
 
       const countAfterFirstBatch = logSpy.mock.calls.length;
-      expect(logSpy.mock.calls.some((c) => String(c[0]).includes('first'))).toBe(true);
+      expect(logSpy.mock.calls.some((c: unknown[]) => String(c[0]).includes('first'))).toBe(true);
 
       // Second batch — only new content should be printed
       store.applyEvents([
@@ -685,9 +685,9 @@ describe('createStdoutRenderer', () => {
 
       expect(logSpy.mock.calls.length).toBeGreaterThan(countAfterFirstBatch);
       // 'first' should NOT appear in any NEW call
-      const newCalls = logSpy.mock.calls.slice(countAfterFirstBatch).map((c) => String(c[0]));
-      expect(newCalls.every((l) => !l.includes('first'))).toBe(true);
-      expect(newCalls.some((l) => l.includes('second'))).toBe(true);
+      const newCalls = logSpy.mock.calls.slice(countAfterFirstBatch).map((c: unknown[]) => String(c[0]));
+      expect(newCalls.every((l: string) => !l.includes('first'))).toBe(true);
+      expect(newCalls.some((l: string) => l.includes('second'))).toBe(true);
       dispose();
     });
   });
@@ -739,8 +739,8 @@ describe('createStdoutRenderer', () => {
         ev('turn_ended', { contentBlocks: [{ type: 'text', text: 'post-cap' }] }, { agentId: 'a1', taskId: 't1' }, seq),
       ]);
 
-      const calls = logSpy.mock.calls.map((c) => String(c[0]));
-      const postCapLine = calls.find((l) => l.includes('post-cap'));
+      const calls = logSpy.mock.calls.map((c: unknown[]) => String(c[0]));
+      const postCapLine = calls.find((l: string) => l.includes('post-cap'));
       expect(postCapLine).toBeDefined();
       expect(postCapLine).toContain('💬');
       dispose();

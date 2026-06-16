@@ -5,7 +5,7 @@ import {
   promptForStructured,
   schemaToString,
   type PromptableHarness,
-} from '../../packages/engine/src/core/structured-output.ts';
+} from '../../packages/engine/src/core/structured-output.js';
 
 // ─── extractJsonFromText ────────────────────────────────────────────────────
 

@@ -182,7 +182,7 @@ describe('loadWorkflow', () => {
 
     const mod = await loadWorkflow('hello', cwd);
     expect(typeof mod.run).toBe('function');
-    const result = await mod.run('test', { cwd: '/tmp', workDir: '/tmp/work' });
+    const result: unknown = await mod.run('test', { cwd: '/tmp', workDir: '/tmp/work' });
     expect(result).toBe('hello-result');
   });
 
@@ -196,7 +196,7 @@ describe('loadWorkflow', () => {
 
     const mod = await loadWorkflow('default-export', cwd);
     expect(typeof mod.run).toBe('function');
-    const result = await mod.run('test', { cwd: '/tmp', workDir: '/tmp/work' });
+    const result: unknown = await mod.run('test', { cwd: '/tmp', workDir: '/tmp/work' });
     expect(result).toBe('default-result');
   });
 
@@ -206,7 +206,7 @@ describe('loadWorkflow', () => {
     await createDirWorkflow(globalWorkflowDir, 'override', "export async function run() { return 'global'; }");
 
     const mod = await loadWorkflow('override', cwd);
-    const result = await mod.run('', { cwd: '', workDir: '' });
+    const result: unknown = await mod.run('', { cwd: '', workDir: '' });
     expect(result).toBe('local');
   });
 
@@ -219,12 +219,12 @@ describe('loadWorkflow', () => {
     );
 
     const mod1 = await loadWorkflow('cached', cwd);
-    const result1 = await mod1.run('', { cwd: '', workDir: '' });
+    const result1: unknown = await mod1.run('', { cwd: '', workDir: '' });
     expect(result1).toBe(1);
 
     // Second load should return the same cached module — counter keeps incrementing
     const mod2 = await loadWorkflow('cached', cwd);
-    const result2 = await mod2.run('', { cwd: '', workDir: '' });
+    const result2: unknown = await mod2.run('', { cwd: '', workDir: '' });
     expect(result2).toBe(2);
 
     // Same object reference (cached)
@@ -270,7 +270,7 @@ describe('clearWorkflowCache', () => {
     // Next load still works (re-resolves via the same path)
     const mod2 = await loadWorkflow('cache-clear', cwd);
     expect(typeof mod2.run).toBe('function');
-    const result = await mod2.run('', { cwd: '', workDir: '' });
+    const result: unknown = await mod2.run('', { cwd: '', workDir: '' });
     expect(result).toBe(42);
   });
 });
@@ -310,7 +310,7 @@ describe('size-based cache eviction', () => {
     // without needing the file on disk.
     const mod = await loadWorkflow('wf-000', cwd);
     expect(typeof mod.run).toBe('function');
-    const result = await mod.run('', { cwd: '', workDir: '' });
+    const result: unknown = await mod.run('', { cwd: '', workDir: '' });
     expect(result).toBe(0);
   });
 

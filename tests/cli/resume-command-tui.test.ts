@@ -242,7 +242,7 @@ mock.module('../../packages/engine/src/core/config.js', () => ({
 
 // ─── Import SUT after mocks ──────────────────────────────────────────────
 
-import { resumeCommand } from '../../packages/cli/src/cli.ts';
+import { resumeCommand } from '../../packages/cli/src/cli.js';
 
 // ─── Restore original modules ────────────────────────────────────────────
 

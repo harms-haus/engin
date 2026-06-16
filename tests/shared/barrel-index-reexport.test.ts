@@ -245,10 +245,10 @@ describe('@engin/shared barrel — collision-prone types remain reachable (not m
   });
 
   it('exposes the protocol-only message types and EventType', () => {
-    const server: ServerMessage = { type: 'workflow_complete' };
-    const client: ClientMessage = { type: 'resync' };
+    const server: ServerMessage = { type: 'run_complete', runId: 'r1' };
+    const client: ClientMessage = { type: 'resync', runId: 'r1' };
     const evt: EventType = 'workflow_started';
-    expect(server.type).toBe('workflow_complete');
+    expect(server.type).toBe('run_complete');
     expect(client.type).toBe('resync');
     expect(evt).toBe('workflow_started');
   });
@@ -321,7 +321,7 @@ describe('@engin/shared barrel — behaviour smoke tests', () => {
   });
 
   it('isServerMessage recognises valid and rejects invalid payloads', () => {
-    expect(isServerMessage({ type: 'snapshot', seq: 0, state: createInitialProjection() })).toBe(true);
+    expect(isServerMessage({ type: 'snapshot', runId: 'r1', seq: 0, state: createInitialProjection() })).toBe(true);
     expect(isServerMessage({ type: 'run_complete', runId: 'r1' })).toBe(true);
     expect(isServerMessage({ type: 'nope' })).toBe(false);
     expect(isServerMessage(null)).toBe(false);

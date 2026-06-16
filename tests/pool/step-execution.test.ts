@@ -5,8 +5,8 @@ import { makeMockSession } from '../helpers/make-session.js';
 import { makeTask } from '../helpers/make-task.js';
 
 // Capture real modules before mocking
-const realHarnessFactory = Object.assign({}, await import('../../packages/engine/src/core/harness-factory.ts'));
-const realStructuredOutput = Object.assign({}, await import('../../packages/engine/src/core/structured-output.ts'));
+const realHarnessFactory = Object.assign({}, await import('../../packages/engine/src/core/harness-factory.js'));
+const realStructuredOutput = Object.assign({}, await import('../../packages/engine/src/core/structured-output.js'));
 
 // ─── Mocks ──────────────────────────────────────────────────────────────────
 
@@ -23,7 +23,7 @@ mock.module('../../packages/engine/src/core/structured-output.ts', () => ({
 // ─── Imports (after mocks) ─────────────────────────────────────────────────
 
 import type { StepExecutionContext } from '../../packages/engine/src/pool/step-execution.js';
-import { runStep } from '../../packages/engine/src/pool/step-execution.ts';
+import { runStep } from '../../packages/engine/src/pool/step-execution.js';
 import type { StepDefinition } from '../../packages/engine/src/pool/types.js';
 
 // ─── Test Helpers ───────────────────────────────────────────────────────────
@@ -606,7 +606,7 @@ describe('runStep (step-execution module)', () => {
         }),
       );
       // Verify sessionId is present (from mocked harness)
-      const callArg = onAgentSpawn.mock.calls[0][0] as Record<string, unknown>;
+      const callArg = (onAgentSpawn.mock.calls as unknown[][])[0][0] as Record<string, unknown>;
       expect(callArg.sessionId).toBe('test-session');
       expect(typeof callArg.sessionPath).toBe('string');
     });
@@ -631,7 +631,7 @@ describe('runStep (step-execution module)', () => {
         }),
       );
       // Verify sessionId is present (from mocked harness)
-      const callArg = onAgentComplete.mock.calls[0][0] as Record<string, unknown>;
+      const callArg = (onAgentComplete.mock.calls as unknown[][])[0][0] as Record<string, unknown>;
       expect(callArg.sessionId).toBe('test-session');
     });
 
@@ -753,7 +753,12 @@ describe('runStep (step-execution module)', () => {
 
   describe('tracked session return value', () => {
     it('returns trackedSession with session and dispose', async () => {
-      const session = makeSession(() => 'done');
+      const session = Object.assign(
+        makeSession(() => 'done'),
+        {
+          abort: mock(async () => {}),
+        },
+      );
       const dispose = mock(() => {});
       mockCreateHarness.mockResolvedValue({
         session,

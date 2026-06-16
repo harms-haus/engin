@@ -4,7 +4,7 @@ import type { ServerWebSocket } from 'bun';
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { RunManager, type StartRunMessage } from '../../packages/engine/src/server/run-manager.ts';
+import { RunManager, type StartRunMessage } from '../../packages/engine/src/server/run-manager.js';
 
 // ─── T35: authorize chokepoint mock ────────────────────────────────────────
 //
@@ -323,10 +323,11 @@ describe('control-server', () => {
     it('list_runs replies with a runs message', async () => {
       const runManager = createMockRunManager();
       const runs = [makeRunSummary('run-x')];
-      runManager.listRuns = mock(() => runs);
+      const listRunsMock = mock(() => runs);
+      runManager.listRuns = listRunsMock;
 
       const port = randomPort();
-      server = await startControlServer({ host: '127.0.0.1', port, runManager });
+      server = await startControlServer({ host: '127.0.0.1', port, runManager: runManager as unknown as RunManager });
 
       const { ws, collector } = await connect(port);
       try {
@@ -335,7 +336,7 @@ describe('control-server', () => {
         const msg = await collector.waitForType('runs');
         expect(msg.runs).toEqual(runs);
         // listRuns should have been invoked again for the explicit request
-        expect(runManager.listRuns.mock.calls.length).toBeGreaterThanOrEqual(2);
+        expect(listRunsMock.mock.calls.length).toBeGreaterThanOrEqual(2);
       } finally {
         ws.close();
       }
@@ -344,10 +345,13 @@ describe('control-server', () => {
     it('start_run calls runManager.startRun, replies run_started, and auto-subscribes', async () => {
       const runManager = createMockRunManager();
       const summary = makeRunSummary('run-started', { workflowName: 'ship', taskPrompt: 'Ship it' });
-      runManager.startRun = mock(async (_msg: StartRunMessage) => ({ runId: 'run-started', summary }));
+      const startRunMock = mock(async (_msg: StartRunMessage) => ({ runId: 'run-started', summary }));
+      runManager.startRun = startRunMock;
+      const subscribeMock = mock((_ws: ServerWebSocket, _runId: string): void => {});
+      runManager.subscribe = subscribeMock;
 
       const port = randomPort();
-      server = await startControlServer({ host: '127.0.0.1', port, runManager });
+      server = await startControlServer({ host: '127.0.0.1', port, runManager: runManager as unknown as RunManager });
 
       const { ws, collector } = await connect(port);
       try {
@@ -367,17 +371,17 @@ describe('control-server', () => {
         expect(msg.summary).toEqual(summary);
 
         // startRun received the payload (workflowName/taskPrompt/cwd forwarded)
-        expect(runManager.startRun).toHaveBeenCalledTimes(1);
-        const passed = runManager.startRun.mock.calls[0][0] as StartRunMessage;
+        expect(startRunMock).toHaveBeenCalledTimes(1);
+        const passed = startRunMock.mock.calls[0][0] as StartRunMessage;
         expect(passed.workflowName).toBe('ship');
         expect(passed.taskPrompt).toBe('Ship it');
         expect(passed.cwd).toBe('/tmp/project');
 
         // Auto-subscribe: the requesting ws is subscribed to the new run
-        expect(runManager.subscribe).toHaveBeenCalledTimes(1);
-        expect(runManager.subscribe.mock.calls[0][1]).toBe('run-started');
+        expect(subscribeMock).toHaveBeenCalledTimes(1);
+        expect(subscribeMock.mock.calls[0][1]).toBe('run-started');
         // The auto-subscribe must target the requesting socket itself.
-        expect(runManager.subscribe.mock.calls[0][0]).toBeDefined();
+        expect(subscribeMock.mock.calls[0][0]).toBeDefined();
       } finally {
         ws.close();
       }
@@ -385,13 +389,14 @@ describe('control-server', () => {
 
     it('start_run forwards optional fields (workDir, maxConcurrent, apiKeys, worktree) to runManager', async () => {
       const runManager = createMockRunManager();
-      runManager.startRun = mock(async (_msg: StartRunMessage) => ({
+      const startRunMock = mock(async (_msg: StartRunMessage) => ({
         runId: 'run-opt',
         summary: makeRunSummary('run-opt'),
       }));
+      runManager.startRun = startRunMock;
 
       const port = randomPort();
-      server = await startControlServer({ host: '127.0.0.1', port, runManager });
+      server = await startControlServer({ host: '127.0.0.1', port, runManager: runManager as unknown as RunManager });
 
       const { ws, collector } = await connect(port);
       try {
@@ -412,8 +417,8 @@ describe('control-server', () => {
         expect(msg.runId).toBe('run-opt');
 
         // Every optional field must be forwarded verbatim to runManager.startRun.
-        expect(runManager.startRun).toHaveBeenCalledTimes(1);
-        const passed = runManager.startRun.mock.calls[0][0] as StartRunMessage;
+        expect(startRunMock).toHaveBeenCalledTimes(1);
+        const passed = startRunMock.mock.calls[0][0] as StartRunMessage;
         expect(passed.workflowName).toBe('develop');
         expect(passed.taskPrompt).toBe('Do stuff');
         expect(passed.cwd).toBe('/tmp/proj');
@@ -460,12 +465,15 @@ describe('control-server', () => {
       const runManager = createMockRunManager();
       runManager.getRun = mock((runId: string) => (runId === 'run-live' ? makeRunSummary('run-live') : undefined));
       const snap = makeProjection(42);
-      runManager.handleResync = mock((ws: ServerWebSocket, runId: string, _lastSeq?: number) => {
+      const handleResyncMock = mock((ws: ServerWebSocket, runId: string, _lastSeq?: number) => {
         ws.send(JSON.stringify({ type: 'snapshot', runId, seq: snap.seq, state: snap }));
       });
+      runManager.handleResync = handleResyncMock;
+      const subscribeMock = mock((_ws: ServerWebSocket, _runId: string): void => {});
+      runManager.subscribe = subscribeMock;
 
       const port = randomPort();
-      server = await startControlServer({ host: '127.0.0.1', port, runManager });
+      server = await startControlServer({ host: '127.0.0.1', port, runManager: runManager as unknown as RunManager });
 
       const { ws, collector } = await connect(port);
       try {
@@ -478,11 +486,11 @@ describe('control-server', () => {
         expect(msg.seq).toBe(42);
         expect(msg.state.currentPhaseId).toBe('scouting');
 
-        expect(runManager.subscribe).toHaveBeenCalledTimes(1);
-        expect(runManager.subscribe.mock.calls[0][1]).toBe('run-live');
+        expect(subscribeMock).toHaveBeenCalledTimes(1);
+        expect(subscribeMock.mock.calls[0][1]).toBe('run-live');
         // Snapshot delivery delegated to runManager.handleResync
-        expect(runManager.handleResync).toHaveBeenCalledTimes(1);
-        expect(runManager.handleResync.mock.calls[0][1]).toBe('run-live');
+        expect(handleResyncMock).toHaveBeenCalledTimes(1);
+        expect(handleResyncMock.mock.calls[0][1]).toBe('run-live');
       } finally {
         ws.close();
       }
@@ -492,9 +500,11 @@ describe('control-server', () => {
       const runManager = createMockRunManager();
       runManager.getRun = mock(() => undefined);
       runManager.handleResync = mock(() => {});
+      const subscribeMock = mock((_ws: ServerWebSocket, _runId: string): void => {});
+      runManager.subscribe = subscribeMock;
 
       const port = randomPort();
-      server = await startControlServer({ host: '127.0.0.1', port, runManager });
+      server = await startControlServer({ host: '127.0.0.1', port, runManager: runManager as unknown as RunManager });
 
       const { ws, collector } = await connect(port);
       try {
@@ -508,8 +518,8 @@ describe('control-server', () => {
         const next = await collector.waitForNext();
         expect(next.type).toBe('runs');
 
-        expect(runManager.subscribe).toHaveBeenCalledTimes(1);
-        expect(runManager.subscribe.mock.calls[0][1]).toBe('ghost');
+        expect(subscribeMock).toHaveBeenCalledTimes(1);
+        expect(subscribeMock.mock.calls[0][1]).toBe('ghost');
         expect(runManager.handleResync).not.toHaveBeenCalled();
       } finally {
         ws.close();
@@ -518,8 +528,10 @@ describe('control-server', () => {
 
     it('unsubscribe calls runManager.unsubscribe for the runId', async () => {
       const runManager = createMockRunManager();
+      const unsubscribeMock = mock((_ws: ServerWebSocket, _runId: string): void => {});
+      runManager.unsubscribe = unsubscribeMock;
       const port = randomPort();
-      server = await startControlServer({ host: '127.0.0.1', port, runManager });
+      server = await startControlServer({ host: '127.0.0.1', port, runManager: runManager as unknown as RunManager });
 
       const { ws, collector } = await connect(port);
       try {
@@ -530,8 +542,8 @@ describe('control-server', () => {
         send(ws, { type: 'list_runs' });
         expect((await collector.waitForNext()).type).toBe('runs');
 
-        expect(runManager.unsubscribe).toHaveBeenCalledTimes(1);
-        expect(runManager.unsubscribe.mock.calls[0][1]).toBe('run-1');
+        expect(unsubscribeMock).toHaveBeenCalledTimes(1);
+        expect(unsubscribeMock.mock.calls[0][1]).toBe('run-1');
       } finally {
         ws.close();
       }
@@ -539,12 +551,13 @@ describe('control-server', () => {
 
     it('resync calls runManager.handleResync with runId and lastSeq', async () => {
       const runManager = createMockRunManager();
-      runManager.handleResync = mock((ws: ServerWebSocket, runId: string) => {
+      const handleResyncMock = mock((ws: ServerWebSocket, runId: string, _lastSeq?: number) => {
         ws.send(JSON.stringify({ type: 'snapshot', runId, seq: 10, state: makeProjection(10) }));
       });
+      runManager.handleResync = handleResyncMock;
 
       const port = randomPort();
-      server = await startControlServer({ host: '127.0.0.1', port, runManager });
+      server = await startControlServer({ host: '127.0.0.1', port, runManager: runManager as unknown as RunManager });
 
       const { ws, collector } = await connect(port);
       try {
@@ -554,8 +567,8 @@ describe('control-server', () => {
         const msg = await collector.waitForType('snapshot');
         expect(msg.runId).toBe('run-1');
 
-        expect(runManager.handleResync).toHaveBeenCalledTimes(1);
-        const [wsArg, runIdArg, lastSeqArg] = runManager.handleResync.mock.calls[0];
+        expect(handleResyncMock).toHaveBeenCalledTimes(1);
+        const [wsArg, runIdArg, lastSeqArg] = handleResyncMock.mock.calls[0];
         expect(wsArg).toBeDefined();
         expect(runIdArg).toBe('run-1');
         expect(lastSeqArg).toBe(7);
@@ -566,12 +579,13 @@ describe('control-server', () => {
 
     it('resync without lastSeq calls runManager.handleResync with undefined lastSeq', async () => {
       const runManager = createMockRunManager();
-      runManager.handleResync = mock((ws: ServerWebSocket, runId: string) => {
+      const handleResyncMock = mock((ws: ServerWebSocket, runId: string, _lastSeq?: number) => {
         ws.send(JSON.stringify({ type: 'snapshot', runId, seq: 0, state: makeProjection(0) }));
       });
+      runManager.handleResync = handleResyncMock;
 
       const port = randomPort();
-      server = await startControlServer({ host: '127.0.0.1', port, runManager });
+      server = await startControlServer({ host: '127.0.0.1', port, runManager: runManager as unknown as RunManager });
 
       const { ws, collector } = await connect(port);
       try {
@@ -581,8 +595,8 @@ describe('control-server', () => {
         const msg = await collector.waitForType('snapshot');
         expect(msg.runId).toBe('run-1');
 
-        expect(runManager.handleResync).toHaveBeenCalledTimes(1);
-        const [, runIdArg, lastSeqArg] = runManager.handleResync.mock.calls[0];
+        expect(handleResyncMock).toHaveBeenCalledTimes(1);
+        const [, runIdArg, lastSeqArg] = handleResyncMock.mock.calls[0];
         expect(runIdArg).toBe('run-1');
         expect(lastSeqArg).toBeUndefined();
       } finally {
@@ -592,8 +606,10 @@ describe('control-server', () => {
 
     it('cancel_run calls runManager.cancelRun for the runId', async () => {
       const runManager = createMockRunManager();
+      const cancelRunMock = mock((_runId: string): void => {});
+      runManager.cancelRun = cancelRunMock;
       const port = randomPort();
-      server = await startControlServer({ host: '127.0.0.1', port, runManager });
+      server = await startControlServer({ host: '127.0.0.1', port, runManager: runManager as unknown as RunManager });
 
       const { ws, collector } = await connect(port);
       try {
@@ -604,8 +620,8 @@ describe('control-server', () => {
         send(ws, { type: 'list_runs' });
         expect((await collector.waitForNext()).type).toBe('runs');
 
-        expect(runManager.cancelRun).toHaveBeenCalledTimes(1);
-        expect(runManager.cancelRun.mock.calls[0][0]).toBe('run-doomed');
+        expect(cancelRunMock).toHaveBeenCalledTimes(1);
+        expect(cancelRunMock.mock.calls[0][0]).toBe('run-doomed');
       } finally {
         ws.close();
       }
@@ -692,13 +708,16 @@ describe('control-server', () => {
     const port = randomPort();
     server = await startControlServer({ host: '127.0.0.1', port, runManager });
 
+    const unsubscribeAllMock = mock((_ws: ServerWebSocket): void => {});
+    runManager.unsubscribeAll = unsubscribeAllMock;
+
     const { ws } = await connect(port);
     try {
       ws.close();
       // The server's close handler fires asynchronously.
       await Bun.sleep(150);
-      expect(runManager.unsubscribeAll).toHaveBeenCalledTimes(1);
-      expect(runManager.unsubscribeAll.mock.calls[0][0]).toBeDefined();
+      expect(unsubscribeAllMock).toHaveBeenCalledTimes(1);
+      expect(unsubscribeAllMock.mock.calls[0][0]).toBeDefined();
     } finally {
       // already closed
     }
@@ -1351,7 +1370,7 @@ describe('control-server', () => {
         // runManager.listRuns should NOT have been called a second time
         // (the message was rejected before routing).
         // The first call was from the connect handler; there should be no more.
-        expect(runManager.listRuns.mock.calls.length).toBe(1);
+        expect(runManager.listRuns).toHaveBeenCalledTimes(1);
       } finally {
         ws.close();
       }

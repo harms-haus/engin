@@ -541,6 +541,7 @@ describe('WorkflowStatusTracker', () => {
         profile: 'prof',
         files: [],
         dependencies: [],
+        phaseId: 'phase-1',
       });
 
       await expect(fs.readFile(path.join(isolatedDir, '.engin-state.json'), 'utf-8')).rejects.toThrow();

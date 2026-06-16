@@ -2,29 +2,58 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, mock } from 'bun
 
 // ─── Capture real modules before mocking ────────────────────────────────────
 
-const realGit = Object.assign({}, await import('../../packages/engine/src/core/git.ts'));
-const realWorktreeLifecycle = Object.assign({}, await import('../../packages/engine/src/core/worktree-lifecycle.ts'));
+const realGit = Object.assign({}, await import('../../packages/engine/src/core/git.js'));
+const realWorktreeLifecycle = Object.assign({}, await import('../../packages/engine/src/core/worktree-lifecycle.js'));
 
 // ─── Mock functions for git ─────────────────────────────────────────────────
 
-const mockGetRepoRoot = mock(() => '/fake/repo');
-const mockGetMainBranch = mock(() => 'main');
-const mockGetCurrentBranch = mock(() => 'feature-branch');
-const mockCheckoutBranch = mock(() => {});
-const mockMergeBranch = mock(() => ({ success: true }));
-const mockAbortMerge = mock(() => {});
-const mockRemoveWorktree = mock(() => {});
-const mockStageAll = mock(() => {});
-const mockCommitChanges = mock(() => {});
-const mockGetDiff = mock(() => 'diff content');
+const mockGetRepoRoot = mock((_dir: string): string => '/fake/repo');
+const mockGetMainBranch = mock((_dir: string): string => 'main');
+const mockGetCurrentBranch = mock((_dir: string): string => 'feature-branch');
+const mockCheckoutBranch = mock((_repoRoot: string, _branch: string): void => {});
+const mockMergeBranch = mock(
+  (_repoRoot: string, _branch: string): { success: true } | { success: false; conflicts: string[] } => ({
+    success: true,
+  }),
+);
+const mockAbortMerge = mock((_repoRoot: string): void => {});
+const mockRemoveWorktree = mock((_repoRoot: string, _worktreePath: string): void => {});
+const mockStageAll = mock((_dir: string): void => {});
+const mockCommitChanges = mock((_dir: string, _message: string): void => {});
+const mockGetDiff = mock((_dir: string): string => 'diff content');
 
-const mockGenerateCommitMessage = mock(async () => 'feat: implement feature');
-const mockResolveConflictsWithAgent = mock(async () => true);
-const mockPushAndCreatePR = mock(async () => {});
+const mockGenerateCommitMessage = mock(
+  async (
+    _profilesDirs: string[],
+    _worktreePath: string,
+    _taskPrompt: string,
+    _diff: string,
+    _apiKeys?: Record<string, string>,
+  ): Promise<string> => 'feat: implement feature',
+);
+const mockResolveConflictsWithAgent = mock(
+  async (
+    _profilesDirs: string[],
+    _repoRoot: string,
+    _conflicts: string[],
+    _taskPrompt: string,
+    _apiKeys?: Record<string, string>,
+  ): Promise<boolean> => true,
+);
+const mockPushAndCreatePR = mock(
+  async (
+    _profilesDirs: string[],
+    _repoRoot: string,
+    _branchName: string,
+    _taskPrompt: string,
+    _title: string,
+    _apiKeys?: Record<string, string>,
+  ): Promise<void> => {},
+);
 
 // ─── Mock modules ────────────────────────────────────────────────────────────
 
-mock.module('../../packages/engine/src/core/git.ts', () => ({
+mock.module('../../packages/engine/src/core/git.js', () => ({
   getRepoRoot: mockGetRepoRoot,
   getMainBranch: mockGetMainBranch,
   getCurrentBranch: mockGetCurrentBranch,
@@ -37,7 +66,7 @@ mock.module('../../packages/engine/src/core/git.ts', () => ({
   getDiff: mockGetDiff,
 }));
 
-mock.module('../../packages/engine/src/core/worktree-lifecycle.ts', () => ({
+mock.module('../../packages/engine/src/core/worktree-lifecycle.js', () => ({
   generateCommitMessage: mockGenerateCommitMessage,
   resolveConflictsWithAgent: mockResolveConflictsWithAgent,
   pushAndCreatePR: mockPushAndCreatePR,
@@ -58,8 +87,8 @@ import {
 // ─── Restore original modules ────────────────────────────────────────────────
 
 afterAll(() => {
-  mock.module('../../packages/engine/src/core/git.ts', () => realGit);
-  mock.module('../../packages/engine/src/core/worktree-lifecycle.ts', () => realWorktreeLifecycle);
+  mock.module('../../packages/engine/src/core/git.js', () => realGit);
+  mock.module('../../packages/engine/src/core/worktree-lifecycle.js', () => realWorktreeLifecycle);
 });
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────

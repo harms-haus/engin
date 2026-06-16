@@ -20,10 +20,9 @@ let _uidCounter = 0;
 function makeAgent(overrides: Partial<AgentEntity> & Pick<AgentEntity, 'agentId' | 'phaseId'>): AgentEntity {
   _uidCounter++;
   return {
+    ...overrides,
     uid: overrides.uid ?? overrides.agentId + '-' + _uidCounter,
-    agentId: overrides.agentId,
     profile: overrides.profile ?? 'coder',
-    phaseId: overrides.phaseId,
     active: overrides.active ?? true,
     log: overrides.log ?? [],
     toolCallCount: overrides.toolCallCount ?? 0,
@@ -35,7 +34,6 @@ function makeAgent(overrides: Partial<AgentEntity> & Pick<AgentEntity, 'agentId'
     taskId: overrides.taskId,
     sessionId: overrides.sessionId,
     sessionPath: overrides.sessionPath,
-    ...overrides,
   };
 }
 
@@ -48,12 +46,10 @@ function resetUidCounter() {
  */
 function makeStep(overrides: Partial<StepEntity> & Pick<StepEntity, 'name' | 'index'>): StepEntity {
   return {
-    name: overrides.name,
-    index: overrides.index,
+    ...overrides,
     profile: overrides.profile,
     agentKey: overrides.agentKey,
     isReadOnly: overrides.isReadOnly ?? false,
-    ...overrides,
   };
 }
 

@@ -1,7 +1,7 @@
 import type { ServerMessage } from '@engin/shared/protocol-types';
 import { StatusBridge } from '@harms-haus/engin-engine';
 import { describe, expect, it } from 'bun:test';
-import { EventStore } from '../../packages/engine/src/tracking/event-store.ts';
+import { EventStore } from '../../packages/engine/src/tracking/event-store.js';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 

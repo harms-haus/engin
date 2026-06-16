@@ -13,7 +13,7 @@ import {
   setupHarnessMocks,
   setupHarnessMocksWithAbort,
   setupProfileMocks,
-} from './helpers.ts';
+} from './helpers.js';
 
 beforeEach(() => {
   clearPoolMocks();
@@ -27,7 +27,7 @@ describe('LanePool dual-listener wait pattern', () => {
       const { pool, tracker } = createPoolAndTracker({
         tasks: [
           makeTask({ id: 'task-1', title: 'First', dependencies: [] }),
-          { ...makeTask({ id: 'task-2', title: 'Second', dependencies: ['task-1'] }), status: undefined as const },
+          { ...makeTask({ id: 'task-2', title: 'Second', dependencies: ['task-1'] }), status: 'blocked' },
         ],
         maxConcurrentLanes: 2,
       });
@@ -43,8 +43,8 @@ describe('LanePool dual-listener wait pattern', () => {
       const { pool, tracker } = createPoolAndTracker({
         tasks: [
           makeTask({ id: 'task-A', title: 'A', dependencies: [] }),
-          { ...makeTask({ id: 'task-B', title: 'B', dependencies: ['task-A'] }), status: undefined as const },
-          { ...makeTask({ id: 'task-C', title: 'C', dependencies: ['task-B'] }), status: undefined as const },
+          { ...makeTask({ id: 'task-B', title: 'B', dependencies: ['task-A'] }), status: 'blocked' },
+          { ...makeTask({ id: 'task-C', title: 'C', dependencies: ['task-B'] }), status: 'blocked' },
         ],
         maxConcurrentLanes: 2,
       });
@@ -65,7 +65,7 @@ describe('LanePool dual-listener wait pattern', () => {
       const { pool, tracker } = createPoolAndTracker({
         tasks: [
           makeTask({ id: 'task-1', dependencies: [] }),
-          { ...makeTask({ id: 'task-2', dependencies: ['task-1'] }), status: undefined as const },
+          { ...makeTask({ id: 'task-2', dependencies: ['task-1'] }), status: 'blocked' },
         ],
         maxConcurrentLanes: 2,
       });
@@ -86,9 +86,9 @@ describe('LanePool dual-listener wait pattern', () => {
       const { pool, tracker } = createPoolAndTracker({
         tasks: [
           makeTask({ id: 'task-A', dependencies: [] }),
-          { ...makeTask({ id: 'task-B', dependencies: ['task-A'] }), status: undefined as const },
-          { ...makeTask({ id: 'task-C', dependencies: ['task-A'] }), status: undefined as const },
-          { ...makeTask({ id: 'task-D', dependencies: ['task-B', 'task-C'] }), status: undefined as const },
+          { ...makeTask({ id: 'task-B', dependencies: ['task-A'] }), status: 'blocked' },
+          { ...makeTask({ id: 'task-C', dependencies: ['task-A'] }), status: 'blocked' },
+          { ...makeTask({ id: 'task-D', dependencies: ['task-B', 'task-C'] }), status: 'blocked' },
         ],
         maxConcurrentLanes: 3,
       });
@@ -106,7 +106,7 @@ describe('LanePool dual-listener wait pattern', () => {
       const { pool, tracker } = createPoolAndTracker({
         tasks: [
           makeTask({ id: 'task-1', dependencies: [] }),
-          { ...makeTask({ id: 'task-2', dependencies: ['task-1'] }), status: undefined as const },
+          { ...makeTask({ id: 'task-2', dependencies: ['task-1'] }), status: 'blocked' },
         ],
         maxConcurrentLanes: 2,
         signal: controller.signal,
@@ -136,7 +136,7 @@ describe('LanePool dual-listener wait pattern', () => {
       const { pool, tracker } = createPoolAndTracker({
         tasks: [
           makeTask({ id: 'task-1', dependencies: [] }),
-          { ...makeTask({ id: 'task-2', dependencies: ['task-1'] }), status: undefined as const },
+          { ...makeTask({ id: 'task-2', dependencies: ['task-1'] }), status: 'blocked' },
         ],
         maxConcurrentLanes: 2,
         signal: controller.signal,
@@ -156,7 +156,7 @@ describe('LanePool dual-listener wait pattern', () => {
       const { pool, tracker } = createPoolAndTracker({
         tasks: [
           makeTask({ id: 'task-1', dependencies: [] }),
-          { ...makeTask({ id: 'task-2', dependencies: ['task-1'] }), status: undefined as const },
+          { ...makeTask({ id: 'task-2', dependencies: ['task-1'] }), status: 'blocked' },
         ],
         maxConcurrentLanes: 2,
       });
@@ -172,7 +172,7 @@ describe('LanePool dual-listener wait pattern', () => {
       const { pool, tracker } = createPoolAndTracker({
         tasks: [
           makeTask({ id: 'task-1', dependencies: [] }),
-          { ...makeTask({ id: 'task-2', dependencies: ['task-1'] }), status: undefined as const },
+          { ...makeTask({ id: 'task-2', dependencies: ['task-1'] }), status: 'blocked' },
         ],
         maxConcurrentLanes: 2,
         signal: controller.signal,
@@ -190,14 +190,14 @@ describe('LanePool dual-listener wait pattern', () => {
       const { pool, tracker } = createPoolAndTracker({
         tasks: [
           makeTask({ id: 'task-1', dependencies: [] }),
-          { ...makeTask({ id: 'task-2', dependencies: ['task-1'] }), status: undefined as const },
+          { ...makeTask({ id: 'task-2', dependencies: ['task-1'] }), status: 'blocked' },
         ],
         maxConcurrentLanes: 2,
       });
       let claimCount = 0;
       const orig = tracker.claimTasks.bind(tracker);
       const spy = spyOn(tracker, 'claimTasks').mockImplementation((count: number) => {
-        const tasks = orig(count);
+        const tasks = orig(count, 'lane-0');
         if (tasks.length > 0) claimCount++;
         return tasks;
       });
@@ -228,7 +228,7 @@ describe('LanePool dual-listener wait pattern', () => {
       let ready = false;
       const origClaim = tracker.claimTasks.bind(tracker);
       const claimSpy = spyOn(tracker, 'claimTasks').mockImplementation((count: number) => {
-        const tasks = origClaim(count);
+        const tasks = origClaim(count, 'lane-0');
         if (tasks.length === 0 && !ready) {
           ready = true;
           tracker.getTask('task-1')!.status = 'ready';
@@ -261,7 +261,7 @@ describe('LanePool dual-listener wait pattern', () => {
       let ready = false;
       const origClaim = tracker.claimTasks.bind(tracker);
       const claimSpy = spyOn(tracker, 'claimTasks').mockImplementation((count: number) => {
-        const tasks = origClaim(count);
+        const tasks = origClaim(count, 'lane-0');
         if (tasks.length === 0 && !ready) {
           ready = true;
           tracker.getTask('task-1')!.status = 'ready';
@@ -293,19 +293,20 @@ describe('LanePool dual-listener wait pattern', () => {
         laneWaitTimeoutMs: 60000,
       });
 
-      const setTimeoutSpy = spyOn(globalThis, 'setTimeout').mockImplementation(
-        (cb: (...args: unknown[]) => void, delay?: number) => {
-          if (typeof delay === 'number' && delay >= 1000) {
-            return realSetTimeout(cb, 0);
-          }
-          return realSetTimeout(cb, delay);
-        },
-      );
+      const setTimeoutSpy = spyOn(globalThis, 'setTimeout').mockImplementation(((
+        cb: (...args: unknown[]) => void,
+        delay?: number,
+      ) => {
+        if (typeof delay === 'number' && delay >= 1000) {
+          return realSetTimeout(cb, 0);
+        }
+        return realSetTimeout(cb, delay);
+      }) as typeof globalThis.setTimeout);
 
       let raceTriggered = false;
       const originalClaim = tracker.claimTasks.bind(tracker);
       const claimSpy = spyOn(tracker, 'claimTasks').mockImplementation((count: number) => {
-        const tasks = originalClaim(count);
+        const tasks = originalClaim(count, 'lane-0');
         if (tasks.length === 0 && !raceTriggered) {
           raceTriggered = true;
           tracker.getTask('task-1')!.status = 'ready';
@@ -337,7 +338,7 @@ describe('LanePool dual-listener wait pattern', () => {
       const spy = spyOn(tracker, 'claimTasks').mockImplementation((count: number) => {
         c++;
         if (c > 2) tracker.getTask('task-1')!.status = 'ready';
-        return origClaim(count);
+        return origClaim(count, 'lane-0');
       });
       const debugSpy = spyOn(console, 'debug').mockImplementation(() => {});
       const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
@@ -365,7 +366,7 @@ describe('LanePool dual-listener wait pattern', () => {
       const spy = spyOn(tracker, 'claimTasks').mockImplementation((count: number) => {
         c++;
         if (c > 8) tracker.getTask('task-1')!.status = 'ready';
-        return origClaim(count);
+        return origClaim(count, 'lane-0');
       });
       const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
       try {

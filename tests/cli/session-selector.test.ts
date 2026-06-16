@@ -467,7 +467,9 @@ describe('interactiveSelectRun', () => {
     expect(readLineSpy).toHaveBeenCalledTimes(2);
 
     // Check that invalid selection message was logged
-    const invalidCall = logSpy.mock.calls.find((c) => typeof c[0] === 'string' && c[0].includes('Invalid selection'));
+    const invalidCall = logSpy.mock.calls.find(
+      (c: unknown[]) => typeof c[0] === 'string' && c[0].includes('Invalid selection'),
+    );
     expect(invalidCall).toBeDefined();
   });
 
@@ -531,7 +533,9 @@ describe('interactiveSelectRun', () => {
     await sessionSelector.interactiveSelectRun(dir);
 
     // Find the log call that shows the run with state file indicator
-    const runLine = logSpy.mock.calls.find((c) => typeof c[0] === 'string' && c[0].includes(`${ts}-develop`));
+    const runLine = logSpy.mock.calls.find(
+      (c: unknown[]) => typeof c[0] === 'string' && c[0].includes(`${ts}-develop`),
+    );
     expect(runLine).toBeDefined();
     expect(runLine![0]).toContain('💾');
   });
@@ -545,7 +549,9 @@ describe('interactiveSelectRun', () => {
 
     await sessionSelector.interactiveSelectRun(dir);
 
-    const runLine = logSpy.mock.calls.find((c) => typeof c[0] === 'string' && c[0].includes(`${ts}-develop`));
+    const runLine = logSpy.mock.calls.find(
+      (c: unknown[]) => typeof c[0] === 'string' && c[0].includes(`${ts}-develop`),
+    );
     expect(runLine).toBeDefined();
     // Should NOT contain the state file icon
     const line = runLine![0] as string;
@@ -638,12 +644,12 @@ describe('interactiveSelectRun', () => {
 
     // Find the log calls that contain run dirNames
     const runLines = logSpy.mock.calls
-      .filter((c) => typeof c[0] === 'string' && (c[0].includes('newer') || c[0].includes('older')))
-      .map((c) => c[0] as string);
+      .filter((c: unknown[]) => typeof c[0] === 'string' && (c[0].includes('newer') || c[0].includes('older')))
+      .map((c: unknown[]) => c[0] as string);
 
     // The newer run should appear first (logged before the older run)
-    const newerIdx = runLines.findIndex((l) => l.includes('newer'));
-    const olderIdx = runLines.findIndex((l) => l.includes('older'));
+    const newerIdx = runLines.findIndex((l: string) => l.includes('newer'));
+    const olderIdx = runLines.findIndex((l: string) => l.includes('older'));
     expect(newerIdx).toBeLessThan(olderIdx);
   });
 
@@ -656,7 +662,9 @@ describe('interactiveSelectRun', () => {
 
     await sessionSelector.interactiveSelectRun(dir);
 
-    const runLine = logSpy.mock.calls.find((c) => typeof c[0] === 'string' && c[0].includes(`${ts}-develop`));
+    const runLine = logSpy.mock.calls.find(
+      (c: unknown[]) => typeof c[0] === 'string' && c[0].includes(`${ts}-develop`),
+    );
     expect(runLine).toBeDefined();
     // Should contain a relative time pattern like "0s ago" or similar
     expect(runLine![0]).toMatch(/\d+[smhd] ago\)/);
@@ -724,9 +732,9 @@ describe('interactiveSelectRun — two-source picker', () => {
       await sessionSelector.interactiveSelectRun(dir, null);
 
       // Collect all logged lines that mention either run
-      const allLogs = logSpy.mock.calls.map((c) => c[0]).filter(Boolean);
-      const activeLineIdx = allLogs.findIndex((l) => typeof l === 'string' && l.includes('active-wf'));
-      const diskLineIdx = allLogs.findIndex((l) => typeof l === 'string' && l.includes('disk-wf'));
+      const allLogs = logSpy.mock.calls.map((c: unknown[]) => c[0]).filter(Boolean);
+      const activeLineIdx = allLogs.findIndex((l: unknown) => typeof l === 'string' && l.includes('active-wf'));
+      const diskLineIdx = allLogs.findIndex((l: unknown) => typeof l === 'string' && l.includes('disk-wf'));
 
       expect(activeLineIdx).toBeGreaterThanOrEqual(0);
       expect(diskLineIdx).toBeGreaterThanOrEqual(0);
@@ -742,7 +750,7 @@ describe('interactiveSelectRun — two-source picker', () => {
 
       await sessionSelector.interactiveSelectRun(dir, null);
 
-      const runLine = logSpy.mock.calls.find((c) => typeof c[0] === 'string' && c[0].includes('green-wf'));
+      const runLine = logSpy.mock.calls.find((c: unknown[]) => typeof c[0] === 'string' && c[0].includes('green-wf'));
       expect(runLine).toBeDefined();
       expect(runLine![0]).toContain('🟢');
     });
@@ -755,7 +763,7 @@ describe('interactiveSelectRun — two-source picker', () => {
 
       await sessionSelector.interactiveSelectRun(dir, null);
 
-      const runLine = logSpy.mock.calls.find((c) => typeof c[0] === 'string' && c[0].includes('run-wf'));
+      const runLine = logSpy.mock.calls.find((c: unknown[]) => typeof c[0] === 'string' && c[0].includes('run-wf'));
       expect(runLine).toBeDefined();
       expect(runLine![0]).toContain('RUNNING');
     });
@@ -768,7 +776,7 @@ describe('interactiveSelectRun — two-source picker', () => {
 
       await sessionSelector.interactiveSelectRun(dir, null);
 
-      const runLine = logSpy.mock.calls.find((c) => typeof c[0] === 'string' && c[0].includes('done-wf'));
+      const runLine = logSpy.mock.calls.find((c: unknown[]) => typeof c[0] === 'string' && c[0].includes('done-wf'));
       expect(runLine).toBeDefined();
       expect(runLine![0]).toContain('COMPLETE');
     });
@@ -781,7 +789,7 @@ describe('interactiveSelectRun — two-source picker', () => {
 
       await sessionSelector.interactiveSelectRun(dir, null);
 
-      const runLine = logSpy.mock.calls.find((c) => typeof c[0] === 'string' && c[0].includes('fail-wf'));
+      const runLine = logSpy.mock.calls.find((c: unknown[]) => typeof c[0] === 'string' && c[0].includes('fail-wf'));
       expect(runLine).toBeDefined();
       expect(runLine![0]).toContain('FAILED');
     });
@@ -796,9 +804,9 @@ describe('interactiveSelectRun — two-source picker', () => {
       await sessionSelector.interactiveSelectRun(dir, null);
 
       // Check that "  1" appears before "first-wf" and "  2" before "second-wf"
-      const allLogs = logSpy.mock.calls.map((c) => c[0]).filter(Boolean);
-      const firstLine = allLogs.find((l) => typeof l === 'string' && l.includes('first-wf'));
-      const secondLine = allLogs.find((l) => typeof l === 'string' && l.includes('second-wf'));
+      const allLogs = logSpy.mock.calls.map((c: unknown[]) => c[0]).filter(Boolean);
+      const firstLine = allLogs.find((l: unknown) => typeof l === 'string' && l.includes('first-wf'));
+      const secondLine = allLogs.find((l: unknown) => typeof l === 'string' && l.includes('second-wf'));
       expect(firstLine).toBeDefined();
       expect(secondLine).toBeDefined();
       expect(firstLine).toMatch(/^\s+1\s/);
@@ -821,7 +829,9 @@ describe('interactiveSelectRun — two-source picker', () => {
       await sessionSelector.interactiveSelectRun(dir, null);
 
       // Disk-only run should appear in the output
-      const diskLine = logSpy.mock.calls.find((c) => typeof c[0] === 'string' && c[0].includes('disk-only-wf'));
+      const diskLine = logSpy.mock.calls.find(
+        (c: unknown[]) => typeof c[0] === 'string' && c[0].includes('disk-only-wf'),
+      );
       expect(diskLine).toBeDefined();
     });
 
@@ -833,7 +843,7 @@ describe('interactiveSelectRun — two-source picker', () => {
 
       await sessionSelector.interactiveSelectRun(dir, null);
 
-      const runLine = logSpy.mock.calls.find((c) => typeof c[0] === 'string' && c[0].includes('disk-wf'));
+      const runLine = logSpy.mock.calls.find((c: unknown[]) => typeof c[0] === 'string' && c[0].includes('disk-wf'));
       expect(runLine).toBeDefined();
       expect(runLine![0]).toContain('💾');
     });
@@ -850,8 +860,8 @@ describe('interactiveSelectRun — two-source picker', () => {
       await sessionSelector.interactiveSelectRun(dir, null);
 
       // Active run = item 1, historical run = item 2
-      const allLogs = logSpy.mock.calls.map((c) => c[0]).filter(Boolean);
-      const hLine = allLogs.find((l) => typeof l === 'string' && l.includes('h-wf'));
+      const allLogs = logSpy.mock.calls.map((c: unknown[]) => c[0]).filter(Boolean);
+      const hLine = allLogs.find((l: unknown) => typeof l === 'string' && l.includes('h-wf'));
       expect(hLine).toBeDefined();
       expect(hLine).toMatch(/^\s+2\s/);
     });
@@ -894,7 +904,9 @@ describe('interactiveSelectRun — two-source picker', () => {
       await sessionSelector.interactiveSelectRun(dir, null);
 
       // The run dirName should appear exactly once in the output
-      const runLines = logSpy.mock.calls.filter((c) => typeof c[0] === 'string' && c[0].includes(sharedDirName));
+      const runLines = logSpy.mock.calls.filter(
+        (c: unknown[]) => typeof c[0] === 'string' && c[0].includes(sharedDirName),
+      );
       expect(runLines).toHaveLength(1);
       // And it should be in the active section (has 🟢 marker)
       expect(runLines[0][0]).toContain('🟢');
@@ -913,7 +925,9 @@ describe('interactiveSelectRun — two-source picker', () => {
       await sessionSelector.interactiveSelectRun(dir, null);
 
       // Disk run should appear once (in historical section, no 🟢)
-      const runLines = logSpy.mock.calls.filter((c) => typeof c[0] === 'string' && c[0].includes(diskDirName));
+      const runLines = logSpy.mock.calls.filter(
+        (c: unknown[]) => typeof c[0] === 'string' && c[0].includes(diskDirName),
+      );
       expect(runLines).toHaveLength(1);
       expect(runLines[0][0]).not.toContain('🟢');
     });
@@ -938,8 +952,8 @@ describe('interactiveSelectRun — two-source picker', () => {
       await sessionSelector.interactiveSelectRun(dir, null);
 
       // shared1 and shared2 should each appear exactly once (in active section)
-      const s1Lines = logSpy.mock.calls.filter((c) => typeof c[0] === 'string' && c[0].includes(shared1));
-      const s2Lines = logSpy.mock.calls.filter((c) => typeof c[0] === 'string' && c[0].includes(shared2));
+      const s1Lines = logSpy.mock.calls.filter((c: unknown[]) => typeof c[0] === 'string' && c[0].includes(shared1));
+      const s2Lines = logSpy.mock.calls.filter((c: unknown[]) => typeof c[0] === 'string' && c[0].includes(shared2));
       expect(s1Lines).toHaveLength(1);
       expect(s2Lines).toHaveLength(1);
       expect(s1Lines[0][0]).toContain('🟢');
@@ -960,7 +974,7 @@ describe('interactiveSelectRun — two-source picker', () => {
 
       await sessionSelector.interactiveSelectRun(dir, null);
 
-      const runLine = logSpy.mock.calls.find((c) => typeof c[0] === 'string' && c[0].includes('disk-wf'));
+      const runLine = logSpy.mock.calls.find((c: unknown[]) => typeof c[0] === 'string' && c[0].includes('disk-wf'));
       expect(runLine).toBeDefined();
       // No 🟢 marker — purely historical
       expect(runLine![0]).not.toContain('🟢');
@@ -977,7 +991,7 @@ describe('interactiveSelectRun — two-source picker', () => {
 
       await sessionSelector.interactiveSelectRun(dir, {} as any);
 
-      const runLine = logSpy.mock.calls.find((c) => typeof c[0] === 'string' && c[0].includes('disk-wf'));
+      const runLine = logSpy.mock.calls.find((c: unknown[]) => typeof c[0] === 'string' && c[0].includes('disk-wf'));
       expect(runLine).toBeDefined();
     });
 
@@ -1005,7 +1019,7 @@ describe('interactiveSelectRun — two-source picker', () => {
       expect(logSpy).toHaveBeenCalledWith('\nPast workflow runs (newest first):\n');
       // Should NOT contain an "Active" or "Server" section header
       const activeHeader = logSpy.mock.calls.find(
-        (c) => typeof c[0] === 'string' && (c[0].includes('Active runs') || c[0].includes('Server runs')),
+        (c: unknown[]) => typeof c[0] === 'string' && (c[0].includes('Active runs') || c[0].includes('Server runs')),
       );
       expect(activeHeader).toBeUndefined();
     });

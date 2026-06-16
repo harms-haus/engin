@@ -10,6 +10,7 @@ const realPiAi = Object.assign({}, await import('@earendil-works/pi-ai'));
 // We need a reference to the listener so tests can simulate events.
 let capturedListener: ((event: any) => void) | undefined;
 let mockUnsubscribe: (() => void) | undefined;
+let capturedSession: { subscribe: ReturnType<typeof mock>; [key: string]: unknown } | undefined;
 
 const mockAuthStorageInstance = {
   setRuntimeApiKey: mock(),
@@ -20,8 +21,8 @@ const mockDefaultResourceLoaderInstance = {
 };
 
 // Mock createAgentSession — subscribe is on the session object
-const mockCreateAgentSession = mock(async () => ({
-  session: {
+const mockCreateAgentSession = mock(async () => {
+  const session = {
     prompt: mock(async () => {}),
     subscribe: mock().mockImplementation((listener: (event: any) => void) => {
       capturedListener = listener;
@@ -31,8 +32,11 @@ const mockCreateAgentSession = mock(async () => ({
     getLastAssistantText: mock(() => 'mock response'),
     messages: [],
     sessionId: 'mock-session-id',
-  },
-}));
+    dispose: mock(),
+  };
+  capturedSession = session;
+  return { session };
+});
 
 mock.module('@earendil-works/pi-coding-agent', () => ({
   createAgentSession: mockCreateAgentSession,
@@ -49,7 +53,7 @@ mock.module('@earendil-works/pi-ai', () => ({
 
 // ─── Imports (after mocks) ─────────────────────────────────────────────────
 
-import { createHarness } from '../../packages/engine/src/core/harness-factory.ts';
+import { createHarness } from '../../packages/engine/src/core/harness-factory.js';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -63,10 +67,11 @@ beforeEach(() => {
   mockAuthStorageInstance.setRuntimeApiKey = mock();
   capturedListener = undefined;
   mockUnsubscribe = undefined;
+  capturedSession = undefined;
   mockDefaultResourceLoaderInstance.reload = mock(async () => {});
   // Re-seed createAgentSession with a fresh subscribe mock
-  mockCreateAgentSession.mockResolvedValue({
-    session: {
+  mockCreateAgentSession.mockImplementation(async () => {
+    const session = {
       prompt: mock(async () => {}),
       subscribe: mock().mockImplementation((listener: (event: any) => void) => {
         capturedListener = listener;
@@ -77,7 +82,9 @@ beforeEach(() => {
       messages: [],
       sessionId: 'mock-session-id',
       dispose: mock(),
-    },
+    };
+    capturedSession = session;
+    return { session };
   });
 });
 
@@ -90,9 +97,7 @@ describe('harness subscribe forwarding', () => {
       cwd: '/tmp',
     });
 
-    const sessionResult = mockCreateAgentSession.mock.results[0].value;
-    const session = await sessionResult;
-    expect(session.session.subscribe).not.toHaveBeenCalled();
+    expect(capturedSession!.subscribe).not.toHaveBeenCalled();
   });
 
   it('subscribe not called when onAgentStatus has no methods', async () => {
@@ -102,9 +107,7 @@ describe('harness subscribe forwarding', () => {
       onAgentStatus: {},
     });
 
-    const sessionResult = mockCreateAgentSession.mock.results[0].value;
-    const session = await sessionResult;
-    expect(session.session.subscribe).not.toHaveBeenCalled();
+    expect(capturedSession!.subscribe).not.toHaveBeenCalled();
   });
 
   it('subscribe called when onTurnStart is defined', async () => {
@@ -115,9 +118,7 @@ describe('harness subscribe forwarding', () => {
       onAgentStatus: { onTurnStart },
     });
 
-    const sessionResult = mockCreateAgentSession.mock.results[0].value;
-    const session = await sessionResult;
-    expect(session.session.subscribe).toHaveBeenCalledTimes(1);
+    expect(capturedSession!.subscribe).toHaveBeenCalledTimes(1);
     expect(capturedListener).toBeTypeOf('function');
   });
 

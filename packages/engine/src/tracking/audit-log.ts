@@ -3,6 +3,14 @@ import { join } from 'node:path';
 import type { AuditEvent } from '../core/types.js';
 import { isEnoentError } from '../core/utils.js';
 
+// `Omit` does NOT distribute over a union, so `Omit<AuditEvent, 'timestamp'>`
+// would keep only the keys shared by every variant and silently drop
+// variant-specific fields (profile / result / error / ...). This distributive
+// form omits 'timestamp' from each union member independently. (Uses
+// `PropertyKey` + `infer O` instead of the usual `keyof any` / `T extends any`
+// so it stays clear of the no-explicit-any lint rule.)
+type DistributiveOmit<T, K extends PropertyKey> = T extends infer O ? Omit<O, K> : never;
+
 export class AuditLog {
   private readonly logPath: string;
   private cache: AuditEvent[] | null = null;
@@ -12,7 +20,7 @@ export class AuditLog {
     this.logPath = join(logDir, 'audit.jsonl');
   }
 
-  async append(event: Omit<AuditEvent, 'timestamp'>): Promise<void> {
+  async append(event: DistributiveOmit<AuditEvent, 'timestamp'>): Promise<void> {
     if (!this.dirEnsured) {
       await mkdir(this.logDir, { recursive: true });
       this.dirEnsured = true;

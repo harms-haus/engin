@@ -43,8 +43,8 @@ import type { WorktreeInfo } from '../../packages/engine/src/core/types.js';
 
 // ─── Capture real modules before mocking ────────────────────────────────────
 
-const realGit = Object.assign({}, await import('../../packages/engine/src/core/git.ts'));
-const realWorktreeLifecycle = Object.assign({}, await import('../../packages/engine/src/core/worktree-lifecycle.ts'));
+const realGit = Object.assign({}, await import('../../packages/engine/src/core/git.js'));
+const realWorktreeLifecycle = Object.assign({}, await import('../../packages/engine/src/core/worktree-lifecycle.js'));
 
 // ─── Mock functions for git ─────────────────────────────────────────────────
 
@@ -461,7 +461,7 @@ describe('T33: worktree_action ClientMessage type', () => {
 // ─── RunManager mock (for server-side tests) ────────────────────────────────
 
 import { startControlServer, type ControlServer } from '@harms-haus/engin-engine';
-import { RunManager, type StartRunMessage } from '../../packages/engine/src/server/run-manager.ts';
+import { RunManager, type StartRunMessage } from '../../packages/engine/src/server/run-manager.js';
 
 // ─── Mock the authorize chokepoint (always allow) ──────────────────────────
 

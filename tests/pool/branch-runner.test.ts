@@ -9,7 +9,7 @@ import {
   mockCreateHarness,
   setupHarnessMocks,
   setupProfileMocks,
-} from './helpers.ts';
+} from './helpers.js';
 
 beforeEach(() => {
   clearPoolMocks();
@@ -208,7 +208,7 @@ describe('branchRunner', () => {
 describe('branchRunner - rejection path', () => {
   it('handles rejected step correctly', async () => {
     // Import the mock for structured output
-    const { mockPromptForStructured } = await import('./helpers.ts');
+    const { mockPromptForStructured } = await import('./helpers.js');
 
     setupProfileMocks();
     setupHarnessMocks();
@@ -270,7 +270,7 @@ describe('branchRunner - session disposal', () => {
   });
 
   it('disposes the session when step is rejected', async () => {
-    const { mockPromptForStructured } = await import('./helpers.ts');
+    const { mockPromptForStructured } = await import('./helpers.js');
 
     setupProfileMocks();
     const dispose = mock(() => {});

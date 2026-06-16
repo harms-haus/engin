@@ -93,44 +93,28 @@ describe('AuditEvent phaseId field', () => {
 
   describe('decision does NOT have phaseId', () => {
     it('decision event does not accept phaseId', () => {
-      // @ts-expect-error — 'phaseId' is not a valid field on decision variant
-      const _event: AuditEvent = {
-        type: 'decision',
-        agentId: 'a1',
-        decision: 'approve',
-        reasoning: 'looks good',
-        phaseId: 'implementing',
-        timestamp: new Date().toISOString(),
-      };
-      expect(_event.type).toBe('decision');
+      type DecisionEvent = Extract<AuditEvent, { type: 'decision' }>;
+      type AssertNoPhaseId = DecisionEvent extends { phaseId: string } ? 'FAIL' : 'PASS';
+      const _check: AssertNoPhaseId = 'PASS';
+      expect(_check).toBe('PASS');
     });
   });
 
   describe('structured_output does NOT have phaseId', () => {
     it('structured_output event does not accept phaseId', () => {
-      // @ts-expect-error — 'phaseId' is not a valid field on structured_output variant
-      const _event: AuditEvent = {
-        type: 'structured_output',
-        agentId: 'a1',
-        output: {},
-        phaseId: 'implementing',
-        timestamp: new Date().toISOString(),
-      };
-      expect(_event.type).toBe('structured_output');
+      type StructuredOutputEvent = Extract<AuditEvent, { type: 'structured_output' }>;
+      type AssertNoPhaseId = StructuredOutputEvent extends { phaseId: string } ? 'FAIL' : 'PASS';
+      const _check: AssertNoPhaseId = 'PASS';
+      expect(_check).toBe('PASS');
     });
   });
 
   describe('error does NOT have phaseId', () => {
     it('error event does not accept phaseId', () => {
-      // @ts-expect-error — 'phaseId' is not a valid field on error variant
-      const _event: AuditEvent = {
-        type: 'error',
-        agentId: 'a1',
-        error: 'something broke',
-        phaseId: 'implementing',
-        timestamp: new Date().toISOString(),
-      };
-      expect(_event.type).toBe('error');
+      type ErrorEvent = Extract<AuditEvent, { type: 'error' }>;
+      type AssertNoPhaseId = ErrorEvent extends { phaseId: string } ? 'FAIL' : 'PASS';
+      const _check: AssertNoPhaseId = 'PASS';
+      expect(_check).toBe('PASS');
     });
   });
 

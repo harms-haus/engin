@@ -58,7 +58,7 @@ mock.module('@earendil-works/pi-ai', () => ({
 // ─── Imports (after mocks) ─────────────────────────────────────────────────
 
 import { AuthStorage, DefaultResourceLoader, SessionManager } from '@earendil-works/pi-coding-agent';
-import { createHarness } from '../../packages/engine/src/core/harness-factory.ts';
+import { createHarness } from '../../packages/engine/src/core/harness-factory.js';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 

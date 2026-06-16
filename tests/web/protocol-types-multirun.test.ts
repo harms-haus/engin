@@ -62,6 +62,7 @@ function makeMinimalProjection() {
     sidebar: { title: '', indicator: '' },
     status: 'running' as const,
     stats: { totalTokens: 0, agentCount: 0 },
+    runLog: [],
   };
 }
 
@@ -152,6 +153,7 @@ describe('ServerMessage – multi-run variants', () => {
       state: makeMinimalProjection(),
     };
     expect(msg.type).toBe('snapshot');
+    if (msg.type !== 'snapshot') throw new Error('unreachable');
     expect(msg.runId).toBe('run-1');
     expect(msg.seq).toBe(10);
     expect(msg.state.status).toBe('running');

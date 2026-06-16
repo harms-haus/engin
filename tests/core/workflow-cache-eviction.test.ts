@@ -37,7 +37,10 @@ function makeCwd(): string {
 async function createWorkflow(name: string, returnValue: number): Promise<void> {
   const dir = join(globalWorkflowDir, name);
   await mkdir(dir, { recursive: true });
-  await writeFile(join(dir, 'main.ts'), `export async function run() { return ${returnValue}; }`);
+  await writeFile(
+    join(dir, 'main.ts'),
+    `export const description = '${String(returnValue)}'; export async function run() {}`,
+  );
 }
 
 function wfName(i: number): string {
@@ -75,8 +78,8 @@ describe('workflowCache oldest-entry eviction', () => {
 
     // Now load wf-001 — it should still be cached (succeed despite disk deletion)
     const mod1 = await loadWorkflow(wfName(1), cwd);
-    const result1 = await mod1.run('', { cwd: '', workDir: '' });
-    expect(result1).toBe(1);
+    await mod1.run('', { cwd: '', workDir: '' });
+    expect(mod1.description).toBe(String(1));
   });
 
   it('cache hit preserves all entries including the oldest when over threshold (bug fix)', async () => {
@@ -100,14 +103,14 @@ describe('workflowCache oldest-entry eviction', () => {
 
     // The oldest entry wf-001 should still be cached (succeeds despite disk deletion).
     const mod1 = await loadWorkflow(wfName(1), cwd);
-    const result1 = await mod1.run('', { cwd: '', workDir: '' });
-    expect(result1).toBe(1);
+    await mod1.run('', { cwd: '', workDir: '' });
+    expect(mod1.description).toBe(String(1));
 
     // wf-030 should also still be cached.
     await rm(join(globalWorkflowDir, wfName(30), 'main.ts'));
     const mod30 = await loadWorkflow(wfName(30), cwd);
-    const result30 = await mod30.run('', { cwd: '', workDir: '' });
-    expect(result30).toBe(30);
+    await mod30.run('', { cwd: '', workDir: '' });
+    expect(mod30.description).toBe(String(30));
   });
 
   it('eviction only fires on cache miss, not on every call (bug fix)', async () => {
@@ -129,8 +132,8 @@ describe('workflowCache oldest-entry eviction', () => {
     // Everything still cached — delete wf-000 from disk and verify it still works.
     await rm(join(globalWorkflowDir, wfName(0), 'main.ts'));
     const mod0 = await loadWorkflow(wfName(0), cwd);
-    const result0 = await mod0.run('', { cwd: '', workDir: '' });
-    expect(result0).toBe(0);
+    await mod0.run('', { cwd: '', workDir: '' });
+    expect(mod0.description).toBe(String(0));
 
     // Now load a new workflow (wf-051, cache miss). This SHOULD trigger eviction.
     await createWorkflow(wfName(51), 51);
@@ -172,8 +175,8 @@ describe('workflowCache oldest-entry eviction', () => {
     // Load wf-025: cache 50 > 50? No → lookup wf-025 → found (still cached!)
     const mod25 = await loadWorkflow(wfName(25), cwd);
     expect(typeof mod25.run).toBe('function');
-    const result = await mod25.run('', { cwd: '', workDir: '' });
-    expect(result).toBe(25);
+    await mod25.run('', { cwd: '', workDir: '' });
+    expect(mod25.description).toBe(String(25));
   });
 
   it('each new unique workflow evicts exactly one oldest entry (not all)', async () => {
@@ -202,8 +205,8 @@ describe('workflowCache oldest-entry eviction', () => {
     await rm(join(globalWorkflowDir, wfName(30), 'main.ts'));
     // Load wf-030: cache 51 > 50 → evict wf-004 → lookup wf-030: found → cached
     const mod30 = await loadWorkflow(wfName(30), cwd);
-    const result = await mod30.run('', { cwd: '', workDir: '' });
-    expect(result).toBe(30);
+    await mod30.run('', { cwd: '', workDir: '' });
+    expect(mod30.description).toBe(String(30));
 
     // Verify wf-003 (evicted) is truly gone: delete from disk → load → throw
     await rm(join(globalWorkflowDir, wfName(3), 'main.ts'));
@@ -227,14 +230,14 @@ describe('workflowCache oldest-entry eviction', () => {
 
     // Load wf-000 → eviction of wf-001, then re-read from disk → new module
     const mod = await loadWorkflow(wfName(0), cwd);
-    const result = await mod.run('', { cwd: '', workDir: '' });
-    expect(result).toBe(999);
+    await mod.run('', { cwd: '', workDir: '' });
+    expect(mod.description).toBe(String(999));
 
     // Now delete wf-000 from disk — it was just re-cached, should still work
     await rm(join(globalWorkflowDir, wfName(0), 'main.ts'));
     const modAgain = await loadWorkflow(wfName(0), cwd);
-    const resultAgain = await modAgain.run('', { cwd: '', workDir: '' });
-    expect(resultAgain).toBe(999);
+    await modAgain.run('', { cwd: '', workDir: '' });
+    expect(modAgain.description).toBe(String(999));
   });
 
   it('cache does not grow unbounded across many unique loads', async () => {
@@ -259,8 +262,8 @@ describe('workflowCache oldest-entry eviction', () => {
     // Late entry wf-060 should be cached: delete from disk → still works
     await rm(join(globalWorkflowDir, wfName(60), 'main.ts'));
     const mod60 = await loadWorkflow(wfName(60), cwd);
-    const result = await mod60.run('', { cwd: '', workDir: '' });
-    expect(result).toBe(60);
+    await mod60.run('', { cwd: '', workDir: '' });
+    expect(mod60.description).toBe(String(60));
   });
 
   it('does not evict when cache size equals threshold', async () => {
@@ -278,8 +281,8 @@ describe('workflowCache oldest-entry eviction', () => {
     // Delete wf-000 from disk: it should still be cached.
     await rm(join(globalWorkflowDir, wfName(0), 'main.ts'));
     const mod = await loadWorkflow(wfName(0), cwd);
-    const result = await mod.run('', { cwd: '', workDir: '' });
-    expect(result).toBe(0);
+    await mod.run('', { cwd: '', workDir: '' });
+    expect(mod.description).toBe(String(0));
   });
 
   it('does not evict when cache size is below threshold', async () => {
@@ -296,8 +299,8 @@ describe('workflowCache oldest-entry eviction', () => {
     // Cache size is 49 — no eviction.
     await rm(join(globalWorkflowDir, wfName(0), 'main.ts'));
     const mod = await loadWorkflow(wfName(0), cwd);
-    const result = await mod.run('', { cwd: '', workDir: '' });
-    expect(result).toBe(0);
+    await mod.run('', { cwd: '', workDir: '' });
+    expect(mod.description).toBe(String(0));
   });
 
   it('evicts in FIFO order — first loaded is first evicted', async () => {
@@ -333,14 +336,14 @@ describe('workflowCache oldest-entry eviction', () => {
     // Verify a mid-range entry (wf-010) is still cached (delete from disk → still works)
     await rm(join(globalWorkflowDir, wfName(10), 'main.ts'));
     const mod10 = await loadWorkflow(wfName(10), cwd);
-    const result10 = await mod10.run('', { cwd: '', workDir: '' });
-    expect(result10).toBe(10);
+    await mod10.run('', { cwd: '', workDir: '' });
+    expect(mod10.description).toBe(String(10));
 
     // Verify another mid-range entry (wf-030) is also still cached
     await rm(join(globalWorkflowDir, wfName(30), 'main.ts'));
     const mod30 = await loadWorkflow(wfName(30), cwd);
-    const result30 = await mod30.run('', { cwd: '', workDir: '' });
-    expect(result30).toBe(30);
+    await mod30.run('', { cwd: '', workDir: '' });
+    expect(mod30.description).toBe(String(30));
   });
 
   it('clearWorkflowCache still works independently of size-based eviction', async () => {

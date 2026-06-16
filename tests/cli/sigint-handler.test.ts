@@ -105,8 +105,8 @@ describe('setupNonTtySigintHandler', () => {
     process.emit('SIGINT');
 
     const allOutput = [
-      ...logSpy.mock.calls.map((c) => String(c[0])),
-      ...stderrSpy.mock.calls.map((c) => String(c[0])),
+      ...logSpy.mock.calls.map((c: unknown[]) => String(c[0])),
+      ...stderrSpy.mock.calls.map((c: unknown[]) => String(c[0])),
     ].join('\n');
     // Match any variant of "cancelling" / "cancel" / "aborting"
     expect(allOutput.toLowerCase()).toMatch(/cancel|abort/);
@@ -154,8 +154,8 @@ describe('setupNonTtySigintHandler', () => {
     }
 
     const allOutput = [
-      ...logSpy.mock.calls.map((c) => String(c[0])),
-      ...stderrSpy.mock.calls.map((c) => String(c[0])),
+      ...logSpy.mock.calls.map((c: unknown[]) => String(c[0])),
+      ...stderrSpy.mock.calls.map((c: unknown[]) => String(c[0])),
     ].join('\n');
     // Match any variant of "force quit" / "force exit" / "forcefully"
     expect(allOutput.toLowerCase()).toMatch(/force/);

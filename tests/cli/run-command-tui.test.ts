@@ -218,7 +218,7 @@ mock.module('../../packages/cli/src/cli/post-worktree.js', () => ({
 
 // ─── Import SUT after mocks ──────────────────────────────────────────────
 
-import { runCommand } from '../../packages/cli/src/cli.ts';
+import { runCommand } from '../../packages/cli/src/cli.js';
 
 // ─── Restore original modules ────────────────────────────────────────────
 

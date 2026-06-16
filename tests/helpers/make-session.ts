@@ -7,10 +7,7 @@ import { mock } from 'bun:test';
  *
  * Default textFn returns 'ok'.
  */
-export function makeMockSession(textFn: (promptText: string) => string | undefined = () => 'ok'): {
-  session: ReturnType<typeof createMockSession>;
-  sessionId: string;
-} {
+export function makeMockSession(textFn: (promptText: string) => string | undefined = () => 'ok') {
   let lastText: string | undefined;
   const session = {
     prompt: mock(async (text: string) => {

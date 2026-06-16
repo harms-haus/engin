@@ -20,15 +20,14 @@ export const mockRunStep = mock() as ReturnType<typeof mock> & ((...args: unknow
 
 mock.module('../../packages/engine/src/pool/step-execution.js', () => ({
   runStep: (...args: unknown[]) => mockRunStep(...args),
-  StepExecutionContext: realStepExecution.StepExecutionContext,
 }));
 
 // ─── Imports after mock.module ─────────────────────────────────────────────
 
 import type { Task } from '../../packages/engine/src/core/types.js';
-import { councilRunner } from '../../packages/engine/src/pool/council-runner.ts';
-import type { StepDefinition, TrackedSession } from '../../packages/engine/src/pool/types.js';
-import { clearPoolMocks } from './helpers.ts';
+import { councilRunner } from '../../packages/engine/src/pool/council-runner.js';
+import type { StepDefinition, TaskRunnerContext, TrackedSession } from '../../packages/engine/src/pool/types.js';
+import { clearPoolMocks } from './helpers.js';
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
 
@@ -70,22 +69,28 @@ function makeTask(overrides?: Partial<Task>): Task {
   };
 }
 
+/** TestContext extends TaskRunnerContext so mock functions keep their `.mock` property. */
+interface TestContext extends TaskRunnerContext {
+  completeTask: ReturnType<typeof mock>;
+  failTask: ReturnType<typeof mock>;
+}
+
 /** Create a runner context with mock complete/fail. */
-function createCtx(overrides?: Record<string, unknown>) {
+function createCtx(overrides?: Partial<TestContext>): TestContext {
   return {
     task: makeTask(),
     agentId: 'lane-0',
     profiles: new Map(),
     onStatus: undefined,
-    activeSessions: new Set(),
+    activeSessions: new Set<{ abort(): Promise<void> }>(),
     phaseId: 'implementing',
     sessionBaseDir: '/tmp/sessions',
     cwd: '/tmp/project',
     maxStepRetries: 5,
-    completeTask: mock(() => true) as () => boolean,
-    failTask: mock(() => {}) as (result?: unknown) => void,
+    completeTask: mock(() => true),
+    failTask: mock(() => {}),
     ...overrides,
-  };
+  } as TestContext;
 }
 
 // ─── Setup ──────────────────────────────────────────────────────────────────
@@ -485,6 +490,7 @@ describe('councilRunner', () => {
       const outcome = await runner(ctx);
 
       expect(outcome.status).toBe('failed');
+      if (outcome.status !== 'failed') throw new Error('expected failed');
       expect(outcome.error).toContain('Synth runtime failure');
       // Worker session should have been disposed
       expect(disposes).toHaveLength(1);
@@ -586,7 +592,7 @@ describe('councilRunner', () => {
       });
 
       const ctx = createCtx({
-        completeTask: mock(() => false) as () => boolean,
+        completeTask: mock(() => false),
       });
       const runner = councilRunner({
         workers: [{ name: 'w1', profileId: 'coder', isReadOnly: false }],

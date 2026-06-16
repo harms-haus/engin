@@ -38,6 +38,7 @@ interface AuditEvent {
   output?: unknown;
   decision?: string;
   reasoning?: string;
+  [key: string]: unknown;
 }
 
 interface _PersistedAgentRecord {

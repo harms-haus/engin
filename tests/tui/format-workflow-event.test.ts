@@ -268,10 +268,8 @@ describe('formatWorkflowEventLine', () => {
       ).toBeNull();
     });
 
-    it('tasks_added returns null', () => {
-      expect(
-        formatWorkflowEventLine(ev('tasks_added', { tasks: [{ id: 't1', title: 'Task', status: 'ready' }] })),
-      ).toBeNull();
+    it('log returns null', () => {
+      expect(formatWorkflowEventLine(ev('log', { content: 'some log line' }))).toBeNull();
     });
   });
 

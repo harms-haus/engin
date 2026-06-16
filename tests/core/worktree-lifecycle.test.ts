@@ -3,10 +3,10 @@ import { join } from 'node:path';
 import { makeProfile } from '../helpers/make-profile.js';
 
 // ─── Capture real modules before mocking ────────────────────────────────────
-const realProfile = Object.assign({}, await import('../../packages/engine/src/core/profile.ts'));
-const realHarnessFactory = Object.assign({}, await import('../../packages/engine/src/core/harness-factory.ts'));
-const realGit = Object.assign({}, await import('../../packages/engine/src/core/git.ts'));
-const realStructuredOutput = Object.assign({}, await import('../../packages/engine/src/core/structured-output.ts'));
+const realProfile = Object.assign({}, await import('../../packages/engine/src/core/profile.js'));
+const realHarnessFactory = Object.assign({}, await import('../../packages/engine/src/core/harness-factory.js'));
+const realGit = Object.assign({}, await import('../../packages/engine/src/core/git.js'));
+const realStructuredOutput = Object.assign({}, await import('../../packages/engine/src/core/structured-output.js'));
 
 // ─── Mock state ─────────────────────────────────────────────────────────────
 
@@ -26,8 +26,8 @@ const mockCreateHarness = mock(async () => ({
   dispose: mock(),
 }));
 
-const mockPromptForStructured = mock(async () => ({
-  result: {},
+const mockPromptForStructured = mock(async (_harness: unknown, _prompt: string, _schema: unknown) => ({
+  result: {} as Record<string, string>,
   attempts: 1,
 }));
 
@@ -43,7 +43,7 @@ const mockMergeBranch = mock(() => ({ success: true }));
 const mockAbortMerge = mock(() => {});
 const mockPushBranch = mock(() => {});
 const mockGetDiff = mock(() => 'diff --git a/file.txt b/file.txt');
-const mockReadWorktreeCopyList = mock(() => []);
+const mockReadWorktreeCopyList = mock((): string[] => []);
 const mockCopyFilesToWorktree = mock(() => {});
 const mockGetMainBranch = mock(() => 'main');
 const mockGetCurrentBranch = mock(() => 'main');
@@ -98,7 +98,7 @@ import {
   resolveConflictsWithAgent,
   setupWorktree,
   type WorktreeSetupResult,
-} from '../../packages/engine/src/core/worktree-lifecycle.ts';
+} from '../../packages/engine/src/core/worktree-lifecycle.js';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -364,7 +364,9 @@ describe('setupWorktree', () => {
     mockCreateHarness.mockResolvedValue({
       session: {
         prompt: mock(async () => {}),
+        subscribe: mock(() => mock()),
         getLastAssistantText: mock(() => ''),
+        messages: [],
         sessionId: 'test-session-id',
         dispose: mock(),
       },
@@ -382,7 +384,9 @@ describe('setupWorktree', () => {
     mockCreateHarness.mockResolvedValue({
       session: {
         prompt: mock(async () => {}),
+        subscribe: mock(() => mock()),
         getLastAssistantText: mock(() => ''),
+        messages: [],
         sessionId: 'test-session-id',
         dispose: mock(),
       },
@@ -480,7 +484,9 @@ describe('generateCommitMessage', () => {
     mockCreateHarness.mockResolvedValue({
       session: {
         prompt: mock(async () => {}),
+        subscribe: mock(() => mock()),
         getLastAssistantText: mock(() => ''),
+        messages: [],
         sessionId: 'test-session-id',
         dispose: mock(),
       },
@@ -498,7 +504,9 @@ describe('generateCommitMessage', () => {
     mockCreateHarness.mockResolvedValue({
       session: {
         prompt: mock(async () => {}),
+        subscribe: mock(() => mock()),
         getLastAssistantText: mock(() => ''),
+        messages: [],
         sessionId: 'test-session-id',
         dispose: mock(),
       },
@@ -592,7 +600,9 @@ describe('resolveConflictsWithAgent', () => {
     mockCreateHarness.mockResolvedValue({
       session: {
         prompt: mock(async () => {}),
+        subscribe: mock(() => mock()),
         getLastAssistantText: mock(() => ''),
+        messages: [],
         sessionId: 'test-session-id',
         dispose: mock(),
       },
@@ -614,7 +624,9 @@ describe('resolveConflictsWithAgent', () => {
     mockCreateHarness.mockResolvedValue({
       session: {
         prompt: mock(async () => {}),
+        subscribe: mock(() => mock()),
         getLastAssistantText: mock(() => ''),
+        messages: [],
         sessionId: 'test-session-id',
         dispose: mock(),
       },
@@ -672,7 +684,9 @@ describe('pushAndCreatePR', () => {
     mockCreateHarness.mockResolvedValue({
       session: {
         prompt: mock(async () => {}),
+        subscribe: mock(() => mock()),
         getLastAssistantText: mock(() => ''),
+        messages: [],
         sessionId: 'test-session-id',
         dispose: mock(),
       },
@@ -690,7 +704,9 @@ describe('pushAndCreatePR', () => {
     mockCreateHarness.mockResolvedValue({
       session: {
         prompt: mock(async () => {}),
+        subscribe: mock(() => mock()),
         getLastAssistantText: mock(() => ''),
+        messages: [],
         sessionId: 'test-session-id',
         dispose: mock(),
       },

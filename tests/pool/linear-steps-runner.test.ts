@@ -10,7 +10,7 @@ import {
   mockPromptForStructured,
   setupHarnessMocks,
   setupProfileMocks,
-} from './helpers.ts';
+} from './helpers.js';
 
 beforeEach(() => {
   clearPoolMocks();

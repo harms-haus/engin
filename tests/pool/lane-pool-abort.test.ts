@@ -12,7 +12,7 @@ import {
   mockLoadProfilesFromDirs,
   setupHarnessMocks,
   setupProfileMocks,
-} from './helpers.ts';
+} from './helpers.js';
 
 beforeEach(() => {
   clearPoolMocks();
@@ -177,8 +177,8 @@ describe('LanePool AbortSignal handling', () => {
       const controller = new AbortController();
       const removeSpy = mock(() => {});
       const orig = controller.signal.removeEventListener.bind(controller.signal);
-      controller.signal.removeEventListener = ((...args: unknown[]) => {
-        removeSpy(...args);
+      controller.signal.removeEventListener = ((...args: Parameters<typeof orig>) => {
+        removeSpy();
         return orig(...args);
       }) as typeof controller.signal.removeEventListener;
       await createPoolAndTracker({
@@ -370,7 +370,7 @@ describe('LanePool AbortSignal handling', () => {
         dispose: mock(() => {}),
       }));
       const controller = new AbortController();
-      s3.prompt = mock(async () => 'done');
+      s3.prompt = mock(async (_text: string) => {});
       let midCalled: () => void;
       const midPromptsCalled = new Promise<void>((r) => {
         midCalled = r;

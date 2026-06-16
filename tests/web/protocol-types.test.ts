@@ -20,6 +20,7 @@ describe('ServerMessage – retained variants', () => {
   it('snapshot variant', () => {
     const msg: ServerMessage = {
       type: 'snapshot',
+      runId: 'r1',
       seq: 10,
       state: {
         seq: 10,
@@ -32,6 +33,7 @@ describe('ServerMessage – retained variants', () => {
         sidebar: { title: 'Engin', indicator: '🟢' },
         status: 'running',
         stats: { totalTokens: 0, agentCount: 0 },
+        runLog: [],
       },
     };
     expect(msg.type).toBe('snapshot');
@@ -42,6 +44,7 @@ describe('ServerMessage – retained variants', () => {
   it('events variant', () => {
     const msg: ServerMessage = {
       type: 'events',
+      runId: 'r1',
       seq: 3,
       events: [
         {
@@ -60,6 +63,7 @@ describe('ServerMessage – retained variants', () => {
   it('events variant with empty batch', () => {
     const msg: ServerMessage = {
       type: 'events',
+      runId: 'r1',
       seq: 0,
       events: [],
     };

@@ -17,7 +17,7 @@ mock.module('../packages/engine/src/core/config.js', () => ({
   },
 }));
 
-import { initDefaultConfig } from '../packages/engine/src/core/setup.ts';
+import { initDefaultConfig } from '../packages/engine/src/core/setup.js';
 
 // Restore original modules so mocks don't leak to other test files in the same process
 afterAll(() => {

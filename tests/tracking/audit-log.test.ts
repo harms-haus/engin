@@ -84,7 +84,7 @@ describe('AuditLog', () => {
 
     const task1 = await log.getEvents({ taskId: 'task-1' });
     expect(task1).toHaveLength(2);
-    expect(task1.every((e) => (e as never).taskId === 'task-1')).toBe(true);
+    expect(task1.every((e) => e.taskId === 'task-1')).toBe(true);
   });
 
   it("getEvents returns [] when file doesn't exist", async () => {
@@ -206,7 +206,7 @@ describe('AuditLog', () => {
 
     const events = await log.getEvents();
     expect(events).toHaveLength(2);
-    expect(warnSpy).toHaveBeenCalledOnce();
+    expect(warnSpy).toHaveBeenCalledTimes(1);
     expect(warnSpy.mock.calls[0][0]).toContain('Skipping malformed');
 
     warnSpy.mockRestore();

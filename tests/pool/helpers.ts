@@ -13,11 +13,11 @@ import { mock } from 'bun:test';
 
 // ─── Capture real modules before mocking ───────────────────────────────────
 
-export const realHarnessFactory = Object.assign({}, await import('../../packages/engine/src/core/harness-factory.ts'));
-export const realProfile = Object.assign({}, await import('../../packages/engine/src/core/profile.ts'));
+export const realHarnessFactory = Object.assign({}, await import('../../packages/engine/src/core/harness-factory.js'));
+export const realProfile = Object.assign({}, await import('../../packages/engine/src/core/profile.js'));
 export const realStructuredOutput = Object.assign(
   {},
-  await import('../../packages/engine/src/core/structured-output.ts'),
+  await import('../../packages/engine/src/core/structured-output.js'),
 );
 
 // ─── Mock definitions + mock.module ───────────────────────────────────────
@@ -26,22 +26,22 @@ export const mockCreateHarness = mock() as ReturnType<typeof mock> & ((...args: 
 export const mockLoadProfilesFromDirs = mock() as ReturnType<typeof mock> & ((...args: unknown[]) => unknown);
 export const mockPromptForStructured = mock() as ReturnType<typeof mock> & ((...args: unknown[]) => unknown);
 
-mock.module('../../packages/engine/src/core/harness-factory.ts', () => ({
+mock.module('../../packages/engine/src/core/harness-factory.js', () => ({
   createHarness: (...args: unknown[]) => mockCreateHarness(...args),
 }));
 
-mock.module('../../packages/engine/src/core/profile.ts', () => ({
+mock.module('../../packages/engine/src/core/profile.js', () => ({
   loadProfilesFromDirs: (...args: unknown[]) => mockLoadProfilesFromDirs(...args),
 }));
 
-mock.module('../../packages/engine/src/core/structured-output.ts', () => ({
+mock.module('../../packages/engine/src/core/structured-output.js', () => ({
   promptForStructured: (...args: unknown[]) => mockPromptForStructured(...args),
 }));
 
 // ─── Imports that resolve through the mocks above ─────────────────────────
 
 import type { AgentProfile, Task } from '../../packages/engine/src/core/types.js';
-import { LanePool } from '../../packages/engine/src/pool/lane-pool.ts';
+import { LanePool } from '../../packages/engine/src/pool/lane-pool.js';
 import type { StepDefinition, TaskRunner, TaskRunnerContext } from '../../packages/engine/src/pool/types.js';
 import { TaskTracker } from '../../packages/engine/src/tracking/task-status.js';
 import { makeMockSession } from '../helpers/make-session.js';
@@ -204,9 +204,9 @@ export function clearPoolMocks() {
 }
 
 export function restorePoolMocks() {
-  mock.module('../../packages/engine/src/core/harness-factory.ts', () => realHarnessFactory);
-  mock.module('../../packages/engine/src/core/profile.ts', () => realProfile);
-  mock.module('../../packages/engine/src/core/structured-output.ts', () => realStructuredOutput);
+  mock.module('../../packages/engine/src/core/harness-factory.js', () => realHarnessFactory);
+  mock.module('../../packages/engine/src/core/profile.js', () => realProfile);
+  mock.module('../../packages/engine/src/core/structured-output.js', () => realStructuredOutput);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

@@ -6,7 +6,7 @@ import {
   mockCreateHarness,
   setupHarnessMocks,
   setupProfileMocks,
-} from './helpers.ts';
+} from './helpers.js';
 
 beforeEach(() => {
   clearPoolMocks();
@@ -34,7 +34,7 @@ describe('LanePool status callback phase field', () => {
     it('onAgentSpawn includes phaseId for every step in a multi-step flow', async () => {
       setupProfileMocks();
       setupHarnessMocks();
-      const onAgentSpawn = mock(() => {});
+      const onAgentSpawn = mock((_info: Record<string, unknown>) => {});
       const { pool } = createPoolAndTracker({
         onStatus: { onAgentSpawn },
         getStepsForTask: () => [
@@ -71,7 +71,7 @@ describe('LanePool status callback phase field', () => {
     it('onAgentComplete includes phaseId for every step in a multi-step flow', async () => {
       setupProfileMocks();
       setupHarnessMocks();
-      const onAgentComplete = mock(() => {});
+      const onAgentComplete = mock((_info: Record<string, unknown>) => {});
       const { pool } = createPoolAndTracker({
         onStatus: { onAgentComplete },
         getStepsForTask: () => [
@@ -131,8 +131,8 @@ describe('LanePool status callback phase field', () => {
     it('onAgentSpawn and onAgentComplete pairs both carry phaseId: implementing', async () => {
       setupProfileMocks();
       setupHarnessMocks();
-      const onAgentSpawn = mock(() => {});
-      const onAgentComplete = mock(() => {});
+      const onAgentSpawn = mock((_info: Record<string, unknown>) => {});
+      const onAgentComplete = mock((_info: Record<string, unknown>) => {});
       const { pool } = createPoolAndTracker({
         onStatus: { onAgentSpawn, onAgentComplete },
         getStepsForTask: () => [
@@ -144,8 +144,8 @@ describe('LanePool status callback phase field', () => {
       expect(onAgentSpawn).toHaveBeenCalledTimes(2);
       expect(onAgentComplete).toHaveBeenCalledTimes(2);
       // Interleave: spawn, complete, spawn, complete
-      const spawnPhases = onAgentSpawn.mock.calls.map((c) => (c[0] as Record<string, unknown>).phaseId);
-      const completePhases = onAgentComplete.mock.calls.map((c) => (c[0] as Record<string, unknown>).phaseId);
+      const spawnPhases = onAgentSpawn.mock.calls.map((c) => c[0].phaseId);
+      const completePhases = onAgentComplete.mock.calls.map((c) => c[0].phaseId);
       expect(spawnPhases).toEqual(['implementing', 'implementing']);
       expect(completePhases).toEqual(['implementing', 'implementing']);
     });

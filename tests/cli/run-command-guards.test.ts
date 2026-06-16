@@ -30,7 +30,7 @@ mock.module('../../packages/engine/src/core/utils.js', () => ({
 
 // ─── Import SUT after mocks ──────────────────────────────────────────────────
 
-import { runCommand } from '../../packages/cli/src/cli.ts';
+import { runCommand } from '../../packages/cli/src/cli.js';
 
 // ─── Restore original modules (prevent cross-file mock leakage) ──────────────
 

@@ -39,7 +39,7 @@ describe('TaskTracker.validateAllDependencies', () => {
 
     try {
       tracker.validateAllDependencies();
-      expect.fail('Expected validateAllDependencies to throw');
+      expect.unreachable('Expected validateAllDependencies to throw');
     } catch (err) {
       expect(err).toBeInstanceOf(Error);
       expect((err as Error).message).toContain('orphan-task');
@@ -52,7 +52,7 @@ describe('TaskTracker.validateAllDependencies', () => {
 
     try {
       tracker.validateAllDependencies();
-      expect.fail('Expected validateAllDependencies to throw');
+      expect.unreachable('Expected validateAllDependencies to throw');
     } catch (err) {
       expect(err).toBeInstanceOf(Error);
       expect((err as Error).message).toContain('missing-dep');
@@ -66,7 +66,7 @@ describe('TaskTracker.validateAllDependencies', () => {
 
     try {
       tracker.validateAllDependencies();
-      expect.fail('Expected validateAllDependencies to throw');
+      expect.unreachable('Expected validateAllDependencies to throw');
     } catch (err) {
       const message = (err as Error).message;
       expect(message).toContain('x');
@@ -82,7 +82,7 @@ describe('TaskTracker.validateAllDependencies', () => {
 
     try {
       tracker.validateAllDependencies();
-      expect.fail('Expected validateAllDependencies to throw');
+      expect.unreachable('Expected validateAllDependencies to throw');
     } catch (err) {
       const message = (err as Error).message;
       expect(message).toContain('multi');

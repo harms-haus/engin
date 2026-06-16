@@ -40,6 +40,7 @@ describe('buildPrompt (prompt-builder module)', () => {
     files: ['src/login.ts', 'src/auth.ts'],
     dependencies: [],
     status: 'ready',
+    phaseId: 'phase-1',
   };
 
   it('includes task title in the prompt', async () => {
@@ -147,6 +148,7 @@ describe('buildPrompt (prompt-builder module)', () => {
       files: [],
       dependencies: [],
       status: 'ready',
+      phaseId: 'phase-1',
     };
     const result = await buildPrompt(minimalTask, baseStep, tempDir);
     expect(result).toContain('## Task: Do stuff');
@@ -164,6 +166,7 @@ describe('buildPrompt (prompt-builder module)', () => {
       files: ['a.ts', 'b.ts'],
       dependencies: [],
       status: 'ready',
+      phaseId: 'phase-1',
       reviewFeedback: ['First issue', 'Second issue'],
     };
     const result = await buildPrompt(fullTask, baseStep, tempDir);

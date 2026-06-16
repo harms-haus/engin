@@ -336,7 +336,7 @@ describe('serverUpCommand', () => {
   it('prints the server URL after successful start', async () => {
     mockStartDaemon.mockResolvedValue({ pid: 1234, port: 3619 });
     await callServerUp(baseOptions());
-    const allOutput = logSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    const allOutput = logSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('\n');
     expect(allOutput).toContain('http://127.0.0.1:3619');
   });
 
@@ -444,8 +444,8 @@ describe('serverStatusCommand', () => {
     // Default: the /health fetch returns a rich payload. Individual tests
     // override this for the down / unreachable cases. A fresh Response is
     // built per call so the body is never double-consumed across tests.
-    fetchSpy = spyOn(globalThis, 'fetch').mockImplementation(
-      async () => new Response(JSON.stringify({ pid: 4242, port: 3619, activeRuns: 3 }), { status: 200 }),
+    fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({ pid: 4242, port: 3619, activeRuns: 3 }), { status: 200 }),
     );
 
     mockStartDaemon.mockReset();
@@ -497,7 +497,7 @@ describe('serverStatusCommand', () => {
   it('reports running with pid, port, host, activeRuns, log path, and web URL when /health responds', async () => {
     mockIsServerAlive.mockResolvedValue(true);
     await callServerStatus(baseOptions());
-    const allOutput = logSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    const allOutput = logSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('\n');
     expect(allOutput).toMatch(/running/i);
     expect(allOutput).toContain('4242'); // pid
     expect(allOutput).toMatch(/port:\s*3619/i); // port
@@ -511,7 +511,7 @@ describe('serverStatusCommand', () => {
     mockIsServerAlive.mockResolvedValue(true);
     fetchSpy.mockRejectedValue(new Error('ECONNREFUSED'));
     await callServerStatus(baseOptions());
-    const allOutput = logSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    const allOutput = logSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('\n');
     expect(allOutput).toMatch(/running/i);
     expect(allOutput).toMatch(/host:\s*127\.0\.0\.1/i); // still reports the known host
     expect(allOutput).toMatch(/port:\s*3619/i); // still reports the known port
@@ -521,7 +521,7 @@ describe('serverStatusCommand', () => {
   it('reports "not running" when /health returns false', async () => {
     mockIsServerAlive.mockResolvedValue(false);
     await callServerStatus(baseOptions());
-    const allOutput = logSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    const allOutput = logSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('\n');
     expect(allOutput).toMatch(/not running/i);
   });
 
@@ -532,7 +532,7 @@ describe('serverStatusCommand', () => {
     await mkdir(enginDir, { recursive: true });
     await writeFile(join(enginDir, 'server.pid'), JSON.stringify({ pid: 9999, port: 3619 }));
     await callServerStatus(baseOptions());
-    const allOutput = logSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    const allOutput = logSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('\n');
     expect(allOutput).toMatch(/not running/i);
     expect(allOutput).toMatch(/stale|pidfile|pid\s*9999/i);
   });
@@ -540,7 +540,7 @@ describe('serverStatusCommand', () => {
   it('does not crash when down and no pidfile exists', async () => {
     mockIsServerAlive.mockResolvedValue(false);
     await expect(callServerStatus(baseOptions())).resolves.toBeUndefined();
-    const allOutput = logSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    const allOutput = logSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('\n');
     expect(allOutput).toMatch(/not running/i);
     expect(allOutput).not.toMatch(/stale|pidfile/i);
   });
@@ -571,7 +571,7 @@ describe('main() server command dispatch', () => {
 
   afterEach(() => {
     process.argv = originalArgv;
-    process.stdout.isTTY = originalIsTTY;
+    process.stdout.isTTY = originalIsTTY as boolean;
     stderrSpy.mockRestore();
     logSpy.mockRestore();
     // Clean up any SIGINT listeners that runCommand may have registered
@@ -708,7 +708,7 @@ describe('T35: LAN binding hard gate', () => {
   let prevExitCode: number | undefined;
 
   beforeEach(() => {
-    prevExitCode = process.exitCode;
+    prevExitCode = process.exitCode as number | undefined;
     process.exitCode = 0;
     logSpy = spyOn(console, 'log').mockImplementation(() => {});
     stderrSpy = spyOn(process.stderr, 'write').mockImplementation(() => true);
@@ -782,8 +782,8 @@ describe('T35: LAN binding hard gate', () => {
     // The message must be PRINTED (console.log or stderr), not just thrown.
     // A future implementation should print before refusing.
     const allOutput = [
-      ...logSpy.mock.calls.map((c) => String(c[0])),
-      ...stderrSpy.mock.calls.map((c) => String(c[0])),
+      ...logSpy.mock.calls.map((c: unknown[]) => String(c[0])),
+      ...stderrSpy.mock.calls.map((c: unknown[]) => String(c[0])),
     ].join('\n');
     expect(allOutput).toMatch(/auth|not.*support|lan|refuse/i);
   });
@@ -813,8 +813,8 @@ describe('T35: LAN binding hard gate', () => {
     // The message must be PRINTED (console.log or stderr), not just thrown.
     // A future implementation should print before refusing.
     const allOutput = [
-      ...logSpy.mock.calls.map((c) => String(c[0])),
-      ...stderrSpy.mock.calls.map((c) => String(c[0])),
+      ...logSpy.mock.calls.map((c: unknown[]) => String(c[0])),
+      ...stderrSpy.mock.calls.map((c: unknown[]) => String(c[0])),
     ].join('\n');
     expect(allOutput).toMatch(/auth|not.*support|lan|refuse/i);
   });

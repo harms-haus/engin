@@ -141,7 +141,7 @@ describe('parseProfile', () => {
   });
 
   it('validates thinkingLevel against allowed values', () => {
-    const valid = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh'];
+    const valid = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh'] as const;
 
     for (const level of valid) {
       const content = ['---', 'provider: openai', 'model: gpt-4o', `thinkingLevel: ${level}`, '---', 'Body.'].join(
