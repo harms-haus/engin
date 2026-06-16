@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from 'bun:test';
 import * as fs from 'node:fs/promises';
 import { join } from 'node:path';
-import { WorkflowStatusTracker } from '../../src/tracking/workflow-status.js';
+import { WorkflowStatusTracker } from '../../packages/engine/src/tracking/workflow-status.js';
 import { makeTask } from '../helpers/make-task.js';
 import { useTempDir } from '../helpers/use-temp-dir.js';
 
@@ -127,7 +127,16 @@ describe('WorkflowStatusTracker – atomic save', () => {
 
   describe('source code structure', () => {
     it('imports rename from node:fs/promises', async () => {
-      const sourcePath = join(import.meta.dir, '..', '..', 'src', 'tracking', 'workflow-serializer.ts');
+      const sourcePath = join(
+        import.meta.dir,
+        '..',
+        '..',
+        'packages',
+        'engine',
+        'src',
+        'tracking',
+        'workflow-serializer.ts',
+      );
       const source = await fs.readFile(sourcePath, 'utf-8');
 
       // Should import rename from node:fs/promises
@@ -137,7 +146,16 @@ describe('WorkflowStatusTracker – atomic save', () => {
     });
 
     it('saveWorkflowState writes to temp path then renames', async () => {
-      const sourcePath = join(import.meta.dir, '..', '..', 'src', 'tracking', 'workflow-serializer.ts');
+      const sourcePath = join(
+        import.meta.dir,
+        '..',
+        '..',
+        'packages',
+        'engine',
+        'src',
+        'tracking',
+        'workflow-serializer.ts',
+      );
       const source = await fs.readFile(sourcePath, 'utf-8');
 
       // Extract the saveWorkflowState function body
@@ -156,7 +174,16 @@ describe('WorkflowStatusTracker – atomic save', () => {
     });
 
     it('saveWorkflowState does not write directly to the final state file path', async () => {
-      const sourcePath = join(import.meta.dir, '..', '..', 'src', 'tracking', 'workflow-serializer.ts');
+      const sourcePath = join(
+        import.meta.dir,
+        '..',
+        '..',
+        'packages',
+        'engine',
+        'src',
+        'tracking',
+        'workflow-serializer.ts',
+      );
       const source = await fs.readFile(sourcePath, 'utf-8');
 
       const funcStart = source.indexOf('export async function saveWorkflowState(');
@@ -169,7 +196,16 @@ describe('WorkflowStatusTracker – atomic save', () => {
     });
 
     it('saveWorkflowState creates the tmp file before renaming', async () => {
-      const sourcePath = join(import.meta.dir, '..', '..', 'src', 'tracking', 'workflow-serializer.ts');
+      const sourcePath = join(
+        import.meta.dir,
+        '..',
+        '..',
+        'packages',
+        'engine',
+        'src',
+        'tracking',
+        'workflow-serializer.ts',
+      );
       const source = await fs.readFile(sourcePath, 'utf-8');
 
       const funcStart = source.indexOf('export async function saveWorkflowState(');
@@ -186,7 +222,16 @@ describe('WorkflowStatusTracker – atomic save', () => {
     });
 
     it('save() in workflow-status.ts delegates to saveWorkflowState', async () => {
-      const sourcePath = join(import.meta.dir, '..', '..', 'src', 'tracking', 'workflow-status.ts');
+      const sourcePath = join(
+        import.meta.dir,
+        '..',
+        '..',
+        'packages',
+        'engine',
+        'src',
+        'tracking',
+        'workflow-status.ts',
+      );
       const source = await fs.readFile(sourcePath, 'utf-8');
 
       const saveStart = source.indexOf('async save()');

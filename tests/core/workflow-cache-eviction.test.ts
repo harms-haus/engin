@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { clearWorkflowCache, loadWorkflow } from '../../src/core/workflow-loader.js';
+import { clearWorkflowCache, loadWorkflow } from '../../packages/engine/src/core/workflow-loader.js';
 import { useTempDir } from '../helpers/use-temp-dir.js';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────

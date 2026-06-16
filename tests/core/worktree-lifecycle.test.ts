@@ -3,10 +3,10 @@ import { join } from 'node:path';
 import { makeProfile } from '../helpers/make-profile.js';
 
 // ─── Capture real modules before mocking ────────────────────────────────────
-const realProfile = Object.assign({}, await import('../../src/core/profile.ts'));
-const realHarnessFactory = Object.assign({}, await import('../../src/core/harness-factory.ts'));
-const realGit = Object.assign({}, await import('../../src/core/git.ts'));
-const realStructuredOutput = Object.assign({}, await import('../../src/core/structured-output.ts'));
+const realProfile = Object.assign({}, await import('../../packages/engine/src/core/profile.ts'));
+const realHarnessFactory = Object.assign({}, await import('../../packages/engine/src/core/harness-factory.ts'));
+const realGit = Object.assign({}, await import('../../packages/engine/src/core/git.ts'));
+const realStructuredOutput = Object.assign({}, await import('../../packages/engine/src/core/structured-output.ts'));
 
 // ─── Mock state ─────────────────────────────────────────────────────────────
 
@@ -50,7 +50,7 @@ const mockGetCurrentBranch = mock(() => 'main');
 
 // ─── Mock module setup ──────────────────────────────────────────────────────
 
-mock.module('../../src/core/profile.ts', () => ({
+mock.module('../../packages/engine/src/core/profile.ts', () => ({
   loadProfilesFromDirs: mock(async (_dirs: string[]) => {
     if (mockGetWorkerProfileError) {
       // Return empty map — the module should detect missing 'worker' and throw
@@ -63,15 +63,15 @@ mock.module('../../src/core/profile.ts', () => ({
   }),
 }));
 
-mock.module('../../src/core/harness-factory.ts', () => ({
+mock.module('../../packages/engine/src/core/harness-factory.ts', () => ({
   createHarness: mockCreateHarness,
 }));
 
-mock.module('../../src/core/structured-output.ts', () => ({
+mock.module('../../packages/engine/src/core/structured-output.ts', () => ({
   promptForStructured: mockPromptForStructured,
 }));
 
-mock.module('../../src/core/git.ts', () => ({
+mock.module('../../packages/engine/src/core/git.ts', () => ({
   isGitRepo: mockIsGitRepo,
   getRepoRoot: mockGetRepoRoot,
   createWorktree: mockCreateWorktree,
@@ -98,7 +98,7 @@ import {
   resolveConflictsWithAgent,
   setupWorktree,
   type WorktreeSetupResult,
-} from '../../src/core/worktree-lifecycle.ts';
+} from '../../packages/engine/src/core/worktree-lifecycle.ts';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -175,10 +175,10 @@ beforeEach(() => {
 
 // Restore the real modules so mocks don't leak into other test files.
 afterAll(() => {
-  mock.module('../../src/core/profile.ts', () => realProfile);
-  mock.module('../../src/core/harness-factory.ts', () => realHarnessFactory);
-  mock.module('../../src/core/git.ts', () => realGit);
-  mock.module('../../src/core/structured-output.ts', () => realStructuredOutput);
+  mock.module('../../packages/engine/src/core/profile.ts', () => realProfile);
+  mock.module('../../packages/engine/src/core/harness-factory.ts', () => realHarnessFactory);
+  mock.module('../../packages/engine/src/core/git.ts', () => realGit);
+  mock.module('../../packages/engine/src/core/structured-output.ts', () => realStructuredOutput);
 });
 
 // ─── setupWorktree ──────────────────────────────────────────────────────────

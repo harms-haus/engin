@@ -1,7 +1,7 @@
+import type { EventRecord, EventType } from '@engin/shared/event-types';
+import { createInitialProjection, MAX_RUN_LOG } from '@engin/shared/event-types';
+import { evolve } from '@engin/shared/evolve';
 import { describe, expect, it } from 'bun:test';
-import type { EventRecord, EventType } from '../../src/tracking/event-types.js';
-import { createInitialProjection } from '../../src/tracking/event-types.js';
-import { evolve } from '../../src/tracking/evolve.js';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -782,6 +782,78 @@ describe('evolve', () => {
       state = evolve(state, makeEvent('phase_started', { phase: 'scouting', round: 1 }));
       state = evolve(state, makeEvent('workflow_failed', { error: 'Boom', phase: 'scouting' }));
       expect(state.failedPhase).toBe('scouting');
+    });
+  });
+
+  describe('log', () => {
+    it('appends a LogEntry to the projection runLog', () => {
+      resetSeq();
+      let state = evolve(createInitialProjection(), makeEvent('workflow_started', { taskPrompt: 'x' }));
+      state = evolve(
+        state,
+        makeEvent('log', { level: 'info', message: 'server booted' }, { timestamp: '2026-06-15T00:00:00Z' }),
+      );
+      expect(state.runLog).toHaveLength(1);
+      expect(state.runLog[0].content).toBe('server booted');
+      expect(state.runLog[0].timestamp).toBe('2026-06-15T00:00:00Z');
+      // id is derived from the event seq (workflow_started=1, log=2)
+      expect(state.runLog[0].id).toBe('log-2');
+    });
+
+    it('maps level "error" to LogEntry type "error"', () => {
+      resetSeq();
+      let state = evolve(createInitialProjection(), makeEvent('workflow_started', { taskPrompt: 'x' }));
+      state = evolve(state, makeEvent('log', { level: 'error', message: 'kaboom' }));
+      expect(state.runLog[0].type).toBe('error');
+      expect(state.runLog[0].content).toBe('kaboom');
+    });
+
+    it('maps level "warn" to LogEntry type "text"', () => {
+      resetSeq();
+      let state = evolve(createInitialProjection(), makeEvent('workflow_started', { taskPrompt: 'x' }));
+      state = evolve(state, makeEvent('log', { level: 'warn', message: 'careful' }));
+      expect(state.runLog[0].type).toBe('text');
+    });
+
+    it('maps level "info" to LogEntry type "text"', () => {
+      resetSeq();
+      let state = evolve(createInitialProjection(), makeEvent('workflow_started', { taskPrompt: 'x' }));
+      state = evolve(state, makeEvent('log', { level: 'info', message: 'hello' }));
+      expect(state.runLog[0].type).toBe('text');
+    });
+
+    it('preserves insertion order across multiple log events', () => {
+      resetSeq();
+      let state = evolve(createInitialProjection(), makeEvent('workflow_started', { taskPrompt: 'x' }));
+      state = evolve(state, makeEvent('log', { level: 'info', message: 'first' }));
+      state = evolve(state, makeEvent('log', { level: 'error', message: 'second' }));
+      state = evolve(state, makeEvent('log', { level: 'info', message: 'third' }));
+      expect(state.runLog.map((e) => e.content)).toEqual(['first', 'second', 'third']);
+      expect(state.runLog.map((e) => e.type)).toEqual(['text', 'error', 'text']);
+    });
+
+    it('is immutable: does not mutate the previous state runLog', () => {
+      resetSeq();
+      let state = evolve(createInitialProjection(), makeEvent('workflow_started', { taskPrompt: 'x' }));
+      const prevRunLog = state.runLog;
+      const next = evolve(state, makeEvent('log', { level: 'info', message: 'hi' }));
+      expect(state.runLog).toBe(prevRunLog);
+      expect(state.runLog).toHaveLength(0);
+      expect(next.runLog).not.toBe(state.runLog);
+      expect(next.runLog).toHaveLength(1);
+    });
+
+    it('caps runLog at MAX_RUN_LOG, dropping the oldest entries', () => {
+      resetSeq();
+      let state = evolve(createInitialProjection(), makeEvent('workflow_started', { taskPrompt: 'x' }));
+      const overflow = 5;
+      for (let i = 0; i < MAX_RUN_LOG + overflow; i++) {
+        state = evolve(state, makeEvent('log', { level: 'info', message: `m-${i}` }));
+      }
+      expect(state.runLog).toHaveLength(MAX_RUN_LOG);
+      // The first `overflow` messages should have been dropped.
+      expect(state.runLog[0].content).toBe(`m-${overflow}`);
+      expect(state.runLog[state.runLog.length - 1].content).toBe(`m-${MAX_RUN_LOG + overflow - 1}`);
     });
   });
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { extractSeverity, isFailingSeverity } from '../../src/pool/severity.js';
+import { extractSeverity, isFailingSeverity } from '../../packages/engine/src/pool/severity.js';
 
 describe('severity module', () => {
   describe('isFailingSeverity', () => {

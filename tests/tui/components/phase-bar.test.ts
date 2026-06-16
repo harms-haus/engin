@@ -1,6 +1,6 @@
 import { visibleWidth } from '@earendil-works/pi-tui';
 import { describe, expect, it } from 'bun:test';
-import { PhaseBar, type PhaseEntity } from '../../../src/tui/components/phase-bar.js';
+import { PhaseBar, type PhaseEntity } from '../../../packages/tui/src/components/phase-bar.js';
 
 // Arrow key escape sequences
 const LEFT_ARROW = '\x1b[D';

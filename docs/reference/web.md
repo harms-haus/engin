@@ -1,162 +1,145 @@
-# Web mirror
+# Web client
 
-engin ships an HTTP + WebSocket server (the **observer server**) and a React + Zustand
-single-page app (the **web mirror**) that renders the same projection as the TUI in a browser
-or on a phone. This document covers the server, the protocol, the broadcast bridge, and the
-frontend.
+The engine server serves a React + Zustand single-page app (the **web client**) that
+renders the same projection as the TUI in a browser or on a phone. The web client is
+a **network client** of the server, just like the TUI: it connects over WebSocket,
+lists active runs, selects one, and views its live projection.
 
-## `startObserverServer(options)`
+This document covers the server's static serving + WebSocket routing (see also the
+[Server reference](server.md) for the daemon and `RunManager`), the shared
+`EngineClient`, the zustand store, and the frontend.
 
-Source: `src/web/observer-server.ts`. A Bun HTTP + WebSocket server.
+## How the server serves the web UI
+
+The control server (`packages/engine/src/server/control-server.ts`) serves the
+built bundle from `packages/web/dist`, resolved once at module load from candidate
+locations (dev working copy, monorepo layout, global install). For `index.html`,
+the `{{WS_ENDPOINT}}` placeholder is substituted with the appropriate `ws://` /
+`wss://` URL. Missing files fall back to `index.html` (SPA), or to a built-in
+placeholder page when no frontend bundle exists.
+
+See [Server reference → Control server](server.md#control-server) for the HTTP +
+WebSocket routing details, and [Server reference → Protocol](server.md#protocol)
+for the multi-run protocol types (`ServerMessage` / `ClientMessage`).
+
+## The shared `EngineClient`
+
+Source: `packages/shared/src/engine-client.ts`. A framework-agnostic, pure-TypeScript
+WebSocket client that owns connection lifecycle, exponential-backoff reconnection,
+resync, and multi-run subscription (run multiplexing) — with **no** dependency on
+React, zustand, Node builtins, or pi packages. Its only runtime API is the global
+`WebSocket` constructor.
 
 ```typescript
-interface ObserverServer {
-  server: ReturnType<typeof Bun.serve>;
-  broadcast: (msg: ServerMessage) => void;
-  url: string;
-  stop: () => Promise<void>;
+class EngineClient {
+  constructor(options: { url: string; authToken?: string; backoff?: {...} });
+  connect(callbacks: EngineClientCallbacks): void;
+  disconnect(): void;
+  isConnected(): boolean;
+  send(msg: ClientMessage): void;
+  requestRuns(timeoutMs?: number): Promise<RunSummary[]>;
+  subscribe(runId: string): void;
+  unsubscribe(runId: string): void;
+  resync(runId: string, lastSeq?: number): void;
 }
 ```
 
-### Options
+| Behaviour       | Detail                                                                                                                  |
+| --------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| Backoff         | Exponential (default initial 1000 ms, ×1.5, max 30 000 ms), reset on a successful open.                                 |
+| Handshake       | On each (re)open: send `auth` (if a token was provided), `list_runs`, then re-`subscribe` + `resync` every tracked run. |
+| Resync tracking | Keeps the latest `seq` per runId (from `snapshot`/`events`) and replays `resync { runId, lastSeq }` on reconnect.       |
+| `disconnect()`  | Clean, manual teardown; clears the reconnect timer and does **not** schedule a reconnect.                               |
+| `send(msg)`     | Serializes + sends a `ClientMessage`; no-op when the socket is absent or not open.                                      |
+| `requestRuns()` | One-shot `list_runs` + promise that resolves with the `runs` response (or `[]` on timeout/disconnect).                  |
 
-| Field           | Description                                                           |
-| --------------- | --------------------------------------------------------------------- |
-| `host`          | Bind hostname.                                                        |
-| `port`          | Port.                                                                 |
-| `displayHost?`  | Host to use in the displayed/QR URL (defaults to the bound hostname). |
-| `onTerminate?`  | Called when a client sends `terminate_server`.                        |
-| `getSnapshot?`  | Returns a `snapshot` `ServerMessage` to send on connect.              |
-| `handleResync?` | `(ws, lastSeq?) => void` to handle `resync` from a client.            |
+## Frontend store
 
-### Server behaviour
+Source: `packages/web/src/store/workflow-store.ts`. A vanilla zustand store (created
+outside React, Immer-backed) that holds the selected run's projection plus a
+multi-run `runs` list.
 
-- **HTTP idle timeout disabled** (`idleTimeout: 0`) so slow mobile WebSocket upgrades aren't
-  killed. WebSocket-level idle timeout remains Bun's default.
-- `websocket.open` adds the client to a `Set` and immediately sends `getSnapshot()` if provided.
-- `websocket.message` parses JSON; `type === 'terminate_server'` → `onTerminate?.()`;
-  `type === 'resync'` → `handleResync?.(ws, msg.lastSeq)`. Invalid JSON is swallowed.
-- `broadcast(msg)` stringifies once and sends to every client, dropping any that throw.
-- `url` is `http://<displayHost ?? hostname>:<port>`.
+| Action                                                        | Behaviour                                                                                                                 |
+| ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `setRuns(runs)` / `addRun(summary)`                           | Maintain the active-run list (from the `runs` / `run_started` messages).                                                  |
+| `selectRun(runId)`                                            | Set the selected run; reset phase/task/step selection.                                                                    |
+| `applySnapshot(runId, snapshot, seq)`                         | Full projection replace for the selected run; clears the event log on a fresh start or server reset (seq went backwards). |
+| `applyEvents(runId, events)`                                  | Fold a batch through `evolveClient` (the shared `evolve`), reconcile selection, and append formatted event lines.         |
+| `setStatus(runId, status)` / `setFailed(runId, error, phase)` | Terminal lifecycle (`run_complete` / `run_failed`).                                                                       |
+| `appendRunLog(runId, entry)`                                  | Server-captured console output (`log` message).                                                                           |
+| `cancelRun(runId)`                                            | Sends `{ type: 'cancel_run', runId }` via the module-level send bridge.                                                   |
+| `selectPhase/Task/Step`                                       | Selection + follow rules (identical to the TUI).                                                                          |
 
-### Static file serving
+A module-level `_sendFn` is set by `useWebSocket` on acquire / cleared on release so
+store actions (e.g. `cancelRun`) can send WS messages without depending on the React
+hook layer.
 
-`serveStatic` serves files from `web/dist` (resolved relative to the server module):
+## `useWebSocket` hook
 
-- `/` or `''` → `/index.html`.
-- Existing files are served with a MIME from a small `MIME_MAP` (`.html`, `.css`, `.js`,
-  `.mjs`, `.json`, images, fonts, `.map`).
-- For `index.html` specifically, the `{{WS_ENDPOINT}}` placeholder is replaced with the
-  appropriate `ws://` or `wss://` URL (`wss` when the request URL protocol is HTTPS).
-- Missing files fall back to `index.html` (SPA fallback), or to a built-in placeholder page if
-  `index.html` is absent. The placeholder also gets `{{WS_ENDPOINT}}` substituted.
+Source: `packages/web/src/hooks/useWebSocket.ts`. A thin React adapter over the
+shared `EngineClient`. The transport/reconnect/resync logic lives in `EngineClient`;
+this hook wires it into React via `useSyncExternalStore` and routes incoming
+`ServerMessage`s into the zustand store.
 
-### Origin validation
+- The `EngineClient` instance is a **module-level singleton** shared by every caller
+  of `useWebSocket()`. The first caller to mount acquires it; the last to unmount
+  tears it down — guaranteeing a single live connection per app session.
+- The WS URL is derived from the `{{WS_ENDPOINT}}` placeholder (substituted by the
+  server) or, failing that, from `window.location`.
+- Message routing: `runs` → `setRuns`; `run_started` → `addRun`; `snapshot`/`events`
+  → `applySnapshot`/`applyEvents`; `run_complete`/`run_failed` →
+  `setStatus`/`setFailed`; `log` → `appendRunLog`; `error` → console.
 
-`validateWebSocketOrigin(req)` guards `/ws` upgrades:
+## Runs frame
 
-- `isLocalhost` is true if the `Host` header starts with `localhost`, `127.0.0.1`, `::1`, or
-  `[::1]`.
-- If `Origin` is present **and** the host is **not** localhost: parse the origin URL
-  (non-http/https schemes like `capacitor://`, `file://`, `ionic://` are **allowed**), then
-  compare hostname (and port, when both are present) against the request `Host` header.
-- If `Origin` is absent **or** the host is localhost: **allowed**.
+Source: `packages/web/src/components/RunsFrame.tsx`. A persistent panel that lists
+active runs from the `runs` message, each showing `workflowName`, a truncated
+`taskPrompt`, `status`, and `currentPhaseId`. Selecting a run `subscribe`s and
+routes the main view to that run's projection; a **Cancel** button (first click
+reveals a "Confirm?" prompt; second click sends `cancel_run { runId }`). Shown
+when there are active runs; "No active runs"
+otherwise.
 
-> **Known limitation.** Clients without an `Origin` header (curl, scripts) bypass the check
-> entirely. The primary protection is the default localhost binding; exposing the server
-> broadly is opt-in via `--host` or `--lan`.
+> Starting runs is **CLI-only** in this iteration. There is no start-run UI, no cwd
+> selector, and no past-runs browsing or archiving — those are future work. The
+> `runs` list is the server's in-memory active registry only.
 
-## Protocol
+## Components
 
-Source: `src/web/protocol-types.ts`. Re-exports state types
-(`WorkflowProjection`, `EventRecord`, `EventType`, entities, `LogEntry`) from
-`src/tracking/event-types.ts`.
+The existing components (Dashboard / EventLog / PhaseBar / TaskList / AgentLog)
+already consume a projection; they are scoped to the selected run via the store.
 
-### Server → Client (`ServerMessage`)
-
-| Type                | Shape                                | Description                                                                                                |
-| ------------------- | ------------------------------------ | ---------------------------------------------------------------------------------------------------------- |
-| `snapshot`          | `{ seq, state: WorkflowProjection }` | Full projection — sent on connect or full resync.                                                          |
-| `events`            | `{ seq, events: EventRecord[] }`     | Batch of raw events since the client's last seq. The client replays them through its own `evolveClient()`. |
-| `workflow_complete` | `{}`                                 | Terminal signal — broadcast immediately, not coalesced.                                                    |
-| `workflow_failed`   | `{ error, phase }`                   | Terminal signal — broadcast immediately, not coalesced.                                                    |
-
-### Client → Server (`ClientMessage`)
-
-| Type               | Shape                  | Description                                             |
-| ------------------ | ---------------------- | ------------------------------------------------------- |
-| `terminate_server` | `{}`                   | Request workflow cancellation (triggers `onTerminate`). |
-| `resync`           | `{ lastSeq?: number }` | Request catch-up after reconnect.                       |
-
-`isServerMessage(data)` is a type guard checking the `type` tag is one of the four server
-variants.
-
-## `StatusBridge`
-
-Source: `src/web/status-bridge.ts`. A thin view over the `EventStore` that broadcasts
-`ServerMessage`s whenever the store changes.
-
-```typescript
-class StatusBridge {
-  constructor(broadcast: (msg: ServerMessage) => void, store: EventStore);
-  getSnapshot(): ServerMessage & { type: 'snapshot' };
-  handleResync(lastSeq?: number): ServerMessage;
-  dispose(): void;
-}
-```
-
-### Behaviour
-
-- **Initialisation.** `lastSentSeq = store.getSnapshot().seq` so pre-subscribe history is not
-  re-broadcast (late joiners get it via `getSnapshot`). `prevStatus = snap.state.status`.
-- **On projection change:**
-  - If `status` changed and is now `complete` → immediately broadcast `workflow_complete`.
-  - If `status` changed and is now `failed` → immediately broadcast `workflow_failed`
-    (`error: projection.error ?? ''`, `phase: projection.failedPhase ?? ''`).
-  - Always `scheduleFlush()`.
-- **Coalescing.** `scheduleFlush` queues a microtask if one isn't pending; multiple synchronous
-  `store.append`s collapse into a single `events` message. `flush` reads
-  `store.getEventsSince(lastSentSeq)` and broadcasts them, advancing `lastSentSeq`.
-- **`handleResync(lastSeq)`** — if `lastSeq` is provided and `>= 0`, attempt event catch-up:
-  if the buffer is contiguous (`events[0].seq === lastSeq + 1`), return an `events` message;
-  otherwise fall back to a full `snapshot`. Gap or empty buffer → snapshot fallback.
-
-## Frontend (the web mirror)
-
-Source: `web/`. A React + Zustand SPA that maintains its own copy of the `WorkflowProjection`
-by replaying events through `evolveClient()` — the same pure reducer logic as the server's
-`evolve()`.
-
-| File                              | Responsibility                                                               |
-| --------------------------------- | ---------------------------------------------------------------------------- |
-| `web/src/App.tsx`                 | Top-level layout: connection banner, EventLog, PhaseBar, TaskList, AgentLog. |
-| `web/src/components/PhaseBar.tsx` | Clickable phase tabs; selecting a completed phase pins the view.             |
-| `web/src/components/TaskList.tsx` | Phase-filtered, click-to-select task list, sorted by status priority.        |
-| `web/src/components/AgentLog.tsx` | Agent detail log with step tab bar and terminate-workflow button.            |
-| `web/src/components/EventLog.tsx` | Scrollable workflow-level event log.                                         |
-| `web/src/store/workflow-store.ts` | Zustand store: projection + selection state + follow rules.                  |
-| `web/src/store/evolve-client.ts`  | Client-side pure reducer (mirrors server `evolve`).                          |
-| `web/src/hooks/useWebSocket.ts`   | WebSocket lifecycle: snapshot/events/terminal handling, resync, terminate.   |
-| `web/src/protocol-types.ts`       | Re-exports protocol + state types.                                           |
+| File                               | Responsibility                                                                          |
+| ---------------------------------- | --------------------------------------------------------------------------------------- |
+| `web/src/App.tsx`                  | Top-level layout: connection banner, RunsFrame, EventLog, PhaseBar, TaskList, AgentLog. |
+| `web/src/components/RunsFrame.tsx` | Active-run list: select + cancel.                                                       |
+| `web/src/components/PhaseBar.tsx`  | Clickable phase tabs; selecting a completed phase pins the view.                        |
+| `web/src/components/TaskList.tsx`  | Phase-filtered, click-to-select task list, sorted by status priority.                   |
+| `web/src/components/AgentLog.tsx`  | Agent detail log with step tab bar.                                                     |
+| `web/src/components/EventLog.tsx`  | Scrollable workflow-level event log.                                                    |
+| `web/src/store/workflow-store.ts`  | Zustand store: projection + selection + runs list.                                      |
+| `web/src/store/evolve-client.ts`   | Re-exports `evolve` from `@engin/shared`.                                               |
+| `web/src/hooks/useWebSocket.ts`    | React adapter over the shared `EngineClient`.                                           |
+| `web/src/protocol-types.ts`        | Re-exports protocol + state types from `@engin/shared`.                                 |
 
 ### Centralised selection model
 
-Both the TUI and the web mirror use the **same five-piece selection model** with the **same
-follow rules** (phase / task / step). See [TUI reference → Dashboard](tui.md#dashboard--the-selection-model).
+Both the TUI and the web client use the **same five-piece selection model** with the
+**same follow rules** (phase / task / step). See [TUI reference → Dashboard](tui.md#dashboard--the-selection-model).
 
-| State               | TUI                    | Web                    |
-| ------------------- | ---------------------- | ---------------------- |
-| `selectedPhaseId`   | `Dashboard._selection` | `workflow-store` field |
-| `selectedTaskId`    | `Dashboard._selection` | `workflow-store` field |
-| `selectedStepIndex` | `Dashboard._selection` | `workflow-store` field |
-| `userPinnedPhase`   | `Dashboard._selection` | `workflow-store` field |
-| `userPinnedStep`    | `Dashboard._selection` | `workflow-store` field |
+| State               | TUI           | Web                    |
+| ------------------- | ------------- | ---------------------- |
+| `selectedPhaseId`   | `ClientStore` | `workflow-store` field |
+| `selectedTaskId`    | `ClientStore` | `workflow-store` field |
+| `selectedStepIndex` | `ClientStore` | `workflow-store` field |
+| `userPinnedPhase`   | `ClientStore` | `workflow-store` field |
+| `userPinnedStep`    | `ClientStore` | `workflow-store` field |
 
-These rules keep the UI focused on live activity while letting you pin to a specific phase or
-step for inspection.
+These rules keep the UI focused on live activity while letting you pin to a specific
+phase or step for inspection.
 
 ## Where to go next
 
+- [Server reference](server.md) — the daemon, `RunManager`, and the protocol.
 - [TUI reference](tui.md) — the terminal view of the same data.
 - [Event store & status](event-store.md) — the source of the projection.
-- [CLI reference → Worktree runs](cli.md#worktree-runs) — where the observer URL comes from.

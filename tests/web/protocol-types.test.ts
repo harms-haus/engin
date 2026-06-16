@@ -1,5 +1,5 @@
+import type { ServerMessage } from '@engin/shared/protocol-types';
 import { describe, expect, it } from 'bun:test';
-import type { ServerMessage } from '../../src/web/protocol-types.ts';
 
 // ─── ServerMessage union validation ────────────────────────────────────────
 //

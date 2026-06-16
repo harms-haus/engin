@@ -11,7 +11,7 @@ mock.module('node:os', () => ({
 
 // ─── Import after mock ─────────────────────────────────────────────────────
 
-import { getLocalNetworkIP } from '../../src/core/network.js';
+import { getLocalNetworkIP } from '../../packages/engine/src/core/network.js';
 
 // ─── Test data ─────────────────────────────────────────────────────────────
 

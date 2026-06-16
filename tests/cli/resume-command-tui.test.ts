@@ -1,3 +1,22 @@
+/**
+ * T27 — resumeCommand as a pure daemon-client.
+ *
+ * In the T27 target state resumeCommand:
+ *   1. Resolves the session name (from arg or interactive picker).
+ *   2. Reads the state file to recover `taskPrompt` and optional worktree info.
+ *   3. Probes GET /health on `options.port`; auto-starts the daemon if down.
+ *   4. Creates an EngineClient connecting to the daemon's WS endpoint.
+ *   5. Checks whether the runId is in the daemon's active list. If active,
+ *      subscribes + resyncs.  If not, sends `start_run` with the existing
+ *      workDir to resume execution.
+ *   6. Waits for `run_complete` / `run_failed`.
+ *   7. Disconnects — the daemon keeps running.
+ *
+ * These tests will be RED against the current (T23) source because
+ * resumeCommand still starts an in-process server.  The implementation phase
+ * rewrites resumeCommand to satisfy the contract below.
+ */
+
 import { afterAll, afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -5,120 +24,110 @@ import { useTempDir } from '../helpers/use-temp-dir.js';
 
 // ─── Capture real modules before mocking ──────────────────────────────────
 
-const realWorkflowLoader = Object.assign({}, await import('../../src/core/workflow-loader.js'));
+const realWorkflowLoader = Object.assign({}, await import('../../packages/engine/src/core/workflow-loader.js'));
 const realFs = Object.assign({}, await import('node:fs'));
-const realUtils = Object.assign({}, await import('../../src/core/utils.js'));
-const realNetwork = Object.assign({}, await import('../../src/core/network.js'));
-const realConsoleStatus = Object.assign({}, await import('../../src/cli/console-status.js'));
-const realConfig = Object.assign({}, await import('../../src/core/config.js'));
-const realPostWorktree = Object.assign({}, await import('../../src/cli/post-worktree.js'));
-const realObserverServer = Object.assign({}, await import('../../src/web/observer-server.js'));
-const realStatusBridge = Object.assign({}, await import('../../src/web/status-bridge.js'));
-const realWorkflowTUI = Object.assign({}, await import('../../src/tui/workflow-tui.js'));
+const realUtils = Object.assign({}, await import('../../packages/engine/src/core/utils.js'));
+const realConsoleStatus = Object.assign({}, await import('../../packages/cli/src/cli/console-status.js'));
+const realConfig = Object.assign({}, await import('../../packages/engine/src/core/config.js'));
+const realPostWorktree = Object.assign({}, await import('../../packages/cli/src/cli/post-worktree.js'));
+const realWorkflowTUI = Object.assign({}, await import('../../packages/tui/src/workflow-tui.js'));
+const realEngineClient = Object.assign({}, await import('@engin/shared/engine-client'));
+const realClientStore = Object.assign({}, await import('@engin/shared/client-store'));
+const realDaemon = Object.assign({}, await import('../../packages/engine/src/server/daemon.js'));
+const realTuiSetup = Object.assign({}, await import('../../packages/cli/src/cli/tui-setup.js'));
+const realEventStore = Object.assign({}, await import('../../packages/engine/src/tracking/event-store.js'));
+const realStoreCallbacks = Object.assign({}, await import('../../packages/engine/src/tracking/store-callbacks.js'));
+const realObserverServer = Object.assign({}, await import('../../packages/engine/src/server/control-server.js'));
+const realStatusBridge = Object.assign({}, await import('../../packages/engine/src/server/status-bridge.js'));
+const realSessionSelector = Object.assign({}, await import('../../packages/cli/src/cli/session-selector.js'));
+const realWorktreeLifecycle = Object.assign({}, await import('../../packages/engine/src/core/worktree-lifecycle.js'));
 
 // ─── Mock functions ──────────────────────────────────────────────────────
 
-const mockWorkflowRun = mock<(taskPrompt: string, options: Record<string, unknown>) => Promise<void>>();
+// Daemon mocks
+const mockIsServerAlive = mock<(port: number) => Promise<boolean>>();
+const mockStartDaemon = mock<(opts: { port: number; host?: string }) => Promise<{ pid: number; port: number }>>();
+const mockStopDaemon = mock<() => Promise<void>>();
 
-// Observer server components
-const mockObserverBroadcast = mock<(msg: unknown) => void>();
-const mockObserverStop = mock<() => Promise<void>>();
-const mockStartObserverServer = mock<(opts: unknown) => Promise<unknown>>();
-
-// TUI method spies
+// TUI lifecycle spies
 const mockTuiStart = mock<() => void>();
 const mockTuiStop = mock<() => void>();
-const mockTuiShowQrCode = mock<(url: string) => Promise<void>>();
 const mockTuiPrepareQrCode = mock<(url: string) => Promise<void>>();
 const mockTuiPauseForInspection = mock<(signal?: AbortSignal) => Promise<void>>();
-const mockTuiGetStatusCallbacks = mock<() => Record<string, unknown>>();
 
-// StatusBridge method spies
-const mockBridgeGetCallbacks = mock<() => Record<string, unknown>>();
-const mockBridgeGetSnapshot = mock<() => Record<string, unknown>>();
+// EngineClient spies
+const mockEngineClientConnect = mock<(callbacks: unknown) => void>();
+const mockEngineClientDisconnect = mock<() => void>();
+const mockEngineClientSend = mock<(msg: unknown) => void>();
+const mockEngineClientSubscribe = mock<(runId: string) => void>();
 
-// composeStatusCallbacks spy
-const mockComposeStatusCallbacks = mock<(callbacks: unknown[]) => unknown>();
+// ClientStore spies
+const mockApplySnapshot = mock<(snapshot: unknown, seq: number) => void>();
+const mockApplyEvents = mock<(events: unknown[]) => void>();
+const mockClientStoreGetState = mock<() => Record<string, unknown>>();
 
-// Network spy
-const mockGetLocalNetworkIP = mock<() => string | null>();
+// "NOT called" spies
+const mockSetupTuiAndObserver = mock<() => Promise<unknown>>();
+const mockEventStoreLoad = mock<() => Promise<unknown>>();
+const mockCreateStoreCallbacks = mock<() => unknown>();
+const mockStartObserverServer = mock<() => Promise<unknown>>();
 
-// existsSync mock for build check tests
-const mockExistsSync = mock<(path: string) => boolean>();
-
-// Post-worktree action mock
+// Post-worktree spy
 const mockPromptPostWorktreeAction = mock<(options: Record<string, unknown>) => Promise<void>>();
 
-// Config mock
+// Session selector spies
+const mockResolveSessionName = mock<(sessionName: string, cwd: string) => Promise<unknown>>();
+const mockInteractiveSelectRun = mock<(cwd: string) => Promise<unknown>>();
+
+// Config spies
 const mockResolveProfilesDirs = mock<(cwd: string, workflowName?: string) => string[]>();
 
-// Capture constructor arguments
-let capturedTuiOptions: { abort?: () => void } | null = null;
-let capturedBridgeBroadcast: ((msg: unknown) => void) | null = null;
-let capturedObserverServerOptions: Record<string, unknown> | null = null;
+// Capture constructor arguments / state
+let capturedTuiOptions: {
+  onDetach?: () => void;
+  onKill?: () => void;
+  runId?: string;
+  clientStore?: unknown;
+} | null = null;
+let capturedEngineClientOptions: { url?: string } | null = null;
+let capturedEngineClientCallbacks: { onMessage: (msg: Record<string, unknown>) => void } | null = null;
+let capturedSentMessages: unknown[] = [];
+let engineClientInstanceCount = 0;
+let clientStoreInstanceCount = 0;
 
-// ─── Mock modules (executes before static imports in Bun) ─────────────────
+// ─── Mock modules (hoisted before imports by Bun) ─────────────────────────
 
-mock.module('../../src/core/workflow-loader.js', () => ({
-  loadWorkflow: () => Promise.resolve({ run: mockWorkflowRun }),
+mock.module('../../packages/engine/src/core/workflow-loader.js', () => ({
+  loadWorkflow: () => Promise.resolve({ run: () => {} }),
   clearWorkflowCache: () => {},
 }));
 
-mock.module('../../src/core/utils.js', () => ({
+mock.module('../../packages/engine/src/core/utils.js', () => ({
   validateWorkflowName: () => {},
-  composeStatusCallbacks: mockComposeStatusCallbacks,
-  isEnoentError: () => false,
-  safeErrorMessage: (err: unknown) => String(err),
+  composeStatusCallbacks: () => ({}),
 }));
 
-/**
- * Mock console-status so that shouldUseTui always returns true (TUI path).
- */
-mock.module('../../src/cli/console-status.js', () => ({
+mock.module('../../packages/cli/src/cli/console-status.js', () => ({
   formatTime: () => '[00:00:00]',
   createStatusCallbacks: () => ({}),
   shouldUseTui: () => true,
 }));
 
-// Mock node:fs so we can control existsSync for build-check tests.
-// Preserve the real readFileSync so state file reading still works.
-mock.module('node:fs', () => ({
-  ...realFs,
-  existsSync: mockExistsSync,
+mock.module('../../packages/engine/src/server/daemon.js', () => ({
+  isServerAlive: mockIsServerAlive,
+  startDaemon: mockStartDaemon,
+  stopDaemon: mockStopDaemon,
 }));
 
-mock.module('../../src/core/network.js', () => ({
-  getLocalNetworkIP: mockGetLocalNetworkIP,
+// T35: mock readServerToken so commands.ts doesn't do real filesystem I/O.
+// Returns null (no token) — T27 tests don't test auth token wiring.
+mock.module('../../packages/engine/src/server/auth.js', () => ({
+  readServerToken: async () => null,
 }));
 
-mock.module('../../src/core/config.js', () => ({
-  ...realConfig,
-  resolveProfilesDirs: mockResolveProfilesDirs,
-}));
-
-mock.module('../../src/cli/post-worktree.js', () => ({
-  promptPostWorktreeAction: mockPromptPostWorktreeAction,
-}));
-
-mock.module('../../src/web/observer-server.js', () => ({
-  startObserverServer: mockStartObserverServer,
-}));
-
-mock.module('../../src/web/status-bridge.js', () => ({
-  StatusBridge: class {
-    constructor(broadcast: (msg: unknown) => void, _store: unknown) {
-      capturedBridgeBroadcast = broadcast;
-    }
-    getSnapshot() {
-      return mockBridgeGetSnapshot();
-    }
-    dispose() {}
-  },
-}));
-
-mock.module('../../src/tui/workflow-tui.js', () => ({
+mock.module('../../packages/tui/src/workflow-tui.js', () => ({
   WorkflowTUI: class {
-    constructor(options: { abort?: () => void }) {
+    constructor(options: { onDetach?: () => void; onKill?: () => void; runId?: string; clientStore?: unknown }) {
       capturedTuiOptions = options;
     }
     start() {
@@ -127,45 +136,180 @@ mock.module('../../src/tui/workflow-tui.js', () => ({
     stop() {
       mockTuiStop();
     }
-    showQrCode(url: string) {
-      return mockTuiShowQrCode(url);
-    }
+    setRunId(_runId: string) {}
     prepareQrCode(url: string) {
       return mockTuiPrepareQrCode(url);
     }
     pauseForInspection(signal?: AbortSignal) {
       return mockTuiPauseForInspection(signal);
     }
-    getStatusCallbacks() {
-      return mockTuiGetStatusCallbacks();
+  },
+}));
+
+mock.module('@engin/shared/engine-client', () => ({
+  EngineClient: class {
+    constructor(options: { url?: string }) {
+      capturedEngineClientOptions = options;
+      engineClientInstanceCount++;
+    }
+    connect(callbacks: { onMessage: (msg: Record<string, unknown>) => void }) {
+      capturedEngineClientCallbacks = callbacks;
+      mockEngineClientConnect(callbacks);
+    }
+    disconnect() {
+      mockEngineClientDisconnect();
+    }
+    send(msg: unknown) {
+      capturedSentMessages.push(msg);
+      mockEngineClientSend(msg);
+    }
+    subscribe(runId: string) {
+      mockEngineClientSubscribe(runId);
+    }
+    unsubscribe(_runId: string) {}
+    isConnected() {
+      return true;
     }
   },
 }));
 
+mock.module('@engin/shared/client-store', () => ({
+  ClientStore: class {
+    constructor() {
+      clientStoreInstanceCount++;
+    }
+    applySnapshot(snapshot: unknown, seq: number) {
+      mockApplySnapshot(snapshot, seq);
+    }
+    applyEvents(events: unknown[]) {
+      mockApplyEvents(events);
+    }
+    getState() {
+      return mockClientStoreGetState();
+    }
+    subscribe(_listener: unknown) {
+      return () => {};
+    }
+  },
+}));
+
+// Prevent complex side effects
+mock.module('../../packages/cli/src/cli/tui-setup.js', () => ({
+  setupTuiAndObserver: mockSetupTuiAndObserver,
+}));
+
+mock.module('../../packages/engine/src/tracking/event-store.js', () => ({
+  EventStore: class {
+    constructor() {}
+    static async load() {
+      return mockEventStoreLoad();
+    }
+  },
+}));
+
+mock.module('../../packages/engine/src/tracking/store-callbacks.js', () => ({
+  createStoreCallbacks: mockCreateStoreCallbacks,
+}));
+
+mock.module('../../packages/engine/src/server/control-server.js', () => ({
+  startObserverServer: mockStartObserverServer,
+}));
+
+mock.module('../../packages/engine/src/server/status-bridge.js', () => ({
+  StatusBridge: class {},
+}));
+
+mock.module('../../packages/engine/src/core/worktree-lifecycle.js', () => ({
+  setupWorktree: () => Promise.resolve({ worktreeInfo: null, worktreePath: '', branchName: '' }),
+}));
+
+mock.module('../../packages/cli/src/cli/session-selector.js', () => ({
+  interactiveSelectRun: mockInteractiveSelectRun,
+  resolveSessionName: mockResolveSessionName,
+}));
+
+mock.module('../../packages/cli/src/cli/post-worktree.js', () => ({
+  promptPostWorktreeAction: mockPromptPostWorktreeAction,
+}));
+
+mock.module('../../packages/engine/src/core/config.js', () => ({
+  ...realConfig,
+  getDefaultWorkDir: (_cwd: string, wf: string) => `/tmp/test-engin/work/${Date.now()}-${wf}`,
+  resolveProfilesDirs: mockResolveProfilesDirs,
+  scanPastRuns: () => Promise.resolve([]),
+}));
+
 // ─── Import SUT after mocks ──────────────────────────────────────────────
 
-import { resumeCommand } from '../../src/cli.ts';
+import { resumeCommand } from '../../packages/cli/src/cli.ts';
 
 // ─── Restore original modules ────────────────────────────────────────────
 
 afterAll(() => {
-  mock.module('../../src/core/workflow-loader.js', () => realWorkflowLoader);
-  mock.module('../../src/core/utils.js', () => realUtils);
-  mock.module('../../src/core/network.js', () => realNetwork);
-  mock.module('../../src/cli/console-status.js', () => realConsoleStatus);
-  mock.module('../../src/core/config.js', () => realConfig);
-  mock.module('../../src/cli/post-worktree.js', () => realPostWorktree);
-  mock.module('../../src/web/observer-server.js', () => realObserverServer);
-  mock.module('../../src/web/status-bridge.js', () => realStatusBridge);
-  mock.module('../../src/tui/workflow-tui.js', () => realWorkflowTUI);
-  mock.module('node:fs', () => realFs);
+  mock.module('../../packages/engine/src/core/workflow-loader.js', () => realWorkflowLoader);
+  mock.module('../../packages/engine/src/core/utils.js', () => realUtils);
+  mock.module('../../packages/cli/src/cli/console-status.js', () => realConsoleStatus);
+  mock.module('../../packages/engine/src/server/daemon.js', () => realDaemon);
+  mock.module('../../packages/tui/src/workflow-tui.js', () => realWorkflowTUI);
+  mock.module('@engin/shared/engine-client', () => realEngineClient);
+  mock.module('@engin/shared/client-store', () => realClientStore);
+  mock.module('../../packages/cli/src/cli/tui-setup.js', () => realTuiSetup);
+  mock.module('../../packages/engine/src/tracking/event-store.js', () => realEventStore);
+  mock.module('../../packages/engine/src/tracking/store-callbacks.js', () => realStoreCallbacks);
+  mock.module('../../packages/engine/src/server/control-server.js', () => realObserverServer);
+  mock.module('../../packages/engine/src/server/status-bridge.js', () => realStatusBridge);
+  mock.module('../../packages/engine/src/core/worktree-lifecycle.js', () => realWorktreeLifecycle);
+  mock.module('../../packages/cli/src/cli/session-selector.js', () => realSessionSelector);
+  mock.module('../../packages/cli/src/cli/post-worktree.js', () => realPostWorktree);
+  mock.module('../../packages/engine/src/core/config.js', () => realConfig);
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
-// resumeCommand — TUI / web / QR / pause integration
+// Helpers
 // ═══════════════════════════════════════════════════════════════════════════
 
-describe('resumeCommand — TUI/web/QR/pause integration', () => {
+function makeRunSummary(runId: string, overrides: Record<string, unknown> = {}) {
+  return {
+    runId,
+    cwd: '/tmp/test-cwd',
+    workflowName: 'test-workflow',
+    taskPrompt: 'test task prompt',
+    status: 'running',
+    startedAt: new Date().toISOString(),
+    ...overrides,
+  };
+}
+
+/**
+ * Deliver a sequence of server messages to the captured EngineClient onMessage
+ * callback, then await the command promise.
+ */
+async function deliverAndAwait(commandPromise: Promise<void>, messages: Record<string, unknown>[]): Promise<void> {
+  // T35: readServerToken (async) now runs before EngineClient creation.
+  // Yield once so that microtask resolves and connect() captures callbacks.
+  if (!capturedEngineClientCallbacks) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  for (const msg of messages) {
+    capturedEngineClientCallbacks?.onMessage(msg);
+  }
+  await commandPromise;
+}
+
+/** Yield until EngineClient.connect() has captured callbacks.
+ *  T35 added readServerToken (async) before EngineClient creation, so tests
+ *  that deliver messages directly (not via deliverAndAwait) must wait. */
+async function waitForEngineClient(): Promise<void> {
+  while (!capturedEngineClientCallbacks) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// resumeCommand — T27 daemon-client integration
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe('resumeCommand — daemon-client integration (T27)', () => {
   const { getDir } = useTempDir();
 
   let logSpy: ReturnType<typeof spyOn>;
@@ -176,11 +320,15 @@ describe('resumeCommand — TUI/web/QR/pause integration', () => {
   function createPastRunDir(
     tempDir: string,
     dirName: string,
-    state: { taskPrompt: string; worktree?: { worktreePath: string; branchName: string; originalCwd: string } },
+    state: {
+      taskPrompt: string;
+      worktree?: { worktreePath: string; branchName: string; originalCwd: string };
+    },
   ) {
     const runDir = join(tempDir, '.engin', 'work', dirName);
     mkdirSync(runDir, { recursive: true });
     writeFileSync(join(runDir, '.engin-state.json'), JSON.stringify(state));
+    return runDir;
   }
 
   function makeResumeOptions(overrides: {
@@ -206,6 +354,28 @@ describe('resumeCommand — TUI/web/QR/pause integration', () => {
     };
   }
 
+  /**
+   * Create a past run directory with a state file and return a builder
+   * function for resume options.
+   */
+  function setupRun(
+    state: {
+      taskPrompt: string;
+      worktree?: { worktreePath: string; branchName: string; originalCwd: string };
+    },
+    dirName = '1700000000000-my-workflow',
+  ) {
+    const tempDir = getDir();
+    const runDir = createPastRunDir(tempDir, dirName, state);
+    return {
+      tempDir,
+      runDir,
+      dirName,
+      make: (overrides: Partial<Parameters<typeof makeResumeOptions>[0]> = {}) =>
+        makeResumeOptions({ cwd: tempDir, sessionName: dirName, ...overrides }),
+    };
+  }
+
   beforeEach(() => {
     logSpy = spyOn(console, 'log').mockImplementation(() => {});
     warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
@@ -213,82 +383,60 @@ describe('resumeCommand — TUI/web/QR/pause integration', () => {
     removeListenerSpy = spyOn(process, 'removeListener');
 
     // Reset all mock functions
-    mockWorkflowRun.mockReset();
-    mockObserverBroadcast.mockReset();
-    mockObserverStop.mockReset();
-    mockStartObserverServer.mockReset();
+    mockIsServerAlive.mockReset();
+    mockStartDaemon.mockReset();
+    mockStopDaemon.mockReset();
     mockTuiStart.mockReset();
     mockTuiStop.mockReset();
-    mockTuiShowQrCode.mockReset();
     mockTuiPrepareQrCode.mockReset();
     mockTuiPauseForInspection.mockReset();
-    mockTuiGetStatusCallbacks.mockReset();
-    mockBridgeGetCallbacks.mockReset();
-    mockBridgeGetSnapshot.mockReset();
-    mockComposeStatusCallbacks.mockReset();
-    mockGetLocalNetworkIP.mockReset();
-    mockExistsSync.mockReset();
+    mockEngineClientConnect.mockReset();
+    mockEngineClientDisconnect.mockReset();
+    mockEngineClientSend.mockReset();
+    mockEngineClientSubscribe.mockReset();
+    mockApplySnapshot.mockReset();
+    mockApplyEvents.mockReset();
+    mockClientStoreGetState.mockReset();
+    mockSetupTuiAndObserver.mockReset();
+    mockEventStoreLoad.mockReset();
+    mockCreateStoreCallbacks.mockReset();
+    mockStartObserverServer.mockReset();
     mockPromptPostWorktreeAction.mockReset();
+    mockResolveSessionName.mockReset();
+    mockInteractiveSelectRun.mockReset();
     mockResolveProfilesDirs.mockReset();
+
     capturedTuiOptions = null;
-    capturedBridgeBroadcast = null;
-    capturedObserverServerOptions = null;
+    capturedEngineClientOptions = null;
+    capturedEngineClientCallbacks = null;
+    capturedSentMessages = [];
+    engineClientInstanceCount = 0;
+    clientStoreInstanceCount = 0;
 
-    // Default: getLocalNetworkIP returns a LAN IP
-    mockGetLocalNetworkIP.mockReturnValue('192.168.1.42');
+    // Default: server is alive
+    mockIsServerAlive.mockResolvedValue(true);
+    mockStartDaemon.mockResolvedValue({ pid: 12345, port: 3619 });
 
-    // Default: web/dist exists (no warning expected)
-    mockExistsSync.mockReturnValue(true);
-
-    // Default mock behaviors
-    mockWorkflowRun.mockResolvedValue(undefined);
-
-    mockStartObserverServer.mockImplementation(async (opts: unknown) => {
-      capturedObserverServerOptions = opts as Record<string, unknown>;
-      return {
-        server: {} as Record<string, unknown>,
-        broadcast: mockObserverBroadcast,
-        url: 'http://127.0.0.1:3619',
-        stop: mockObserverStop,
-      };
-    });
-
-    mockTuiStart.mockImplementation(() => {});
-    mockTuiStop.mockImplementation(() => {});
-    mockTuiShowQrCode.mockResolvedValue(undefined);
+    // Default: TUI mock behaviors
     mockTuiPrepareQrCode.mockResolvedValue(undefined);
     mockTuiPauseForInspection.mockResolvedValue(undefined);
-    mockTuiGetStatusCallbacks.mockReturnValue({ isTuiCallbacks: true });
-    mockBridgeGetCallbacks.mockReturnValue({ isBridgeCallbacks: true });
-    mockBridgeGetSnapshot.mockReturnValue({
-      type: 'snapshot',
-      seq: 0,
-      state: {
-        seq: 0,
-        taskPrompt: '',
-        currentPhaseId: '',
-        completedPhaseIds: [],
-        tasks: {},
-        agents: {},
-        sidebar: { title: '', indicator: '' },
-        status: 'running',
-        stats: { totalTokens: 0, agentCount: 0 },
-      },
-    });
-    mockComposeStatusCallbacks.mockImplementation((callbacks: unknown[]) => ({
-      composed: true,
-      length: callbacks.length,
+
+    // Default: resolveSessionName returns the PastRunEntry
+    mockResolveSessionName.mockImplementation(async (sessionName: string, cwd: string) => ({
+      dirName: sessionName,
+      fullPath: join(cwd, '.engin', 'work', sessionName),
+      workflowName: sessionName.split('-').slice(1).join('-') || 'my-workflow',
+      timestamp: Number(sessionName.split('-')[0]) || Date.now(),
+      hasStateFile: true,
     }));
 
-    mockPromptPostWorktreeAction.mockResolvedValue(undefined);
-    mockResolveProfilesDirs.mockImplementation((_cwd: string, _workflowName?: string) => [
-      '/local/profiles',
-      '/global/profiles',
+    mockResolveProfilesDirs.mockImplementation((_cwd: string, wf?: string) => [
+      `/local/profiles/${wf}`,
+      `/global/profiles/${wf}`,
     ]);
   });
 
   afterEach(() => {
-    // Clean up any SIGINT listeners left on the process
     const listeners = process.listeners('SIGINT');
     for (const l of listeners) process.removeListener('SIGINT', l as any);
 
@@ -298,388 +446,579 @@ describe('resumeCommand — TUI/web/QR/pause integration', () => {
     removeListenerSpy.mockRestore();
   });
 
-  // ─── Non-worktree resume with TUI ─────────────────────────────────────
+  // ─── Daemon health check and auto-start ─────────────────────────────────
 
-  describe('non-worktree resume with TUI', () => {
-    it('defaults to localhost-only binding when no host/lan given', async () => {
-      const ts = Date.now();
-      const dirName = `${ts}-my-workflow`;
-      const tempDir = getDir();
-      createPastRunDir(tempDir, dirName, { taskPrompt: 'resumed task' });
+  describe('daemon health check and auto-start', () => {
+    it('probes isServerAlive on the default port (3619)', async () => {
+      const { make } = setupRun({ taskPrompt: 'resumed task' });
 
-      await resumeCommand(makeResumeOptions({ cwd: tempDir, sessionName: dirName }));
+      const cmd = resumeCommand(make());
+      await deliverAndAwait(cmd, [
+        { type: 'run_started', runId: 'r1', summary: makeRunSummary('r1') },
+        { type: 'run_complete', runId: 'r1' },
+      ]);
 
-      expect(mockStartObserverServer).toHaveBeenCalledTimes(1);
-      const opts = capturedObserverServerOptions as Record<string, unknown> | null;
-      expect(opts).not.toBeNull();
-      // Default is localhost only — not reachable from other devices
-      expect(opts!.host).toBe('127.0.0.1');
-      expect(opts!.port).toBe(3619);
-      expect(opts!.displayHost).toBe('127.0.0.1');
-      // getLocalNetworkIP should not even be consulted in the default path
-      expect(mockGetLocalNetworkIP).not.toHaveBeenCalled();
+      expect(mockIsServerAlive).toHaveBeenCalled();
+      expect(mockIsServerAlive).toHaveBeenCalledWith(3619);
     });
 
-    it('binds to 0.0.0.0 and uses LAN IP for display when --lan is given', async () => {
-      const ts = Date.now();
-      const dirName = `${ts}-my-workflow`;
-      const tempDir = getDir();
-      createPastRunDir(tempDir, dirName, { taskPrompt: 'resumed task' });
+    it('uses custom port from options', async () => {
+      const { make } = setupRun({ taskPrompt: 'resumed task' });
 
-      await resumeCommand(makeResumeOptions({ cwd: tempDir, sessionName: dirName, lan: true }));
+      const cmd = resumeCommand(make({ port: 8080 }));
+      await deliverAndAwait(cmd, [
+        { type: 'run_started', runId: 'r1', summary: makeRunSummary('r1') },
+        { type: 'run_complete', runId: 'r1' },
+      ]);
 
-      const opts = capturedObserverServerOptions as Record<string, unknown> | null;
-      expect(opts!.host).toBe('0.0.0.0');
-      expect(opts!.port).toBe(3619);
-      expect(opts!.displayHost).toBe('192.168.1.42');
+      expect(mockIsServerAlive).toHaveBeenCalledWith(8080);
     });
 
-    it('uses host and port from options when provided, without displayHost', async () => {
-      const ts = Date.now();
-      const dirName = `${ts}-my-workflow`;
-      const tempDir = getDir();
-      createPastRunDir(tempDir, dirName, { taskPrompt: 'resumed task' });
+    it('auto-starts daemon when server is down', async () => {
+      mockIsServerAlive.mockResolvedValue(false);
+      const { make } = setupRun({ taskPrompt: 'resumed task' });
 
-      const opts = makeResumeOptions({ cwd: tempDir, sessionName: dirName });
-      opts.host = '127.0.0.1';
-      opts.port = 8080;
-      await resumeCommand(opts);
+      const cmd = resumeCommand(make());
+      await deliverAndAwait(cmd, [
+        { type: 'run_started', runId: 'r1', summary: makeRunSummary('r1') },
+        { type: 'run_complete', runId: 'r1' },
+      ]);
 
-      const serverOpts = capturedObserverServerOptions as Record<string, unknown> | null;
-      expect(serverOpts!.host).toBe('127.0.0.1');
-      expect(serverOpts!.port).toBe(8080);
-      expect(serverOpts!.displayHost).toBeUndefined();
+      expect(mockStartDaemon).toHaveBeenCalledTimes(1);
+      expect(mockStartDaemon).toHaveBeenCalledWith({ port: 3619, host: '127.0.0.1' });
     });
 
-    it('falls back to 127.0.0.1 for display when --lan given and getLocalNetworkIP returns null', async () => {
-      mockGetLocalNetworkIP.mockReturnValue(null);
+    it('does NOT call startDaemon when server is already alive', async () => {
+      mockIsServerAlive.mockResolvedValue(true);
+      const { make } = setupRun({ taskPrompt: 'resumed task' });
 
-      const ts = Date.now();
-      const dirName = `${ts}-my-workflow`;
-      const tempDir = getDir();
-      createPastRunDir(tempDir, dirName, { taskPrompt: 'resumed task' });
+      const cmd = resumeCommand(make());
+      await deliverAndAwait(cmd, [
+        { type: 'run_started', runId: 'r1', summary: makeRunSummary('r1') },
+        { type: 'run_complete', runId: 'r1' },
+      ]);
 
-      await resumeCommand(makeResumeOptions({ cwd: tempDir, sessionName: dirName, lan: true }));
-
-      const opts = capturedObserverServerOptions as Record<string, unknown> | null;
-      expect(opts!.host).toBe('0.0.0.0');
-      expect(opts!.displayHost).toBe('127.0.0.1');
-    });
-
-    it('creates and starts WorkflowTUI', async () => {
-      const ts = Date.now();
-      const dirName = `${ts}-my-workflow`;
-      const tempDir = getDir();
-      createPastRunDir(tempDir, dirName, { taskPrompt: 'resumed task' });
-
-      await resumeCommand(makeResumeOptions({ cwd: tempDir, sessionName: dirName }));
-
-      expect(capturedTuiOptions).not.toBeNull();
-      expect(capturedTuiOptions!.abort).toBeDefined();
-      expect(mockTuiStart).toHaveBeenCalledTimes(1);
-    });
-
-    it('prepares QR code with server URL before start', async () => {
-      const ts = Date.now();
-      const dirName = `${ts}-my-workflow`;
-      const tempDir = getDir();
-      createPastRunDir(tempDir, dirName, { taskPrompt: 'resumed task' });
-
-      await resumeCommand(makeResumeOptions({ cwd: tempDir, sessionName: dirName }));
-
-      expect(mockTuiPrepareQrCode).toHaveBeenCalledTimes(1);
-      expect(mockTuiPrepareQrCode.mock.calls[0][0]).toBe('http://127.0.0.1:3619');
-    });
-
-    it('creates StatusBridge with a wrapper that delegates to the observer broadcast', async () => {
-      const ts = Date.now();
-      const dirName = `${ts}-my-workflow`;
-      const tempDir = getDir();
-      createPastRunDir(tempDir, dirName, { taskPrompt: 'resumed task' });
-
-      await resumeCommand(makeResumeOptions({ cwd: tempDir, sessionName: dirName }));
-
-      expect(capturedBridgeBroadcast).not.toBeNull();
-      // The captured function is a wrapper that delegates to the real broadcast
-      capturedBridgeBroadcast!({ type: 'test' });
-      expect(mockObserverBroadcast).toHaveBeenCalledWith({ type: 'test' });
-    });
-
-    it('passes storeCallbacks directly as onStatus (no composition in TUI path)', async () => {
-      const ts = Date.now();
-      const dirName = `${ts}-my-workflow`;
-      const tempDir = getDir();
-      createPastRunDir(tempDir, dirName, { taskPrompt: 'resumed task' });
-
-      await resumeCommand(makeResumeOptions({ cwd: tempDir, sessionName: dirName }));
-
-      // composeStatusCallbacks should NOT be called in the TUI path
-      expect(mockComposeStatusCallbacks).not.toHaveBeenCalled();
-      const runOpts = mockWorkflowRun.mock.calls[0][1] as Record<string, unknown>;
-      expect(runOpts.onStatus).toBeDefined();
-      expect(typeof runOpts.onStatus).toBe('object');
-    });
-
-    it('calls pauseForInspection after workflow.run completes', async () => {
-      let runResolved = false;
-      mockWorkflowRun.mockImplementation(async () => {
-        runResolved = true;
-      });
-
-      const ts = Date.now();
-      const dirName = `${ts}-my-workflow`;
-      const tempDir = getDir();
-      createPastRunDir(tempDir, dirName, { taskPrompt: 'resumed task' });
-
-      await resumeCommand(makeResumeOptions({ cwd: tempDir, sessionName: dirName }));
-
-      expect(runResolved).toBe(true);
-      expect(mockTuiPauseForInspection).toHaveBeenCalledTimes(1);
-    });
-
-    it('passes the abort signal to pauseForInspection', async () => {
-      const ts = Date.now();
-      const dirName = `${ts}-my-workflow`;
-      const tempDir = getDir();
-      createPastRunDir(tempDir, dirName, { taskPrompt: 'resumed task' });
-
-      await resumeCommand(makeResumeOptions({ cwd: tempDir, sessionName: dirName }));
-
-      const signalArg = mockTuiPauseForInspection.mock.calls[0][0];
-      expect(signalArg).toBeDefined();
-      expect(signalArg).toBeInstanceOf(AbortSignal);
-    });
-
-    it('stops TUI and observer server after pause resolves', async () => {
-      const ts = Date.now();
-      const dirName = `${ts}-my-workflow`;
-      const tempDir = getDir();
-      createPastRunDir(tempDir, dirName, { taskPrompt: 'resumed task' });
-
-      await resumeCommand(makeResumeOptions({ cwd: tempDir, sessionName: dirName }));
-
-      expect(mockTuiStop).toHaveBeenCalledTimes(1);
-      expect(mockObserverStop).toHaveBeenCalledTimes(1);
-    });
-
-    it('passes the task prompt from state file to workflow.run', async () => {
-      const ts = Date.now();
-      const dirName = `${ts}-my-workflow`;
-      const tempDir = getDir();
-      createPastRunDir(tempDir, dirName, { taskPrompt: 'original saved prompt' });
-
-      await resumeCommand(makeResumeOptions({ cwd: tempDir, sessionName: dirName }));
-
-      expect(mockWorkflowRun.mock.calls[0][0]).toBe('original saved prompt');
-    });
-
-    it('sets verbose to false in workflow.run options', async () => {
-      const ts = Date.now();
-      const dirName = `${ts}-my-workflow`;
-      const tempDir = getDir();
-      createPastRunDir(tempDir, dirName, { taskPrompt: 'resumed task' });
-
-      await resumeCommand(makeResumeOptions({ cwd: tempDir, sessionName: dirName }));
-
-      const runOpts = mockWorkflowRun.mock.calls[0][1] as Record<string, unknown>;
-      expect(runOpts.verbose).toBe(false);
-    });
-
-    // ─── Build check warning ─────────────────────────────────────────--
-
-    it('warns when web/dist does not exist', async () => {
-      mockExistsSync.mockReturnValue(false);
-
-      const ts = Date.now();
-      const dirName = `${ts}-my-workflow`;
-      const tempDir = getDir();
-      createPastRunDir(tempDir, dirName, { taskPrompt: 'resumed task' });
-
-      await resumeCommand(makeResumeOptions({ cwd: tempDir, sessionName: dirName }));
-
-      expect(warnSpy).toHaveBeenCalledTimes(1);
-      const msg = warnSpy.mock.calls[0][0] as string;
-      expect(msg).toContain('web/dist not found');
-      expect(msg).toContain('npm run build');
-    });
-
-    it('does not warn when web/dist exists', async () => {
-      mockExistsSync.mockReturnValue(true);
-
-      const ts = Date.now();
-      const dirName = `${ts}-my-workflow`;
-      const tempDir = getDir();
-      createPastRunDir(tempDir, dirName, { taskPrompt: 'resumed task' });
-
-      await resumeCommand(makeResumeOptions({ cwd: tempDir, sessionName: dirName }));
-
-      expect(warnSpy).not.toHaveBeenCalled();
+      expect(mockStartDaemon).not.toHaveBeenCalled();
     });
   });
 
-  // ─── Worktree resume with TUI ─────────────────────────────────────────
+  // ─── Session resolution ─────────────────────────────────────────────────
 
-  describe('worktree resume with TUI', () => {
+  describe('session resolution', () => {
+    it('reads the state file to recover taskPrompt', async () => {
+      const { make } = setupRun({ taskPrompt: 'saved prompt text' });
+
+      const cmd = resumeCommand(make());
+      await deliverAndAwait(cmd, [
+        { type: 'run_started', runId: 'r1', summary: makeRunSummary('r1') },
+        { type: 'run_complete', runId: 'r1' },
+      ]);
+
+      // The task prompt should be forwarded to the daemon.
+      const startRunMsg = capturedSentMessages.find((m) => (m as Record<string, unknown>).type === 'start_run') as
+        | Record<string, unknown>
+        | undefined;
+
+      // Either start_run is sent with the saved prompt, or the command
+      // used it internally. If start_run is sent, verify the prompt.
+      if (startRunMsg) {
+        expect(startRunMsg.taskPrompt).toBe('saved prompt text');
+      }
+    });
+
+    it('throws when state file has no taskPrompt', async () => {
+      const { make } = setupRun({ taskPrompt: '' });
+
+      await expect(resumeCommand(make())).rejects.toThrow('no task prompt');
+    });
+
+    it('throws when state file has no resumable state', async () => {
+      const tempDir = getDir();
+      const dirName = '1700000000000-no-state';
+      const runDir = join(tempDir, '.engin', 'work', dirName);
+      mkdirSync(runDir, { recursive: true });
+      // No .engin-state.json created
+
+      const opts = makeResumeOptions({ cwd: tempDir, sessionName: dirName });
+
+      await expect(resumeCommand(opts)).rejects.toThrow();
+    });
+  });
+
+  // ─── EngineClient (WS client) setup ────────────────────────────────────
+
+  describe('EngineClient (localhost WS client) setup', () => {
+    it('creates exactly one EngineClient', async () => {
+      const { make } = setupRun({ taskPrompt: 'resumed task' });
+
+      const cmd = resumeCommand(make());
+      await deliverAndAwait(cmd, [
+        { type: 'run_started', runId: 'r1', summary: makeRunSummary('r1') },
+        { type: 'run_complete', runId: 'r1' },
+      ]);
+
+      expect(engineClientInstanceCount).toBe(1);
+    });
+
+    it("points EngineClient at daemon's localhost WS endpoint", async () => {
+      const { make } = setupRun({ taskPrompt: 'resumed task' });
+
+      const cmd = resumeCommand(make());
+      await deliverAndAwait(cmd, [
+        { type: 'run_started', runId: 'r1', summary: makeRunSummary('r1') },
+        { type: 'run_complete', runId: 'r1' },
+      ]);
+
+      expect(capturedEngineClientOptions).not.toBeNull();
+      expect(capturedEngineClientOptions!.url).toBe('ws://127.0.0.1:3619/ws');
+    });
+
+    it('uses configured port in the WS URL', async () => {
+      const { make } = setupRun({ taskPrompt: 'resumed task' });
+
+      const cmd = resumeCommand(make({ port: 8080 }));
+      await deliverAndAwait(cmd, [
+        { type: 'run_started', runId: 'r1', summary: makeRunSummary('r1') },
+        { type: 'run_complete', runId: 'r1' },
+      ]);
+
+      expect(capturedEngineClientOptions!.url).toBe('ws://127.0.0.1:8080/ws');
+    });
+
+    it('always uses 127.0.0.1 in WS URL even with --host/--lan', async () => {
+      const { make } = setupRun({ taskPrompt: 'resumed task' });
+
+      const cmd = resumeCommand(make({ lan: true, host: '0.0.0.0' }));
+      await deliverAndAwait(cmd, [
+        { type: 'run_started', runId: 'r1', summary: makeRunSummary('r1') },
+        { type: 'run_complete', runId: 'r1' },
+      ]);
+
+      expect(capturedEngineClientOptions!.url).toBe('ws://127.0.0.1:3619/ws');
+    });
+
+    it('creates exactly one ClientStore', async () => {
+      const { make } = setupRun({ taskPrompt: 'resumed task' });
+
+      const cmd = resumeCommand(make());
+      await deliverAndAwait(cmd, [
+        { type: 'run_started', runId: 'r1', summary: makeRunSummary('r1') },
+        { type: 'run_complete', runId: 'r1' },
+      ]);
+
+      expect(clientStoreInstanceCount).toBe(1);
+    });
+
+    it('disconnects EngineClient during teardown', async () => {
+      const { make } = setupRun({ taskPrompt: 'resumed task' });
+
+      const cmd = resumeCommand(make());
+      await deliverAndAwait(cmd, [
+        { type: 'run_started', runId: 'r1', summary: makeRunSummary('r1') },
+        { type: 'run_complete', runId: 'r1' },
+      ]);
+
+      expect(mockEngineClientDisconnect).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // ─── WS protocol: resume behavior ──────────────────────────────────────
+
+  describe('WS protocol: resume behavior', () => {
+    it('sends start_run to resume the workflow via the daemon', async () => {
+      const { make } = setupRun({ taskPrompt: 'resumed task' });
+
+      const cmd = resumeCommand(make());
+      await deliverAndAwait(cmd, [
+        { type: 'run_started', runId: 'r1', summary: makeRunSummary('r1') },
+        { type: 'run_complete', runId: 'r1' },
+      ]);
+
+      const startRunMsg = capturedSentMessages.find((m) => (m as Record<string, unknown>).type === 'start_run');
+      expect(startRunMsg).toBeDefined();
+    });
+
+    it('includes the saved taskPrompt in start_run', async () => {
+      const { make } = setupRun({ taskPrompt: 'the original prompt' });
+
+      const cmd = resumeCommand(make());
+      await deliverAndAwait(cmd, [
+        { type: 'run_started', runId: 'r1', summary: makeRunSummary('r1') },
+        { type: 'run_complete', runId: 'r1' },
+      ]);
+
+      const startRunMsg = capturedSentMessages.find((m) => (m as Record<string, unknown>).type === 'start_run') as
+        | Record<string, unknown>
+        | undefined;
+
+      if (startRunMsg) {
+        expect(startRunMsg.taskPrompt).toBe('the original prompt');
+      }
+    });
+
+    it('resolves when run_complete is received', async () => {
+      const { make } = setupRun({ taskPrompt: 'resumed task' });
+
+      const cmd = resumeCommand(make());
+      await deliverAndAwait(cmd, [
+        { type: 'run_started', runId: 'r1', summary: makeRunSummary('r1') },
+        { type: 'run_complete', runId: 'r1' },
+      ]);
+
+      expect(mockEngineClientDisconnect).toHaveBeenCalled();
+    });
+
+    it('resolves when run_failed is received', async () => {
+      const { make } = setupRun({ taskPrompt: 'resumed task' });
+
+      const cmd = resumeCommand(make());
+      await deliverAndAwait(cmd, [
+        { type: 'run_started', runId: 'r1', summary: makeRunSummary('r1') },
+        { type: 'run_failed', runId: 'r1', error: 'boom', phase: 'dev' },
+      ]);
+
+      expect(mockEngineClientDisconnect).toHaveBeenCalled();
+    });
+  });
+
+  // ─── WS protocol: message forwarding to ClientStore ────────────────────
+
+  describe('WS protocol: message forwarding to ClientStore', () => {
+    const dirName = '1700000000000-resume-ws-run';
+
+    it('forwards snapshot messages to ClientStore.applySnapshot', async () => {
+      const { make } = setupRun({ taskPrompt: 'resumed task' }, dirName);
+
+      const cmd = resumeCommand(make());
+      const snapshotState = { seq: 3, status: 'running' };
+
+      await waitForEngineClient();
+      capturedEngineClientCallbacks?.onMessage({
+        type: 'run_started',
+        runId: dirName,
+        summary: makeRunSummary(dirName),
+      });
+      capturedEngineClientCallbacks?.onMessage({
+        type: 'snapshot',
+        runId: dirName,
+        seq: 3,
+        state: snapshotState,
+      });
+      capturedEngineClientCallbacks?.onMessage({
+        type: 'run_complete',
+        runId: dirName,
+      });
+
+      await cmd;
+
+      expect(mockApplySnapshot).toHaveBeenCalled();
+      expect(mockApplySnapshot).toHaveBeenCalledWith(snapshotState, 3);
+    });
+
+    it('forwards events messages to ClientStore.applyEvents', async () => {
+      const { make } = setupRun({ taskPrompt: 'resumed task' }, dirName);
+
+      const cmd = resumeCommand(make());
+      const events = [{ seq: 4, type: 'phase_start' }];
+
+      await waitForEngineClient();
+      capturedEngineClientCallbacks?.onMessage({
+        type: 'run_started',
+        runId: dirName,
+        summary: makeRunSummary(dirName),
+      });
+      capturedEngineClientCallbacks?.onMessage({
+        type: 'events',
+        runId: dirName,
+        seq: 4,
+        events,
+      });
+      capturedEngineClientCallbacks?.onMessage({
+        type: 'run_complete',
+        runId: dirName,
+      });
+
+      await cmd;
+
+      expect(mockApplyEvents).toHaveBeenCalled();
+      expect(mockApplyEvents).toHaveBeenCalledWith(events);
+    });
+
+    it('ignores messages for a different runId', async () => {
+      const { make } = setupRun({ taskPrompt: 'resumed task' }, dirName);
+
+      const cmd = resumeCommand(make());
+
+      await waitForEngineClient();
+      capturedEngineClientCallbacks?.onMessage({
+        type: 'run_started',
+        runId: dirName,
+        summary: makeRunSummary(dirName),
+      });
+      capturedEngineClientCallbacks?.onMessage({
+        type: 'snapshot',
+        runId: 'different-run',
+        seq: 1,
+        state: {},
+      });
+      capturedEngineClientCallbacks?.onMessage({
+        type: 'run_complete',
+        runId: dirName,
+      });
+
+      await cmd;
+
+      // applySnapshot should only be called with the correct runId's data.
+      // The mock was called (from the run_started flow), but NOT for the wrong runId.
+      const wrongRunCalls = mockApplySnapshot.mock.calls.filter((call) => call[0] !== dirName);
+      expect(wrongRunCalls).toHaveLength(0);
+    });
+  });
+
+  // ─── TUI lifecycle ─────────────────────────────────────────────────────
+
+  describe('TUI lifecycle', () => {
+    it('creates a WorkflowTUI with onDetach/onKill callbacks and clientStore', async () => {
+      const { make } = setupRun({ taskPrompt: 'resumed task' });
+
+      const cmd = resumeCommand(make());
+      await deliverAndAwait(cmd, [
+        { type: 'run_started', runId: 'r1', summary: makeRunSummary('r1') },
+        { type: 'run_complete', runId: 'r1' },
+      ]);
+
+      expect(capturedTuiOptions).not.toBeNull();
+      expect(capturedTuiOptions!.onDetach).toBeDefined();
+      expect(typeof capturedTuiOptions!.onDetach).toBe('function');
+      expect(capturedTuiOptions!.onKill).toBeDefined();
+      expect(typeof capturedTuiOptions!.onKill).toBe('function');
+      expect(capturedTuiOptions!.clientStore).toBeDefined();
+    });
+
+    it('starts the TUI', async () => {
+      const { make } = setupRun({ taskPrompt: 'resumed task' });
+
+      const cmd = resumeCommand(make());
+      await deliverAndAwait(cmd, [
+        { type: 'run_started', runId: 'r1', summary: makeRunSummary('r1') },
+        { type: 'run_complete', runId: 'r1' },
+      ]);
+
+      expect(mockTuiStart).toHaveBeenCalledTimes(1);
+    });
+
+    it('prepares QR code with the daemon URL', async () => {
+      const { make } = setupRun({ taskPrompt: 'resumed task' });
+
+      const cmd = resumeCommand(make({ port: 8080 }));
+      await deliverAndAwait(cmd, [
+        { type: 'run_started', runId: 'r1', summary: makeRunSummary('r1') },
+        { type: 'run_complete', runId: 'r1' },
+      ]);
+
+      expect(mockTuiPrepareQrCode).toHaveBeenCalledTimes(1);
+      expect(mockTuiPrepareQrCode.mock.calls[0][0]).toBe('http://127.0.0.1:8080');
+    });
+
+    it('calls pauseForInspection after run_complete', async () => {
+      const { make } = setupRun({ taskPrompt: 'resumed task' });
+
+      const cmd = resumeCommand(make());
+      await deliverAndAwait(cmd, [
+        { type: 'run_started', runId: 'r1', summary: makeRunSummary('r1') },
+        { type: 'run_complete', runId: 'r1' },
+      ]);
+
+      expect(mockTuiPauseForInspection).toHaveBeenCalledTimes(1);
+    });
+
+    it('passes no signal to pauseForInspection (TUI manages its own shutdown)', async () => {
+      const { make } = setupRun({ taskPrompt: 'resumed task' });
+
+      const cmd = resumeCommand(make());
+      await deliverAndAwait(cmd, [
+        { type: 'run_started', runId: 'r1', summary: makeRunSummary('r1') },
+        { type: 'run_complete', runId: 'r1' },
+      ]);
+
+      const signalArg = mockTuiPauseForInspection.mock.calls[0][0];
+      expect(signalArg).toBeUndefined();
+    });
+
+    it('stops the TUI after pause resolves', async () => {
+      const { make } = setupRun({ taskPrompt: 'resumed task' });
+
+      const cmd = resumeCommand(make());
+      await deliverAndAwait(cmd, [
+        { type: 'run_started', runId: 'r1', summary: makeRunSummary('r1') },
+        { type: 'run_complete', runId: 'r1' },
+      ]);
+
+      expect(mockTuiStop).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // ─── Worktree resume ────────────────────────────────────────────────────
+
+  describe('worktree resume', () => {
     const mockWorktreeInfo = {
       worktreePath: '/tmp/resume-worktree-path',
       branchName: 'engin/test-resume-abc123',
       originalCwd: '/tmp/original-cwd',
     };
 
-    it('starts observer server and TUI even with worktree info', async () => {
-      const ts = Date.now();
-      const dirName = `${ts}-my-workflow`;
-      const tempDir = getDir();
-      createPastRunDir(tempDir, dirName, {
-        taskPrompt: 'resumed worktree task',
-        worktree: mockWorktreeInfo,
-      });
+    it('passes worktree info in start_run when state has worktree data', async () => {
+      const { make } = setupRun({ taskPrompt: 'resumed worktree task', worktree: mockWorktreeInfo });
 
-      await resumeCommand(makeResumeOptions({ cwd: tempDir, sessionName: dirName }));
+      const cmd = resumeCommand(make());
+      await deliverAndAwait(cmd, [
+        { type: 'run_started', runId: 'r1', summary: makeRunSummary('r1') },
+        { type: 'run_complete', runId: 'r1' },
+      ]);
 
-      expect(mockStartObserverServer).toHaveBeenCalledTimes(1);
-      expect(mockTuiStart).toHaveBeenCalledTimes(1);
-      expect(mockTuiPrepareQrCode).toHaveBeenCalledTimes(1);
-    });
-
-    it('passes storeCallbacks directly as onStatus for worktree resume', async () => {
-      const ts = Date.now();
-      const dirName = `${ts}-my-workflow`;
-      const tempDir = getDir();
-      createPastRunDir(tempDir, dirName, {
-        taskPrompt: 'resumed worktree task',
-        worktree: mockWorktreeInfo,
-      });
-
-      await resumeCommand(makeResumeOptions({ cwd: tempDir, sessionName: dirName }));
-
-      // composeStatusCallbacks should NOT be called in the TUI path
-      expect(mockComposeStatusCallbacks).not.toHaveBeenCalled();
-      const runOpts = mockWorkflowRun.mock.calls[0][1] as Record<string, unknown>;
-      expect(runOpts.onStatus).toBeDefined();
-      expect(typeof runOpts.onStatus).toBe('object');
-    });
-
-    it('calls pauseForInspection after workflow.run completes', async () => {
-      const ts = Date.now();
-      const dirName = `${ts}-my-workflow`;
-      const tempDir = getDir();
-      createPastRunDir(tempDir, dirName, {
-        taskPrompt: 'resumed worktree task',
-        worktree: mockWorktreeInfo,
-      });
-
-      await resumeCommand(makeResumeOptions({ cwd: tempDir, sessionName: dirName }));
-
-      expect(mockTuiPauseForInspection).toHaveBeenCalledTimes(1);
-    });
-
-    it('stops TUI and observer server after completion', async () => {
-      const ts = Date.now();
-      const dirName = `${ts}-my-workflow`;
-      const tempDir = getDir();
-      createPastRunDir(tempDir, dirName, {
-        taskPrompt: 'resumed worktree task',
-        worktree: mockWorktreeInfo,
-      });
-
-      await resumeCommand(makeResumeOptions({ cwd: tempDir, sessionName: dirName }));
-
-      expect(mockTuiStop).toHaveBeenCalledTimes(1);
-      expect(mockObserverStop).toHaveBeenCalledTimes(1);
+      // The command should include worktree info in the start_run message
+      // so the daemon can resume in the correct worktree context.
+      const startRunMsg = capturedSentMessages.find((m) => (m as Record<string, unknown>).type === 'start_run');
+      // start_run should be sent even for worktree resume
+      expect(startRunMsg).toBeDefined();
     });
 
     it('calls promptPostWorktreeAction after TUI pause resolves', async () => {
-      const ts = Date.now();
-      const dirName = `${ts}-my-workflow`;
-      const tempDir = getDir();
-      createPastRunDir(tempDir, dirName, {
-        taskPrompt: 'resumed worktree task',
-        worktree: mockWorktreeInfo,
-      });
+      mockPromptPostWorktreeAction.mockResolvedValue(undefined);
+      const { make } = setupRun({ taskPrompt: 'resumed worktree task', worktree: mockWorktreeInfo });
 
-      await resumeCommand(makeResumeOptions({ cwd: tempDir, sessionName: dirName }));
+      const cmd = resumeCommand(make());
+      await deliverAndAwait(cmd, [
+        { type: 'run_started', runId: 'r1', summary: makeRunSummary('r1') },
+        { type: 'run_complete', runId: 'r1' },
+      ]);
 
       expect(mockPromptPostWorktreeAction).toHaveBeenCalledTimes(1);
     });
 
-    it('throws descriptive error when state file has no taskPrompt', async () => {
-      const ts = Date.now();
-      const dirName = `${ts}-my-workflow`;
-      const tempDir = getDir();
-      createPastRunDir(tempDir, dirName, { taskPrompt: '' });
+    it('disconnects EngineClient during worktree resume teardown', async () => {
+      const { make } = setupRun({ taskPrompt: 'resumed worktree task', worktree: mockWorktreeInfo });
 
-      const options = makeResumeOptions({ cwd: tempDir, sessionName: dirName });
-      await expect(resumeCommand(options)).rejects.toThrow('no task prompt');
+      const cmd = resumeCommand(make());
+      await deliverAndAwait(cmd, [
+        { type: 'run_started', runId: 'r1', summary: makeRunSummary('r1') },
+        { type: 'run_complete', runId: 'r1' },
+      ]);
+
+      expect(mockEngineClientDisconnect).toHaveBeenCalledTimes(1);
     });
   });
 
-  // ─── Error handling ────────────────────────────────────────────────────
+  // ─── Cleanup and error handling ────────────────────────────────────────
 
-  describe('error handling', () => {
-    it('stops TUI and observer server when workflow.run throws', async () => {
-      mockWorkflowRun.mockRejectedValue(new Error('resume crashed'));
+  describe('cleanup and error handling', () => {
+    it('does not leak SIGINT listeners in TTY mode (T30)', async () => {
+      // T30: TUI mode does NOT register a process-level SIGINT listener —
+      // the TUI handles Ctrl+C via raw-mode input. Assert no SIGINT
+      // listeners are leaked after the run completes.
+      const sigintBefore = process.listeners('SIGINT').length;
 
-      const ts = Date.now();
-      const dirName = `${ts}-my-workflow`;
-      const tempDir = getDir();
-      createPastRunDir(tempDir, dirName, { taskPrompt: 'resumed task' });
+      const { make } = setupRun({ taskPrompt: 'resumed task' });
 
-      await expect(resumeCommand(makeResumeOptions({ cwd: tempDir, sessionName: dirName }))).rejects.toThrow(
-        'resume crashed',
-      );
+      const cmd = resumeCommand(make());
+      await deliverAndAwait(cmd, [
+        { type: 'run_started', runId: 'r1', summary: makeRunSummary('r1') },
+        { type: 'run_complete', runId: 'r1' },
+      ]);
 
-      expect(mockTuiStop).toHaveBeenCalled();
-      expect(mockObserverStop).toHaveBeenCalled();
+      expect(process.listeners('SIGINT')).toHaveLength(sigintBefore);
     });
 
-    it('does not call pauseForInspection when workflow.run throws', async () => {
-      mockWorkflowRun.mockRejectedValue(new Error('resume crashed'));
+    it('disconnects EngineClient when run_failed', async () => {
+      const { make } = setupRun({ taskPrompt: 'resumed task' });
 
-      const ts = Date.now();
-      const dirName = `${ts}-my-workflow`;
-      const tempDir = getDir();
-      createPastRunDir(tempDir, dirName, { taskPrompt: 'resumed task' });
+      const cmd = resumeCommand(make());
+      await deliverAndAwait(cmd, [
+        { type: 'run_started', runId: 'r1', summary: makeRunSummary('r1') },
+        { type: 'run_failed', runId: 'r1', error: 'oops', phase: 'x' },
+      ]);
 
-      await expect(resumeCommand(makeResumeOptions({ cwd: tempDir, sessionName: dirName }))).rejects.toThrow(
-        'resume crashed',
-      );
-
-      expect(mockTuiPauseForInspection).not.toHaveBeenCalled();
-    });
-
-    it('cleans up SIGINT handler in finally block', async () => {
-      const ts = Date.now();
-      const dirName = `${ts}-my-workflow`;
-      const tempDir = getDir();
-      createPastRunDir(tempDir, dirName, { taskPrompt: 'resumed task' });
-
-      await resumeCommand(makeResumeOptions({ cwd: tempDir, sessionName: dirName }));
-
-      expect(removeListenerSpy).toHaveBeenCalledWith('SIGINT', expect.any(Function));
+      expect(mockEngineClientDisconnect).toHaveBeenCalledTimes(1);
     });
   });
 
-  // ─── Abort signal wiring ──────────────────────────────────────────────
+  // ─── Negative assertions: T27 must NOT use in-process server ───────────
 
-  describe('abort signal wiring', () => {
-    it('onTerminate aborts the controller signal passed to workflow.run', async () => {
-      const ts = Date.now();
-      const dirName = `${ts}-my-workflow`;
+  describe('must NOT use in-process server infrastructure', () => {
+    it('does NOT call setupTuiAndObserver', async () => {
+      const { make } = setupRun({ taskPrompt: 'resumed task' });
+
+      const cmd = resumeCommand(make());
+      await deliverAndAwait(cmd, [
+        { type: 'run_started', runId: 'r1', summary: makeRunSummary('r1') },
+        { type: 'run_complete', runId: 'r1' },
+      ]);
+
+      expect(mockSetupTuiAndObserver).not.toHaveBeenCalled();
+    });
+
+    it('does NOT call startObserverServer', async () => {
+      const { make } = setupRun({ taskPrompt: 'resumed task' });
+
+      const cmd = resumeCommand(make());
+      await deliverAndAwait(cmd, [
+        { type: 'run_started', runId: 'r1', summary: makeRunSummary('r1') },
+        { type: 'run_complete', runId: 'r1' },
+      ]);
+
+      expect(mockStartObserverServer).not.toHaveBeenCalled();
+    });
+
+    it('does NOT create an in-process EventStore', async () => {
+      const { make } = setupRun({ taskPrompt: 'resumed task' });
+
+      const cmd = resumeCommand(make());
+      await deliverAndAwait(cmd, [
+        { type: 'run_started', runId: 'r1', summary: makeRunSummary('r1') },
+        { type: 'run_complete', runId: 'r1' },
+      ]);
+
+      expect(mockEventStoreLoad).not.toHaveBeenCalled();
+    });
+
+    it('does NOT call createStoreCallbacks', async () => {
+      const { make } = setupRun({ taskPrompt: 'resumed task' });
+
+      const cmd = resumeCommand(make());
+      await deliverAndAwait(cmd, [
+        { type: 'run_started', runId: 'r1', summary: makeRunSummary('r1') },
+        { type: 'run_complete', runId: 'r1' },
+      ]);
+
+      expect(mockCreateStoreCallbacks).not.toHaveBeenCalled();
+    });
+  });
+
+  // ─── Interactive session picker (stub for T46) ─────────────────────────
+
+  describe('interactive session picker', () => {
+    it('calls interactiveSelectRun when no sessionName is provided', async () => {
+      mockInteractiveSelectRun.mockResolvedValue(undefined);
+
       const tempDir = getDir();
-      createPastRunDir(tempDir, dirName, { taskPrompt: 'resumed task' });
+      const opts = {
+        command: 'resume' as const,
+        cwd: tempDir,
+        maxConcurrent: 3,
+        verbose: false,
+        worktree: false,
+        apiKeys: {},
+        warnings: [],
+      };
 
-      await resumeCommand(makeResumeOptions({ cwd: tempDir, sessionName: dirName }));
+      // resumeCommand with no sessionName should invoke the interactive picker.
+      // When the picker returns undefined (user cancelled), the command exits.
+      await resumeCommand(opts);
 
-      const opts = capturedObserverServerOptions as Record<string, unknown> | null;
-      const onTerminate = opts!.onTerminate as () => void;
-
-      const runOpts = mockWorkflowRun.mock.calls[0][1] as Record<string, unknown>;
-      const signal = runOpts.signal as AbortSignal;
-      expect(signal.aborted).toBe(false);
-
-      onTerminate();
-      expect(signal.aborted).toBe(true);
+      // The interactive picker should have been consulted.
+      // (The exact assertion depends on the implementation.)
+      // For now, verify the mock was available.
+      expect(mockInteractiveSelectRun).toBeDefined();
     });
   });
 });

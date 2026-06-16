@@ -1,9 +1,9 @@
 /* eslint-disable no-control-regex -- tests intentionally match ANSI escape codes */
+import type { AgentEntity, LogEntry, TaskEntity, WorkflowProjection } from '@engin/shared';
+import { createInitialProjection } from '@engin/shared';
 import { describe, expect, it, spyOn } from 'bun:test';
-import type { AgentEntity, LogEntry, TaskEntity, WorkflowProjection } from '../../../src/tracking/event-types.js';
-import { createInitialProjection } from '../../../src/tracking/event-types.js';
-import { Dashboard } from '../../../src/tui/components/dashboard.js';
-import { stripAnsi } from '../../../src/tui/theme.js';
+import { Dashboard } from '../../../packages/tui/src/components/dashboard.js';
+import { stripAnsi } from '../../../packages/tui/src/theme.js';
 
 const WIDTH = 80;
 

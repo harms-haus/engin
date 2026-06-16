@@ -7,7 +7,7 @@ import {
   loadProfiles,
   loadProfilesFromDirs,
   parseProfile,
-} from '../../src/core/profile.js';
+} from '../../packages/engine/src/core/profile.js';
 import { useTempDir } from '../helpers/use-temp-dir.js';
 
 // ─── Helper to create a temp directory for each test ────────────────────────

@@ -49,7 +49,7 @@ mock.module('@earendil-works/pi-ai', () => ({
 
 // ─── Imports (after mocks) ─────────────────────────────────────────────────
 
-import { createHarness } from '../../src/core/harness-factory.ts';
+import { createHarness } from '../../packages/engine/src/core/harness-factory.ts';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 

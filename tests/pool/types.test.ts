@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'bun:test';
-import type { Task } from '../../src/core/types.js';
-import type { StepDefinition } from '../../src/pool/types.js';
-import { TaskTracker } from '../../src/tracking/task-status.js';
+import type { Task } from '../../packages/engine/src/core/types.js';
+import type { StepDefinition } from '../../packages/engine/src/pool/types.js';
+import { TaskTracker } from '../../packages/engine/src/tracking/task-status.js';
 
 // ─── getStepsForTask with TaskTracker integration ───────────────────────────
 

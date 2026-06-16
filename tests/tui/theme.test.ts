@@ -1,5 +1,5 @@
+import type { TaskStatus } from '@engin/shared';
 import { describe, expect, it } from 'bun:test';
-import type { TaskStatus } from '../../src/core/types.js';
 import {
   bgDark,
   bgStatusBar,
@@ -15,7 +15,7 @@ import {
   statusColor,
   statusIcon,
   yellow,
-} from '../../src/tui/theme.js';
+} from '../../packages/tui/src/theme.js';
 
 describe('ANSI style functions', () => {
   it('cyan wraps with 36m and resets', () => {

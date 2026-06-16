@@ -1,30 +1,30 @@
 import { afterAll, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { z } from 'zod';
-import type { AgentProfile } from '../../src/core/types.js';
+import type { AgentProfile } from '../../packages/engine/src/core/types.js';
 import { makeMockSession } from '../helpers/make-session.js';
 import { makeTask } from '../helpers/make-task.js';
 
 // Capture real modules before mocking
-const realHarnessFactory = Object.assign({}, await import('../../src/core/harness-factory.ts'));
-const realStructuredOutput = Object.assign({}, await import('../../src/core/structured-output.ts'));
+const realHarnessFactory = Object.assign({}, await import('../../packages/engine/src/core/harness-factory.ts'));
+const realStructuredOutput = Object.assign({}, await import('../../packages/engine/src/core/structured-output.ts'));
 
 // ─── Mocks ──────────────────────────────────────────────────────────────────
 
 const mockCreateHarness = mock() as ReturnType<typeof mock> & ((...args: unknown[]) => unknown);
-mock.module('../../src/core/harness-factory.ts', () => ({
+mock.module('../../packages/engine/src/core/harness-factory.ts', () => ({
   createHarness: (...args: unknown[]) => mockCreateHarness(...args),
 }));
 
 const mockPromptForStructured = mock() as ReturnType<typeof mock> & ((...args: unknown[]) => unknown);
-mock.module('../../src/core/structured-output.ts', () => ({
+mock.module('../../packages/engine/src/core/structured-output.ts', () => ({
   promptForStructured: (...args: unknown[]) => mockPromptForStructured(...args),
 }));
 
 // ─── Imports (after mocks) ─────────────────────────────────────────────────
 
-import type { StepExecutionContext } from '../../src/pool/step-execution.js';
-import { runStep } from '../../src/pool/step-execution.ts';
-import type { StepDefinition } from '../../src/pool/types.js';
+import type { StepExecutionContext } from '../../packages/engine/src/pool/step-execution.js';
+import { runStep } from '../../packages/engine/src/pool/step-execution.ts';
+import type { StepDefinition } from '../../packages/engine/src/pool/types.js';
 
 // ─── Test Helpers ───────────────────────────────────────────────────────────
 
@@ -857,6 +857,6 @@ describe('runStep (step-execution module)', () => {
 
 // Restore the real modules so mocks don't leak into other test files.
 afterAll(() => {
-  mock.module('../../src/core/harness-factory.ts', () => realHarnessFactory);
-  mock.module('../../src/core/structured-output.ts', () => realStructuredOutput);
+  mock.module('../../packages/engine/src/core/harness-factory.ts', () => realHarnessFactory);
+  mock.module('../../packages/engine/src/core/structured-output.ts', () => realStructuredOutput);
 });

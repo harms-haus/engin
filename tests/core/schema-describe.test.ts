@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { z } from 'zod';
-import { describeSchema } from '../../src/core/schema-describe.ts';
+import { describeSchema } from '../../packages/engine/src/core/schema-describe.ts';
 
 // ─── describeSchema – basic types ───────────────────────────────────────────
 

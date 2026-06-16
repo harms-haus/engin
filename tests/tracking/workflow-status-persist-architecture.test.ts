@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from 'bun:test';
 import * as fs from 'node:fs/promises';
 import { join } from 'node:path';
-import { WorkflowStatusTracker } from '../../src/tracking/workflow-status.js';
+import { WorkflowStatusTracker } from '../../packages/engine/src/tracking/workflow-status.js';
 import { makeTask } from '../helpers/make-task.js';
 import { useTempDir } from '../helpers/use-temp-dir.js';
 
@@ -19,7 +19,16 @@ describe('WorkflowStatusTracker – persist architecture (bounded promise chain)
 
   describe('source code structure', () => {
     it('does NOT have a _savePromise field', async () => {
-      const sourcePath = join(import.meta.dir, '..', '..', 'src', 'tracking', 'workflow-status.ts');
+      const sourcePath = join(
+        import.meta.dir,
+        '..',
+        '..',
+        'packages',
+        'engine',
+        'src',
+        'tracking',
+        'workflow-status.ts',
+      );
       const source = await fs.readFile(sourcePath, 'utf-8');
 
       // The old unbounded chain field must be removed
@@ -29,7 +38,16 @@ describe('WorkflowStatusTracker – persist architecture (bounded promise chain)
     });
 
     it('has a private _doPersist async method', async () => {
-      const sourcePath = join(import.meta.dir, '..', '..', 'src', 'tracking', 'workflow-status.ts');
+      const sourcePath = join(
+        import.meta.dir,
+        '..',
+        '..',
+        'packages',
+        'engine',
+        'src',
+        'tracking',
+        'workflow-status.ts',
+      );
       const source = await fs.readFile(sourcePath, 'utf-8');
 
       // The new bounded method should exist
@@ -37,7 +55,16 @@ describe('WorkflowStatusTracker – persist architecture (bounded promise chain)
     });
 
     it('persistState calls void this._doPersist() instead of chaining promises', async () => {
-      const sourcePath = join(import.meta.dir, '..', '..', 'src', 'tracking', 'workflow-status.ts');
+      const sourcePath = join(
+        import.meta.dir,
+        '..',
+        '..',
+        'packages',
+        'engine',
+        'src',
+        'tracking',
+        'workflow-status.ts',
+      );
       const source = await fs.readFile(sourcePath, 'utf-8');
 
       // Extract persistState method body
@@ -54,7 +81,16 @@ describe('WorkflowStatusTracker – persist architecture (bounded promise chain)
     });
 
     it('dispose() does not reference _savePromise', async () => {
-      const sourcePath = join(import.meta.dir, '..', '..', 'src', 'tracking', 'workflow-status.ts');
+      const sourcePath = join(
+        import.meta.dir,
+        '..',
+        '..',
+        'packages',
+        'engine',
+        'src',
+        'tracking',
+        'workflow-status.ts',
+      );
       const source = await fs.readFile(sourcePath, 'utf-8');
 
       // Find dispose method body
@@ -67,7 +103,16 @@ describe('WorkflowStatusTracker – persist architecture (bounded promise chain)
     });
 
     it('_doPersist has try/catch/finally with _queuedSave retry logic', async () => {
-      const sourcePath = join(import.meta.dir, '..', '..', 'src', 'tracking', 'workflow-status.ts');
+      const sourcePath = join(
+        import.meta.dir,
+        '..',
+        '..',
+        'packages',
+        'engine',
+        'src',
+        'tracking',
+        'workflow-status.ts',
+      );
       const source = await fs.readFile(sourcePath, 'utf-8');
 
       const doPersistStart = source.indexOf('private async _doPersist');
@@ -84,7 +129,16 @@ describe('WorkflowStatusTracker – persist architecture (bounded promise chain)
     });
 
     it('does not have _saveLock removed — the save mutex is preserved', async () => {
-      const sourcePath = join(import.meta.dir, '..', '..', 'src', 'tracking', 'workflow-status.ts');
+      const sourcePath = join(
+        import.meta.dir,
+        '..',
+        '..',
+        'packages',
+        'engine',
+        'src',
+        'tracking',
+        'workflow-status.ts',
+      );
       const source = await fs.readFile(sourcePath, 'utf-8');
 
       // The _saveLock mutex should still be present (it's the second serialization mechanism)
@@ -673,7 +727,16 @@ describe('WorkflowStatusTracker – persist architecture (bounded promise chain)
     it('_doPersist sets _pendingSave before yielding to prevent duplicate save window', async () => {
       // Verify the source code fix: _doPersist must set _pendingSave = true
       // at its start before any await point
-      const sourcePath = join(import.meta.dir, '..', '..', 'src', 'tracking', 'workflow-status.ts');
+      const sourcePath = join(
+        import.meta.dir,
+        '..',
+        '..',
+        'packages',
+        'engine',
+        'src',
+        'tracking',
+        'workflow-status.ts',
+      );
       const source = await fs.readFile(sourcePath, 'utf-8');
 
       // Find _doPersist method body
@@ -856,7 +919,16 @@ describe('WorkflowStatusTracker – persist architecture (bounded promise chain)
     });
 
     it('_pendingSave and _queuedSave are both reset in dispose()', async () => {
-      const sourcePath = join(import.meta.dir, '..', '..', 'src', 'tracking', 'workflow-status.ts');
+      const sourcePath = join(
+        import.meta.dir,
+        '..',
+        '..',
+        'packages',
+        'engine',
+        'src',
+        'tracking',
+        'workflow-status.ts',
+      );
       const source = await fs.readFile(sourcePath, 'utf-8');
 
       // Find dispose method body. Note: attachAutoPersist is defined BEFORE dispose
@@ -871,7 +943,16 @@ describe('WorkflowStatusTracker – persist architecture (bounded promise chain)
     });
 
     it('no _needsSave field remains in the source (renamed to _queuedSave)', async () => {
-      const sourcePath = join(import.meta.dir, '..', '..', 'src', 'tracking', 'workflow-status.ts');
+      const sourcePath = join(
+        import.meta.dir,
+        '..',
+        '..',
+        'packages',
+        'engine',
+        'src',
+        'tracking',
+        'workflow-status.ts',
+      );
       const source = await fs.readFile(sourcePath, 'utf-8');
 
       // The old field name should not appear as a field declaration

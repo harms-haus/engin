@@ -3,38 +3,38 @@
 import { afterAll, beforeEach, describe, expect, it, mock } from 'bun:test';
 import type { ZodType } from 'zod';
 import { z } from 'zod';
-import type { AgentProfile, AgentStatusCallbacks, StatusCallbacks } from '../../src/core/types.js';
+import type { AgentProfile, AgentStatusCallbacks, StatusCallbacks } from '../../packages/engine/src/core/types.js';
 import { makeMockSession } from '../helpers/make-session.js';
 
 // Capture real modules before mocking so we can restore them in afterAll.
 // Without the restore, these relative-path mock.module() registrations leak
 // into sibling test files (harness-factory.subscribe.test.ts,
 // structured-output.test.ts) under CI's parallel scheduling.
-const realProfile = Object.assign({}, await import('../../src/core/profile.js'));
-const realHarnessFactory = Object.assign({}, await import('../../src/core/harness-factory.js'));
-const realStructuredOutput = Object.assign({}, await import('../../src/core/structured-output.js'));
+const realProfile = Object.assign({}, await import('../../packages/engine/src/core/profile.js'));
+const realHarnessFactory = Object.assign({}, await import('../../packages/engine/src/core/harness-factory.js'));
+const realStructuredOutput = Object.assign({}, await import('../../packages/engine/src/core/structured-output.js'));
 
 // ─── Mock Dependencies ─────────────────────────────────────────────────────
 
 const mockLoadProfilesFromDirs = mock() as ReturnType<typeof mock> & ((...args: unknown[]) => unknown);
-mock.module('../../src/core/profile.js', () => ({
+mock.module('../../packages/engine/src/core/profile.js', () => ({
   loadProfilesFromDirs: (...args: unknown[]) => mockLoadProfilesFromDirs(...args),
 }));
 
 const mockCreateHarness = mock() as ReturnType<typeof mock> & ((...args: unknown[]) => unknown);
-mock.module('../../src/core/harness-factory.js', () => ({
+mock.module('../../packages/engine/src/core/harness-factory.js', () => ({
   createHarness: (...args: unknown[]) => mockCreateHarness(...args),
 }));
 
 const mockPromptForStructured = mock() as ReturnType<typeof mock> & ((...args: unknown[]) => unknown);
-mock.module('../../src/core/structured-output.js', () => ({
+mock.module('../../packages/engine/src/core/structured-output.js', () => ({
   promptForStructured: (...args: unknown[]) => mockPromptForStructured(...args),
 }));
 
 // ─── Import after mocks ────────────────────────────────────────────────────
 
-import type { RunStepTaskOptions } from '../../src/core/phase-tasks.js';
-import { runStepTask } from '../../src/core/phase-tasks.js';
+import type { RunStepTaskOptions } from '../../packages/engine/src/core/phase-tasks.js';
+import { runStepTask } from '../../packages/engine/src/core/phase-tasks.js';
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
 
@@ -761,7 +761,7 @@ describe('runStepTask', () => {
 
 // Restore the real modules so mocks don't leak into other test files.
 afterAll(() => {
-  mock.module('../../src/core/profile.js', () => realProfile);
-  mock.module('../../src/core/harness-factory.js', () => realHarnessFactory);
-  mock.module('../../src/core/structured-output.js', () => realStructuredOutput);
+  mock.module('../../packages/engine/src/core/profile.js', () => realProfile);
+  mock.module('../../packages/engine/src/core/harness-factory.js', () => realHarnessFactory);
+  mock.module('../../packages/engine/src/core/structured-output.js', () => realStructuredOutput);
 });

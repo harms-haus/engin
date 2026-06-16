@@ -11,14 +11,14 @@ frontmatter, so you can customise agent behaviour without touching engin's sourc
 
 > engin is a **pure library**. It ships no built-in workflows and no built-in profiles. It
 > provides the building blocks — harness creation, profile loading, structured output, agent
-> loop patterns, the task pool, the event-sourced status store, a TUI dashboard, and a
-> WebSocket observer server — that your workflow scripts compose into pipelines.
+> loop patterns, the task pool, the event-sourced status store, a TUI dashboard, and a WebSocket
+> server — that your workflow scripts compose into pipelines.
 
 ## The rigid hierarchy: workflow → phases → tasks → steps
 
 engin models execution as a **rigid four-level hierarchy**. The structure is enforced by the
 event model and the projection, and it is reflected everywhere — the event stream, the
-read-model, the TUI dashboard, and the web mirror all navigate the same tree.
+read-model, the TUI dashboard, and the web client all navigate the same tree.
 
 - A **Workflow** owns an ordered list of **Phases**. Phases execute one at a time; each phase
   must complete before the next begins.
@@ -67,15 +67,17 @@ See [Event store & status](../reference/event-store.md) and
 - **DAG task dependencies** — tasks declare dependencies; the `TaskTracker` detects cycles and
   serves ready tasks in a deterministic order.
 - **Event-sourced status** — every status change is an append-only `EventRecord`; the
-  in-memory `WorkflowProjection` is derived by a pure reducer. Both the TUI and the web mirror
-  subscribe to the same store.
+  in-memory `WorkflowProjection` is derived by a pure reducer. The TUI and the web client
+  each rebuild the projection from the event stream over WebSocket.
+- **Client/server architecture** — a long-lived engine server hosts concurrent runs; the
+  CLI's TUI and the web UI are both network clients of it.
 - **Full audit trail** — agent starts, ends, decisions, and errors are logged for post-hoc
   analysis.
-- **Live observability** — a terminal dashboard (TUI) and a browser/mobile web mirror both
-  render the same projection in real time over a snapshot/delta WebSocket protocol.
+- **Live observability** — a terminal dashboard (TUI) and a browser/mobile web client both
+  render the same projection in real time over a multi-run WebSocket protocol (snapshot/delta/resync).
 
 ## Where to go next
 
-- [Architecture](architecture.md) — how the source is layered and how status flows.
+- [Architecture](architecture.md) — the client/server process model, the package layout, and how status flows.
 - [Getting started](../guides/getting-started.md) — install and run.
 - [Building a new workflow](../guides/building-workflows.md) — author your first workflow.

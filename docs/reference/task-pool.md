@@ -1,6 +1,6 @@
 # Task pool & execution
 
-The pool layer (`src/pool/`) executes tasks concurrently. A `LanePool` spins up N workers
+The pool layer (`packages/engine/src/pool/`) executes tasks concurrently. A `LanePool` spins up N workers
 ("lanes") that each claim tasks from a shared `TaskTracker` and process them through a
 configurable sequence of steps, with reviewer feedback loops. Every step is one agent.
 
@@ -9,7 +9,7 @@ and retries, and the prompt builder.
 
 ## `TaskTracker` — the write model
 
-Source: `src/tracking/task-status.ts`. Manages a collection of `Task` objects with a DAG of
+Source: `packages/engine/src/tracking/task-status.ts`. Manages a collection of `Task` objects with a DAG of
 dependencies. Enforces state transitions and detects cycles. Extends `EventEmitter`.
 
 ```typescript
@@ -93,7 +93,7 @@ the projection (read model). Both are correct for their audience. See
 
 ## `LanePool` — the executor
 
-Source: `src/pool/lane-pool.ts`.
+Source: `packages/engine/src/pool/lane-pool.ts`.
 
 ```typescript
 class LanePool {
@@ -141,7 +141,7 @@ consecutive timeouts.
 
 ## Step execution and retries
 
-Source: `src/pool/linear-steps-runner.ts` and `src/pool/step-execution.ts`.
+Source: `packages/engine/src/pool/linear-steps-runner.ts` and `packages/engine/src/pool/step-execution.ts`.
 
 ### Linear step execution (linearStepsRunner)
 
@@ -205,7 +205,7 @@ while keeping the pool, DAG, event store, and TUI unchanged.
 
 ### `TaskRunner` interface
 
-Source: `src/pool/types.ts`.
+Source: `packages/engine/src/pool/types.ts`.
 
 ```typescript
 type TaskRunner = (ctx: TaskRunnerContext) => Promise<TaskOutcome>;
@@ -231,7 +231,7 @@ If neither is provided, the lane throws at runtime.
 
 ### `TaskRunnerContext`
 
-Source: `src/pool/types.ts`.
+Source: `packages/engine/src/pool/types.ts`.
 
 ```typescript
 interface TaskRunnerContext {
@@ -260,7 +260,7 @@ interface TaskRunnerContext {
 
 ### `TaskOutcome`
 
-Source: `src/pool/types.ts`.
+Source: `packages/engine/src/pool/types.ts`.
 
 ```typescript
 type TaskOutcome = { status: 'completed'; output?: unknown } | { status: 'failed'; error?: string; feedback?: string };
@@ -298,7 +298,7 @@ on every exit path (success, failure, error). Sessions are also registered on
 
 ### Built-in runners
 
-All factories are in `src/pool/`.
+All factories are in `packages/engine/src/pool/`.
 
 ---
 
@@ -440,7 +440,7 @@ prompt content, title, file types, or any other property.
 
 ## Prompt builder
 
-Source: `src/pool/prompt-builder.ts`. `buildPrompt(task, step, cwd)` assembles the prompt:
+Source: `packages/engine/src/pool/prompt-builder.ts`. `buildPrompt(task, step, cwd)` assembles the prompt:
 
 1. Header: `## Task: <title>`, `## Step: <step.name>`.
 2. For each path in `task.files`:
@@ -456,7 +456,7 @@ all items)` with each entry as `Attempt <n+1>: <feedback>`.
 
 ## Validation and severity
 
-Source: `src/pool/validation.ts` and `src/pool/severity.ts`.
+Source: `packages/engine/src/pool/validation.ts` and `packages/engine/src/pool/severity.ts`.
 
 - **`assertSafeName(value, label)`** — Throws unless `value` matches `^[a-zA-Z0-9_-]+$`. Used
   on task IDs and step names that appear in file paths.

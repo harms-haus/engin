@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
-import * as sessionSelector from '../../src/cli/session-selector.js';
+import * as sessionSelector from '../../packages/cli/src/cli/session-selector.js';
+import type { RunSummary } from '../../packages/shared/src/protocol-types.js';
 import { useTempDir } from '../helpers/use-temp-dir.js';
 
 // ─── Shared helpers ────────────────────────────────────────────────────────
@@ -19,11 +20,27 @@ function createPastRun(cwd: string, dirName: string, hasStateFile = false) {
   }
 }
 
+/**
+ * Create a mock RunSummary for testing the active-run section of the picker.
+ * Each call produces a unique runId based on the current timestamp.
+ */
+function createMockRunSummary(overrides: Partial<RunSummary> = {}): RunSummary {
+  return {
+    runId: `${Date.now()}-${Math.random().toString(36).slice(2)}-test-wf`,
+    cwd: '/tmp/test',
+    workflowName: 'test-workflow',
+    taskPrompt: 'test task',
+    status: 'running',
+    startedAt: new Date().toISOString(),
+    ...overrides,
+  };
+}
+
 // ─── Module exports ────────────────────────────────────────────────────────
 
 describe('session-selector module exports', () => {
   it('exports all four expected functions', async () => {
-    const mod = await import('../../src/cli/session-selector.js');
+    const mod = await import('../../packages/cli/src/cli/session-selector.js');
     expect(typeof mod.formatRelativeTime).toBe('function');
     expect(typeof mod.readLineFromStdin).toBe('function');
     expect(typeof mod.interactiveSelectRun).toBe('function');
@@ -295,7 +312,7 @@ describe('readLineFromStdin', () => {
   });
 });
 
-// ─── interactiveSelectRun ──────────────────────────────────────────────────
+// ─── interactiveSelectRun (existing — updated for PickerSelection) ──────────
 
 describe('interactiveSelectRun', () => {
   const { getDir } = useTempDir();
@@ -323,7 +340,9 @@ describe('interactiveSelectRun', () => {
     expect(logSpy).toHaveBeenCalledWith('No past workflow runs found.');
   });
 
-  it('returns selected run when user enters valid number', async () => {
+  // ── Updated: return type is now PickerSelection ────────────────────────
+
+  it('returns historical selection when user enters valid number', async () => {
     const dir = getDir();
     const ts = Date.now();
     createPastRun(dir, `${ts}-develop`, true);
@@ -333,12 +352,19 @@ describe('interactiveSelectRun', () => {
 
     const result = await sessionSelector.interactiveSelectRun(dir);
     expect(result).toBeDefined();
-    expect(result!.dirName).toBe(`${ts}-develop`);
-    expect(result!.workflowName).toBe('develop');
-    expect(result!.hasStateFile).toBe(true);
+    // TDD RED: New return type is PickerSelection with discriminated union.
+    // Current impl returns PastRunEntry directly (no `type` field) → assertion fails.
+    expect(result).toHaveProperty('type', 'historical');
+    expect((result as any).pastRun).toEqual(
+      expect.objectContaining({
+        dirName: `${ts}-develop`,
+        workflowName: 'develop',
+        hasStateFile: true,
+      }),
+    );
   });
 
-  it('returns second run when user enters 2', async () => {
+  it('returns historical selection for second run when user enters 2', async () => {
     const dir = getDir();
     const ts = Date.now();
     createPastRun(dir, `${ts}-develop`, true);
@@ -348,9 +374,15 @@ describe('interactiveSelectRun', () => {
 
     const result = await sessionSelector.interactiveSelectRun(dir);
     expect(result).toBeDefined();
-    expect(result!.dirName).toBe(`${ts - 1000}-review`);
-    expect(result!.workflowName).toBe('review');
-    expect(result!.hasStateFile).toBe(false);
+    // TDD RED: Same return type update needed.
+    expect(result).toHaveProperty('type', 'historical');
+    expect((result as any).pastRun).toEqual(
+      expect.objectContaining({
+        dirName: `${ts - 1000}-review`,
+        workflowName: 'review',
+        hasStateFile: false,
+      }),
+    );
   });
 
   it('returns undefined when user presses Enter to cancel', async () => {
@@ -388,7 +420,13 @@ describe('interactiveSelectRun', () => {
 
     const result = await sessionSelector.interactiveSelectRun(dir);
     expect(result).toBeDefined();
-    expect(result!.dirName).toBe(`${ts}-develop`);
+    // TDD RED: Updated return type assertion.
+    expect(result).toHaveProperty('type', 'historical');
+    expect((result as any).pastRun).toEqual(
+      expect.objectContaining({
+        dirName: `${ts}-develop`,
+      }),
+    );
     expect(readLineSpy).toHaveBeenCalledTimes(2);
 
     // Check that invalid selection message was logged
@@ -585,5 +623,499 @@ describe('interactiveSelectRun', () => {
     expect(runLine).toBeDefined();
     // Should contain a relative time pattern like "0s ago" or similar
     expect(runLine![0]).toMatch(/\d+[smhd] ago\)/);
+  });
+});
+
+// ─── interactiveSelectRun — Two-source picker (active + historical) ────────
+//
+// Tests for the NEW behavior: the picker draws from TWO sources:
+//   1. ACTIVE RUNS (top) — queried from the server via EngineClient
+//   2. HISTORICAL RUNS (below) — disk scan of .engin/work/
+//
+// These tests mock `queryActiveRuns` (a new export that the implement phase
+// will add) to control what the server returns. When the function doesn't
+// exist yet, the spyOn setup will throw — that IS the RED failure signal.
+//
+// The second parameter to interactiveSelectRun is the EngineClient (or null
+// when the server is down). The return type changes from PastRunEntry to:
+//   PickerSelection =
+//     | { type: 'active';  runSummary: RunSummary }
+//     | { type: 'historical'; pastRun: PastRunEntry }
+
+describe('interactiveSelectRun — two-source picker', () => {
+  const { getDir } = useTempDir();
+
+  let logSpy: ReturnType<typeof spyOn>;
+  let writeSpy: ReturnType<typeof spyOn>;
+  let readLineSpy: ReturnType<typeof spyOn>;
+  let queryActiveRunsSpy: ReturnType<typeof spyOn>;
+
+  beforeEach(() => {
+    logSpy = spyOn(console, 'log').mockImplementation(() => {});
+    writeSpy = spyOn(process.stdout, 'write').mockImplementation(() => true);
+    readLineSpy = spyOn(sessionSelector, 'readLineFromStdin');
+    // TDD RED: queryActiveRuns does not exist yet on the module.
+    // This spyOn will throw, causing all tests in this block to fail at setup.
+    // That is the expected RED signal — the implement phase will add the export.
+    queryActiveRunsSpy = spyOn(sessionSelector as any, 'queryActiveRuns').mockResolvedValue([]);
+  });
+
+  afterEach(() => {
+    logSpy.mockRestore();
+    writeSpy.mockRestore();
+    readLineSpy.mockRestore();
+    queryActiveRunsSpy.mockRestore();
+  });
+
+  // ─── 1. Active runs shown first ──────────────────────────────────────
+
+  describe('active runs shown first', () => {
+    it('displays active runs above historical runs in the list', async () => {
+      const dir = getDir();
+      const ts = Date.now();
+      const activeRun = createMockRunSummary({
+        runId: `${ts}-active-wf`,
+        workflowName: 'active-wf',
+        status: 'running',
+      });
+      // Disk run with a newer timestamp than the active run's simulated time
+      createPastRun(dir, `${ts - 5000}-disk-wf`, true);
+
+      queryActiveRunsSpy.mockResolvedValueOnce([activeRun]);
+      readLineSpy.mockResolvedValueOnce(undefined); // display then cancel
+
+      await sessionSelector.interactiveSelectRun(dir, null);
+
+      // Collect all logged lines that mention either run
+      const allLogs = logSpy.mock.calls.map((c) => c[0]).filter(Boolean);
+      const activeLineIdx = allLogs.findIndex((l) => typeof l === 'string' && l.includes('active-wf'));
+      const diskLineIdx = allLogs.findIndex((l) => typeof l === 'string' && l.includes('disk-wf'));
+
+      expect(activeLineIdx).toBeGreaterThanOrEqual(0);
+      expect(diskLineIdx).toBeGreaterThanOrEqual(0);
+      // Active run must appear BEFORE the disk run
+      expect(activeLineIdx).toBeLessThan(diskLineIdx);
+    });
+
+    it('shows green marker (🟢) for every active run', async () => {
+      const dir = getDir();
+      const activeRun = createMockRunSummary({ status: 'running', workflowName: 'green-wf' });
+      queryActiveRunsSpy.mockResolvedValueOnce([activeRun]);
+      readLineSpy.mockResolvedValueOnce(undefined);
+
+      await sessionSelector.interactiveSelectRun(dir, null);
+
+      const runLine = logSpy.mock.calls.find((c) => typeof c[0] === 'string' && c[0].includes('green-wf'));
+      expect(runLine).toBeDefined();
+      expect(runLine![0]).toContain('🟢');
+    });
+
+    it('shows RUNNING label for active runs with status "running"', async () => {
+      const dir = getDir();
+      const activeRun = createMockRunSummary({ status: 'running', workflowName: 'run-wf' });
+      queryActiveRunsSpy.mockResolvedValueOnce([activeRun]);
+      readLineSpy.mockResolvedValueOnce(undefined);
+
+      await sessionSelector.interactiveSelectRun(dir, null);
+
+      const runLine = logSpy.mock.calls.find((c) => typeof c[0] === 'string' && c[0].includes('run-wf'));
+      expect(runLine).toBeDefined();
+      expect(runLine![0]).toContain('RUNNING');
+    });
+
+    it('shows COMPLETE label for active runs with status "complete"', async () => {
+      const dir = getDir();
+      const completeRun = createMockRunSummary({ status: 'complete', workflowName: 'done-wf' });
+      queryActiveRunsSpy.mockResolvedValueOnce([completeRun]);
+      readLineSpy.mockResolvedValueOnce(undefined);
+
+      await sessionSelector.interactiveSelectRun(dir, null);
+
+      const runLine = logSpy.mock.calls.find((c) => typeof c[0] === 'string' && c[0].includes('done-wf'));
+      expect(runLine).toBeDefined();
+      expect(runLine![0]).toContain('COMPLETE');
+    });
+
+    it('shows FAILED label for active runs with status "failed"', async () => {
+      const dir = getDir();
+      const failedRun = createMockRunSummary({ status: 'failed', workflowName: 'fail-wf' });
+      queryActiveRunsSpy.mockResolvedValueOnce([failedRun]);
+      readLineSpy.mockResolvedValueOnce(undefined);
+
+      await sessionSelector.interactiveSelectRun(dir, null);
+
+      const runLine = logSpy.mock.calls.find((c) => typeof c[0] === 'string' && c[0].includes('fail-wf'));
+      expect(runLine).toBeDefined();
+      expect(runLine![0]).toContain('FAILED');
+    });
+
+    it('numbers active runs starting from 1', async () => {
+      const dir = getDir();
+      const activeRun1 = createMockRunSummary({ workflowName: 'first-wf' });
+      const activeRun2 = createMockRunSummary({ workflowName: 'second-wf' });
+      queryActiveRunsSpy.mockResolvedValueOnce([activeRun1, activeRun2]);
+      readLineSpy.mockResolvedValueOnce(undefined);
+
+      await sessionSelector.interactiveSelectRun(dir, null);
+
+      // Check that "  1" appears before "first-wf" and "  2" before "second-wf"
+      const allLogs = logSpy.mock.calls.map((c) => c[0]).filter(Boolean);
+      const firstLine = allLogs.find((l) => typeof l === 'string' && l.includes('first-wf'));
+      const secondLine = allLogs.find((l) => typeof l === 'string' && l.includes('second-wf'));
+      expect(firstLine).toBeDefined();
+      expect(secondLine).toBeDefined();
+      expect(firstLine).toMatch(/^\s+1\s/);
+      expect(secondLine).toMatch(/^\s+2\s/);
+    });
+  });
+
+  // ─── 2. Historical runs below active ─────────────────────────────────
+
+  describe('historical runs below active', () => {
+    it('shows disk runs that are not active on the server', async () => {
+      const dir = getDir();
+      const ts = Date.now();
+      const activeRun = createMockRunSummary({ runId: `${ts}-active-wf` });
+      createPastRun(dir, `${ts - 1000}-disk-only-wf`, true);
+
+      queryActiveRunsSpy.mockResolvedValueOnce([activeRun]);
+      readLineSpy.mockResolvedValueOnce(undefined);
+
+      await sessionSelector.interactiveSelectRun(dir, null);
+
+      // Disk-only run should appear in the output
+      const diskLine = logSpy.mock.calls.find((c) => typeof c[0] === 'string' && c[0].includes('disk-only-wf'));
+      expect(diskLine).toBeDefined();
+    });
+
+    it('shows historical runs with 💾 indicator for resumable state', async () => {
+      const dir = getDir();
+      createPastRun(dir, `${Date.now()}-disk-wf`, true);
+      queryActiveRunsSpy.mockResolvedValueOnce([]);
+      readLineSpy.mockResolvedValueOnce(undefined);
+
+      await sessionSelector.interactiveSelectRun(dir, null);
+
+      const runLine = logSpy.mock.calls.find((c) => typeof c[0] === 'string' && c[0].includes('disk-wf'));
+      expect(runLine).toBeDefined();
+      expect(runLine![0]).toContain('💾');
+    });
+
+    it('numbers historical runs continuing after active run numbers', async () => {
+      const dir = getDir();
+      const ts = Date.now();
+      const activeRun = createMockRunSummary({ runId: `${ts}-a-wf`, workflowName: 'a-wf' });
+      createPastRun(dir, `${ts - 1000}-h-wf`, true);
+
+      queryActiveRunsSpy.mockResolvedValueOnce([activeRun]);
+      readLineSpy.mockResolvedValueOnce(undefined);
+
+      await sessionSelector.interactiveSelectRun(dir, null);
+
+      // Active run = item 1, historical run = item 2
+      const allLogs = logSpy.mock.calls.map((c) => c[0]).filter(Boolean);
+      const hLine = allLogs.find((l) => typeof l === 'string' && l.includes('h-wf'));
+      expect(hLine).toBeDefined();
+      expect(hLine).toMatch(/^\s+2\s/);
+    });
+
+    it('shows selection prompt range covering all items', async () => {
+      const dir = getDir();
+      const ts = Date.now();
+      const activeRun1 = createMockRunSummary({ workflowName: 'a1' });
+      const activeRun2 = createMockRunSummary({ workflowName: 'a2' });
+      createPastRun(dir, `${ts - 1000}-h1`, true);
+      createPastRun(dir, `${ts - 2000}-h2`, true);
+
+      queryActiveRunsSpy.mockResolvedValueOnce([activeRun1, activeRun2]);
+      readLineSpy.mockResolvedValueOnce('1');
+
+      await sessionSelector.interactiveSelectRun(dir, null);
+
+      // 2 active + 2 historical = 4 items total
+      expect(writeSpy).toHaveBeenCalledWith('Select a run (1-4) or press Enter to cancel: ');
+    });
+  });
+
+  // ─── 3. Dedup ────────────────────────────────────────────────────────
+
+  describe('dedup', () => {
+    it('shows active run ONLY in the active section when also on disk', async () => {
+      const dir = getDir();
+      const ts = Date.now();
+      const sharedDirName = `${ts}-shared-wf`;
+
+      // Create the same run on disk AND have it active on server
+      createPastRun(dir, sharedDirName, true);
+      const activeRun = createMockRunSummary({
+        runId: sharedDirName,
+        workflowName: 'shared-wf',
+      });
+      queryActiveRunsSpy.mockResolvedValueOnce([activeRun]);
+      readLineSpy.mockResolvedValueOnce(undefined);
+
+      await sessionSelector.interactiveSelectRun(dir, null);
+
+      // The run dirName should appear exactly once in the output
+      const runLines = logSpy.mock.calls.filter((c) => typeof c[0] === 'string' && c[0].includes(sharedDirName));
+      expect(runLines).toHaveLength(1);
+      // And it should be in the active section (has 🟢 marker)
+      expect(runLines[0][0]).toContain('🟢');
+    });
+
+    it('does NOT dedup when a disk run is NOT active on the server', async () => {
+      const dir = getDir();
+      const ts = Date.now();
+      const diskDirName = `${ts}-disk-only-wf`;
+      createPastRun(dir, diskDirName, true);
+
+      // No active runs on server
+      queryActiveRunsSpy.mockResolvedValueOnce([]);
+      readLineSpy.mockResolvedValueOnce(undefined);
+
+      await sessionSelector.interactiveSelectRun(dir, null);
+
+      // Disk run should appear once (in historical section, no 🟢)
+      const runLines = logSpy.mock.calls.filter((c) => typeof c[0] === 'string' && c[0].includes(diskDirName));
+      expect(runLines).toHaveLength(1);
+      expect(runLines[0][0]).not.toContain('🟢');
+    });
+
+    it('dedup multiple overlapping runs correctly', async () => {
+      const dir = getDir();
+      const ts = Date.now();
+      const shared1 = `${ts}-shared1`;
+      const shared2 = `${ts - 100}-shared2`;
+
+      // Both on disk AND active on server
+      createPastRun(dir, shared1, true);
+      createPastRun(dir, shared2, true);
+      const activeRun1 = createMockRunSummary({ runId: shared1, workflowName: 'shared1' });
+      const activeRun2 = createMockRunSummary({ runId: shared2, workflowName: 'shared2' });
+      // Plus one disk-only run
+      createPastRun(dir, `${ts - 200}-disk-only`, true);
+
+      queryActiveRunsSpy.mockResolvedValueOnce([activeRun1, activeRun2]);
+      readLineSpy.mockResolvedValueOnce(undefined);
+
+      await sessionSelector.interactiveSelectRun(dir, null);
+
+      // shared1 and shared2 should each appear exactly once (in active section)
+      const s1Lines = logSpy.mock.calls.filter((c) => typeof c[0] === 'string' && c[0].includes(shared1));
+      const s2Lines = logSpy.mock.calls.filter((c) => typeof c[0] === 'string' && c[0].includes(shared2));
+      expect(s1Lines).toHaveLength(1);
+      expect(s2Lines).toHaveLength(1);
+      expect(s1Lines[0][0]).toContain('🟢');
+      expect(s2Lines[0][0]).toContain('🟢');
+    });
+  });
+
+  // ─── 4. Server down fallback ─────────────────────────────────────────
+
+  describe('server down fallback', () => {
+    it('shows only historical runs when client is null', async () => {
+      const dir = getDir();
+      const ts = Date.now();
+      createPastRun(dir, `${ts}-disk-wf`, true);
+
+      queryActiveRunsSpy.mockResolvedValueOnce([]);
+      readLineSpy.mockResolvedValueOnce(undefined);
+
+      await sessionSelector.interactiveSelectRun(dir, null);
+
+      const runLine = logSpy.mock.calls.find((c) => typeof c[0] === 'string' && c[0].includes('disk-wf'));
+      expect(runLine).toBeDefined();
+      // No 🟢 marker — purely historical
+      expect(runLine![0]).not.toContain('🟢');
+    });
+
+    it('shows only historical runs when client is not connected', async () => {
+      const dir = getDir();
+      const ts = Date.now();
+      createPastRun(dir, `${ts}-disk-wf`, true);
+
+      // Simulate a client that is not connected — queryActiveRuns returns []
+      queryActiveRunsSpy.mockResolvedValueOnce([]);
+      readLineSpy.mockResolvedValueOnce(undefined);
+
+      await sessionSelector.interactiveSelectRun(dir, {} as any);
+
+      const runLine = logSpy.mock.calls.find((c) => typeof c[0] === 'string' && c[0].includes('disk-wf'));
+      expect(runLine).toBeDefined();
+    });
+
+    it('returns undefined with "No past workflow runs found" when server down and no disk runs', async () => {
+      const dir = getDir();
+      queryActiveRunsSpy.mockResolvedValueOnce([]);
+      readLineSpy.mockResolvedValueOnce(undefined);
+
+      const result = await sessionSelector.interactiveSelectRun(dir, null);
+      expect(result).toBeUndefined();
+      expect(logSpy).toHaveBeenCalledWith('No past workflow runs found.');
+    });
+
+    it('shows only historical header when server down (no active section)', async () => {
+      const dir = getDir();
+      const ts = Date.now();
+      createPastRun(dir, `${ts}-disk-wf`, true);
+
+      queryActiveRunsSpy.mockResolvedValueOnce([]);
+      readLineSpy.mockResolvedValueOnce(undefined);
+
+      await sessionSelector.interactiveSelectRun(dir, null);
+
+      // Should show the historical header, NOT an active section header
+      expect(logSpy).toHaveBeenCalledWith('\nPast workflow runs (newest first):\n');
+      // Should NOT contain an "Active" or "Server" section header
+      const activeHeader = logSpy.mock.calls.find(
+        (c) => typeof c[0] === 'string' && (c[0].includes('Active runs') || c[0].includes('Server runs')),
+      );
+      expect(activeHeader).toBeUndefined();
+    });
+  });
+
+  // ─── 5. Selection behavior (return types) ────────────────────────────
+
+  describe('selection behavior', () => {
+    it('returns { type: "active", runSummary } when user selects an active run', async () => {
+      const dir = getDir();
+      const ts = Date.now();
+      const activeRun = createMockRunSummary({
+        runId: `${ts}-active-wf`,
+        workflowName: 'active-wf',
+        status: 'running',
+      });
+      createPastRun(dir, `${ts - 1000}-disk-wf`, true);
+
+      queryActiveRunsSpy.mockResolvedValueOnce([activeRun]);
+      readLineSpy.mockResolvedValueOnce('1'); // Select first item (active)
+
+      const result = await sessionSelector.interactiveSelectRun(dir, null);
+
+      expect(result).toBeDefined();
+      expect(result).toHaveProperty('type', 'active');
+      expect((result as any).runSummary).toEqual(
+        expect.objectContaining({
+          runId: `${ts}-active-wf`,
+          workflowName: 'active-wf',
+          status: 'running',
+        }),
+      );
+    });
+
+    it('returns { type: "historical", pastRun } when user selects a historical run', async () => {
+      const dir = getDir();
+      const ts = Date.now();
+      const activeRun = createMockRunSummary({ runId: `${ts}-active-wf` });
+      createPastRun(dir, `${ts - 1000}-disk-wf`, true);
+
+      queryActiveRunsSpy.mockResolvedValueOnce([activeRun]);
+      // '2' selects the historical item (item 2: active=1, historical=2)
+      // Fallback: if current impl only shows 1 item, '2' is out-of-range;
+      // provide undefined as retry fallback so the test doesn't hang.
+      readLineSpy.mockResolvedValueOnce('2');
+      readLineSpy.mockResolvedValueOnce(undefined); // fallback cancel
+
+      const result = await sessionSelector.interactiveSelectRun(dir, null);
+
+      // TDD RED: Current impl returns PastRunEntry (no `type`), so this fails.
+      expect(result).toBeDefined();
+      expect(result).toHaveProperty('type', 'historical');
+      expect((result as any).pastRun).toEqual(
+        expect.objectContaining({
+          dirName: `${ts - 1000}-disk-wf`,
+          workflowName: 'disk-wf',
+        }),
+      );
+    });
+
+    it('returns { type: "historical" } when there are no active runs and user selects', async () => {
+      const dir = getDir();
+      const ts = Date.now();
+      createPastRun(dir, `${ts}-disk-wf`, true);
+
+      queryActiveRunsSpy.mockResolvedValueOnce([]);
+      readLineSpy.mockResolvedValueOnce('1');
+
+      const result = await sessionSelector.interactiveSelectRun(dir, null);
+
+      expect(result).toBeDefined();
+      expect(result).toHaveProperty('type', 'historical');
+      expect((result as any).pastRun).toEqual(expect.objectContaining({ dirName: `${ts}-disk-wf` }));
+    });
+
+    it('returns undefined when user cancels with Enter (no selection)', async () => {
+      const dir = getDir();
+      const activeRun = createMockRunSummary();
+      queryActiveRunsSpy.mockResolvedValueOnce([activeRun]);
+      readLineSpy.mockResolvedValueOnce(undefined); // Enter = cancel
+
+      const result = await sessionSelector.interactiveSelectRun(dir, null);
+      expect(result).toBeUndefined();
+    });
+
+    it('active selection for correct item when active runs are listed first', async () => {
+      const dir = getDir();
+      const ts = Date.now();
+      const activeRun1 = createMockRunSummary({ runId: `${ts}-a1`, workflowName: 'a1' });
+      const activeRun2 = createMockRunSummary({ runId: `${ts}-a2`, workflowName: 'a2' });
+      createPastRun(dir, `${ts - 1000}-h1`, true);
+
+      queryActiveRunsSpy.mockResolvedValueOnce([activeRun1, activeRun2]);
+      // '2' selects the second active run (items: 1=a1, 2=a2, 3=h1)
+      // Fallback: if current impl only shows 1 item, '2' is out-of-range;
+      // provide undefined as retry fallback so the test doesn't hang.
+      readLineSpy.mockResolvedValueOnce('2');
+      readLineSpy.mockResolvedValueOnce(undefined); // fallback cancel
+
+      const result = await sessionSelector.interactiveSelectRun(dir, null);
+
+      // TDD RED: Current impl returns PastRunEntry for the disk run (not active).
+      expect(result).toBeDefined();
+      expect(result).toHaveProperty('type', 'active');
+      expect((result as any).runSummary).toEqual(expect.objectContaining({ runId: `${ts}-a2` }));
+    });
+  });
+
+  // ─── 6. EngineClient parameter ───────────────────────────────────────
+
+  describe('EngineClient parameter', () => {
+    it('accepts a mock EngineClient as second parameter', async () => {
+      const dir = getDir();
+      const mockClient = { isConnected: () => true } as any;
+      queryActiveRunsSpy.mockResolvedValueOnce([]);
+      readLineSpy.mockResolvedValueOnce(undefined);
+
+      // Should not throw — just display historical runs
+      const result = await sessionSelector.interactiveSelectRun(dir, mockClient);
+      expect(result).toBeUndefined();
+      // queryActiveRuns should have been called with the client
+      expect(queryActiveRunsSpy).toHaveBeenCalledWith(mockClient);
+    });
+
+    it('works without client parameter (backward compatible)', async () => {
+      const dir = getDir();
+      const ts = Date.now();
+      createPastRun(dir, `${ts}-disk-wf`, true);
+      queryActiveRunsSpy.mockResolvedValueOnce([]);
+      readLineSpy.mockResolvedValueOnce(undefined);
+
+      // Call with only cwd (no client) — backward compatible
+      const result = await sessionSelector.interactiveSelectRun(dir);
+      expect(result).toBeUndefined(); // User cancelled
+    });
+
+    it('passes null client to queryActiveRuns when omitted', async () => {
+      const dir = getDir();
+      queryActiveRunsSpy.mockResolvedValueOnce([]);
+      readLineSpy.mockResolvedValueOnce(undefined);
+
+      await sessionSelector.interactiveSelectRun(dir);
+
+      // When no client is passed, queryActiveRuns should be called with null/undefined
+      expect(queryActiveRunsSpy).toHaveBeenCalledTimes(1);
+      const arg = queryActiveRunsSpy.mock.calls[0][0];
+      expect(arg === null || arg === undefined).toBe(true);
+    });
   });
 });

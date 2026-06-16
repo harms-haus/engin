@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it } from 'bun:test';
 import * as fs from 'node:fs/promises';
 import { join } from 'node:path';
-import type { WorktreeInfo } from '../../src/core/types.js';
-import { WorkflowStatusTracker } from '../../src/tracking/workflow-status.js';
+import type { WorktreeInfo } from '../../packages/engine/src/core/types.js';
+import { WorkflowStatusTracker } from '../../packages/engine/src/tracking/workflow-status.js';
 import { useTempDir } from '../helpers/use-temp-dir.js';
 
 const SAMPLE_WORKTREE: WorktreeInfo = {
@@ -291,37 +291,82 @@ describe('WorkflowStatusTracker – worktree persistence', () => {
 
   describe('source code structure', () => {
     it('imports WorktreeInfo from core types', async () => {
-      const sourcePath = join(import.meta.dir, '..', '..', 'src', 'tracking', 'workflow-status.ts');
+      const sourcePath = join(
+        import.meta.dir,
+        '..',
+        '..',
+        'packages',
+        'engine',
+        'src',
+        'tracking',
+        'workflow-status.ts',
+      );
       const source = await fs.readFile(sourcePath, 'utf-8');
 
-      const importLine = source.split('\n').find((line) => line.includes("from '../core/types.js'"));
+      const importLine = source.split('\n').find((line) => line.includes('../core/types.js'));
       expect(importLine).toBeDefined();
       expect(importLine!).toContain('WorktreeInfo');
     });
 
     it('has a _worktree private field', async () => {
-      const sourcePath = join(import.meta.dir, '..', '..', 'src', 'tracking', 'workflow-status.ts');
+      const sourcePath = join(
+        import.meta.dir,
+        '..',
+        '..',
+        'packages',
+        'engine',
+        'src',
+        'tracking',
+        'workflow-status.ts',
+      );
       const source = await fs.readFile(sourcePath, 'utf-8');
 
       expect(source).toMatch(/private\s+_worktree\??\s*:\s*WorktreeInfo/);
     });
 
     it('has a worktree getter returning WorktreeInfo | undefined', async () => {
-      const sourcePath = join(import.meta.dir, '..', '..', 'src', 'tracking', 'workflow-status.ts');
+      const sourcePath = join(
+        import.meta.dir,
+        '..',
+        '..',
+        'packages',
+        'engine',
+        'src',
+        'tracking',
+        'workflow-status.ts',
+      );
       const source = await fs.readFile(sourcePath, 'utf-8');
 
       expect(source).toMatch(/get\s+worktree\(\)[\s\S]*?WorktreeInfo\s*\|\s*undefined/);
     });
 
     it('has a setWorktree method accepting WorktreeInfo', async () => {
-      const sourcePath = join(import.meta.dir, '..', '..', 'src', 'tracking', 'workflow-status.ts');
+      const sourcePath = join(
+        import.meta.dir,
+        '..',
+        '..',
+        'packages',
+        'engine',
+        'src',
+        'tracking',
+        'workflow-status.ts',
+      );
       const source = await fs.readFile(sourcePath, 'utf-8');
 
       expect(source).toMatch(/setWorktree\(info\s*:\s*WorktreeInfo\)/);
     });
 
     it('setWorktree uses spread copy', async () => {
-      const sourcePath = join(import.meta.dir, '..', '..', 'src', 'tracking', 'workflow-status.ts');
+      const sourcePath = join(
+        import.meta.dir,
+        '..',
+        '..',
+        'packages',
+        'engine',
+        'src',
+        'tracking',
+        'workflow-status.ts',
+      );
       const source = await fs.readFile(sourcePath, 'utf-8');
 
       // Find the setWorktree method body
@@ -333,7 +378,16 @@ describe('WorkflowStatusTracker – worktree persistence', () => {
     });
 
     it('serializeWorkflowState includes worktree with spread copy', async () => {
-      const sourcePath = join(import.meta.dir, '..', '..', 'src', 'tracking', 'workflow-serializer.ts');
+      const sourcePath = join(
+        import.meta.dir,
+        '..',
+        '..',
+        'packages',
+        'engine',
+        'src',
+        'tracking',
+        'workflow-serializer.ts',
+      );
       const source = await fs.readFile(sourcePath, 'utf-8');
 
       // serializeWorkflowState should contain worktree: tracker.worktree
@@ -342,7 +396,16 @@ describe('WorkflowStatusTracker – worktree persistence', () => {
     });
 
     it('load() restores _worktree from data.worktree with spread copy', async () => {
-      const sourcePath = join(import.meta.dir, '..', '..', 'src', 'tracking', 'workflow-status.ts');
+      const sourcePath = join(
+        import.meta.dir,
+        '..',
+        '..',
+        'packages',
+        'engine',
+        'src',
+        'tracking',
+        'workflow-status.ts',
+      );
       const source = await fs.readFile(sourcePath, 'utf-8');
 
       // load() should have: tracker._worktree = data.worktree ? { ...data.worktree } : undefined
@@ -352,7 +415,7 @@ describe('WorkflowStatusTracker – worktree persistence', () => {
     });
 
     it('WorktreeInfo is in the WorkflowState interface', async () => {
-      const typesPath = join(import.meta.dir, '..', '..', 'src', 'core', 'types.ts');
+      const typesPath = join(import.meta.dir, '..', '..', 'packages', 'engine', 'src', 'core', 'types.ts');
       const source = await fs.readFile(typesPath, 'utf-8');
 
       // WorkflowState should have a worktree field
@@ -360,7 +423,7 @@ describe('WorkflowStatusTracker – worktree persistence', () => {
     });
 
     it('WorktreeInfo interface has required fields', async () => {
-      const typesPath = join(import.meta.dir, '..', '..', 'src', 'core', 'types.ts');
+      const typesPath = join(import.meta.dir, '..', '..', 'packages', 'engine', 'src', 'core', 'types.ts');
       const source = await fs.readFile(typesPath, 'utf-8');
 
       // Find the WorktreeInfo interface

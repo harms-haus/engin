@@ -67,17 +67,16 @@ engin apidoc "Generate API docs" \
 | `--verbose`                | Verbose console output. Disables the TUI dashboard when stdout is a TTY.     |
 | `--worktree`               | Run the workflow inside a git worktree.                                      |
 | `--api-key <provider=key>` | Provider → API key override (repeatable). Visible in process listings.       |
-| `--host <host>`            | Web server bind host (default: 127.0.0.1, localhost only).                   |
-| `--lan`                    | Bind on all interfaces for LAN/QR access (default: off).                     |
+| `--host <host>`            | _Deprecated for `run`._ Bind host — use `engin server up --host` instead.    |
+| `--lan`                    | _Deprecated for `run`._ Bind all interfaces — use `engin server up --lan`.   |
 | `--port <port>`            | Web server port (default: `3619`).                                           |
 
-See the [CLI reference](../reference/cli.md) for the full command list and exit codes.
+### Starting runs
 
-### Interactive mode
-
-Run `engin` with no arguments in a TTY and you get an interactive composer. Type
-`/<workflow-name> <task prompt>` to launch a workflow. The composer supports `--verbose`,
-`--worktree`, and `--max-concurrent` inline; `Ctrl+Enter` inserts a new line; `Enter` submits.
+The only way to start a run is explicitly: `engin run <workflow-name> <task prompt>`.
+The former interactive composer has been removed. See the
+[CLI reference](../reference/cli.md) for the full command list (including
+`engin server up/down/status`) and exit codes.
 
 ## Programmatic quick start
 

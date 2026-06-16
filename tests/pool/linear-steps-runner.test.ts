@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
 import { z } from 'zod';
 
-import { linearStepsRunner } from '../../src/pool/linear-steps-runner.js';
+import { linearStepsRunner } from '../../packages/engine/src/pool/linear-steps-runner.js';
 import {
   clearPoolMocks,
   createRunnerContext,

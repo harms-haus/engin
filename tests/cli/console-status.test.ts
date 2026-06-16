@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
-import { createStatusCallbacks, formatTime, shouldUseTui } from '../../src/cli/console-status.js';
+import { createStatusCallbacks, formatTime, shouldUseTui } from '../../packages/cli/src/cli/console-status.js';
 
 // ─── formatTime ─────────────────────────────────────────────────────────────
 

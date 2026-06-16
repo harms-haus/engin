@@ -1,20 +1,35 @@
-// ─── Structural parity test for the two copies of protocol-types.ts ────────
+// ─── Structural parity test for the protocol-types module ─────────────────
 //
-// src/web/protocol-types.ts      – server-side (Bun)
-// web/src/protocol-types.ts      – client-side (Vite/React)
+// PARITY NOTE (post-T08): Both the server side (src/web/protocol-types.ts) and
+// the client side (web/src/protocol-types.ts) are now bare `export *`
+// re-exports of the SAME shared module, `@engin/shared/protocol-types`. Because
+// both sides import the identical module, structural parity between the
+// server-facing and client-facing ServerMessage / ClientMessage types is
+// GUARANTEED BY CONSTRUCTION — they are, literally, the same type aliases.
 //
-// The client copy includes the comment "Mirror copy – keep in sync" but
-// there is no automated guard against divergence.  This file uses TypeScript's
-// structural type system to verify at compile time that both ServerMessage
-// types (and their shared value types) remain structurally identical.
+// The `Equal<>` compile-time checks in this file are therefore no longer
+// guarding two divergent copies; instead they serve as REGRESSION GUARDS
+// against any future accidental divergence (e.g. if one side were ever
+// re-pointed at a divergent local copy, or if a manual mirror were
+// reintroduced). They also document, variant by variant, the exact shape the
+// multi-run protocol is expected to carry.
 //
-// After the snapshot/delta refactor (kb-13–17) the protocol only carries:
-//   - snapshot          (full WorkflowProjection on connect / full resync)
-//   - events            (batched EventRecord deltas)
-//   - workflow_complete / workflow_failed  (top-level lifecycle signals)
+// MULTI-RUN PROTOCOL: after the run-registry refactor every projection / event
+// / lifecycle message is tagged with `runId` so a single WebSocket connection
+// can fan out to many concurrent runs. The ServerMessage union now consists of:
+//   - runs            (active-run list, sent on subscribe and on change)
+//   - run_started     (a new run has entered the registry)
+//   - snapshot        (full WorkflowProjection for a run — connect / resync)
+//   - events          (batch of raw EventRecords since the last seq for a run)
+//   - run_complete    (run-scoped terminal success signal)
+//   - run_failed      (run-scoped terminal failure signal)
+//   - log             (server-captured runtime console output for a run)
+//   - auth_required   (reserved for future auth enforcement)
+//   - error           (protocol-level errors)
 //
-// The old per-event WS message types have been removed; this test now guards
-// the SMALLER retained union.
+// The old unscoped `snapshot` / `events` and the global `workflow_complete` /
+// `workflow_failed` / `terminate_server` message types have been REMOVED; this
+// test now guards the new, run-scoped union.
 //
 // === How it works ===
 //
@@ -38,15 +53,15 @@
 // - `tsc --noEmit` on this file    → catches divergence via Equal<> checks
 // - IDEs (VS Code, etc.)           → show inline errors via Equal<> checks
 
-import { describe, expect, it } from 'bun:test';
 import type {
+  RunSummary as ClientRunSummary,
+  ServerMessage as ClientSideMessage,
+  RunSummary,
   ClientMessage as ServerClientMessage,
   ServerMessage as ServerSideMessage,
-} from '../../src/web/protocol-types.ts';
-import type {
-  ServerMessage as ClientSideMessage,
   ClientMessage as WebClientMessage,
-} from '../../web/src/protocol-types.ts';
+} from '@engin/shared/protocol-types';
+import { describe, expect, it } from 'bun:test';
 
 // ─── Type-level exact equality utility ─────────────────────────────────────
 //
@@ -61,7 +76,7 @@ type Equal<X, Y> = (<T>() => T extends X ? 1 : 2) extends <T>() => T extends Y ?
  * If the type argument resolves to `false`, a compile error results:
  *   "Type 'false' does not satisfy the constraint 'true'."
  */
-// eslint-disable-next-line @typescript-eslint/no-unused-vars -- T is a compile-time assertion parameter used at call sites
+
 function assertEqual<T extends true>(_desc?: string): void {}
 
 // ─── 1. Top-level bi-directional assignability ─────────────────────────────
@@ -75,30 +90,90 @@ function clientAssignableToServer(_m: ClientSideMessage): ServerSideMessage {
 }
 
 // ─── 2. Variant-level exact equality via Equal<> ───────────────────────────
+//
+// One check per ServerMessage variant. Because both type aliases resolve to
+// the same shared module these are trivially `true`, but they pin down the
+// exact shape of each variant as documentation + regression guard.
 
-// ── snapshot ──
+// ── runs ──
+type ServerRuns = Extract<ServerSideMessage, { type: 'runs' }>;
+type ClientRuns = Extract<ClientSideMessage, { type: 'runs' }>;
+assertEqual<Equal<ServerRuns, ClientRuns>>('runs');
+
+// ── run_started ──
+type ServerRunStarted = Extract<ServerSideMessage, { type: 'run_started' }>;
+type ClientRunStarted = Extract<ClientSideMessage, { type: 'run_started' }>;
+assertEqual<Equal<ServerRunStarted, ClientRunStarted>>('run_started');
+
+// ── snapshot (run-scoped) ──
 type ServerSnapshot = Extract<ServerSideMessage, { type: 'snapshot' }>;
 type ClientSnapshot = Extract<ClientSideMessage, { type: 'snapshot' }>;
 assertEqual<Equal<ServerSnapshot, ClientSnapshot>>('snapshot');
 
-// ── events ──
+// ── events (run-scoped) ──
 type ServerEvents = Extract<ServerSideMessage, { type: 'events' }>;
 type ClientEvents = Extract<ClientSideMessage, { type: 'events' }>;
 assertEqual<Equal<ServerEvents, ClientEvents>>('events');
 
-// ── workflow_complete ──
-type ServerWorkflowComplete = Extract<ServerSideMessage, { type: 'workflow_complete' }>;
-type ClientWorkflowComplete = Extract<ClientSideMessage, { type: 'workflow_complete' }>;
-assertEqual<Equal<ServerWorkflowComplete, ClientWorkflowComplete>>('workflow_complete');
+// ── run_complete ──
+type ServerRunComplete = Extract<ServerSideMessage, { type: 'run_complete' }>;
+type ClientRunComplete = Extract<ClientSideMessage, { type: 'run_complete' }>;
+assertEqual<Equal<ServerRunComplete, ClientRunComplete>>('run_complete');
 
-// ── workflow_failed ──
-type ServerWorkflowFailed = Extract<ServerSideMessage, { type: 'workflow_failed' }>;
-type ClientWorkflowFailed = Extract<ClientSideMessage, { type: 'workflow_failed' }>;
-assertEqual<Equal<ServerWorkflowFailed, ClientWorkflowFailed>>('workflow_failed');
+// ── run_failed ──
+type ServerRunFailed = Extract<ServerSideMessage, { type: 'run_failed' }>;
+type ClientRunFailed = Extract<ClientSideMessage, { type: 'run_failed' }>;
+assertEqual<Equal<ServerRunFailed, ClientRunFailed>>('run_failed');
 
-// ─── 2b. ClientMessage variant-level exact equality ────────────────────────
+// ── log ──
+type ServerLog = Extract<ServerSideMessage, { type: 'log' }>;
+type ClientLog = Extract<ClientSideMessage, { type: 'log' }>;
+assertEqual<Equal<ServerLog, ClientLog>>('log');
 
+// ── auth_required ──
+type ServerAuthRequired = Extract<ServerSideMessage, { type: 'auth_required' }>;
+type ClientAuthRequired = Extract<ClientSideMessage, { type: 'auth_required' }>;
+assertEqual<Equal<ServerAuthRequired, ClientAuthRequired>>('auth_required');
+
+// ── error ──
+type ServerError = Extract<ServerSideMessage, { type: 'error' }>;
+type ClientError = Extract<ClientSideMessage, { type: 'error' }>;
+assertEqual<Equal<ServerError, ClientError>>('error');
+
+// ─── 2b. RunSummary exact equality ─────────────────────────────────────────
+
+assertEqual<Equal<RunSummary, ClientRunSummary>>('RunSummary');
+
+// ─── 2c. ClientMessage variant-level exact equality ────────────────────────
+
+// Whole-union check, plus one per variant to mirror the ServerMessage guards.
 assertEqual<Equal<ServerClientMessage, WebClientMessage>>('ClientMessage');
+
+assertEqual<Equal<Extract<ServerClientMessage, { type: 'auth' }>, Extract<WebClientMessage, { type: 'auth' }>>>('auth');
+assertEqual<
+  Equal<Extract<ServerClientMessage, { type: 'list_runs' }>, Extract<WebClientMessage, { type: 'list_runs' }>>
+>('list_runs');
+assertEqual<
+  Equal<Extract<ServerClientMessage, { type: 'start_run' }>, Extract<WebClientMessage, { type: 'start_run' }>>
+>('start_run');
+assertEqual<
+  Equal<Extract<ServerClientMessage, { type: 'subscribe' }>, Extract<WebClientMessage, { type: 'subscribe' }>>
+>('subscribe');
+assertEqual<
+  Equal<Extract<ServerClientMessage, { type: 'unsubscribe' }>, Extract<WebClientMessage, { type: 'unsubscribe' }>>
+>('unsubscribe');
+assertEqual<Equal<Extract<ServerClientMessage, { type: 'resync' }>, Extract<WebClientMessage, { type: 'resync' }>>>(
+  'resync',
+);
+assertEqual<
+  Equal<Extract<ServerClientMessage, { type: 'cancel_run' }>, Extract<WebClientMessage, { type: 'cancel_run' }>>
+>('cancel_run');
+assertEqual<
+  Equal<
+    Extract<ServerClientMessage, { type: 'worktree_action' }>,
+    Extract<WebClientMessage, { type: 'worktree_action' }>
+  >
+>('worktree_action');
 
 // ─── 3. Sample objects for each variant ────────────────────────────────────
 //
@@ -110,10 +185,69 @@ function checkVariant<T extends ServerSideMessage & ClientSideMessage>(_obj: T):
   // no-op: compile-time check only
 }
 
+const ISO_NOW = '2026-06-15T12:00:00.000Z';
+
+function makeRunSummary(overrides: Partial<RunSummary> = {}): RunSummary {
+  return {
+    runId: '1781118746110-develop',
+    cwd: '/home/user/project',
+    workflowName: 'develop',
+    taskPrompt: 'Build the thing',
+    status: 'running',
+    startedAt: ISO_NOW,
+    ...overrides,
+  };
+}
+
+function makeMinimalProjection() {
+  return {
+    seq: 0,
+    taskPrompt: '',
+    phases: [],
+    currentPhaseId: '',
+    completedPhaseIds: [],
+    tasks: {},
+    agents: {},
+    sidebar: { title: '', indicator: '' },
+    status: 'running' as const,
+    stats: { totalTokens: 0, agentCount: 0 },
+    runLog: [],
+  };
+}
+
 describe('ServerMessage – variant parity (sample objects)', () => {
-  it('snapshot variant', () => {
-    const sample = {
+  it('runs variant', () => {
+    const sample: ServerSideMessage = {
+      type: 'runs',
+      runs: [makeRunSummary(), makeRunSummary({ runId: 'run-2', status: 'complete' })],
+    };
+    checkVariant(sample);
+    expect(sample.type).toBe('runs');
+    expect(sample.runs).toHaveLength(2);
+    expect(sample.runs[0].runId).toBe('1781118746110-develop');
+    expect(sample.runs[1].status).toBe('complete');
+  });
+
+  it('runs variant – empty list', () => {
+    const sample: ServerSideMessage = { type: 'runs', runs: [] };
+    checkVariant(sample);
+    expect(sample.type).toBe('runs');
+    expect(sample.runs).toHaveLength(0);
+  });
+
+  it('run_started variant', () => {
+    const summary = makeRunSummary();
+    const sample: ServerSideMessage = { type: 'run_started', runId: summary.runId, summary };
+    checkVariant(sample);
+    expect(sample.type).toBe('run_started');
+    expect(sample.runId).toBe(summary.runId);
+    expect(sample.summary).toBe(summary);
+  });
+
+  it('snapshot variant (run-scoped)', () => {
+    const sample: ServerSideMessage = {
       type: 'snapshot',
+      runId: 'run-1',
       seq: 42,
       state: {
         seq: 42,
@@ -126,7 +260,7 @@ describe('ServerMessage – variant parity (sample objects)', () => {
             id: 't1',
             title: 'Implement API',
             phaseId: 'coding',
-            status: 'running',
+            status: 'active',
             steps: [],
             dependencies: [],
             startedAt: Date.now(),
@@ -160,10 +294,12 @@ describe('ServerMessage – variant parity (sample objects)', () => {
         },
         status: 'running',
         stats: { totalTokens: 700, agentCount: 1 },
+        runLog: [],
       },
     };
     checkVariant(sample);
     expect(sample.type).toBe('snapshot');
+    expect(sample.runId).toBe('run-1');
     expect(sample.seq).toBe(42);
     expect(sample.state.currentPhaseId).toBe('coding');
     expect(sample.state.status).toBe('running');
@@ -171,9 +307,25 @@ describe('ServerMessage – variant parity (sample objects)', () => {
     expect(Object.keys(sample.state.agents)).toHaveLength(1);
   });
 
-  it('events variant', () => {
-    const sample = {
+  it('snapshot variant – minimal (empty run)', () => {
+    const sample: ServerSideMessage = {
+      type: 'snapshot',
+      runId: 'run-1',
+      seq: 0,
+      state: makeMinimalProjection(),
+    };
+    checkVariant(sample);
+    expect(sample.type).toBe('snapshot');
+    expect(sample.runId).toBe('run-1');
+    expect(sample.state.tasks).toEqual({});
+    expect(sample.state.agents).toEqual({});
+    expect(sample.state.runLog).toEqual([]);
+  });
+
+  it('events variant (run-scoped)', () => {
+    const sample: ServerSideMessage = {
       type: 'events',
+      runId: 'run-1',
       seq: 5,
       events: [
         {
@@ -199,62 +351,93 @@ describe('ServerMessage – variant parity (sample objects)', () => {
     };
     checkVariant(sample);
     expect(sample.type).toBe('events');
+    expect(sample.runId).toBe('run-1');
     expect(sample.seq).toBe(5);
     expect(sample.events).toHaveLength(2);
     expect(sample.events[0].type).toBe('phase_started');
     expect(sample.events[1].type).toBe('agent_spawned');
   });
 
-  it('workflow_complete variant', () => {
-    const sample = { type: 'workflow_complete' };
-    checkVariant(sample);
-    expect(sample.type).toBe('workflow_complete');
-  });
-
-  it('workflow_failed variant', () => {
-    const sample = {
-      type: 'workflow_failed',
-      error: 'Something went wrong',
-      phase: 'planning',
-    };
-    checkVariant(sample);
-    expect(sample.type).toBe('workflow_failed');
-    expect(sample.error).toBe('Something went wrong');
-    expect(sample.phase).toBe('planning');
-  });
-
-  it('snapshot variant – minimal (no optional sidebar phases)', () => {
-    const sample = {
-      type: 'snapshot',
-      seq: 0,
-      state: {
-        seq: 0,
-        taskPrompt: '',
-        phases: [],
-        currentPhaseId: '',
-        completedPhaseIds: [],
-        tasks: {},
-        agents: {},
-        sidebar: { title: '', indicator: '' },
-        status: 'running' as const,
-        stats: { totalTokens: 0, agentCount: 0 },
-      },
-    };
-    checkVariant(sample);
-    expect(sample.type).toBe('snapshot');
-    expect(sample.state.tasks).toEqual({});
-    expect(sample.state.agents).toEqual({});
-  });
-
   it('events variant – empty batch', () => {
-    const sample = {
+    const sample: ServerSideMessage = {
       type: 'events',
+      runId: 'run-1',
       seq: 3,
       events: [],
     };
     checkVariant(sample);
     expect(sample.type).toBe('events');
+    expect(sample.runId).toBe('run-1');
     expect(sample.events).toHaveLength(0);
+  });
+
+  it('run_complete variant', () => {
+    const sample: ServerSideMessage = { type: 'run_complete', runId: 'run-1' };
+    checkVariant(sample);
+    expect(sample.type).toBe('run_complete');
+    expect(sample.runId).toBe('run-1');
+  });
+
+  it('run_failed variant', () => {
+    const sample: ServerSideMessage = {
+      type: 'run_failed',
+      runId: 'run-1',
+      error: 'Something went wrong',
+      phase: 'planning',
+    };
+    checkVariant(sample);
+    expect(sample.type).toBe('run_failed');
+    expect(sample.runId).toBe('run-1');
+    expect(sample.error).toBe('Something went wrong');
+    expect(sample.phase).toBe('planning');
+  });
+
+  it('log variant', () => {
+    const sample: ServerSideMessage = {
+      type: 'log',
+      runId: 'run-1',
+      level: 'warn',
+      message: 'disk almost full',
+      timestamp: ISO_NOW,
+    };
+    checkVariant(sample);
+    expect(sample.type).toBe('log');
+    expect(sample.runId).toBe('run-1');
+    expect(sample.level).toBe('warn');
+    expect(sample.message).toBe('disk almost full');
+    expect(sample.timestamp).toBe(ISO_NOW);
+  });
+
+  it('auth_required variant', () => {
+    const sample: ServerSideMessage = { type: 'auth_required' };
+    checkVariant(sample);
+    expect(sample.type).toBe('auth_required');
+  });
+
+  it('error variant (no runId)', () => {
+    const sample: ServerSideMessage = {
+      type: 'error',
+      code: 'UNKNOWN_RUN',
+      message: 'no such run',
+    };
+    checkVariant(sample);
+    expect(sample.type).toBe('error');
+    expect(sample.code).toBe('UNKNOWN_RUN');
+    expect(sample.message).toBe('no such run');
+    expect(sample.runId).toBeUndefined();
+  });
+
+  it('error variant (with runId)', () => {
+    const sample: ServerSideMessage = {
+      type: 'error',
+      runId: 'run-1',
+      code: 'BAD_MESSAGE',
+      message: 'malformed payload',
+    };
+    checkVariant(sample);
+    expect(sample.type).toBe('error');
+    expect(sample.runId).toBe('run-1');
+    expect(sample.code).toBe('BAD_MESSAGE');
   });
 });
 
@@ -265,23 +448,102 @@ function checkClientMessage<T extends ServerClientMessage & WebClientMessage>(_o
 }
 
 describe('ClientMessage – variant parity (sample objects)', () => {
-  it('terminate_server variant', () => {
-    const sample = { type: 'terminate_server' as const };
+  it('auth variant (no token)', () => {
+    const sample: ServerClientMessage = { type: 'auth' };
     checkClientMessage(sample);
-    expect(sample.type).toBe('terminate_server');
+    expect(sample.type).toBe('auth');
   });
 
-  it('resync variant without lastSeq', () => {
-    const sample = { type: 'resync' as const };
+  it('auth variant (with token)', () => {
+    const sample: ServerClientMessage = { type: 'auth', token: 'secret-token' };
     checkClientMessage(sample);
-    expect(sample.type).toBe('resync');
+    expect(sample.type).toBe('auth');
+    expect(sample.token).toBe('secret-token');
   });
 
-  it('resync variant with lastSeq', () => {
-    const sample = { type: 'resync' as const, lastSeq: 42 };
+  it('list_runs variant', () => {
+    const sample: ServerClientMessage = { type: 'list_runs' };
+    checkClientMessage(sample);
+    expect(sample.type).toBe('list_runs');
+  });
+
+  it('start_run variant (required fields only)', () => {
+    const sample: ServerClientMessage = {
+      type: 'start_run',
+      workflowName: 'develop',
+      taskPrompt: 'Build the feature',
+      cwd: '/home/user/project',
+    };
+    checkClientMessage(sample);
+    expect(sample.type).toBe('start_run');
+    expect(sample.workflowName).toBe('develop');
+    expect(sample.taskPrompt).toBe('Build the feature');
+    expect(sample.cwd).toBe('/home/user/project');
+  });
+
+  it('start_run variant (all optional fields)', () => {
+    const sample: ServerClientMessage = {
+      type: 'start_run',
+      workflowName: 'develop',
+      taskPrompt: 'Build the feature',
+      cwd: '/home/user/project',
+      workDir: '/tmp/workdir',
+      maxConcurrent: 4,
+      apiKeys: { anthropic: 'sk-xxx' },
+      worktree: true,
+    };
+    checkClientMessage(sample);
+    expect(sample.workDir).toBe('/tmp/workdir');
+    expect(sample.maxConcurrent).toBe(4);
+    expect(sample.worktree).toBe(true);
+  });
+
+  it('subscribe variant', () => {
+    const sample: ServerClientMessage = { type: 'subscribe', runId: 'run-1' };
+    checkClientMessage(sample);
+    expect(sample.type).toBe('subscribe');
+    expect(sample.runId).toBe('run-1');
+  });
+
+  it('unsubscribe variant', () => {
+    const sample: ServerClientMessage = { type: 'unsubscribe', runId: 'run-1' };
+    checkClientMessage(sample);
+    expect(sample.type).toBe('unsubscribe');
+    expect(sample.runId).toBe('run-1');
+  });
+
+  it('resync variant (runId, no lastSeq)', () => {
+    const sample: ServerClientMessage = { type: 'resync', runId: 'run-1' };
     checkClientMessage(sample);
     expect(sample.type).toBe('resync');
+    expect(sample.runId).toBe('run-1');
+  });
+
+  it('resync variant (runId + lastSeq)', () => {
+    const sample: ServerClientMessage = { type: 'resync', runId: 'run-1', lastSeq: 42 };
+    checkClientMessage(sample);
+    expect(sample.type).toBe('resync');
+    expect(sample.runId).toBe('run-1');
     expect(sample.lastSeq).toBe(42);
+  });
+
+  it('cancel_run variant', () => {
+    const sample: ServerClientMessage = { type: 'cancel_run', runId: 'run-1' };
+    checkClientMessage(sample);
+    expect(sample.type).toBe('cancel_run');
+    expect(sample.runId).toBe('run-1');
+  });
+
+  it('worktree_action variant', () => {
+    const sample: ServerClientMessage = {
+      type: 'worktree_action',
+      runId: 'run-1',
+      action: 'merge',
+    };
+    checkClientMessage(sample);
+    expect(sample.type).toBe('worktree_action');
+    expect(sample.runId).toBe('run-1');
+    expect(sample.action).toBe('merge');
   });
 });
 
@@ -294,15 +556,6 @@ describe('ClientMessage – variant parity (sample objects)', () => {
 
 import type {
   AgentEntity,
-  EventRecord,
-  EventType,
-  LogEntry,
-  PhaseEntity,
-  StepEntity,
-  TaskEntity,
-  WorkflowProjection,
-} from '../../src/web/protocol-types.ts';
-import type {
   AgentEntity as ClientAgentEntity,
   EventRecord as ClientEventRecord,
   EventType as ClientEventType,
@@ -311,7 +564,14 @@ import type {
   StepEntity as ClientStepEntity,
   TaskEntity as ClientTaskEntity,
   WorkflowProjection as ClientWorkflowProjection,
-} from '../../web/src/protocol-types.ts';
+  EventRecord,
+  EventType,
+  LogEntry,
+  PhaseEntity,
+  StepEntity,
+  TaskEntity,
+  WorkflowProjection,
+} from '@engin/shared/protocol-types';
 
 assertEqual<Equal<PhaseEntity, ClientPhaseEntity>>('PhaseEntity');
 assertEqual<Equal<StepEntity, ClientStepEntity>>('StepEntity');
@@ -394,86 +654,182 @@ void taskEntityAssignableFromClient;
 void workflowProjectionAssignableFromServer;
 void workflowProjectionAssignableFromClient;
 
-// ─── 5. Serialization round-trip ──────────────────────────────────────────
+// ─── 5. JSON round-trip ────────────────────────────────────────────────────
 //
-// Confirm that WorkflowProjection (and its nested types) are fully
-// JSON-serializable: no Map, no class instances, no functions.
+// Every protocol value must be fully JSON-serializable (no Map, no class
+// instances, no functions): messages travel over WebSocket as JSON text.
 // JSON.parse(JSON.stringify(obj)) should produce a deep-equal copy.
 
-describe('WorkflowProjection – JSON round-trip', () => {
-  it('survives JSON.parse(JSON.stringify()) with full data', () => {
-    const projection: WorkflowProjection = {
-      seq: 7,
-      taskPrompt: 'Build the thing',
-      phases: [{ id: 'coding', label: 'Coding', icon: '💻', taskIds: ['t1'] }],
-      currentPhaseId: 'coding',
-      completedPhaseIds: ['scouting', 'planning'],
-      tasks: {
-        t1: {
-          id: 't1',
-          title: 'Implement API',
-          phaseId: 'coding',
-          status: 'running',
-          steps: [],
-          dependencies: [],
-          startedAt: 1700000000000,
-        },
-      },
-      agents: {
-        a1: {
-          uid: 'uid-1',
-          agentId: 'a1',
-          profile: 'coder',
-          phaseId: 'coding',
-          taskId: 't1',
-          active: true,
-          log: [
-            {
-              id: 'log-1',
-              timestamp: '2025-01-01T00:00:00.000Z',
-              type: 'text',
-              content: 'working on it',
-              metadata: { key: 'value' },
-            },
-          ],
-          toolCallCount: 3,
-          inputTokens: 500,
-          outputTokens: 200,
-          taskTitle: 'Implement API',
-        },
-      },
-      sidebar: {
-        title: 'Engin',
-        indicator: '🟢',
-      },
-      status: 'running',
-      stats: { totalTokens: 700, agentCount: 1 },
-    };
-
-    const roundTripped = JSON.parse(JSON.stringify(projection));
-    expect(roundTripped).toEqual(projection);
+describe('RunSummary – JSON round-trip', () => {
+  it('survives JSON.parse(JSON.stringify()) with all fields', () => {
+    const summary: RunSummary = makeRunSummary({ currentPhaseId: 'coding' });
+    const roundTripped = JSON.parse(JSON.stringify(summary));
+    expect(roundTripped).toEqual(summary);
   });
 
-  it('survives round-trip with optional fields populated', () => {
-    const projection: WorkflowProjection = {
-      seq: 1,
-      taskPrompt: '',
-      phases: [],
-      currentPhaseId: '',
-      completedPhaseIds: [],
-      tasks: {},
-      agents: {},
-      sidebar: { title: '', indicator: '' },
-      status: 'failed',
-      error: 'Something broke',
-      failedPhase: 'planning',
-      stats: { totalTokens: 0, agentCount: 0 },
-    };
+  it('survives round-trip with every status value', () => {
+    for (const status of ['running', 'complete', 'failed'] as const) {
+      const summary: RunSummary = makeRunSummary({ status });
+      expect(JSON.parse(JSON.stringify(summary))).toEqual(summary);
+    }
+  });
 
-    const roundTripped = JSON.parse(JSON.stringify(projection));
-    expect(roundTripped).toEqual(projection);
-    expect(roundTripped.error).toBe('Something broke');
-    expect(roundTripped.failedPhase).toBe('planning');
+  it('omits currentPhaseId from the serialised form when undefined', () => {
+    const summary: RunSummary = makeRunSummary();
+    const serialised = JSON.parse(JSON.stringify(summary));
+    expect('currentPhaseId' in serialised).toBe(false);
+  });
+});
+
+describe('ServerMessage – JSON round-trip per variant', () => {
+  it('runs round-trips through JSON', () => {
+    const msg: ServerSideMessage = {
+      type: 'runs',
+      runs: [makeRunSummary(), makeRunSummary({ runId: 'run-2', status: 'failed' })],
+    };
+    const roundTripped = JSON.parse(JSON.stringify(msg));
+    expect(roundTripped).toEqual(msg);
+    expect(roundTripped.runs).toHaveLength(2);
+  });
+
+  it('run_started round-trips through JSON', () => {
+    const msg: ServerSideMessage = {
+      type: 'run_started',
+      runId: 'run-1',
+      summary: makeRunSummary({ currentPhaseId: 'planning' }),
+    };
+    const roundTripped = JSON.parse(JSON.stringify(msg));
+    expect(roundTripped).toEqual(msg);
+    expect(roundTripped.summary.status).toBe('running');
+  });
+
+  it('snapshot round-trips through JSON', () => {
+    const msg: ServerSideMessage = {
+      type: 'snapshot',
+      runId: 'run-1',
+      seq: 7,
+      state: {
+        seq: 7,
+        taskPrompt: 'Build the thing',
+        phases: [{ id: 'coding', label: 'Coding', icon: '💻', taskIds: ['t1'] }],
+        currentPhaseId: 'coding',
+        completedPhaseIds: ['scouting', 'planning'],
+        tasks: {
+          t1: {
+            id: 't1',
+            title: 'Implement API',
+            phaseId: 'coding',
+            status: 'active',
+            steps: [],
+            dependencies: [],
+            startedAt: 1700000000000,
+          },
+        },
+        agents: {
+          a1: {
+            uid: 'uid-1',
+            agentId: 'a1',
+            profile: 'coder',
+            phaseId: 'coding',
+            taskId: 't1',
+            active: true,
+            log: [
+              {
+                id: 'log-1',
+                timestamp: '2025-01-01T00:00:00.000Z',
+                type: 'text',
+                content: 'working on it',
+                metadata: { key: 'value' },
+              },
+            ],
+            toolCallCount: 3,
+            inputTokens: 500,
+            outputTokens: 200,
+            taskTitle: 'Implement API',
+          },
+        },
+        sidebar: { title: 'Engin', indicator: '🟢' },
+        status: 'running',
+        stats: { totalTokens: 700, agentCount: 1 },
+        runLog: [],
+      },
+    };
+    const roundTripped = JSON.parse(JSON.stringify(msg));
+    expect(roundTripped).toEqual(msg);
+    expect(roundTripped.runId).toBe('run-1');
+  });
+
+  it('events round-trips through JSON', () => {
+    const msg: ServerSideMessage = {
+      type: 'events',
+      runId: 'run-1',
+      seq: 3,
+      events: [
+        {
+          seq: 3,
+          type: 'phase_started',
+          data: { phase: 'coding' },
+          metadata: { timestamp: ISO_NOW, phaseId: 'coding' },
+        },
+      ],
+    };
+    const roundTripped = JSON.parse(JSON.stringify(msg));
+    expect(roundTripped).toEqual(msg);
+    expect(roundTripped.events[0].type).toBe('phase_started');
+  });
+
+  it('run_complete round-trips through JSON', () => {
+    const msg: ServerSideMessage = { type: 'run_complete', runId: 'run-1' };
+    expect(JSON.parse(JSON.stringify(msg))).toEqual(msg);
+  });
+
+  it('run_failed round-trips through JSON', () => {
+    const msg: ServerSideMessage = {
+      type: 'run_failed',
+      runId: 'run-1',
+      error: 'kaboom',
+      phase: 'planning',
+    };
+    expect(JSON.parse(JSON.stringify(msg))).toEqual(msg);
+  });
+
+  it('log round-trips through JSON', () => {
+    const msg: ServerSideMessage = {
+      type: 'log',
+      runId: 'run-1',
+      level: 'error',
+      message: 'disk full',
+      timestamp: ISO_NOW,
+    };
+    expect(JSON.parse(JSON.stringify(msg))).toEqual(msg);
+  });
+
+  it('auth_required round-trips through JSON', () => {
+    const msg: ServerSideMessage = { type: 'auth_required' };
+    expect(JSON.parse(JSON.stringify(msg))).toEqual(msg);
+  });
+
+  it('error round-trips through JSON (without runId)', () => {
+    const msg: ServerSideMessage = {
+      type: 'error',
+      code: 'UNKNOWN_RUN',
+      message: 'no such run',
+    };
+    const roundTripped = JSON.parse(JSON.stringify(msg));
+    expect(roundTripped).toEqual(msg);
+    expect('runId' in roundTripped).toBe(false);
+  });
+
+  it('error round-trips through JSON (with runId)', () => {
+    const msg: ServerSideMessage = {
+      type: 'error',
+      runId: 'run-1',
+      code: 'BAD_MESSAGE',
+      message: 'malformed payload',
+    };
+    const roundTripped = JSON.parse(JSON.stringify(msg));
+    expect(roundTripped).toEqual(msg);
+    expect(roundTripped.runId).toBe('run-1');
   });
 
   it('EventRecord survives JSON round-trip', () => {

@@ -1,6 +1,6 @@
 import { visibleWidth } from '@earendil-works/pi-tui';
 import { describe, expect, it } from 'bun:test';
-import { EventLog } from '../../../src/tui/components/event-log.js';
+import { EventLog } from '../../../packages/tui/src/components/event-log.js';
 
 describe('EventLog', () => {
   describe('addLine and totalLines', () => {

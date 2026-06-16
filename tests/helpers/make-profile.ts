@@ -1,4 +1,4 @@
-import type { AgentProfile } from '../../src/core/types.js';
+import type { AgentProfile } from '../../packages/engine/src/core/types.js';
 
 /**
  * Creates an AgentProfile with sensible defaults.

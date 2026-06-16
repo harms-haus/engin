@@ -9,12 +9,21 @@
     "esModuleInterop": true,
     "skipLibCheck": true,
     "baseUrl": ".",
-    "paths": { "@engin/*": ["./src/*"] },
+    "paths": {
+      "@engin/shared": ["./packages/shared/src/index.ts"],
+      "@engin/shared/*": ["./packages/shared/src/*"]
+    },
     "declaration": true,
     "declarationMap": true,
     "sourceMap": true,
     "types": ["bun-types"]
   },
   "include": ["src"],
-  "exclude": ["node_modules", "dist", "tests"]
+  "exclude": ["node_modules", "dist", "tests"],
+  "references": [
+    { "path": "./packages/shared" },
+    { "path": "./packages/engine" },
+    { "path": "./packages/tui" },
+    { "path": "./packages/cli" }
+  ]
 }

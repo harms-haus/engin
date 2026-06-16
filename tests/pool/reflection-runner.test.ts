@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
 import { z } from 'zod';
 
-import { reflectionRunner } from '../../src/pool/reflection-runner.js';
+import { reflectionRunner } from '../../packages/engine/src/pool/reflection-runner.js';
 import {
   clearPoolMocks,
   createRunnerContext,

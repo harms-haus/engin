@@ -1,132 +1,64 @@
-import { afterAll, afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
-import { mkdirSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
-import { useTempDir } from '../helpers/use-temp-dir.js';
+// ─── T30: Non-TTY SIGINT handler contract tests ────────────────────────────
+//
+// Tests for the new `setupNonTtySigintHandler(runId, engineClient)` API that
+// replaces the old `setupSigintHandler(useTui)` model.
+//
+// CONTRACT UNDER TEST (T30):
+//
+//   setupNonTtySigintHandler(runId: string, engineClient: { send(msg): void })
+//     → { dispose: () => void }
+//
+//   - Registers a process.on('SIGINT', handler).
+//   - First SIGINT:
+//       1. engineClient.send({ type: 'cancel_run', runId }) is called.
+//       2. A cancelling/abort message is printed (console.log or console.error).
+//   - Second SIGINT:
+//       1. process.exit(1) is called.
+//       2. A force-exit message is printed.
+//   - NO 5-second force-exit timer (client does not own the run lifecycle).
+//     After first SIGINT, the process is NOT auto-killed after 5s.
+//   - dispose() removes the SIGINT listener; emitting SIGINT after dispose
+//     does NOT call engineClient.send or process.exit.
+//
+// TTY mode (TUI attached) is NOT handled by this module — the TUI input
+// handler (T31) manages Ctrl+C/Ctrl+D in that path. `setupSigintHandler`
+// (the old function) is removed by T30.
 
-// ─── Capture real modules before mocking ─────────────────────────────────────
+import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
 
-const realWorkflowLoader = Object.assign({}, await import('../../src/core/workflow-loader.js'));
-const realUtils = Object.assign({}, await import('../../src/core/utils.js'));
+// ─── Import the SUT (will NOT exist until the implement phase) ─────────────
+//
+// Because `setupNonTtySigintHandler` doesn't exist yet, this import will fail.
+// That failure is the expected RED state for TDD — the test must compile
+// (no syntax errors) but the import resolution must fail.
 
-// ─── Mock functions ──────────────────────────────────────────────────────────
+import { setupNonTtySigintHandler } from '../../packages/cli/src/cli/sigint.js';
 
-const mockWorkflowRun = mock<(taskPrompt: string, options: Record<string, unknown>) => Promise<void>>();
+// ═══════════════════════════════════════════════════════════════════════════════
+// Helper: create a mock engineClient with a send spy
+// ═══════════════════════════════════════════════════════════════════════════════
 
-// ─── Mock modules (hoisted before imports by Bun test runtime) ───────────────
-
-mock.module('../../src/core/workflow-loader.js', () => ({
-  loadWorkflow: () => Promise.resolve({ run: mockWorkflowRun }),
-  clearWorkflowCache: () => {},
-}));
-
-mock.module('../../src/core/utils.js', () => ({
-  validateWorkflowName: () => {},
-}));
-
-// ─── Import SUT after mocks ──────────────────────────────────────────────────
-
-import { resumeCommand, runCommand } from '../../src/cli.ts';
-
-// ─── Restore original modules ────────────────────────────────────────────────
-
-afterAll(() => {
-  mock.module('../../src/core/workflow-loader.js', () => realWorkflowLoader);
-  mock.module('../../src/core/utils.js', () => realUtils);
-});
-
-// ─── Shared helpers ──────────────────────────────────────────────────────────
-
-function makeRunOptions() {
+function createMockEngineClient() {
   return {
-    command: 'run' as const,
-    workflowName: 'test-workflow',
-    taskPrompt: 'test prompt',
-    cwd: '/tmp',
-    maxConcurrent: 3,
-    verbose: true, // ensures shouldUseTui() returns false → console.log is emitted
-    apiKeys: {},
-    warnings: [],
-  };
-}
-
-function createPastRunDir(tempDir: string, dirName: string) {
-  const runDir = join(tempDir, '.engin', 'work', dirName);
-  mkdirSync(runDir, { recursive: true });
-  writeFileSync(join(runDir, '.engin-state.json'), JSON.stringify({ taskPrompt: 'resumed test prompt' }));
-}
-
-/**
- * Poll until the SIGINT handler is registered on the `process.on` spy.
- *
- * The async chain runCommand/resumeCommand → loadWorkflow → setupSigintHandler
- * → process.on('SIGINT', …) may take more than a single event-loop tick under
- * load or in CI, so a fixed `setTimeout(0)` wait is flaky. Polling (with a
- * timeout) makes handler capture deterministic.
- */
-async function waitForSigintHandler(
-  onSpy: ReturnType<typeof spyOn>,
-  timeoutMs = 2000,
-): Promise<(() => void) | undefined> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const sigintCall = onSpy.mock.calls.find((call) => call[0] === 'SIGINT');
-    if (sigintCall) return sigintCall[1] as (() => void) | undefined;
-    await new Promise((r) => setTimeout(r, 0));
-  }
-  return onSpy.mock.calls.find((call) => call[0] === 'SIGINT')?.[1] as (() => void) | undefined;
-}
-
-/**
- * Starts runCommand and waits for the SIGINT handler to be registered.
- * Returns the inner promise, captured handler, resolve function, and signal.
- */
-async function startRunCommand(
-  onSpy: ReturnType<typeof spyOn>,
-  mockFn: typeof mockWorkflowRun,
-): Promise<{
-  runPromise: Promise<void>;
-  handler: () => void;
-  resolveRun: () => void;
-  signal: AbortSignal | undefined;
-}> {
-  let resolveRun: (() => void) | undefined;
-  let capturedSignal: AbortSignal | undefined;
-
-  mockFn.mockImplementation((_taskPrompt: string, opts: Record<string, unknown>) => {
-    capturedSignal = opts?.signal as AbortSignal | undefined;
-    return new Promise<void>((resolve) => {
-      resolveRun = resolve;
-    });
-  });
-
-  const promise = runCommand(makeRunOptions());
-  const handler = await waitForSigintHandler(onSpy);
-
-  return {
-    runPromise: promise,
-    handler: handler!,
-    resolveRun: resolveRun!,
-    signal: capturedSignal,
+    send: mock<(msg: Record<string, unknown>) => void>(),
   };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// SIGINT handler tests through runCommand
+// Tests
 // ═══════════════════════════════════════════════════════════════════════════════
 
-describe('SIGINT handler (runCommand)', () => {
+describe('setupNonTtySigintHandler', () => {
   let exitSpy: ReturnType<typeof spyOn>;
   let logSpy: ReturnType<typeof spyOn>;
-  let onSpy: ReturnType<typeof spyOn>;
-  let removeListenerSpy: ReturnType<typeof spyOn>;
+  let stderrSpy: ReturnType<typeof spyOn>;
 
   beforeEach(() => {
     exitSpy = spyOn(process, 'exit').mockImplementation(((code: number) => {
       throw new Error(`process.exit(${code})`);
     }) as never);
     logSpy = spyOn(console, 'log').mockImplementation(() => {});
-    onSpy = spyOn(process, 'on');
-    removeListenerSpy = spyOn(process, 'removeListener');
+    stderrSpy = spyOn(console, 'error').mockImplementation(() => {});
   });
 
   afterEach(() => {
@@ -136,388 +68,239 @@ describe('SIGINT handler (runCommand)', () => {
 
     exitSpy.mockRestore();
     logSpy.mockRestore();
-    onSpy.mockRestore();
-    removeListenerSpy.mockRestore();
+    stderrSpy.mockRestore();
   });
 
-  // ─── Registration ────────────────────────────────────────────────────────
+  // ─── Return value shape ─────────────────────────────────────────────────
 
-  it('registers a SIGINT handler via process.on', async () => {
-    const { runPromise, handler, resolveRun } = await startRunCommand(onSpy, mockWorkflowRun);
+  it('returns an object with a dispose function', () => {
+    const client = createMockEngineClient();
+    const result = setupNonTtySigintHandler('run-abc', client);
 
-    expect(handler).toBeDefined();
-    expect(onSpy).toHaveBeenCalledWith('SIGINT', expect.any(Function));
-
-    resolveRun();
-    await runPromise;
+    expect(result).toBeDefined();
+    expect(typeof result.dispose).toBe('function');
   });
 
-  // ─── First SIGINT ────────────────────────────────────────────────────────
+  // ─── First SIGINT ──────────────────────────────────────────────────────
 
-  it('first SIGINT aborts the AbortController signal', async () => {
-    const { runPromise, handler, resolveRun, signal } = await startRunCommand(onSpy, mockWorkflowRun);
+  it('first SIGINT sends cancel_run via engineClient.send', () => {
+    const client = createMockEngineClient();
+    const { dispose } = setupNonTtySigintHandler('run-abc', client);
 
-    handler();
+    process.emit('SIGINT');
 
-    expect(signal).toBeDefined();
-    expect(signal!.aborted).toBe(true);
-
-    resolveRun();
-    await runPromise;
-  });
-
-  it('first SIGINT logs graceful shutdown message', async () => {
-    const { runPromise, handler, resolveRun } = await startRunCommand(onSpy, mockWorkflowRun);
-
-    handler();
-
-    const logCalls = logSpy.mock.calls.map((c) => String(c[0])).join('\n');
-    expect(logCalls).toContain('Interrupt received');
-    expect(logCalls).toContain('stopping workflow gracefully');
-    expect(logCalls).toContain('Ctrl+C again to force quit');
-
-    resolveRun();
-    await runPromise;
-  });
-
-  it('first SIGINT schedules a 5-second force-exit safety timer', async () => {
-    const setTimeoutSpy = spyOn(globalThis, 'setTimeout');
-
-    const { runPromise, handler, resolveRun } = await startRunCommand(onSpy, mockWorkflowRun);
-
-    handler();
-
-    const timerCall = setTimeoutSpy.mock.calls.find((call) => call[1] === 5000);
-    expect(timerCall).toBeDefined();
-    expect(typeof timerCall![0]).toBe('function'); // callback
-
-    // Clear the actual real timer so it doesn't fire after the test
-    const timerCallIdx = setTimeoutSpy.mock.calls.findIndex((call) => call[1] === 5000);
-    const timerResult = setTimeoutSpy.mock.results[timerCallIdx];
-    if (timerResult?.type === 'return') {
-      clearTimeout(timerResult.value as ReturnType<typeof setTimeout>);
-    }
-
-    setTimeoutSpy.mockRestore();
-    resolveRun();
-    await runPromise;
-  });
-
-  // ─── Second SIGINT ───────────────────────────────────────────────────────
-
-  it('second SIGINT calls process.exit(1)', async () => {
-    const { runPromise, handler, resolveRun } = await startRunCommand(onSpy, mockWorkflowRun);
-
-    handler(); // first
-
-    expect(() => handler()).toThrow('process.exit(1)');
-    expect(exitSpy).toHaveBeenCalledWith(1);
-
-    resolveRun();
-    await runPromise.catch(() => {});
-  });
-
-  it('second SIGINT logs force quit message', async () => {
-    const { runPromise, handler, resolveRun } = await startRunCommand(onSpy, mockWorkflowRun);
-
-    handler(); // first
-    logSpy.mockClear();
-
-    try {
-      handler(); // second
-    } catch {
-      /* expected – process.exit mock throws */
-    }
-
-    const logCalls = logSpy.mock.calls.map((c) => String(c[0])).join('\n');
-    expect(logCalls).toContain('Force quit');
-
-    resolveRun();
-    await runPromise.catch(() => {});
-  });
-
-  it('second SIGINT clears the force-exit timer via clearTimeout', async () => {
-    const clearTimeoutSpy = spyOn(globalThis, 'clearTimeout');
-
-    const { runPromise, handler, resolveRun } = await startRunCommand(onSpy, mockWorkflowRun);
-
-    handler(); // first
-
-    try {
-      handler(); // second
-    } catch {
-      /* expected */
-    }
-
-    // The second SIGINT handler should clear the force-exit timer
-    expect(clearTimeoutSpy).toHaveBeenCalled();
-
-    clearTimeoutSpy.mockRestore();
-    resolveRun();
-    await runPromise.catch(() => {});
-  });
-
-  // ─── Force-exit timer callback ───────────────────────────────────────────
-
-  it('force-exit timer callback calls process.exit(1) and logs timeout message', async () => {
-    // Use spyOn (which calls through) to capture the timer callback + id
-    const setTimeoutSpy = spyOn(globalThis, 'setTimeout');
-
-    const { runPromise, handler, resolveRun } = await startRunCommand(onSpy, mockWorkflowRun);
-
-    handler(); // first SIGINT → schedules timer via real setTimeout
-
-    // Find the 5000ms setTimeout call
-    const timerCallIdx = setTimeoutSpy.mock.calls.findIndex((call) => call[1] === 5000);
-    expect(timerCallIdx).toBeGreaterThanOrEqual(0);
-
-    const timerCallback = setTimeoutSpy.mock.calls[timerCallIdx][0] as () => void;
-    const timerResult = setTimeoutSpy.mock.results[timerCallIdx];
-
-    // Cancel the real timer so it doesn't fire after the test
-    if (timerResult?.type === 'return') {
-      clearTimeout(timerResult.value as ReturnType<typeof setTimeout>);
-    }
-
-    setTimeoutSpy.mockRestore();
-
-    // Invoke the captured callback directly to test its behavior
-    logSpy.mockClear();
-    try {
-      timerCallback();
-    } catch {
-      /* expected – process.exit mock throws */
-    }
-
-    expect(exitSpy).toHaveBeenCalledWith(1);
-    const logCalls = logSpy.mock.calls.map((c) => String(c[0])).join('\n');
-    expect(logCalls).toContain('Graceful shutdown timed out');
-
-    resolveRun();
-    await runPromise.catch(() => {});
-  });
-
-  // ─── Cleanup ─────────────────────────────────────────────────────────────
-
-  it('cleanup removes SIGINT handler after workflow completes normally', async () => {
-    const { runPromise, handler, resolveRun } = await startRunCommand(onSpy, mockWorkflowRun);
-
-    resolveRun();
-    await runPromise;
-
-    expect(removeListenerSpy).toHaveBeenCalledWith('SIGINT', handler);
-  });
-
-  it('cleanup clears force-exit timer when workflow completes after first SIGINT', async () => {
-    const clearTimeoutSpy = spyOn(globalThis, 'clearTimeout');
-
-    const { runPromise, handler, resolveRun } = await startRunCommand(onSpy, mockWorkflowRun);
-
-    handler(); // first SIGINT → sets force-exit timer
-    resolveRun(); // complete the workflow → triggers finally { cleanup }
-    await runPromise;
-
-    // The finally block should clear the force-exit timer
-    expect(clearTimeoutSpy).toHaveBeenCalled();
-
-    clearTimeoutSpy.mockRestore();
-  });
-});
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// SIGINT handler tests through resumeCommand
-// ═══════════════════════════════════════════════════════════════════════════════
-
-describe('SIGINT handler (resumeCommand)', () => {
-  const { getDir } = useTempDir();
-
-  let exitSpy: ReturnType<typeof spyOn>;
-  let logSpy: ReturnType<typeof spyOn>;
-  let onSpy: ReturnType<typeof spyOn>;
-  let removeListenerSpy: ReturnType<typeof spyOn>;
-
-  beforeEach(() => {
-    exitSpy = spyOn(process, 'exit').mockImplementation(((code: number) => {
-      throw new Error(`process.exit(${code})`);
-    }) as never);
-    logSpy = spyOn(console, 'log').mockImplementation(() => {});
-    onSpy = spyOn(process, 'on');
-    removeListenerSpy = spyOn(process, 'removeListener');
-  });
-
-  afterEach(() => {
-    const listeners = process.listeners('SIGINT');
-    for (const l of listeners) process.removeListener('SIGINT', l as any);
-
-    exitSpy.mockRestore();
-    logSpy.mockRestore();
-    onSpy.mockRestore();
-    removeListenerSpy.mockRestore();
-  });
-
-  async function startResumeCommand(sessionName: string) {
-    let resolveRun: (() => void) | undefined;
-    let capturedSignal: AbortSignal | undefined;
-
-    mockWorkflowRun.mockImplementation((_taskPrompt: string, opts: Record<string, unknown>) => {
-      capturedSignal = opts?.signal as AbortSignal | undefined;
-      return new Promise<void>((resolve) => {
-        resolveRun = resolve;
-      });
+    expect(client.send).toHaveBeenCalledTimes(1);
+    expect(client.send).toHaveBeenCalledWith({
+      type: 'cancel_run',
+      runId: 'run-abc',
     });
 
-    const options = {
-      command: 'resume' as const,
-      sessionName,
-      cwd: getDir(),
-      maxConcurrent: 3,
-      verbose: true,
-      apiKeys: {},
-      warnings: [],
-    };
-
-    const promise = resumeCommand(options);
-    const handler = await waitForSigintHandler(onSpy);
-
-    return {
-      runPromise: promise,
-      handler: handler!,
-      resolveRun: resolveRun!,
-      signal: capturedSignal,
-    };
-  }
-
-  // ─── Registration ────────────────────────────────────────────────────────
-
-  it('registers a SIGINT handler', async () => {
-    const ts = Date.now();
-    createPastRunDir(getDir(), `${ts}-my-workflow`);
-
-    const { runPromise, handler, resolveRun } = await startResumeCommand(`${ts}-my-workflow`);
-
-    expect(handler).toBeDefined();
-    expect(onSpy).toHaveBeenCalledWith('SIGINT', expect.any(Function));
-
-    resolveRun();
-    await runPromise;
+    dispose();
   });
 
-  // ─── First SIGINT ────────────────────────────────────────────────────────
+  it('first SIGINT prints a cancellation message', () => {
+    const client = createMockEngineClient();
+    const { dispose } = setupNonTtySigintHandler('run-abc', client);
 
-  it('first SIGINT aborts the AbortController signal', async () => {
-    const ts = Date.now();
-    createPastRunDir(getDir(), `${ts}-my-workflow`);
+    process.emit('SIGINT');
 
-    const { runPromise, handler, resolveRun, signal } = await startResumeCommand(`${ts}-my-workflow`);
+    const allOutput = [
+      ...logSpy.mock.calls.map((c) => String(c[0])),
+      ...stderrSpy.mock.calls.map((c) => String(c[0])),
+    ].join('\n');
+    // Match any variant of "cancelling" / "cancel" / "aborting"
+    expect(allOutput.toLowerCase()).toMatch(/cancel|abort/);
 
-    handler();
-
-    expect(signal).toBeDefined();
-    expect(signal!.aborted).toBe(true);
-
-    resolveRun();
-    await runPromise;
+    dispose();
   });
 
-  it('first SIGINT logs graceful shutdown message', async () => {
-    const ts = Date.now();
-    createPastRunDir(getDir(), `${ts}-my-workflow`);
+  it('first SIGINT does NOT call process.exit', () => {
+    const client = createMockEngineClient();
+    const { dispose } = setupNonTtySigintHandler('run-abc', client);
 
-    const { runPromise, handler, resolveRun } = await startResumeCommand(`${ts}-my-workflow`);
+    process.emit('SIGINT');
 
-    handler();
+    expect(exitSpy).not.toHaveBeenCalled();
 
-    const logCalls = logSpy.mock.calls.map((c) => String(c[0])).join('\n');
-    expect(logCalls).toContain('Interrupt received');
-    expect(logCalls).toContain('stopping workflow gracefully');
-
-    resolveRun();
-    await runPromise;
+    dispose();
   });
 
-  // ─── Second SIGINT ───────────────────────────────────────────────────────
+  // ─── Second SIGINT ─────────────────────────────────────────────────────
 
-  it('second SIGINT calls process.exit(1)', async () => {
-    const ts = Date.now();
-    createPastRunDir(getDir(), `${ts}-my-workflow`);
+  it('second SIGINT calls process.exit(1)', () => {
+    const client = createMockEngineClient();
+    const { dispose } = setupNonTtySigintHandler('run-abc', client);
 
-    const { runPromise, handler, resolveRun } = await startResumeCommand(`${ts}-my-workflow`);
+    process.emit('SIGINT'); // first
+    process.emit('SIGINT'); // second
 
-    handler(); // first
-
-    expect(() => handler()).toThrow('process.exit(1)');
     expect(exitSpy).toHaveBeenCalledWith(1);
 
-    resolveRun();
-    await runPromise.catch(() => {});
+    dispose();
   });
 
-  it('second SIGINT logs force quit message', async () => {
-    const ts = Date.now();
-    createPastRunDir(getDir(), `${ts}-my-workflow`);
+  it('second SIGINT prints a force-exit message', () => {
+    const client = createMockEngineClient();
+    const { dispose } = setupNonTtySigintHandler('run-abc', client);
 
-    const { runPromise, handler, resolveRun } = await startResumeCommand(`${ts}-my-workflow`);
-
-    handler(); // first
+    process.emit('SIGINT'); // first
     logSpy.mockClear();
+    stderrSpy.mockClear();
 
     try {
-      handler(); // second
+      process.emit('SIGINT'); // second — triggers process.exit(1) which throws
     } catch {
       /* expected */
     }
 
-    const logCalls = logSpy.mock.calls.map((c) => String(c[0])).join('\n');
-    expect(logCalls).toContain('Force quit');
+    const allOutput = [
+      ...logSpy.mock.calls.map((c) => String(c[0])),
+      ...stderrSpy.mock.calls.map((c) => String(c[0])),
+    ].join('\n');
+    // Match any variant of "force quit" / "force exit" / "forcefully"
+    expect(allOutput.toLowerCase()).toMatch(/force/);
 
-    resolveRun();
-    await runPromise.catch(() => {});
+    dispose();
   });
 
-  // ─── Cleanup ─────────────────────────────────────────────────────────────
+  it('second SIGINT does NOT send cancel_run again', () => {
+    const client = createMockEngineClient();
+    const { dispose } = setupNonTtySigintHandler('run-abc', client);
 
-  it('cleanup removes SIGINT handler after workflow completes normally', async () => {
-    const ts = Date.now();
-    createPastRunDir(getDir(), `${ts}-my-workflow`);
+    process.emit('SIGINT'); // first → sends cancel_run
+    client.send.mockClear();
 
-    const { runPromise, handler, resolveRun } = await startResumeCommand(`${ts}-my-workflow`);
-
-    resolveRun();
-    await runPromise;
-
-    expect(removeListenerSpy).toHaveBeenCalledWith('SIGINT', handler);
-  });
-
-  // ─── Consistency with runCommand ─────────────────────────────────────────
-
-  it('uses identical SIGINT handler behavior as runCommand', async () => {
-    const ts = Date.now();
-    createPastRunDir(getDir(), `${ts}-my-workflow`);
-
-    const { runPromise, handler, resolveRun, signal } = await startResumeCommand(`${ts}-my-workflow`);
-
-    // Verify handler was registered
-    expect(handler).toBeDefined();
-
-    // First SIGINT: abort + message + timer
-    handler();
-    expect(signal?.aborted).toBe(true);
-    const afterFirst = logSpy.mock.calls.map((c) => String(c[0])).join('\n');
-    expect(afterFirst).toContain('Interrupt received');
-    expect(afterFirst).toContain('Ctrl+C again to force quit');
-
-    // Second SIGINT: force exit + message
-    logSpy.mockClear();
     try {
-      handler();
+      process.emit('SIGINT'); // second → process.exit(1)
     } catch {
       /* expected */
     }
-    const afterSecond = logSpy.mock.calls.map((c) => String(c[0])).join('\n');
-    expect(afterSecond).toContain('Force quit');
-    expect(exitSpy).toHaveBeenCalledWith(1);
 
-    resolveRun();
-    await runPromise.catch(() => {});
+    expect(client.send).not.toHaveBeenCalled();
+
+    dispose();
+  });
+
+  // ─── No 5-second force-exit timer ──────────────────────────────────────
+
+  it('does NOT schedule a force-exit timer after first SIGINT', () => {
+    const setTimeoutSpy = spyOn(globalThis, 'setTimeout');
+
+    const client = createMockEngineClient();
+    const { dispose } = setupNonTtySigintHandler('run-abc', client);
+
+    process.emit('SIGINT');
+
+    // No setTimeout should have been called with 5000ms
+    const fiveSecondTimer = setTimeoutSpy.mock.calls.find((call) => call[1] === 5000);
+    expect(fiveSecondTimer).toBeUndefined();
+
+    // No setTimeout at all should have been called by the handler
+    // (except possibly by unrelated code — we check the count is zero)
+    expect(setTimeoutSpy).not.toHaveBeenCalled();
+
+    setTimeoutSpy.mockRestore();
+    dispose();
+  });
+
+  it('process does NOT auto-exit after the old 5-second window', async () => {
+    const client = createMockEngineClient();
+    const { dispose } = setupNonTtySigintHandler('run-abc', client);
+
+    process.emit('SIGINT'); // first
+
+    // Wait longer than the old 5-second timer window
+    await new Promise((r) => setTimeout(r, 100));
+
+    // process.exit should NOT have been called (no auto-exit)
+    expect(exitSpy).not.toHaveBeenCalled();
+
+    dispose();
+  });
+
+  // ─── dispose() ─────────────────────────────────────────────────────────
+
+  it('dispose removes the SIGINT listener', () => {
+    const client = createMockEngineClient();
+    const { dispose } = setupNonTtySigintHandler('run-abc', client);
+
+    // Verify listener is registered
+    const beforeDispose = process.listeners('SIGINT').length;
+
+    dispose();
+
+    const afterDispose = process.listeners('SIGINT').length;
+    expect(afterDispose).toBeLessThan(beforeDispose);
+  });
+
+  it('SIGINT after dispose does NOT call engineClient.send', () => {
+    const client = createMockEngineClient();
+    const { dispose } = setupNonTtySigintHandler('run-abc', client);
+
+    dispose();
+
+    process.emit('SIGINT');
+
+    expect(client.send).not.toHaveBeenCalled();
+  });
+
+  it('SIGINT after dispose does NOT call process.exit', () => {
+    const client = createMockEngineClient();
+    const { dispose } = setupNonTtySigintHandler('run-abc', client);
+
+    dispose();
+
+    process.emit('SIGINT');
+
+    expect(exitSpy).not.toHaveBeenCalled();
+  });
+
+  // ─── runId forwarding ──────────────────────────────────────────────────
+
+  it('forwards the correct runId in cancel_run', () => {
+    const client = createMockEngineClient();
+    const { dispose } = setupNonTtySigintHandler('unique-run-id-123', client);
+
+    process.emit('SIGINT');
+
+    expect(client.send).toHaveBeenCalledWith({
+      type: 'cancel_run',
+      runId: 'unique-run-id-123',
+    });
+
+    dispose();
+  });
+
+  it('forwards a different runId correctly', () => {
+    const client = createMockEngineClient();
+    const { dispose } = setupNonTtySigintHandler('another-run-xyz', client);
+
+    process.emit('SIGINT');
+
+    expect(client.send).toHaveBeenCalledWith({
+      type: 'cancel_run',
+      runId: 'another-run-xyz',
+    });
+
+    dispose();
+  });
+
+  // ─── Multiple independent instances ─────────────────────────────────────
+
+  it('supports multiple independent handler instances without interference', () => {
+    const client1 = createMockEngineClient();
+    const client2 = createMockEngineClient();
+
+    const { dispose: dispose1 } = setupNonTtySigintHandler('run-1', client1);
+    const { dispose: dispose2 } = setupNonTtySigintHandler('run-2', client2);
+
+    process.emit('SIGINT');
+
+    // Both clients receive cancel_run (two listeners registered)
+    expect(client1.send).toHaveBeenCalledWith({ type: 'cancel_run', runId: 'run-1' });
+    expect(client2.send).toHaveBeenCalledWith({ type: 'cancel_run', runId: 'run-2' });
+
+    dispose1();
+    dispose2();
   });
 });

@@ -2,8 +2,8 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, mock } from 'bun
 
 // ─── Capture real modules before mocking ────────────────────────────────────
 
-const realGit = Object.assign({}, await import('../../src/core/git.ts'));
-const realWorktreeLifecycle = Object.assign({}, await import('../../src/core/worktree-lifecycle.ts'));
+const realGit = Object.assign({}, await import('../../packages/engine/src/core/git.ts'));
+const realWorktreeLifecycle = Object.assign({}, await import('../../packages/engine/src/core/worktree-lifecycle.ts'));
 
 // ─── Mock functions for git ─────────────────────────────────────────────────
 
@@ -24,7 +24,7 @@ const mockPushAndCreatePR = mock(async () => {});
 
 // ─── Mock modules ────────────────────────────────────────────────────────────
 
-mock.module('../../src/core/git.ts', () => ({
+mock.module('../../packages/engine/src/core/git.ts', () => ({
   getRepoRoot: mockGetRepoRoot,
   getMainBranch: mockGetMainBranch,
   getCurrentBranch: mockGetCurrentBranch,
@@ -37,7 +37,7 @@ mock.module('../../src/core/git.ts', () => ({
   getDiff: mockGetDiff,
 }));
 
-mock.module('../../src/core/worktree-lifecycle.ts', () => ({
+mock.module('../../packages/engine/src/core/worktree-lifecycle.ts', () => ({
   generateCommitMessage: mockGenerateCommitMessage,
   resolveConflictsWithAgent: mockResolveConflictsWithAgent,
   pushAndCreatePR: mockPushAndCreatePR,
@@ -53,13 +53,13 @@ import {
   handleMergeToMain,
   handlePushAndPR,
   promptPostWorktreeAction,
-} from '../../src/cli/post-worktree.js';
+} from '../../packages/cli/src/cli/post-worktree.js';
 
 // ─── Restore original modules ────────────────────────────────────────────────
 
 afterAll(() => {
-  mock.module('../../src/core/git.ts', () => realGit);
-  mock.module('../../src/core/worktree-lifecycle.ts', () => realWorktreeLifecycle);
+  mock.module('../../packages/engine/src/core/git.ts', () => realGit);
+  mock.module('../../packages/engine/src/core/worktree-lifecycle.ts', () => realWorktreeLifecycle);
 });
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────

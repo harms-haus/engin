@@ -13,10 +13,15 @@ import { describe, expect, it } from 'bun:test';
 // ─── 1. Compile-time: new types are exported ───────────────────────────────
 //
 // These imports verify at compile time that PhaseEntity and StepEntity are
-// re-exported from the protocol-types module. If they were missing, tsc/Bun
+// exported from the protocol-types module. If they were missing, tsc/Bun
 // would report "Module has no exported member".
+//
+// Parity note: the canonical home for these types is now the shared package
+// module `@engin/shared/protocol-types`. Both the engine and the web app
+// consume the SAME module, so structural parity is trivially guaranteed;
+// these imports double as regression guards against future divergence.
 
-import type { PhaseEntity, StepEntity, WorkflowProjection } from '../../src/web/protocol-types.ts';
+import type { PhaseEntity, StepEntity, WorkflowProjection } from '@engin/shared/protocol-types';
 
 // ─── 2. Runtime: module exports confirm the expected shape ─────────────────
 
@@ -82,12 +87,13 @@ describe('StepEntity is re-exported from protocol-types', () => {
 
 // ─── 3. ServerMessage still works with updated WorkflowProjection ─────────
 
-import type { ClientMessage, ServerMessage } from '../../src/web/protocol-types.ts';
+import type { ClientMessage, ServerMessage } from '@engin/shared/protocol-types';
 
-describe('ServerMessage – unchanged shape with updated WorkflowProjection', () => {
-  it('snapshot variant carries the new WorkflowProjection (with phases array)', () => {
+describe('ServerMessage – updated shape with WorkflowProjection (multi-run)', () => {
+  it('snapshot variant is run-scoped and carries the new WorkflowProjection', () => {
     const msg: ServerMessage = {
       type: 'snapshot',
+      runId: 'run-1',
       seq: 1,
       state: {
         seq: 1,
@@ -125,9 +131,11 @@ describe('ServerMessage – unchanged shape with updated WorkflowProjection', ()
         sidebar: { title: 'Engin', indicator: '🟢' },
         status: 'running',
         stats: { totalTokens: 500, agentCount: 1 },
+        runLog: [],
       },
     };
     expect(msg.type).toBe('snapshot');
+    expect(msg.runId).toBe('run-1');
     expect(msg.state.phases).toHaveLength(2);
     expect(msg.state.phases[0].id).toBe('plan');
     expect(msg.state.phases[0].taskIds).toEqual(['t1']);
@@ -135,9 +143,10 @@ describe('ServerMessage – unchanged shape with updated WorkflowProjection', ()
     expect(msg.state.completedPhaseIds).toEqual(['plan']);
   });
 
-  it('events variant still works unchanged', () => {
+  it('events variant is run-scoped', () => {
     const msg: ServerMessage = {
       type: 'events',
+      runId: 'run-1',
       seq: 2,
       events: [
         {
@@ -149,52 +158,59 @@ describe('ServerMessage – unchanged shape with updated WorkflowProjection', ()
       ],
     };
     expect(msg.type).toBe('events');
+    expect(msg.runId).toBe('run-1');
     expect(msg.events).toHaveLength(1);
   });
 
-  it('workflow_complete variant still works unchanged', () => {
-    const msg: ServerMessage = { type: 'workflow_complete' };
-    expect(msg.type).toBe('workflow_complete');
+  it('run_complete variant is run-scoped', () => {
+    const msg: ServerMessage = { type: 'run_complete', runId: 'run-1' };
+    expect(msg.type).toBe('run_complete');
+    expect(msg.runId).toBe('run-1');
   });
 
-  it('workflow_failed variant still works unchanged', () => {
+  it('run_failed variant is run-scoped', () => {
     const msg: ServerMessage = {
-      type: 'workflow_failed',
+      type: 'run_failed',
+      runId: 'run-1',
       error: 'failure',
       phase: 'planning',
     };
-    expect(msg.type).toBe('workflow_failed');
+    expect(msg.type).toBe('run_failed');
+    expect(msg.runId).toBe('run-1');
     expect(msg.error).toBe('failure');
     expect(msg.phase).toBe('planning');
   });
 });
 
-describe('ClientMessage – unchanged shape', () => {
-  it('terminate_server variant', () => {
-    const msg: ClientMessage = { type: 'terminate_server' };
-    expect(msg.type).toBe('terminate_server');
+describe('ClientMessage – multi-run shape', () => {
+  it('list_runs variant', () => {
+    const msg: ClientMessage = { type: 'list_runs' };
+    expect(msg.type).toBe('list_runs');
   });
 
-  it('resync variant without lastSeq', () => {
-    const msg: ClientMessage = { type: 'resync' };
+  it('resync variant is run-scoped without lastSeq', () => {
+    const msg: ClientMessage = { type: 'resync', runId: 'run-1' };
     expect(msg.type).toBe('resync');
+    expect(msg.runId).toBe('run-1');
   });
 
-  it('resync variant with lastSeq', () => {
-    const msg: ClientMessage = { type: 'resync', lastSeq: 42 };
+  it('resync variant is run-scoped with lastSeq', () => {
+    const msg: ClientMessage = { type: 'resync', runId: 'run-1', lastSeq: 42 };
     expect(msg.type).toBe('resync');
+    expect(msg.runId).toBe('run-1');
     expect(msg.lastSeq).toBe(42);
   });
 });
 
 // ─── 4. isServerMessage type guard still works ────────────────────────────
 
-import { isServerMessage } from '../../src/web/protocol-types.ts';
+import { isServerMessage } from '@engin/shared/protocol-types';
 
-describe('isServerMessage – unchanged', () => {
+describe('isServerMessage – multi-run', () => {
   it('returns true for valid snapshot message', () => {
     const msg = {
       type: 'snapshot',
+      runId: 'run-1',
       seq: 0,
       state: {
         seq: 0,
@@ -207,21 +223,30 @@ describe('isServerMessage – unchanged', () => {
         sidebar: { title: '', indicator: '' },
         status: 'running' as const,
         stats: { totalTokens: 0, agentCount: 0 },
+        runLog: [],
       },
     };
     expect(isServerMessage(msg)).toBe(true);
   });
 
   it('returns true for events message', () => {
-    expect(isServerMessage({ type: 'events', seq: 0, events: [] })).toBe(true);
+    expect(isServerMessage({ type: 'events', runId: 'r', seq: 0, events: [] })).toBe(true);
   });
 
-  it('returns true for workflow_complete', () => {
-    expect(isServerMessage({ type: 'workflow_complete' })).toBe(true);
+  it('returns true for run_complete', () => {
+    expect(isServerMessage({ type: 'run_complete', runId: 'r' })).toBe(true);
   });
 
-  it('returns true for workflow_failed', () => {
-    expect(isServerMessage({ type: 'workflow_failed', error: 'err', phase: 'p' })).toBe(true);
+  it('returns true for run_failed', () => {
+    expect(isServerMessage({ type: 'run_failed', runId: 'r', error: 'err', phase: 'p' })).toBe(true);
+  });
+
+  it('returns false for the removed workflow_complete type', () => {
+    expect(isServerMessage({ type: 'workflow_complete' })).toBe(false);
+  });
+
+  it('returns false for the removed workflow_failed type', () => {
+    expect(isServerMessage({ type: 'workflow_failed', error: 'err', phase: 'p' })).toBe(false);
   });
 
   it('returns false for unknown type', () => {
@@ -239,15 +264,16 @@ describe('isServerMessage – unchanged', () => {
 
 // ─── 5. Web layer re-export picks up PhaseEntity ──────────────────────────
 //
-// web/src/protocol-types.ts does `export * from '@engin/web/protocol-types'`
-// which resolves to src/web/protocol-types.ts.  PhaseEntity should be
-// available through the web app's import chain.
+// The canonical home for protocol types is now `@engin/shared/protocol-types`,
+// which both the engine and the web app consume (the web app's
+// web/src/protocol-types.ts re-exports from it). PhaseEntity is therefore
+// available through the shared module that the web app ultimately imports.
 
 describe('Web re-export chain', () => {
-  it('PhaseEntity is reachable via the same import path used by the web app', async () => {
-    // Dynamic import from the backend source (the canonical location).
-    // The web app uses `@engin/web/protocol-types` which resolves here.
-    const mod = await import('../../src/web/protocol-types.js');
+  it('PhaseEntity is reachable via the shared module used by the web app', async () => {
+    // Dynamic import from the shared package (the canonical location).
+    // The web app resolves `@engin/web/protocol-types` to this module.
+    const mod = await import('@engin/shared/protocol-types');
     // PhaseEntity is a type-only export, but we can verify it exists as
     // a re-export by checking that the module re-exports the named types.
     // TypeScript ensures compile-time availability; runtime we check
@@ -282,6 +308,7 @@ describe('PhaseEntity integration with WorkflowProjection', () => {
       sidebar: { title: '', indicator: '' },
       status: 'running',
       stats: { totalTokens: 0, agentCount: 0 },
+      runLog: [],
     };
     expect(proj.phases[0].id).toBe('p1');
     expect(proj.phases[1].taskIds).toEqual(['t1']);
@@ -312,6 +339,7 @@ describe('PhaseEntity integration with WorkflowProjection', () => {
       sidebar: { title: '', indicator: '' },
       status: 'running',
       stats: { totalTokens: 0, agentCount: 0 },
+      runLog: [],
     };
     expect(proj.tasks.t1.steps).toHaveLength(2);
     expect(proj.tasks.t1.steps[0].name).toBe('step-0');

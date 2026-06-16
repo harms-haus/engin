@@ -1,5 +1,5 @@
+import { formatToolCall } from '@engin/shared/format-tool-call';
 import { describe, expect, it } from 'bun:test';
-import { formatToolCall } from '../../src/tui/format-tool-call.js';
 
 describe('formatToolCall', () => {
   // ── File tools ────────────────────────────────────────────────────────────

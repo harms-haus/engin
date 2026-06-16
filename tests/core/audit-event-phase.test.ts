@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'bun:test';
-import type { AuditEvent } from '../../src/core/types.js';
-import { AuditLog } from '../../src/tracking/audit-log.js';
+import type { AuditEvent } from '../../packages/engine/src/core/types.js';
+import { AuditLog } from '../../packages/engine/src/tracking/audit-log.js';
 import { useTempDir } from '../helpers/use-temp-dir.js';
 
 describe('AuditEvent phaseId field', () => {

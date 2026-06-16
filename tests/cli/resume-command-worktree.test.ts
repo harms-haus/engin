@@ -5,10 +5,10 @@ import { useTempDir } from '../helpers/use-temp-dir.js';
 
 // ─── Capture real modules before mocking ────────────────────────────────────
 
-const realWorkflowLoader = Object.assign({}, await import('../../src/core/workflow-loader.js'));
-const realUtils = Object.assign({}, await import('../../src/core/utils.js'));
-const realConfig = Object.assign({}, await import('../../src/core/config.js'));
-const realPostWorktree = Object.assign({}, await import('../../src/cli/post-worktree.js'));
+const realWorkflowLoader = Object.assign({}, await import('../../packages/engine/src/core/workflow-loader.js'));
+const realUtils = Object.assign({}, await import('../../packages/engine/src/core/utils.js'));
+const realConfig = Object.assign({}, await import('../../packages/engine/src/core/config.js'));
+const realPostWorktree = Object.assign({}, await import('../../packages/cli/src/cli/post-worktree.js'));
 
 // ─── Mock functions ─────────────────────────────────────────────────────────
 
@@ -26,17 +26,17 @@ const mockResolveProfilesDirs = mock<(cwd: string, workflowName?: string) => str
 
 // ─── Mock modules (hoisted before imports by Bun test runtime) ──────────────
 
-mock.module('../../src/core/workflow-loader.js', () => ({
+mock.module('../../packages/engine/src/core/workflow-loader.js', () => ({
   loadWorkflow: () => Promise.resolve({ run: mockWorkflowRun }),
   clearWorkflowCache: () => {},
 }));
 
-mock.module('../../src/core/utils.js', () => ({
+mock.module('../../packages/engine/src/core/utils.js', () => ({
   validateWorkflowName: () => {},
   composeStatusCallbacks: mockComposeStatusCallbacks,
 }));
 
-mock.module('../../src/core/config.js', () => ({
+mock.module('../../packages/engine/src/core/config.js', () => ({
   ...realConfig,
   getDefaultWorkDir: realConfig.getDefaultWorkDir,
   getGlobalConfigDir: realConfig.getGlobalConfigDir,
@@ -44,21 +44,21 @@ mock.module('../../src/core/config.js', () => ({
   resolveProfilesDirs: mockResolveProfilesDirs,
 }));
 
-mock.module('../../src/cli/post-worktree.js', () => ({
+mock.module('../../packages/cli/src/cli/post-worktree.js', () => ({
   promptPostWorktreeAction: mockPromptPostWorktreeAction,
 }));
 
 // ─── Import SUT after mocks ─────────────────────────────────────────────────
 
-import { resumeCommand } from '../../src/cli.ts';
+import { resumeCommand } from '../../packages/cli/src/cli.ts';
 
 // ─── Restore original modules ───────────────────────────────────────────────
 
 afterAll(() => {
-  mock.module('../../src/core/workflow-loader.js', () => realWorkflowLoader);
-  mock.module('../../src/core/utils.js', () => realUtils);
-  mock.module('../../src/core/config.js', () => realConfig);
-  mock.module('../../src/cli/post-worktree.js', () => realPostWorktree);
+  mock.module('../../packages/engine/src/core/workflow-loader.js', () => realWorkflowLoader);
+  mock.module('../../packages/engine/src/core/utils.js', () => realUtils);
+  mock.module('../../packages/engine/src/core/config.js', () => realConfig);
+  mock.module('../../packages/cli/src/cli/post-worktree.js', () => realPostWorktree);
 });
 
 // ─── Shared helpers ─────────────────────────────────────────────────────────

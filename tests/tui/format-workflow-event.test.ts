@@ -1,6 +1,6 @@
+import type { EventRecord } from '@engin/shared/event-types';
+import { formatWorkflowEventLine } from '@engin/shared/format-workflow-event';
 import { describe, expect, it } from 'bun:test';
-import type { EventRecord } from '../../src/tracking/event-types.js';
-import { formatWorkflowEventLine } from '../../src/tui/format-workflow-event.js';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 

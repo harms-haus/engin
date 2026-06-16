@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { createQrOverlayComponent } from '../../../src/tui/components/qr-overlay.js';
+import { createQrOverlayComponent } from '../../../packages/tui/src/components/qr-overlay.js';
 
 describe('QrOverlayComponent', () => {
   it('creates component with correct lineHeight for a given URL', async () => {

@@ -1,0 +1,24 @@
+{
+  "compilerOptions": {
+    "target": "ES2024",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "outDir": "dist",
+    "rootDir": "src",
+    "composite": true,
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "types": ["bun-types"],
+    "baseUrl": ".",
+    "paths": {
+      "@engin/shared": ["../shared/src/index"],
+      "@engin/shared/*": ["../shared/src/*"]
+    }
+  },
+  "include": ["src"],
+  "exclude": ["node_modules", "dist"]
+}

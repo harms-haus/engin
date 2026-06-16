@@ -1,7 +1,10 @@
 # CLI reference
 
-The `engin` binary supports a small set of commands. The first positional argument is usually
-the workflow name; the second is the task prompt.
+The `engin` binary is the published entry point (`@harms-haus/engin`). It is a
+**client** of the long-lived engine server daemon. Every run is submitted to the
+server; the CLI attaches a view (TUI or stdout renderer) that consumes the run's
+event stream over WebSocket, blocks until the run reaches a terminal state, then
+exits — leaving the server running.
 
 ```
 engin <command> [options]
@@ -9,16 +12,24 @@ engin <command> [options]
 
 ## Commands
 
-| Command                       | Description                                                           |
-| ----------------------------- | --------------------------------------------------------------------- |
-| `<workflow> <task>` (default) | Run a named workflow with a task prompt.                              |
-| `init`                        | Create the config directory structure in the global config directory. |
-| `resume [session]`            | Resume a past workflow run.                                           |
-| (no arguments, in a TTY)      | Launch the interactive composer.                                      |
-| `--help` / `-h`               | Show usage.                                                           |
-| `--version` / `-v`            | Show version.                                                         |
+| Command                 | Description                                                                     |
+| ----------------------- | ------------------------------------------------------------------------------- |
+| `run <workflow> <task>` | Auto-start the server if down, submit the run, attach, block to terminal state. |
+| `resume [session]`      | Resume/attach to a past or active workflow run.                                 |
+| `init`                  | Create the config directory structure in the global config directory.           |
+| `server up`             | Start the engine server daemon (idempotent).                                    |
+| `server down`           | Stop the engine server daemon (warns about active runs unless `--force`).       |
+| `server status`         | Report whether the server is running and on which port.                         |
+| `--help` / `-h`         | Show usage.                                                                     |
+| `--version` / `-v`      | Show version.                                                                   |
 
-The `run` keyword is implicit — `engin apidoc "Do the thing"` runs the `apidoc` workflow.
+> The `run` keyword is implicit — `engin apidoc "Do the thing"` runs the `apidoc`
+> workflow (there is no literal `run` token). Running `engin` with no positional
+> arguments is treated as `run` with no workflow name, which errors with a usage
+> message.
+
+> **Removed.** The interactive composer (formerly launched with no arguments in a
+> TTY) has been deleted. The only run entry is `engin <wf> <task>`.
 
 ## `run`
 
@@ -26,46 +37,91 @@ The `run` keyword is implicit — `engin apidoc "Do the thing"` runs the `apidoc
 engin <workflow-name> <task-prompt> [options]
 ```
 
-Loads the workflow by name (local then global config), wires up status tracking, sets up the
-TUI or verbose console output, and calls the workflow's `run(taskPrompt, options)`.
+### What it does
+
+1. **Ensure server up.** Probe `GET /health` on the configured `--port` (default
+   3619). If down, auto-start the daemon detached and wait for readiness (polling
+   `/health` with a timeout). If it fails to come up, error clearly.
+2. **Submit.** Connect an `EngineClient` over WebSocket to `ws://127.0.0.1:<port>/ws`
+   and send `start_run { workflowName, taskPrompt, cwd, workDir?, maxConcurrent?,
+apiKeys?, worktree? }`. Receive `run_started { runId }` (the client is
+   auto-subscribed to the run).
+3. **Attach the view.**
+   - **TTY** (and not `--verbose`): render the TUI dashboard (`WorkflowTUI`) driven
+     by a `ClientStore` fed from the `EngineClient`. The QR overlay points at the
+     server's web URL (`http://127.0.0.1:<port>/`).
+   - **non-TTY** or `--verbose`: render formatted event lines to stdout from the WS
+     event/`log` stream via the stdout renderer (a `ClientStore` subscriber).
+4. **Block** until `run_complete` / `run_failed` for `runId`. Transient WS drops are
+   handled by reconnect/backoff + `resync` + a "reconnecting…" banner (TUI). If the
+   server is truly gone, the CLI errors out.
+5. **Post-run.** On terminal state, if `--worktree`, run the interactive
+   merge/PR/discard prompt client-side and send the chosen `worktree_action` to the
+   server.
+6. **Exit.** The server keeps running. The client flushes nothing — durability is
+   the server's job.
+
+There is **exactly one execution path: the server**. Non-TTY `engin run` does not
+fall back to in-process execution; it submits to the server and renders the
+resulting stream to stdout.
 
 ### Flags
 
-| Flag                       | Default                              | Description                                                                      |
-| -------------------------- | ------------------------------------ | -------------------------------------------------------------------------------- |
-| `--cwd <path>`             | `process.cwd()`                      | Project working directory.                                                       |
-| `--work-dir <path>`        | `.engin/work/<timestamp>-<workflow>` | Directory for workflow state persistence.                                        |
-| `--max-concurrent <n>`     | `5`                                  | Maximum parallel agents. Must be a positive integer.                             |
-| `--verbose`                | off                                  | Verbose console output. Disables the TUI when stdout is a TTY.                   |
-| `--worktree`               | off                                  | Run the workflow in a git worktree.                                              |
-| `--api-key <provider=key>` | —                                    | Provider → API key override (repeatable). **Visible in process listings.**       |
-| `--host <host>`            | `127.0.0.1`                          | Web server bind host.                                                            |
-| `--lan`                    | off                                  | Bind on all interfaces (0.0.0.0) and auto-detect the LAN IP for QR code display. |
-| `--port <port>`            | `3619`                               | Web server port (integer in 1–65535).                                            |
+| Flag                       | Default                              | Description                                                                                         |
+| -------------------------- | ------------------------------------ | --------------------------------------------------------------------------------------------------- |
+| `--cwd <path>`             | `process.cwd()`                      | Project working directory.                                                                          |
+| `--work-dir <path>`        | `.engin/work/<timestamp>-<workflow>` | Directory for workflow state persistence (forwarded to the server).                                 |
+| `--max-concurrent <n>`     | `5`                                  | Maximum parallel agents. Must be a positive integer.                                                |
+| `--verbose`                | off                                  | Verbose stdout output (turn/tool detail). Disables the TUI when stdout is a TTY.                    |
+| `--worktree`               | off                                  | Run the workflow in a git worktree (created server-side).                                           |
+| `--api-key <provider=key>` | —                                    | Provider → API key override (repeatable). Forwarded to the server. **Visible in process listings.** |
+| `--port <port>`            | `3619`                               | Server port to connect to / auto-start. Integer in 1–65535.                                         |
 
-A value beginning with `--` (e.g. `--port --verbose`) is rejected as a missing value. Unknown
-flags throw. `--help`/`-h` and `--version`/`-v` short-circuit before flag validation.
+> `--host` and `--lan` are **deprecated for `run`/`resume`** — server binding is
+> `engin server up`'s concern. If passed to `run`/`resume`, a deprecation warning is
+> emitted and they have no effect (the CLI always connects to `127.0.0.1`).
+
+A value beginning with `--` (e.g. `--port --verbose`) is rejected as a missing
+value. Unknown flags throw. `--help`/`-h` and `--version`/`-v` short-circuit before
+flag validation.
 
 The first time `--api-key` is used, a single warning is emitted to stderr:
 
-> Warning: API keys passed via --api-key are visible in process listings. Consider using
-> environment variables instead.
+> Warning: API keys passed via --api-key are visible in process listings. Consider
+> using environment variables instead.
 
 ### Exit codes
 
-| Code | Meaning                          |
-| ---- | -------------------------------- |
-| `0`  | Workflow completed successfully. |
-| `1`  | Workflow failed with an error.   |
+| Code | Meaning                                            |
+| ---- | -------------------------------------------------- |
+| `0`  | Workflow completed successfully.                   |
+| `1`  | Workflow failed, was killed, or an error occurred. |
 
-## `init`
+### Disconnect semantics (TTY)
 
-```bash
-engin init
+The attached TUI offers two ways to leave a run without stopping the server:
+
+| Input                            | Behaviour                                                                                                                                                                                                                                 |
+| -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Ctrl+C`                         | Show the **detach/kill prompt** overlay (showing the `runId`). **Detach** (default) leaves the run running on the server and exits the client; **Kill** sends `cancel_run { runId }` and stays attached until terminal state is observed. |
+| `Ctrl+D`                         | **Detach immediately** (no prompt) — leave the run running, exit the client.                                                                                                                                                              |
+| Esc / 2nd Ctrl+C (at the prompt) | Dismiss the prompt; the run is unaffected and the client stays attached.                                                                                                                                                                  |
+
+On detach, the client prints:
+
+```
+[hh:mm:ss] 🔌 Detached. Run <runId> is still active on the server. Re-attach with: engin resume <runId>
 ```
 
-Creates `~/.config/engin/workflows/` (the `workflows` subdirectory inside the global config
-directory). No files are installed — workflows are user-managed. Safe to run repeatedly.
+These inputs **never kill the server** and never affect other runs.
+
+### SIGINT behaviour (non-TTY)
+
+Non-TTY mode has no interactive prompt:
+
+- **First Ctrl+C** — sends `cancel_run { runId }` and prints a message. The client
+  stays alive until the terminal event arrives.
+- **Second Ctrl+C** — force-quits the client immediately (exit code 1).
 
 ## `resume`
 
@@ -74,85 +130,115 @@ engin resume                  # interactive picker
 engin resume <session-name>   # resume a specific run by name (or unique prefix)
 ```
 
-Lists past runs from `{cwd}/.engin/work/` (newest first, up to 20 shown) and lets you pick one.
-A `💾` marker means the run has a resumable `.engin-state.json`. Runs are matched by exact
-directory name, or by a unique prefix. An ambiguous prefix throws; no match throws with a hint
-to run `engin resume` without arguments.
+Resume reads the task prompt and optional worktree info from the run's saved
+`.engin-state.json`, then submits it to the server (which replays prior events
+before continuing) and attaches the same view path as `run`.
 
-Resume reads the task prompt and optional worktree info from the saved state, then calls the
-workflow's `run()` with the loaded `EventStore` so the dashboard replays prior events before
-continuing.
+### Interactive picker
 
-## Interactive composer
+With no `session-name`, the picker draws from **two sources, in this order**:
 
-Running `engin` with no arguments in a TTY opens an interactive editor. Type a slash command:
+1. **Active / detached runs first** — runs currently in the server's active registry
+   (queried via `list_runs`), shown with a 🟢 marker and a `RUNNING` / `COMPLETE` / `FAILED`
+   label, above the historical list.
+2. **Historical runs below** — runs found by the disk scan of `<cwd>/.engin/work/`
+   that have a resumable `.engin-state.json` and are **not** active on the server.
+   A `💾` marker means the run has a resumable state file.
 
-```
-/apidoc Document the public API
-```
+A run that is both on disk and active appears **only** in the top (active) section,
+never duplicated. Runs are matched by exact directory name, or by a unique prefix;
+an ambiguous prefix throws, and no match throws with a hint to run `engin resume`
+without arguments.
 
-Supported inline flags: `--verbose`, `--worktree`, `--max-concurrent <n>`. `Ctrl+Enter` inserts
-a new line; `Enter` submits; `Ctrl+C` or `Escape` cancels.
+> **Known limitation.** Selecting an **active** run currently errors out — the code
+> constructs a synthetic `PastRunEntry` with `hasStateFile: false`, which throws
+> "does not have a resumable state file". The TODO to wire subscribe-only attach
+> (so selecting an active run attaches to the live run instead of erroring) is not
+> yet implemented (`packages/cli/src/cli/commands.ts`). Selecting a historical run
+> resumes it as expected.
 
-## TUI vs console output
+If the server is down, the picker shows only the historical (disk) list.
 
-Output mode is decided by `shouldUseTui({ verbose, isTty: !!process.stdout.isTTY })` — the rule
-is `!verbose && isTTY`. So:
+## `init`
 
-- **TTY, not verbose** → the live dashboard (see [TUI reference](tui.md)).
-- **TTY, verbose** → console output with turn/tool-call/token detail.
-- **Non-TTY** (piped, CI) → console output at the non-verbose level.
-
-In both console and TUI modes, events are recorded into the canonical `EventStore` so the web
-mirror and resume both work.
-
-### Console output (non-verbose)
-
-```
-[09:14:32] 🚀 Workflow started: "..." (resumed: false)
-[09:14:32] 📝 Phase registered: Scouting
-[09:14:32] 📦 Phase started: scouting (round 0)
-[09:14:33] ⏳ Agent spawned: scout (profile: scout)
-[09:14:45] ✅ Agent complete: scout
-[09:14:46] ✅ Phase completed: scouting (13.1s)
-...
-[09:31:44] 🎉 Workflow complete in 1032.4s (14 agents)
+```bash
+engin init
 ```
 
-### Console output (verbose)
+Creates `~/.config/engin/workflows/` (the `workflows` subdirectory inside the global
+config directory). No files are installed — workflows are user-managed. Safe to run
+repeatedly. Unchanged from the single-process era (client-side config setup).
 
-Adds turn-level and tool-level lines:
+## `server`
 
+### `engin server up`
+
+```bash
+engin server up [--port <port>] [--host <host>] [--lan]
 ```
-[09:14:33] 🔄 Turn 1 started (agent: scout)
-[09:14:33] 🔧 read({"path":"src/index.ts"}) (agent: scout)
-[09:14:34] ✅ Tool result: read (agent: scout)
-[09:14:35] 🧠 Let me analyse the file structure...
-[09:14:35] 💬 I've found the relevant files.
-[09:14:35] 📊 Tokens: 1520 in / 340 out
+
+Starts the engine server daemon. **Idempotent** — probes `/health` first and is a
+no-op if the server is already up on the port. Prints the server URL and pid on
+success.
+
+| Flag     | Default     | Description                                                                |
+| -------- | ----------- | -------------------------------------------------------------------------- |
+| `--port` | `3619`      | Port to bind.                                                              |
+| `--host` | `127.0.0.1` | Bind host.                                                                 |
+| `--lan`  | off         | Bind on all interfaces. **Refused** until auth is implemented (see below). |
+
+**`--lan` / wildcard host guard.** `--lan` (or `--host 0.0.0.0`, `::`, `*`) binds to
+all network interfaces, which requires authentication that is not yet implemented.
+The command refuses with a non-zero exit and a clear message:
+
+> LAN binding (0.0.0.0 / --lan) requires authentication, which is not yet supported.
+> The server is limited to localhost (127.0.0.1) bindings until auth is available.
+
+This guard lives in the engine (`packages/engine/src/server/bind-guard.ts`) so it
+covers every caller: `server up`, and the auto-start paths in `run`/`resume`.
+
+### `engin server down`
+
+```bash
+engin server down [--force | -y]
 ```
 
-## SIGINT (Ctrl+C) behaviour
+Stops the daemon. If the server is alive with active runs and `--force` is not set,
+prints the active-run count and prompts **y/N** for confirmation. On approval (or
+with `--force`), it sends `SIGTERM` via the pidfile, waits up to 10 s, escalates to
+`SIGKILL` if needed, and clears the pidfile. The daemon's shutdown hook cancels all
+active runs and flushes their stores before the socket closes.
 
-There are two Ctrl+C paths; exactly one is active depending on the output mode:
+### `engin server status`
 
-- **TUI mode** — the dashboard's raw-mode input listener handles Ctrl+C. The first press calls
-  `abort()` on the run's `AbortController` (cooperative cancellation). The second press calls
-  `process.exit(1)`.
-- **Console mode** — a SIGINT handler does the same two-step dance, with log lines. After the
-  first Ctrl+C a 5-second force-exit safety net starts; if graceful shutdown has not completed
-  by then, the process exits with code 1. The second Ctrl+C exits immediately.
+```bash
+engin server status
+```
+
+Probes `/health` and prints whether the server is running and on which port.
 
 ## Worktree runs
 
-Pass `--worktree` to run inside a freshly created git worktree on a generated branch (sibling
-of the repo root). After the workflow completes, engin prompts for a post-run action:
+Pass `--worktree` to run inside a freshly created git worktree on a generated
+branch (sibling of the repo root). **Worktree creation runs server-side** (the
+server has repo context for the run). After the run completes, the CLI prompts
+client-side for a post-run action; the chosen action is sent to the server via
+`worktree_action`:
 
-1. **Do nothing** — keep the worktree.
-2. **Merge to main** — commit, merge into the detected main branch, resolve conflicts with an
-   agent if any, then remove the worktree.
-3. **Push and create PR** — commit, push, and run `gh pr create`.
+1. **Do nothing (keep)** — keep the worktree (`keep`).
+2. **Merge to main** — commit, merge into the detected main branch, resolve
+   conflicts with an agent if any, then remove the worktree (`merge`).
+3. **Push and create PR** — commit, push, and run `gh pr create` (`pr`).
 
-The branch name is generated by an agent and sanitised to `[a-z0-9-]`. Files listed in a
-`.worktreecopy` file at the repo root are copied into the worktree before the run (useful for
-ignored config you still need).
+If the client detaches mid-run (force-quit), the worktree is **left in place** for
+a later client to act on.
+
+The branch name is generated by an agent and sanitised to `[a-z0-9-]`. Files listed
+in a `.worktreecopy` file at the repo root are copied into the worktree before the
+run (useful for ignored config you still need).
+
+## Where to go next
+
+- [Server reference](server.md) — the daemon, `RunManager`, the multi-run protocol.
+- [TUI reference](tui.md) — the terminal view and the detach/kill prompt.
+- [Web reference](web.md) — the React client and runs frame.

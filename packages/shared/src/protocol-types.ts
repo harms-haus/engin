@@ -1,0 +1,118 @@
+import type { EventRecord, WorkflowProjection } from './event-types.js';
+
+// Re-export all state types so the web layer depends on tracking core.
+// This file is the single source of truth for the web-facing protocol:
+// the web app (`web/src/protocol-types.ts`) re-exports everything here.
+export type {
+  AgentEntity,
+  EventRecord,
+  EventType,
+  LogEntry,
+  PhaseEntity,
+  StepEntity,
+  TaskEntity,
+  WorkflowProjection,
+} from './event-types.js';
+
+// ─── Shared UI value types ──────────────────────────────────────────────────
+// NOTE: PhaseDescriptor has been replaced by PhaseEntity (re-exported above).
+// Consumers should import PhaseEntity instead.
+
+// ─── RunSummary ─────────────────────────────────────────────────────────────
+// A lightweight descriptor for a single run. Used in the active-run list
+// (`runs` message) and in `run_started`. Carries just enough to render a
+// sidebar entry without the full WorkflowProjection.
+
+export interface RunSummary {
+  /** == work-directory name, e.g. "1781118746110-develop". */
+  runId: string;
+  /** Working directory the run was launched from. */
+  cwd: string;
+  /** Name of the workflow definition that backs this run. */
+  workflowName: string;
+  /** The task prompt that seeded the run (may be truncated for display). */
+  taskPrompt: string;
+  /** High-level lifecycle status of the run. */
+  status: 'running' | 'complete' | 'failed';
+  /** Phase the run is currently in, if any. */
+  currentPhaseId?: string;
+  /** ISO 8601 timestamp marking when the run started. */
+  startedAt: string;
+  /** T33: Worktree info when the run uses a git worktree. */
+  worktree?: { worktreePath: string; branchName: string; originalCwd?: string };
+}
+
+// ─── Server to Client Messages ──────────────────────────────────────────────
+//
+// The multi-run protocol tags every projection/event/lifecycle message with
+// `runId` so a single connection can fan out to many concurrent runs.
+//
+//   - `runs`          — the active-run list (sent on subscribe and on change).
+//   - `run_started`   — a new run has entered the registry.
+//   - `snapshot`      — full WorkflowProjection for a run (connect / resync).
+//   - `events`        — batch of raw EventRecords since the last seq for a run.
+//   - `run_complete`  / `run_failed` — dedicated top-level run-scoped lifecycle
+//     signals (terminal; sent immediately, not coalesced).
+//   - `log`           — server-captured runtime console output for a run.
+//   - `auth_required` — reserved for future auth enforcement.
+//   - `error`         — protocol-level errors (unknown runId, bad message, …).
+
+export type ServerMessage =
+  | { type: 'runs'; runs: RunSummary[] }
+  | { type: 'run_started'; runId: string; summary: RunSummary }
+  | { type: 'snapshot'; runId: string; seq: number; state: WorkflowProjection }
+  | { type: 'events'; runId: string; seq: number; events: EventRecord[] }
+  | { type: 'run_complete'; runId: string }
+  | { type: 'run_failed'; runId: string; error: string; phase: string }
+  | {
+      type: 'log';
+      runId: string;
+      level: 'info' | 'warn' | 'error';
+      message: string;
+      timestamp: string;
+    }
+  | { type: 'auth_required' }
+  | { type: 'error'; runId?: string; code: string; message: string };
+
+// ─── Client to Server Messages ──────────────────────────────────────────────
+
+export type ClientMessage =
+  | { type: 'auth'; token?: string }
+  | { type: 'list_runs' }
+  | {
+      type: 'start_run';
+      workflowName: string;
+      taskPrompt: string;
+      cwd: string;
+      workDir?: string;
+      maxConcurrent?: number;
+      apiKeys?: Record<string, string>;
+      worktree?: boolean;
+    }
+  | { type: 'subscribe'; runId: string }
+  | { type: 'unsubscribe'; runId: string }
+  | { type: 'resync'; runId: string; lastSeq?: number }
+  | { type: 'cancel_run'; runId: string }
+  | { type: 'worktree_action'; runId: string; action: 'merge' | 'pr' | 'discard' | 'keep' };
+
+// ─── Type guard ─────────────────────────────────────────────────────────────
+
+export function isServerMessage(data: unknown): data is ServerMessage {
+  if (typeof data !== 'object' || data === null) return false;
+  const msg = data as Record<string, unknown>;
+  if (typeof msg.type !== 'string') return false;
+  switch (msg.type) {
+    case 'runs':
+    case 'run_started':
+    case 'snapshot':
+    case 'events':
+    case 'run_complete':
+    case 'run_failed':
+    case 'log':
+    case 'auth_required':
+    case 'error':
+      return true;
+    default:
+      return false;
+  }
+}

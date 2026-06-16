@@ -20,7 +20,7 @@ import {
   readWorktreeCopyList,
   removeWorktree,
   stageAll,
-} from '../../src/core/git.js';
+} from '../../packages/engine/src/core/git.js';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 

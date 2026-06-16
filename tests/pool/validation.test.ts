@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { assertSafeName } from '../../src/pool/validation.js';
+import { assertSafeName } from '../../packages/engine/src/pool/validation.js';
 
 describe('assertSafeName (validation module)', () => {
   // ─── Valid names do not throw ─────────────────────────────────────────

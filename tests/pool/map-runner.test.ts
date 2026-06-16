@@ -10,22 +10,22 @@ import { afterAll, beforeEach, describe, expect, it, mock } from 'bun:test';
 
 // ─── Capture real module before mocking ────────────────────────────────────
 
-const realStepExecution = Object.assign({}, await import('../../src/pool/step-execution.js'));
+const realStepExecution = Object.assign({}, await import('../../packages/engine/src/pool/step-execution.js'));
 
 // ─── Mock definitions + mock.module ────────────────────────────────────────
 
 export const mockRunStep = mock() as ReturnType<typeof mock> & ((...args: unknown[]) => unknown);
 
-mock.module('../../src/pool/step-execution.js', () => ({
+mock.module('../../packages/engine/src/pool/step-execution.js', () => ({
   runStep: (...args: unknown[]) => mockRunStep(...args),
   StepExecutionContext: realStepExecution.StepExecutionContext,
 }));
 
 // ─── Imports after mock.module ─────────────────────────────────────────────
 
-import type { AgentProfile, Task } from '../../src/core/types.js';
-import { mapRunner } from '../../src/pool/map-runner.js';
-import type { StepDefinition, TaskRunnerContext } from '../../src/pool/types.js';
+import type { AgentProfile, Task } from '../../packages/engine/src/core/types.js';
+import { mapRunner } from '../../packages/engine/src/pool/map-runner.js';
+import type { StepDefinition, TaskRunnerContext } from '../../packages/engine/src/pool/types.js';
 import { makeMockSession } from '../helpers/make-session.ts';
 import { makeTask } from '../helpers/make-task.ts';
 
@@ -102,7 +102,7 @@ const testStep: StepDefinition = {
 // ─── Restore real module after all tests in this file ──────────────────────
 
 afterAll(() => {
-  mock.module('../../src/pool/step-execution.js', () => realStepExecution);
+  mock.module('../../packages/engine/src/pool/step-execution.js', () => realStepExecution);
 });
 
 // ─── Tests ─────────────────────────────────────────────────────────────────

@@ -2,8 +2,8 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, mock, spyOn } fr
 
 // ─── Capture real modules before mocking ─────────────────────────────────────
 
-const realWorkflowLoader = Object.assign({}, await import('../../src/core/workflow-loader.js'));
-const realUtils = Object.assign({}, await import('../../src/core/utils.js'));
+const realWorkflowLoader = Object.assign({}, await import('../../packages/engine/src/core/workflow-loader.js'));
+const realUtils = Object.assign({}, await import('../../packages/engine/src/core/utils.js'));
 
 // ─── Mock functions ──────────────────────────────────────────────────────────
 
@@ -16,25 +16,25 @@ const mockComposeStatusCallbacks = mock<(callbacks: unknown[]) => unknown>();
 
 // ─── Mock modules (hoisted before imports by Bun test runtime) ───────────────
 
-mock.module('../../src/core/workflow-loader.js', () => ({
+mock.module('../../packages/engine/src/core/workflow-loader.js', () => ({
   loadWorkflow: () => Promise.resolve({ run: mockWorkflowRun }),
   clearWorkflowCache: () => {},
 }));
 
-mock.module('../../src/core/utils.js', () => ({
+mock.module('../../packages/engine/src/core/utils.js', () => ({
   validateWorkflowName: () => {},
   composeStatusCallbacks: mockComposeStatusCallbacks,
 }));
 
 // ─── Import SUT after mocks ──────────────────────────────────────────────────
 
-import { runCommand } from '../../src/cli.ts';
+import { runCommand } from '../../packages/cli/src/cli.ts';
 
 // ─── Restore original modules ────────────────────────────────────────────────
 
 afterAll(() => {
-  mock.module('../../src/core/workflow-loader.js', () => realWorkflowLoader);
-  mock.module('../../src/core/utils.js', () => realUtils);
+  mock.module('../../packages/engine/src/core/workflow-loader.js', () => realWorkflowLoader);
+  mock.module('../../packages/engine/src/core/utils.js', () => realUtils);
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════

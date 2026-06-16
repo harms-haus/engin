@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from 'bun:test';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
-import { WorkflowStatusTracker } from '../../src/tracking/workflow-status.js';
+import { WorkflowStatusTracker } from '../../packages/engine/src/tracking/workflow-status.js';
 import { makeTask } from '../helpers/make-task.js';
 import { useTempDir } from '../helpers/use-temp-dir.js';
 

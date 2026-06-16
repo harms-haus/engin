@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'bun:test';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { clearProfileCache, loadProfiles } from '../../src/core/profile.js';
+import { clearProfileCache, loadProfiles } from '../../packages/engine/src/core/profile.js';
 import { useTempDir } from '../helpers/use-temp-dir.js';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────

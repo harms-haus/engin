@@ -1,6 +1,7 @@
 {
-  "name": "@harms-haus/engin",
+  "name": "engin-workspace",
   "version": "0.1.0",
+  "private": true,
   "description": "An AI-powered development engine with dynamic profile and workflow discovery.",
   "keywords": [
     "ai",
@@ -12,48 +13,21 @@
     "engine"
   ],
   "type": "module",
-  "main": "src/index.ts",
-  "types": "src/index.ts",
-  "exports": {
-    ".": {
-      "import": "./src/index.ts",
-      "types": "./src/index.ts"
-    },
-    "./web/protocol-types": {
-      "import": "./src/web/protocol-types.ts",
-      "types": "./src/web/protocol-types.ts"
-    }
-  },
-  "bin": {
-    "engin": "./dist/cli.js"
-  },
-  "publishConfig": {
-    "access": "public"
-  },
+  "workspaces": [
+    "packages/*"
+  ],
   "scripts": {
-    "build": "tsc",
-    "setup": "bun run build && bun dist/cli.js init",
-    "test": "bun test tests/",
+    "build": "tsc -b packages/shared",
+    "setup": "bun run build && bun packages/cli/dist/cli.js init",
+    "test": "bun test",
     "test:coverage": "bun test --coverage",
-    "test:watch": "bun test tests/ --watch",
-    "typecheck": "tsc --noEmit",
+    "test:watch": "bun test --watch",
+    "typecheck": "tsc -b packages/shared && tsc --noEmit",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "prepare": "simple-git-hooks"
-  },
-  "files": [
-    "dist",
-    "src"
-  ],
-  "dependencies": {
-    "@earendil-works/pi-coding-agent": "^0.79.0",
-    "@earendil-works/pi-tui": "^0.79.0",
-    "dotenv": "^16.5.0",
-    "gray-matter": "^4.0.3",
-    "qrcode": "^1.5.4",
-    "zod": "^3.25.0"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

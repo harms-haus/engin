@@ -4,12 +4,12 @@ import { join } from 'node:path';
 import { useTempDir } from './helpers/use-temp-dir.js';
 
 // Resolve real module objects before mocking so they can be restored in afterAll
-const actualConfig = Object.assign({}, await import('../src/core/config.js'));
+const actualConfig = Object.assign({}, await import('../packages/engine/src/core/config.js'));
 
 // Mock ../src/core/config.js so getGlobalConfigDir returns our temp dir
 let mockGlobalDir: string;
 
-mock.module('../src/core/config.js', () => ({
+mock.module('../packages/engine/src/core/config.js', () => ({
   getGlobalConfigDir: () => mockGlobalDir,
   ensureDir: async (dirPath: string) => {
     const { mkdir: mkdirFn } = await import('node:fs/promises');
@@ -17,11 +17,11 @@ mock.module('../src/core/config.js', () => ({
   },
 }));
 
-import { initDefaultConfig } from '../src/core/setup.ts';
+import { initDefaultConfig } from '../packages/engine/src/core/setup.ts';
 
 // Restore original modules so mocks don't leak to other test files in the same process
 afterAll(() => {
-  mock.module('../src/core/config.js', () => actualConfig);
+  mock.module('../packages/engine/src/core/config.js', () => actualConfig);
 });
 
 describe('initDefaultConfig', () => {

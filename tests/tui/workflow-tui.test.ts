@@ -1,12 +1,28 @@
 import { TUI } from '@earendil-works/pi-tui';
+import type { AgentEntity, TaskEntity, WorkflowProjection } from '@engin/shared';
+import { ClientStore } from '@engin/shared/client-store';
+import type { EventRecord, EventType } from '@engin/shared/event-types';
 import { describe, expect, it, mock, spyOn } from 'bun:test';
-import type { TaskEntity } from '../../src/core/types.js';
-import { EventStore } from '../../src/tracking/event-store.js';
-import type { AgentEntity, WorkflowProjection } from '../../src/tracking/event-types.js';
-import { createStoreCallbacks } from '../../src/tracking/store-callbacks.js';
-import { WorkflowTUI } from '../../src/tui/workflow-tui.js';
+import { WorkflowTUI } from '../../packages/tui/src/workflow-tui.js';
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
+// ─── Event helpers ───────────────────────────────────────────────────────────
+
+const ISO_NOW = '2026-06-15T00:00:00.000Z';
+
+let eventSeq = 0;
+
+/** Build an EventRecord with a monotonically increasing seq (or an override). */
+function ev(
+  type: EventType,
+  data: Record<string, unknown> = {},
+  meta: Partial<EventRecord['metadata']> = {},
+  seqOverride?: number,
+): EventRecord {
+  const s = seqOverride ?? ++eventSeq;
+  return { seq: s, type, data, metadata: { timestamp: ISO_NOW, ...meta } };
+}
+
+// ─── Projection helpers ──────────────────────────────────────────────────────
 
 /** Create a minimal projection with agents in given phases. */
 function projectionWithAgents(phases: string[], agentIds: string[], taskId = 't1'): WorkflowProjection {
@@ -32,6 +48,7 @@ function projectionWithAgents(phases: string[], agentIds: string[], taskId = 't1
     sidebar: { title: '', indicator: '' },
     status: 'running',
     stats: { totalTokens: 0, agentCount: 0 },
+    runLog: [],
   };
   for (const phase of phases) {
     for (const agentId of agentIds) {
@@ -79,6 +96,7 @@ function buildProjection(options: {
     sidebar: { title: '', indicator: options.indicator ?? '' },
     status: 'running' as const,
     stats: { totalTokens: 0, agentCount: 0 },
+    runLog: [] as WorkflowProjection['runLog'],
   };
   for (const t of options.tasks ?? []) {
     p.tasks[t.id] = t;
@@ -139,9 +157,9 @@ describe('WorkflowTUI', () => {
       expect(tui).toBeDefined();
     });
 
-    it('creates an instance with a store', () => {
-      const store = new EventStore('/tmp/test');
-      const tui = new WorkflowTUI({ store });
+    it('creates an instance with a clientStore', () => {
+      const clientStore = new ClientStore();
+      const tui = new WorkflowTUI({ clientStore });
       expect(tui).toBeDefined();
     });
 
@@ -162,136 +180,622 @@ describe('WorkflowTUI', () => {
       expect(dashboard.agentLog).toBeDefined();
     });
 
-    it('store-backed TUI syncs projection into dashboard', () => {
-      const store = new EventStore('/tmp/test');
-      const storeCallbacks = createStoreCallbacks(store);
-      const tui = new WorkflowTUI({ store });
+    // ── T31: new options ──────────────────────────────────────────────────
 
-      // Append events to the store
-      storeCallbacks.onWorkflowStart!({ taskPrompt: 'test', resumed: false, workDir: '/tmp' });
-      storeCallbacks.onPhaseStart!({ phase: 'scouting', round: 1 });
-      storeCallbacks.onSidebarUpdate!({
-        phases: [{ id: 'scouting', label: 'Scouting', icon: '🔍' }],
-      });
-
-      // Dashboard should have synced the projection
-      // Note: phases array is not populated by current store callbacks,
-      // but currentPhaseId should be reflected in the selection state.
-      const dashboard = tui.getDashboard();
-      expect(dashboard.getSelection().selectedPhaseId).toBe('scouting');
-      // The phaseBar shows the currentPhaseId when no phases are registered
-      expect(dashboard.phaseBar.render(78)[0]).toContain('scouting');
-    });
-  });
-
-  describe('console override and restore', () => {
-    it('routes console.log through eventLog when overridden', () => {
-      const tui = new WorkflowTUI();
-      const eventLog = tui.getEventLog();
-      const originalLog = console.log;
-
-      console.log = (...args: unknown[]) => {
-        eventLog.addLine(args.join(' '));
-      };
-
-      console.log('hello from test');
-      const lines = eventLog.render(80);
-      const joined = lines.join('\n');
-      expect(joined).toContain('hello from test');
-
-      console.log = originalLog;
+    it('accepts runId option (T31)', () => {
+      const tui = new WorkflowTUI({ runId: 'run-789' });
+      expect(tui).toBeDefined();
     });
 
-    it('routes console.warn through eventLog with prefix', () => {
-      const tui = new WorkflowTUI();
-      const eventLog = tui.getEventLog();
-      const originalWarn = console.warn;
-
-      console.warn = (...args: unknown[]) => {
-        eventLog.addLine('⚠️ ' + args.join(' '));
-      };
-
-      console.warn('watch out');
-      const lines = eventLog.render(80);
-      const joined = lines.join('\n');
-      expect(joined).toContain('⚠️ watch out');
-
-      console.warn = originalWarn;
+    it('accepts onDetach callback option (T31)', () => {
+      const tui = new WorkflowTUI({ onDetach: () => {} });
+      expect(tui).toBeDefined();
     });
 
-    it('routes console.error through eventLog with prefix', () => {
-      const tui = new WorkflowTUI();
-      const eventLog = tui.getEventLog();
-      const originalError = console.error;
-
-      console.error = (...args: unknown[]) => {
-        eventLog.addLine('❌ ' + args.join(' '));
-      };
-
-      console.error('something broke');
-      const lines = eventLog.render(80);
-      const joined = lines.join('\n');
-      expect(joined).toContain('❌ something broke');
-
-      console.error = originalError;
+    it('accepts onKill callback option (T31)', () => {
+      const tui = new WorkflowTUI({ onKill: () => {} });
+      expect(tui).toBeDefined();
     });
 
-    it('restores original console methods after stop-like cleanup', () => {
-      const originalLog = console.log;
-      const originalWarn = console.warn;
-      const originalError = console.error;
-
-      console.log = () => {};
-      console.warn = () => {};
-      console.error = () => {};
-
-      expect(console.log).not.toBe(originalLog);
-      expect(console.warn).not.toBe(originalWarn);
-      expect(console.error).not.toBe(originalError);
-
-      console.log = originalLog;
-      console.warn = originalWarn;
-      console.error = originalError;
-
-      expect(console.log).toBe(originalLog);
-      expect(console.warn).toBe(originalWarn);
-      expect(console.error).toBe(originalError);
-    });
-  });
-
-  describe('interrupt handling', () => {
-    it('increments interruptCount on first Ctrl+C and calls abort', () => {
-      let abortCalled = false;
+    it('accepts all T31 options together (T31)', () => {
       const tui = new WorkflowTUI({
-        abort: () => {
-          abortCalled = true;
-        },
+        runId: 'run-999',
+        onDetach: () => {},
+        onKill: () => {},
+        agentLogLines: 12,
       });
+      expect(tui).toBeDefined();
+    });
+  });
 
-      let interruptCount = 0;
-      const eventLog = tui.getEventLog();
+  // ─── Client-store integration ────────────────────────────────────────────
+  //
+  // The TUI now takes a ClientStore (from @engin/shared/client-store) instead
+  // of an EventStore. Internally it wires up createWsBackedTui, which:
+  //   1. Drains workflow event-log lines (seq-keyed) into the event log.
+  //   2. Drains runLog entries (warn/error prefixed; info silent) — this is
+  //      how server-captured runtime console output reaches the TUI (T32).
+  //   3. Syncs the dashboard from the current projection.
+  //   4. Calls requestRender().
 
-      interruptCount++;
-      if (interruptCount === 1) {
-        eventLog.addLine('⏹ Stopping workflow...');
-      }
+  describe('client-store integration', () => {
+    it('syncs projection applied via applyEvents into the dashboard', () => {
+      const clientStore = new ClientStore();
+      const tui = new WorkflowTUI({ clientStore });
 
-      expect(interruptCount).toBe(1);
-      expect(abortCalled).toBe(false);
+      clientStore.applyEvents([
+        ev('workflow_started', { taskPrompt: 'test', resumed: false }, {}, 1),
+        ev('phase_registered', { id: 'scouting', label: 'Scouting', icon: '🔍' }, {}, 2),
+        ev('phase_started', { phase: 'scouting', round: 1 }, {}, 3),
+      ]);
 
-      const lines = eventLog.render(80);
-      const joined = lines.join('\n');
-      expect(joined).toContain('⏹ Stopping workflow...');
+      const dashboard = tui.getDashboard();
+      // Dashboard follows the current phase.
+      expect(dashboard.getSelection().selectedPhaseId).toBe('scouting');
+      // The phase bar renders the registered phase label.
+      expect(dashboard.phaseBar.render(78)[0]).toContain('Scouting');
     });
 
-    it('would call process.exit on second Ctrl+C (verified by counter logic)', () => {
-      let interruptCount = 0;
+    it('syncs projection applied via applySnapshot into the dashboard', () => {
+      const clientStore = new ClientStore();
+      const tui = new WorkflowTUI({ clientStore });
 
-      interruptCount++;
-      expect(interruptCount).toBe(1);
+      clientStore.applySnapshot(
+        {
+          seq: 1,
+          taskPrompt: 'snap',
+          phases: [{ id: 'exec', label: 'Exec', icon: '⚡', taskIds: [] }],
+          currentPhaseId: 'exec',
+          completedPhaseIds: [],
+          tasks: {},
+          agents: {},
+          sidebar: { title: '', indicator: '' },
+          status: 'running',
+          stats: { totalTokens: 0, agentCount: 0 },
+          runLog: [],
+        },
+        1,
+      );
 
-      interruptCount++;
-      expect(interruptCount).toBe(2);
+      const dashboard = tui.getDashboard();
+      expect(dashboard.getSelection().selectedPhaseId).toBe('exec');
+      expect(dashboard.phaseBar.render(78)[0]).toContain('Exec');
+    });
+
+    it('forwards workflow event-log lines from applied events into the event log', () => {
+      const clientStore = new ClientStore();
+      const tui = new WorkflowTUI({ clientStore });
+
+      clientStore.applyEvents([ev('workflow_started', { taskPrompt: 'ship it', resumed: false }, {}, 1)]);
+
+      const joined = tui.getEventLog().render(80).join('\n');
+      expect(joined).toContain('🚀 Workflow started: "ship it" (resumed: false)');
+    });
+
+    it('does not duplicate event-log lines across multiple applyEvents batches', () => {
+      const clientStore = new ClientStore();
+      const tui = new WorkflowTUI({ clientStore });
+
+      clientStore.applyEvents([ev('workflow_started', { taskPrompt: 'a', resumed: false }, {}, 1)]);
+      clientStore.applyEvents([ev('phase_started', { phase: 'build', round: 1 }, {}, 2)]);
+
+      const joined = tui.getEventLog().render(80).join('\n');
+      expect(joined).toContain('🚀 Workflow started: "a" (resumed: false)');
+      expect(joined).toContain('📦 Phase: build (round 1)');
+    });
+
+    it('renders runLog warn entries with the ⚠️ prefix (server-captured console output)', () => {
+      const clientStore = new ClientStore();
+      const tui = new WorkflowTUI({ clientStore });
+
+      clientStore.appendRunLog('warn', 'low memory', ISO_NOW);
+
+      const joined = tui.getEventLog().render(80).join('\n');
+      expect(joined).toContain('⚠️ low memory');
+    });
+
+    it('renders runLog error entries with the ❌ prefix', () => {
+      const clientStore = new ClientStore();
+      const tui = new WorkflowTUI({ clientStore });
+
+      clientStore.appendRunLog('error', 'kaboom', ISO_NOW);
+
+      const joined = tui.getEventLog().render(80).join('\n');
+      expect(joined).toContain('❌ kaboom');
+    });
+
+    it('does NOT render runLog info entries', () => {
+      const clientStore = new ClientStore();
+      const tui = new WorkflowTUI({ clientStore });
+
+      clientStore.appendRunLog('info', 'starting build', ISO_NOW);
+
+      const joined = tui.getEventLog().render(80).join('\n');
+      expect(joined).not.toContain('starting build');
+    });
+
+    it('coexists: workflow event lines and runLog warn/error lines both appear', () => {
+      const clientStore = new ClientStore();
+      const tui = new WorkflowTUI({ clientStore });
+
+      clientStore.applyEvents([ev('workflow_started', { taskPrompt: 'x', resumed: false }, {}, 1)]);
+      clientStore.appendRunLog('warn', 'careful', ISO_NOW);
+      clientStore.appendRunLog('error', 'broke', ISO_NOW);
+
+      const joined = tui.getEventLog().render(80).join('\n');
+      expect(joined).toContain('🚀 Workflow started: "x" (resumed: false)');
+      expect(joined).toContain('⚠️ careful');
+      expect(joined).toContain('❌ broke');
+    });
+
+    it('does not wire an adapter when no clientStore is provided', () => {
+      const tui = new WorkflowTUI();
+
+      // Applying events to a detached store must not affect the dashboard.
+      // Without a clientStore the adapter is never wired, so the dashboard
+      // selection stays at its default (selectedPhaseId === null).
+      const dashboard = tui.getDashboard();
+      expect(dashboard.getSelection().selectedPhaseId).toBeNull();
+    });
+
+    it('reflects spawned agents in the synced dashboard projection', () => {
+      const clientStore = new ClientStore();
+      const tui = new WorkflowTUI({ clientStore });
+
+      clientStore.applyEvents([
+        ev('phase_registered', { id: 'impl', label: 'Impl', icon: '🔧' }, {}, 1),
+        ev('phase_started', { phase: 'impl', round: 1 }, {}, 2),
+        ev(
+          'task_registered',
+          { taskId: 't1', title: 'Task', phaseId: 'impl', stepCount: 1, steps: [], dependencies: [] },
+          {},
+          3,
+        ),
+        ev('task_started', { taskId: 't1', title: 'Task' }, {}, 4),
+        ev('agent_spawned', { profile: 'coder' }, { agentId: 'a1', taskId: 't1' }, 5),
+      ]);
+
+      const dashboard = tui.getDashboard();
+      // The phase bar shows the current phase.
+      expect(dashboard.getSelection().selectedPhaseId).toBe('impl');
+    });
+  });
+
+  // ─── Console (no monkey-patching) ────────────────────────────────────────
+  //
+  // The refactor REMOVES all console.warn/error monkey-patching. Runtime
+  // console output now arrives as server-captured log events via the
+  // ClientStore runLog (see "client-store integration" above). The TUI must
+  // never override or restore console.log/warn/error.
+
+  describe('console (no monkey-patching)', () => {
+    function setupStarted() {
+      const addListenerSpy = spyOn(TUI.prototype, 'addInputListener').mockImplementation(function (this: any) {
+        this.requestRender = () => {};
+        return () => {};
+      });
+      const tuiStartSpy = spyOn(TUI.prototype, 'start').mockImplementation(() => {});
+      const tuiStopSpy = spyOn(TUI.prototype, 'stop').mockImplementation(() => {});
+      const wtui = new WorkflowTUI();
+      return {
+        wtui,
+        cleanup: () => {
+          addListenerSpy.mockRestore();
+          tuiStartSpy.mockRestore();
+          tuiStopSpy.mockRestore();
+        },
+      };
+    }
+
+    it('does not override console.log/warn/error on start()', () => {
+      const originalLog = console.log;
+      const originalWarn = console.warn;
+      const originalError = console.error;
+
+      const { wtui, cleanup } = setupStarted();
+      try {
+        wtui.start();
+        expect(console.log).toBe(originalLog);
+        expect(console.warn).toBe(originalWarn);
+        expect(console.error).toBe(originalError);
+      } finally {
+        wtui.stop();
+        cleanup();
+      }
+    });
+
+    it('does not override console.log/warn/error on stop()', () => {
+      const originalLog = console.log;
+      const originalWarn = console.warn;
+      const originalError = console.error;
+
+      const { wtui, cleanup } = setupStarted();
+      try {
+        wtui.start();
+        wtui.stop();
+        expect(console.log).toBe(originalLog);
+        expect(console.warn).toBe(originalWarn);
+        expect(console.error).toBe(originalError);
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('console.warn no longer routes into the event log after start()', () => {
+      const { wtui, cleanup } = setupStarted();
+      try {
+        wtui.start();
+        const before = wtui.getEventLog().render(80).join('\n');
+
+        console.warn('a warning that must not appear');
+
+        const after = wtui.getEventLog().render(80).join('\n');
+        expect(after).toBe(before);
+        expect(after).not.toContain('a warning that must not appear');
+      } finally {
+        wtui.stop();
+        cleanup();
+      }
+    });
+
+    it('console.error no longer routes into the event log after start()', () => {
+      const { wtui, cleanup } = setupStarted();
+      try {
+        wtui.start();
+        const before = wtui.getEventLog().render(80).join('\n');
+
+        console.error('an error that must not appear');
+
+        const after = wtui.getEventLog().render(80).join('\n');
+        expect(after).toBe(before);
+        expect(after).not.toContain('an error that must not appear');
+      } finally {
+        wtui.stop();
+        cleanup();
+      }
+    });
+  });
+
+  // ─── T31: Detach/kill prompt ──────────────────────────────────────────────
+  //
+  // Ctrl+C now shows an in-TUI prompt overlay with two choices:
+  //   • Detach (default) — leave run running on server, exit client
+  //   • Kill — send cancel_run, wait for terminal, then exit
+  //
+  // Second Ctrl+C at the prompt or Escape dismisses it.
+  // Ctrl+D detaches immediately (no prompt).
+  //
+  // WorkflowTUIOptions gains: runId, onDetach, onKill (callback form so
+  // tui never imports engine — see the package dependency rules).
+  //
+  // These tests encode the T31 contract. They will be RED until the
+  // implement phase adds the new options and changes the Ctrl+C handler.
+
+  describe('detach/kill prompt (T31)', () => {
+    const CTRL_C = '\x03';
+    const ENTER = '\r';
+    const ESCAPE = '\x1b';
+    const UP_ARROW = '\x1b[A';
+    const DOWN_ARROW = '\x1b[B';
+
+    /**
+     * Setup helper: creates a WorkflowTUI with T31 options, mocks the
+     * underlying TUI so we can capture the global input listener and
+     * spy on showOverlay.
+     */
+    function setupPrompt(
+      options: {
+        runId?: string;
+        onDetach?: () => void;
+        onKill?: () => void;
+      } = {},
+    ) {
+      const onDetachMock = options.onDetach ?? mock(() => {});
+      const onKillMock = options.onKill ?? mock(() => {});
+      const requestRenderMock = mock(() => {});
+      const hideMock = mock(() => {});
+      const overlayHandle = {
+        hide: hideMock,
+        setHidden: mock(() => {}),
+        isHidden: mock(() => false),
+        focus: mock(() => {}),
+        unfocus: mock(() => {}),
+        isFocused: mock(() => false),
+      };
+      const showOverlayMock = mock(() => overlayHandle);
+      let capturedCallback: ((data: string) => any) | null = null;
+
+      const addListenerSpy = spyOn(TUI.prototype, 'addInputListener').mockImplementation(function (
+        this: any,
+        cb: (data: string) => any,
+      ) {
+        capturedCallback = cb;
+        this.requestRender = requestRenderMock;
+        this.showOverlay = showOverlayMock;
+        return () => {};
+      });
+      const tuiStartSpy = spyOn(TUI.prototype, 'start').mockImplementation(() => {});
+      const tuiStopSpy = spyOn(TUI.prototype, 'stop').mockImplementation(() => {});
+
+      const wtui = new WorkflowTUI({
+        runId: options.runId ?? 'run-abc',
+        onDetach: onDetachMock,
+        onKill: onKillMock,
+      });
+      wtui.start();
+
+      return {
+        wtui,
+        callback: capturedCallback!,
+        requestRenderMock,
+        showOverlayMock,
+        overlayHandle,
+        onDetachMock,
+        onKillMock,
+        cleanup() {
+          wtui.stop();
+          addListenerSpy.mockRestore();
+          tuiStartSpy.mockRestore();
+          tuiStopSpy.mockRestore();
+        },
+      };
+    }
+
+    it('first Ctrl+C shows the detach/kill prompt overlay', () => {
+      const { callback, showOverlayMock, cleanup } = setupPrompt();
+      try {
+        expect(callback).not.toBeNull();
+        callback(CTRL_C);
+
+        expect(showOverlayMock).toHaveBeenCalledTimes(1);
+        const [component, options] = showOverlayMock.mock.calls[0];
+        expect(component).toBeDefined();
+        expect(typeof component.render).toBe('function');
+        expect(options).toEqual(expect.objectContaining({ anchor: expect.any(String) }));
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('the prompt shows the runId when provided', () => {
+      const { callback, showOverlayMock, cleanup } = setupPrompt({ runId: 'run-xyz-123' });
+      try {
+        callback(CTRL_C);
+        const [component] = showOverlayMock.mock.calls[0];
+        const lines = component.render(60);
+        expect(lines.join('\n')).toContain('run-xyz-123');
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('Detach is the default (highlighted) selection', () => {
+      const { callback, showOverlayMock, cleanup } = setupPrompt();
+      try {
+        callback(CTRL_C);
+        const [component] = showOverlayMock.mock.calls[0];
+        const lines = component.render(60);
+        const joined = lines.join('\n');
+        expect(joined).toContain('Detach');
+        expect(joined).toContain('Kill');
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('Down arrow navigates from Detach to Kill', () => {
+      const { callback, showOverlayMock, cleanup } = setupPrompt();
+      try {
+        callback(CTRL_C);
+        const [component] = showOverlayMock.mock.calls[0];
+
+        // Navigate down — should not throw
+        component.handleInput(DOWN_ARROW);
+        const lines = component.render(60);
+        expect(lines.join('\n')).toContain('Kill');
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('Up arrow navigates back from Kill to Detach', () => {
+      const { callback, showOverlayMock, cleanup } = setupPrompt();
+      try {
+        callback(CTRL_C);
+        const [component] = showOverlayMock.mock.calls[0];
+
+        component.handleInput(DOWN_ARROW);
+        component.handleInput(UP_ARROW);
+        const lines = component.render(60);
+        expect(lines.join('\n')).toContain('Detach');
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('Enter with Detach selected calls onDetach', () => {
+      const { callback, showOverlayMock, onDetachMock, overlayHandle, cleanup } = setupPrompt();
+      try {
+        callback(CTRL_C);
+        const [component] = showOverlayMock.mock.calls[0];
+
+        // Detach is default, press Enter to confirm
+        component.handleInput(ENTER);
+        expect(onDetachMock).toHaveBeenCalledTimes(1);
+        expect(overlayHandle.hide).toHaveBeenCalled();
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('Enter with Kill selected calls onKill', () => {
+      const { callback, showOverlayMock, onKillMock, overlayHandle, cleanup } = setupPrompt();
+      try {
+        callback(CTRL_C);
+        const [component] = showOverlayMock.mock.calls[0];
+
+        component.handleInput(DOWN_ARROW); // select Kill
+        component.handleInput(ENTER); // confirm
+        expect(onKillMock).toHaveBeenCalledTimes(1);
+        expect(overlayHandle.hide).toHaveBeenCalled();
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('second Ctrl+C at the prompt dismisses it (no callback fired)', () => {
+      const { callback, showOverlayMock, onDetachMock, onKillMock, overlayHandle, cleanup } = setupPrompt();
+      try {
+        callback(CTRL_C);
+        const [component] = showOverlayMock.mock.calls[0];
+
+        // Second Ctrl+C on the overlay component dismisses the prompt
+        component.handleInput(CTRL_C);
+        expect(overlayHandle.hide).toHaveBeenCalled();
+        expect(onDetachMock).not.toHaveBeenCalled();
+        expect(onKillMock).not.toHaveBeenCalled();
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('Escape at the prompt dismisses it (no callback fired)', () => {
+      const { callback, showOverlayMock, onDetachMock, onKillMock, overlayHandle, cleanup } = setupPrompt();
+      try {
+        callback(CTRL_C);
+        const [component] = showOverlayMock.mock.calls[0];
+
+        component.handleInput(ESCAPE);
+        expect(overlayHandle.hide).toHaveBeenCalled();
+        expect(onDetachMock).not.toHaveBeenCalled();
+        expect(onKillMock).not.toHaveBeenCalled();
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('calls requestRender when Ctrl+C shows the prompt', () => {
+      const { callback, requestRenderMock, cleanup } = setupPrompt();
+      try {
+        callback(CTRL_C);
+        expect(requestRenderMock).toHaveBeenCalled();
+      } finally {
+        cleanup();
+      }
+    });
+  });
+
+  // ─── T31: Ctrl+D immediate detach ────────────────────────────────────────
+
+  describe('Ctrl+D immediate detach (T31)', () => {
+    const CTRL_D = '\x04';
+
+    it('calls onDetach immediately without showing prompt', () => {
+      const onDetachMock = mock(() => {});
+      const showOverlayMock = mock(() => ({
+        hide: mock(() => {}),
+        setHidden: mock(() => {}),
+        isHidden: mock(() => false),
+        focus: mock(() => {}),
+        unfocus: mock(() => {}),
+        isFocused: mock(() => false),
+      }));
+      let capturedCallback: ((data: string) => any) | null = null;
+
+      const addListenerSpy = spyOn(TUI.prototype, 'addInputListener').mockImplementation(function (
+        this: any,
+        cb: (data: string) => any,
+      ) {
+        capturedCallback = cb;
+        this.requestRender = mock(() => {});
+        this.showOverlay = showOverlayMock;
+        return () => {};
+      });
+      const tuiStartSpy = spyOn(TUI.prototype, 'start').mockImplementation(() => {});
+      const tuiStopSpy = spyOn(TUI.prototype, 'stop').mockImplementation(() => {});
+
+      const wtui = new WorkflowTUI({
+        runId: 'run-123',
+        onDetach: onDetachMock,
+      });
+      wtui.start();
+
+      try {
+        capturedCallback!(CTRL_D);
+        expect(onDetachMock).toHaveBeenCalledTimes(1);
+        expect(showOverlayMock).not.toHaveBeenCalled();
+      } finally {
+        wtui.stop();
+        addListenerSpy.mockRestore();
+        tuiStartSpy.mockRestore();
+        tuiStopSpy.mockRestore();
+      }
+    });
+
+    it('calls onDetach even when no runId is provided', () => {
+      const onDetachMock = mock(() => {});
+      let capturedCallback: ((data: string) => any) | null = null;
+
+      const addListenerSpy = spyOn(TUI.prototype, 'addInputListener').mockImplementation(function (
+        this: any,
+        cb: (data: string) => any,
+      ) {
+        capturedCallback = cb;
+        this.requestRender = mock(() => {});
+        this.showOverlay = mock(() => ({}));
+        return () => {};
+      });
+      const tuiStartSpy = spyOn(TUI.prototype, 'start').mockImplementation(() => {});
+      const tuiStopSpy = spyOn(TUI.prototype, 'stop').mockImplementation(() => {});
+
+      const wtui = new WorkflowTUI({ onDetach: onDetachMock });
+      wtui.start();
+
+      try {
+        capturedCallback!(CTRL_D);
+        expect(onDetachMock).toHaveBeenCalledTimes(1);
+      } finally {
+        wtui.stop();
+        addListenerSpy.mockRestore();
+        tuiStartSpy.mockRestore();
+        tuiStopSpy.mockRestore();
+      }
+    });
+
+    it('Ctrl+D does not call onKill', () => {
+      const onDetachMock = mock(() => {});
+      const onKillMock = mock(() => {});
+      let capturedCallback: ((data: string) => any) | null = null;
+
+      const addListenerSpy = spyOn(TUI.prototype, 'addInputListener').mockImplementation(function (
+        this: any,
+        cb: (data: string) => any,
+      ) {
+        capturedCallback = cb;
+        this.requestRender = mock(() => {});
+        this.showOverlay = mock(() => ({}));
+        return () => {};
+      });
+      const tuiStartSpy = spyOn(TUI.prototype, 'start').mockImplementation(() => {});
+      const tuiStopSpy = spyOn(TUI.prototype, 'stop').mockImplementation(() => {});
+
+      const wtui = new WorkflowTUI({
+        runId: 'run-456',
+        onDetach: onDetachMock,
+        onKill: onKillMock,
+      });
+      wtui.start();
+
+      try {
+        capturedCallback!(CTRL_D);
+        expect(onDetachMock).toHaveBeenCalledTimes(1);
+        expect(onKillMock).not.toHaveBeenCalled();
+      } finally {
+        wtui.stop();
+        addListenerSpy.mockRestore();
+        tuiStartSpy.mockRestore();
+        tuiStopSpy.mockRestore();
+      }
     });
   });
 
@@ -432,7 +936,7 @@ describe('WorkflowTUI', () => {
       const tuiStartSpy = spyOn(TUI.prototype, 'start').mockImplementation(() => {});
       const tuiStopSpy = spyOn(TUI.prototype, 'stop').mockImplementation(() => {});
 
-      const wtui = new WorkflowTUI({ abort: () => {} });
+      const wtui = new WorkflowTUI();
       wtui.start();
 
       return {
@@ -1028,7 +1532,7 @@ describe('WorkflowTUI', () => {
     it('attaches the prepared QR overlay during start()', async () => {
       const { mockShowOverlay, cleanup } = setupStartWithShowOverlaySpy();
       try {
-        const wtui = new WorkflowTUI({ abort: () => {} });
+        const wtui = new WorkflowTUI();
         await wtui.prepareQrCode('https://example.com');
         wtui.start();
 
@@ -1049,7 +1553,7 @@ describe('WorkflowTUI', () => {
     it('does not attach anything during start() when no QR was prepared', () => {
       const { mockShowOverlay, cleanup } = setupStartWithShowOverlaySpy();
       try {
-        const wtui = new WorkflowTUI({ abort: () => {} });
+        const wtui = new WorkflowTUI();
         wtui.start();
         expect(mockShowOverlay).not.toHaveBeenCalled();
       } finally {
@@ -1192,6 +1696,108 @@ describe('WorkflowTUI', () => {
       const listener = addInputMock.mock.calls[0][0];
 
       listener('\x03');
+
+      await expect(promise).resolves.toBeUndefined();
+    });
+  });
+
+  // ─── pauseForInspection: client-store completion ─────────────────────────
+  //
+  // With the refactor, pauseForInspection now also resolves when the client
+  // store observes a run_complete / run_failed (status 'complete' or 'failed'),
+  // in addition to Escape/Ctrl+C and the optional AbortSignal.
+
+  describe('pauseForInspection (client-store completion)', () => {
+    function setupClientStorePauseTest() {
+      const clientStore = new ClientStore();
+      const wtui = new WorkflowTUI({ clientStore });
+      (wtui as any).tui = {
+        showOverlay: mock(() => {}),
+        requestRender: mock(() => {}),
+        addInputListener: mock(() => () => {}),
+        addChild: mock(() => {}),
+        setFocus: mock(() => {}),
+        stop: mock(() => {}),
+        start: mock(() => {}),
+      } as any;
+      (wtui as any).running = true;
+      return { wtui, clientStore };
+    }
+
+    it('resolves when the client store reaches "complete" status', async () => {
+      const { wtui, clientStore } = setupClientStorePauseTest();
+
+      const promise = wtui.pauseForInspection();
+      // Yield once so any listener/subscription wiring settles.
+      await new Promise((r) => setTimeout(r, 5));
+
+      clientStore.setStatus('complete');
+
+      await expect(promise).resolves.toBeUndefined();
+    });
+
+    it('resolves when the client store reaches "failed" status', async () => {
+      const { wtui, clientStore } = setupClientStorePauseTest();
+
+      const promise = wtui.pauseForInspection();
+      await new Promise((r) => setTimeout(r, 5));
+
+      clientStore.setStatus('failed');
+
+      await expect(promise).resolves.toBeUndefined();
+    });
+
+    it('resolves when a workflow_completed event is applied to the client store', async () => {
+      const { wtui, clientStore } = setupClientStorePauseTest();
+
+      const promise = wtui.pauseForInspection();
+      await new Promise((r) => setTimeout(r, 5));
+
+      clientStore.applyEvents([ev('workflow_completed', { totalDurationMs: 1000, agentCount: 1 }, {}, 1)]);
+
+      await expect(promise).resolves.toBeUndefined();
+    });
+
+    it('resolves when a workflow_failed event is applied to the client store', async () => {
+      const { wtui, clientStore } = setupClientStorePauseTest();
+
+      const promise = wtui.pauseForInspection();
+      await new Promise((r) => setTimeout(r, 5));
+
+      clientStore.applyEvents([ev('workflow_failed', { phase: 'planning', error: 'boom' }, {}, 1)]);
+
+      await expect(promise).resolves.toBeUndefined();
+    });
+
+    it('does not resolve while the client store is still "running"', async () => {
+      const { wtui, clientStore } = setupClientStorePauseTest();
+
+      let resolved = false;
+      const promise = wtui.pauseForInspection();
+      promise.then(() => {
+        resolved = true;
+      });
+      await new Promise((r) => setTimeout(r, 10));
+
+      // Still running → must not have resolved.
+      expect(resolved).toBe(false);
+
+      // Drive it to completion so the dangling promise does not keep the
+      // process alive / leak listeners across tests.
+      clientStore.setStatus('complete');
+      await promise;
+    });
+
+    it('still resolves via Escape key even with a client store attached', async () => {
+      const { wtui } = setupClientStorePauseTest();
+
+      const promise = wtui.pauseForInspection();
+      // The pause input listener is added after the main handler is torn down.
+      const tuiMock = (wtui as any).tui;
+      const listener = tuiMock.addInputListener.mock.calls[tuiMock.addInputListener.mock.calls.length - 1][0];
+
+      const result = listener('\x1b');
+      expect(result).toEqual({ consume: true });
 
       await expect(promise).resolves.toBeUndefined();
     });

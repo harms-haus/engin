@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'bun:test';
-import { EventStore } from '../../src/tracking/event-store.js';
-import { createStoreCallbacks } from '../../src/tracking/store-callbacks.js';
-import type { Dashboard } from '../../src/tui/components/dashboard.js';
-import type { EventLog } from '../../src/tui/components/event-log.js';
-import { createStoreBackedTui } from '../../src/tui/status-callbacks.js';
+import { EventStore } from '../../packages/engine/src/tracking/event-store.js';
+import { createStoreCallbacks } from '../../packages/engine/src/tracking/store-callbacks.js';
+import type { Dashboard } from '../../packages/tui/src/components/dashboard.js';
+import type { EventLog } from '../../packages/tui/src/components/event-log.js';
+import { createStoreBackedTui } from '../../packages/tui/src/status-callbacks.js';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 

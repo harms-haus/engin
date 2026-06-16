@@ -1,13 +1,13 @@
 import { beforeEach, describe, expect, it } from 'bun:test';
 import * as fs from 'node:fs/promises';
 import { join } from 'node:path';
-import type { WorkflowState } from '../../src/core/types.js';
+import type { WorkflowState } from '../../packages/engine/src/core/types.js';
 import {
   loadWorkflowState,
   saveWorkflowState,
   serializeWorkflowState,
-} from '../../src/tracking/workflow-serializer.js';
-import { WorkflowStatusTracker } from '../../src/tracking/workflow-status.js';
+} from '../../packages/engine/src/tracking/workflow-serializer.js';
+import { WorkflowStatusTracker } from '../../packages/engine/src/tracking/workflow-status.js';
 import { makeTask } from '../helpers/make-task.js';
 import { useTempDir } from '../helpers/use-temp-dir.js';
 

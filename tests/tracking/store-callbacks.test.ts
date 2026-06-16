@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
-import type { EventRecord, EventType } from '../../src/tracking/event-types.js';
-import { createStoreCallbacks } from '../../src/tracking/store-callbacks.js';
+import type { EventRecord, EventType } from '../../packages/engine/src/tracking/event-types.js';
+import { createStoreCallbacks } from '../../packages/engine/src/tracking/store-callbacks.js';
 
 // ── Mock EventStore ──────────────────────────────────────────────────────────
 
@@ -360,7 +360,7 @@ describe('createStoreCallbacks', () => {
 // ── Integration: store-callbacks → EventStore → evolve ──────────────────────
 
 import { beforeEach as beforeIntegration } from 'bun:test';
-import { EventStore } from '../../src/tracking/event-store.js';
+import { EventStore } from '../../packages/engine/src/tracking/event-store.js';
 import { useTempDir } from '../helpers/use-temp-dir.js';
 
 describe('store-callbacks → EventStore integration', () => {

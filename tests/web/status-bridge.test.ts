@@ -1,15 +1,21 @@
+import type { ServerMessage } from '@engin/shared/protocol-types';
+import { StatusBridge } from '@harms-haus/engin-engine';
 import { describe, expect, it } from 'bun:test';
-import { EventStore } from '../../src/tracking/event-store.ts';
-import type { ServerMessage } from '../../src/web/protocol-types.ts';
-import { StatusBridge } from '../../src/web/status-bridge.ts';
+import { EventStore } from '../../packages/engine/src/tracking/event-store.ts';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
+
+/** The default runId used by createSetup() when none is supplied. */
+const DEFAULT_RUN_ID = 'run-abc-123';
 
 /**
  * Create an EventStore and StatusBridge with a message collector.
  * Uses a small ring buffer so we can test resync-eviction scenarios easily.
  */
-function createSetup(ringBufferSize = 1000) {
+function createSetup(opts: { runId?: string; ringBufferSize?: number } = {}) {
+  const runId = opts.runId ?? DEFAULT_RUN_ID;
+  const ringBufferSize = opts.ringBufferSize ?? 1000;
+
   const messages: ServerMessage[] = [];
   const broadcast = (msg: ServerMessage) => {
     messages.push(msg);
@@ -17,7 +23,7 @@ function createSetup(ringBufferSize = 1000) {
   const store = new EventStore('/tmp/bridge-test-' + Math.random().toString(36).slice(2), {
     maxRingBuffer: ringBufferSize,
   });
-  const bridge = new StatusBridge(broadcast, store);
+  const bridge = new StatusBridge(broadcast, store, runId);
 
   /** Clear collected messages. */
   function clear() {
@@ -41,20 +47,30 @@ function createSetup(ringBufferSize = 1000) {
     await new Promise<void>((r) => setTimeout(r, 0));
   }
 
-  return { store, bridge, messages, clear, msgs, count, flushMicrotasks };
+  return { runId, store, bridge, messages, clear, msgs, count, flushMicrotasks };
 }
 
 // ─── Tests ──────────────────────────────────────────────────────────────────
 
 describe('StatusBridge', () => {
+  // ─── Constructor runId ────────────────────────────────────────────────────
+
+  describe('constructor runId', () => {
+    it('accepts a runId string as the third parameter', () => {
+      const store = new EventStore('/tmp/bridge-ctor-' + Math.random().toString(36).slice(2));
+      expect(() => new StatusBridge(() => {}, store, 'my-run-id')).not.toThrow();
+    });
+  });
+
   // ─── getSnapshot ───────────────────────────────────────────────────────────
 
   describe('getSnapshot', () => {
-    it('returns { type: "snapshot", seq, state } from a fresh store', () => {
-      const { bridge, store } = createSetup();
+    it('returns { type: "snapshot", runId, seq, state } from a fresh store', () => {
+      const { bridge, store, runId } = createSetup();
       const snapshot = bridge.getSnapshot();
       const storeSnap = store.getSnapshot();
       expect(snapshot.type).toBe('snapshot');
+      expect(snapshot.runId).toBe(runId);
       expect(snapshot.seq).toBe(storeSnap.seq);
       expect(snapshot.state).toBe(storeSnap.state);
       expect(snapshot.seq).toBe(0);
@@ -66,12 +82,20 @@ describe('StatusBridge', () => {
       expect(snapshot.state.sidebar).toEqual({ title: '', indicator: '' });
     });
 
+    it('tags the snapshot with the constructor runId', () => {
+      const { bridge, runId } = createSetup({ runId: 'custom-run-42' });
+      const snapshot = bridge.getSnapshot();
+      expect(snapshot.type).toBe('snapshot');
+      expect(snapshot.runId).toBe('custom-run-42');
+    });
+
     it('reflects store state after workflow_started', () => {
-      const { store, bridge } = createSetup();
+      const { store, bridge, runId } = createSetup();
       store.append('workflow_started', { taskPrompt: 'Implement login page' });
       const snapshot = bridge.getSnapshot();
       expect(snapshot.state.taskPrompt).toBe('Implement login page');
       expect(snapshot.seq).toBe(1);
+      expect(snapshot.runId).toBe(runId);
     });
 
     it('reflects phase state', () => {
@@ -123,6 +147,16 @@ describe('StatusBridge', () => {
       expect(snapshot.state.completedPhaseIds).toEqual(['a']);
       expect(snapshot.seq).toBe(3);
     });
+
+    it('different bridges with different runIds tag snapshots independently', () => {
+      const store = new EventStore('/tmp/bridge-multi-' + Math.random().toString(36).slice(2));
+      const bridgeA = new StatusBridge(() => {}, store, 'run-A');
+      const bridgeB = new StatusBridge(() => {}, store, 'run-B');
+      expect(bridgeA.getSnapshot().runId).toBe('run-A');
+      expect(bridgeB.getSnapshot().runId).toBe('run-B');
+      bridgeA.dispose();
+      bridgeB.dispose();
+    });
   });
 
   // ─── dispose ───────────────────────────────────────────────────────────────
@@ -146,13 +180,14 @@ describe('StatusBridge', () => {
 
   describe('event forwarding', () => {
     it('broadcasts { type: "events" } after appending to the store', async () => {
-      const { store, msgs, flushMicrotasks } = createSetup();
+      const { store, msgs, runId, flushMicrotasks } = createSetup();
       store.append('workflow_started', { taskPrompt: 'test' });
       await flushMicrotasks();
 
       const eventsMsgs = msgs('events');
       expect(eventsMsgs).toHaveLength(1);
       expect(eventsMsgs[0].type).toBe('events');
+      expect(eventsMsgs[0].runId).toBe(runId);
       expect(eventsMsgs[0].seq).toBe(1);
       expect(eventsMsgs[0].events).toHaveLength(1);
       expect(eventsMsgs[0].events[0].type).toBe('workflow_started');
@@ -160,12 +195,13 @@ describe('StatusBridge', () => {
     });
 
     it('forwards raw EventRecords with correct seq', async () => {
-      const { store, msgs, flushMicrotasks } = createSetup();
+      const { store, msgs, runId, flushMicrotasks } = createSetup();
       store.append('phase_started', { phaseId: 'scouting', round: 1 }, { phaseId: 'scouting' });
       await flushMicrotasks();
 
       const events = msgs('events');
       expect(events).toHaveLength(1);
+      expect(events[0].runId).toBe(runId);
       expect(events[0].events[0].seq).toBe(1);
       expect(events[0].events[0].type).toBe('phase_started');
       expect(events[0].events[0].metadata.phaseId).toBe('scouting');
@@ -204,7 +240,7 @@ describe('StatusBridge', () => {
 
   describe('coalescing', () => {
     it('coalesces multiple synchronous appends into one events message', async () => {
-      const { store, msgs, flushMicrotasks } = createSetup();
+      const { store, msgs, runId, flushMicrotasks } = createSetup();
       // Synchronous appends — should produce only one flush
       store.append('workflow_started', { taskPrompt: 'a' });
       store.append('sidebar_updated', { title: 'b' });
@@ -216,10 +252,11 @@ describe('StatusBridge', () => {
       expect(events).toHaveLength(1);
       expect(events[0].events).toHaveLength(3);
       expect(events[0].seq).toBe(3);
+      expect(events[0].runId).toBe(runId);
     });
 
     it('separates flushes across async ticks', async () => {
-      const { store, msgs, flushMicrotasks } = createSetup();
+      const { store, msgs, runId, flushMicrotasks } = createSetup();
       store.append('workflow_started', { taskPrompt: 'a' });
       await flushMicrotasks();
 
@@ -232,6 +269,7 @@ describe('StatusBridge', () => {
       expect(msgs('events')).toHaveLength(2);
       expect(msgs('events')[1].events).toHaveLength(1);
       expect(msgs('events')[1].seq).toBe(2);
+      expect(msgs('events')[1].runId).toBe(runId);
     });
 
     it('does not broadcast if no new events since last flush', async () => {
@@ -256,7 +294,7 @@ describe('StatusBridge', () => {
       store.append('sidebar_updated', { title: 'old' });
 
       const messages: ServerMessage[] = [];
-      const bridge = new StatusBridge((msg) => messages.push(msg), store);
+      const bridge = new StatusBridge((msg) => messages.push(msg), store, DEFAULT_RUN_ID);
 
       // Flush should not produce events for pre-existing data
       await new Promise<void>((r) => queueMicrotask(r));
@@ -273,7 +311,7 @@ describe('StatusBridge', () => {
       store.append('workflow_started', { taskPrompt: 'before' });
 
       const messages: ServerMessage[] = [];
-      const bridge = new StatusBridge((msg) => messages.push(msg), store);
+      const bridge = new StatusBridge((msg) => messages.push(msg), store, DEFAULT_RUN_ID);
 
       // New event after bridge creation
       store.append('sidebar_updated', { title: 'after' });
@@ -286,6 +324,7 @@ describe('StatusBridge', () => {
       expect(eventsMsgs[0].events).toHaveLength(1);
       expect(eventsMsgs[0].events[0].type).toBe('sidebar_updated');
       expect(eventsMsgs[0].seq).toBe(2);
+      expect(eventsMsgs[0].runId).toBe(DEFAULT_RUN_ID);
 
       bridge.dispose();
     });
@@ -295,11 +334,12 @@ describe('StatusBridge', () => {
       store.append('workflow_started', { taskPrompt: 'history' });
       store.append('phase_started', { phaseId: 'a', round: 1 }, { phaseId: 'a' });
 
-      const bridge = new StatusBridge(() => {}, store);
+      const bridge = new StatusBridge(() => {}, store, DEFAULT_RUN_ID);
       const snapshot = bridge.getSnapshot();
       expect(snapshot.state.taskPrompt).toBe('history');
       expect(snapshot.state.currentPhaseId).toBe('a');
       expect(snapshot.seq).toBe(2);
+      expect(snapshot.runId).toBe(DEFAULT_RUN_ID);
       bridge.dispose();
     });
   });
@@ -308,7 +348,7 @@ describe('StatusBridge', () => {
 
   describe('handleResync', () => {
     it('returns events catch-up when lastSeq is within ring buffer', () => {
-      const { store, bridge } = createSetup();
+      const { store, bridge, runId } = createSetup();
       store.append('workflow_started', { taskPrompt: 'a' }); // seq 1
       store.append('sidebar_updated', { title: 'b' }); // seq 2
       store.append('phase_started', { phaseId: 'c', round: 1 }, { phaseId: 'c' }); // seq 3
@@ -316,6 +356,7 @@ describe('StatusBridge', () => {
       const msg = bridge.handleResync(1);
       expect(msg.type).toBe('events');
       if (msg.type === 'events') {
+        expect(msg.runId).toBe(runId);
         expect(msg.seq).toBe(3);
         // Should get events with seq > 1
         expect(msg.events).toHaveLength(2);
@@ -325,19 +366,20 @@ describe('StatusBridge', () => {
     });
 
     it('returns full snapshot when lastSeq is undefined', () => {
-      const { store, bridge } = createSetup();
+      const { store, bridge, runId } = createSetup();
       store.append('workflow_started', { taskPrompt: 'x' });
 
       const msg = bridge.handleResync();
       expect(msg.type).toBe('snapshot');
       if (msg.type === 'snapshot') {
+        expect(msg.runId).toBe(runId);
         expect(msg.state.taskPrompt).toBe('x');
         expect(msg.seq).toBe(1);
       }
     });
 
     it('returns full snapshot when gap is evicted from ring buffer', () => {
-      const { store, bridge } = createSetup(5); // tiny ring buffer
+      const { store, bridge } = createSetup({ ringBufferSize: 5 }); // tiny ring buffer
 
       // Append 10 events — the first 5 will be evicted
       for (let i = 0; i < 10; i++) {
@@ -347,6 +389,9 @@ describe('StatusBridge', () => {
       // lastSeq=1 should be evicted (oldest in buffer is seq 6)
       const msg = bridge.handleResync(1);
       expect(msg.type).toBe('snapshot');
+      if (msg.type === 'snapshot') {
+        expect(msg.runId).toBe(DEFAULT_RUN_ID);
+      }
     });
 
     it('returns snapshot when client is already current (empty buffer)', () => {
@@ -363,54 +408,94 @@ describe('StatusBridge', () => {
       const msg = bridge.handleResync(1);
       expect(msg.type).toBe('snapshot');
     });
+
+    it('tags both events and snapshot resync messages with runId', () => {
+      const { store, bridge, runId } = createSetup();
+      store.append('workflow_started', { taskPrompt: 'a' }); // seq 1
+      store.append('sidebar_updated', { title: 'b' }); // seq 2
+
+      // events path
+      const eventsMsg = bridge.handleResync(1);
+      expect(eventsMsg.type).toBe('events');
+      if (eventsMsg.type === 'events') {
+        expect(eventsMsg.runId).toBe(runId);
+      }
+
+      // snapshot path
+      const snapMsg = bridge.handleResync();
+      expect(snapMsg.type).toBe('snapshot');
+      if (snapMsg.type === 'snapshot') {
+        expect(snapMsg.runId).toBe(runId);
+      }
+    });
   });
 
-  // ─── Terminal lifecycle broadcasts (C1) ───────────────────────────────
+  // ─── Terminal lifecycle broadcasts ─────────────────────────────────────
   //
   // When the projection status transitions to 'complete' or 'failed', the
-  // bridge must broadcast a dedicated workflow_complete / workflow_failed
-  // message IMMEDIATELY (not coalesced into the events batch), so the web
-  // client can surface a status banner without waiting for the event flush.
-  // The coalesced events batch still carries the terminal event records too.
+  // bridge must broadcast a dedicated run_complete / run_failed message
+  // IMMEDIATELY (not coalesced into the events batch), tagged with runId, so
+  // the web client can surface a status banner without waiting for the event
+  // flush.  The coalesced events batch still carries the terminal event
+  // records too.
 
   describe('terminal lifecycle broadcasts', () => {
-    it('broadcasts workflow_failed immediately on status → failed', () => {
-      const { store, messages } = createSetup();
+    it('broadcasts run_failed immediately on status → failed', () => {
+      const { store, messages, runId } = createSetup();
 
-      // Synchronous append — the workflow_failed broadcast must be captured
+      // Synchronous append — the run_failed broadcast must be captured
       // BEFORE any microtask flush.
       store.append('workflow_failed', { error: 'boom', phase: 'testing' });
 
-      const failed = messages.filter((m) => m.type === 'workflow_failed');
+      const failed = messages.filter((m) => m.type === 'run_failed');
       expect(failed).toHaveLength(1);
-      if (failed[0].type === 'workflow_failed') {
+      if (failed[0].type === 'run_failed') {
+        expect(failed[0].runId).toBe(runId);
         expect(failed[0].error).toBe('boom');
         expect(failed[0].phase).toBe('testing');
       }
     });
 
-    it('broadcasts workflow_complete immediately on status → complete', () => {
-      const { store, messages } = createSetup();
+    it('broadcasts run_complete immediately on status → complete', () => {
+      const { store, messages, runId } = createSetup();
 
       store.append('workflow_completed', { totalDurationMs: 1000 });
 
-      const complete = messages.filter((m) => m.type === 'workflow_complete');
+      const complete = messages.filter((m) => m.type === 'run_complete');
       expect(complete).toHaveLength(1);
+      if (complete[0].type === 'run_complete') {
+        expect(complete[0].runId).toBe(runId);
+      }
+    });
+
+    it('does NOT emit legacy workflow_complete / workflow_failed types', () => {
+      const { store, messages } = createSetup();
+
+      store.append('workflow_completed', { totalDurationMs: 1000 });
+      store.append('workflow_failed', { error: 'boom', phase: 'testing' });
+
+      // ServerMessage never carries the legacy workflow_complete /
+      // workflow_failed types, so compare the discriminator as a string.
+      const types = messages.map((m) => m.type as string);
+      expect(types.filter((t) => t === 'workflow_complete')).toHaveLength(0);
+      expect(types.filter((t) => t === 'workflow_failed')).toHaveLength(0);
     });
 
     it('broadcasts both terminal signal and coalesced events batch', async () => {
-      const { store, messages, flushMicrotasks } = createSetup();
+      const { store, messages, runId, flushMicrotasks } = createSetup();
 
       store.append('workflow_completed', { totalDurationMs: 1000, agentCount: 1 });
 
       // Terminal signal should be present immediately (synchronous).
-      const complete = messages.filter((m) => m.type === 'workflow_complete');
+      const complete = messages.filter((m) => m.type === 'run_complete');
       expect(complete).toHaveLength(1);
+      expect(complete[0].runId).toBe(runId);
 
       // The coalesced events batch is still delivered after the microtask flush.
       await flushMicrotasks();
       const events = messages.filter((m) => m.type === 'events');
       expect(events).toHaveLength(1);
+      expect(events[0].runId).toBe(runId);
       expect(events[0].events[0].type).toBe('workflow_completed');
     });
 
@@ -419,20 +504,99 @@ describe('StatusBridge', () => {
       store.append('workflow_started', { taskPrompt: 'x' });
       store.append('sidebar_updated', { title: 'T' });
 
-      expect(messages.filter((m) => m.type === 'workflow_complete')).toHaveLength(0);
-      expect(messages.filter((m) => m.type === 'workflow_failed')).toHaveLength(0);
+      expect(messages.filter((m) => m.type === 'run_complete')).toHaveLength(0);
+      expect(messages.filter((m) => m.type === 'run_failed')).toHaveLength(0);
+    });
+  });
+
+  // ─── broadcastTerminal ─────────────────────────────────────────────────
+  //
+  // broadcastTerminal() is the canonical hook the RunManager calls when a
+  // workflow reaches a terminal lifecycle state.  It must broadcast a
+  // run-scoped run_complete / run_failed message tagged with runId
+  // IMMEDIATELY (synchronously, not coalesced).
+
+  describe('broadcastTerminal', () => {
+    it('immediately broadcasts run_complete tagged with runId', () => {
+      const { bridge, messages, runId } = createSetup();
+
+      bridge.broadcastTerminal({ type: 'run_complete', runId });
+
+      const complete = messages.filter((m) => m.type === 'run_complete');
+      expect(complete).toHaveLength(1);
+      expect(complete[0].runId).toBe(runId);
+    });
+
+    it('immediately broadcasts run_failed tagged with runId, error and phase', () => {
+      const { bridge, messages, runId } = createSetup();
+
+      bridge.broadcastTerminal({ type: 'run_failed', runId, error: 'kaboom', phase: 'plan' });
+
+      const failed = messages.filter((m) => m.type === 'run_failed');
+      expect(failed).toHaveLength(1);
+      if (failed[0].type === 'run_failed') {
+        expect(failed[0].runId).toBe(runId);
+        expect(failed[0].error).toBe('kaboom');
+        expect(failed[0].phase).toBe('plan');
+      }
+    });
+
+    it('broadcasts synchronously (no microtask flush required)', async () => {
+      const { bridge, messages, runId, flushMicrotasks } = createSetup();
+
+      bridge.broadcastTerminal({ type: 'run_complete', runId });
+
+      // The message must be present BEFORE any microtask flush.
+      expect(messages.filter((m) => m.type === 'run_complete')).toHaveLength(1);
+
+      // Flushing must not duplicate the terminal message.
+      await flushMicrotasks();
+      expect(messages.filter((m) => m.type === 'run_complete')).toHaveLength(1);
+    });
+  });
+
+  // ─── runId-tagging invariant ───────────────────────────────────────────
+  //
+  // Every message the bridge emits (snapshot, events, run_complete,
+  // run_failed) must be tagged with the constructor-supplied runId.
+
+  describe('runId-tagging invariant', () => {
+    it('tags every broadcast message with the constructor runId', async () => {
+      const runId = 'tagged-run-99';
+      const { store, messages, bridge, flushMicrotasks } = createSetup({ runId });
+
+      store.append('workflow_started', { taskPrompt: 'x' });
+      store.append('phase_started', { phaseId: 'scouting', round: 1 }, { phaseId: 'scouting' });
+      store.append('workflow_completed', { totalDurationMs: 100 });
+      await flushMicrotasks();
+
+      // Every captured message must carry the runId.
+      expect(messages.length).toBeGreaterThan(0);
+      for (const msg of messages) {
+        if (
+          msg.type === 'snapshot' ||
+          msg.type === 'events' ||
+          msg.type === 'run_complete' ||
+          msg.type === 'run_failed'
+        ) {
+          expect(msg.runId).toBe(runId);
+        }
+      }
+
+      bridge.broadcastTerminal({ type: 'run_failed', runId, error: 'e', phase: 'p' });
+      const failed = messages.filter((m) => m.type === 'run_failed');
+      expect(failed[failed.length - 1].runId).toBe(runId);
     });
   });
 
   // ─── Only snapshot/events/terminal broadcasts ───────────────────────────
   //
-  // After the snapshot/delta refactor (kb-13–17) the bridge must emit only
-  // snapshot, events, and dedicated terminal lifecycle messages
-  // (workflow_complete / workflow_failed).  The latter are synthesized by the
-  // bridge on terminal status transitions and sent immediately.
+  // After the multi-run refactor the bridge must emit only snapshot, events,
+  // and dedicated terminal lifecycle messages (run_complete / run_failed),
+  // all tagged with runId.
 
   describe('only snapshot/events/terminal broadcasts', () => {
-    const ALLOWED_TYPES = new Set(['snapshot', 'events', 'workflow_complete', 'workflow_failed']);
+    const ALLOWED_TYPES = new Set(['snapshot', 'events', 'run_complete', 'run_failed']);
 
     it('broadcasts only allowed types for a wide variety of event types', async () => {
       const { store, messages, flushMicrotasks } = createSetup();
@@ -470,8 +634,8 @@ describe('StatusBridge', () => {
       // At least one events message was broadcast.
       expect(messages.filter((m) => m.type === 'events')).toHaveLength(1);
       // Terminal lifecycle signals were broadcast.
-      expect(messages.filter((m) => m.type === 'workflow_complete')).toHaveLength(1);
-      expect(messages.filter((m) => m.type === 'workflow_failed')).toHaveLength(1);
+      expect(messages.filter((m) => m.type === 'run_complete')).toHaveLength(1);
+      expect(messages.filter((m) => m.type === 'run_failed')).toHaveLength(1);
     });
   });
 });

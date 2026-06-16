@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { mkdir, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { LoadEnvResult } from '../../src/core/config.js';
+import type { LoadEnvResult } from '../../packages/engine/src/core/config.js';
 import {
   ensureDir,
   getDefaultWorkDir,
@@ -11,7 +11,7 @@ import {
   resolveProfilesDirs,
   resolveWorkflowsDirs,
   scanPastRuns,
-} from '../../src/core/config.js';
+} from '../../packages/engine/src/core/config.js';
 import { useEnvSandbox } from '../helpers/env-sandbox.js';
 import { useTempDir } from '../helpers/use-temp-dir.js';
 

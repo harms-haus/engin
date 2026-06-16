@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, spyOn } from 'bun:test';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
-import { EventStore } from '../../src/tracking/event-store.js';
+import { EventStore } from '../../packages/engine/src/tracking/event-store.js';
 import { useTempDir } from '../helpers/use-temp-dir.js';
 
 describe('EventStore', () => {
@@ -321,19 +321,27 @@ describe('EventStore', () => {
 
     it('default capacity is 1000', () => {
       const store = new EventStore(dir);
-      // Append 1000 events
+      // Append 1000 events — buffer stays at 1000 (below hysteresis threshold)
       for (let i = 0; i < 1000; i++) {
         store.append('workflow_started', { taskPrompt: `event-${i}` });
       }
       const all = store.getEventsSince(0);
       expect(all).toHaveLength(1000);
 
-      // 1001st event should evict the first
-      store.append('workflow_started', { taskPrompt: 'overflow' });
-      const after = store.getEventsSince(0);
-      expect(after).toHaveLength(1000);
-      expect(after[0].seq).toBe(2);
-      expect(after[after.length - 1].data.taskPrompt).toBe('overflow');
+      // 1001st event does NOT evict yet (hysteresis: trim at 1100 * 1.1 = 1100)
+      store.append('workflow_started', { taskPrompt: 'just-over' });
+      const after1001 = store.getEventsSince(0);
+      expect(after1001).toHaveLength(1001);
+      expect(after1001[0].seq).toBe(1);
+
+      // Append until we exceed the hysteresis threshold (1101 events)
+      for (let i = 0; i < 100; i++) {
+        store.append('workflow_started', { taskPrompt: `pad-${i}` });
+      }
+      // 1101 events → trim fires, back to 1000
+      const afterTrim = store.getEventsSince(0);
+      expect(afterTrim).toHaveLength(1000);
+      expect(afterTrim[0].seq).toBe(102); // first 101 evicted
     });
   });
 

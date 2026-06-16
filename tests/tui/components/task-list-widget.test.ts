@@ -1,8 +1,8 @@
 /* eslint-disable no-control-regex -- tests intentionally match ANSI escape codes */
+import type { TaskEntity } from '@engin/shared';
 import { describe, expect, it } from 'bun:test';
-import type { TaskEntity } from '../../../src/tracking/event-types.js';
-import { TaskListWidget } from '../../../src/tui/components/task-list-widget.js';
-import { dim, statusColor, statusIcon } from '../../../src/tui/theme.js';
+import { TaskListWidget } from '../../../packages/tui/src/components/task-list-widget.js';
+import { dim, statusColor, statusIcon } from '../../../packages/tui/src/theme.js';
 
 const UP = '\x1b[A';
 const DOWN = '\x1b[B';

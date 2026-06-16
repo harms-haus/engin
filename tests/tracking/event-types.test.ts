@@ -1,4 +1,3 @@
-import { describe, expect, it } from 'bun:test';
 import type {
   AgentEntity,
   EventRecord,
@@ -6,11 +5,12 @@ import type {
   LogEntry,
   PhaseEntity,
   WorkflowProjection,
-} from '../../src/tracking/event-types.js';
-import { createInitialProjection } from '../../src/tracking/event-types.js';
+} from '@engin/shared/event-types';
+import { createInitialProjection, MAX_RUN_LOG } from '@engin/shared/event-types';
+import { describe, expect, it } from 'bun:test';
 
 // Also verify re-exports exist from core/types.ts
-import type { StepDefinition, StepEntity, TaskEntity, TaskStatus } from '../../src/core/types.js';
+import type { StepDefinition, StepEntity, TaskEntity, TaskStatus } from '../../packages/engine/src/core/types.js';
 
 // ── Type-level helpers ───────────────────────────────────────────────────────
 // These are compile-time checks: they verify the types are well-formed.
@@ -83,6 +83,11 @@ describe('EventType', () => {
   it('includes step_started', () => {
     const t: EventType = 'step_started';
     expect(t).toBe('step_started');
+  });
+
+  it('includes log', () => {
+    const t: EventType = 'log';
+    expect(t).toBe('log');
   });
 
   it('excludes task_step_started from the union', () => {
@@ -163,7 +168,7 @@ describe('EventType', () => {
     }
   });
 
-  it('has exactly 19 members (including new ones, excluding removed)', () => {
+  it('has exactly 21 members (including log)', () => {
     // Count the members by assigning dummy values and counting
     const all: EventType[] = [
       'workflow_started',
@@ -186,8 +191,9 @@ describe('EventType', () => {
       'turn_ended',
       'tool_call_started',
       'tool_call_ended',
+      'log',
     ];
-    expect(all).toHaveLength(20);
+    expect(all).toHaveLength(21);
   });
 });
 
@@ -456,6 +462,27 @@ describe('WorkflowProjection', () => {
     expect(failedProj.error).toBe('Something broke');
     expect(failedProj.failedPhase).toBe('impl');
   });
+
+  it('has a runLog field of type LogEntry[]', () => {
+    const proj: WorkflowProjection = {
+      ...createInitialProjection(),
+      runLog: [
+        { id: 'r1', timestamp: '2026-06-15T00:00:00Z', type: 'text', content: 'server booted' },
+        { id: 'r2', timestamp: '2026-06-15T00:00:01Z', type: 'error', content: 'kaboom' },
+      ],
+    };
+    expect(Array.isArray(proj.runLog)).toBe(true);
+    expect(proj.runLog).toHaveLength(2);
+    expect(proj.runLog[0].content).toBe('server booted');
+    expect(proj.runLog[1].type).toBe('error');
+  });
+});
+
+describe('MAX_RUN_LOG', () => {
+  it('is exported as a number equal to 200', () => {
+    expect(typeof MAX_RUN_LOG).toBe('number');
+    expect(MAX_RUN_LOG).toBe(200);
+  });
 });
 
 describe('createInitialProjection', () => {
@@ -486,6 +513,20 @@ describe('createInitialProjection', () => {
     const proj = createInitialProjection();
     expect(proj.error).toBeUndefined();
     expect(proj.failedPhase).toBeUndefined();
+  });
+
+  it('initializes runLog as an empty array', () => {
+    const proj = createInitialProjection();
+    expect(Array.isArray(proj.runLog)).toBe(true);
+    expect(proj.runLog).toEqual([]);
+  });
+
+  it('returns a fresh runLog array each call (no shared reference)', () => {
+    const a = createInitialProjection();
+    const b = createInitialProjection();
+    expect(a.runLog).not.toBe(b.runLog);
+    a.runLog.push({ id: 'x', timestamp: '', type: 'text', content: 'mutate' });
+    expect(b.runLog).toHaveLength(0);
   });
 });
 

@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
 
-import { branchRunner } from '../../src/pool/branch-runner.js';
-import type { StepDefinition } from '../../src/pool/types.js';
+import { branchRunner } from '../../packages/engine/src/pool/branch-runner.js';
+import type { StepDefinition } from '../../packages/engine/src/pool/types.js';
 import {
   clearPoolMocks,
   createRunnerContext,

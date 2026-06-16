@@ -1,27 +1,32 @@
 import { afterAll, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { z } from 'zod';
-import type { AgentSession, HarnessCreationOptions } from '../../src/core/types.ts';
+import type { AgentSession, HarnessCreationOptions } from '../../packages/engine/src/core/types.ts';
 import { makeMockSession } from '../helpers/make-session.js';
 
 // Capture real modules before mocking so we can restore them in afterAll.
-const realHarnessFactory = Object.assign({}, await import('../../src/core/harness-factory.ts'));
-const realStructuredOutput = Object.assign({}, await import('../../src/core/structured-output.ts'));
+const realHarnessFactory = Object.assign({}, await import('../../packages/engine/src/core/harness-factory.ts'));
+const realStructuredOutput = Object.assign({}, await import('../../packages/engine/src/core/structured-output.ts'));
 
 // ─── Mocks ──────────────────────────────────────────────────────────────────
 
 const mockCreateHarness = mock() as ReturnType<typeof mock> & ((...args: unknown[]) => unknown);
-mock.module('../../src/core/harness-factory.ts', () => ({
+mock.module('../../packages/engine/src/core/harness-factory.ts', () => ({
   createHarness: (...args: unknown[]) => mockCreateHarness(...args),
 }));
 
 const mockPromptForStructured = mock() as ReturnType<typeof mock> & ((...args: unknown[]) => unknown);
-mock.module('../../src/core/structured-output.ts', () => ({
+mock.module('../../packages/engine/src/core/structured-output.ts', () => ({
   promptForStructured: (...args: unknown[]) => mockPromptForStructured(...args),
 }));
 
 // ─── Imports (after mocks) ─────────────────────────────────────────────────
 
-import { agentLoopUntil, parallelAgents, retryAgentUntil, sequentialAgents } from '../../src/core/agent-loop.ts';
+import {
+  agentLoopUntil,
+  parallelAgents,
+  retryAgentUntil,
+  sequentialAgents,
+} from '../../packages/engine/src/core/agent-loop.ts';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -527,6 +532,6 @@ describe('sequentialAgents agentIdPrefix', () => {
 
 // Restore the real modules so mocks don't leak into other test files.
 afterAll(() => {
-  mock.module('../../src/core/harness-factory.ts', () => realHarnessFactory);
-  mock.module('../../src/core/structured-output.ts', () => realStructuredOutput);
+  mock.module('../../packages/engine/src/core/harness-factory.ts', () => realHarnessFactory);
+  mock.module('../../packages/engine/src/core/structured-output.ts', () => realStructuredOutput);
 });

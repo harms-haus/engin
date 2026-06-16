@@ -1,4 +1,4 @@
-import type { Task } from '../../src/core/types.js';
+import type { Task } from '../../packages/engine/src/core/types.js';
 
 /**
  * Creates a Task with sensible defaults.

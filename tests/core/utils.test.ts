@@ -1,6 +1,6 @@
 import { describe, expect, it, mock } from 'bun:test';
-import type { StatusCallbacks } from '../../src/core/types.js';
-import { STATUS_CALLBACK_METHODS } from '../../src/core/types.js';
+import type { StatusCallbacks } from '../../packages/engine/src/core/types.js';
+import { STATUS_CALLBACK_METHODS } from '../../packages/engine/src/core/types.js';
 import {
   appendReviewFeedback,
   composeStatusCallbacks,
@@ -9,7 +9,7 @@ import {
   isEnoentError,
   safeErrorMessage,
   validateWorkflowName,
-} from '../../src/core/utils.js';
+} from '../../packages/engine/src/core/utils.js';
 
 // ─── validateWorkflowName ──────────────────────────────────────────────────
 

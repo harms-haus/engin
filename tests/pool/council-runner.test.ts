@@ -12,22 +12,22 @@ import { z } from 'zod';
 
 // ─── Capture real module before mocking ────────────────────────────────────
 
-const realStepExecution = Object.assign({}, await import('../../src/pool/step-execution.js'));
+const realStepExecution = Object.assign({}, await import('../../packages/engine/src/pool/step-execution.js'));
 
 // ─── Mock definitions + mock.module ────────────────────────────────────────
 
 export const mockRunStep = mock() as ReturnType<typeof mock> & ((...args: unknown[]) => unknown);
 
-mock.module('../../src/pool/step-execution.js', () => ({
+mock.module('../../packages/engine/src/pool/step-execution.js', () => ({
   runStep: (...args: unknown[]) => mockRunStep(...args),
   StepExecutionContext: realStepExecution.StepExecutionContext,
 }));
 
 // ─── Imports after mock.module ─────────────────────────────────────────────
 
-import type { Task } from '../../src/core/types.js';
-import { councilRunner } from '../../src/pool/council-runner.ts';
-import type { StepDefinition, TrackedSession } from '../../src/pool/types.js';
+import type { Task } from '../../packages/engine/src/core/types.js';
+import { councilRunner } from '../../packages/engine/src/pool/council-runner.ts';
+import type { StepDefinition, TrackedSession } from '../../packages/engine/src/pool/types.js';
 import { clearPoolMocks } from './helpers.ts';
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
@@ -96,7 +96,7 @@ beforeEach(() => {
 });
 
 afterAll(() => {
-  mock.module('../../src/pool/step-execution.js', () => realStepExecution);
+  mock.module('../../packages/engine/src/pool/step-execution.js', () => realStepExecution);
 });
 
 // ─── Tests ──────────────────────────────────────────────────────────────────

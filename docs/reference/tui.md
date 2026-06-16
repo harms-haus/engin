@@ -1,17 +1,18 @@
 # TUI dashboard
 
-When the CLI detects an interactive terminal (TTY) without `--verbose`, it uses `WorkflowTUI`
-to render a live dashboard instead of plain console output. This document covers the lifecycle
-manager, the widget tree, the selection model and follow rules, keyboard shortcuts, and the
-theme helpers.
+When the CLI detects an interactive terminal (TTY) without `--verbose`, it attaches a
+`WorkflowTUI` dashboard to the run instead of plain stdout output. The TUI is a
+**WebSocket client**: it renders a `ClientStore` projection that is fed from the
+shared `EngineClient` over `ws://127.0.0.1:<port>/ws`, not from an in-process store.
 
-The TUI is built on [`@earendil-works/pi-tui`](https://www.npmjs.com/package/@earendil-works/pi-tui).
-It does **not** expose `StatusCallbacks` — the engine wires `createStoreCallbacks(store)` into
-the workflow's `onStatus`, and the TUI receives projection updates via store subscription.
+It is built on [`@earendil-works/pi-tui`](https://www.npmjs.com/package/@earendil-works/pi-tui).
+It does **not** expose `StatusCallbacks` — the server wires
+`createStoreCallbacks(store)` into the workflow's `onStatus`, and the TUI receives
+projection updates via the WS stream.
 
 ## `WorkflowTUI`
 
-Source: `src/tui/workflow-tui.ts`.
+Source: `packages/tui/src/workflow-tui.ts`.
 
 ```typescript
 class WorkflowTUI {
@@ -23,41 +24,55 @@ class WorkflowTUI {
   prepareQrCode(url: string): Promise<void>;
   showQrCode(url: string): Promise<void>;
   pauseForInspection(signal?: AbortSignal): Promise<void>;
+  setRunId(runId: string): void;
 }
 ```
 
-| Method                        | Behaviour                                                                                                                                                                                                                            |
-| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `start()`                     | Create a `ProcessTerminal`, build the widget tree (EventLog → separator → Dashboard), fit the event log to the terminal height, focus the event log, override `console.warn`/`error`, and start rendering. No-op if already running. |
-| `stop()`                      | Restore original `console` methods, unsubscribe input, hide any QR overlay, and stop the TUI. Safe to call multiple times.                                                                                                           |
-| `prepareQrCode(url)`          | Pre-generate the QR overlay. **Call before `start()`** so the overlay attaches during the first (scrollback-safe) render.                                                                                                            |
-| `showQrCode(url)`             | Generate (if needed) and display the QR overlay for the observer URL.                                                                                                                                                                |
-| `pauseForInspection(signal?)` | Keep the TUI alive after the workflow completes so you can inspect the final state. Resolves when `signal` fires or Ctrl+C/Escape is pressed.                                                                                        |
+| Method                        | Behaviour                                                                                                                                                                                                                                                       |
+| ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `start()`                     | Create a `ProcessTerminal`, build the widget tree (EventLog → separator → Dashboard), fit the event log to the terminal height, focus the event log, wire the input listener (including the detach/kill prompt), and start rendering. No-op if already running. |
+| `stop()`                      | Unsubscribe the store bridge + input listener, hide any QR / detach-kill overlays, and stop the TUI. Safe to call multiple times.                                                                                                                               |
+| `prepareQrCode(url)`          | Pre-generate the QR overlay. **Call before `start()`** so the overlay attaches during the first (scrollback-safe) render.                                                                                                                                       |
+| `showQrCode(url)`             | Generate (if needed) and display the QR overlay for the server's web URL.                                                                                                                                                                                       |
+| `pauseForInspection(signal?)` | Keep the TUI alive after the run completes so you can inspect the final state. Resolves on Ctrl+C/Escape, or when the `ClientStore` reaches a terminal status.                                                                                                  |
+| `setRunId(runId)`             | Update the runId (once `run_started` is received) so the detach/kill prompt can display it.                                                                                                                                                                     |
 
 ### `WorkflowTUIOptions`
 
-| Field            | Type         | Default | Description                                                                                   |
-| ---------------- | ------------ | ------- | --------------------------------------------------------------------------------------------- |
-| `agentLogLines?` | `number`     | `20`    | Collapsed height of the agent detail log (expanded shows 40).                                 |
-| `abort?`         | `() => void` | —       | Invoked on first Ctrl+C; use to cancel the run.                                               |
-| `store?`         | `EventStore` | —       | The canonical store. When provided, the TUI subscribes and syncs widgets from the projection. |
+| Field            | Type          | Default | Description                                                                             |
+| ---------------- | ------------- | ------- | --------------------------------------------------------------------------------------- |
+| `agentLogLines?` | `number`      | `20`    | Collapsed height of the agent detail log (expanded shows 40).                           |
+| `clientStore?`   | `ClientStore` | —       | The shared plain-TS projection store the widgets sync from (fed by the `EngineClient`). |
+| `runId?`         | `string`      | —       | Server run identifier, shown in the detach/kill prompt. Set later via `setRunId`.       |
+| `onDetach?`      | `() => void`  | —       | Called when the user chooses to detach (leave run on the server, exit the client).      |
+| `onKill?`        | `() => void`  | —       | Called when the user chooses to kill (send `cancel_run`, then exit once terminal).      |
 
-### Console interception
+### Console interception (removed)
 
-When the TUI is running:
+The TUI no longer monkey-patches `console.warn`/`console.error` — it is a client in
+a separate process from the server, where the workflow actually runs. Runtime
+warnings/errors are captured **server-side** and delivered as `log` events (see
+[Event store & status → The `log` event type](event-store.md#the-log-event-type)).
+The TUI renders them into the `EventLog` with the existing ⚠️/❌ prefixes.
 
-- `console.log` **passes through unchanged** (so library noise like dotenv doesn't clutter the
-  event log).
-- `console.warn` / `console.error` are routed to the event log **with deduplication** (the most
-  recent 50 unique messages are tracked; repeats are suppressed). warn is prefixed `⚠️`, error
-  `❌`. They also still call the original.
+### Disconnect semantics
+
+| Input                            | Behaviour                                                                                                                                                                                                                                 |
+| -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Ctrl+C`                         | Show the **detach/kill prompt** overlay (showing the `runId`). **Detach** (default) leaves the run running on the server and exits the client; **Kill** sends `cancel_run { runId }` and stays attached until terminal state is observed. |
+| `Ctrl+D`                         | **Detach immediately** (no prompt).                                                                                                                                                                                                       |
+| Esc / 2nd Ctrl+C (at the prompt) | Dismiss the prompt; the run is unaffected and the client stays attached.                                                                                                                                                                  |
+
+On a transient `EngineClient` disconnect, the TUI shows a "reconnecting…" banner and
+keeps the last projection visible; on reconnect it sends
+`resync { runId, lastSeq }`. See [CLI reference → Disconnect semantics](cli.md#disconnect-semantics-tty).
 
 ### Keyboard shortcuts
 
 | Key                   | Action                                                                                 |
 | --------------------- | -------------------------------------------------------------------------------------- |
-| `Ctrl+C` (1st)        | Calls `abort()`; logs `⏹ Stopping workflow...`                                         |
-| `Ctrl+C` (2nd)        | `process.exit(1)`                                                                      |
+| `Ctrl+C`              | Show the detach/kill prompt (↑/↓ select · Enter confirm · Esc cancel).                 |
+| `Ctrl+D`              | Detach immediately.                                                                    |
 | `←` / `→`             | Select phase (cycle through registered phases).                                        |
 | `↑` / `↓`             | Select task (when the agent log is collapsed) or scroll the agent log (when expanded). |
 | `Tab` / `Shift+Tab`   | Cycle steps/agents within the selected task (forward/backward).                        |
@@ -66,8 +81,10 @@ When the TUI is running:
 | `PgUp` / `PgDn`       | Scroll the event log up / down.                                                        |
 | `Home` / `End`        | Jump to top / bottom of the event log (resumes auto-scroll).                           |
 
-> In TUI mode the SIGINT handler is suppressed; the raw-mode input listener handles Ctrl+C. In
-> non-TUI (console) mode only the SIGINT handler runs. They are never simultaneously active.
+> In TUI mode the process-level SIGINT handler is suppressed; the raw-mode input
+> listener handles Ctrl+C. In non-TTY (stdout renderer) mode the SIGINT handler
+> runs instead (first Ctrl+C → `cancel_run`, second → force-quit). They are never
+> simultaneously active.
 
 ## Widget tree
 
@@ -84,29 +101,26 @@ WorkflowTUI
 All widgets implement the `Component` interface from `@earendil-works/pi-tui`:
 `render(width): string[]`, `invalidate(): void`, `handleInput(data): void`.
 
-## `createStoreBackedTui(deps)`
+## `createWsBackedTui(deps)`
 
-Source: `src/tui/status-callbacks.ts`. Factory that subscribes the TUI widgets to an
-`EventStore`. It does **not** implement `StatusCallbacks` — it subscribes via
-`store.subscribe()` and syncs all widgets from the projection.
+Source: `packages/tui/src/ws-backed-tui.ts` (replaces the former
+`createStoreBackedTui`). Subscribes the TUI widgets to a **`ClientStore`** (the
+shared plain-TS projection store), not an `EventStore`.
 
-On each notification:
+On each store notification:
 
-1. Read new events via `store.getEventsSince(lastSeq)` and write human-readable lines into the
-   `EventLog` (formatted by `formatWorkflowEventLine`).
-2. Call `dashboard.syncFromProjection(projection)`.
+1. Read new entries from `workflowEventLog` and write them into the `EventLog`
+   (lines are pre-formatted by `formatWorkflowEventLine`).
+2. Push the new projection into the `Dashboard` (`syncFromProjection`).
 3. Call `requestRender()`.
 
-Any events already in the store before subscription (e.g. from a resumed run's replay) are
-processed immediately on construction.
-
-`deps`: `{ store: EventStore; eventLog: EventLog; dashboard: Dashboard; requestRender: () => void }`.
-Returns `{ dispose: () => void }`.
+`deps`: `{ clientStore, eventLog, dashboard, requestRender }`. Returns
+`{ dispose }`.
 
 ## `Dashboard` — the selection model
 
-Source: `src/tui/components/dashboard.ts`. Owns the **centralised selection model** and the
-follow rules that keep the view focused on live activity.
+Source: `packages/tui/src/components/dashboard.ts`. Owns the **centralised selection
+model** and the follow rules that keep the view focused on live activity.
 
 | State               | Description                                                       |
 | ------------------- | ----------------------------------------------------------------- |
@@ -122,25 +136,26 @@ Pushes projection state into all child widgets, then runs the follow rules:
 
 - **Phase follow** — if `selectedPhaseId` is set, not completed, and differs from
   `currentPhaseId`, advance to `currentPhaseId` and reset task/step selection. If
-  `selectedPhaseId` is `null`, set it to `currentPhaseId`. If it is completed, leave it
-  (reviewing history).
-- **Task follow** — if `selectedTaskId` is `null` or no longer in the selected phase's tasks,
-  auto-select the first `active` task (or the first task). Reset step selection.
+  `selectedPhaseId` is `null`, set it to `currentPhaseId`. If it is completed, leave
+  it (reviewing history).
+- **Task follow** — if `selectedTaskId` is `null` or no longer in the selected
+  phase's tasks, auto-select the first `active` task (or the first task). Reset step
+  selection.
 - **Step follow** — if not user-pinned, sync `selectedStepIndex` to the task's
   `activeStepIndex`.
 
 ### `handleInput(data)` routing
 
-- `←`/`→` → PhaseBar; recompute `selectedPhaseId` (wraps); set `userPinnedPhase`; reset
-  task/step selection.
-- `↑`/`↓` → if the agent log is expanded, scroll it; else TaskList (and reset step selection if
-  the task changed).
+- `←`/`→` → PhaseBar; recompute `selectedPhaseId` (wraps); set `userPinnedPhase`;
+  reset task/step selection.
+- `↑`/`↓` → if the agent log is expanded, scroll it; else TaskList (and reset step
+  selection if the task changed).
 - `Shift+↑`/`Shift+↓` → only when expanded, scroll the agent log.
-- `Tab`/`Shift+Tab` → AgentLog; set `userPinnedStep`; cycle `selectedStepIndex` over steps that
-  have an `agentKey`.
+- `Tab`/`Shift+Tab` → AgentLog; set `userPinnedStep`; cycle `selectedStepIndex` over
+  steps that have an `agentKey`.
 
-`getComputedHeight()` = phase bar (1) + visible task count + expanded agent log lines + 4
-border lines.
+`getComputedHeight()` = phase bar (1) + visible task count + expanded agent log
+lines + 4 border lines.
 
 ## Widgets
 
@@ -149,8 +164,9 @@ border lines.
 Scrollable log of timestamped event lines. Constructor: `EventLog(maxLines = 20,
 maxBufferLines = 5000)`.
 
-- `addLine(text)` writes into a ring buffer; if not auto-scrolling, increments the scroll
-  offset to keep the view stable. Oldest lines are pruned beyond `maxBufferLines`.
+- `addLine(text)` writes into a ring buffer; if not auto-scrolling, increments the
+  scroll offset to keep the view stable. Oldest lines are pruned beyond
+  `maxBufferLines`.
 - `handleInput` — PgUp/PgDn/Home/End navigation.
 - When scrolled up, the first visible line becomes a dim indicator:
   `↑ <N> more lines above (PgUp/PgDn)`.
@@ -159,10 +175,10 @@ maxBufferLines = 5000)`.
 
 Single-line phase progress indicator.
 
-- `setPhases`, `setCurrentPhaseId` (also resets the selected phase), `setSelectedPhase`,
-  `setCompletedPhaseIds`, `setIndicator`.
-- Markers: `✓` (completed, green), `●` (running, cyan), `·` (pending, dim). Selected phase is
-  underlined. Segments joined with `│`.
+- `setPhases`, `setCurrentPhaseId` (also resets the selected phase),
+  `setSelectedPhase`, `setCompletedPhaseIds`, `setIndicator`.
+- Markers: `✓` (completed, green), `●` (running, cyan), `·` (pending, dim). Selected
+  phase is underlined. Segments joined with `│`.
 
 ### `TaskListWidget`
 
@@ -177,8 +193,8 @@ Grid of tasks in the current phase, one row per task. Sorted by status priority
 
 Detail view for the agent fulfilling the selected step of the selected task.
 
-- Renders a step **tab bar** at the bottom — one tab per step, marked `✓` (done), `▶` (active),
-  or `○` (pending). Steps without an agent are dimmed.
+- Renders a step **tab bar** at the bottom — one tab per step, marked `✓` (done),
+  `▶` (active), or `○` (pending). Steps without an agent are dimmed.
 - Header shows profile, tool-call count, and input/output token totals.
 - Right-side controls hint at the available keys (scroll/expand/cycle).
 
@@ -193,16 +209,25 @@ Entry type → icon/colour:
 | `error`                         | ⚠️   | red    |
 | `decision`                      | 🤝   | none   |
 
-`tool_call_end` entries are hidden from the rendered log (the `tool_call_start` line already
-shows the formatted call).
+`tool_call_end` entries are hidden from the rendered log (the `tool_call_start` line
+already shows the formatted call).
+
+### Detach/kill prompt
+
+Source: `packages/tui/src/components/detach-kill-prompt.ts`. A center-anchored
+overlay with two options — **Detach** (default, highlighted) and **Kill** — showing
+the run's `runId`. Each option shows a description line — Detach: "Leave run
+running, exit client"; Kill: "Cancel run, then exit". Input: ↑/↓ or ←/→ to
+navigate (wraps); Enter to confirm (`onConfirm('detach' | 'kill')`); Escape or
+Ctrl+C to dismiss (`onDismiss`).
 
 ## Theme
 
-Source: `src/tui/theme.ts`. ANSI escape-sequence helpers. All colour helpers have signature
-`(str: string) => string`.
+Source: `packages/tui/src/theme.ts`. ANSI escape-sequence helpers. All colour
+helpers have signature `(str: string) => string`.
 
-**Foreground:** `cyan`, `dim`, `bold`, `underline`, `green`, `red`, `yellow`, `blue`,
-`magenta`, `darkRed` (256-colour 131).
+**Foreground:** `cyan`, `dim`, `bold`, `underline`, `green`, `red`, `yellow`,
+`blue`, `magenta`, `darkRed` (256-colour 131).
 
 **Background:** `bgDark` (256-colour 236), `bgStatusBar` (256-colour 237).
 
@@ -224,7 +249,8 @@ Source: `src/tui/theme.ts`. ANSI escape-sequence helpers. All colour helpers hav
 
 ### `formatToolCall(toolName, args)`
 
-Source: `src/tui/format-tool-call.ts`. Plain-text, per-tool formatting with icons:
+Source: `packages/shared/src/format-tool-call.ts` (re-exported by the TUI).
+Plain-text, per-tool formatting with icons:
 
 | Tool                           | Format                                              |
 | ------------------------------ | --------------------------------------------------- |
@@ -246,17 +272,19 @@ Commands are truncated to 60 chars, arg blobs to 50.
 
 ### `formatWorkflowEventLine(ev)`
 
-Source: `src/tui/format-workflow-event.ts`. Maps an `EventRecord` to a human-readable emoji
-line for the event log. Returns `null` for silent types (`decision`, `turn_started`,
-`turn_ended`, `tool_call_started`, `tool_call_ended`).
+Source: `packages/shared/src/format-workflow-event.ts`. Maps an `EventRecord` to a
+human-readable emoji line for the event log. Returns `null` for silent types
+(`decision`, `turn_started`, `turn_ended`, `tool_call_started`, `tool_call_ended`).
 
 ## QR overlay
 
-Source: `src/tui/components/qr-overlay.ts`. `createQrOverlayComponent(url)` generates a QR
-code (small terminal style) plus an OSC-8 clickable hyperlink line. Anchored top-right,
-non-capturing. Used so you can open the observer URL on a phone.
+Source: `packages/tui/src/components/qr-overlay.ts`. `createQrOverlayComponent(url)`
+generates a QR code (small terminal style) plus an OSC-8 clickable hyperlink line.
+Anchored top-right, non-capturing. Used so you can open the server's web URL on a
+phone.
 
 ## Where to go next
 
-- [Web reference](web.md) — the same projection, rendered in a browser.
-- [Event store & status](event-store.md) — what the widgets are subscribing to.
+- [CLI reference](cli.md) — how the TUI is attached and the detach/kill semantics.
+- [Web client](web.md) — the same projection, rendered in a browser.
+- [Event store & status](event-store.md) — the substrate the store is fed from.

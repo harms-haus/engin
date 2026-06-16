@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it } from 'bun:test';
 import * as fs from 'node:fs/promises';
 import { join } from 'node:path';
-import type { PersistedAgentRecord } from '../../src/core/types.js';
-import { WorkflowStatusTracker } from '../../src/tracking/workflow-status.js';
+import type { PersistedAgentRecord } from '../../packages/engine/src/core/types.js';
+import { WorkflowStatusTracker } from '../../packages/engine/src/tracking/workflow-status.js';
 import { useTempDir } from '../helpers/use-temp-dir.js';
 
 describe('WorkflowStatusTracker – agent persistence', () => {
@@ -470,7 +470,16 @@ describe('WorkflowStatusTracker – agent persistence', () => {
 
     it('source does not import sync fs functions or contain persistStateSync', async () => {
       // Structural test: verify the source was refactored to remove sync I/O.
-      const sourcePath = join(import.meta.dir, '..', '..', 'src', 'tracking', 'workflow-status.ts');
+      const sourcePath = join(
+        import.meta.dir,
+        '..',
+        '..',
+        'packages',
+        'engine',
+        'src',
+        'tracking',
+        'workflow-status.ts',
+      );
       const source = await fs.readFile(sourcePath, 'utf-8');
 
       // Should NOT import from 'node:fs' (the sync module)

@@ -22,10 +22,10 @@ Read in this order:
 
 ### Concepts
 
-| Document                                 | What it covers                                                                                                      |
-| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| [Overview](concepts/overview.md)         | What engin is, the rigid execution hierarchy, and the system's key properties.                                      |
-| [Architecture](concepts/architecture.md) | Layered source layout, per-module responsibilities, and how status flows from a workflow to the TUI and web mirror. |
+| Document                                 | What it covers                                                                                                                    |
+| ---------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| [Overview](concepts/overview.md)         | What engin is, the rigid execution hierarchy, and the system's key properties.                                                    |
+| [Architecture](concepts/architecture.md) | The client/server process model, the 5-package workspace layout, and how status flows from the server to the TUI and web clients. |
 
 ### Guides
 
@@ -37,16 +37,17 @@ Read in this order:
 
 ### Reference
 
-| Document                                         | What it covers                                                                                                |
-| ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------- |
-| [CLI reference](reference/cli.md)                | Every command, flag, default, exit code, and the SIGINT/interactive behaviour.                                |
-| [Configuration](reference/configuration.md)      | Config directory resolution, `.env` loading, API-key resolution precedence, and resuming runs.                |
-| [Programmatic API](reference/api.md)             | Every exported function and class with signatures and semantics.                                              |
-| [Types reference](reference/types.md)            | Every exported type and interface.                                                                            |
-| [Event store & status](reference/event-store.md) | The event-sourced status model: `EventStore`, the `evolve` reducer, the projection, and the callback mapping. |
-| [Task pool & execution](reference/task-pool.md)  | `LanePool`, `TaskTracker`, step execution, retries, and the prompt builder.                                   |
-| [TUI dashboard](reference/tui.md)                | The terminal dashboard: `WorkflowTUI`, widgets, keyboard shortcuts, and theme.                                |
-| [Web mirror](reference/web.md)                   | The observer HTTP/WebSocket server, the snapshot/delta protocol, and the React frontend.                      |
+| Document                                         | What it covers                                                                                                    |
+| ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------- |
+| [CLI reference](reference/cli.md)                | `run`, `resume`, `server up/down/status`, every flag, default, exit code, and the detach/kill semantics.          |
+| [Server reference](reference/server.md)          | The daemon, `RunManager`, the multi-run WebSocket protocol, auth attach-points, and the `--lan` guard.            |
+| [Configuration](reference/configuration.md)      | Config directory resolution, `.env` loading, API-key resolution precedence, and resuming runs.                    |
+| [Programmatic API](reference/api.md)             | Every exported function and class with signatures and semantics.                                                  |
+| [Types reference](reference/types.md)            | Every exported type and interface.                                                                                |
+| [Event store & status](reference/event-store.md) | The event-sourced status model: `EventStore`, the `evolve` reducer, the projection, the `log` event, and clients. |
+| [Task pool & execution](reference/task-pool.md)  | `LanePool`, `TaskTracker`, step execution, retries, and the prompt builder.                                       |
+| [TUI dashboard](reference/tui.md)                | The terminal client: `WorkflowTUI`, widgets, keyboard shortcuts, the detach/kill prompt, and theme.               |
+| [Web client](reference/web.md)                   | The React client, the shared `EngineClient`, the zustand store, and the runs frame.                               |
 
 ### Development
 
@@ -56,5 +57,6 @@ Read in this order:
 
 ## A note on accuracy
 
-Every API table in this library was regenerated against the current source in `src/`. If a
-claim here ever disagrees with the code, the code wins — please open an issue.
+Every API table in this library was regenerated against the current source in the
+`packages/` workspace. If a claim here ever disagrees with the code, the code wins —
+please open an issue.

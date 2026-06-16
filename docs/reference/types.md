@@ -24,7 +24,7 @@ Settled statuses (`complete`, `failed`, `cancelled`) are terminal on the executo
 
 ### `EventType`
 
-The 20 event types recorded by `EventStore`:
+The 21 event types recorded by `EventStore`:
 
 ```typescript
 type EventType =
@@ -47,7 +47,8 @@ type EventType =
   | 'turn_started'
   | 'turn_ended'
   | 'tool_call_started'
-  | 'tool_call_ended';
+  | 'tool_call_ended'
+  | 'log';
 ```
 
 See [Event store & status → The reducer](event-store.md#the-evolve-reducer).
@@ -69,7 +70,7 @@ See [Event store & status → The reducer](event-store.md#the-evolve-reducer).
 
 ### `Task`
 
-The executor-side (write-model) task. Source: `src/core/types.ts`.
+The executor-side (write-model) task. Source: `packages/engine/src/core/types.ts`.
 
 | Field             | Type         | Description                                                                                    |
 | ----------------- | ------------ | ---------------------------------------------------------------------------------------------- |
@@ -88,7 +89,7 @@ The executor-side (write-model) task. Source: `src/core/types.ts`.
 
 ### `TaskEntity`
 
-The read-model (projection) shape. Source: `src/core/types.ts`. Does **not** carry
+The read-model (projection) shape. Source: `packages/engine/src/core/types.ts`. Does **not** carry
 executor-only fields. Steps have no `status`; their rendered state is derived from `index` vs
 the task's `activeStepIndex`.
 
@@ -106,7 +107,7 @@ the task's `activeStepIndex`.
 
 ### `StepEntity`
 
-Source: `src/core/types.ts`. Steps have **no status** — state is derived:
+Source: `packages/engine/src/core/types.ts`. Steps have **no status** — state is derived:
 
 - `index < activeStepIndex` → done
 - `index === activeStepIndex` → active
@@ -122,7 +123,7 @@ Source: `src/core/types.ts`. Steps have **no status** — state is derived:
 
 ### `PhaseEntity`
 
-Source: `src/tracking/event-types.ts`.
+Source: `packages/shared/src/event-types.ts` (canonical; re-exported by the engine).
 
 | Field     | Type       | Description                                       |
 | --------- | ---------- | ------------------------------------------------- |
@@ -133,7 +134,7 @@ Source: `src/tracking/event-types.ts`.
 
 ### `AgentEntity`
 
-Source: `src/tracking/event-types.ts`.
+Source: `packages/shared/src/event-types.ts` (canonical; re-exported by the engine).
 
 | Field           | Type         | Description                                        |
 | --------------- | ------------ | -------------------------------------------------- |
@@ -155,7 +156,7 @@ Source: `src/tracking/event-types.ts`.
 
 ### `LogEntry`
 
-Source: `src/tracking/event-types.ts`. Re-exported by the TUI as `AgentLogEntry`.
+Source: `packages/shared/src/event-types.ts` (canonical; re-exported by the engine). Re-exported by the TUI as `AgentLogEntry`.
 
 | Field       | Type                                                                                                   | Description                   |
 | ----------- | ------------------------------------------------------------------------------------------------------ | ----------------------------- |
@@ -167,7 +168,7 @@ Source: `src/tracking/event-types.ts`. Re-exported by the TUI as `AgentLogEntry`
 
 ### `WorkflowProjection`
 
-Source: `src/tracking/event-types.ts`. The canonical read-model derived by `evolve()`.
+Source: `packages/shared/src/event-types.ts` (canonical; re-exported by the engine). The canonical read-model derived by `evolve()`.
 
 ```typescript
 interface WorkflowProjection {
@@ -183,12 +184,14 @@ interface WorkflowProjection {
   error?: string;
   failedPhase?: string;
   stats: { totalTokens: number; agentCount: number };
+  /** Server-captured console output (capped at MAX_RUN_LOG entries). */
+  runLog: LogEntry[];
 }
 ```
 
 ### `EventRecord`
 
-Source: `src/tracking/event-types.ts`.
+Source: `packages/shared/src/event-types.ts` (canonical; re-exported by the engine).
 
 ```typescript
 interface EventRecord {
@@ -415,11 +418,16 @@ A discriminated union representing the content of an assistant turn:
 
 ### `WorkflowTUIOptions`
 
-| Field            | Type         | Default | Description                                                                                   |
-| ---------------- | ------------ | ------- | --------------------------------------------------------------------------------------------- |
-| `agentLogLines?` | `number`     | `20`    | Collapsed height of the agent detail log (expanded shows 40).                                 |
-| `abort?`         | `() => void` | —       | Callback invoked on first Ctrl+C.                                                             |
-| `store?`         | `EventStore` | —       | The canonical store. When provided, the TUI subscribes and syncs widgets from the projection. |
+Source: `packages/tui/src/workflow-tui.ts`. The TUI is a WebSocket client — it takes a
+`ClientStore` (fed by the `EngineClient`), not an `EventStore`.
+
+| Field            | Type          | Default | Description                                                                     |
+| ---------------- | ------------- | ------- | ------------------------------------------------------------------------------- |
+| `agentLogLines?` | `number`      | `20`    | Collapsed height of the agent detail log (expanded shows 40).                   |
+| `clientStore?`   | `ClientStore` | —       | The shared projection store the widgets sync from (fed by the `EngineClient`).  |
+| `runId?`         | `string`      | —       | Server run identifier, shown in the detach/kill prompt.                         |
+| `onDetach?`      | `() => void`  | —       | Called when the user detaches (leaves the run on the server, exits the client). |
+| `onKill?`        | `() => void`  | —       | Called when the user kills (sends `cancel_run`, then exits on terminal state).  |
 
 ### `DashboardSelection`
 

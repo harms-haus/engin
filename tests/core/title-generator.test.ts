@@ -1,11 +1,11 @@
 import { afterAll, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { z } from 'zod';
-import type { AgentProfile, StatusCallbacks } from '../../src/core/types.js';
+import type { AgentProfile, StatusCallbacks } from '../../packages/engine/src/core/types.js';
 
 // Capture real modules before mocking so we can restore them in afterAll.
-const realProfile = Object.assign({}, await import('../../src/core/profile.ts'));
-const realHarnessFactory = Object.assign({}, await import('../../src/core/harness-factory.ts'));
-const realStructuredOutput = Object.assign({}, await import('../../src/core/structured-output.ts'));
+const realProfile = Object.assign({}, await import('../../packages/engine/src/core/profile.ts'));
+const realHarnessFactory = Object.assign({}, await import('../../packages/engine/src/core/harness-factory.ts'));
+const realStructuredOutput = Object.assign({}, await import('../../packages/engine/src/core/structured-output.ts'));
 
 // ─── Mocks ──────────────────────────────────────────────────────────────────
 
@@ -21,21 +21,25 @@ const mockCreateHarness = mock();
 
 const mockPromptForStructured = mock();
 
-mock.module('../../src/core/profile.ts', () => ({
+mock.module('../../packages/engine/src/core/profile.ts', () => ({
   loadProfilesFromDirs: (...args: unknown[]) => mockLoadProfilesFromDirs(...args),
 }));
 
-mock.module('../../src/core/harness-factory.ts', () => ({
+mock.module('../../packages/engine/src/core/harness-factory.ts', () => ({
   createHarness: (...args: unknown[]) => mockCreateHarness(...args),
 }));
 
-mock.module('../../src/core/structured-output.ts', () => ({
+mock.module('../../packages/engine/src/core/structured-output.ts', () => ({
   promptForStructured: (...args: unknown[]) => mockPromptForStructured(...args),
 }));
 
 // ─── Imports (after mocks) ─────────────────────────────────────────────────
 
-import { TitleSchema, generateWorkflowTitle, type TitleGeneratorOptions } from '../../src/core/title-generator.ts';
+import {
+  TitleSchema,
+  generateWorkflowTitle,
+  type TitleGeneratorOptions,
+} from '../../packages/engine/src/core/title-generator.ts';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -437,7 +441,7 @@ describe('generateWorkflowTitle – promptForStructured interaction', () => {
 
 // Restore the real modules so mocks don't leak into other test files.
 afterAll(() => {
-  mock.module('../../src/core/profile.ts', () => realProfile);
-  mock.module('../../src/core/harness-factory.ts', () => realHarnessFactory);
-  mock.module('../../src/core/structured-output.ts', () => realStructuredOutput);
+  mock.module('../../packages/engine/src/core/profile.ts', () => realProfile);
+  mock.module('../../packages/engine/src/core/harness-factory.ts', () => realHarnessFactory);
+  mock.module('../../packages/engine/src/core/structured-output.ts', () => realStructuredOutput);
 });

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { TaskTracker } from '../../src/tracking/task-status.js';
+import { TaskTracker } from '../../packages/engine/src/tracking/task-status.js';
 import { makeTask } from '../helpers/make-task.js';
 
 describe('TaskTracker.validateAllDependencies', () => {

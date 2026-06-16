@@ -1,7 +1,7 @@
 /* eslint-disable no-control-regex -- tests intentionally match ANSI escape codes */
+import type { AgentEntity, StepEntity } from '@engin/shared';
 import { describe, expect, it } from 'bun:test';
-import type { AgentEntity, StepEntity } from '../../../src/tracking/event-types.js';
-import { AgentLogWidget } from '../../../src/tui/components/agent-log-widget.js';
+import { AgentLogWidget } from '../../../packages/tui/src/components/agent-log-widget.js';
 
 const WIDTH = 40;
 

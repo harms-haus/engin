@@ -2,9 +2,9 @@ import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { Task } from '../../src/core/types.js';
-import { buildPrompt } from '../../src/pool/prompt-builder.js';
-import type { StepDefinition } from '../../src/pool/types.js';
+import type { Task } from '../../packages/engine/src/core/types.js';
+import { buildPrompt } from '../../packages/engine/src/pool/prompt-builder.js';
+import type { StepDefinition } from '../../packages/engine/src/pool/types.js';
 
 describe('buildPrompt (prompt-builder module)', () => {
   let tempDir: string;

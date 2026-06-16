@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, spyOn } from 'bun:test';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
-import { AuditLog } from '../../src/tracking/audit-log.js';
+import { AuditLog } from '../../packages/engine/src/tracking/audit-log.js';
 import { useTempDir } from '../helpers/use-temp-dir.js';
 
 describe('AuditLog', () => {

@@ -118,7 +118,7 @@ authoring are the phase lifecycle hooks:
 | `onPhaseStart`    | `{ phase, round }`      | When a phase begins executing.                          |
 | `onPhaseComplete` | `{ phase, durationMs }` | When a phase finishes.                                  |
 
-Registering phases up front lets the TUI and web mirror render the full phase bar before any
+Registering phases up front lets the TUI and web client render the full phase bar before any
 agent has run. The other callbacks (`onTaskRegister`, `onTaskStart`, `onAgentSpawn`,
 `onStepStart`, `onAgentComplete`, `onTaskComplete`, `onTaskRejected`, …) are fired for you by
 `runStepTask` and the `LanePool`. You generally do not call them directly.

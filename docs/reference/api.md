@@ -1,6 +1,8 @@
 # Programmatic API
 
-Everything below is exported from the top-level `@harms-haus/engin` entry point (`src/index.ts`).
+Everything below is exported from the top-level `@harms-haus/engin` entry point
+(`packages/cli/src/index.ts`), which re-exports the stable workflow-facing API from the
+engine and shared packages.
 Types are collected separately in [Types reference](types.md).
 
 ## Workflow loading
@@ -255,7 +257,7 @@ The persisted-workflow-state classes are also exported:
 
 Top-level persisted workflow state. Persists to `.engin-state.json`. Auto-persists on
 `TaskSettled`, `TaskReady`, and `TaskClaimed` events from its `TaskTracker`. See source in
-`src/tracking/workflow-status.ts` for the full getter/mutator surface.
+`packages/engine/src/tracking/workflow-status.ts` for the full getter/mutator surface.
 
 ### `AuditLog`
 

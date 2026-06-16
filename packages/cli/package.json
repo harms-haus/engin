@@ -1,0 +1,32 @@
+{
+  "name": "@harms-haus/engin",
+  "version": "0.2.0",
+  "description": "An AI-powered development engine with dynamic profile and workflow discovery.",
+  "type": "module",
+  "private": false,
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "exports": {
+    ".": {
+      "import": "./src/index.ts",
+      "types": "./src/index.ts"
+    }
+  },
+  "bin": {
+    "engin": "./src/cli.ts"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "dist",
+    "src",
+    "../web/dist",
+    "../shared/src"
+  ],
+  "dependencies": {
+    "@harms-haus/engin-shared": "workspace:*",
+    "@harms-haus/engin-engine": "workspace:*",
+    "@harms-haus/engin-tui": "workspace:*"
+  }
+}
