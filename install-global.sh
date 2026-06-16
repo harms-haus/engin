@@ -1,22 +1,32 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ─── Install @harms-haus/engin globally via bun ─────────────────────────────
+# ─── Install @harms-haus/engin globally via bun (workspace layout) ───────────
+#
+# The repo is now a 5-package bun workspace. The public CLI lives in
+# packages/cli (@harms-haus/engin); its `bin` runs the TypeScript entrypoint
+# directly (`src/cli.ts`, `#!/usr/bin/env bun`), and its workspace deps
+# (@harms-haus/engin-engine/-shared/-tui) resolve from the hoisted root
+# node_modules (module resolution is relative to the script file, so it works
+# regardless of the caller's cwd).
 #
 # This script:
-#   1. Builds the package from source
-#   2. Installs it to bun's global node_modules
-#   3. Links the `engin` CLI command to ~/.bun/bin/
-#   4. Verifies that workflow scripts (e.g. ~/.config/engin/workflows/develop/main.ts)
-#      can import from "@harms-haus/engin"
+#   1. Verifies the CLI entrypoints are present
+#   2. Registers @harms-haus/engin globally via `bun link` (this both exposes
+#      the `engin` bin and makes `import { ... } from '@harms-haus/engin'`
+#      resolvable from workflow scripts)
+#   3. Falls back to a manual ~/.bun/bin/engin symlink if `bun link` did not
+#      place the bin on PATH
+#   4. Verifies the `engin` command runs and the package imports cleanly
 #
 # Usage:
-#   ./install-global.sh            # install from this repo
-#   ./install-global.sh --force    # force reinstall even if already installed
+#   ./install-global.sh            # (re)install / link from this repo
+#   ./install-global.sh --force    # force re-link
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+CLI_DIR="$SCRIPT_DIR/packages/cli"
 PKG_NAME="@harms-haus/engin"
-GLOBAL_DIR="$HOME/.bun/install/global"
+BUN_BIN_DIR="$HOME/.bun/bin"
 
 # ─── Colors ──────────────────────────────────────────────────────────────────
 GREEN='\033[0;32m'
@@ -38,65 +48,53 @@ for arg in "$@"; do
     esac
 done
 
-# ─── Step 1: Build ───────────────────────────────────────────────────────────
-info "Building $PKG_NAME..."
-cd "$SCRIPT_DIR"
-bun run build
+# ─── Step 1: Verify the CLI entrypoints are present ──────────────────────────
+info "Verifying CLI entrypoints..."
+[ -f "$CLI_DIR/src/cli.ts" ]   || error "CLI entrypoint not found: packages/cli/src/cli.ts"
+[ -f "$CLI_DIR/src/index.ts" ] || error "Public API entrypoint not found: packages/cli/src/index.ts"
 
-# Verify the build produced what we expect
-[ -f dist/cli.js ]   || error "Build failed: dist/cli.js not found"
-[ -f dist/index.js ] || error "Build failed: dist/index.js not found"
-
-# ─── Step 2: Remove previous global install ──────────────────────────────────
-if [ -d "$GLOBAL_DIR/node_modules/@harms-haus/engin" ]; then
-    info "Removing previous global install..."
-    rm -rf "$GLOBAL_DIR/node_modules/@harms-haus/engin"
+# ─── Step 2: Remove any previous global link/bin ─────────────────────────────
+# A stale symlink left over from a prior (single-package) install can shadow
+# the new one, so remove it first.
+if [ -L "$BUN_BIN_DIR/engin" ] || [ -f "$BUN_BIN_DIR/engin" ]; then
+    info "Removing previous global bin link..."
+    rm -f "$BUN_BIN_DIR/engin"
 fi
 
-# Also remove stale bin link
-if [ -L "$HOME/.bun/bin/engin" ] || [ -f "$HOME/.bun/bin/engin" ]; then
-    rm -f "$HOME/.bun/bin/engin"
+# ─── Step 3: Register the package globally via `bun link` ────────────────────
+info "Linking $PKG_NAME globally (bun link)..."
+(
+    cd "$CLI_DIR"
+    if [ "$FORCE" = true ]; then
+        bun link --force
+    else
+        bun link
+    fi
+)
+
+# ─── Step 4: Ensure the `engin` bin is on PATH (fallback to a manual symlink) ─
+# `bun link` normally creates the bin in ~/.bun/bin; if it did not (or the dir
+# is absent), create the symlink ourselves — the shebang runs it under bun.
+mkdir -p "$BUN_BIN_DIR"
+if ! command -v engin &>/dev/null && [ ! -x "$BUN_BIN_DIR/engin" ]; then
+    warn "`bun link` did not place \`engin\` on PATH; creating a manual symlink."
+    ln -sf "$CLI_DIR/src/cli.ts" "$BUN_BIN_DIR/engin"
 fi
 
-# ─── Step 3: Install globally ───────────────────────────────────────────────
-info "Installing $PKG_NAME globally..."
-
-# Bun's `bun add -g` has a bug where it appends a duplicate key to ~/package.json
-# if the package already exists. Work around by removing the key first.
-if [ -f "$HOME/package.json" ]; then
-    # Use a temp file to safely edit JSON — remove any existing entry for our package
-   DEDUPED=$(grep -v "\"$PKG_NAME\"" "$HOME/package.json" | sed "/^{$/,/^}$/{/^}/!{/^[[:space:]]*$/d}}" )
-    # Simpler approach: use node/bun to clean it
-    bun -e "
-      const fs = require('fs');
-      const pkg = JSON.parse(fs.readFileSync('$HOME/package.json', 'utf8'));
-      if (pkg.dependencies && pkg.dependencies['$PKG_NAME']) {
-        delete pkg.dependencies['$PKG_NAME'];
-        fs.writeFileSync('$HOME/package.json', JSON.stringify(pkg, null, 2) + '\n');
-      }
-    " 2>/dev/null || true
-fi
-
-bun add -g "$SCRIPT_DIR"
-
-# ─── Step 4: Verify the `engin` command ─────────────────────────────────────
+# ─── Step 5: Verify the `engin` command ─────────────────────────────────────
 if command -v engin &>/dev/null; then
     info "✓ \`engin\` command available at $(command -v engin)"
 else
-    warn "\`engin\` not found in PATH. Ensure ~/.bun/bin is in your PATH."
+    warn "\`engin\` not found in PATH. Ensure $BUN_BIN_DIR is in your PATH."
     warn "  Add this to your shell profile:"
     warn '    export PATH="$HOME/.bun/bin:$PATH"'
 fi
 
-# ─── Step 5: Verify imports resolve for workflow scripts ─────────────────────
+# ─── Step 6: Verify imports resolve for workflow scripts ────────────────────
 info "Verifying package resolves for workflow scripts..."
 
 VERIFY_SCRIPT=$(cat <<'BUN'
-// Try resolving @harms-haus/engin from a workflow-like location
-import { resolve } from "node:path";
-import { createRequire } from "node:module";
-
-// Bun resolves global packages automatically, but let's verify.
+// Verify @harms-haus/engin is importable from a workflow-like location.
 try {
     const mod = await import("@harms-haus/engin");
     const exportedKeys = Object.keys(mod);
@@ -105,8 +103,8 @@ try {
         process.exit(1);
     }
     console.log(`OK: Found ${exportedKeys.length} exports from @harms-haus/engin`);
-} catch (err: any) {
-    console.error(`ERROR: Failed to import @harms-haus/engin: ${err.message}`);
+} catch (err) {
+    console.error(`ERROR: Failed to import @harms-haus/engin: ${err.message ?? err}`);
     process.exit(1);
 }
 BUN
@@ -118,6 +116,7 @@ RESULT=$(bun -e "$VERIFY_SCRIPT" 2>&1) || {
 info "✓ $RESULT"
 
 # ─── Done ────────────────────────────────────────────────────────────────────
-info "✅ $PKG_NAME installed globally."
+info "✅ $PKG_NAME linked globally."
 info "   Command:  engin"
 info "   Run:      engin run develop \"your task here\""
+info "   Server:   engin server up   (then \`engin run\` or open the web UI)"
