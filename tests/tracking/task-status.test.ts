@@ -59,8 +59,9 @@ describe('TaskTracker', () => {
   // ── getReadyTasks ──────────────────────────────────────────────────
 
   describe('getReadyTasks', () => {
-    it('returns only ready tasks sorted by dep count then id', () => {
+    it('returns only ready tasks; ties broken alphabetically', () => {
       const tracker = new TaskTracker();
+      // c depends on a and b → both ready, both block c (equal pressure)
       tracker.addTask({ ...makeTask({ id: 'c', dependencies: ['a', 'b'] }), status: undefined });
       tracker.addTask(makeTask({ id: 'a' }));
       tracker.addTask(makeTask({ id: 'b' }));
@@ -68,10 +69,98 @@ describe('TaskTracker', () => {
       const ready = tracker.getReadyTasks();
 
       expect(ready).toHaveLength(2);
-      // a and b have 0 deps, sorted alphabetically
+      // a and b block the same task (c) → tie on pressure → sorted alphabetically
       expect(ready[0].id).toBe('a');
       expect(ready[1].id).toBe('b');
-      // c is blocked
+      // c is blocked and excluded
+    });
+
+    it('prioritizes a task that has dependents over a leaf task', () => {
+      const tracker = new TaskTracker();
+      // a is a leaf (nothing depends on it); b blocks c
+      tracker.addTask(makeTask({ id: 'a' }));
+      tracker.addTask(makeTask({ id: 'b' }));
+      tracker.addTask({ ...makeTask({ id: 'c', dependencies: ['b'] }), status: undefined });
+
+      const ready = tracker.getReadyTasks();
+
+      // b relieves blocking pressure on c; a relieves none → b first
+      expect(ready.map((t) => t.id)).toEqual(['b', 'a']);
+    });
+
+    it('a single lane claims the pressure-relieving task first', () => {
+      const tracker = new TaskTracker();
+      tracker.addTask(makeTask({ id: 'a' })); // leaf
+      tracker.addTask(makeTask({ id: 'b' }));
+      tracker.addTask({ ...makeTask({ id: 'c', dependencies: ['b'] }), status: undefined });
+
+      // Only one "lane": claimTasks(1) must pick b (blocks c), not the leaf a
+      expect(tracker.claimTasks(1, 'lane-0').map((t) => t.id)).toEqual(['b']);
+    });
+
+    it('counts transitive dependents: deeper chains outrank shallow ones', () => {
+      const tracker = new TaskTracker();
+      // chain x → y → z (x blocks 2 tasks transitively)
+      tracker.addTask(makeTask({ id: 'x' }));
+      tracker.addTask({ ...makeTask({ id: 'y', dependencies: ['x'] }), status: undefined });
+      tracker.addTask({ ...makeTask({ id: 'z', dependencies: ['y'] }), status: undefined });
+      // shallow: m → n (m blocks 1 task)
+      tracker.addTask(makeTask({ id: 'm' }));
+      tracker.addTask({ ...makeTask({ id: 'n', dependencies: ['m'] }), status: undefined });
+
+      const ready = tracker.getReadyTasks();
+
+      // x (2 transitive dependents) before m (1); y/z/n are blocked
+      expect(ready.map((t) => t.id)).toEqual(['x', 'm']);
+    });
+
+    it('prefers a task even when its dependent is not yet fully unblockable', () => {
+      // Requirement scenario: c depends on b AND on alpha (blocked by beta).
+      // Completing b will not unblock c (alpha is still pending), but b still
+      // relieves pressure on c, so it outranks the leaf `a`.
+      const tracker = new TaskTracker();
+      tracker.addTask(makeTask({ id: 'a' })); // leaf
+      tracker.addTask(makeTask({ id: 'b' }));
+      tracker.addTask(makeTask({ id: 'beta' }));
+      tracker.addTask({ ...makeTask({ id: 'alpha', dependencies: ['beta'] }), status: undefined });
+      tracker.addTask({ ...makeTask({ id: 'c', dependencies: ['b', 'alpha'] }), status: undefined });
+
+      // Ready: a, b, beta. beta blocks alpha→c (pressure 2); b blocks c
+      // (pressure 1); both outrank the leaf a (pressure 0).
+      const ready = tracker.getReadyTasks();
+
+      expect(ready[0].id).toBe('beta'); // most downstream pressure
+      expect(ready[1].id).toBe('b'); // relieves pressure on c even though c still waits on alpha
+      expect(ready[ready.length - 1].id).toBe('a'); // leaf sinks last
+    });
+
+    it('falls back to leaves once no task with dependents is ready', () => {
+      const tracker = new TaskTracker();
+      tracker.addTask(makeTask({ id: 'a' })); // leaf
+      tracker.addTask(makeTask({ id: 'b' }));
+      tracker.addTask({ ...makeTask({ id: 'c', dependencies: ['b'] }), status: undefined });
+
+      // Claim + complete b → c becomes ready. c is now a leaf too, so the only
+      // ready tasks are leaves (a, c); tie broken by fewer deps then id.
+      tracker.claimTasks(1, 'agent-1');
+      tracker.completeTask('b');
+
+      const ready = tracker.getReadyTasks();
+      expect(ready.map((t) => t.id)).toEqual(['a', 'c']);
+    });
+
+    it('rebuilds pressure ranking after tasks are added (cache invalidation)', () => {
+      const tracker = new TaskTracker();
+      tracker.addTask(makeTask({ id: 'a' }));
+      tracker.addTask(makeTask({ id: 'b' }));
+      // Both leaves so far → alphabetical
+      expect(tracker.getReadyTasks().map((t) => t.id)).toEqual(['a', 'b']);
+
+      // Now make b block a new task c
+      tracker.addTask({ ...makeTask({ id: 'c', dependencies: ['b'] }), status: undefined });
+
+      // b now relieves pressure on c → must move ahead of a on the same tracker
+      expect(tracker.getReadyTasks().map((t) => t.id)).toEqual(['b', 'a']);
     });
   });
 

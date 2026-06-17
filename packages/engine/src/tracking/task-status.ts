@@ -14,6 +14,13 @@ export class TaskTracker extends EventEmitter {
   private tasks: Map<string, Task>;
   private reverseDeps: Map<string, Set<string>>;
   private warnedDeadlocked = new Set<string>();
+  /**
+   * Memoized transitive-dependents map (taskId → set of tasks that transitively
+   * depend on it). A pure function of the dependency topology, so it is rebuilt
+   * lazily and only invalidated when the topology changes. See
+   * {@link getTransitiveDependents}.
+   */
+  private transitiveDependents: Map<string, Set<string>> | null = null;
 
   constructor() {
     super();
@@ -69,6 +76,8 @@ export class TaskTracker extends EventEmitter {
     } else {
       this.reverseDeps.set(parentId, new Set([childId]));
     }
+    // Topology changed: the memoized transitive-dependents map is now stale.
+    this.transitiveDependents = null;
   }
 
   private removeReverseDep(parentId: string, childId: string): void {
@@ -77,6 +86,8 @@ export class TaskTracker extends EventEmitter {
       set.delete(childId);
       if (set.size === 0) this.reverseDeps.delete(parentId);
     }
+    // Topology changed: the memoized transitive-dependents map is now stale.
+    this.transitiveDependents = null;
   }
 
   getTask(id: string): Task | undefined {
@@ -94,7 +105,72 @@ export class TaskTracker extends EventEmitter {
         ready.push(task);
       }
     }
-    return ready.sort((a, b) => a.dependencies.length - b.dependencies.length || a.id.localeCompare(b.id));
+    return ready.sort((a, b) => this.compareByBlockingPressure(a, b));
+  }
+
+  /**
+   * Ordering comparator for ready tasks, used to decide which task a lane
+   * claims next when several are available.
+   *
+   * Prefers tasks that relieve the most "blocking pressure": a task with many
+   * downstream dependents is claimed before one with few (or none), so that
+   * completing it unblocks — or at least advances — the largest amount of
+   * pending work. Leaf tasks (nothing depends on them) sink to the bottom and
+   * are only chosen once no task with dependents remains ready.
+   *
+   * The pressure metric counts *transitive* dependents, so it correctly
+   * prefers a task even when finishing it won't immediately unblock anything
+   * (e.g. a dependent still has other unsatisfied dependencies): every
+   * completed predecessor still reduces the dependent's remaining blockers.
+   *
+   * Ties are broken by fewer existing dependencies (lighter tasks first), then
+   * by id for a stable, deterministic order.
+   */
+  private compareByBlockingPressure(a: Task, b: Task): number {
+    const pressureA = this.getTransitiveDependentCount(a.id);
+    const pressureB = this.getTransitiveDependentCount(b.id);
+    if (pressureA !== pressureB) return pressureB - pressureA; // descending: more pressure first
+    const depLenDiff = a.dependencies.length - b.dependencies.length;
+    if (depLenDiff !== 0) return depLenDiff; // ascending: fewer deps first
+    return a.id.localeCompare(b.id); // deterministic tiebreak
+  }
+
+  /**
+   * Count of tasks that transitively depend on `id` — every task reachable from
+   * `id` through the reverse-dependency graph. Used to gauge blocking pressure.
+   */
+  private getTransitiveDependentCount(id: string): number {
+    return this.getTransitiveDependents().get(id)?.size ?? 0;
+  }
+
+  /**
+   * Build (once, then memoize) a map of each task → the set of all tasks that
+   * transitively depend on it. Derived purely from the dependency topology, so
+   * it is safe to cache across status changes; it is invalidated whenever the
+   * topology changes (see {@link addReverseDep} / {@link removeReverseDep}).
+   */
+  private getTransitiveDependents(): Map<string, Set<string>> {
+    if (this.transitiveDependents) return this.transitiveDependents;
+
+    const result = new Map<string, Set<string>>();
+    for (const start of this.tasks.keys()) {
+      const reached = new Set<string>();
+      // DFS over the reverse-dependency graph: every task that transitively
+      // depends on `start` accumulates into `reached`.
+      const stack: string[] = [...(this.reverseDeps.get(start) ?? [])];
+      while (stack.length > 0) {
+        const current = stack.pop();
+        if (current === undefined) continue; // guarded by stack.length > 0
+        if (reached.has(current)) continue;
+        reached.add(current);
+        const dependents = this.reverseDeps.get(current);
+        if (dependents) for (const dep of dependents) stack.push(dep);
+      }
+      result.set(start, reached);
+    }
+
+    this.transitiveDependents = result;
+    return result;
   }
 
   /**
