@@ -167,6 +167,31 @@ export class TaskTracker extends EventEmitter {
     queueMicrotask(() => this.emit(TaskTracker.Events.TaskSettled));
   }
 
+  /**
+   * Reset a single `failed` task back to `ready` so a lane can re-claim and
+   * re-run it from step 1. Throws unless the task is currently `failed`.
+   *
+   * Emits `TaskReady` so waiting lanes wake up to re-claim the task.
+   *
+   * Unlike {@link resetFailedTasks} (which resets every failed task and is
+   * used on resume), this targets one task and is used by the LanePool for
+   * same-run retries. The tracker is session-agnostic, so clearing of any
+   * persisted session data is the caller's responsibility.
+   */
+  resetTaskForRetry(id: string): void {
+    const task = this.tasks.get(id);
+    if (!task) throw new Error(`Task "${id}" not found`);
+    if (task.status !== 'failed') {
+      throw new Error(`Task "${id}" must be "failed" to reset for retry, got "${task.status}"`);
+    }
+
+    task.status = 'ready';
+    task.assignedAgent = undefined;
+    task.result = undefined;
+    task.reviewFeedback = undefined;
+    queueMicrotask(() => this.emit(TaskTracker.Events.TaskReady));
+  }
+
   rejectTask(id: string, reason: string): void {
     const task = this.tasks.get(id);
     if (!task) throw new Error(`Task "${id}" not found`);

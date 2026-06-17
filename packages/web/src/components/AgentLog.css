@@ -49,6 +49,11 @@
   color: var(--error);
 }
 
+.agent-log__entry--render {
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+}
+
 .agent-log__entry--empty {
   color: var(--text-muted);
 }

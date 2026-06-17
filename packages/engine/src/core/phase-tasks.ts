@@ -3,7 +3,8 @@
 import type { ZodType } from 'zod';
 import { createHarness } from './harness-factory.js';
 import { loadProfilesFromDirs } from './profile.js';
-import { promptForStructured } from './structured-output.js';
+import type { RendererRegistry } from './renderer-registry.js';
+import { extractJsonFromText, promptForStructured } from './structured-output.js';
 import type { AgentProfile, StatusCallbacks } from './types.js';
 import { forwardAgentStatus, safeErrorMessage } from './utils.js';
 
@@ -32,6 +33,8 @@ export interface RunStepTaskOptions {
   isReadOnly?: boolean;
   /** Zod schema for structured output. When absent, raw assistant text is returned. */
   schema?: ZodType<unknown>;
+  /** Optional registry of per-profile renderers that transform agent output into human-readable markdown */
+  rendererRegistry?: RendererRegistry;
   /** Prompt to send to the agent */
   prompt: string;
   /** Abort signal for cooperative cancellation */
@@ -69,6 +72,7 @@ export async function runStepTask<T = unknown>(opts: RunStepTaskOptions): Promis
     onStatus,
     isReadOnly = false,
     schema,
+    rendererRegistry,
     prompt,
     signal,
   } = opts;
@@ -150,6 +154,29 @@ export async function runStepTask<T = unknown>(opts: RunStepTaskOptions): Promis
     } else {
       await harness.session.prompt(prompt);
       result = harness.session.getLastAssistantText() as T;
+    }
+
+    // 8b. Renderer invocation — transform agent output into human-readable form
+    if (rendererRegistry) {
+      const renderer = rendererRegistry.get(profileId);
+      if (renderer) {
+        const rawText = harness.session.getLastAssistantText();
+        if (rawText) {
+          const jsonStr = extractJsonFromText(rawText);
+          let data: unknown = rawText;
+          if (jsonStr) {
+            try {
+              data = JSON.parse(jsonStr);
+            } catch {
+              data = rawText;
+            }
+          }
+          const rendered = renderer(data);
+          if (rendered) {
+            onStatus?.onAgentRender?.({ agentId: taskId, profile: profileId, taskId, rendered });
+          }
+        }
+      }
     }
   } catch (err) {
     // 10. Error handling — fire onTaskRejected before re-throwing

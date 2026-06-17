@@ -312,6 +312,87 @@ describe('AgentLogWidget', () => {
     expect(lines[4]).toContain('running tool');
   });
 
+  // ─── render entry type (typeIconMap / typeColorMap) ────────────────────
+  //
+  // After T1, LogEntry['type'] includes 'render'. Both `typeIconMap` and
+  // `typeColorMap` are typed as Record<LogEntry['type'], ...>, so each must
+  // provide an entry for 'render'. The maps are module-private, so the
+  // contract is observed through render() output:
+  //   - typeIconMap['render']  → '📋' (clipboard emoji, U+1F4CB)
+  //   - typeColorMap['render'] → null  (no colour transform; content as-is,
+  //                                     identical to 'text' and 'decision')
+  //   - render entries are NOT filtered out (the loop skips only tool_call_end)
+  //   - render content is shown verbatim (NOT run through formatToolCall,
+  //     unlike 'tool_call' / 'tool_call_start')
+  describe('render entry type (typeIconMap / typeColorMap)', () => {
+    it('renders a render-type entry with the clipboard icon (U+1F4CB)', () => {
+      const { widget, agents, uid } = setupWidget(6);
+      const agent = agents.find((a) => a.uid === uid)!;
+      agent.log.push({ id: '1', timestamp: '', type: 'render', content: 'rendered-artifact' });
+      widget.invalidate();
+
+      const lines = widget.render(WIDTH);
+      // lines[0]=header, lines[1]=first entry slot, lines[5]=tab bar
+      expect(lines[1]).toContain('📋');
+      expect(lines[1]).toContain('rendered-artifact');
+    });
+
+    it('does not fall back to the literal "undefined" for the render icon', () => {
+      // Guards against a missing typeIconMap['render'] entry (the pre-fix
+      // bug): an absent key would interpolate `undefined` into the prefix,
+      // producing a line like "  undefined xyz-content".
+      const { widget, agents, uid } = setupWidget(6);
+      const agent = agents.find((a) => a.uid === uid)!;
+      agent.log.push({ id: '1', timestamp: '', type: 'render', content: 'xyz-content' });
+      widget.invalidate();
+
+      const lines = widget.render(WIDTH);
+      expect(lines[1]).toContain('xyz-content');
+      expect(lines[1]).not.toContain('undefined');
+    });
+
+    it('does not filter out render entries (only tool_call_end is skipped)', () => {
+      const { widget, agents, uid } = setupWidget(6);
+      const agent = agents.find((a) => a.uid === uid)!;
+      agent.log.push({ id: '1', timestamp: '', type: 'tool_call_end', content: 'END_HIDDEN_MARKER' });
+      agent.log.push({ id: '2', timestamp: '', type: 'render', content: 'RENDER_VISIBLE_MARKER' });
+      widget.invalidate();
+
+      const joined = widget.render(WIDTH).join('\n');
+      expect(joined).toContain('RENDER_VISIBLE_MARKER');
+      expect(joined).not.toContain('END_HIDDEN_MARKER');
+    });
+
+    it('applies no ANSI colour wrapping to render entries (typeColorMap null)', () => {
+      const { widget, agents, uid } = setupWidget(6);
+      const agent = agents.find((a) => a.uid === uid)!;
+      agent.log.push({ id: '1', timestamp: '', type: 'render', content: 'plain render text' });
+      widget.invalidate();
+
+      const lines = widget.render(WIDTH);
+      // colorFn is null → raw prefix+text emitted with no escape codes
+      expect(lines[1]).not.toMatch(/\x1b\[/);
+    });
+
+    it('shows render content verbatim (not run through formatToolCall)', () => {
+      // tool_call / tool_call_start entries are formatted; a render entry must
+      // display its content unchanged. Render at a wide width so the long
+      // content is not wrapped/split across lines.
+      const { widget, agents, uid } = setupWidget(6);
+      const agent = agents.find((a) => a.uid === uid)!;
+      agent.log.push({
+        id: '1',
+        timestamp: '',
+        type: 'render',
+        content: 'writeFile({ path: "/tmp/x", force: true })',
+      });
+      widget.invalidate();
+
+      const lines = widget.render(120);
+      expect(lines[1]).toContain('writeFile({ path: "/tmp/x", force: true })');
+    });
+  });
+
   it('wraps long content to width', () => {
     const { widget, agents, uid } = setupWidget(6);
     const agent = agents.find((a) => a.uid === uid)!;

@@ -384,6 +384,27 @@ export function evolve(state: WorkflowProjection, event: EventRecord): WorkflowP
       });
     }
 
+    case 'agent_rendered': {
+      const agentId = String(event.metadata.agentId ?? '');
+      const taskId = event.metadata.taskId;
+      const resolved = resolveAgent(state.agents, agentId, taskId);
+      if (!resolved) return clone(state, { seq: event.seq });
+      const { key, entity: existing } = resolved;
+      const entry = {
+        id: `log-${event.seq}`,
+        timestamp: event.metadata.timestamp,
+        type: 'render' as const,
+        content: String(event.data.rendered ?? ''),
+      };
+      return clone(state, {
+        agents: {
+          ...state.agents,
+          [key]: clone(existing, { log: capLog(existing.log, entry) }),
+        },
+        seq: event.seq,
+      });
+    }
+
     // ── Turn lifecycle ─────────────────────────────────────────────
     case 'turn_started':
       // No-op — just bump seq

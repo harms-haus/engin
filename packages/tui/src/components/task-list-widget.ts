@@ -1,6 +1,6 @@
 import { type Component, matchesKey, truncateToWidth } from '@earendil-works/pi-tui';
 import type { TaskEntity } from '@engin/shared';
-import { bold, dim, formatElapsed, statusColor, statusIcon } from '../theme.js';
+import { bold, dim, formatElapsed, statusColor, statusIcon, yellow } from '../theme.js';
 
 // ─── Task List Widget ───────────────────────────────────────────────────────
 
@@ -100,6 +100,19 @@ export class TaskListWidget implements Component {
         const endTime = task.completedAt !== undefined ? new Date(task.completedAt).getTime() : Date.now();
         const elapsed = dim(formatElapsed(endTime - task.startedAt));
         text += ' - ' + elapsed;
+      }
+
+      // ── Dependencies ──
+      if (task.dependencies.length > 0) {
+        const taskMap = new Map(this.tasks.map((t) => [t.id, t]));
+        const depParts = task.dependencies.map((depId) => {
+          const depTask = taskMap.get(depId);
+          if (depTask === undefined || depTask.status === 'complete') {
+            return dim(depId);
+          }
+          return yellow(depId);
+        });
+        text += ' - deps: ' + depParts.join(', ');
       }
 
       if (task.id === this.selectedTaskId) {

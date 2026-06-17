@@ -1,5 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { z } from 'zod';
+import { RendererRegistry } from '../../packages/engine/src/core/renderer-registry.js';
 import type { AgentProfile } from '../../packages/engine/src/core/types.js';
 import { makeMockSession } from '../helpers/make-session.js';
 import { makeTask } from '../helpers/make-task.js';
@@ -18,6 +19,7 @@ mock.module('../../packages/engine/src/core/harness-factory.ts', () => ({
 const mockPromptForStructured = mock() as ReturnType<typeof mock> & ((...args: unknown[]) => unknown);
 mock.module('../../packages/engine/src/core/structured-output.ts', () => ({
   promptForStructured: (...args: unknown[]) => mockPromptForStructured(...args),
+  extractJsonFromText: realStructuredOutput.extractJsonFromText,
 }));
 
 // ─── Imports (after mocks) ─────────────────────────────────────────────────
@@ -856,6 +858,248 @@ describe('runStep (step-execution module)', () => {
       expect(promptedText).toContain('Review Feedback History');
       expect(promptedText).toContain('Attempt 1: Fix the null check');
       expect(promptedText).toContain('Attempt 2: Add error handling');
+    });
+  });
+
+  // ─── Renderer Invocation in Finally Block ──────────────────────────────
+
+  describe('renderer invocation in runStep finally block', () => {
+    const reviewSchema = z.object({
+      approved: z.boolean(),
+      feedback: z.string().optional(),
+    });
+
+    it('does not call onAgentRender when rendererRegistry is undefined', async () => {
+      const session = makeSession(() => 'done');
+      setupHarnessMocks(session);
+
+      const onAgentRender = mock(() => {});
+      const execCtx = createStepExecutionContext({
+        onStatus: { onAgentRender } as unknown as StepExecutionContext['onStatus'],
+        // rendererRegistry intentionally omitted → undefined
+      });
+      const profiles = createProfilesMap(defaultProfile);
+
+      await runStep(makeTask(), baseStep, 'lane-0', defaultCtx, profiles, execCtx);
+
+      expect(onAgentRender).not.toHaveBeenCalled();
+    });
+
+    it('does not call onAgentRender when no renderer registered for the profile', async () => {
+      const registry = new RendererRegistry(); // empty — no renderers registered
+
+      const session = makeSession(() => 'done');
+      setupHarnessMocks(session);
+
+      const onAgentRender = mock(() => {});
+      const execCtx = createStepExecutionContext({
+        onStatus: { onAgentRender } as unknown as StepExecutionContext['onStatus'],
+        rendererRegistry: registry,
+      });
+      const profiles = createProfilesMap(defaultProfile);
+
+      await runStep(makeTask(), baseStep, 'lane-0', defaultCtx, profiles, execCtx);
+
+      expect(onAgentRender).not.toHaveBeenCalled();
+    });
+
+    it('calls render function with parsed JSON and fires onAgentRender when assistant text is valid JSON', async () => {
+      const renderFn = mock((data: unknown) => `rendered:${JSON.stringify(data)}`);
+      const registry = new RendererRegistry();
+      registry.register('coder', renderFn);
+
+      const jsonData = { approved: true, score: 9 };
+      const session = makeSession(() => JSON.stringify(jsonData));
+      setupHarnessMocks(session);
+
+      const onAgentRender = mock(() => {});
+      const execCtx = createStepExecutionContext({
+        onStatus: { onAgentRender } as unknown as StepExecutionContext['onStatus'],
+        rendererRegistry: registry,
+      });
+      const profiles = createProfilesMap(defaultProfile);
+
+      await runStep(makeTask(), baseStep, 'lane-0', defaultCtx, profiles, execCtx);
+
+      expect(renderFn).toHaveBeenCalledTimes(1);
+      // extractJsonFromText finds the JSON, JSON.parse parses it → data is the object
+      expect(renderFn.mock.calls[0][0]).toEqual(jsonData);
+      expect(onAgentRender).toHaveBeenCalledTimes(1);
+      expect(onAgentRender).toHaveBeenCalledWith(
+        expect.objectContaining({
+          agentId: 'lane-0',
+          profile: 'coder',
+          taskId: 'task-1',
+          rendered: `rendered:${JSON.stringify(jsonData)}`,
+        }),
+      );
+    });
+
+    it('calls render function with raw text when assistant text is non-JSON', async () => {
+      const renderFn = mock((data: unknown) => `rendered:${JSON.stringify(data)}`);
+      const registry = new RendererRegistry();
+      registry.register('coder', renderFn);
+
+      const rawText = 'The implementation looks correct but could use more comments.';
+      const session = makeSession(() => rawText);
+      setupHarnessMocks(session);
+
+      const onAgentRender = mock(() => {});
+      const execCtx = createStepExecutionContext({
+        onStatus: { onAgentRender } as unknown as StepExecutionContext['onStatus'],
+        rendererRegistry: registry,
+      });
+      const profiles = createProfilesMap(defaultProfile);
+
+      await runStep(makeTask(), baseStep, 'lane-0', defaultCtx, profiles, execCtx);
+
+      expect(renderFn).toHaveBeenCalledTimes(1);
+      // No JSON found by extractJsonFromText → data is the raw text
+      expect(renderFn.mock.calls[0][0]).toBe(rawText);
+      expect(onAgentRender).toHaveBeenCalledTimes(1);
+      expect(onAgentRender).toHaveBeenCalledWith(
+        expect.objectContaining({
+          rendered: `rendered:${JSON.stringify(rawText)}`,
+        }),
+      );
+    });
+
+    it('does not fire onAgentRender when render function returns empty string', async () => {
+      const registry = new RendererRegistry();
+      registry.register('coder', () => '');
+
+      const session = makeSession(() => 'done');
+      setupHarnessMocks(session);
+
+      const onAgentRender = mock(() => {});
+      const execCtx = createStepExecutionContext({
+        onStatus: { onAgentRender } as unknown as StepExecutionContext['onStatus'],
+        rendererRegistry: registry,
+      });
+      const profiles = createProfilesMap(defaultProfile);
+
+      await runStep(makeTask(), baseStep, 'lane-0', defaultCtx, profiles, execCtx);
+
+      expect(onAgentRender).not.toHaveBeenCalled();
+    });
+
+    it('does not fire onAgentRender when render function returns undefined', async () => {
+      const registry = new RendererRegistry();
+      registry.register('coder', () => undefined as unknown as string);
+
+      const session = makeSession(() => 'done');
+      setupHarnessMocks(session);
+
+      const onAgentRender = mock(() => {});
+      const execCtx = createStepExecutionContext({
+        onStatus: { onAgentRender } as unknown as StepExecutionContext['onStatus'],
+        rendererRegistry: registry,
+      });
+      const profiles = createProfilesMap(defaultProfile);
+
+      await runStep(makeTask(), baseStep, 'lane-0', defaultCtx, profiles, execCtx);
+
+      expect(onAgentRender).not.toHaveBeenCalled();
+    });
+
+    it('fires onAgentRender before onAgentComplete (ordering)', async () => {
+      const callOrder: string[] = [];
+      const registry = new RendererRegistry();
+      registry.register('coder', () => 'rendered output');
+
+      const session = makeSession(() => 'done');
+      setupHarnessMocks(session);
+
+      const execCtx = createStepExecutionContext({
+        onStatus: {
+          onAgentRender: () => callOrder.push('render'),
+          onAgentComplete: () => callOrder.push('complete'),
+        } as unknown as StepExecutionContext['onStatus'],
+        rendererRegistry: registry,
+      });
+      const profiles = createProfilesMap(defaultProfile);
+
+      await runStep(makeTask(), baseStep, 'lane-0', defaultCtx, profiles, execCtx);
+
+      expect(callOrder).toEqual(['render', 'complete']);
+    });
+
+    it('fires onAgentRender on approved step (non-structured)', async () => {
+      const registry = new RendererRegistry();
+      registry.register('coder', () => 'rendered output');
+
+      const session = makeSession(() => 'done');
+      setupHarnessMocks(session);
+
+      const onAgentRender = mock(() => {});
+      const execCtx = createStepExecutionContext({
+        onStatus: { onAgentRender } as unknown as StepExecutionContext['onStatus'],
+        rendererRegistry: registry,
+      });
+      const profiles = createProfilesMap(defaultProfile);
+
+      const { result } = await runStep(makeTask(), baseStep, 'lane-0', defaultCtx, profiles, execCtx);
+
+      expect(result.type).toBe('approved');
+      expect(onAgentRender).toHaveBeenCalledTimes(1);
+    });
+
+    it('fires onAgentRender on rejected step (structured)', async () => {
+      const registry = new RendererRegistry();
+      registry.register('reviewer', () => 'rendered review');
+
+      const session = makeSession(() => 'done');
+      // Override getLastAssistantText to return text even though promptForStructured is mocked
+      session.getLastAssistantText = mock(() => '{"approved": false}');
+      setupHarnessMocks(session);
+      mockPromptForStructured.mockResolvedValue({
+        result: { approved: false, feedback: 'Missing tests' },
+        attempts: 1,
+      });
+
+      const onAgentRender = mock(() => {});
+      const execCtx = createStepExecutionContext({
+        onStatus: { onAgentRender } as unknown as StepExecutionContext['onStatus'],
+        rendererRegistry: registry,
+      });
+      const profiles = createProfilesMap(defaultProfile, reviewerProfile);
+
+      const { result } = await runStep(
+        makeTask(),
+        { name: 'review', profileId: 'reviewer', isReadOnly: true, schema: reviewSchema },
+        'lane-0',
+        defaultCtx,
+        profiles,
+        execCtx,
+      );
+
+      expect(result.type).toBe('rejected');
+      expect(onAgentRender).toHaveBeenCalledTimes(1);
+    });
+
+    it('passes correct agentId and taskId to onAgentRender', async () => {
+      const registry = new RendererRegistry();
+      registry.register('coder', () => 'rendered output');
+
+      const session = makeSession(() => 'done');
+      setupHarnessMocks(session);
+
+      const onAgentRender = mock(() => {});
+      const execCtx = createStepExecutionContext({
+        onStatus: { onAgentRender } as unknown as StepExecutionContext['onStatus'],
+        rendererRegistry: registry,
+      });
+      const profiles = createProfilesMap(defaultProfile);
+
+      await runStep(makeTask({ id: 'my-task-99' }), baseStep, 'lane-3', defaultCtx, profiles, execCtx);
+
+      expect(onAgentRender).toHaveBeenCalledWith(
+        expect.objectContaining({
+          agentId: 'lane-3',
+          profile: 'coder',
+          taskId: 'my-task-99',
+        }),
+      );
     });
   });
 });

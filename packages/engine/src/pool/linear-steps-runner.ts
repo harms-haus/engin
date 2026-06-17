@@ -57,6 +57,7 @@ export function linearStepsRunner(steps: StepDefinition[]): TaskRunner {
       onStatus,
       activeSessions: ctx.activeSessions,
       phaseId,
+      rendererRegistry: ctx.rendererRegistry,
     };
 
     // ── Step 4: Main loop ─────────────────────────────────────────────

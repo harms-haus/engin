@@ -12,7 +12,7 @@ export type { StepDefinition, StepEntity, TaskEntity, TaskStatus };
 export interface LogEntry {
   id: string;
   timestamp: string;
-  type: 'text' | 'thinking' | 'tool_call' | 'tool_call_start' | 'tool_call_end' | 'decision' | 'error';
+  type: 'text' | 'thinking' | 'tool_call' | 'tool_call_start' | 'tool_call_end' | 'decision' | 'error' | 'render';
   content: string;
   metadata?: Record<string, unknown>;
 }
@@ -38,7 +38,8 @@ export type EventType =
   | 'turn_ended'
   | 'tool_call_started'
   | 'tool_call_ended'
-  | 'log';
+  | 'log'
+  | 'agent_rendered';
 
 // ─── Event Record ────────────────────────────────────────────────────────────
 

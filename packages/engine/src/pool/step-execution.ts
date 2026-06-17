@@ -1,6 +1,8 @@
+import { rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { createHarness } from '../core/harness-factory.js';
-import { promptForStructured } from '../core/structured-output.js';
+import type { RendererRegistry } from '../core/renderer-registry.js';
+import { extractJsonFromText, promptForStructured } from '../core/structured-output.js';
 import type { AgentProfile, Task } from '../core/types.js';
 import { forwardAgentStatus, safeErrorMessage } from '../core/utils.js';
 import { buildPrompt } from './prompt-builder.js';
@@ -24,6 +26,23 @@ export interface StepExecutionContext {
   activeSessions: Set<{ abort(): Promise<void> }>;
   /** Phase identifier propagated from the LanePool options. */
   phaseId: string;
+  /** Optional registry of custom output renderers keyed by profile name. */
+  rendererRegistry?: RendererRegistry;
+}
+
+/**
+ * Recursively delete every persisted session for a task.
+ *
+ * A task's sessions live at `{sessionBaseDir}/{taskId}/` (one subdirectory
+ * per step execution: `{exec}-{stepIndex}-{stepName}`). Clearing the whole
+ * task directory guarantees a retry / resume restarts from step 1 with a
+ * clean slate instead of resuming stale or half-written session state.
+ *
+ * No-op (does not throw) when the directory does not exist.
+ */
+export function clearTaskSessions(sessionBaseDir: string, taskId: string): void {
+  assertSafeName(taskId, 'task id');
+  rmSync(join(sessionBaseDir, taskId), { recursive: true, force: true });
 }
 
 /**
@@ -152,6 +171,35 @@ export async function runStep(
     throw err;
   } finally {
     execCtx.activeSessions.delete(session);
+
+    // Invoke registered renderer (if any) before firing the completion callback.
+    // This lets UI consumers display a custom rendering of the agent's final output.
+    if (execCtx.rendererRegistry) {
+      const renderFn = execCtx.rendererRegistry.get(step.profileId);
+      if (renderFn) {
+        const rawText = session.getLastAssistantText();
+        if (rawText) {
+          let data: unknown = rawText;
+          try {
+            const jsonStr = extractJsonFromText(rawText);
+            if (jsonStr) {
+              data = JSON.parse(jsonStr);
+            }
+          } catch {
+            // JSON.parse failed — fall back to raw text
+          }
+          const rendered = renderFn(data);
+          if (rendered) {
+            execCtx.onStatus?.onAgentRender?.({
+              agentId,
+              profile: step.profileId,
+              taskId: task.id,
+              rendered,
+            });
+          }
+        }
+      }
+    }
 
     // Fire completion callback — always runs even if dispose failed
     execCtx.onStatus?.onAgentComplete?.({

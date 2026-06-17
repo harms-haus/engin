@@ -7000,5 +7000,57 @@
         }
       }
     }
+  },
+  {
+    "name": "agent_rendered appends a render LogEntry to the agent log",
+    "events": [
+      {
+        "seq": 1,
+        "type": "workflow_started",
+        "data": {
+          "taskPrompt": "x"
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z"
+        }
+      },
+      {
+        "seq": 2,
+        "type": "agent_spawned",
+        "data": {
+          "profile": "coder"
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      },
+      {
+        "seq": 3,
+        "type": "agent_rendered",
+        "data": {
+          "rendered": "rendered output"
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "agentId": "a1"
+        }
+      }
+    ],
+    "expect": {
+      "seq": 3,
+      "agents": {
+        "a1": {
+          "log": [
+            {
+              "id": "log-3",
+              "type": "render",
+              "content": "rendered output",
+              "timestamp": "2025-01-01T00:00:00.000Z"
+            }
+          ]
+        }
+      }
+    }
   }
 ]

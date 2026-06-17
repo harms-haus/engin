@@ -621,6 +621,153 @@ describe('evolve', () => {
     });
   });
 
+  describe('agent_rendered', () => {
+    it('appends a render LogEntry to the agent log', () => {
+      resetSeq();
+      let state = evolve(createInitialProjection(), makeEvent('workflow_started', { taskPrompt: 'x' }));
+      state = evolve(
+        state,
+        makeEvent(
+          'agent_spawned',
+          { agentId: 'a1', profile: 'coder' },
+          { timestamp: new Date().toISOString(), agentId: 'a1', taskId: 't1' },
+        ),
+      );
+      state = evolve(
+        state,
+        makeEvent(
+          'agent_rendered',
+          { rendered: '# Heading\n\nrendered markdown' },
+          { timestamp: '2026-06-16T12:00:00Z', agentId: 'a1', taskId: 't1' },
+        ),
+      );
+      const key = 'a1::t1';
+      expect(state.agents[key].log).toHaveLength(1);
+      expect(state.agents[key].log[0].type).toBe('render');
+      expect(state.agents[key].log[0].content).toBe('# Heading\n\nrendered markdown');
+      expect(state.agents[key].log[0].timestamp).toBe('2026-06-16T12:00:00Z');
+      // id derived from event seq: workflow_started=1, agent_spawned=2, agent_rendered=3
+      expect(state.agents[key].log[0].id).toBe('log-3');
+    });
+
+    it('is a no-op when the agent is not found', () => {
+      resetSeq();
+      let state = evolve(createInitialProjection(), makeEvent('workflow_started', { taskPrompt: 'x' }));
+      const before = state;
+      state = evolve(
+        state,
+        makeEvent(
+          'agent_rendered',
+          { rendered: 'orphan render' },
+          { timestamp: new Date().toISOString(), agentId: 'ghost' },
+        ),
+      );
+      // No agents were created
+      expect(Object.keys(state.agents)).toHaveLength(0);
+      // seq is bumped
+      expect(state.seq).toBe(before.seq + 1);
+      // A new top-level object is returned, but the agents map is unchanged
+      expect(state).not.toBe(before);
+      expect(state.agents).toBe(before.agents);
+    });
+
+    it('falls back to empty string when data.rendered is undefined', () => {
+      resetSeq();
+      let state = evolve(createInitialProjection(), makeEvent('workflow_started', { taskPrompt: 'x' }));
+      state = evolve(
+        state,
+        makeEvent(
+          'agent_spawned',
+          { agentId: 'a1', profile: 'coder' },
+          { timestamp: new Date().toISOString(), agentId: 'a1' },
+        ),
+      );
+      state = evolve(state, makeEvent('agent_rendered', {}, { timestamp: new Date().toISOString(), agentId: 'a1' }));
+      const agent = state.agents['a1'];
+      expect(agent.log).toHaveLength(1);
+      expect(agent.log[0].type).toBe('render');
+      expect(agent.log[0].content).toBe('');
+    });
+
+    it('resolves the agent by agentId alone when taskId is omitted', () => {
+      resetSeq();
+      let state = evolve(createInitialProjection(), makeEvent('workflow_started', { taskPrompt: 'x' }));
+      // Spawn with a taskId so the key is 'a1::t1'
+      state = evolve(
+        state,
+        makeEvent(
+          'agent_spawned',
+          { agentId: 'a1', profile: 'coder' },
+          { timestamp: new Date().toISOString(), agentId: 'a1', taskId: 't1' },
+        ),
+      );
+      // Fire agent_rendered with ONLY agentId (no taskId) — resolveAgent must still find it
+      state = evolve(
+        state,
+        makeEvent('agent_rendered', { rendered: 'resolved' }, { timestamp: new Date().toISOString(), agentId: 'a1' }),
+      );
+      const key = 'a1::t1';
+      expect(state.agents[key].log).toHaveLength(1);
+      expect(state.agents[key].log[0].type).toBe('render');
+      expect(state.agents[key].log[0].content).toBe('resolved');
+    });
+
+    it('does not mutate the previous state (immutability)', () => {
+      resetSeq();
+      let state = evolve(createInitialProjection(), makeEvent('workflow_started', { taskPrompt: 'x' }));
+      state = evolve(
+        state,
+        makeEvent(
+          'agent_spawned',
+          { agentId: 'a1', profile: 'coder' },
+          { timestamp: new Date().toISOString(), agentId: 'a1' },
+        ),
+      );
+      const prevLog = state.agents['a1'].log;
+      const next = evolve(
+        state,
+        makeEvent('agent_rendered', { rendered: 'r1' }, { timestamp: new Date().toISOString(), agentId: 'a1' }),
+      );
+      // Previous state's log is untouched
+      expect(state.agents['a1'].log).toBe(prevLog);
+      expect(state.agents['a1'].log).toHaveLength(0);
+      // New state has a distinct log array with the appended entry
+      expect(next.agents['a1'].log).not.toBe(prevLog);
+      expect(next.agents['a1'].log).toHaveLength(1);
+      // The agent object itself is replaced (not mutated in place)
+      expect(next.agents['a1']).not.toBe(state.agents['a1']);
+    });
+
+    it('accumulates multiple render entries in insertion order', () => {
+      resetSeq();
+      let state = evolve(createInitialProjection(), makeEvent('workflow_started', { taskPrompt: 'x' }));
+      state = evolve(
+        state,
+        makeEvent(
+          'agent_spawned',
+          { agentId: 'a1', profile: 'coder' },
+          { timestamp: new Date().toISOString(), agentId: 'a1' },
+        ),
+      );
+      state = evolve(
+        state,
+        makeEvent('agent_rendered', { rendered: 'first' }, { timestamp: new Date().toISOString(), agentId: 'a1' }),
+      );
+      state = evolve(
+        state,
+        makeEvent('agent_rendered', { rendered: 'second' }, { timestamp: new Date().toISOString(), agentId: 'a1' }),
+      );
+      state = evolve(
+        state,
+        makeEvent('agent_rendered', { rendered: 'third' }, { timestamp: new Date().toISOString(), agentId: 'a1' }),
+      );
+      const log = state.agents['a1'].log;
+      expect(log).toHaveLength(3);
+      expect(log.map((e) => e.content)).toEqual(['first', 'second', 'third']);
+      expect(log.every((e) => e.type === 'render')).toBe(true);
+    });
+  });
+
   describe('sidebar_updated', () => {
     it('merges sidebar fields (title, indicator only)', () => {
       resetSeq();

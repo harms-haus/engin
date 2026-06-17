@@ -14,6 +14,7 @@ import {
   removeWorktree,
   stageAll,
 } from '../core/git.js';
+import { RendererRegistry } from '../core/renderer-registry.js';
 import type { StatusCallbacks, WorkflowModule, WorkflowRunOptions, WorktreeInfo } from '../core/types.js';
 import { loadWorkflow } from '../core/workflow-loader.js';
 import {
@@ -236,12 +237,23 @@ export class RunManager {
   ): Promise<void> {
     const { runId, store, controller, bridge } = handle;
 
+    // Create a fresh renderer registry for this run and give the workflow
+    // module an opportunity to register output renderers for its agent
+    // profiles. When no renderers are registered (or the workflow does not
+    // export registerRenderers), the registry is empty and all render calls
+    // return undefined — the correct default behavior.
+    const rendererRegistry = new RendererRegistry();
+    if (typeof workflow.registerRenderers === 'function') {
+      workflow.registerRenderers(rendererRegistry);
+    }
+
     // Build the workflow run options.
     const options: WorkflowRunOptions = {
       cwd: handle.cwd,
       workDir: handle.workDir,
       onStatus: storeCallbacks,
       signal: controller.signal,
+      rendererRegistry,
     };
     if (msg.maxConcurrent !== undefined) {
       options.maxConcurrentTasks = msg.maxConcurrent;

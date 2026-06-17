@@ -23,6 +23,7 @@ const typeIconMap: Record<LogEntry['type'], string> = {
   tool_call_end: '✅',
   error: '⚠️',
   decision: '🤝',
+  render: '📋',
 };
 
 const typeColorMap: Record<LogEntry['type'], ((s: string) => string) | null> = {
@@ -33,6 +34,7 @@ const typeColorMap: Record<LogEntry['type'], ((s: string) => string) | null> = {
   tool_call_end: green,
   error: red,
   decision: null,
+  render: null,
 };
 
 // ─── Pad helper ──────────────────────────────────────────────────────────────

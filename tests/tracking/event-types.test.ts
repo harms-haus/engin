@@ -18,6 +18,35 @@ import type { StepDefinition, StepEntity, TaskEntity, TaskStatus } from '../../p
 
 const _typeCheck: EventType = 'workflow_started';
 
+// Canonical, type-checked enumeration of every EventType member. Declared as
+// EventType[] so the compiler rejects any literal that is not a union member.
+// The count and exclude tests below all reference THIS array, so they can
+// never drift out of sync with the source union.
+const EXPECTED_EVENT_TYPES: EventType[] = [
+  'workflow_started',
+  'phase_registered',
+  'phase_started',
+  'phase_completed',
+  'agent_spawned',
+  'agent_completed',
+  'task_registered',
+  'task_started',
+  'step_started',
+  'task_completed',
+  'task_rejected',
+  'decision',
+  'error',
+  'workflow_completed',
+  'workflow_failed',
+  'sidebar_updated',
+  'turn_started',
+  'turn_ended',
+  'tool_call_started',
+  'tool_call_ended',
+  'log',
+  'agent_rendered',
+];
+
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 describe('LogEntry', () => {
@@ -43,11 +72,36 @@ describe('LogEntry', () => {
       'tool_call_end',
       'decision',
       'error',
+      'render',
     ];
     for (const t of types) {
       const entry: LogEntry = { id: 'l', timestamp: '', type: t, content: '' };
       expect(entry.type).toBe(t);
     }
+  });
+
+  it('allows the render log type', () => {
+    const entry: LogEntry = {
+      id: 'render-1',
+      timestamp: '2026-06-16T12:00:00Z',
+      type: 'render',
+      content: '<rendered output>',
+    };
+    expect(entry.type).toBe('render');
+    expect(entry.content).toBe('<rendered output>');
+  });
+
+  it('render entry can carry arbitrary metadata', () => {
+    const entry: LogEntry = {
+      id: 'render-2',
+      timestamp: '2026-06-16T12:00:00Z',
+      type: 'render',
+      content: 'rendered markdown',
+      metadata: { format: 'markdown', target: 'sidebar' },
+    };
+    expect(entry.type).toBe('render');
+    expect(entry.metadata?.format).toBe('markdown');
+    expect(entry.metadata?.target).toBe('sidebar');
   });
 
   it('metadata is optional', () => {
@@ -90,55 +144,26 @@ describe('EventType', () => {
     expect(t).toBe('log');
   });
 
+  it('includes agent_rendered as a member (appended after log)', () => {
+    const t: EventType = 'agent_rendered';
+    expect(t).toBe('agent_rendered');
+  });
+
+  it('agent_rendered is the last member of EXPECTED_EVENT_TYPES (after log)', () => {
+    // Guards the required ordering: 'agent_rendered' appended after 'log'.
+    const lastIndex = EXPECTED_EVENT_TYPES.length - 1;
+    const logIndex = EXPECTED_EVENT_TYPES.indexOf('log');
+    expect(EXPECTED_EVENT_TYPES[lastIndex]).toBe('agent_rendered');
+    expect(logIndex).toBe(lastIndex - 1);
+  });
+
   it('excludes task_step_started from the union', () => {
-    const validEvents: readonly string[] = [
-      'workflow_started',
-      'phase_registered',
-      'phase_started',
-      'phase_completed',
-      'agent_spawned',
-      'agent_completed',
-      'task_registered',
-      'task_started',
-      'step_started',
-      'task_completed',
-      'task_rejected',
-      'decision',
-      'error',
-      'workflow_completed',
-      'workflow_failed',
-      'sidebar_updated',
-      'turn_started',
-      'turn_ended',
-      'tool_call_started',
-      'tool_call_ended',
-    ];
+    const validEvents: readonly string[] = EXPECTED_EVENT_TYPES;
     expect(validEvents).not.toContain('task_step_started');
   });
 
   it('excludes tasks_added from the union', () => {
-    const validEvents: readonly string[] = [
-      'workflow_started',
-      'phase_registered',
-      'phase_started',
-      'phase_completed',
-      'agent_spawned',
-      'agent_completed',
-      'task_registered',
-      'task_started',
-      'step_started',
-      'task_completed',
-      'task_rejected',
-      'decision',
-      'error',
-      'workflow_completed',
-      'workflow_failed',
-      'sidebar_updated',
-      'turn_started',
-      'turn_ended',
-      'tool_call_started',
-      'tool_call_ended',
-    ];
+    const validEvents: readonly string[] = EXPECTED_EVENT_TYPES;
     expect(validEvents).not.toContain('tasks_added');
   });
 
@@ -168,32 +193,13 @@ describe('EventType', () => {
     }
   });
 
-  it('has exactly 21 members (including log)', () => {
-    // Count the members by assigning dummy values and counting
-    const all: EventType[] = [
-      'workflow_started',
-      'phase_registered',
-      'phase_started',
-      'phase_completed',
-      'agent_spawned',
-      'agent_completed',
-      'task_registered',
-      'task_started',
-      'step_started',
-      'task_completed',
-      'task_rejected',
-      'decision',
-      'error',
-      'workflow_completed',
-      'workflow_failed',
-      'sidebar_updated',
-      'turn_started',
-      'turn_ended',
-      'tool_call_started',
-      'tool_call_ended',
-      'log',
-    ];
-    expect(all).toHaveLength(21);
+  it('has exactly 22 members (including log and agent_rendered)', () => {
+    // EXPECTED_EVENT_TYPES is typed as EventType[], so the array itself is a
+    // compile-time guard: any literal here that is not a valid union member is
+    // a type error. The length assertion catches a missing/extra member, and
+    // the duplicate check guards against accidental repetition.
+    expect(EXPECTED_EVENT_TYPES).toHaveLength(22);
+    expect(new Set(EXPECTED_EVENT_TYPES).size).toBe(EXPECTED_EVENT_TYPES.length);
   });
 });
 
@@ -240,6 +246,23 @@ describe('EventRecord', () => {
       },
     };
     expect(record.metadata.stepIndex).toBe(0);
+  });
+
+  it('type accepts agent_rendered with agent metadata', () => {
+    const record: EventRecord = {
+      seq: 8,
+      type: 'agent_rendered',
+      data: { agentId: 'a1', output: '<rendered output>' },
+      metadata: {
+        timestamp: '2026-06-16T12:00:00Z',
+        agentId: 'a1',
+        phaseId: 'impl',
+      },
+    };
+    expect(record.type).toBe('agent_rendered');
+    expect(record.data.agentId).toBe('a1');
+    expect(record.metadata.agentId).toBe('a1');
+    expect(record.metadata.phaseId).toBe('impl');
   });
 
   it('metadata fields are optional', () => {

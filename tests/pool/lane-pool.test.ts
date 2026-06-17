@@ -1,5 +1,8 @@
 import { beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { z } from 'zod';
+import { useTempDir } from '../helpers/use-temp-dir.js';
 import {
   LanePool,
   TaskTracker,
@@ -807,6 +810,165 @@ describe('LanePool', () => {
       } finally {
         spy.mockRestore();
       }
+    });
+  });
+
+  describe('maxTaskRetries (same-run failed-task retry)', () => {
+    const { getDir } = useTempDir();
+
+    it('retries a failed task up to maxTaskRetries times (total attempts = 1 + max)', async () => {
+      setupProfileMocks();
+      let failCount = 0;
+      mockCreateHarness.mockImplementation(() => {
+        failCount++;
+        return {
+          session: makeSession(() => {
+            throw new Error('always fails');
+          }),
+          sessionId: `s-${failCount}`,
+          dispose: mock(() => {}),
+        };
+      });
+      const { pool, tracker } = createPoolAndTracker({ maxTaskRetries: 2 });
+      const result = await pool.run();
+      // 1 initial attempt + 2 retries = 3 total; all fail → task stays failed
+      expect(failCount).toBe(3);
+      expect(result.failedTasks).toBe(1);
+      expect(result.completedTasks).toBe(0);
+      expect(tracker.getTask('task-1')!.status).toBe('failed');
+    });
+
+    it('re-run task starts from step 1 (re-executes the first step)', async () => {
+      setupProfileMocks();
+      let calls = 0;
+      const seenStepNames: string[] = [];
+      mockCreateHarness.mockImplementation((opts: any) => {
+        calls++;
+        seenStepNames.push(opts?.sessionDir ?? '?');
+        // Fail the first two attempts, succeed on the third.
+        if (calls <= 2) {
+          return {
+            session: makeSession(() => {
+              throw new Error('fail');
+            }),
+            sessionId: `s-${calls}`,
+            dispose: mock(() => {}),
+          };
+        }
+        return { session: makeSession(() => 'done'), sessionId: `s-${calls}`, dispose: mock(() => {}) };
+      });
+      const { pool, tracker } = createPoolAndTracker({ maxTaskRetries: 2 });
+      const result = await pool.run();
+      expect(result.completedTasks).toBe(1);
+      expect(tracker.getTask('task-1')!.status).toBe('complete');
+      expect(calls).toBe(3); // initial + 2 retries
+      // Every retry begins fresh at step 1 (single-step task here). The key
+      // assertion is that execCount-based session dir resets: the first step
+      // dir suffix `-0-implement` appears across all 3 attempts because each
+      // retry restarts the step index from 0.
+      expect(seenStepNames.every((d) => d.endsWith('0-implement'))).toBe(true);
+    });
+
+    it('clears the task session directory on each retry', async () => {
+      setupProfileMocks();
+      const base = getDir();
+      const createdDirs: string[] = [];
+      let calls = 0;
+      mockCreateHarness.mockImplementation((opts: any) => {
+        calls++;
+        const dir = opts?.sessionDir as string | undefined;
+        if (dir) {
+          createdDirs.push(dir);
+          // Simulate the harness writing a per-attempt marker file into its dir.
+          mkdirSync(dir, { recursive: true });
+          writeFileSync(join(dir, `attempt-${calls}.jsonl`), '...');
+        }
+        if (calls <= 1) {
+          return {
+            session: makeSession(() => {
+              throw new Error('fail');
+            }),
+            sessionId: `s-${calls}`,
+            dispose: mock(() => {}),
+          };
+        }
+        return { session: makeSession(() => 'done'), sessionId: `s-${calls}`, dispose: mock(() => {}) };
+      });
+      const { pool, tracker } = createPoolAndTracker({ maxTaskRetries: 2, sessionBaseDir: base });
+      await pool.run();
+      expect(tracker.getTask('task-1')!.status).toBe('complete');
+      // Two fresh attempts (session dirs created twice).
+      expect(createdDirs.length).toBe(2);
+      // The retry cleared the whole task dir, so attempt 1's marker is gone
+      // and only attempt 2's marker remains in the recreated dir.
+      expect(existsSync(join(createdDirs[0], 'attempt-1.jsonl'))).toBe(false);
+      expect(existsSync(join(createdDirs[0], 'attempt-2.jsonl'))).toBe(true);
+    });
+
+    it('does NOT retry when maxTaskRetries is unset (preserves historical behavior)', async () => {
+      setupProfileMocks();
+      let attempts = 0;
+      mockCreateHarness.mockImplementation(() => {
+        attempts++;
+        return {
+          session: makeSession(() => {
+            throw new Error('fail');
+          }),
+          sessionId: `s-${attempts}`,
+          dispose: mock(() => {}),
+        };
+      });
+      const { pool, tracker } = createPoolAndTracker(); // no maxTaskRetries
+      const result = await pool.run();
+      expect(attempts).toBe(1);
+      expect(result.failedTasks).toBe(1);
+      expect(tracker.getTask('task-1')!.status).toBe('failed');
+    });
+
+    it('does NOT retry a task that completed successfully', async () => {
+      setupProfileMocks();
+      let attempts = 0;
+      mockCreateHarness.mockImplementation(() => {
+        attempts++;
+        return {
+          session: makeSession(() => 'done'),
+          sessionId: `s-${attempts}`,
+          dispose: mock(() => {}),
+        };
+      });
+      const { pool } = createPoolAndTracker({ maxTaskRetries: 2 });
+      const result = await pool.run();
+      expect(result.completedTasks).toBe(1);
+      expect(attempts).toBe(1); // completed on first try — no retries
+    });
+
+    it('announces each retry via onDecision', async () => {
+      setupProfileMocks();
+      const onDecision = mock((_info: { decision: string; taskId: string }) => {});
+      let n = 0;
+      mockCreateHarness.mockImplementation(() => {
+        n++;
+        return n <= 2
+          ? {
+              session: makeSession(() => {
+                throw new Error('fail');
+              }),
+              sessionId: `s-${n}`,
+              dispose: mock(() => {}),
+            }
+          : { session: makeSession(() => 'done'), sessionId: `s-${n}`, dispose: mock(() => {}) };
+      });
+      const { pool } = createPoolAndTracker({
+        maxTaskRetries: 2,
+        onStatus: { onDecision },
+      });
+      await pool.run();
+      const retryCalls = onDecision.mock.calls.filter((c) => c[0].decision.includes('Retrying failed task'));
+      expect(retryCalls).toHaveLength(2);
+      expect(retryCalls[0][0].taskId).toBe('task-1');
+      // attempt numbering: 2/3 then 3/3
+      expect(retryCalls[0][0].decision).toContain('attempt 2/3');
+      expect(retryCalls[1][0].decision).toContain('attempt 3/3');
     });
   });
 

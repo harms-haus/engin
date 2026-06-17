@@ -1228,6 +1228,81 @@ describe('TaskTracker', () => {
     });
   });
 
+  describe('resetTaskForRetry', () => {
+    it('resets a failed task to ready and clears transient fields', () => {
+      const tracker = new TaskTracker();
+      tracker.addTask(makeTask({ id: 'a' }));
+      tracker.claimTasks(1, 'agent-1');
+      tracker.failTask('a', 'error');
+      const before = tracker.getTask('a')!;
+      before.reviewFeedback = ['bad'];
+      expect(before.status).toBe('failed');
+
+      tracker.resetTaskForRetry('a');
+      const task = tracker.getTask('a')!;
+      expect(task.status).toBe('ready');
+      expect(task.assignedAgent).toBeUndefined();
+      expect(task.result).toBeUndefined();
+      expect(task.reviewFeedback).toBeUndefined();
+    });
+
+    it('emits TaskReady so a waiting lane wakes up to re-claim', async () => {
+      const tracker = new TaskTracker();
+      tracker.addTask(makeTask({ id: 'a' }));
+      tracker.claimTasks(1, 'agent-1');
+      tracker.failTask('a');
+
+      let emitted = false;
+      tracker.once(TaskTracker.Events.TaskReady, () => {
+        emitted = true;
+      });
+      tracker.resetTaskForRetry('a');
+      // Event is emitted via queueMicrotask
+      await new Promise((resolve) => queueMicrotask(resolve));
+      expect(emitted).toBe(true);
+    });
+
+    it('does not reset a complete task', () => {
+      const tracker = new TaskTracker();
+      tracker.addTask(makeTask({ id: 'a' }));
+      tracker.claimTasks(1, 'agent-1');
+      tracker.completeTask('a');
+
+      expect(() => tracker.resetTaskForRetry('a')).toThrow('must be "failed"');
+      expect(tracker.getTask('a')!.status).toBe('complete');
+    });
+
+    it('does not reset an active (in-flight) task', () => {
+      const tracker = new TaskTracker();
+      tracker.addTask(makeTask({ id: 'a' }));
+      tracker.claimTasks(1, 'agent-1');
+      // task is now 'active'
+
+      expect(() => tracker.resetTaskForRetry('a')).toThrow('must be "failed"');
+      expect(tracker.getTask('a')!.status).toBe('active');
+    });
+
+    it('throws when the task does not exist', () => {
+      const tracker = new TaskTracker();
+      expect(() => tracker.resetTaskForRetry('nope')).toThrow('not found');
+    });
+
+    it('can be re-claimed after reset (returns to ready)', () => {
+      const tracker = new TaskTracker();
+      tracker.addTask(makeTask({ id: 'a' }));
+      tracker.claimTasks(1, 'agent-1');
+      tracker.failTask('a');
+
+      tracker.resetTaskForRetry('a');
+      expect(tracker.getReadyTasks().map((t) => t.id)).toContain('a');
+
+      const claimed = tracker.claimTasks(1, 'agent-2');
+      expect(claimed).toHaveLength(1);
+      expect(claimed[0].id).toBe('a');
+      expect(claimed[0].assignedAgent).toBe('agent-2');
+    });
+  });
+
   describe('resetForRetry', () => {
     it('resets both failed and active tasks to ready', () => {
       const tracker = new TaskTracker();

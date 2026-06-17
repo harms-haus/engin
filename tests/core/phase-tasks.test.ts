@@ -3,6 +3,8 @@
 import { afterAll, beforeEach, describe, expect, it, mock } from 'bun:test';
 import type { ZodType } from 'zod';
 import { z } from 'zod';
+import type { RenderFunction } from '../../packages/engine/src/core/renderer-registry.js';
+import { RendererRegistry } from '../../packages/engine/src/core/renderer-registry.js';
 import type { AgentProfile, AgentStatusCallbacks, StatusCallbacks } from '../../packages/engine/src/core/types.js';
 import { makeMockSession } from '../helpers/make-session.js';
 
@@ -29,6 +31,9 @@ mock.module('../../packages/engine/src/core/harness-factory.js', () => ({
 const mockPromptForStructured = mock() as ReturnType<typeof mock> & ((...args: unknown[]) => unknown);
 mock.module('../../packages/engine/src/core/structured-output.js', () => ({
   promptForStructured: (...args: unknown[]) => mockPromptForStructured(...args),
+  // Expose the real extractJsonFromText so the renderer-invocation logic can
+  // exercise realistic JSON extraction without an extra mock to maintain.
+  extractJsonFromText: realStructuredOutput.extractJsonFromText,
 }));
 
 // ─── Import after mocks ────────────────────────────────────────────────────
@@ -49,7 +54,14 @@ const defaultProfile: AgentProfile = {
   includeTools: [] as string[],
 };
 
-function makeDefaultOptions(overrides?: Partial<RunStepTaskOptions>): RunStepTaskOptions {
+/**
+ * Test-only augmentation so `rendererRegistry` can be supplied before the
+ * production RunStepTaskOptions type declares it. Once the field is added to
+ * RunStepTaskOptions this intersection becomes a harmless no-op.
+ */
+type StepTaskOptionsWithRenderer = RunStepTaskOptions & { rendererRegistry?: RendererRegistry };
+
+function makeDefaultOptions(overrides?: Partial<StepTaskOptionsWithRenderer>): StepTaskOptionsWithRenderer {
   return {
     profilesDirs: ['/tmp/profiles'],
     phaseId: 'test-phase',
@@ -89,6 +101,7 @@ function createStatusCallbacksSpy(): StatusCallbacks & {
   onTaskRejected: ReturnType<typeof mock>;
   onAgentSpawn: ReturnType<typeof mock>;
   onAgentComplete: ReturnType<typeof mock>;
+  onAgentRender: ReturnType<typeof mock>;
   onStepStart: ReturnType<typeof mock>;
   onTurnStart: ReturnType<typeof mock>;
   onTurnEnd: ReturnType<typeof mock>;
@@ -120,6 +133,9 @@ function createStatusCallbacksSpy(): StatusCallbacks & {
     onAgentComplete: mock(() => {
       track('onAgentComplete');
     }),
+    onAgentRender: mock(() => {
+      track('onAgentRender');
+    }),
     onStepStart: mock(() => {
       track('onStepStart');
     }),
@@ -145,6 +161,7 @@ function createStatusCallbacksSpy(): StatusCallbacks & {
     onTaskRejected: ReturnType<typeof mock>;
     onAgentSpawn: ReturnType<typeof mock>;
     onAgentComplete: ReturnType<typeof mock>;
+    onAgentRender: ReturnType<typeof mock>;
     onStepStart: ReturnType<typeof mock>;
     onTurnStart: ReturnType<typeof mock>;
     onTurnEnd: ReturnType<typeof mock>;
@@ -755,6 +772,196 @@ describe('runStepTask', () => {
       await runStepTask(makeDefaultOptions({ apiKeys: undefined }));
 
       expect(mockCreateHarness).toHaveBeenCalledWith(expect.objectContaining({ apiKeys: undefined }));
+    });
+  });
+
+  // ─── Renderer Invocation ─────────────────────────────────────────────
+
+  describe('renderer invocation', () => {
+    it('fires onAgentRender with the rendered output when rendererRegistry has a renderer for the profileId', async () => {
+      setupProfilesMock(defaultProfile);
+      const session = makeMockSession(() => '{"summary":"done"}').session;
+      setupHarnessMock(session);
+
+      const registry = new RendererRegistry();
+      registry.register('coder', (data) => {
+        const d = data as { summary?: string };
+        return `## ${d.summary ?? 'unknown'}`;
+      });
+
+      const onStatus = createStatusCallbacksSpy();
+      await runStepTask(
+        makeDefaultOptions({ rendererRegistry: registry, onStatus: onStatus as unknown as StatusCallbacks }),
+      );
+
+      expect(onStatus.onAgentRender).toHaveBeenCalledTimes(1);
+      const renderCall = onStatus.onAgentRender.mock.calls[0]![0] as Record<string, unknown>;
+      expect(renderCall.agentId).toBe('task-1');
+      expect(renderCall.profile).toBe('coder');
+      expect(renderCall.taskId).toBe('task-1');
+      expect(renderCall.rendered).toBe('## done');
+    });
+
+    it('does not fire onAgentRender when rendererRegistry is not provided', async () => {
+      setupProfilesMock(defaultProfile);
+      setupHarnessMock();
+
+      const onStatus = createStatusCallbacksSpy();
+      await runStepTask(makeDefaultOptions({ onStatus: onStatus as unknown as StatusCallbacks }));
+
+      expect(onStatus.onAgentRender).not.toHaveBeenCalled();
+    });
+
+    it('does not fire onAgentRender when rendererRegistry has no renderer for the profileId', async () => {
+      setupProfilesMock(defaultProfile);
+      const session = makeMockSession(() => '{"x":1}').session;
+      setupHarnessMock(session);
+
+      const renderSpy = mock((_data: unknown) => 'should-not-be-called');
+      const registry = new RendererRegistry();
+      registry.register('other-profile', renderSpy as unknown as RenderFunction);
+
+      const onStatus = createStatusCallbacksSpy();
+      await runStepTask(
+        makeDefaultOptions({ rendererRegistry: registry, onStatus: onStatus as unknown as StatusCallbacks }),
+      );
+
+      expect(renderSpy).not.toHaveBeenCalled();
+      expect(onStatus.onAgentRender).not.toHaveBeenCalled();
+    });
+
+    it('passes parsed JSON data to the render function', async () => {
+      setupProfilesMock(defaultProfile);
+      const session = makeMockSession(() => '{"approved":true,"count":3}').session;
+      setupHarnessMock(session);
+
+      const renderSpy = mock((_data: unknown) => 'rendered');
+      const registry = new RendererRegistry();
+      registry.register('coder', renderSpy as unknown as RenderFunction);
+
+      await runStepTask(makeDefaultOptions({ rendererRegistry: registry }));
+
+      expect(renderSpy).toHaveBeenCalledTimes(1);
+      expect(renderSpy).toHaveBeenCalledWith({ approved: true, count: 3 });
+    });
+
+    it('does not fire onAgentRender when the render function returns an empty string', async () => {
+      setupProfilesMock(defaultProfile);
+      const session = makeMockSession(() => '{"x":1}').session;
+      setupHarnessMock(session);
+
+      const renderSpy = mock((_data: unknown) => '');
+      const registry = new RendererRegistry();
+      registry.register('coder', renderSpy as unknown as RenderFunction);
+
+      const onStatus = createStatusCallbacksSpy();
+      await runStepTask(
+        makeDefaultOptions({ rendererRegistry: registry, onStatus: onStatus as unknown as StatusCallbacks }),
+      );
+
+      // The renderer is still invoked...
+      expect(renderSpy).toHaveBeenCalledTimes(1);
+      // ...but an empty result suppresses the render event.
+      expect(onStatus.onAgentRender).not.toHaveBeenCalled();
+    });
+
+    it('returns the original result unchanged when a renderer is invoked', async () => {
+      setupProfilesMock(defaultProfile);
+      const session = makeMockSession(() => 'raw assistant text').session;
+      setupHarnessMock(session);
+
+      const registry = new RendererRegistry();
+      registry.register('coder', () => 'RENDERED OUTPUT');
+
+      const result = await runStepTask<string>(makeDefaultOptions({ rendererRegistry: registry }));
+
+      // runStepTask must return the agent result, not the rendered string.
+      expect(result).toBe('raw assistant text');
+    });
+
+    it('does not invoke the renderer when getLastAssistantText returns no text', async () => {
+      setupProfilesMock(defaultProfile);
+      // Structured path: the mocked promptForStructured never calls session.prompt,
+      // so getLastAssistantText() returns undefined.
+      const session = makeMockSession().session;
+      setupHarnessMock(session);
+      mockPromptForStructured.mockResolvedValue({ result: { ok: true }, attempts: 1 });
+
+      const renderSpy = mock((_data: unknown) => 'rendered');
+      const registry = new RendererRegistry();
+      registry.register('coder', renderSpy as unknown as RenderFunction);
+
+      const onStatus = createStatusCallbacksSpy();
+      await runStepTask(
+        makeDefaultOptions({
+          schema: z.object({ ok: z.boolean() }) as unknown as ZodType<unknown>,
+          rendererRegistry: registry,
+          onStatus: onStatus as unknown as StatusCallbacks,
+        }),
+      );
+
+      expect(renderSpy).not.toHaveBeenCalled();
+      expect(onStatus.onAgentRender).not.toHaveBeenCalled();
+    });
+
+    it('invokes the renderer in the structured path when getLastAssistantText returns text', async () => {
+      setupProfilesMock(defaultProfile);
+      const jsonText = '{"approved":true,"count":3}';
+      const session = {
+        prompt: mock(async () => {}),
+        getLastAssistantText: mock(() => jsonText),
+        sessionId: 'test-session',
+        subscribe: mock(() => () => {}),
+        dispose: mock(() => {}),
+      };
+      mockCreateHarness.mockResolvedValue({
+        session,
+        sessionId: 'test-session',
+        dispose: mock(() => {}),
+      });
+      mockPromptForStructured.mockResolvedValue({ result: { approved: true, count: 3 }, attempts: 1 });
+
+      const renderSpy = mock((_data: unknown) => 'RENDERED');
+      const registry = new RendererRegistry();
+      registry.register('coder', renderSpy as unknown as RenderFunction);
+
+      const onStatus = createStatusCallbacksSpy();
+      await runStepTask(
+        makeDefaultOptions({
+          schema: z.object({ approved: z.boolean(), count: z.number() }) as unknown as ZodType<unknown>,
+          rendererRegistry: registry,
+          onStatus: onStatus as unknown as StatusCallbacks,
+        }),
+      );
+
+      expect(renderSpy).toHaveBeenCalledTimes(1);
+      expect(renderSpy).toHaveBeenCalledWith({ approved: true, count: 3 });
+      expect(onStatus.onAgentRender).toHaveBeenCalledTimes(1);
+      expect((onStatus.onAgentRender.mock.calls[0]![0] as Record<string, unknown>).rendered).toBe('RENDERED');
+    });
+
+    it('fires onAgentRender after the prompt completes and before onAgentComplete', async () => {
+      setupProfilesMock(defaultProfile);
+      const session = makeMockSession(() => '{"summary":"done"}').session;
+      setupHarnessMock(session);
+
+      const registry = new RendererRegistry();
+      registry.register('coder', () => '## done');
+
+      const onStatus = createStatusCallbacksSpy();
+      await runStepTask(
+        makeDefaultOptions({ rendererRegistry: registry, onStatus: onStatus as unknown as StatusCallbacks }),
+      );
+
+      const renderIdx = onStatus.callOrder.indexOf('onAgentRender');
+      const stepStartIdx = onStatus.callOrder.indexOf('onStepStart');
+      const agentCompleteIdx = onStatus.callOrder.indexOf('onAgentComplete');
+      const taskCompleteIdx = onStatus.callOrder.indexOf('onTaskComplete');
+
+      expect(renderIdx).toBeGreaterThanOrEqual(0);
+      expect(renderIdx).toBeGreaterThan(stepStartIdx);
+      expect(agentCompleteIdx).toBeGreaterThan(renderIdx);
+      expect(taskCompleteIdx).toBeGreaterThan(renderIdx);
     });
   });
 });

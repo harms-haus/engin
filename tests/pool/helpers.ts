@@ -122,11 +122,13 @@ export function setupHarnessMocksWithAbort(session?: ReturnType<typeof makeSessi
 export interface PoolOptions {
   maxConcurrentLanes?: number;
   maxStepRetries?: number;
+  maxTaskRetries?: number;
   getStepsForTask?: (task: Task) => StepDefinition[];
   getRunnerForTask?: (task: Task) => TaskRunner;
   tasks?: Task[];
   signal?: AbortSignal;
   laneWaitTimeoutMs?: number;
+  sessionBaseDir?: string;
   onStatus?: Record<string, unknown>;
   auditLog?: unknown;
 }
@@ -146,13 +148,14 @@ export function createPoolAndTracker(overrides?: PoolOptions) {
   const pool = new LanePool({
     maxConcurrentLanes: overrides?.maxConcurrentLanes ?? 1,
     profilesDirs: ['/mock/profiles'],
-    sessionBaseDir: '/tmp/sessions',
+    sessionBaseDir: overrides?.sessionBaseDir ?? '/tmp/sessions',
     cwd: '/tmp/project',
     phaseId: 'implementing',
     taskTracker: tracker,
     getStepsForTask,
     getRunnerForTask: overrides?.getRunnerForTask,
     maxStepRetries: overrides?.maxStepRetries,
+    maxTaskRetries: overrides?.maxTaskRetries,
     onStatus: overrides?.onStatus as unknown as undefined,
     auditLog: overrides?.auditLog as unknown as undefined,
     signal: overrides?.signal,

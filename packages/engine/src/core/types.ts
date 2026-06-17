@@ -4,6 +4,7 @@ export type { ThinkingLevel };
 
 // ─── Peer dependency re-exports (not re-exported by pi-coding-agent) ───────
 import type { ThinkingLevel } from '@earendil-works/pi-agent-core';
+import type { RendererRegistry } from './renderer-registry.js';
 
 export { getModel, parseJsonWithRepair } from '@earendil-works/pi-ai';
 export type { Model } from '@earendil-works/pi-ai';
@@ -143,6 +144,7 @@ export interface WorkflowStatusCallbacks {
   onTaskComplete?: (info: { taskId: string; title: string }) => void;
   onTaskRejected?: (info: { taskId: string; title: string; reason: string }) => void;
   onDecision?: (info: { agentId: string; decision: string; reasoning: string; taskId?: string }) => void;
+  onAgentRender?: (info: { agentId: string; profile: string; taskId?: string; rendered: string }) => void;
   onError?: (info: { agentId: string; error: string; phaseId: string; taskId?: string }) => void;
   onWorkflowComplete?: (info: { totalDurationMs: number; agentCount: number }) => void;
   onWorkflowFailed?: (info: { error: Error; phaseId: string }) => void;
@@ -190,6 +192,7 @@ export const STATUS_CALLBACK_METHODS: readonly string[] = Object.freeze([
   'onTaskComplete',
   'onTaskRejected',
   'onDecision',
+  'onAgentRender',
   'onError',
   'onWorkflowComplete',
   'onWorkflowFailed',
@@ -223,6 +226,8 @@ export interface WorkflowRunOptions {
   verbose?: boolean;
   /** Git worktree information for isolated execution */
   worktree?: WorktreeInfo;
+  /** When provided, enables output renderers that transform agent JSON output into human-readable markdown. */
+  rendererRegistry?: RendererRegistry;
 }
 
 // ─── Workflow Entry ───────────────────────────────────────────────────────
@@ -235,6 +240,8 @@ export interface WorkflowEntry {
 // ─── Workflow Module ────────────────────────────────────────────────────────
 export interface WorkflowModule {
   run(taskPrompt: string, options: WorkflowRunOptions): Promise<void>;
+  /** Optional hook for workflows to register output renderers for agent profiles. Called by the engine after module load. */
+  registerRenderers?: (registry: RendererRegistry) => void;
   name?: string;
   description?: string;
 }

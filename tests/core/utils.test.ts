@@ -152,6 +152,7 @@ describe('STATUS_CALLBACK_METHODS', () => {
       'onTaskComplete',
       'onTaskRejected',
       'onDecision',
+      'onAgentRender',
       'onError',
       'onWorkflowComplete',
       'onWorkflowFailed',
@@ -226,77 +227,23 @@ describe('composeStatusCallbacks', () => {
 
   it('calls all methods on multiple callbacks in array order', () => {
     const log: string[] = [];
-    const cb1: StatusCallbacks = {
-      onWorkflowStart: () => log.push('cb1.onWorkflowStart'),
-      onPhaseStart: () => log.push('cb1.onPhaseStart'),
-      onPhaseComplete: () => log.push('cb1.onPhaseComplete'),
-      onPhaseRegister: () => log.push('cb1.onPhaseRegister'),
-      onAgentSpawn: () => log.push('cb1.onAgentSpawn'),
-      onAgentComplete: () => log.push('cb1.onAgentComplete'),
-      onTaskStart: () => log.push('cb1.onTaskStart'),
-      onTaskRegister: () => log.push('cb1.onTaskRegister'),
-      onStepStart: () => log.push('cb1.onStepStart'),
-      onTaskComplete: () => log.push('cb1.onTaskComplete'),
-      onTaskRejected: () => log.push('cb1.onTaskRejected'),
-      onDecision: () => log.push('cb1.onDecision'),
-      onError: () => log.push('cb1.onError'),
-      onWorkflowComplete: () => log.push('cb1.onWorkflowComplete'),
-      onWorkflowFailed: () => log.push('cb1.onWorkflowFailed'),
-      onTurnStart: () => log.push('cb1.onTurnStart'),
-      onTurnEnd: () => log.push('cb1.onTurnEnd'),
-      onToolCallStart: () => log.push('cb1.onToolCallStart'),
-      onToolCallEnd: () => log.push('cb1.onToolCallEnd'),
-      onSidebarUpdate: () => log.push('cb1.onSidebarUpdate'),
-    };
-    const cb2: StatusCallbacks = {
-      onWorkflowStart: () => log.push('cb2.onWorkflowStart'),
-      onPhaseStart: () => log.push('cb2.onPhaseStart'),
-      onPhaseComplete: () => log.push('cb2.onPhaseComplete'),
-      onPhaseRegister: () => log.push('cb2.onPhaseRegister'),
-      onAgentSpawn: () => log.push('cb2.onAgentSpawn'),
-      onAgentComplete: () => log.push('cb2.onAgentComplete'),
-      onTaskStart: () => log.push('cb2.onTaskStart'),
-      onTaskRegister: () => log.push('cb2.onTaskRegister'),
-      onStepStart: () => log.push('cb2.onStepStart'),
-      onTaskComplete: () => log.push('cb2.onTaskComplete'),
-      onTaskRejected: () => log.push('cb2.onTaskRejected'),
-      onDecision: () => log.push('cb2.onDecision'),
-      onError: () => log.push('cb2.onError'),
-      onWorkflowComplete: () => log.push('cb2.onWorkflowComplete'),
-      onWorkflowFailed: () => log.push('cb2.onWorkflowFailed'),
-      onTurnStart: () => log.push('cb2.onTurnStart'),
-      onTurnEnd: () => log.push('cb2.onTurnEnd'),
-      onToolCallStart: () => log.push('cb2.onToolCallStart'),
-      onToolCallEnd: () => log.push('cb2.onToolCallEnd'),
-      onSidebarUpdate: () => log.push('cb2.onSidebarUpdate'),
-    };
+    // Build each callback dynamically from STATUS_CALLBACK_METHODS so the test
+    // stays correct whenever a new method is added to the interface (e.g.
+    // onAgentRender). Each method pushes `<prefix>.<methodName>` to the log.
+    const makeCb = (prefix: string): StatusCallbacks =>
+      Object.fromEntries(STATUS_CALLBACK_METHODS.map((m) => [m, () => log.push(`${prefix}.${m}`)])) as StatusCallbacks;
+    const cb1 = makeCb('cb1');
+    const cb2 = makeCb('cb2');
     const composed = composeStatusCallbacks([cb1, cb2]);
 
-    // Call each method on the composed object
-    composed.onWorkflowStart?.({} as any);
-    composed.onPhaseStart?.({} as any);
-    composed.onPhaseComplete?.({} as any);
-    composed.onPhaseRegister?.({} as any);
-    composed.onAgentSpawn?.({} as any);
-    composed.onAgentComplete?.({} as any);
-    composed.onTaskStart?.({} as any);
-    composed.onTaskRegister?.({} as any);
-    composed.onStepStart?.({} as any);
-    composed.onTaskComplete?.({} as any);
-    composed.onTaskRejected?.({} as any);
-    composed.onDecision?.({} as any);
-    composed.onError?.({} as any);
-    composed.onWorkflowComplete?.({} as any);
-    composed.onWorkflowFailed?.({} as any);
-    composed.onTurnStart?.({} as any);
-    composed.onTurnEnd?.({} as any);
-    composed.onToolCallStart?.({} as any);
-    composed.onToolCallEnd?.({} as any);
-    composed.onSidebarUpdate?.({} as any);
+    // Invoke every method on the composed object, in STATUS_CALLBACK_METHODS order.
+    for (const name of STATUS_CALLBACK_METHODS) {
+      (composed as Record<string, (info: unknown) => void>)[name]?.({} as any);
+    }
 
-    // Each method should invoke both cb1 and cb2 in order
-    expect(log).toHaveLength(40);
-    for (let i = 0; i < 20; i++) {
+    // Each method should invoke both cb1 and cb2 in order, for every entry.
+    expect(log).toHaveLength(STATUS_CALLBACK_METHODS.length * 2);
+    for (let i = 0; i < STATUS_CALLBACK_METHODS.length; i++) {
       const methodIndex = i * 2;
       expect(log[methodIndex]).toBe(`cb1.${STATUS_CALLBACK_METHODS[i]}`);
       expect(log[methodIndex + 1]).toBe(`cb2.${STATUS_CALLBACK_METHODS[i]}`);
@@ -319,28 +266,37 @@ describe('composeStatusCallbacks', () => {
 
   it('returns a no-op object when the array is empty', () => {
     const composed = composeStatusCallbacks([]);
-    // All methods should exist and be callable without throwing
+    // Minimal valid info payloads keyed by method name, so every callback in
+    // STATUS_CALLBACK_METHODS (including onAgentRender) is invoked against the
+    // no-op object without throwing. Iterating the array keeps this test
+    // correct whenever a new method is added.
+    const noopInfo: Record<string, unknown> = {
+      onWorkflowStart: { taskPrompt: '', resumed: false, workDir: '' },
+      onPhaseRegister: { id: '', label: '', icon: '' },
+      onPhaseStart: { phase: '', round: 0 },
+      onPhaseComplete: { phase: '', durationMs: 0 },
+      onAgentSpawn: { agentId: '', profile: '', phaseId: '' },
+      onAgentComplete: { agentId: '', profile: '', phaseId: '' },
+      onTaskStart: { taskId: '', title: '', agentId: '' },
+      onTaskRegister: { taskId: '', phaseId: '', title: '', dependencies: [], steps: [] },
+      onStepStart: { taskId: '', stepIndex: 0, stepName: '', agentId: '' },
+      onTaskComplete: { taskId: '', title: '' },
+      onTaskRejected: { taskId: '', title: '', reason: '' },
+      onDecision: { agentId: '', decision: '', reasoning: '' },
+      onAgentRender: { agentId: '', profile: '', rendered: '' },
+      onError: { agentId: '', error: '', phaseId: '' },
+      onWorkflowComplete: { totalDurationMs: 0, agentCount: 0 },
+      onWorkflowFailed: { error: new Error(), phaseId: '' },
+      onSidebarUpdate: {},
+      onTurnStart: { agentId: '', turn: 0 },
+      onTurnEnd: { agentId: '', turn: 0 },
+      onToolCallStart: { agentId: '', toolName: '', toolCallId: '', arguments: {} },
+      onToolCallEnd: { agentId: '', toolName: '', toolCallId: '', isError: false },
+    };
     expect(() => {
-      composed.onWorkflowStart?.({ taskPrompt: '', resumed: false, workDir: '' });
-      composed.onPhaseStart?.({ phase: '', round: 0 });
-      composed.onPhaseComplete?.({ phase: '', durationMs: 0 });
-      composed.onPhaseRegister?.({ id: '', label: '', icon: '' });
-      composed.onAgentSpawn?.({ agentId: '', profile: '', phaseId: '' });
-      composed.onAgentComplete?.({ agentId: '', profile: '', phaseId: '' });
-      composed.onTaskStart?.({ taskId: '', title: '', agentId: '' });
-      composed.onTaskRegister?.({ taskId: '', phaseId: '', title: '', dependencies: [], steps: [] });
-      composed.onStepStart?.({ taskId: '', stepIndex: 0, stepName: '', agentId: '' });
-      composed.onTaskComplete?.({ taskId: '', title: '' });
-      composed.onTaskRejected?.({ taskId: '', title: '', reason: '' });
-      composed.onDecision?.({ agentId: '', decision: '', reasoning: '' });
-      composed.onError?.({ agentId: '', error: '', phaseId: '' });
-      composed.onWorkflowComplete?.({ totalDurationMs: 0, agentCount: 0 });
-      composed.onWorkflowFailed?.({ error: new Error(), phaseId: '' });
-      composed.onTurnStart?.({ agentId: '', turn: 0 });
-      composed.onTurnEnd?.({ agentId: '', turn: 0 });
-      composed.onToolCallStart?.({ agentId: '', toolName: '', toolCallId: '', arguments: {} });
-      composed.onToolCallEnd?.({ agentId: '', toolName: '', toolCallId: '', isError: false });
-      composed.onSidebarUpdate?.({});
+      for (const name of STATUS_CALLBACK_METHODS) {
+        (composed as Record<string, (info: unknown) => void>)[name]?.(noopInfo[name]);
+      }
     }).not.toThrow();
   });
 

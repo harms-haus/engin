@@ -5,6 +5,7 @@ import { safeErrorMessage } from '../core/utils.js';
 import { TaskTracker } from '../tracking/task-status.js';
 // buildPrompt is used via prompt-builder module directly
 import { linearStepsRunner } from './linear-steps-runner.js';
+import { clearTaskSessions } from './step-execution.js';
 import type { TaskProcessorContext } from './task-processor.js';
 import { reportError, safeCompleteTask, safeFailTask } from './task-processor.js';
 import type { LanePoolOptions, LanePoolResult, TaskOutcome, TaskRunner, TaskRunnerContext } from './types.js';
@@ -27,6 +28,8 @@ export class LanePool {
   private readonly options: LanePoolOptions;
   /** Active sessions that may be mid-prompt; aborted on SIGINT for faster shutdown. */
   private readonly activeSessions = new Set<{ abort(): Promise<void> }>();
+  /** Per-task count of same-run retries already consumed (keyed by task id). */
+  private readonly taskRetries = new Map<string, number>();
 
   constructor(options: LanePoolOptions) {
     this.options = options;
@@ -132,6 +135,41 @@ export class LanePool {
     }
   }
 
+  /**
+   * If the task that just ran ended up `failed` and its retry budget is not
+   * exhausted, clear its persisted sessions, reset it to `ready`, and announce
+   * the retry. The lane loop (or a sibling lane) will then re-claim and re-run
+   * it from step 1.
+   *
+   * No-op when `maxTaskRetries` is unset/`0` (the historical behavior: failed
+   * tasks stay failed).
+   */
+  private maybeRetryFailedTask(task: Task, agentId: string, reason?: string): void {
+    const max = this.options.maxTaskRetries ?? 0;
+    if (max <= 0) return;
+
+    const current = this.options.taskTracker.getTask(task.id);
+    if (!current || current.status !== 'failed') return;
+
+    const used = this.taskRetries.get(task.id) ?? 0;
+    if (used >= max) return;
+
+    this.taskRetries.set(task.id, used + 1);
+    const attempt = used + 2; // human-readable: the initial run is attempt #1
+    try {
+      clearTaskSessions(this.options.sessionBaseDir, task.id);
+    } catch (err) {
+      console.warn(`[${agentId}] Failed to clear sessions for task ${task.id}: ${safeErrorMessage(err)}`);
+    }
+    this.options.taskTracker.resetTaskForRetry(task.id);
+    this.options.onStatus?.onDecision?.({
+      agentId,
+      decision: `Retrying failed task "${task.id}" (attempt ${attempt}/${max + 1})`,
+      reasoning: reason ?? 'task failed',
+      taskId: task.id,
+    });
+  }
+
   // ── Lane Runner ─────────────────────────────────────────────────────────
 
   /**
@@ -225,6 +263,7 @@ export class LanePool {
           phaseId: this.options.phaseId,
         };
 
+        let failureReason: string | undefined;
         try {
           const runner = this.resolveRunner(task);
           const runnerCtx: TaskRunnerContext = {
@@ -238,6 +277,7 @@ export class LanePool {
             cwd: this.options.cwd,
             apiKeys: this.options.apiKeys,
             maxStepRetries: this.options.maxStepRetries ?? 5,
+            rendererRegistry: this.options.rendererRegistry,
             completeTask: (result?: unknown) => safeCompleteTask(task.id, result, processorCtx),
             failTask: (result?: unknown) => safeFailTask(task.id, result ?? { completed: false }, processorCtx),
           };
@@ -245,17 +285,27 @@ export class LanePool {
           const outcome: TaskOutcome = await runner(runnerCtx);
           if (outcome.status === 'completed') {
             this.options.onStatus?.onTaskComplete?.({ taskId: task.id, title: task.title });
-          } else if (outcome.feedback) {
-            this.options.onStatus?.onTaskRejected?.({ taskId: task.id, title: task.title, reason: outcome.feedback });
-          } else if (outcome.error) {
-            // Runner returned a failed outcome with an error message; report it
-            reportError(agentId, outcome.error, undefined, task.id, processorCtx);
+          } else {
+            failureReason = outcome.feedback ?? outcome.error;
+            if (outcome.feedback) {
+              this.options.onStatus?.onTaskRejected?.({ taskId: task.id, title: task.title, reason: outcome.feedback });
+            } else if (outcome.error) {
+              // Runner returned a failed outcome with an error message; report it
+              reportError(agentId, outcome.error, undefined, task.id, processorCtx);
+            }
           }
         } catch (err) {
           const error = safeErrorMessage(err);
+          failureReason = error;
           reportError(agentId, error, undefined, task.id, processorCtx);
           safeFailTask(task.id, { completed: false, error: true }, processorCtx);
         }
+
+        // ── Same-run retry: if the task just failed and its budget isn't ──
+        // exhausted, clear its persisted sessions and reset it to `ready` so a
+        // lane re-claims it and restarts from step 1. Capped at
+        // `maxTaskRetries` extra attempts to avoid infinite loops.
+        this.maybeRetryFailedTask(task, agentId, failureReason);
         continue;
       }
 

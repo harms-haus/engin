@@ -16,7 +16,7 @@
 import '@testing-library/jest-dom/vitest';
 
 import { act, fireEvent, render } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { TaskEntity } from '../protocol-types';
 import { useWorkflowStore } from '../store/workflow-store';
 
@@ -33,6 +33,8 @@ function makeTask(overrides: Partial<TaskEntity> & { id: string }): TaskEntity {
     status: 'ready',
     steps: [],
     dependencies: [],
+    startedAt: undefined,
+    completedAt: undefined,
     ...overrides,
   };
 }
@@ -642,5 +644,484 @@ describe('TaskList – accessibility', () => {
     const stepSpan = container.querySelector('.task-list__step');
     expect(stepSpan).toBeInTheDocument();
     expect(stepSpan?.textContent).toContain('step 1/1: code');
+  });
+});
+
+// ─── Elapsed time display ─────────────────────────────────────────────────
+// Verified against formatElapsed output for fixed startedAt→completedAt diffs.
+// Completed tasks use the completedAt branch, so no live interval is created.
+
+describe('TaskList – elapsed time display', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    resetStore();
+  });
+
+  it('does not render elapsed when startedAt is undefined', () => {
+    const tasks: Record<string, TaskEntity> = {
+      't-1': makeTask({ id: 't-1', title: 'No Start', phaseId: 'phase-1', status: 'ready' }),
+    };
+    seedStoreAct(tasks, 'phase-1');
+
+    const { container } = render(<TaskList />);
+    expect(container.querySelector('.task-list__elapsed')).not.toBeInTheDocument();
+  });
+
+  it('renders elapsed for a completed task using startedAt/completedAt diff', () => {
+    // diff = 42000ms → '42s'
+    const tasks: Record<string, TaskEntity> = {
+      't-1': makeTask({
+        id: 't-1',
+        title: 'Done',
+        phaseId: 'phase-1',
+        status: 'complete',
+        startedAt: 0,
+        completedAt: '1970-01-01T00:00:42.000Z',
+      }),
+    };
+    seedStoreAct(tasks, 'phase-1');
+
+    const { container } = render(<TaskList />);
+    const elapsed = container.querySelector('.task-list__elapsed');
+    expect(elapsed).toBeInTheDocument();
+    expect(elapsed?.textContent).toBe('42s');
+  });
+
+  it('renders "<1s" for a sub-second completed duration', () => {
+    // diff = 500ms → '<1s'
+    const tasks: Record<string, TaskEntity> = {
+      't-1': makeTask({
+        id: 't-1',
+        title: 'Quick',
+        phaseId: 'phase-1',
+        status: 'complete',
+        startedAt: 0,
+        completedAt: '1970-01-01T00:00:00.500Z',
+      }),
+    };
+    seedStoreAct(tasks, 'phase-1');
+
+    const { container } = render(<TaskList />);
+    expect(container.querySelector('.task-list__elapsed')?.textContent).toBe('<1s');
+  });
+
+  it('renders "1m30s" for a 90-second completed duration', () => {
+    // diff = 90000ms → '1m30s'
+    const tasks: Record<string, TaskEntity> = {
+      't-1': makeTask({
+        id: 't-1',
+        title: 'Longer',
+        phaseId: 'phase-1',
+        status: 'complete',
+        startedAt: 0,
+        completedAt: '1970-01-01T00:01:30.000Z',
+      }),
+    };
+    seedStoreAct(tasks, 'phase-1');
+
+    const { container } = render(<TaskList />);
+    expect(container.querySelector('.task-list__elapsed')?.textContent).toBe('1m30s');
+  });
+
+  it('renders elapsed inline within the single-line task body next to the title', () => {
+    const tasks: Record<string, TaskEntity> = {
+      't-1': makeTask({
+        id: 't-1',
+        title: 'Done',
+        phaseId: 'phase-1',
+        status: 'complete',
+        startedAt: 0,
+        completedAt: '1970-01-01T00:00:42.000Z',
+      }),
+    };
+    seedStoreAct(tasks, 'phase-1');
+
+    const { container } = render(<TaskList />);
+    const body = container.querySelector('.task-list__body');
+    expect(body?.querySelector('.task-list__title')).toBeInTheDocument();
+    expect(body?.querySelector('.task-list__elapsed')).toBeInTheDocument();
+  });
+});
+
+// ─── useElapsed live timer (fake timers) ──────────────────────────────────
+// Running tasks (completedAt undefined) set up a 1s interval that re-derives
+// elapsed from Date.now(). Fake timers drive the clock deterministically.
+
+describe('TaskList – useElapsed live timer', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    resetStore();
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(0));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('starts at "<1s" for a freshly started running task', () => {
+    const tasks: Record<string, TaskEntity> = {
+      't-1': makeTask({
+        id: 't-1',
+        title: 'Running',
+        phaseId: 'phase-1',
+        status: 'active',
+        startedAt: 0,
+      }),
+    };
+    seedStoreAct(tasks, 'phase-1');
+
+    const { container } = render(<TaskList />);
+    expect(container.querySelector('.task-list__elapsed')?.textContent).toBe('<1s');
+  });
+
+  it('updates elapsed every second as the clock advances', () => {
+    const tasks: Record<string, TaskEntity> = {
+      't-1': makeTask({
+        id: 't-1',
+        title: 'Running',
+        phaseId: 'phase-1',
+        status: 'active',
+        startedAt: 0,
+      }),
+    };
+    seedStoreAct(tasks, 'phase-1');
+
+    const { container } = render(<TaskList />);
+
+    act(() => {
+      vi.advanceTimersByTime(1000);
+    });
+    expect(container.querySelector('.task-list__elapsed')?.textContent).toBe('1s');
+
+    act(() => {
+      vi.advanceTimersByTime(41_000);
+    });
+    expect(container.querySelector('.task-list__elapsed')?.textContent).toBe('42s');
+  });
+
+  it('stops updating once the task completes (running interval is cleared)', () => {
+    const tasks: Record<string, TaskEntity> = {
+      't-1': makeTask({
+        id: 't-1',
+        title: 'Running',
+        phaseId: 'phase-1',
+        status: 'active',
+        startedAt: 0,
+      }),
+    };
+    seedStoreAct(tasks, 'phase-1');
+
+    const { container } = render(<TaskList />);
+
+    // While running, elapsed tracks the advancing clock.
+    act(() => {
+      vi.advanceTimersByTime(5000);
+    });
+    expect(container.querySelector('.task-list__elapsed')?.textContent).toBe('5s');
+
+    // Complete the task at a fixed completedAt (diff = 42000ms → '42s').
+    act(() => {
+      useWorkflowStore.setState((s) => {
+        s.tasksById['t-1'].status = 'complete';
+        s.tasksById['t-1'].completedAt = '1970-01-01T00:00:42.000Z';
+      });
+    });
+    expect(container.querySelector('.task-list__elapsed')?.textContent).toBe('42s');
+
+    // Advancing the clock further must NOT change the now-fixed elapsed value.
+    act(() => {
+      vi.advanceTimersByTime(60_000);
+    });
+    expect(container.querySelector('.task-list__elapsed')?.textContent).toBe('42s');
+  });
+
+  it('renders title, step, elapsed, and deps together in a single body for an active task', () => {
+    const tasks: Record<string, TaskEntity> = {
+      'dep-a': makeTask({ id: 'dep-a', title: 'Dep A', phaseId: 'phase-2', status: 'complete' }),
+      't-1': makeTask({
+        id: 't-1',
+        title: 'Active Task',
+        phaseId: 'phase-1',
+        status: 'active',
+        startedAt: 0,
+        steps: [{ name: 'code', index: 0 }],
+        activeStepIndex: 0,
+        dependencies: ['dep-a'],
+      }),
+    };
+    seedStoreAct(tasks, 'phase-1');
+
+    const { container } = render(<TaskList />);
+    const body = container.querySelector('.task-list__body');
+    expect(body?.querySelector('.task-list__title')?.textContent).toBe('Active Task');
+    expect(body?.querySelector('.task-list__step')?.textContent).toContain('step 1/1: code');
+    expect(body?.querySelector('.task-list__elapsed')?.textContent).toBe('<1s');
+    expect(body?.querySelector('.task-list__deps')).toBeInTheDocument();
+  });
+});
+
+// ─── useElapsed interval lifecycle (real timers + spies) ──────────────────
+// Asserts setInterval/clearInterval usage directly. Real timers keep the spy
+// semantics straightforward; the scheduled interval is cleared on unmount.
+
+describe('TaskList – useElapsed interval lifecycle', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    resetStore();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('sets up a 1000ms interval for a running task', () => {
+    const setIntervalSpy = vi.spyOn(globalThis, 'setInterval');
+
+    const tasks: Record<string, TaskEntity> = {
+      't-1': makeTask({
+        id: 't-1',
+        title: 'Running',
+        phaseId: 'phase-1',
+        status: 'active',
+        startedAt: 0,
+      }),
+    };
+    seedStoreAct(tasks, 'phase-1');
+
+    render(<TaskList />);
+
+    expect(setIntervalSpy).toHaveBeenCalledWith(expect.any(Function), 1000);
+  });
+
+  it('clears the interval when the task row is unmounted', () => {
+    const clearIntervalSpy = vi.spyOn(globalThis, 'clearInterval');
+
+    const tasks: Record<string, TaskEntity> = {
+      't-1': makeTask({
+        id: 't-1',
+        title: 'Running',
+        phaseId: 'phase-1',
+        status: 'active',
+        startedAt: 0,
+      }),
+    };
+    seedStoreAct(tasks, 'phase-1');
+
+    const { unmount } = render(<TaskList />);
+    unmount();
+
+    expect(clearIntervalSpy).toHaveBeenCalled();
+  });
+
+  it('does not set up an interval for a completed task', () => {
+    const setIntervalSpy = vi.spyOn(globalThis, 'setInterval');
+
+    const tasks: Record<string, TaskEntity> = {
+      't-1': makeTask({
+        id: 't-1',
+        title: 'Done',
+        phaseId: 'phase-1',
+        status: 'complete',
+        startedAt: 0,
+        completedAt: '1970-01-01T00:00:42.000Z',
+      }),
+    };
+    seedStoreAct(tasks, 'phase-1');
+
+    render(<TaskList />);
+
+    expect(setIntervalSpy).not.toHaveBeenCalled();
+  });
+
+  it('clears the running interval when the task transitions to completed', () => {
+    const clearIntervalSpy = vi.spyOn(globalThis, 'clearInterval');
+
+    const tasks: Record<string, TaskEntity> = {
+      't-1': makeTask({
+        id: 't-1',
+        title: 'Running',
+        phaseId: 'phase-1',
+        status: 'active',
+        startedAt: 0,
+      }),
+    };
+    seedStoreAct(tasks, 'phase-1');
+
+    render(<TaskList />);
+    clearIntervalSpy.mockClear();
+
+    act(() => {
+      useWorkflowStore.setState((s) => {
+        s.tasksById['t-1'].status = 'complete';
+        s.tasksById['t-1'].completedAt = '1970-01-01T00:00:42.000Z';
+      });
+    });
+
+    expect(clearIntervalSpy).toHaveBeenCalled();
+  });
+});
+
+// ─── Dependency display ────────────────────────────────────────────────────
+// Dependency tasks live in phase-2 so they are present in the store (for the
+// status lookup) but are NOT rendered — only the phase-1 task row renders.
+
+describe('TaskList – dependency display', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    resetStore();
+  });
+
+  it('does not render deps when dependencies is empty', () => {
+    const tasks: Record<string, TaskEntity> = {
+      't-1': makeTask({
+        id: 't-1',
+        title: 'No Deps',
+        phaseId: 'phase-1',
+        status: 'complete',
+        startedAt: 0,
+        completedAt: '1970-01-01T00:00:01.000Z',
+        dependencies: [],
+      }),
+    };
+    seedStoreAct(tasks, 'phase-1');
+
+    const { container } = render(<TaskList />);
+    expect(container.querySelector('.task-list__deps')).not.toBeInTheDocument();
+  });
+
+  it('renders a deps span prefixed with "deps:"', () => {
+    const tasks: Record<string, TaskEntity> = {
+      'dep-a': makeTask({ id: 'dep-a', title: 'Dep A', phaseId: 'phase-2', status: 'complete' }),
+      't-1': makeTask({
+        id: 't-1',
+        title: 'Main',
+        phaseId: 'phase-1',
+        status: 'complete',
+        startedAt: 0,
+        completedAt: '1970-01-01T00:00:01.000Z',
+        dependencies: ['dep-a'],
+      }),
+    };
+    seedStoreAct(tasks, 'phase-1');
+
+    const { container } = render(<TaskList />);
+    const deps = container.querySelector('.task-list__deps');
+    expect(deps).toBeInTheDocument();
+    expect(deps?.textContent).toContain('deps:');
+  });
+
+  it('wraps a completed dependency in task-list__dep--done', () => {
+    const tasks: Record<string, TaskEntity> = {
+      'dep-a': makeTask({ id: 'dep-a', title: 'Dep A', phaseId: 'phase-2', status: 'complete' }),
+      't-1': makeTask({
+        id: 't-1',
+        title: 'Main',
+        phaseId: 'phase-1',
+        status: 'complete',
+        startedAt: 0,
+        completedAt: '1970-01-01T00:00:01.000Z',
+        dependencies: ['dep-a'],
+      }),
+    };
+    seedStoreAct(tasks, 'phase-1');
+
+    const { container } = render(<TaskList />);
+    const done = container.querySelector('.task-list__dep--done');
+    expect(done).toBeInTheDocument();
+    expect(done?.textContent).toContain('dep-a');
+    expect(container.querySelector('.task-list__dep--pending')).not.toBeInTheDocument();
+  });
+
+  it('wraps a found-but-incomplete dependency in task-list__dep--pending', () => {
+    const tasks: Record<string, TaskEntity> = {
+      'dep-a': makeTask({ id: 'dep-a', title: 'Dep A', phaseId: 'phase-2', status: 'active' }),
+      't-1': makeTask({
+        id: 't-1',
+        title: 'Main',
+        phaseId: 'phase-1',
+        status: 'complete',
+        startedAt: 0,
+        completedAt: '1970-01-01T00:00:01.000Z',
+        dependencies: ['dep-a'],
+      }),
+    };
+    seedStoreAct(tasks, 'phase-1');
+
+    const { container } = render(<TaskList />);
+    const pending = container.querySelector('.task-list__dep--pending');
+    expect(pending).toBeInTheDocument();
+    expect(pending?.textContent).toContain('dep-a');
+    expect(container.querySelector('.task-list__dep--done')).not.toBeInTheDocument();
+  });
+
+  it('wraps a missing (not-found) dependency in task-list__dep--pending', () => {
+    const tasks: Record<string, TaskEntity> = {
+      't-1': makeTask({
+        id: 't-1',
+        title: 'Main',
+        phaseId: 'phase-1',
+        status: 'complete',
+        startedAt: 0,
+        completedAt: '1970-01-01T00:00:01.000Z',
+        dependencies: ['ghost'],
+      }),
+    };
+    seedStoreAct(tasks, 'phase-1');
+
+    const { container } = render(<TaskList />);
+    const pending = container.querySelector('.task-list__dep--pending');
+    expect(pending).toBeInTheDocument();
+    expect(pending?.textContent).toContain('ghost');
+  });
+
+  it('joins multiple dependencies with comma-space and classes by status', () => {
+    const tasks: Record<string, TaskEntity> = {
+      'dep-done': makeTask({ id: 'dep-done', title: 'Done Dep', phaseId: 'phase-2', status: 'complete' }),
+      'dep-pending': makeTask({ id: 'dep-pending', title: 'Pending Dep', phaseId: 'phase-2', status: 'ready' }),
+      't-1': makeTask({
+        id: 't-1',
+        title: 'Main',
+        phaseId: 'phase-1',
+        status: 'complete',
+        startedAt: 0,
+        completedAt: '1970-01-01T00:00:01.000Z',
+        dependencies: ['dep-done', 'dep-pending', 'ghost'],
+      }),
+    };
+    seedStoreAct(tasks, 'phase-1');
+
+    const { container } = render(<TaskList />);
+    const deps = container.querySelector('.task-list__deps');
+    // Normalize any JSX-introduced whitespace before comparing.
+    expect(deps?.textContent?.replace(/\s+/g, ' ').trim()).toBe('deps: dep-done, dep-pending, ghost');
+
+    const done = container.querySelectorAll('.task-list__dep--done');
+    const pending = container.querySelectorAll('.task-list__dep--pending');
+    expect(done).toHaveLength(1);
+    expect(done[0].textContent).toContain('dep-done');
+    expect(pending).toHaveLength(2);
+    expect(Array.from(pending).map((d) => d.textContent?.trim())).toEqual(['dep-pending', 'ghost']);
+  });
+
+  it('renders deps inline within the single-line task body', () => {
+    const tasks: Record<string, TaskEntity> = {
+      'dep-a': makeTask({ id: 'dep-a', title: 'Dep A', phaseId: 'phase-2', status: 'complete' }),
+      't-1': makeTask({
+        id: 't-1',
+        title: 'Main',
+        phaseId: 'phase-1',
+        status: 'complete',
+        startedAt: 0,
+        completedAt: '1970-01-01T00:00:01.000Z',
+        dependencies: ['dep-a'],
+      }),
+    };
+    seedStoreAct(tasks, 'phase-1');
+
+    const { container } = render(<TaskList />);
+    const body = container.querySelector('.task-list__body');
+    expect(body?.querySelector('.task-list__title')).toBeInTheDocument();
+    expect(body?.querySelector('.task-list__deps')).toBeInTheDocument();
   });
 });

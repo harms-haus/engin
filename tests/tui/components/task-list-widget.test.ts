@@ -2,7 +2,7 @@
 import type { TaskEntity } from '@engin/shared';
 import { describe, expect, it } from 'bun:test';
 import { TaskListWidget } from '../../../packages/tui/src/components/task-list-widget.js';
-import { dim, statusColor, statusIcon } from '../../../packages/tui/src/theme.js';
+import { dim, statusColor, statusIcon, yellow } from '../../../packages/tui/src/theme.js';
 
 const UP = '\x1b[A';
 const DOWN = '\x1b[B';
@@ -735,6 +735,264 @@ describe('TaskListWidget', () => {
         // Should show elapsed based on Date.now() - startedAt, which is ~10s
         expect(line).toContain('10s');
       });
+    });
+  });
+
+  describe('dependency info rendering', () => {
+    /** Wide enough to avoid truncation of deps segments. */
+    const DEPS_WIDTH = 120;
+
+    it('task with no dependencies shows no deps segment', () => {
+      const widget = new TaskListWidget();
+      widget.updateTasks([
+        makeTask({
+          id: 't1',
+          title: 'Solo',
+          status: 'active',
+          startedAt: Date.now() - 5000,
+          dependencies: [],
+        }),
+      ]);
+      const lines = widget.render(DEPS_WIDTH);
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).not.toContain('deps:');
+    });
+
+    it('task with dependencies where all are complete renders each dep dim (gray)', () => {
+      const widget = new TaskListWidget();
+      widget.updateTasks([
+        makeTask({ id: 'dep1', title: 'Dep 1', status: 'complete' }),
+        makeTask({ id: 'dep2', title: 'Dep 2', status: 'complete' }),
+        makeTask({
+          id: 't1',
+          title: 'My Task',
+          status: 'active',
+          startedAt: Date.now() - 5000,
+          dependencies: ['dep1', 'dep2'],
+        }),
+      ]);
+      const lines = widget.render(DEPS_WIDTH);
+      // My Task is last in creation order
+      const line = lines[lines.length - 1];
+      expect(line).toContain(' - deps: ');
+      // Each dep id is dim-wrapped
+      expect(line).toContain(dim('dep1'));
+      expect(line).toContain(dim('dep2'));
+      // Neither dep is yellow-wrapped
+      expect(line).not.toContain(yellow('dep1'));
+      expect(line).not.toContain(yellow('dep2'));
+    });
+
+    it('task with a dependency that is active renders that dep id in yellow', () => {
+      const widget = new TaskListWidget();
+      widget.updateTasks([
+        makeTask({
+          id: 'dep1',
+          title: 'Dep 1',
+          status: 'active',
+          startedAt: Date.now() - 2000,
+        }),
+        makeTask({
+          id: 't1',
+          title: 'My Task',
+          status: 'active',
+          startedAt: Date.now() - 5000,
+          dependencies: ['dep1'],
+        }),
+      ]);
+      const lines = widget.render(DEPS_WIDTH);
+      const line = lines[lines.length - 1];
+      expect(line).toContain(' - deps: ');
+      expect(line).toContain(yellow('dep1'));
+    });
+
+    it('task with a ready dependency renders that dep id in yellow', () => {
+      const widget = new TaskListWidget();
+      widget.updateTasks([
+        makeTask({ id: 'dep1', title: 'Dep 1', status: 'ready' }),
+        makeTask({
+          id: 't1',
+          title: 'My Task',
+          status: 'active',
+          startedAt: Date.now() - 5000,
+          dependencies: ['dep1'],
+        }),
+      ]);
+      const lines = widget.render(DEPS_WIDTH);
+      const line = lines[lines.length - 1];
+      expect(line).toContain(' - deps: ');
+      expect(line).toContain(yellow('dep1'));
+    });
+
+    it('task with a blocked dependency renders that dep id in yellow', () => {
+      const widget = new TaskListWidget();
+      widget.updateTasks([
+        makeTask({ id: 'dep1', title: 'Dep 1', status: 'blocked' }),
+        makeTask({
+          id: 't1',
+          title: 'My Task',
+          status: 'active',
+          startedAt: Date.now() - 5000,
+          dependencies: ['dep1'],
+        }),
+      ]);
+      const lines = widget.render(DEPS_WIDTH);
+      const line = lines[lines.length - 1];
+      expect(line).toContain(' - deps: ');
+      expect(line).toContain(yellow('dep1'));
+    });
+
+    it('mixed deps: one complete (dim) + one incomplete (yellow), comma-space joined', () => {
+      const widget = new TaskListWidget();
+      widget.updateTasks([
+        makeTask({ id: 'dep1', title: 'Dep 1', status: 'complete' }),
+        makeTask({ id: 'dep2', title: 'Dep 2', status: 'active', startedAt: Date.now() - 1000 }),
+        makeTask({
+          id: 't1',
+          title: 'My Task',
+          status: 'active',
+          startedAt: Date.now() - 5000,
+          dependencies: ['dep1', 'dep2'],
+        }),
+      ]);
+      const lines = widget.render(DEPS_WIDTH);
+      const line = lines[lines.length - 1];
+      expect(line).toContain(' - deps: ');
+      // Complete dep → dim
+      expect(line).toContain(dim('dep1'));
+      expect(line).not.toContain(yellow('dep1'));
+      // Active dep → yellow
+      expect(line).toContain(yellow('dep2'));
+      // Joined with comma-space
+      expect(line).toContain(' - deps: ' + dim('dep1') + ', ' + yellow('dep2'));
+    });
+
+    it('dependency id not present in current task list renders dim (unknown/cross-phase)', () => {
+      const widget = new TaskListWidget();
+      // dep1 is NOT in the task list at all
+      widget.updateTasks([
+        makeTask({
+          id: 't1',
+          title: 'My Task',
+          status: 'ready',
+          dependencies: ['dep1'],
+        }),
+      ]);
+      const lines = widget.render(DEPS_WIDTH);
+      const line = lines[0];
+      expect(line).toContain(' - deps: ');
+      expect(line).toContain(dim('dep1'));
+      expect(line).not.toContain(yellow('dep1'));
+    });
+
+    it('deps segment appears after the elapsed-time segment in the line', () => {
+      const widget = new TaskListWidget();
+      widget.updateTasks([
+        makeTask({ id: 'dep1', title: 'Dep 1', status: 'complete' }),
+        makeTask({
+          id: 't1',
+          title: 'My Task',
+          status: 'complete',
+          startedAt: 1000,
+          completedAt: new Date(6000).toISOString(),
+          dependencies: ['dep1'],
+        }),
+      ]);
+      const lines = widget.render(DEPS_WIDTH);
+      const line = lines[lines.length - 1];
+      // Strip ANSI codes for positional checks
+      const stripped = line.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '');
+      const elapsedIdx = stripped.indexOf('5s');
+      const depsIdx = stripped.indexOf('deps:');
+      expect(elapsedIdx).toBeGreaterThanOrEqual(0);
+      expect(depsIdx).toBeGreaterThanOrEqual(0);
+      expect(depsIdx).toBeGreaterThan(elapsedIdx);
+    });
+
+    it('deps segment is skipped for ready task that has dependencies (ready shows no elapsed)', () => {
+      // A ready task doesn't show elapsed time, but still shows deps
+      const widget = new TaskListWidget();
+      widget.updateTasks([
+        makeTask({ id: 'dep1', title: 'Dep 1', status: 'complete' }),
+        makeTask({
+          id: 't1',
+          title: 'My Task',
+          status: 'ready',
+          dependencies: ['dep1'],
+        }),
+      ]);
+      const lines = widget.render(DEPS_WIDTH);
+      const line = lines[lines.length - 1];
+      const stripped = line.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '');
+      // Ready task: icon + title + ' - deps: ...'
+      // No elapsed segment; deps should still be present
+      expect(stripped).toContain('deps:');
+      expect(line).toContain(dim('dep1'));
+      // Dash count: title - deps
+      expect((stripped.match(/ - /g) || []).length).toBe(1);
+    });
+
+    it('deps segment is appended after elapsed for blocked task with dependencies', () => {
+      // blocked task shows no elapsed, but still shows deps
+      const widget = new TaskListWidget();
+      widget.updateTasks([
+        makeTask({ id: 'dep1', title: 'Dep 1', status: 'ready' }),
+        makeTask({
+          id: 't1',
+          title: 'My Task',
+          status: 'blocked',
+          dependencies: ['dep1'],
+        }),
+      ]);
+      const lines = widget.render(DEPS_WIDTH);
+      const line = lines[lines.length - 1];
+      const stripped = line.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '');
+      expect(stripped).toContain('deps:');
+      expect(line).toContain(yellow('dep1'));
+    });
+
+    it('deps for failed task with dependencies renders after elapsed', () => {
+      const widget = new TaskListWidget();
+      widget.updateTasks([
+        makeTask({ id: 'dep1', title: 'Dep 1', status: 'complete' }),
+        makeTask({
+          id: 't1',
+          title: 'My Task',
+          status: 'failed',
+          startedAt: 2000,
+          completedAt: new Date(7000).toISOString(),
+          dependencies: ['dep1'],
+        }),
+      ]);
+      const lines = widget.render(DEPS_WIDTH);
+      const line = lines[lines.length - 1];
+      const stripped = line.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '');
+      const elapsedIdx = stripped.indexOf('5s');
+      const depsIdx = stripped.indexOf('deps:');
+      expect(elapsedIdx).toBeGreaterThanOrEqual(0);
+      expect(depsIdx).toBeGreaterThan(elapsedIdx);
+    });
+
+    it('deps for cancelled task with dependencies renders after elapsed', () => {
+      const widget = new TaskListWidget();
+      widget.updateTasks([
+        makeTask({ id: 'dep1', title: 'Dep 1', status: 'complete' }),
+        makeTask({
+          id: 't1',
+          title: 'My Task',
+          status: 'cancelled',
+          startedAt: 2000,
+          completedAt: new Date(7000).toISOString(),
+          dependencies: ['dep1'],
+        }),
+      ]);
+      const lines = widget.render(DEPS_WIDTH);
+      const line = lines[lines.length - 1];
+      const stripped = line.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '');
+      const elapsedIdx = stripped.indexOf('5s');
+      const depsIdx = stripped.indexOf('deps:');
+      expect(elapsedIdx).toBeGreaterThanOrEqual(0);
+      expect(depsIdx).toBeGreaterThan(elapsedIdx);
     });
   });
 });

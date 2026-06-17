@@ -1,3 +1,4 @@
+import type { RendererRegistry } from '../core/renderer-registry.js';
 import type { AgentProfile, StatusCallbacks, StepDefinition, Task } from '../core/types.js';
 import type { AuditLog } from '../tracking/audit-log.js';
 import type { TaskTracker } from '../tracking/task-status.js';
@@ -33,10 +34,22 @@ export interface LanePoolOptions {
   getRunnerForTask?: (task: Task) => TaskRunner;
   /** Maximum retries per step on agent crash. Default: 5 */
   maxStepRetries?: number;
+  /**
+   * Maximum number of times a failed task is reset and re-run within a single
+   * pool run, after its initial attempt. Total attempts = `1 + maxTaskRetries`.
+   *
+   * When a task fails and retries remain, its persisted sessions are cleared
+   * ({@link clearTaskSessions}) and it is reset to `ready` so a lane re-claims
+   * it and restarts from step 1. Default `0` (a failed task stays failed — the
+   * historical behavior).
+   */
+  maxTaskRetries?: number;
   /** Maximum time (ms) a lane waits for new work before polling again. Default: 60000 */
   laneWaitTimeoutMs?: number;
   /** Abort signal for cooperative cancellation */
   signal?: AbortSignal;
+  /** Optional registry of custom output renderers keyed by profile name */
+  rendererRegistry?: RendererRegistry;
   /** Phase identifier set by the workflow orchestrator — required */
   phaseId: string;
 }
@@ -75,6 +88,8 @@ export interface TaskRunnerContext {
   cwd: string;
   apiKeys?: Record<string, string>;
   maxStepRetries: number;
+  /** Optional registry of custom output renderers keyed by profile name */
+  rendererRegistry?: RendererRegistry;
   /** Safely settle the task as complete. The optional `result` is stored on
    *  the task (e.g. the agent's final output) so downstream phases can read it
    *  via `task.result`. Returns true on success. */

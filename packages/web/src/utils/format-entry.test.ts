@@ -52,7 +52,15 @@ describe('shouldRenderEntry', () => {
   });
 
   it('renders all non-tool_call_end entry types', () => {
-    const types: LogEntry['type'][] = ['text', 'thinking', 'tool_call', 'tool_call_start', 'decision', 'error'];
+    const types: LogEntry['type'][] = [
+      'text',
+      'thinking',
+      'tool_call',
+      'tool_call_start',
+      'decision',
+      'error',
+      'render',
+    ];
     for (const type of types) {
       expect(shouldRenderEntry(entry({ type, content: 'x' }))).toBe(true);
     }
