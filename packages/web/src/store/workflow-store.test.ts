@@ -21,7 +21,7 @@
 
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { EventRecord, RunSummary, WorkflowProjection } from '../protocol-types';
-import { getSeq, useWorkflowStore } from './workflow-store';
+import { getSeq, setStoreSubscribeRunFn, setStoreUnsubscribeRunFn, useWorkflowStore } from './workflow-store';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -181,6 +181,56 @@ describe('store – selectedRunId & selectRun', () => {
     expect(s.selectedStepIndex).toBeNull();
     expect(s.userPinnedPhase).toBe(false);
     expect(s.userPinnedStep).toBe(false);
+  });
+
+  it('selectRun subscribes to the new run via the bridge (so the server streams its snapshot)', () => {
+    const subscribed: string[] = [];
+    setStoreSubscribeRunFn((runId) => subscribed.push(runId));
+    try {
+      useWorkflowStore.getState().selectRun('run-42');
+      expect(subscribed).toEqual(['run-42']);
+    } finally {
+      setStoreSubscribeRunFn(null);
+    }
+  });
+
+  it('selectRun unsubscribes the previously selected run when switching', () => {
+    const subscribed: string[] = [];
+    const unsubscribed: string[] = [];
+    setStoreSubscribeRunFn((runId) => subscribed.push(runId));
+    setStoreUnsubscribeRunFn((runId) => unsubscribed.push(runId));
+    try {
+      useWorkflowStore.getState().selectRun('run-a');
+      useWorkflowStore.getState().selectRun('run-b');
+      expect(unsubscribed).toEqual(['run-a']);
+      expect(subscribed).toEqual(['run-a', 'run-b']);
+    } finally {
+      setStoreSubscribeRunFn(null);
+      setStoreUnsubscribeRunFn(null);
+    }
+  });
+
+  it('selectRun resets the projection so the previous run’s data does not bleed in', () => {
+    // Seed a populated projection belonging to a previous run.
+    useWorkflowStore.setState({
+      selectedRunId: 'run-old',
+      seq: 99,
+      taskPrompt: 'old prompt',
+      currentPhaseId: 'exec',
+      completedPhaseIds: ['plan', 'exec'],
+      workflowEventLog: [{ seq: 1, line: 'stale event line' }],
+      stats: { totalTokens: 1234, agentCount: 2 },
+    });
+
+    useWorkflowStore.getState().selectRun('run-new');
+
+    const s = useWorkflowStore.getState();
+    expect(s.seq).toBe(0);
+    expect(s.taskPrompt).toBe('');
+    expect(s.currentPhaseId).toBe('');
+    expect(s.completedPhaseIds).toEqual([]);
+    expect(s.workflowEventLog).toEqual([]);
+    expect(s.stats).toEqual({ totalTokens: 0, agentCount: 0 });
   });
 });
 

@@ -38,6 +38,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CLI_DIR="$SCRIPT_DIR/packages/cli"
 ENGINE_DIR="$SCRIPT_DIR/packages/engine"
+SHARED_DIR="$SCRIPT_DIR/packages/shared"
+TUI_DIR="$SCRIPT_DIR/packages/tui"
+WEB_DIR="$SCRIPT_DIR/packages/web"
 WEB_DIST_DIR="$SCRIPT_DIR/packages/web/dist"
 PKG_NAME="@harms-haus/engin"
 BUN_BIN_DIR="$HOME/.bun/bin"
@@ -104,6 +107,39 @@ info "Linking $PKG_NAME globally (bun link)..."
     fi
 )
 
+# ─── Step 3b: Link workspace packages for GLOBAL workflow resolution ──────
+# `bun link` registers the CLI bin and a global entry under
+# ~/.bun/install/global/node_modules, but a bare `import '@harms-haus/engin'`
+# from a GLOBAL workflow (~/.config/engin/workflows/<name>/main.ts) does NOT
+# resolve through that store — module resolution climbs the directory tree to
+# the nearest ancestor node_modules, which for the default global config dir
+# is ~/node_modules.
+#
+# The pre-workspace install-global.sh installed into ~/node_modules and left a
+# real (stale) copy of @harms-haus/engin there. That copy is missing the
+# workspace sibling packages (@harms-haus/engin-engine/-shared/-tui), so an
+# `engin run` of a global workflow fails at startRun with:
+#   "Cannot find module '@harms-haus/engin-engine'
+#      from '.../~/node_modules/@harms-haus/engin/src/index.ts'"
+# (the socket connects fine; only the run crashes, leaving the TUI empty).
+#
+# Replace any stale real copies with symlinks to the LIVE workspace packages so
+# global workflow resolution always works AND always tracks the current source.
+info "Linking workspace packages into ~/node_modules for global workflow resolution..."
+HOME_NM="$HOME/node_modules"
+mkdir -p "$HOME_NM/@harms-haus"
+link_workspace_pkg () {
+    # Remove a stale real directory OR an old symlink, then symlink fresh.
+    rm -rf "$HOME_NM/$2"
+    ln -s "$1" "$HOME_NM/$2"
+}
+link_workspace_pkg "$CLI_DIR"    "@harms-haus/engin"
+link_workspace_pkg "$ENGINE_DIR" "@harms-haus/engin-engine"
+link_workspace_pkg "$SHARED_DIR" "@harms-haus/engin-shared"
+link_workspace_pkg "$TUI_DIR"    "@harms-haus/engin-tui"
+link_workspace_pkg "$WEB_DIR"    "@harms-haus/engin-web"
+info "✓ Workspace packages symlinked into $HOME_NM/@harms-haus/ (track the live workspace)."
+
 # ─── Step 4: Ensure the `engin` bin is on PATH (fallback to a manual symlink) ─
 # `bun link` normally creates the bin in ~/.bun/bin; if it did not (or the dir
 # is absent), create the symlink ourselves — the shebang runs it under bun.
@@ -123,10 +159,15 @@ else
 fi
 
 # ─── Step 6: Verify imports resolve for workflow scripts ────────────────────
-info "Verifying package resolves for workflow scripts..."
+# Run the import from a temp file directly under $HOME, mimicking a GLOBAL
+# workflow at ~/.config/engin/workflows/* (resolution climbs to ~/node_modules).
+# A verify run from the repo root would resolve via the workspace and HIDE a
+# broken/stale global install — which is exactly the bug this catches.
+info "Verifying @harms-haus/engin resolves from a global-workflow location..."
 
-VERIFY_SCRIPT=$(cat <<'BUN'
-// Verify @harms-haus/engin is importable from a workflow-like location.
+VERIFY_DIR="$(mktemp -d "$HOME/.engin-verify-XXXXXX")"
+trap 'rm -rf "$VERIFY_DIR"' EXIT
+cat > "$VERIFY_DIR/verify.ts" <<'BUN'
 try {
     const mod = await import("@harms-haus/engin");
     const exportedKeys = Object.keys(mod);
@@ -140,10 +181,9 @@ try {
     process.exit(1);
 }
 BUN
-)
 
-RESULT=$(bun -e "$VERIFY_SCRIPT" 2>&1) || {
-    error "Package import verification failed:\n$RESULT"
+RESULT=$(bun "$VERIFY_DIR/verify.ts" 2>&1) || {
+    error "Package import verification failed (from $VERIFY_DIR):\n$RESULT\n\nThis usually means the workspace packages are not linked into ~/node_modules/@harms-haus/ (see Step 3b)."
 }
 info "✓ $RESULT"
 

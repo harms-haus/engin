@@ -26,10 +26,25 @@ const MAX_WORKFLOW_EVENT_LOG = 1000;
 // Allows store actions (e.g. cancelRun) to send WS messages without depending
 // on the React hook layer.
 let _sendFn: ((msg: ClientMessage) => void) | null = null;
+let _subscribeRunFn: ((runId: string) => void) | null = null;
+let _unsubscribeRunFn: ((runId: string) => void) | null = null;
 
 /** Called by useWebSocket when the singleton EngineClient is acquired / released. */
 export function setStoreSendFn(fn: ((msg: ClientMessage) => void) | null): void {
   _sendFn = fn;
+}
+
+/** Called by useWebSocket to wire (or unwire) the run-subscription bridge.
+ *  Delegates to `EngineClient.subscribe`/`unsubscribe` so subscriptions are
+ *  tracked and replayed on reconnect. `selectRun` uses this to tell the server
+ *  to stream a run's snapshot/events — without it the server never sends a
+ *  projection for the clicked run, so its details never appear. */
+export function setStoreSubscribeRunFn(fn: ((runId: string) => void) | null): void {
+  _subscribeRunFn = fn;
+}
+
+export function setStoreUnsubscribeRunFn(fn: ((runId: string) => void) | null): void {
+  _unsubscribeRunFn = fn;
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -185,6 +200,26 @@ export interface WorkflowStoreState {
 
 // ─── Store creation ─────────────────────────────────────────────────────────
 
+/** The projection fields reset to empty/initial values. Spread into a draft
+ *  in {@link selectRun} so switching runs doesn't bleed the previous run's
+ *  entities / event log / seq into the view while the first snapshot is in
+ *  flight. (Includes `seq: 0` so the first snapshot clears the event log.) */
+const EMPTY_PROJECTION = {
+  agentsById: {} as Record<string, AgentEntity>,
+  tasksById: {} as Record<string, TaskEntity>,
+  phases: [] as PhaseEntity[],
+  currentPhaseId: '',
+  completedPhaseIds: [] as string[],
+  sidebar: { title: '', indicator: '' },
+  status: 'running' as const,
+  taskPrompt: '',
+  error: undefined as string | undefined,
+  failedPhase: undefined as string | undefined,
+  seq: 0,
+  stats: { totalTokens: 0, agentCount: 0 },
+  workflowEventLog: [] as WorkflowEventLogEntry[],
+};
+
 const INITIAL_STATE = {
   agentsById: {} as Record<string, AgentEntity>,
   tasksById: {} as Record<string, TaskEntity>,
@@ -291,12 +326,27 @@ export const useWorkflowStore = create<WorkflowStoreState>()(
 
     selectRun: (runId) =>
       set((state) => {
+        const previousRunId = state.selectedRunId;
+        // Adopt the new run and reset ALL projection + selection state so the
+        // view does not show the previous run's data while the first snapshot
+        // is in flight. `seq: 0` makes the incoming snapshot clear the event log.
         state.selectedRunId = runId;
+        Object.assign(state, EMPTY_PROJECTION);
         state.selectedPhaseId = null;
         state.selectedTaskId = null;
         state.selectedStepIndex = null;
         state.userPinnedPhase = false;
         state.userPinnedStep = false;
+        // Subscribe to the run on the server. The server's `subscribe` handler
+        // replies with a full snapshot, which applySnapshot() then projects.
+        // Drop the previously selected run from the multiplex set so we don't
+        // accumulate server-side subscriptions for every run ever clicked.
+        // (Bridge fns are null until useWebSocket acquires the singleton; in
+        // that brief window no message is sent and the user can re-select.)
+        if (previousRunId !== null && previousRunId !== runId) {
+          _unsubscribeRunFn?.(previousRunId);
+        }
+        _subscribeRunFn?.(runId);
       }),
 
     cancelRun: (runId: string) => {

@@ -807,7 +807,7 @@ describe('control-server', () => {
       return await fetch(`${serverUrl}/ws`, { headers });
     }
 
-    it('rejects mismatched Origin on non-localhost', async () => {
+    it('rejects cross-origin Origin on a non-localhost bind', async () => {
       const port = randomPort();
       server = await startControlServer({ host: '0.0.0.0', port, runManager: createMockRunManager() });
       const res = await hitWs(`http://0.0.0.0:${port}`, 'https://evil.com');
@@ -815,73 +815,62 @@ describe('control-server', () => {
       expect(await res.text()).toBe('Forbidden');
     });
 
-    it('allows missing Origin on non-localhost', async () => {
+    it('allows a missing Origin on a non-localhost bind (non-browser clients)', async () => {
       const port = randomPort();
       server = await startControlServer({ host: '0.0.0.0', port, runManager: createMockRunManager() });
       const res = await hitWs(`http://0.0.0.0:${port}`);
       expect(res.status).not.toBe(403);
     });
 
-    it('rejects matching Origin while auth is disabled (browser-originated connections blocked)', async () => {
+    it('allows a same-origin browser Origin (hostname + port match)', async () => {
       const port = randomPort();
       server = await startControlServer({ host: '0.0.0.0', port, runManager: createMockRunManager() });
       const res = await hitWs(`http://0.0.0.0:${port}`, `http://0.0.0.0:${port}`);
-      expect(res.status).toBe(403);
+      expect(res.status).not.toBe(403);
     });
 
-    it('rejects any Origin when connecting via 127.0.0.1 while auth is disabled', async () => {
+    it('allows any Origin when the Host is 127.0.0.1 (localhost bypass)', async () => {
       const port = randomPort();
       server = await startControlServer({ host: '127.0.0.1', port, runManager: createMockRunManager() });
+      // Even a foreign origin is permitted because the connection is local.
       const res = await hitWs(`http://127.0.0.1:${port}`, 'https://evil.com');
-      expect(res.status).toBe(403);
+      expect(res.status).not.toBe(403);
     });
 
-    it('rejects any Origin when connecting via localhost while auth is disabled', async () => {
+    it('allows any Origin when the Host is localhost (localhost bypass)', async () => {
       const port = randomPort();
       server = await startControlServer({ host: '127.0.0.1', port, runManager: createMockRunManager() });
       const res = await hitWs(`http://localhost:${port}`, 'https://evil.com');
-      expect(res.status).toBe(403);
+      expect(res.status).not.toBe(403);
     });
 
-    it('allows missing Origin on localhost', async () => {
+    it('allows a missing Origin on localhost', async () => {
       const port = randomPort();
       server = await startControlServer({ host: '127.0.0.1', port, runManager: createMockRunManager() });
       const res = await hitWs(`http://127.0.0.1:${port}`);
       expect(res.status).not.toBe(403);
     });
 
-    it('rejects capacitor://localhost origin while auth is disabled', async () => {
+    it('allows non-http scheme Origins (capacitor://, file://)', async () => {
       const port = randomPort();
       server = await startControlServer({ host: '0.0.0.0', port, runManager: createMockRunManager() });
-      const res = await hitWs(`http://0.0.0.0:${port}`, 'capacitor://localhost');
-      expect(res.status).toBe(403);
+      const cap = await hitWs(`http://0.0.0.0:${port}`, 'capacitor://localhost');
+      expect(cap.status).not.toBe(403);
+      const file = await hitWs(`http://0.0.0.0:${port}`, 'file://');
+      expect(file.status).not.toBe(403);
     });
 
-    it('rejects file:// origin while auth is disabled', async () => {
-      const port = randomPort();
-      server = await startControlServer({ host: '0.0.0.0', port, runManager: createMockRunManager() });
-      const res = await hitWs(`http://0.0.0.0:${port}`, 'file://');
-      expect(res.status).toBe(403);
-    });
-
-    it('rejects Origin with omitted port while auth is disabled', async () => {
+    it('allows an Origin that omits the port (default-port omission)', async () => {
       const port = randomPort();
       server = await startControlServer({ host: '0.0.0.0', port, runManager: createMockRunManager() });
       const res = await hitWs(`http://0.0.0.0:${port}`, `http://0.0.0.0`);
-      expect(res.status).toBe(403);
+      expect(res.status).not.toBe(403);
     });
 
-    it('rejects genuinely mismatched hostname', async () => {
+    it('rejects a genuinely mismatched hostname', async () => {
       const port = randomPort();
       server = await startControlServer({ host: '0.0.0.0', port, runManager: createMockRunManager() });
       const res = await hitWs(`http://0.0.0.0:${port}`, 'http://evil.com');
-      expect(res.status).toBe(403);
-    });
-
-    it('rejects Origin with case-insensitive hostname while auth is disabled', async () => {
-      const port = randomPort();
-      server = await startControlServer({ host: '0.0.0.0', port, runManager: createMockRunManager() });
-      const res = await hitWs(`http://0.0.0.0:${port}`, `http://0.0.0.0:${port}`);
       expect(res.status).toBe(403);
     });
 

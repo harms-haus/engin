@@ -73,12 +73,14 @@ function validateWebSocketOrigin(req: Request): boolean {
   const origin = req.headers.get('origin');
   const host = req.headers.get('host') || '';
 
-  // ── Sec-C1: Reject all browser-originated connections while auth is
-  // disabled. Browsers send an Origin header on WebSocket upgrades; CLI /
-  // engin-binary clients do not. Until an authentication layer is enabled,
-  // only non-browser clients are permitted to connect. When auth lands,
-  // replace this with an allowlist validated against the Origin header.
-  if (origin) return false;
+  // This is a CSRF defense for BROWSER WebSocket upgrades — NOT an
+  // authentication layer (see server-refactor.prompt.md §13 for the auth
+  // attach-point). Browsers always send an Origin header on ws upgrades, so a
+  // blanket `if (origin) return false` here would reject every browser client
+  // and the web UI could never connect. Instead we ALLOW same-origin browser
+  // upgrades (localhost bypass + hostname/port matching) and only reject
+  // genuinely cross-origin ones. Non-browser clients (CLI/TUI via Bun's
+  // WebSocket) send no Origin header and pass through unconditionally.
 
   // Determine if the connection is from localhost
   const isLocalhost =

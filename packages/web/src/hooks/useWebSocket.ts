@@ -17,7 +17,12 @@ import type { EngineClientCallbacks } from '@engin/shared/engine-client';
 import { EngineClient } from '@engin/shared/engine-client';
 import { useEffect, useSyncExternalStore } from 'react';
 import type { ClientMessage, ServerMessage } from '../protocol-types';
-import { setStoreSendFn, useWorkflowStore } from '../store/workflow-store';
+import {
+  setStoreSendFn,
+  setStoreSubscribeRunFn,
+  setStoreUnsubscribeRunFn,
+  useWorkflowStore,
+} from '../store/workflow-store';
 
 // ─── Helper: derive WS URL from the environment ───────────────────────────
 
@@ -130,6 +135,15 @@ function acquire(): void {
     const client = ensureClient();
     client.connect(engineClientCallbacks);
     setStoreSendFn((msg) => client.send(msg));
+    // Delegate run subscription to EngineClient so it tracks the runId set
+    // and replays it on reconnect. selectRun() uses these bridges to tell the
+    // server which run to stream; the server replies with a full snapshot.
+    setStoreSubscribeRunFn((runId) => {
+      client.subscribe(runId);
+    });
+    setStoreUnsubscribeRunFn((runId) => {
+      client.unsubscribe(runId);
+    });
   }
 }
 
@@ -137,6 +151,8 @@ function release(): void {
   refCount = Math.max(0, refCount - 1);
   if (refCount === 0 && engineClient !== null) {
     setStoreSendFn(null);
+    setStoreSubscribeRunFn(null);
+    setStoreUnsubscribeRunFn(null);
     // Last consumer gone — tear down and reset all shared state so the next
     // acquire starts fresh (also restores test isolation between cases).
     engineClient.disconnect();
