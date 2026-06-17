@@ -237,7 +237,86 @@ export async function runStepTask<T = unknown>(opts: RunStepTaskOptions): Promis
   return result;
 }
 
-// ─── Internal: validation-retry prompt builder ───────────────────────────────
+// ─── Multi-Step Task Primitive ──────────────────────────────────────────────
+
+/**
+ * One step within a {@link runMultiStepTask}.
+ *
+ * Each step runs in its OWN agent session (its own profile, system prompt, and
+ * context window) — exactly like the implementation phase's per-step agents.
+ * Steps run sequentially within a single registered task.
+ */
+export interface MultiStepDefinition {
+  /** Name of the step (displayed in status callbacks). */
+  stepName: string;
+  /** Profile ID to load for this step's agent. */
+  profileId: string;
+  /**
+   * Prompt to send to the agent. May be a function evaluated at step-run time
+   * and receiving the results of previously-completed steps (in order), so a
+   * later step can read artifacts an earlier step produced (e.g. a file written
+   * to disk) without that data being available up front.
+   */
+  prompt: string | ((priorResults: unknown[]) => Promise<string> | string);
+  /** When true, write/edit tools are stripped from this step's agent. */
+  isReadOnly?: boolean;
+  /** Write sandbox dirs for this step (ignored when `isReadOnly` is true). */
+  allowedWriteDirs?: string[];
+  /** Zod schema for structured output. When absent, raw assistant text is returned. */
+  schema?: ZodType<unknown>;
+  /**
+   * File-output validation gate (used when `schema` is absent). Called after
+   * each agent turn: return `{ error }` to re-prompt within the SAME session,
+   * or `undefined`/`{}` to accept. Mirrors {@link RunStepTaskOptions.validateOutput}.
+   */
+  validateOutput?: () => Promise<{ error?: string } | undefined> | ({ error?: string } | undefined);
+  /**
+   * Approval gate over the step's result. Return `true` to advance to the next
+   * step; return `false` to reject, back up one step, and retry (up to
+   * `maxStepRetries`). Defaults to always-approved.
+   */
+  isApproved?: (result: unknown) => boolean;
+  /** Feedback text produced when this step is rejected (default: generic message). */
+  getFeedback?: (result: unknown) => string;
+}
+
+export interface RunMultiStepTaskOptions {
+  /** Directories to search for agent profile .md files */
+  profilesDirs: string[];
+  /** Phase identifier for status callbacks */
+  phaseId: string;
+  /** Unique task identifier */
+  taskId: string;
+  /** Human-readable task title */
+  title: string;
+  /** Ordered steps to run sequentially within this task. */
+  steps: MultiStepDefinition[];
+  /** Working directory for the agents */
+  cwd: string;
+  /** Optional API key overrides by provider */
+  apiKeys?: Record<string, string>;
+  /** Status callback handlers */
+  onStatus?: StatusCallbacks;
+  /** Optional registry of per-profile renderers that transform agent output into human-readable markdown */
+  rendererRegistry?: RendererRegistry;
+  /** Abort signal for cooperative cancellation */
+  signal?: AbortSignal;
+  /**
+   * Max total attempts per step before a rejection exhausts and fails the task
+   * (default 3). Each back-up-and-retry of a step counts as one attempt.
+   */
+  maxStepRetries?: number;
+}
+
+/** Outcome of {@link runMultiStepTask}. */
+export interface MultiStepTaskResult {
+  /** Result of each step, indexed by step order. */
+  results: unknown[];
+  /** `true` when every step approved; `false` when a gate exhausted its retries. */
+  approved: boolean;
+}
+
+// ─── Internal: prompt builders ──────────────────────────────────────────────
 
 /**
  * Rebuild a prompt to ask the agent to fix a validation failure on retry.
@@ -251,4 +330,246 @@ function buildValidationRetryPrompt(originalPrompt: string, error: string): stri
     `Error: ${error}`,
     'Please correct the output and try again.',
   ].join('\n');
+}
+
+/**
+ * Append the accumulated cross-step review feedback to a step's prompt. Mirrors
+ * the implementation phase's `buildPrompt` feedback-history section so a
+ * producing step sees every prior rejection it must address.
+ */
+function appendFeedbackHistory(prompt: string, history: string[]): string {
+  if (history.length === 0) return prompt;
+  const lines = ['', '## Review Feedback History (please address all items)'];
+  history.forEach((fb, i) => {
+    lines.push(`Attempt ${i + 1}: ${fb}`);
+  });
+  return prompt + '\n' + lines.join('\n');
+}
+
+// ─── runMultiStepTask ───────────────────────────────────────────────────────
+
+/**
+ * Run ONE task composed of N sequential steps, each in its own agent session.
+ *
+ * This is the multi-step sibling of {@link runStepTask}: it registers a single
+ * task (with all its steps) once, then runs each step through a fresh harness —
+ * a distinct profile, system prompt, and context window per step, matching the
+ * implementation phase's per-step-agent model.
+ *
+ * A step may gate its successor via `isApproved`. When a step is rejected, the
+ * runner backs up ONE step, appends the rejection feedback to that step's
+ * prompt, and retries — up to `maxStepRetries` total attempts per step. This
+ * lets a review step drive rework of its producer (e.g. plan → review-plan:
+ * a rejected review re-runs the planner with the feedback).
+ *
+ * Lifecycle (status callbacks):
+ * 1. `onTaskRegister` once, with every step.
+ * 2. `onTaskStart` once.
+ * 3. Per step: `onAgentSpawn` → `onStepStart` → (run) → `onAgentRender`? → `onAgentComplete`.
+ * 4. On rejection: `onDecision` per attempt.
+ * 5. On success: `onTaskComplete`. On failure/exhaustion: `onTaskRejected`.
+ *
+ * Returns `{ results, approved }`. `approved === false` means a gate exhausted
+ * its retries without passing (the task did NOT complete cleanly); callers that
+ * want best-effort behavior can still inspect `results`.
+ */
+export async function runMultiStepTask(opts: RunMultiStepTaskOptions): Promise<MultiStepTaskResult> {
+  const {
+    profilesDirs,
+    phaseId,
+    taskId,
+    title,
+    steps,
+    cwd,
+    apiKeys,
+    onStatus,
+    rendererRegistry,
+    signal,
+    maxStepRetries = 3,
+  } = opts;
+
+  // 1. Early abort — fired before any callbacks
+  if (signal?.aborted) {
+    throw new DOMException('Aborted', 'AbortError');
+  }
+
+  // 2. Validate steps
+  if (steps.length === 0) {
+    throw new Error(`Task "${taskId}" has no steps`);
+  }
+
+  // 3. Register the task (all steps) and signal start
+  onStatus?.onTaskRegister?.({
+    taskId,
+    phaseId,
+    title,
+    dependencies: [],
+    steps: steps.map((s) => ({ name: s.stepName, profileId: s.profileId, isReadOnly: s.isReadOnly ?? false })),
+  });
+
+  onStatus?.onTaskStart?.({ taskId, title, agentId: taskId, phaseId, startedAt: Date.now() });
+
+  const results: unknown[] = [];
+  const feedbackHistory: string[] = [];
+  const stepAttempts = new Map<number, number>();
+
+  // 4. Load profiles once (shared across all steps)
+  let profiles: Map<string, AgentProfile>;
+  try {
+    profiles = await loadProfilesFromDirs(profilesDirs);
+  } catch (err) {
+    const errorMessage = safeErrorMessage(err);
+    onStatus?.onTaskRejected?.({ taskId, title, reason: errorMessage });
+    throw err;
+  }
+
+  try {
+    let stepIndex = 0;
+
+    while (stepIndex < steps.length) {
+      if (signal?.aborted) {
+        throw new DOMException('Aborted', 'AbortError');
+      }
+
+      const step = steps[stepIndex];
+
+      // 4a. Resolve & adjust profile
+      const profile = profiles.get(step.profileId);
+      if (!profile) {
+        throw new Error(`Profile "${step.profileId}" not found in directories: ${profilesDirs.join(', ')}`);
+      }
+      let adjustedProfile: AgentProfile = profile;
+      if (step.isReadOnly) {
+        adjustedProfile = {
+          ...profile,
+          excludeTools: [...new Set([...profile.excludeTools, 'write', 'edit'])],
+        };
+      }
+
+      // 4b. Resolve prompt (may be lazy) and append accumulated feedback.
+      //     Pass a snapshot copy so a lazy prompt can't observe later mutations
+      //     to the shared results array.
+      const basePrompt = typeof step.prompt === 'function' ? await step.prompt([...results]) : step.prompt;
+      const promptText = appendFeedbackHistory(basePrompt, feedbackHistory);
+
+      // 4c. Create harness (own session for this step)
+      const harness = await createHarness({
+        profile: adjustedProfile,
+        cwd,
+        apiKeys,
+        agentId: taskId,
+        onAgentStatus: forwardAgentStatus(onStatus),
+        allowedWriteDirs: step.allowedWriteDirs,
+      });
+
+      // 4d. Fire agent spawn + step start
+      onStatus?.onAgentSpawn?.({
+        agentId: taskId,
+        profile: step.profileId,
+        phaseId,
+        taskId,
+        stepIndex,
+        sessionId: harness.sessionId,
+        sessionPath: harness.sessionId,
+      });
+      onStatus?.onStepStart?.({ taskId, stepIndex, stepName: step.stepName, agentId: taskId });
+
+      let result: unknown;
+      try {
+        // 4e. Run the prompt
+        if (step.schema) {
+          const structured = await promptForStructured(harness.session, promptText, step.schema, { maxRetries: 3 });
+          result = structured.result;
+        } else if (step.validateOutput) {
+          // File-based output: validate after each turn and retry within the same session.
+          let validationError: string | undefined;
+          for (let attempt = 0; attempt < 3; attempt++) {
+            const turnPrompt =
+              attempt === 0 || validationError === undefined
+                ? promptText
+                : buildValidationRetryPrompt(promptText, validationError);
+            await harness.session.prompt(turnPrompt);
+            const gate = await step.validateOutput();
+            validationError = gate?.error;
+            if (!validationError) break;
+          }
+          if (validationError) {
+            throw new Error(`Agent output failed validation after 3 attempts: ${validationError}`);
+          }
+          result = harness.session.getLastAssistantText();
+        } else {
+          await harness.session.prompt(promptText);
+          result = harness.session.getLastAssistantText();
+        }
+
+        // 4f. Renderer invocation
+        if (rendererRegistry) {
+          const renderer = rendererRegistry.get(step.profileId);
+          if (renderer) {
+            const rawText = harness.session.getLastAssistantText();
+            if (rawText) {
+              const jsonStr = extractJsonFromText(rawText);
+              let data: unknown = rawText;
+              if (jsonStr) {
+                try {
+                  data = JSON.parse(jsonStr);
+                } catch {
+                  data = rawText;
+                }
+              }
+              const rendered = renderer(data);
+              if (rendered) {
+                onStatus?.onAgentRender?.({ agentId: taskId, profile: step.profileId, taskId, rendered });
+              }
+            }
+          }
+        }
+      } finally {
+        // 4g. Fire agent complete + dispose (always, even on error)
+        try {
+          onStatus?.onAgentComplete?.({ agentId: taskId, profile: step.profileId, phaseId, taskId });
+        } finally {
+          harness.dispose();
+        }
+      }
+
+      results[stepIndex] = result;
+
+      // 4h. Approval gate
+      const approved = step.isApproved ? step.isApproved(result) : true;
+      if (approved) {
+        stepIndex++;
+        continue;
+      }
+
+      // 4i. Rejected — record feedback, back up one step, retry
+      const feedback = step.getFeedback ? step.getFeedback(result) : 'Step rejected without feedback';
+      feedbackHistory.push(feedback);
+      const attempt = (stepAttempts.get(stepIndex) ?? 0) + 1;
+      stepAttempts.set(stepIndex, attempt);
+
+      onStatus?.onDecision?.({
+        agentId: taskId,
+        decision: `Step "${step.stepName}" rejected (attempt ${attempt}/${maxStepRetries})`,
+        reasoning: feedback,
+        taskId,
+      });
+
+      if (attempt >= maxStepRetries) {
+        // Exhausted — best-effort: return what we have, marked not approved.
+        onStatus?.onTaskRejected?.({ taskId, title, reason: feedback });
+        return { results, approved: false };
+      }
+
+      stepIndex = Math.max(0, stepIndex - 1);
+    }
+
+    // 5. All steps approved
+    onStatus?.onTaskComplete?.({ taskId, title });
+    return { results, approved: true };
+  } catch (err) {
+    const errorMessage = safeErrorMessage(err);
+    onStatus?.onTaskRejected?.({ taskId, title, reason: errorMessage });
+    throw err;
+  }
 }

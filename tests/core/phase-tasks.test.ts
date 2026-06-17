@@ -39,7 +39,7 @@ mock.module('../../packages/engine/src/core/structured-output.js', () => ({
 // ─── Import after mocks ────────────────────────────────────────────────────
 
 import type { RunStepTaskOptions } from '../../packages/engine/src/core/phase-tasks.js';
-import { runStepTask } from '../../packages/engine/src/core/phase-tasks.js';
+import { runMultiStepTask, runStepTask } from '../../packages/engine/src/core/phase-tasks.js';
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
 
@@ -102,6 +102,7 @@ function createStatusCallbacksSpy(): StatusCallbacks & {
   onAgentSpawn: ReturnType<typeof mock>;
   onAgentComplete: ReturnType<typeof mock>;
   onAgentRender: ReturnType<typeof mock>;
+  onDecision: ReturnType<typeof mock>;
   onStepStart: ReturnType<typeof mock>;
   onTurnStart: ReturnType<typeof mock>;
   onTurnEnd: ReturnType<typeof mock>;
@@ -136,6 +137,9 @@ function createStatusCallbacksSpy(): StatusCallbacks & {
     onAgentRender: mock(() => {
       track('onAgentRender');
     }),
+    onDecision: mock(() => {
+      track('onDecision');
+    }),
     onStepStart: mock(() => {
       track('onStepStart');
     }),
@@ -162,6 +166,7 @@ function createStatusCallbacksSpy(): StatusCallbacks & {
     onAgentSpawn: ReturnType<typeof mock>;
     onAgentComplete: ReturnType<typeof mock>;
     onAgentRender: ReturnType<typeof mock>;
+    onDecision: ReturnType<typeof mock>;
     onStepStart: ReturnType<typeof mock>;
     onTurnStart: ReturnType<typeof mock>;
     onTurnEnd: ReturnType<typeof mock>;
@@ -1061,6 +1066,317 @@ describe('runStepTask', () => {
       expect(renderIdx).toBeGreaterThan(stepStartIdx);
       expect(agentCompleteIdx).toBeGreaterThan(renderIdx);
       expect(taskCompleteIdx).toBeGreaterThan(renderIdx);
+    });
+  });
+});
+
+// ─── runMultiStepTask Tests ────────────────────────────────────────────────
+
+describe('runMultiStepTask', () => {
+  // Two profiles so each step gets a distinct agent, mirroring plan → review-plan.
+  const plannerProfile: AgentProfile = { ...defaultProfile, id: 'planner', name: 'Planner' };
+  const reviewerProfile: AgentProfile = { ...defaultProfile, id: 'reviewer', name: 'Reviewer' };
+
+  // Map profile id → session so createHarness returns the right session per step.
+  function setupSessionPerProfile(sessions: {
+    planner?: ReturnType<typeof makeMockSession>['session'];
+    reviewer?: ReturnType<typeof makeMockSession>['session'];
+  }) {
+    const planner = sessions.planner ?? makeMockSession(() => 'plan-text').session;
+    const reviewer = sessions.reviewer ?? makeMockSession().session;
+    mockCreateHarness.mockImplementation(async (opts: { profile: AgentProfile }) => ({
+      session: opts.profile.id === 'planner' ? planner : reviewer,
+      sessionId: opts.profile.id,
+      dispose: mock(() => {}),
+    }));
+    return { planner, reviewer };
+  }
+
+  function makeTwoStepOptions(overrides?: {
+    reviewerResult?: unknown;
+    isApproved?: (r: unknown) => boolean;
+    getFeedback?: (r: unknown) => string;
+    onStatus?: StatusCallbacks;
+    maxStepRetries?: number;
+  }) {
+    return {
+      profilesDirs: ['/tmp/profiles'],
+      phaseId: 'plan-phase',
+      taskId: 'planning',
+      title: 'Plan & Review',
+      cwd: '/tmp/project',
+      steps: [
+        { stepName: 'plan', profileId: 'planner', prompt: 'Write the plan', isReadOnly: false },
+        {
+          stepName: 'review-plan',
+          profileId: 'reviewer',
+          prompt: 'Review the plan',
+          isReadOnly: true,
+          schema: z.object({ ready: z.boolean() }) as unknown as ZodType<unknown>,
+          isApproved: overrides?.isApproved ?? ((r: unknown) => (r as { ready?: boolean }).ready === true),
+          getFeedback: overrides?.getFeedback ?? ((r: unknown) => (r as { feedback?: string }).feedback ?? 'rejected'),
+        },
+      ],
+      onStatus: overrides?.onStatus,
+      maxStepRetries: overrides?.maxStepRetries,
+    };
+  }
+
+  beforeEach(() => {
+    // mockClear() (file-level beforeEach) does NOT reset implementations, so
+    // reset explicitly — these tests rely on precise mockResolvedValueOnce chains.
+    mockLoadProfilesFromDirs.mockReset();
+    mockCreateHarness.mockReset();
+    mockPromptForStructured.mockReset();
+    mockLoadProfilesFromDirs.mockResolvedValue(
+      new Map([
+        ['planner', plannerProfile],
+        ['reviewer', reviewerProfile],
+      ]),
+    );
+    // Happy-path default: the reviewer step (structured output) approves.
+    mockPromptForStructured.mockResolvedValue({ result: { ready: true }, attempts: 1 });
+  });
+
+  // ── Registration ──────────────────────────────────────────────────────
+
+  describe('registration', () => {
+    it('registers ONE task with every step', async () => {
+      setupSessionPerProfile({});
+      const onStatus = createStatusCallbacksSpy();
+      await runMultiStepTask(makeTwoStepOptions({ onStatus: onStatus as unknown as StatusCallbacks }));
+
+      expect(onStatus.onTaskRegister).toHaveBeenCalledTimes(1);
+      const reg = onStatus.onTaskRegister.mock.calls[0]![0] as Record<string, unknown>;
+      expect(reg.taskId).toBe('planning');
+      expect(reg.phaseId).toBe('plan-phase');
+      expect(reg.title).toBe('Plan & Review');
+      expect(reg.dependencies).toEqual([]);
+      expect(reg.steps).toEqual([
+        { name: 'plan', profileId: 'planner', isReadOnly: false },
+        { name: 'review-plan', profileId: 'reviewer', isReadOnly: true },
+      ]);
+    });
+
+    it('fires onTaskStart exactly once and onTaskComplete exactly once on success', async () => {
+      setupSessionPerProfile({});
+      mockPromptForStructured.mockResolvedValue({ result: { ready: true }, attempts: 1 });
+      const onStatus = createStatusCallbacksSpy();
+      const res = await runMultiStepTask(makeTwoStepOptions({ onStatus: onStatus as unknown as StatusCallbacks }));
+
+      expect(onStatus.onTaskStart).toHaveBeenCalledTimes(1);
+      expect(onStatus.onTaskComplete).toHaveBeenCalledTimes(1);
+      expect(res.approved).toBe(true);
+      expect(res.results).toHaveLength(2);
+    });
+  });
+
+  // ── One agent per step ──────────────────────────────────────────────
+
+  describe('per-step agents', () => {
+    it('creates a fresh harness (own session) per step, each with the step profile', async () => {
+      setupSessionPerProfile({});
+      mockPromptForStructured.mockResolvedValue({ result: { ready: true }, attempts: 1 });
+      const onStatus = createStatusCallbacksSpy();
+      await runMultiStepTask(makeTwoStepOptions({ onStatus: onStatus as unknown as StatusCallbacks }));
+
+      // Two steps → two distinct agent spawns with distinct profiles + stepIndex.
+      expect(mockCreateHarness).toHaveBeenCalledTimes(2);
+      const profilesUsed = mockCreateHarness.mock.calls.map((c) => (c[0] as { profile: AgentProfile }).profile.id);
+      expect(profilesUsed).toEqual(['planner', 'reviewer']);
+
+      expect(onStatus.onAgentSpawn).toHaveBeenCalledTimes(2);
+      const spawn0 = onStatus.onAgentSpawn.mock.calls[0]![0] as Record<string, unknown>;
+      const spawn1 = onStatus.onAgentSpawn.mock.calls[1]![0] as Record<string, unknown>;
+      expect(spawn0.profile).toBe('planner');
+      expect(spawn0.stepIndex).toBe(0);
+      expect(spawn1.profile).toBe('reviewer');
+      expect(spawn1.stepIndex).toBe(1);
+      expect(onStatus.onStepStart).toHaveBeenCalledTimes(2);
+    });
+
+    it('strips write/edit for read-only steps but not write steps', async () => {
+      setupSessionPerProfile({});
+      mockPromptForStructured.mockResolvedValue({ result: { ready: true }, attempts: 1 });
+      await runMultiStepTask(makeTwoStepOptions());
+
+      const planProfile = (mockCreateHarness.mock.calls[0]![0] as { profile: AgentProfile }).profile;
+      const reviewProfile = (mockCreateHarness.mock.calls[1]![0] as { profile: AgentProfile }).profile;
+      expect(planProfile.excludeTools).not.toContain('write');
+      expect(reviewProfile.excludeTools).toContain('write');
+      expect(reviewProfile.excludeTools).toContain('edit');
+    });
+
+    it('fires onAgentComplete + disposes once per step (two harnesses disposed)', async () => {
+      const disposeMock = mock(() => {});
+      mockCreateHarness.mockImplementation(async (opts: { profile: AgentProfile }) => ({
+        session: makeMockSession().session,
+        sessionId: opts.profile.id,
+        dispose: disposeMock,
+      }));
+      mockPromptForStructured.mockResolvedValue({ result: { ready: true }, attempts: 1 });
+      const onStatus = createStatusCallbacksSpy();
+      await runMultiStepTask(makeTwoStepOptions({ onStatus: onStatus as unknown as StatusCallbacks }));
+
+      expect(onStatus.onAgentComplete).toHaveBeenCalledTimes(2);
+      expect(disposeMock).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  // ── Lazy prompts ─────────────────────────────────────────────────────
+
+  describe('lazy prompt functions', () => {
+    it('evaluates a step prompt function at run time with prior step results', async () => {
+      const planner = makeMockSession(() => 'PLAN-OUTPUT').session;
+      const reviewer = makeMockSession().session;
+      mockCreateHarness.mockImplementation(async (opts: { profile: AgentProfile }) => ({
+        session: opts.profile.id === 'planner' ? planner : reviewer,
+        sessionId: opts.profile.id,
+        dispose: mock(() => {}),
+      }));
+      mockPromptForStructured.mockResolvedValue({ result: { ready: true }, attempts: 1 });
+
+      const reviewerPrompt = mock((prior: unknown[]) => `Review: ${JSON.stringify(prior)}`);
+      await runMultiStepTask({
+        profilesDirs: ['/tmp/profiles'],
+        phaseId: 'plan-phase',
+        taskId: 'planning',
+        title: 'Plan & Review',
+        cwd: '/tmp',
+        steps: [
+          { stepName: 'plan', profileId: 'planner', prompt: 'Write the plan' },
+          {
+            stepName: 'review-plan',
+            profileId: 'reviewer',
+            prompt: reviewerPrompt as unknown as string,
+            isReadOnly: true,
+            schema: z.object({ ready: z.boolean() }) as unknown as ZodType<unknown>,
+            isApproved: (r) => (r as { ready?: boolean }).ready === true,
+            getFeedback: (r) => (r as { feedback?: string }).feedback ?? 'rejected',
+          },
+        ],
+      });
+
+      // The review prompt saw the planner step's result.
+      expect(reviewerPrompt).toHaveBeenCalledTimes(1);
+      expect(reviewerPrompt.mock.calls[0][0]).toEqual(['PLAN-OUTPUT']);
+      // promptForStructured received the resolved (string) prompt, not the function.
+      expect(typeof mockPromptForStructured.mock.calls[0][1]).toBe('string');
+      expect(mockPromptForStructured.mock.calls[0][1]).toContain('Review:');
+    });
+  });
+
+  // ── Approval gate + back-up ─────────────────────────────────────────
+
+  describe('approval gate and back-up', () => {
+    it('backs up to the previous step and re-runs it with feedback when a gate rejects', async () => {
+      const planner = makeMockSession(() => 'plan-text').session;
+      setupSessionPerProfile({ planner });
+      // Reviewer rejects twice, then approves.
+      mockPromptForStructured
+        .mockResolvedValueOnce({ result: { ready: false, feedback: 'too vague' }, attempts: 1 })
+        .mockResolvedValueOnce({ result: { ready: false, feedback: 'still vague' }, attempts: 1 })
+        .mockResolvedValueOnce({ result: { ready: true }, attempts: 1 });
+
+      const onStatus = createStatusCallbacksSpy();
+      const res = await runMultiStepTask(makeTwoStepOptions({ onStatus: onStatus as unknown as StatusCallbacks }));
+
+      expect(res.approved).toBe(true);
+      // 2 rejections → planner re-ran twice after the initial = 3 planner runs.
+      const plannerPrompts = (planner.prompt as ReturnType<typeof mock>).mock.calls.map((c) => c[0] as string);
+      expect(plannerPrompts).toHaveLength(3);
+      expect(plannerPrompts[0]).not.toContain('Review Feedback History');
+      expect(plannerPrompts[1]).toContain('Review Feedback History');
+      expect(plannerPrompts[1]).toContain('too vague');
+      expect(plannerPrompts[2]).toContain('still vague');
+      // A decision was logged for each rejection (2).
+      expect(onStatus.onDecision).toHaveBeenCalledTimes(2);
+    });
+
+    it('returns approved=false and fires onTaskRejected when retries exhaust', async () => {
+      setupSessionPerProfile({});
+      // Reviewer always rejects.
+      mockPromptForStructured.mockResolvedValue({ result: { ready: false, feedback: 'nope' }, attempts: 1 });
+
+      const onStatus = createStatusCallbacksSpy();
+      const res = await runMultiStepTask(makeTwoStepOptions({ onStatus: onStatus as unknown as StatusCallbacks }));
+
+      expect(res.approved).toBe(false);
+      expect(onStatus.onTaskRejected).toHaveBeenCalledTimes(1);
+      expect(onStatus.onTaskComplete).not.toHaveBeenCalled();
+      // default maxStepRetries=3 → 3 rejections.
+      expect(onStatus.onDecision).toHaveBeenCalledTimes(3);
+    });
+
+    it('respects a custom maxStepRetries', async () => {
+      setupSessionPerProfile({});
+      mockPromptForStructured.mockResolvedValue({ result: { ready: false, feedback: 'nope' }, attempts: 1 });
+
+      const onStatus = createStatusCallbacksSpy();
+      const res = await runMultiStepTask({
+        ...makeTwoStepOptions({ onStatus: onStatus as unknown as StatusCallbacks }),
+        maxStepRetries: 1,
+      });
+
+      expect(res.approved).toBe(false);
+      expect(onStatus.onDecision).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // ── validateOutput step ─────────────────────────────────────────────
+
+  describe('validateOutput step', () => {
+    it('runs a file-output step (no schema) and returns its assistant text', async () => {
+      const session = makeMockSession(() => 'wrote plan.json').session;
+      mockCreateHarness.mockResolvedValue({ session, sessionId: 's', dispose: mock(() => {}) });
+      const validateOutput = mock(() => undefined);
+
+      const res = await runMultiStepTask({
+        profilesDirs: ['/tmp/profiles'],
+        phaseId: 'p',
+        taskId: 't',
+        title: 'T',
+        cwd: '/tmp',
+        steps: [
+          { stepName: 'plan', profileId: 'planner', prompt: 'write it', validateOutput: validateOutput as never },
+        ],
+      });
+
+      expect(session.prompt).toHaveBeenCalledTimes(1);
+      expect(validateOutput).toHaveBeenCalledTimes(1);
+      expect(res.results[0]).toBe('wrote plan.json');
+      expect(res.approved).toBe(true);
+    });
+  });
+
+  // ── Abort & empty steps ──────────────────────────────────────────────
+
+  describe('edge cases', () => {
+    it('throws AbortError with no callbacks when signal is already aborted', async () => {
+      const onStatus = createStatusCallbacksSpy();
+      await expect(
+        runMultiStepTask({
+          ...makeTwoStepOptions({ onStatus: onStatus as unknown as StatusCallbacks }),
+          signal: AbortSignal.abort(),
+        }),
+      ).rejects.toThrow(DOMException);
+      expect(onStatus.onTaskRegister).not.toHaveBeenCalled();
+    });
+
+    it('throws when no steps are provided', async () => {
+      const onStatus = createStatusCallbacksSpy();
+      await expect(
+        runMultiStepTask({
+          profilesDirs: ['/tmp'],
+          phaseId: 'p',
+          taskId: 't',
+          title: 'T',
+          cwd: '/tmp',
+          steps: [],
+          onStatus: onStatus as unknown as StatusCallbacks,
+        }),
+      ).rejects.toThrow('no steps');
+      expect(onStatus.onTaskRegister).not.toHaveBeenCalled();
     });
   });
 });
