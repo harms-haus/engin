@@ -1,6 +1,8 @@
 // ─── One-Step Task Primitive ──────────────────────────────────────────────────
 
+import { join } from 'node:path';
 import type { ZodType } from 'zod';
+import { assertSafeName } from '../pool/validation.js';
 import { createHarness } from './harness-factory.js';
 import { loadProfilesFromDirs } from './profile.js';
 import type { RendererRegistry } from './renderer-registry.js';
@@ -255,9 +257,28 @@ export interface MultiStepDefinition {
    * Prompt to send to the agent. May be a function evaluated at step-run time
    * and receiving the results of previously-completed steps (in order), so a
    * later step can read artifacts an earlier step produced (e.g. a file written
-   * to disk) without that data being available up front.
+   * to disk) without that data being available up front. The function also
+   * receives a context object whose `attempt` field is the per-step execution
+   * count (0 = first execution of this step; incremented on each
+   * back-up-and-retry re-execution), so a prompt can branch on retries.
+   *
+   * NOTE on `ctx.attempt`: this is the per-step EXECUTION count, sourced from
+   * the `stepExecutions` map (incremented every time the step is entered).
+   * It is NOT the same as `RunStepContext.attempt` (in
+   * `pool/step-execution.ts`), which is the per-step REJECTION counter
+   * (populated from `stepAttempts`) used internally by the LanePool's `runStep`
+   * — a different type in a different module with the same field name. The two
+   * diverge: a step that is entered but never rejected has
+   * `ctx.attempt` advance per execution while `RunStepContext.attempt` would
+   * stay 0. We deliberately expose the execution count here (via
+   * `stepExecutions`) rather than `stepAttempts`, because `stepAttempts` only
+   * increments on rejection and would remain 0 forever for ungated steps,
+   * making it useless for eliding inlined context on re-runs. When writing a
+   * lazy prompt that needs `ctx.attempt`, guard defensively (`ctx?.attempt ??
+   * 0`) since some external callers/mocks may invoke the function with only
+   * one argument.
    */
-  prompt: string | ((priorResults: unknown[]) => Promise<string> | string);
+  prompt: string | ((priorResults: unknown[], ctx: { attempt: number }) => Promise<string> | string);
   /** When true, write/edit tools are stripped from this step's agent. */
   isReadOnly?: boolean;
   /** Write sandbox dirs for this step (ignored when `isReadOnly` is true). */
@@ -299,6 +320,18 @@ export interface RunMultiStepTaskOptions {
   onStatus?: StatusCallbacks;
   /** Optional registry of per-profile renderers that transform agent output into human-readable markdown */
   rendererRegistry?: RendererRegistry;
+  /**
+   * Base directory for persisted session storage. When set, step sessions are
+   * persisted to disk and resumed across retries (so context — including
+   * inlined file contents — is retained). When absent, sessions are in-memory
+   * (historical behavior; no resume).
+   *
+   * Caveat: resume re-sends the full prompt text (prompt + accumulated feedback
+   * history) into the resumed session. Stripping already-inlined file contents
+   * on retry is the CALLER's responsibility via the `{ attempt }` signal on a
+   * lazy prompt — runMultiStepTask itself does not elide them.
+   */
+  sessionBaseDir?: string;
   /** Abort signal for cooperative cancellation */
   signal?: AbortSignal;
   /**
@@ -384,6 +417,7 @@ export async function runMultiStepTask(opts: RunMultiStepTaskOptions): Promise<M
     apiKeys,
     onStatus,
     rendererRegistry,
+    sessionBaseDir,
     signal,
     maxStepRetries = 3,
   } = opts;
@@ -412,6 +446,14 @@ export async function runMultiStepTask(opts: RunMultiStepTaskOptions): Promise<M
   const results: unknown[] = [];
   const feedbackHistory: string[] = [];
   const stepAttempts = new Map<number, number>();
+  // Per-step execution count (0-indexed); incremented at the TOP of each
+  // iteration. Used as the `attempt` context for lazy prompts and to build
+  // persisted session directory names. NOTE: stepAttempts only increments on
+  // rejection, so it CANNOT be used here (it stays 0 for ungated steps).
+  const stepExecutions = new Map<number, number>();
+  // Per-step persisted session file path (captured before dispose) so a
+  // re-executed step can resume its prior session.
+  const sessionPaths = new Map<number, string>();
 
   // 4. Load profiles once (shared across all steps)
   let profiles: Map<string, AgentProfile>;
@@ -433,6 +475,12 @@ export async function runMultiStepTask(opts: RunMultiStepTaskOptions): Promise<M
 
       const step = steps[stepIndex];
 
+      // Track per-step execution count (mirrors linear-steps-runner's
+      // stepExecutions). Increment at the TOP of each iteration so the first
+      // execution is attempt 0 and each back-up-and-retry increments it.
+      const execCount = stepExecutions.get(stepIndex) ?? 0;
+      stepExecutions.set(stepIndex, execCount + 1);
+
       // 4a. Resolve & adjust profile
       const profile = profiles.get(step.profileId);
       if (!profile) {
@@ -448,11 +496,30 @@ export async function runMultiStepTask(opts: RunMultiStepTaskOptions): Promise<M
 
       // 4b. Resolve prompt (may be lazy) and append accumulated feedback.
       //     Pass a snapshot copy so a lazy prompt can't observe later mutations
-      //     to the shared results array.
-      const basePrompt = typeof step.prompt === 'function' ? await step.prompt([...results]) : step.prompt;
+      //     to the shared results array. The context carries the per-step
+      //     execution count (attempt) so a lazy prompt can branch on retries.
+      const basePrompt =
+        typeof step.prompt === 'function' ? await step.prompt([...results], { attempt: execCount }) : step.prompt;
       const promptText = appendFeedbackHistory(basePrompt, feedbackHistory);
 
-      // 4c. Create harness (own session for this step)
+      // 4c. Create harness (own session for this step).
+      //     - If a session for this step was persisted on a prior execution →
+      //       resume it (so context — including inlined file contents — is
+      //       retained across retries).
+      //     - Else if sessionBaseDir is set → start a new persisted session in
+      //       `{sessionBaseDir}/{taskId}/{execCount}-{stepIndex}-{stepName}`.
+      //     - Else → in-memory (historical behavior; no resume).
+      const existingSessionPath = sessionPaths.get(stepIndex);
+      // Validate task id and step name against path traversal before building
+      // the session directory (mirrors step-execution.ts:77-78). Only needed
+      // when sessionBaseDir is set — path interpolation happens only then.
+      if (sessionBaseDir) {
+        assertSafeName(taskId, 'task id');
+        assertSafeName(step.stepName, 'step name');
+      }
+      const sessionDir = sessionBaseDir
+        ? join(sessionBaseDir, taskId, `${execCount}-${stepIndex}-${step.stepName}`)
+        : undefined;
       const harness = await createHarness({
         profile: adjustedProfile,
         cwd,
@@ -460,7 +527,19 @@ export async function runMultiStepTask(opts: RunMultiStepTaskOptions): Promise<M
         agentId: taskId,
         onAgentStatus: forwardAgentStatus(onStatus),
         allowedWriteDirs: step.allowedWriteDirs,
+        ...(existingSessionPath ? { resumeSessionPath: existingSessionPath } : sessionDir ? { sessionDir } : {}),
       });
+
+      // Capture the persisted session file path BEFORE the finally block
+      // disposes the harness. session.sessionFile is resolved at harness
+      // construction (before the first turn is flushed), so it is correct on
+      // both first run and resume, and survives dispose (proven by
+      // step-execution.ts + linear-steps-runner.ts). For in-memory sessions
+      // sessionFile is undefined, so nothing is captured and the next
+      // execution stays in-memory (historical behavior).
+      if (harness.session.sessionFile) {
+        sessionPaths.set(stepIndex, harness.session.sessionFile);
+      }
 
       // 4d. Fire agent spawn + step start
       onStatus?.onAgentSpawn?.({
@@ -470,7 +549,7 @@ export async function runMultiStepTask(opts: RunMultiStepTaskOptions): Promise<M
         taskId,
         stepIndex,
         sessionId: harness.sessionId,
-        sessionPath: harness.sessionId,
+        sessionPath: harness.session.sessionFile ?? existingSessionPath ?? sessionDir ?? harness.sessionId,
       });
       onStatus?.onStepStart?.({ taskId, stepIndex, stepName: step.stepName, agentId: taskId });
 

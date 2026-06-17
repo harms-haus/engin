@@ -80,8 +80,18 @@ function isBinaryExt(filePath: string): boolean {
 /**
  * Build the prompt text for a step. On retry, appends review feedback.
  * File contents from `task.files` are pre-loaded and injected as code blocks.
+ *
+ * `opts.skipFiles` (default `false`) omits the `task.files` contents block —
+ * used on session resume where the file contents are already in context —
+ * but does NOT affect the review feedback section, which is always appended
+ * when present.
  */
-export async function buildPrompt(task: Task, step: StepDefinition, cwd: string): Promise<string> {
+export async function buildPrompt(
+  task: Task,
+  step: StepDefinition,
+  cwd: string,
+  opts?: { skipFiles?: boolean },
+): Promise<string> {
   const parts: string[] = [];
 
   parts.push(`## Task: ${task.title}`);
@@ -89,7 +99,7 @@ export async function buildPrompt(task: Task, step: StepDefinition, cwd: string)
   parts.push('');
 
   // ─── File contents section ─────────────────────────────────────────────
-  if (task.files?.length) {
+  if (!opts?.skipFiles && task.files?.length) {
     for (const fp of task.files) {
       if (isBinaryExt(fp)) continue;
       const absPath = isAbsolute(fp) ? fp : join(cwd, fp);

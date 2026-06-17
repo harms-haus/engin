@@ -134,7 +134,7 @@ export async function runStep(
 
   try {
     // Build prompt
-    const promptText = await buildPrompt(task, step, execCtx.cwd);
+    const promptText = await buildPrompt(task, step, execCtx.cwd, { skipFiles: !!existingSessionPath });
 
     if (step.schema) {
       // Structured output step (review)
