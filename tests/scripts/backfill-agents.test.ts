@@ -34,6 +34,7 @@ interface AuditEvent {
   profile?: { id: string; name?: string } | string;
   taskId?: string;
   phase?: string;
+  stepIndex?: number;
   timestamp?: string;
   output?: unknown;
   decision?: string;
@@ -57,6 +58,7 @@ function agentStart(
     profile: { id: string; name?: string } | string;
     taskId: string;
     phase: string;
+    stepIndex: number;
     timestamp: string;
   }> = {},
 ): AuditEvent {
@@ -66,15 +68,20 @@ function agentStart(
     profile: overrides.profile ?? 'default',
     taskId: overrides.taskId,
     phase: overrides.phase,
+    stepIndex: overrides.stepIndex,
     timestamp: overrides.timestamp ?? '2025-01-15T10:00:00.000Z',
   };
 }
 
-function agentEnd(agentId: string, overrides: Partial<{ taskId: string; timestamp: string }> = {}): AuditEvent {
+function agentEnd(
+  agentId: string,
+  overrides: Partial<{ taskId: string; stepIndex: number; timestamp: string }> = {},
+): AuditEvent {
   return {
     type: 'agent_end',
     agentId,
     taskId: overrides.taskId,
+    stepIndex: overrides.stepIndex,
     timestamp: overrides.timestamp ?? '2025-01-15T10:05:00.000Z',
   };
 }
@@ -264,5 +271,140 @@ describe('reconstructAgents', () => {
     expect(task2).toBeDefined();
     expect(task2!.agentId).toBe('lane-0');
     expect(task2!.completedAt).toBe('2025-01-15T10:20:00.000Z');
+  });
+
+  // ── 8. stepIndex-based composite keys ──────────────────────────────
+
+  it('separates records by stepIndex within same agentId+taskId', () => {
+    const events: AuditEvent[] = [
+      agentStart('lane-0', { profile: 'coder', taskId: 'task-1', stepIndex: 0 }),
+      agentStart('lane-0', { profile: 'coder', taskId: 'task-1', stepIndex: 1 }),
+      agentEnd('lane-0', { taskId: 'task-1', stepIndex: 0, timestamp: '2025-01-15T10:10:00.000Z' }),
+      agentEnd('lane-0', { taskId: 'task-1', stepIndex: 1, timestamp: '2025-01-15T10:20:00.000Z' }),
+    ];
+
+    const result = reconstructAgents(events);
+
+    expect(result).toHaveLength(2);
+
+    const step0 = result.find(
+      (r) => r.agentId === 'lane-0' && r.taskId === 'task-1' && r.completedAt === '2025-01-15T10:10:00.000Z',
+    );
+    const step1 = result.find(
+      (r) => r.agentId === 'lane-0' && r.taskId === 'task-1' && r.completedAt === '2025-01-15T10:20:00.000Z',
+    );
+
+    expect(step0).toBeDefined();
+    expect(step0!.profile).toBe('coder');
+
+    expect(step1).toBeDefined();
+    expect(step1!.profile).toBe('coder');
+  });
+
+  // ── 9. agent_end matches correct stepIndex composite key ────────────
+
+  it('agent_end with stepIndex only matches the start event with same stepIndex', () => {
+    const events: AuditEvent[] = [
+      agentStart('lane-0', { profile: 'coder', taskId: 'task-1', stepIndex: 0 }),
+      agentStart('lane-0', { profile: 'tester', taskId: 'task-1', stepIndex: 1 }),
+      // End event for stepIndex 0 and 1
+      agentEnd('lane-0', { taskId: 'task-1', stepIndex: 0, timestamp: '2025-01-15T10:10:00.000Z' }),
+    ];
+
+    const result = reconstructAgents(events);
+
+    expect(result).toHaveLength(2);
+
+    // Find the record whose completedAt matches the end event
+    const completed = result.find((r) => r.completedAt !== undefined);
+    expect(completed).toBeDefined();
+    expect(completed!.completedAt).toBe('2025-01-15T10:10:00.000Z');
+    // The completed one should have profile 'coder' (from stepIndex 0)
+    expect(completed!.profile).toBe('coder');
+
+    // The other record (stepIndex 1) should have no completedAt
+    const uncompleted = result.find((r) => r.completedAt === undefined);
+    expect(uncompleted).toBeDefined();
+    expect(uncompleted!.profile).toBe('tester');
+  });
+
+  // ── 10. Backward compatibility: stepIndex absent (old audit logs) ──
+
+  it('backward compatible when stepIndex is absent (old audit logs)', () => {
+    const events: AuditEvent[] = [
+      agentStart('lane-0', { profile: 'coder', taskId: 'task-1' }),
+      agentEnd('lane-0', { taskId: 'task-1', timestamp: '2025-01-15T10:10:00.000Z' }),
+    ];
+
+    const result = reconstructAgents(events);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].agentId).toBe('lane-0');
+    expect(result[0].taskId).toBe('task-1');
+    expect(result[0].completedAt).toBe('2025-01-15T10:10:00.000Z');
+  });
+
+  // ── 11. isInferredScoutAgent path: scout-N agents ──────────────────
+
+  it('infers scout-N agents from structured_output events', () => {
+    const events: AuditEvent[] = [
+      structuredOutput('scout-1', { results: [] }),
+      structuredOutput('scout-2', { results: [] }),
+    ];
+
+    const result = reconstructAgents(events);
+
+    expect(result).toHaveLength(2);
+
+    const scout1 = result.find((r) => r.agentId === 'scout-1');
+    const scout2 = result.find((r) => r.agentId === 'scout-2');
+
+    expect(scout1).toBeDefined();
+    expect(scout1!.phase).toBe('scouting');
+    expect(scout1!.profile).toBe('');
+
+    expect(scout2).toBeDefined();
+    expect(scout2!.phase).toBe('scouting');
+    expect(scout2!.profile).toBe('');
+  });
+
+  it('infers scout-N agents from decision events', () => {
+    const events: AuditEvent[] = [decision('scout-1', 'proceed', 'Good candidates found')];
+
+    const result = reconstructAgents(events);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].agentId).toBe('scout-1');
+    expect(result[0].phase).toBe('scouting');
+  });
+
+  // ── 12. agent_end for agent that never started creates minimal record ──
+
+  it('creates minimal record for agent_end when no matching start event exists', () => {
+    const events: AuditEvent[] = [agentEnd('lane-0', { taskId: 'task-1', timestamp: '2025-01-15T10:10:00.000Z' })];
+
+    const result = reconstructAgents(events);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].agentId).toBe('lane-0');
+    expect(result[0].taskId).toBe('task-1');
+    expect(result[0].phase).toBe('implementing');
+    expect(result[0].profile).toBe('');
+    expect(result[0].completedAt).toBe('2025-01-15T10:10:00.000Z');
+  });
+
+  it('creates minimal record for agent_end with stepIndex when no matching start event exists', () => {
+    const events: AuditEvent[] = [
+      agentEnd('lane-0', { taskId: 'task-1', stepIndex: 2, timestamp: '2025-01-15T10:10:00.000Z' }),
+    ];
+
+    const result = reconstructAgents(events);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].agentId).toBe('lane-0');
+    expect(result[0].taskId).toBe('task-1');
+    expect(result[0].phase).toBe('implementing');
+    expect(result[0].profile).toBe('');
+    expect(result[0].completedAt).toBe('2025-01-15T10:10:00.000Z');
   });
 });

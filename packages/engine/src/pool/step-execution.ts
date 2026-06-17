@@ -123,6 +123,15 @@ export async function runStep(
     sessionPath: trackedSession.sessionPath,
   });
 
+  // Fire onStepStart AFTER onAgentSpawn so the step always has an agentKey linkage.
+  // This ensures the event order in the EventStore is: agent_spawned → step_started.
+  execCtx.onStatus?.onStepStart?.({
+    taskId: task.id,
+    stepIndex: ctx.stepIndex,
+    stepName: step.name,
+    agentId,
+  });
+
   try {
     // Build prompt
     const promptText = await buildPrompt(task, step, execCtx.cwd);
@@ -207,6 +216,7 @@ export async function runStep(
       profile: step.profileId,
       phaseId: execCtx.phaseId,
       taskId: task.id,
+      stepIndex: ctx.stepIndex,
       sessionId: session.sessionId,
     });
   }

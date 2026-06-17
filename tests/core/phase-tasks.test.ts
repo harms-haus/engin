@@ -695,6 +695,7 @@ describe('runStepTask', () => {
       expect(completeCall.profile).toBe('coder');
       expect(completeCall.phaseId).toBe('test-phase');
       expect(completeCall.taskId).toBe('task-1');
+      expect(completeCall.stepIndex).toBe(0);
 
       expect(disposeMock).toHaveBeenCalledTimes(1);
     });
@@ -723,6 +724,8 @@ describe('runStepTask', () => {
       ).rejects.toThrow('fail');
 
       expect(onStatus.onAgentComplete).toHaveBeenCalledTimes(1);
+      const completeCall = onStatus.onAgentComplete.mock.calls[0]![0] as Record<string, unknown>;
+      expect(completeCall.stepIndex).toBe(0);
       expect(disposeMock).toHaveBeenCalledTimes(1);
     });
 
@@ -1219,6 +1222,11 @@ describe('runMultiStepTask', () => {
       await runMultiStepTask(makeTwoStepOptions({ onStatus: onStatus as unknown as StatusCallbacks }));
 
       expect(onStatus.onAgentComplete).toHaveBeenCalledTimes(2);
+      // Each step should carry the correct stepIndex
+      const step0Call = onStatus.onAgentComplete.mock.calls[0]![0] as Record<string, unknown>;
+      const step1Call = onStatus.onAgentComplete.mock.calls[1]![0] as Record<string, unknown>;
+      expect(step0Call.stepIndex).toBe(0);
+      expect(step1Call.stepIndex).toBe(1);
       expect(disposeMock).toHaveBeenCalledTimes(2);
     });
   });

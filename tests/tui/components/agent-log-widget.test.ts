@@ -963,6 +963,264 @@ describe('AgentLogWidget', () => {
     expect(widget.getSelectedAgentUid()).toBe('key-0');
   });
 
+  // ─── Dead _userPinnedStep removal: regression tests ───────────────
+  //
+  // The private _userPinnedStep field was never read inside AgentLogWidget;
+  // only written.  These tests verify that the public API methods that
+  // previously assigned to _userPinnedStep still behave correctly after the
+  // field is removed.
+  describe('dead _userPinnedStep removal (regression)', () => {
+    it('setSelectedStepIndex selects the step and resets scrollOffset', () => {
+      const widget = new AgentLogWidget(10);
+      const agent = makeAgent({ agentId: 'a0', profile: 'p0', phaseId: 'test', uid: 'key-0' });
+      const steps: StepEntity[] = [
+        makeStep({ name: 'step0', index: 0, agentKey: 'key-0' }),
+        makeStep({ name: 'step1', index: 1, agentKey: 'key-1' }),
+      ];
+      widget.setAgents([agent]);
+      widget.setSteps(steps);
+      widget.setSelectedStepIndex(1);
+      expect(widget.getSelectedAgentUid()).toBe('key-1');
+
+      // After scrolling up (expanded), scrollOffset > 0
+      const agent0 = agent;
+      agent0.log.push({ id: '1', timestamp: '', type: 'text', content: 'line' });
+      for (let i = 0; i < 8; i++) {
+        agent0.log.push({ id: `${i + 2}`, timestamp: '', type: 'text', content: 'padding ' + 'x'.repeat(60) });
+      }
+      widget.invalidate();
+      widget.toggleExpand();
+      widget.render(80);
+      widget.handleInput('\x1b[A'); // scroll up
+
+      // Calling setSelectedStepIndex resets scrollOffset to 0
+      widget.setSelectedStepIndex(0);
+      const lines = widget.render(80);
+      // No scroll indicator should appear because scrollOffset was reset
+      expect(lines[1]).not.toContain('up arrow');
+    });
+
+    it('setSelectedAgentUid finds step and resets scrollOffset', () => {
+      const widget = new AgentLogWidget(10);
+      const agent = makeAgent({ agentId: 'a0', profile: 'p0', phaseId: 'test', uid: 'key-0' });
+      const steps: StepEntity[] = [
+        makeStep({ name: 'step0', index: 0, agentKey: 'key-0' }),
+        makeStep({ name: 'step1', index: 1, agentKey: 'key-1' }),
+      ];
+      widget.setAgents([agent]);
+      widget.setSteps(steps);
+      widget.setSelectedStepIndex(0);
+
+      // Select by UID
+      widget.setSelectedAgentUid('key-1');
+      expect(widget.getSelectedAgentUid()).toBe('key-1');
+
+      // Select by null (deselect)
+      widget.setSelectedAgentUid(null);
+      expect(widget.getSelectedAgentUid()).toBeNull();
+    });
+
+    it('setSelectedAgentUid does nothing when uid not found in steps', () => {
+      const widget = new AgentLogWidget(5);
+      const agent = makeAgent({ agentId: 'a0', profile: 'p0', phaseId: 'test', uid: 'key-0' });
+      const steps: StepEntity[] = [makeStep({ name: 'step0', index: 0, agentKey: 'key-0' })];
+      widget.setAgents([agent]);
+      widget.setSteps(steps);
+      widget.setSelectedStepIndex(0);
+
+      // uid 'nonexistent' not in steps — current selection unchanged
+      widget.setSelectedAgentUid('nonexistent');
+      expect(widget.getSelectedAgentUid()).toBe('key-0');
+    });
+
+    it('toggleExpand toggles state and resets scrollOffset', () => {
+      const widget = new AgentLogWidget(10);
+      const agent = makeAgent({ agentId: 'a0', profile: 'p0', phaseId: 'test', uid: 'key-0' });
+      const steps: StepEntity[] = [makeStep({ name: 'step0', index: 0, agentKey: 'key-0' })];
+      widget.setAgents([agent]);
+      widget.setSteps(steps);
+      widget.setSelectedStepIndex(0);
+
+      // Initial: collapsed, no scroll
+      expect(widget.isExpanded()).toBe(false);
+
+      widget.toggleExpand();
+      expect(widget.isExpanded()).toBe(true);
+
+      // Scroll up a bit
+      for (let i = 0; i < 45; i++) {
+        agent.log.push({ id: `${i}`, timestamp: '', type: 'text', content: `entry-${i}` });
+      }
+      widget.invalidate();
+      widget.render(80);
+      widget.handleInput('\x1b[A');
+
+      // Collapse then re-expand — scrollOffset reset to 0
+      widget.toggleExpand();
+      expect(widget.isExpanded()).toBe(false);
+
+      widget.toggleExpand();
+      expect(widget.isExpanded()).toBe(true);
+      const lines = widget.render(80);
+      expect(lines[1]).not.toContain('up arrow');
+    });
+
+    it('handleInput expanded scroll does not throw when no entries exist', () => {
+      const widget = new AgentLogWidget(10);
+      const agent = makeAgent({ agentId: 'a0', profile: 'p0', phaseId: 'test', uid: 'key-0' });
+      const steps: StepEntity[] = [makeStep({ name: 'step0', index: 0, agentKey: 'key-0' })];
+      widget.setAgents([agent]);
+      widget.setSteps(steps);
+      widget.setSelectedStepIndex(0);
+
+      widget.toggleExpand();
+      widget.render(80);
+
+      // No log entries — scrolling should be a no-op, not crash
+      expect(() => widget.handleInput('\x1b[A')).not.toThrow();
+      expect(() => widget.handleInput('\x1b[B')).not.toThrow();
+    });
+
+    it('handleInput tab cycles steps that have agentKey and resets scrollOffset', () => {
+      const widget = new AgentLogWidget(10);
+      const agent0 = makeAgent({ agentId: 'a0', profile: 'p0', phaseId: 'test', uid: 'key-0' });
+      const steps: StepEntity[] = [
+        makeStep({ name: 'step0', index: 0, agentKey: 'key-0' }),
+        makeStep({ name: 'step1', index: 1, agentKey: 'key-1' }),
+        makeStep({ name: 'step2', index: 2 }), // no agentKey
+      ];
+      widget.setAgents([agent0]);
+      widget.setSteps(steps);
+      widget.setSelectedStepIndex(0);
+
+      // Scroll to simulate having scrolled
+      widget.toggleExpand();
+      for (let i = 0; i < 45; i++) {
+        agent0.log.push({ id: `${i}`, timestamp: '', type: 'text', content: `entry-${i}` });
+      }
+      widget.invalidate();
+      widget.render(80);
+      widget.handleInput('\x1b[A');
+
+      // Tab away and back — should reset scrollOffset
+      widget.handleInput('\x09'); // tab
+      expect(widget.getSelectedAgentUid()).toBe('key-1');
+
+      widget.handleInput('\x09'); // tab again, wraps to key-0 (skips step2)
+      expect(widget.getSelectedAgentUid()).toBe('key-0');
+
+      // After tab cycling, scrollOffset was reset so no scroll indicator
+      const lines = widget.render(80);
+      expect(lines[1]).not.toContain('up arrow');
+    });
+
+    it('handleInput shift+tab cycles backward through agent steps', () => {
+      const widget = new AgentLogWidget(5);
+      const agent0 = makeAgent({ agentId: 'a0', profile: 'p0', phaseId: 'test', uid: 'key-0' });
+      const steps: StepEntity[] = [
+        makeStep({ name: 'step0', index: 0, agentKey: 'key-0' }),
+        makeStep({ name: 'step1', index: 1, agentKey: 'key-1' }),
+      ];
+      widget.setAgents([agent0]);
+      widget.setSteps(steps);
+      widget.setSelectedStepIndex(0);
+
+      // Shift+Tab from step0 wraps to step1
+      widget.handleInput('\x1b[Z');
+      expect(widget.getSelectedAgentUid()).toBe('key-1');
+
+      // Shift+Tab from step1 wraps to step0
+      widget.handleInput('\x1b[Z');
+      expect(widget.getSelectedAgentUid()).toBe('key-0');
+    });
+
+    it('handleInput up/down scroll adjustments are clamped', () => {
+      const widget = new AgentLogWidget(10);
+      const agent = makeAgent({ agentId: 'a0', profile: 'p0', phaseId: 'test', uid: 'key-0' });
+      const steps: StepEntity[] = [makeStep({ name: 'step0', index: 0, agentKey: 'key-0' })];
+      widget.setAgents([agent]);
+      widget.setSteps(steps);
+      widget.setSelectedStepIndex(0);
+
+      // Add entries to allow scrolling
+      for (let i = 0; i < 5; i++) {
+        agent.log.push({ id: `${i}`, timestamp: '', type: 'text', content: 'x'.repeat(60) });
+      }
+      widget.invalidate();
+      widget.toggleExpand();
+      widget.render(80);
+
+      // Repeated up arrows should clamp at max scroll offset (no crash)
+      for (let i = 0; i < 100; i++) {
+        widget.handleInput('\x1b[A');
+      }
+      expect(() => widget.render(80)).not.toThrow();
+
+      // Repeated down arrows should clamp at 0 (no crash)
+      for (let i = 0; i < 100; i++) {
+        widget.handleInput('\x1b[B');
+      }
+      const lines = widget.render(80);
+      // When expanded, _expandedLineCount is 40 (not the constructor's maxLines)
+      expect(lines.length).toBe(40);
+      expect(lines[1]).not.toContain('up arrow');
+    });
+
+    it('handleInput shift+up/shift+down scroll adjustments are clamped', () => {
+      const widget = new AgentLogWidget(10);
+      const agent = makeAgent({ agentId: 'a0', profile: 'p0', phaseId: 'test', uid: 'key-0' });
+      const steps: StepEntity[] = [makeStep({ name: 'step0', index: 0, agentKey: 'key-0' })];
+      widget.setAgents([agent]);
+      widget.setSteps(steps);
+      widget.setSelectedStepIndex(0);
+
+      for (let i = 0; i < 50; i++) {
+        agent.log.push({ id: `${i}`, timestamp: '', type: 'text', content: 'x'.repeat(60) });
+      }
+      widget.invalidate();
+      widget.toggleExpand();
+      widget.render(80);
+
+      // Repeated shift+up arrows should clamp (no crash)
+      for (let i = 0; i < 100; i++) {
+        widget.handleInput('\x1b[1;2A');
+      }
+      expect(() => widget.render(80)).not.toThrow();
+
+      // Repeated shift+down arrows should clamp at 0 (no crash)
+      for (let i = 0; i < 100; i++) {
+        widget.handleInput('\x1b[1;2B');
+      }
+      const lines = widget.render(80);
+      expect(lines.length).toBe(40);
+    });
+
+    it('setSelectedStepIndex(-1) selects no step', () => {
+      const widget = new AgentLogWidget(5);
+      const agent = makeAgent({ agentId: 'a0', profile: 'p0', phaseId: 'test', uid: 'key-0' });
+      const steps: StepEntity[] = [makeStep({ name: 'step0', index: 0, agentKey: 'key-0' })];
+      widget.setAgents([agent]);
+      widget.setSteps(steps);
+      widget.setSelectedStepIndex(-1);
+
+      expect(widget.getSelectedAgentUid()).toBeNull();
+    });
+
+    it('setSelectedStepIndex with index >= steps.length is no-op', () => {
+      const widget = new AgentLogWidget(5);
+      const agent = makeAgent({ agentId: 'a0', profile: 'p0', phaseId: 'test', uid: 'key-0' });
+      const steps: StepEntity[] = [makeStep({ name: 'step0', index: 0, agentKey: 'key-0' })];
+      widget.setAgents([agent]);
+      widget.setSteps(steps);
+      widget.setSelectedStepIndex(0);
+      expect(widget.getSelectedAgentUid()).toBe('key-0');
+
+      // index >= steps.length (1) → no-op
+      widget.setSelectedStepIndex(100);
+      expect(widget.getSelectedAgentUid()).toBe('key-0');
+    });
+  });
+
   // ─── Bug3 render fixes ──────────────────────────────────────────────
 
   describe('Bug3 render fixes', () => {

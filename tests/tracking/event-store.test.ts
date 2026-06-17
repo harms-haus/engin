@@ -387,6 +387,145 @@ describe('EventStore', () => {
       expect(proj.status).toBe('running');
       expect(proj.seq).toBe(0);
     });
+
+    // ── snapshot version-gating ────────────────────────────────────────
+
+    it('saveSnapshot includes version field', async () => {
+      const store = new EventStore(dir);
+      store.append('workflow_started', { taskPrompt: 'v2 snapshot' });
+      await store.saveSnapshot();
+
+      const raw = await fs.readFile(path.join(dir, 'event-snapshot.json'), 'utf-8');
+      const snap = JSON.parse(raw);
+      expect(snap).toHaveProperty('version', 2);
+    });
+
+    it('loads snapshot with matching version normally', async () => {
+      // Create events, save snapshot (which includes version)
+      const store1 = new EventStore(dir);
+      store1.append('workflow_started', { taskPrompt: 'versioned' });
+      store1.append('phase_started', { phase: 'scouting' });
+      await store1.flush();
+      await store1.saveSnapshot();
+
+      // Add a subsequent event AFTER the snapshot — this should be replayed
+      // from JSONL on load, while pre-snapshot state comes from the snapshot.
+      store1.append('phase_completed', { phase: 'scouting', durationMs: 100 });
+      await store1.flush();
+
+      // Load should restore from snapshot + replay seq 3
+      const store2 = await EventStore.load(dir);
+      expect(store2.getProjection().taskPrompt).toBe('versioned');
+      expect(store2.getProjection().currentPhaseId).toBe('scouting');
+      expect(store2.getProjection().completedPhaseIds).toEqual(['scouting']);
+      expect(store2.getProjection().seq).toBe(3);
+    });
+
+    it('discards snapshot with missing version and replays from JSONL', async () => {
+      // Create events, flush them to disk, then save snapshot
+      const store1 = new EventStore(dir);
+      store1.append('workflow_started', { taskPrompt: 'old snapshot' });
+      store1.append('phase_started', { phase: 'scouting' });
+      await store1.flush();
+      await store1.saveSnapshot();
+
+      // Manually write an additional event AFTER the snapshot point to JSONL
+      const extraRec = {
+        seq: 3,
+        type: 'phase_completed',
+        data: { phase: 'scouting', durationMs: 100 },
+        metadata: { timestamp: new Date().toISOString() },
+      };
+      await fs.appendFile(path.join(dir, 'events.jsonl'), JSON.stringify(extraRec) + '\n', 'utf-8');
+
+      // Remove the version field from the snapshot (simulating old format)
+      const snapshotPath = path.join(dir, 'event-snapshot.json');
+      const raw = await fs.readFile(snapshotPath, 'utf-8');
+      const snap = JSON.parse(raw);
+      delete snap.version;
+      await fs.writeFile(snapshotPath, JSON.stringify(snap, null, 2), 'utf-8');
+
+      // Spy on console.debug to verify the discard message
+      const debugSpy = spyOn(console, 'debug').mockImplementation(() => {});
+
+      // Load — should discard the old-format snapshot and replay all events
+      const store2 = await EventStore.load(dir);
+
+      expect(debugSpy).toHaveBeenCalledTimes(1);
+      expect(debugSpy).toHaveBeenCalledWith('[EventStore] Discarding snapshot with version', undefined, 'expected', 2);
+      debugSpy.mockRestore();
+
+      // The projection should reflect ALL events (seq 1, 2, 3) replayed.
+      // phase_started sets currentPhaseId to 'scouting', then phase_completed
+      // does NOT clear it — so currentPhaseId remains 'scouting'.
+      expect(store2.getProjection().taskPrompt).toBe('old snapshot');
+      expect(store2.getProjection().currentPhaseId).toBe('scouting');
+      expect(store2.getProjection().completedPhaseIds).toEqual(['scouting']);
+      expect(store2.getProjection().seq).toBe(3);
+    });
+
+    it('discards snapshot with wrong version number and replays from JSONL', async () => {
+      // Create events, flush them to disk, then save snapshot
+      const store1 = new EventStore(dir);
+      store1.append('workflow_started', { taskPrompt: 'wrong version' });
+      store1.append('phase_started', { phase: 'testing' });
+      await store1.flush();
+      await store1.saveSnapshot();
+
+      // Manually add more events to JSONL
+      const extraRec = {
+        seq: 3,
+        type: 'phase_completed',
+        data: { phase: 'testing', durationMs: 50 },
+        metadata: { timestamp: new Date().toISOString() },
+      };
+      await fs.appendFile(path.join(dir, 'events.jsonl'), JSON.stringify(extraRec) + '\n', 'utf-8');
+
+      // Change version field to an old/wrong value
+      const snapshotPath = path.join(dir, 'event-snapshot.json');
+      const raw = await fs.readFile(snapshotPath, 'utf-8');
+      const snap = JSON.parse(raw);
+      snap.version = 1;
+      await fs.writeFile(snapshotPath, JSON.stringify(snap, null, 2), 'utf-8');
+
+      const debugSpy = spyOn(console, 'debug').mockImplementation(() => {});
+
+      const store2 = await EventStore.load(dir);
+
+      expect(debugSpy).toHaveBeenCalledTimes(1);
+      expect(debugSpy).toHaveBeenCalledWith('[EventStore] Discarding snapshot with version', 1, 'expected', 2);
+      debugSpy.mockRestore();
+
+      // All events replayed from JSONL
+      expect(store2.getProjection().taskPrompt).toBe('wrong version');
+      expect(store2.getProjection().seq).toBe(3);
+    });
+
+    it('replays ALL events from JSONL when snapshot is discarded (snapshotSeq=0)', async () => {
+      // Create events, flush them to disk, then save snapshot
+      const store1 = new EventStore(dir);
+      store1.append('workflow_started', { taskPrompt: 'full replay' });
+      store1.append('phase_started', { phase: 'alpha' });
+      store1.append('phase_completed', { phase: 'alpha', durationMs: 200 });
+      store1.append('phase_started', { phase: 'beta' });
+      await store1.flush();
+      await store1.saveSnapshot();
+
+      // Remove version to simulate old format
+      const snapshotPath = path.join(dir, 'event-snapshot.json');
+      const raw = await fs.readFile(snapshotPath, 'utf-8');
+      const snap = JSON.parse(raw);
+      delete snap.version;
+      await fs.writeFile(snapshotPath, JSON.stringify(snap, null, 2), 'utf-8');
+
+      // Load — should discard snapshot and replay ALL events from JSONL
+      const store2 = await EventStore.load(dir);
+
+      expect(store2.getProjection().taskPrompt).toBe('full replay');
+      expect(store2.getProjection().currentPhaseId).toBe('beta');
+      expect(store2.getProjection().completedPhaseIds).toEqual(['alpha']);
+      expect(store2.getProjection().seq).toBe(4);
+    });
   });
 
   // ── load from NDJSON ──────────────────────────────────────────────

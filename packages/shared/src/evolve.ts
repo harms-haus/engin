@@ -11,40 +11,52 @@ import { MAX_RUN_LOG } from './event-types.js';
 
 export const MAX_AGENT_LOG = 500;
 
-/** Stable key for an agent entity: agentId::taskId, or just agentId if no task. */
-function agentKey(agentId: string, taskId?: string): string {
-  return taskId ? `${agentId}::${taskId}` : agentId;
+/**
+ * Stable key for an agent entity.
+ * - If taskId is undefined → just agentId (non-task agents like scouts/planners).
+ * - If taskId is defined AND stepIndex is defined → agentId::taskId::stepIndex.
+ * - If taskId is defined but stepIndex is undefined → agentId::taskId (backward-compatible).
+ */
+function agentKey(agentId: string, taskId?: string, stepIndex?: number): string {
+  if (taskId === undefined) return agentId;
+  if (stepIndex !== undefined) return `${agentId}::${taskId}::${stepIndex}`;
+  return `${agentId}::${taskId}`;
 }
 
 /**
- * Resolve an agent entity by agentId (and optional taskId).
- * When only agentId is available (e.g. turn/tool-call callbacks), finds
- * the active agent for that agentId, preferring the last spawned.
+ * Resolve an agent entity by agentId (and optional taskId / stepIndex).
+ *
+ * 1. Fast path — try exact key match using all available identifiers.
+ * 2. Fallback — search all agents for best match:
+ *    - Filter by agentId (required) and taskId (if defined).
+ *    - Prefer the last active agent (or any matching agent if none active).
+ *
+ * This unified fallback is critical because events such as `agent_completed`
+ * may carry agentId + taskId but NOT stepIndex (legacy events). With per-step
+ * keys, the exact-key match would fail, and the fallback ensures resolution.
  */
 function resolveAgent(
   agents: Record<string, AgentEntity>,
   agentId: string,
   taskId?: string,
+  stepIndex?: number,
 ): { key: string; entity: AgentEntity } | undefined {
   // 1. Exact key match (fast path)
-  const exactKey = agentKey(agentId, taskId);
+  const exactKey = agentKey(agentId, taskId, stepIndex);
   if (agents[exactKey]) return { key: exactKey, entity: agents[exactKey] };
 
-  // 2. Without taskId — search for best match
-  if (!taskId) {
-    let best: { key: string; entity: AgentEntity } | undefined;
-    for (const [k, v] of Object.entries(agents)) {
-      if (v.agentId !== agentId) continue;
-      if (v.active) {
-        best = { key: k, entity: v };
-      } else if (!best) {
-        best = { key: k, entity: v };
-      }
+  // 2. Search fallback — iterate all agents for best match
+  let best: { key: string; entity: AgentEntity } | undefined;
+  for (const [k, v] of Object.entries(agents)) {
+    if (v.agentId !== agentId) continue;
+    if (taskId !== undefined && v.taskId !== taskId) continue;
+    if (v.active) {
+      best = { key: k, entity: v };
+    } else if (!best) {
+      best = { key: k, entity: v };
     }
-    return best;
   }
-
-  return undefined;
+  return best;
 }
 
 /** Create a shallow clone with an optional field set. */
@@ -122,7 +134,7 @@ export function evolve(state: WorkflowProjection, event: EventRecord): WorkflowP
       const agentId = String(event.metadata.agentId ?? event.data.agentId ?? '');
       const taskId = event.metadata.taskId;
       const stepIndex = event.metadata.stepIndex;
-      const key = agentKey(agentId, taskId);
+      const key = agentKey(agentId, taskId, stepIndex);
       const existing = state.agents[key];
       // If this agent is associated with a task, copy the task's title.
       const existingTask = taskId ? state.tasks[taskId] : undefined;
@@ -202,7 +214,7 @@ export function evolve(state: WorkflowProjection, event: EventRecord): WorkflowP
     case 'agent_completed': {
       const agentId = String(event.metadata.agentId ?? event.data.agentId ?? '');
       const taskId = event.metadata.taskId;
-      const resolved = resolveAgent(state.agents, agentId, taskId);
+      const resolved = resolveAgent(state.agents, agentId, taskId, event.metadata.stepIndex as number | undefined);
       if (!resolved) return clone(state, { seq: event.seq });
       const { key, entity: existing } = resolved;
       return clone(state, {
@@ -294,7 +306,7 @@ export function evolve(state: WorkflowProjection, event: EventRecord): WorkflowP
       const agentId = String(event.metadata.agentId ?? event.data.agentId ?? '');
       if (agentId) {
         const taskIdForAgent = event.metadata.taskId ?? taskId;
-        const resolved = resolveAgent(state.agents, agentId, taskIdForAgent);
+        const resolved = resolveAgent(state.agents, agentId, taskIdForAgent, stepIndex);
         if (resolved && existing.steps[stepIndex]) {
           const newSteps = [...existing.steps];
           newSteps[stepIndex] = { ...newSteps[stepIndex], agentKey: resolved.key };

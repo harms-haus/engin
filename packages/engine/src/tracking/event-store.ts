@@ -12,10 +12,13 @@ import { evolve } from './evolve.js';
 // store.
 const persistError = console.error;
 
+const SNAPSHOT_VERSION = 2;
+
 interface SnapshotData {
   state: WorkflowProjection;
   seq: number;
   timestamp: string;
+  version?: number;
 }
 
 export class EventStore {
@@ -143,6 +146,7 @@ export class EventStore {
       state: this.projection,
       seq: this.seq,
       timestamp: new Date().toISOString(),
+      version: SNAPSHOT_VERSION,
     };
 
     const tmpPath = this.snapshotPath + '.tmp';
@@ -161,9 +165,13 @@ export class EventStore {
     try {
       const raw = await readFile(snapshotPath, 'utf-8');
       const snap: SnapshotData = JSON.parse(raw);
-      store.projection = snap.state;
-      store.seq = snap.seq;
-      snapshotSeq = snap.seq;
+      if (snap.version !== SNAPSHOT_VERSION) {
+        console.debug('[EventStore] Discarding snapshot with version', snap.version, 'expected', SNAPSHOT_VERSION);
+      } else {
+        store.projection = snap.state;
+        store.seq = snap.seq;
+        snapshotSeq = snap.seq;
+      }
     } catch {
       // No snapshot — start fresh
     }

@@ -300,6 +300,158 @@ describe('Dashboard', () => {
       expect(d.getSelection().selectedStepIndex).toBe(1);
       expect(d.getSelection().userPinnedStep).toBe(true);
     });
+
+    it('follows new task activeStepIndex after task auto-follow changes task (not pinned)', () => {
+      const d = new Dashboard(4);
+
+      // ── Phase with two tasks: t1 (active) with step index 2, t2 (ready) ──
+      const p1 = buildProjection({
+        phases: [{ id: 'phase-a' }],
+        currentPhaseId: 'phase-a',
+        tasks: [
+          makeTask({
+            id: 't1',
+            phaseId: 'phase-a',
+            status: 'active',
+            activeStepIndex: 2,
+            steps: [
+              { name: 'Step 0', index: 0 },
+              { name: 'Step 1', index: 1 },
+              { name: 'Step 2', index: 2 },
+            ],
+            startedAt: Date.now(),
+          }),
+          makeTask({
+            id: 't2',
+            phaseId: 'phase-a',
+            status: 'ready',
+            activeStepIndex: 0,
+            steps: [{ name: 'Step 0', index: 0 }],
+          }),
+        ],
+      });
+      d.syncFromProjection(p1);
+
+      // t1 (first active) is auto-selected; step follows activeStepIndex (2)
+      expect(d.getSelection().selectedTaskId).toBe('t1');
+      expect(d.getSelection().selectedStepIndex).toBe(2);
+
+      // ── Update: t1 removed, t2 becomes active → auto-follow should pick t2 ──
+      const p2 = buildProjection({
+        phases: [{ id: 'phase-a' }],
+        currentPhaseId: 'phase-a',
+        tasks: [
+          makeTask({
+            id: 't2',
+            phaseId: 'phase-a',
+            status: 'active',
+            activeStepIndex: 0,
+            steps: [{ name: 'Step 0', index: 0 }],
+            startedAt: Date.now(),
+          }),
+        ],
+      });
+      d.syncFromProjection(p2);
+
+      const sel = d.getSelection();
+      expect(sel.selectedTaskId).toBe('t2');
+      // Step index should follow t2's activeStepIndex (0), not carry over from t1 (2)
+      expect(sel.selectedStepIndex).toBe(0);
+      expect(sel.userPinnedStep).toBe(false);
+    });
+
+    it('resets pinned step selection when task auto-follow picks a different task', () => {
+      const d = new Dashboard(4);
+
+      // ── Two tasks; t1 is active and initially selected ──
+      const p1 = buildProjection({
+        phases: [{ id: 'phase-a' }],
+        currentPhaseId: 'phase-a',
+        tasks: [
+          makeTask({
+            id: 't1',
+            phaseId: 'phase-a',
+            status: 'active',
+            activeStepIndex: 0,
+            steps: [
+              { name: 'Step 0', index: 0, agentKey: 'a1' },
+              { name: 'Step 1', index: 1, agentKey: 'a2' },
+            ],
+            startedAt: Date.now(),
+          }),
+          makeTask({ id: 't2', phaseId: 'phase-a', status: 'ready' }),
+        ],
+        agents: [makeAgent('a1', 't1', 'phase-a'), makeAgent('a2', 't1', 'phase-a')],
+      });
+      d.syncFromProjection(p1);
+
+      // Pin step to index 1 (user manually selected it)
+      d.handleInput('\t'); // tab once → step index 1
+      expect(d.getSelection().selectedStepIndex).toBe(1);
+      expect(d.getSelection().userPinnedStep).toBe(true);
+
+      // ── Update: t1 completed, t2 becomes the only task in phase ──
+      const p2 = buildProjection({
+        phases: [{ id: 'phase-a' }],
+        currentPhaseId: 'phase-a',
+        tasks: [
+          makeTask({
+            id: 't2',
+            phaseId: 'phase-a',
+            status: 'active',
+            activeStepIndex: 0,
+            steps: [{ name: 'Step 0', index: 0 }],
+            startedAt: Date.now(),
+          }),
+        ],
+      });
+      d.syncFromProjection(p2);
+
+      const sel = d.getSelection();
+      expect(sel.selectedTaskId).toBe('t2');
+      // Step index was pinned to 1 on t1, but t1 is gone → must reset.
+      // After reset to null, STEP FOLLOW re-initializes to the new task's activeStepIndex.
+      expect(sel.selectedStepIndex).toBe(0);
+      expect(sel.userPinnedStep).toBe(false);
+    });
+
+    it('preserves step selection when task auto-follow keeps the same task', () => {
+      const d = new Dashboard(4);
+
+      // Single task stays the same across syncs
+      const p1 = buildProjection({
+        phases: [{ id: 'phase-a' }],
+        currentPhaseId: 'phase-a',
+        tasks: [
+          makeTask({
+            id: 't1',
+            phaseId: 'phase-a',
+            status: 'active',
+            activeStepIndex: 0,
+            steps: [
+              { name: 'Step 0', index: 0, agentKey: 'a1' },
+              { name: 'Step 1', index: 1, agentKey: 'a2' },
+            ],
+            startedAt: Date.now(),
+          }),
+        ],
+        agents: [makeAgent('a1', 't1', 'phase-a'), makeAgent('a2', 't1', 'phase-a')],
+      });
+      d.syncFromProjection(p1);
+
+      // Tab to pin step index 1
+      d.handleInput('\t');
+      expect(d.getSelection().selectedStepIndex).toBe(1);
+      expect(d.getSelection().userPinnedStep).toBe(true);
+
+      // ── Re-sync with same projection (task unchanged) ──
+      d.syncFromProjection(p1);
+
+      // Step selection should be preserved because the task didn't change
+      expect(d.getSelection().selectedTaskId).toBe('t1');
+      expect(d.getSelection().selectedStepIndex).toBe(1);
+      expect(d.getSelection().userPinnedStep).toBe(true);
+    });
   });
 
   // ── syncFromProjection: widget updates ──────────────────────────────

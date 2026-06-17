@@ -79,14 +79,18 @@ errors are caught and do not crash the store. On the server, the per-run
 
 ### `saveSnapshot()`
 
-Atomically write `{ state, seq, timestamp }` to `event-snapshot.json` (temp file +
-rename).
+Atomically write `{ state, seq, timestamp, version }` to `event-snapshot.json` (temp file +
+rename). `version` is the current `SNAPSHOT_VERSION` (currently `2`); it lets `load()`
+detect snapshots written by an incompatible evolve schema.
 
 ### `EventStore.load(workDir)`
 
 Factory for resume: load a snapshot if present, then replay `events.jsonl` records
 with `seq > snapshotSeq` through `evolve()`. Falls back to a pristine in-memory
-projection when neither file exists. The server's `RunManager.startRun` uses this
+projection when neither file exists. **Version gating:** if the snapshot's `version`
+field is missing or does not equal the current `SNAPSHOT_VERSION` (2), the snapshot
+is discarded (a `console.debug` line is emitted) and _all_ events are replayed from
+`events.jsonl` starting at `seq` 0. The server's `RunManager.startRun` uses this
 when starting or resuming a run.
 
 ## `createStoreCallbacks(store): StatusCallbacks`
@@ -163,11 +167,16 @@ and bumps `seq`. This is the **same** reducer the clients run (the web imports i
 
 **Helpers:**
 
-- `agentKey(agentId, taskId?)` → `${agentId}::${taskId}` if `taskId`, else just
-  `agentId`.
-- `resolveAgent(agents, agentId, taskId?)` — exact key match first; otherwise, when
-  no `taskId`, scan for an agent matching `agentId`, preferring one with
-  `active === true`.
+- `agentKey(agentId, taskId?, stepIndex?)` — `agentId::taskId::stepIndex` when both
+  `taskId` and `stepIndex` are defined; `agentId::taskId` when only `taskId` is
+  defined (backward-compatible with pre-step-keying events); just `agentId` when
+  `taskId` is undefined (non-task agents like scouts/planners).
+- `resolveAgent(agents, agentId, taskId?, stepIndex?)` — try an exact `agentKey`
+  match first; if that fails, scan all agents filtering by `agentId` (required) and
+  `taskId` (when defined), preferring one with `active === true`. The unified
+  fallback is critical because some events (e.g. legacy `agent_completed`, or
+  `turn_ended`/`tool_call_*` that carry only `agentId`) lack a `stepIndex`, so the
+  exact-key path would otherwise miss.
 - `capLog(log)` — keep the last 500 entries.
 
 ### Per-event effects
@@ -198,8 +207,12 @@ and bumps `seq`. This is the **same** reducer the clients run (the web imports i
 
 ### Subtle behaviours
 
-- Agents are keyed **per `(agentId, taskId)`**. The same `agentId` reused across two
-  tasks produces two distinct `AgentEntity` records.
+- Agents are keyed **per `(agentId, taskId, stepIndex)`** when all three are present,
+  falling back to `(agentId, taskId)` for legacy events that lack `stepIndex`, and
+  to bare `agentId` for non-task agents (scouts/planners). The same `agentId` reused
+  across two tasks, _or across two steps within the same task_, produces two distinct
+  `AgentEntity` records, each accumulating its own `log`, token totals, and
+  `toolCallCount`.
 - `agentCount` increments only on the **first spawn** of a given key; subsequent
   re-spawns (upsert) do not.
 - Step linking (`tasks[taskId].steps[stepIndex].agentKey`) happens in
@@ -232,12 +245,12 @@ facts) and only clear them on a genuine fresh start or server reset.
 
 Within a run's work directory (on the server):
 
-| File                  | Contents                                                                           |
-| --------------------- | ---------------------------------------------------------------------------------- |
-| `events.jsonl`        | Append-only newline-delimited `EventRecord`s.                                      |
-| `event-snapshot.json` | Atomically written `{ state, seq, timestamp }` (temp + rename).                    |
-| `.engin-state.json`   | `WorkflowStatusTracker` state (the write-model view).                              |
-| `audit/audit.jsonl`   | Legacy `AuditLog` events (agent_start/agent_end/decision/structured_output/error). |
+| File                  | Contents                                                                                                 |
+| --------------------- | -------------------------------------------------------------------------------------------------------- |
+| `events.jsonl`        | Append-only newline-delimited `EventRecord`s.                                                            |
+| `event-snapshot.json` | Atomically written `{ state, seq, timestamp, version }` (temp + rename); version = SNAPSHOT_VERSION (2). |
+| `.engin-state.json`   | `WorkflowStatusTracker` state (the write-model view).                                                    |
+| `audit/audit.jsonl`   | Legacy `AuditLog` events (agent_start/agent_end/decision/structured_output/error).                       |
 
 ## `AuditLog`
 

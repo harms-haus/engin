@@ -35,6 +35,7 @@ interface AuditStartEvent {
   profile: { id: string; name?: string } | string;
   taskId?: string;
   phase?: string;
+  stepIndex?: number;
   timestamp: string;
 }
 
@@ -42,6 +43,7 @@ interface AuditEndEvent {
   type: 'agent_end';
   agentId: string;
   taskId?: string;
+  stepIndex?: number;
   timestamp: string;
 }
 
@@ -75,8 +77,10 @@ interface RunSummary {
 // cannot import from either, so the logic
 // is duplicated here to avoid a cross-package dependency.
 
-function agentKey(agentId: string, taskId?: string): string {
-  return taskId ? `${agentId}::${taskId}` : agentId;
+function agentKey(agentId: string, taskId?: string, stepIndex?: number): string {
+  if (!taskId) return agentId;
+  if (stepIndex !== undefined) return `${agentId}::${taskId}::${stepIndex}`;
+  return `${agentId}::${taskId}`;
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -127,7 +131,7 @@ export function reconstructAgents(auditEvents: AuditEvent[]): PersistedAgentReco
     const startEvent = event as AuditStartEvent;
 
     // Skip duplicates (same agentId + taskId combo can appear in implementing phase)
-    const key = agentKey(startEvent.agentId, startEvent.taskId);
+    const key = agentKey(startEvent.agentId, startEvent.taskId, startEvent.stepIndex);
 
     if (!records.has(key)) {
       records.set(key, {
@@ -168,7 +172,7 @@ export function reconstructAgents(auditEvents: AuditEvent[]): PersistedAgentReco
     const endEvent = event as AuditEndEvent;
 
     // Find matching record
-    const key = agentKey(endEvent.agentId, endEvent.taskId);
+    const key = agentKey(endEvent.agentId, endEvent.taskId, endEvent.stepIndex);
 
     const record = records.get(key);
     if (record) {

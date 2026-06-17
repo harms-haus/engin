@@ -69,13 +69,8 @@ export function reflectionRunner(options: ReflectionRunnerOptions): TaskRunner {
     try {
       for (let round = 0; round < maxRounds; round++) {
         // ── Step 4a: Run draftStep (stepIndex 0) ────────────────────────
-        onStatus?.onStepStart?.({
-          taskId: task.id,
-          stepIndex: 0,
-          stepName: options.draftStep.name,
-          agentId,
-        });
-
+        // onStepStart is fired by runStep() after onAgentSpawn for correct
+        // event ordering (agent_spawned → step_started).
         draftExecCount++;
 
         const existingDraftSession = taskSessions.get(0);
@@ -110,13 +105,8 @@ export function reflectionRunner(options: ReflectionRunnerOptions): TaskRunner {
         }
 
         // ── Step 4b: Run criticStep (stepIndex 1) ───────────────────────
-        onStatus?.onStepStart?.({
-          taskId: task.id,
-          stepIndex: 1,
-          stepName: options.criticStep.name,
-          agentId,
-        });
-
+        // onStepStart is fired by runStep() after onAgentSpawn for correct
+        // event ordering (agent_spawned → step_started).
         criticExecCount++;
 
         const existingCriticSession = taskSessions.get(1);

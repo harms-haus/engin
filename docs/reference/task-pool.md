@@ -154,7 +154,7 @@ Per-step state maps track the rejection count (`stepAttempts`), execution count
 The loop:
 
 1. The LanePool fires `onTaskStart` once before calling the runner (the runner itself does not fire it).
-2. For the current step, fire `onStepStart`, then `runStep(...)`. Any existing session for the
+2. For the current step, call `runStep(...)`. `runStep` fires `onAgentSpawn` and then `onStepStart` (in that order, so the step always has an `agentKey` linkage before `step_started` is recorded). Any existing session for the
    step is passed in as `existingSessionPath` for resume; after the run, the old session is
    disposed and replaced.
 3. **On approval** — capture the output, advance `currentStepIndex`.
@@ -181,6 +181,7 @@ Runs a single step. The session directory is
 `{sessionBaseDir}/{taskId}/{execCount}-{stepIndex}-{step.name}` — note the first segment is
 the per-step **execution count**, not the rejection attempt.
 
+- **Event ordering.** `runStep` fires `onAgentSpawn` first, then `onStepStart` (with `{ taskId, stepIndex, stepName, agentId }`), so the EventStore always records `agent_spawned` before `step_started`. This ordering also guarantees the step's `agentKey` is populated before clients see the step start.
 - **Read-only steps** add `write`/`edit` to the profile's `excludeTools` (deduplicated).
 - **Resume** — if `existingSessionPath` is provided, the harness is created with
   `resumeSessionPath` instead of `sessionDir`.
@@ -276,18 +277,18 @@ The `LanePool` dispatches lifecycle events based on the outcome:
 
 Responsibilities are split between the pool and runners to avoid duplication:
 
-| Event                              | Owner     | When                                                 |
-| ---------------------------------- | --------- | ---------------------------------------------------- |
-| `onTaskRegister`                   | LanePool  | Before any task starts (during `run()`)              |
-| `onTaskStart`                      | LanePool  | After claiming, before calling the runner            |
-| `onStepStart`                      | Runner    | Before each step execution                           |
-| `onDecision`                       | Runner    | On rejection (with retry reason)                     |
-| `onAgentSpawn` / `onAgentComplete` | `runStep` | Before / after each agent session                    |
-| `onTaskComplete`                   | LanePool  | When runner returns `{ status: 'completed' }`        |
-| `onTaskRejected`                   | LanePool  | When runner returns `{ status: 'failed', feedback }` |
+| Event                              | Owner     | When                                                       |
+| ---------------------------------- | --------- | ---------------------------------------------------------- |
+| `onTaskRegister`                   | LanePool  | Before any task starts (during `run()`)                    |
+| `onTaskStart`                      | LanePool  | After claiming, before calling the runner                  |
+| `onStepStart`                      | `runStep` | Inside runStep, after onAgentSpawn, before the prompt runs |
+| `onDecision`                       | Runner    | On rejection (with retry reason)                           |
+| `onAgentSpawn` / `onAgentComplete` | `runStep` | Before / after each agent session                          |
+| `onTaskComplete`                   | LanePool  | When runner returns `{ status: 'completed' }`              |
+| `onTaskRejected`                   | LanePool  | When runner returns `{ status: 'failed', feedback }`       |
 
-Runners fire `onStepStart` and `onDecision` during execution. `runStep` fires
-`onAgentSpawn` and `onAgentComplete`. The `LanePool` fires `onTaskStart`,
+Runners fire `onDecision` during execution. `runStep` fires `onAgentSpawn`,
+`onStepStart` (after the spawn), and `onAgentComplete`. The `LanePool` fires `onTaskStart`,
 `onTaskComplete`, and `onTaskRejected`.
 
 ### Session management

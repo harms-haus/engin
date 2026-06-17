@@ -225,7 +225,7 @@ export async function runStepTask<T = unknown>(opts: RunStepTaskOptions): Promis
     // 9. Fire agent complete and dispose harness
     if (harness) {
       try {
-        onStatus?.onAgentComplete?.({ agentId: taskId, profile: profileId, phaseId, taskId });
+        onStatus?.onAgentComplete?.({ agentId: taskId, profile: profileId, phaseId, taskId, stepIndex: 0 });
       } finally {
         harness.dispose();
       }
@@ -527,7 +527,7 @@ export async function runMultiStepTask(opts: RunMultiStepTaskOptions): Promise<M
       } finally {
         // 4g. Fire agent complete + dispose (always, even on error)
         try {
-          onStatus?.onAgentComplete?.({ agentId: taskId, profile: step.profileId, phaseId, taskId });
+          onStatus?.onAgentComplete?.({ agentId: taskId, profile: step.profileId, phaseId, taskId, stepIndex });
         } finally {
           harness.dispose();
         }

@@ -429,7 +429,7 @@ describe('evolveClient – task lifecycle', () => {
     // Start step 0 with agent link
     s = evolveClient(s, event('step_started', { taskId: 't1', stepIndex: 0, agentId: 'a1' }, { taskId: 't1' }, 3));
     expect(s.tasks['t1'].activeStepIndex).toBe(0);
-    expect(s.tasks['t1'].steps[0].agentKey).toBe('a1::t1');
+    expect(s.tasks['t1'].steps[0].agentKey).toBe('a1::t1::0');
   });
 
   it('step_started is a no-op when task does not exist', () => {

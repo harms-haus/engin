@@ -86,15 +86,7 @@ export function branchRunner(options: BranchRunnerOptions): TaskRunner {
         phaseId: ctx.phaseId,
       };
 
-      // ── Step 5: Fire onStepStart ────────────────────────────────────
-      ctx.onStatus?.onStepStart?.({
-        taskId: ctx.task.id,
-        stepIndex: 0,
-        stepName: selectedStep.name,
-        agentId: ctx.agentId,
-      });
-
-      // ── Step 6: Run the selected step ───────────────────────────────
+      // ── Step 5: Run the selected step ───────────────────────────────
       const { result, trackedSession } = await runStep(
         ctx.task,
         selectedStep,
@@ -105,7 +97,7 @@ export function branchRunner(options: BranchRunnerOptions): TaskRunner {
       );
       sessions.push(trackedSession);
 
-      // ── Step 7: Settle based on result ──────────────────────────────
+      // ── Step 6: Settle based on result ──────────────────────────────
       if (result.type === 'approved') {
         if (ctx.completeTask(result.output)) {
           disposeAllSessions();
@@ -121,7 +113,7 @@ export function branchRunner(options: BranchRunnerOptions): TaskRunner {
       disposeAllSessions();
       return { status: 'failed', feedback: result.feedback };
     } catch (err) {
-      // ── Step 8: Unexpected error — never re-throw ───────────────────
+      // ── Step 7: Unexpected error — never re-throw ───────────────────
       disposeAllSessions();
       const errorMsg = safeErrorMessage(err);
       ctx.failTask({ completed: false, error: errorMsg });

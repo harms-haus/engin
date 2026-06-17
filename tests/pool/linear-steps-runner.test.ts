@@ -217,6 +217,114 @@ describe('linearStepsRunner', () => {
     });
   });
 
+  describe('event ordering: onAgentSpawn before onStepStart', () => {
+    it('fires onAgentSpawn before onStepStart for each step', async () => {
+      setupProfileMocks();
+      setupHarnessMocks();
+
+      const callOrder: string[] = [];
+      const onAgentSpawn = mock((_info: unknown) => {
+        callOrder.push('onAgentSpawn');
+      });
+      const onStepStart = mock((_info: unknown) => {
+        callOrder.push('onStepStart');
+      });
+
+      const ctx = createRunnerContext({
+        onStatus: { onAgentSpawn, onStepStart } as Record<string, unknown>,
+      });
+      const runner = linearStepsRunner([{ name: 'implement', profileId: 'coder', isReadOnly: false }]);
+
+      await runner(ctx);
+
+      // For a single step, we expect: onAgentSpawn, onStepStart (in that order)
+      expect(callOrder).toEqual(['onAgentSpawn', 'onStepStart']);
+    });
+
+    it('fires onAgentSpawn before onStepStart for each of two steps in sequence', async () => {
+      setupProfileMocks();
+      setupHarnessMocks();
+
+      const callOrder: string[] = [];
+      const onAgentSpawn = mock((_info: unknown) => {
+        callOrder.push('onAgentSpawn');
+      });
+      const onStepStart = mock((_info: unknown) => {
+        callOrder.push('onStepStart');
+      });
+
+      const ctx = createRunnerContext({
+        onStatus: { onAgentSpawn, onStepStart } as Record<string, unknown>,
+      });
+      const runner = linearStepsRunner([
+        { name: 'implement', profileId: 'coder', isReadOnly: false },
+        { name: 'review', profileId: 'reviewer', isReadOnly: true },
+      ]);
+
+      await runner(ctx);
+
+      // For two steps: step0 onAgentSpawn, step0 onStepStart, step1 onAgentSpawn, step1 onStepStart
+      expect(callOrder).toEqual(['onAgentSpawn', 'onStepStart', 'onAgentSpawn', 'onStepStart']);
+    });
+
+    it('maintains ordering across retry (back-up) scenario', async () => {
+      setupProfileMocks();
+      setupHarnessMocks();
+
+      // First call to promptForStructured rejects, second approves
+      let structuredCall = 0;
+      mockPromptForStructured.mockImplementation(() => {
+        structuredCall++;
+        if (structuredCall === 1) {
+          return Promise.resolve({
+            result: { approved: false, feedback: 'Needs more tests', severity: 'medium' },
+            attempts: 1,
+          });
+        }
+        return Promise.resolve({
+          result: { approved: true, feedback: undefined },
+          attempts: 1,
+        });
+      });
+
+      const callOrder: string[] = [];
+      const onAgentSpawn = mock((_info: unknown) => {
+        callOrder.push('onAgentSpawn');
+      });
+      const onStepStart = mock((_info: unknown) => {
+        callOrder.push('onStepStart');
+      });
+
+      const ctx = createRunnerContext({
+        maxStepRetries: 5,
+        onStatus: { onAgentSpawn, onStepStart } as Record<string, unknown>,
+      });
+      const runner = linearStepsRunner([
+        { name: 'implement', profileId: 'coder', isReadOnly: false },
+        {
+          name: 'review',
+          profileId: 'reviewer',
+          isReadOnly: true,
+          schema: z.object({ approved: z.boolean(), feedback: z.string().optional() }),
+        },
+      ]);
+
+      await runner(ctx);
+
+      // Expect: step0 spawn, step0 start, step1 spawn, step1 start, step0 retry spawn, step0 retry start, step1 spawn, step1 start
+      expect(callOrder).toEqual([
+        'onAgentSpawn',
+        'onStepStart',
+        'onAgentSpawn',
+        'onStepStart',
+        'onAgentSpawn',
+        'onStepStart',
+        'onAgentSpawn',
+        'onStepStart',
+      ]);
+    });
+  });
+
   describe('session disposal', () => {
     it('disposes all sessions on successful completion', async () => {
       setupProfileMocks();

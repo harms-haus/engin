@@ -281,10 +281,307 @@ describe('evolve', () => {
         ),
       );
 
-      const key = 'a1::t1';
+      const key = 'a1::t1::1';
       expect(state.agents[key].stepIndex).toBe(1);
       // Task step should be linked
       expect(state.tasks['t1'].steps[1].agentKey).toBe(key);
+    });
+
+    it('creates independent agent entities for different steps within the same task', () => {
+      resetSeq();
+      let state = evolve(createInitialProjection(), makeEvent('workflow_started', { taskPrompt: 'x' }));
+
+      // Register a phase and a task with 2 steps
+      state = evolve(state, makeEvent('phase_registered', { id: 'p1', label: 'Phase 1', icon: '' }));
+      state = evolve(
+        state,
+        makeEvent('task_registered', {
+          taskId: 't1',
+          title: 'Do thing',
+          phaseId: 'p1',
+          steps: [
+            { name: 'analyze', profileId: 'scout', isReadOnly: true },
+            { name: 'implement', profileId: 'coder', isReadOnly: false },
+          ],
+          dependencies: [],
+        }),
+      );
+
+      // Spawn agent for step 0
+      state = evolve(
+        state,
+        makeEvent(
+          'agent_spawned',
+          { agentId: 'lane-0', profile: 'scout' },
+          { timestamp: new Date().toISOString(), agentId: 'lane-0', taskId: 't1', stepIndex: 0 },
+        ),
+      );
+
+      // Spawn agent for step 1 (same agentId, same taskId, different stepIndex)
+      state = evolve(
+        state,
+        makeEvent(
+          'agent_spawned',
+          { agentId: 'lane-0', profile: 'coder' },
+          { timestamp: new Date().toISOString(), agentId: 'lane-0', taskId: 't1', stepIndex: 1 },
+        ),
+      );
+
+      const key0 = 'lane-0::t1::0';
+      const key1 = 'lane-0::t1::1';
+
+      // Both entities must exist and be independent
+      expect(state.agents[key0]).toBeDefined();
+      expect(state.agents[key1]).toBeDefined();
+      expect(state.agents[key0].agentId).toBe('lane-0');
+      expect(state.agents[key1].agentId).toBe('lane-0');
+      expect(state.agents[key0].stepIndex).toBe(0);
+      expect(state.agents[key1].stepIndex).toBe(1);
+      expect(state.agents[key0].profile).toBe('scout');
+      expect(state.agents[key1].profile).toBe('coder');
+      expect(state.agents[key0].uid).toBe(key0);
+      expect(state.agents[key1].uid).toBe(key1);
+      expect(state.agents[key0].active).toBe(true);
+      expect(state.agents[key1].active).toBe(true);
+      // Each has its own log
+      expect(state.agents[key0].log).toEqual([]);
+      expect(state.agents[key1].log).toEqual([]);
+      // Task steps should be linked
+      expect(state.tasks['t1'].steps[0].agentKey).toBe(key0);
+      expect(state.tasks['t1'].steps[1].agentKey).toBe(key1);
+
+      // agentCount should be 2 (two distinct spawns)
+      expect(state.stats.agentCount).toBe(2);
+    });
+
+    it('events without stepIndex coalesce onto the last-active step agent when multiple are active', () => {
+      resetSeq();
+      let state = evolve(createInitialProjection(), makeEvent('workflow_started', { taskPrompt: 'x' }));
+
+      // Register a phase and a task with 2 steps
+      state = evolve(state, makeEvent('phase_registered', { id: 'p1', label: 'Phase 1', icon: '' }));
+      state = evolve(
+        state,
+        makeEvent('task_registered', {
+          taskId: 't1',
+          title: 'Do thing',
+          phaseId: 'p1',
+          steps: [
+            { name: 'analyze', profileId: 'scout', isReadOnly: true },
+            { name: 'implement', profileId: 'coder', isReadOnly: false },
+          ],
+          dependencies: [],
+        }),
+      );
+
+      // Spawn agent for step 0
+      state = evolve(
+        state,
+        makeEvent(
+          'agent_spawned',
+          { agentId: 'a1', profile: 'scout' },
+          { timestamp: new Date().toISOString(), agentId: 'a1', taskId: 't1', stepIndex: 0 },
+        ),
+      );
+
+      // Spawn agent for step 1
+      state = evolve(
+        state,
+        makeEvent(
+          'agent_spawned',
+          { agentId: 'a1', profile: 'coder' },
+          { timestamp: new Date().toISOString(), agentId: 'a1', taskId: 't1', stepIndex: 1 },
+        ),
+      );
+
+      const key0 = 'a1::t1::0';
+      const key1 = 'a1::t1::1';
+
+      // Fire turn_ended (no stepIndex metadata)
+      state = evolve(
+        state,
+        makeEvent(
+          'turn_ended',
+          {
+            turn: 1,
+            tokens: { input: 100, output: 50 },
+            contentBlocks: [{ type: 'text', text: 'step 0 work' }],
+          },
+          { timestamp: new Date().toISOString(), agentId: 'a1' },
+        ),
+      );
+
+      // Fire tool_call_started (taskId only, no stepIndex)
+      state = evolve(
+        state,
+        makeEvent(
+          'tool_call_started',
+          { toolName: 'write', toolCallId: 'tc-1', arguments: {} },
+          { timestamp: new Date().toISOString(), agentId: 'a1', taskId: 't1' },
+        ),
+      );
+
+      // turn_ended and tool_call_started carry only agentId (no stepIndex). With both step agents
+      // active, resolveAgent's fallback prefers the last-inserted active agent (key1), so both
+      // events land there and key0 is untouched. In production this coalescing does not occur
+      // because steps run sequentially (only one agent active at a time).
+      expect(state.agents[key0].log).toHaveLength(0);
+      expect(state.agents[key0].inputTokens).toBe(0);
+      expect(state.agents[key0].outputTokens).toBe(0);
+      expect(state.agents[key0].toolCallCount).toBe(0);
+
+      // Step 1 agent got both events (last active)
+      expect(state.agents[key1].log).toHaveLength(2); // text + tool_call_start
+      expect(state.agents[key1].inputTokens).toBe(100);
+      expect(state.agents[key1].outputTokens).toBe(50);
+      expect(state.agents[key1].toolCallCount).toBe(1);
+    });
+
+    it('re-spawn with stepIndex preserves accumulated log/tokens (per-step upsert)', () => {
+      resetSeq();
+      let state = evolve(createInitialProjection(), makeEvent('workflow_started', { taskPrompt: 'x' }));
+
+      // Register a phase and a task with 1 step
+      state = evolve(state, makeEvent('phase_registered', { id: 'p1', label: 'Phase 1', icon: '' }));
+      state = evolve(
+        state,
+        makeEvent('task_registered', {
+          taskId: 't1',
+          title: 'Do thing',
+          phaseId: 'p1',
+          steps: [{ name: 'analyze', profileId: 'scout', isReadOnly: true }],
+          dependencies: [],
+        }),
+      );
+
+      // First spawn with stepIndex
+      state = evolve(
+        state,
+        makeEvent(
+          'agent_spawned',
+          { agentId: 'a1', profile: 'scout' },
+          { timestamp: new Date().toISOString(), agentId: 'a1', taskId: 't1', stepIndex: 0 },
+        ),
+      );
+
+      // Accumulate state
+      state = evolve(
+        state,
+        makeEvent(
+          'turn_ended',
+          {
+            turn: 1,
+            tokens: { input: 200, output: 100 },
+            contentBlocks: [{ type: 'text', text: 'hello' }],
+          },
+          { timestamp: new Date().toISOString(), agentId: 'a1' },
+        ),
+      );
+
+      state = evolve(
+        state,
+        makeEvent(
+          'tool_call_started',
+          { toolName: 'write', toolCallId: 'tc-1', arguments: {} },
+          { timestamp: new Date().toISOString(), agentId: 'a1', taskId: 't1' },
+        ),
+      );
+
+      const key = 'a1::t1::0';
+      expect(state.agents[key].log).toHaveLength(2);
+      expect(state.agents[key].inputTokens).toBe(200);
+      expect(state.agents[key].outputTokens).toBe(100);
+      expect(state.agents[key].toolCallCount).toBe(1);
+      expect(state.stats.agentCount).toBe(1);
+
+      // Re-spawn same agent (same key — same stepIndex)
+      state = evolve(
+        state,
+        makeEvent(
+          'agent_spawned',
+          { agentId: 'a1', profile: 'scout-v2' },
+          { timestamp: new Date().toISOString(), agentId: 'a1', taskId: 't1', stepIndex: 0 },
+        ),
+      );
+
+      // Accumulated state must be preserved (UPSERT)
+      expect(state.agents[key].log).toHaveLength(2);
+      expect(state.agents[key].inputTokens).toBe(200);
+      expect(state.agents[key].outputTokens).toBe(100);
+      expect(state.agents[key].toolCallCount).toBe(1);
+      expect(state.agents[key].active).toBe(true);
+      expect(state.agents[key].profile).toBe('scout-v2');
+      // agentCount must NOT double-count
+      expect(state.stats.agentCount).toBe(1);
+    });
+
+    it('resolveAgent finds active step agent when only agentId is available', () => {
+      resetSeq();
+      let state = evolve(createInitialProjection(), makeEvent('workflow_started', { taskPrompt: 'x' }));
+
+      // Register a phase and a task with 2 steps
+      state = evolve(state, makeEvent('phase_registered', { id: 'p1', label: 'Phase 1', icon: '' }));
+      state = evolve(
+        state,
+        makeEvent('task_registered', {
+          taskId: 't1',
+          title: 'Do thing',
+          phaseId: 'p1',
+          steps: [
+            { name: 'analyze', profileId: 'scout', isReadOnly: true },
+            { name: 'implement', profileId: 'coder', isReadOnly: false },
+          ],
+          dependencies: [],
+        }),
+      );
+
+      // Spawn step 0 agent, then complete it
+      state = evolve(
+        state,
+        makeEvent(
+          'agent_spawned',
+          { agentId: 'a1', profile: 'scout' },
+          { timestamp: new Date().toISOString(), agentId: 'a1', taskId: 't1', stepIndex: 0 },
+        ),
+      );
+      state = evolve(
+        state,
+        makeEvent(
+          'agent_completed',
+          {},
+          { timestamp: new Date().toISOString(), agentId: 'a1', taskId: 't1', stepIndex: 0 },
+        ),
+      );
+
+      // Spawn step 1 agent (active)
+      state = evolve(
+        state,
+        makeEvent(
+          'agent_spawned',
+          { agentId: 'a1', profile: 'coder' },
+          { timestamp: new Date().toISOString(), agentId: 'a1', taskId: 't1', stepIndex: 1 },
+        ),
+      );
+
+      // Now resolveAgent with only agentId (no taskId) should find the active one (step 1)
+      // We'll verify by firing a decision event which uses resolveAgent internally
+      state = evolve(
+        state,
+        makeEvent(
+          'decision',
+          { decision: 'use step 1', reasoning: '' },
+          { timestamp: new Date().toISOString(), agentId: 'a1' },
+        ),
+      );
+
+      // The decision should go to the active step 1 agent
+      const key1 = 'a1::t1::1';
+      expect(state.agents[key1].log).toHaveLength(1);
+      expect(state.agents[key1].log[0].content).toBe('use step 1');
+
+      // Step 0 agent should NOT have the decision
+      const key0 = 'a1::t1::0';
+      expect(state.agents[key0].log).toHaveLength(0);
     });
   });
 
@@ -1121,11 +1418,11 @@ describe('evolve', () => {
           },
         ),
       );
-      expect(state.agents['coder-1::t1']).toBeDefined();
-      expect(state.agents['coder-1::t1'].active).toBe(true);
-      expect(state.agents['coder-1::t1'].stepIndex).toBe(1);
+      expect(state.agents['coder-1::t1::1']).toBeDefined();
+      expect(state.agents['coder-1::t1::1'].active).toBe(true);
+      expect(state.agents['coder-1::t1::1'].stepIndex).toBe(1);
       // Task step should be linked
-      expect(state.tasks['t1'].steps[1].agentKey).toBe('coder-1::t1');
+      expect(state.tasks['t1'].steps[1].agentKey).toBe('coder-1::t1::1');
 
       // 8. step_started (step 1) — also links agentKey
       state = evolve(
@@ -1157,7 +1454,7 @@ describe('evolve', () => {
           { timestamp: new Date().toISOString(), agentId: 'coder-1', taskId: 't1' },
         ),
       );
-      expect(state.agents['coder-1::t1'].toolCallCount).toBe(1);
+      expect(state.agents['coder-1::t1::1'].toolCallCount).toBe(1);
 
       // 11. tool_call_ended
       state = evolve(
@@ -1182,8 +1479,9 @@ describe('evolve', () => {
           { timestamp: new Date().toISOString(), agentId: 'coder-1' },
         ),
       );
-      expect(state.agents['coder-1::t1'].inputTokens).toBe(200);
-      expect(state.agents['coder-1::t1'].outputTokens).toBe(100);
+      // turn_ended has no taskId/stepIndex metadata, resolveAgent falls back to active search
+      expect(state.agents['coder-1::t1::1'].inputTokens).toBe(200);
+      expect(state.agents['coder-1::t1::1'].outputTokens).toBe(100);
       expect(state.stats.totalTokens).toBe(300);
 
       // 13. task_completed
@@ -1206,8 +1504,9 @@ describe('evolve', () => {
           { timestamp: new Date().toISOString(), agentId: 'coder-1', taskId: 't1' },
         ),
       );
-      expect(state.agents['coder-1::t1'].active).toBe(false);
-      expect(state.agents['coder-1::t1'].completedAt).toBeDefined();
+      // agent_completed has no stepIndex in metadata; resolveAgent falls back to active search
+      expect(state.agents['coder-1::t1::1'].active).toBe(false);
+      expect(state.agents['coder-1::t1::1'].completedAt).toBeDefined();
 
       // 15. phase_completed
       state = evolve(
@@ -1229,10 +1528,10 @@ describe('evolve', () => {
       expect(state.currentPhaseId).toBe('implementing');
       expect(state.completedPhaseIds).toEqual(['implementing']);
       expect(Object.keys(state.tasks)).toEqual(['t1']);
-      expect(Object.keys(state.agents)).toEqual(['coder-1::t1']);
+      expect(Object.keys(state.agents)).toEqual(['coder-1::t1::1']);
       expect(state.stats.totalTokens).toBe(300);
       expect(state.stats.agentCount).toBe(1);
-      expect(state.agents['coder-1::t1'].log.length).toBeGreaterThanOrEqual(3); // decision + tool_call_start + tool_call_end + text
+      expect(state.agents['coder-1::t1::1'].log.length).toBeGreaterThanOrEqual(3); // decision + tool_call_start + tool_call_end + text
     });
   });
 });

@@ -68,15 +68,7 @@ export function linearStepsRunner(steps: StepDefinition[]): TaskRunner {
       while (currentStepIndex < steps.length) {
         const step = steps[currentStepIndex];
 
-        // Step 4a: Fire onStepStart
-        onStatus?.onStepStart?.({
-          taskId: task.id,
-          stepIndex: currentStepIndex,
-          stepName: step.name,
-          agentId,
-        });
-
-        // Step 4b: Track attempt count and execution count
+        // Step 4a: Track attempt count and execution count
         const currentAttempt = stepAttempts.get(currentStepIndex) ?? 0;
         const execCount = stepExecutions.get(currentStepIndex) ?? 0;
         stepExecutions.set(currentStepIndex, execCount + 1);

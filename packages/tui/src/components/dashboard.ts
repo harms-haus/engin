@@ -153,7 +153,12 @@ export class Dashboard implements Component {
     if (currentSelectedTaskId === null || !phaseTasks.some((t) => t.id === currentSelectedTaskId)) {
       // Auto-select first active task; if none, first task; if none, null
       const activeTask = phaseTasks.find((t) => t.status === 'active');
-      this._selection.selectedTaskId = activeTask?.id ?? phaseTasks[0]?.id ?? null;
+      const newTaskId = activeTask?.id ?? phaseTasks[0]?.id ?? null;
+      if (newTaskId !== currentSelectedTaskId) {
+        this._selection.selectedStepIndex = null;
+        this._selection.userPinnedStep = false;
+      }
+      this._selection.selectedTaskId = newTaskId;
     }
     // else keep selected task
 

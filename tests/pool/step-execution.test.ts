@@ -613,7 +613,7 @@ describe('runStep (step-execution module)', () => {
       expect(typeof callArg.sessionPath).toBe('string');
     });
 
-    it('fires onAgentComplete with sessionId after execution', async () => {
+    it('fires onAgentComplete with sessionId and stepIndex after execution', async () => {
       setupHarnessMocks();
 
       const onAgentComplete = mock(() => {});
@@ -630,6 +630,7 @@ describe('runStep (step-execution module)', () => {
           profile: 'coder',
           phaseId: 'implementing',
           taskId: 'task-1',
+          stepIndex: 0,
         }),
       );
       // Verify sessionId is present (from mocked harness)

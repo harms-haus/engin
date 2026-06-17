@@ -79,7 +79,6 @@ export class AgentLogWidget implements Component {
   private _steps: StepEntity[] = [];
   private _selectedStepIndex = 0;
   private _activeStepIndex = 0;
-  private _userPinnedStep = false;
 
   private readonly _collapsedLines: number;
   private _expanded = false;
@@ -119,7 +118,6 @@ export class AgentLogWidget implements Component {
     if (index >= -1 && index < this._steps.length) {
       this._selectedStepIndex = index;
       this._scrollOffset = 0;
-      this._userPinnedStep = true;
       this.dirty = true;
     }
   }
@@ -135,7 +133,6 @@ export class AgentLogWidget implements Component {
     if (idx >= 0) {
       this._selectedStepIndex = idx;
       this._scrollOffset = 0;
-      this._userPinnedStep = true;
       this.dirty = true;
     }
   }
@@ -148,7 +145,6 @@ export class AgentLogWidget implements Component {
   toggleExpand(): void {
     this._expanded = !this._expanded;
     this._scrollOffset = 0;
-    this._userPinnedStep = false;
     this.dirty = true;
   }
 
@@ -357,13 +353,11 @@ export class AgentLogWidget implements Component {
         const entrySlots = this.getEntrySlots();
         const maxScrollOffset = Math.max(0, this._lastTotalEntryLines - entrySlots);
         this._scrollOffset = Math.min(this._scrollOffset + 1, maxScrollOffset);
-        this._userPinnedStep = true;
         this.dirty = true;
         return;
       }
       if (matchesKey(data, 'down')) {
         this._scrollOffset = Math.max(0, this._scrollOffset - 1);
-        this._userPinnedStep = true;
         this.dirty = true;
         return;
       }
@@ -371,13 +365,11 @@ export class AgentLogWidget implements Component {
         const entrySlots = this.getEntrySlots();
         const maxScrollOffset = Math.max(0, this._lastTotalEntryLines - entrySlots);
         this._scrollOffset = Math.min(this._scrollOffset + 10, maxScrollOffset);
-        this._userPinnedStep = true;
         this.dirty = true;
         return;
       }
       if (matchesKey(data, Key.shift('down'))) {
         this._scrollOffset = Math.max(0, this._scrollOffset - 10);
-        this._userPinnedStep = true;
         this.dirty = true;
         return;
       }
@@ -390,7 +382,6 @@ export class AgentLogWidget implements Component {
       if (nextIndex === this._selectedStepIndex) return; // no agent steps
       this._selectedStepIndex = nextIndex;
       this._scrollOffset = 0;
-      this._userPinnedStep = true;
       this.dirty = true;
       return;
     }

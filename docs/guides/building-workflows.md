@@ -260,9 +260,10 @@ console.log(`Drafted ${result.completedTasks} pages; ${result.failedTasks} faile
 
 For each claimed task, the lane walks the steps returned by `getStepsForTask` in order:
 
-1. Fire `onStepStart` for the current step.
-2. Load the profile (read-only steps strip `write`/`edit`). Create a persisted harness session
+1. Load the profile (read-only steps strip `write`/`edit`). Create a persisted harness session
    at `{sessionBaseDir}/{taskId}/{execCount}-{stepIndex}-{stepName}/`.
+2. Inside `runStep`, fire `onAgentSpawn` and then `onStepStart` (in that order, so the step's
+   `agentKey` is populated before `step_started` is recorded).
 3. Build the prompt — including any pre-loaded file contents from `task.files` and the task's
    accumulated `reviewFeedback`.
 4. Run the prompt. If the step has a `schema`, the response is parsed and validated (3 attempts

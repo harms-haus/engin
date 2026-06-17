@@ -138,16 +138,23 @@ describe('createStoreCallbacks', () => {
   });
 
   describe('onAgentComplete', () => {
-    it('appends agent_completed with correct data and metadata', () => {
+    it('appends agent_completed with correct data and metadata including stepIndex', () => {
       const { store, calls } = createMockStore();
       const cb = createStoreCallbacks(store as never);
-      cb.onAgentComplete!({ agentId: 'a1', profile: 'coder', phaseId: 'impl', taskId: 't1', sessionId: 'sess-1' });
+      cb.onAgentComplete!({
+        agentId: 'a1',
+        profile: 'coder',
+        phaseId: 'impl',
+        taskId: 't1',
+        stepIndex: 2,
+        sessionId: 'sess-1',
+      });
       expect(calls).toHaveLength(1);
       expect(calls[0].type).toBe('agent_completed');
       expect(calls[0].data.agentId).toBe('a1');
       expect(calls[0].data.profile).toBe('coder');
       expect(calls[0].data.sessionId).toBe('sess-1');
-      expect(calls[0].metadata).toEqual({ agentId: 'a1', taskId: 't1', phaseId: 'impl' });
+      expect(calls[0].metadata).toEqual({ agentId: 'a1', taskId: 't1', phaseId: 'impl', stepIndex: 2 });
     });
   });
 
@@ -167,14 +174,14 @@ describe('createStoreCallbacks', () => {
   });
 
   describe('onStepStart', () => {
-    it('appends step_started with correct data and metadata', () => {
+    it('appends step_started with correct data and metadata including stepIndex', () => {
       const { store, calls } = createMockStore();
       const cb = createStoreCallbacks(store as never);
       cb.onStepStart!({ taskId: 't1', stepIndex: 1, stepName: 'analyze', agentId: 'a1' });
       expect(calls).toHaveLength(1);
       expect(calls[0].type).toBe('step_started');
       expect(calls[0].data).toEqual({ taskId: 't1', stepIndex: 1, stepName: 'analyze', agentId: 'a1' });
-      expect(calls[0].metadata).toEqual({ taskId: 't1', agentId: 'a1' });
+      expect(calls[0].metadata).toEqual({ taskId: 't1', agentId: 'a1', stepIndex: 1 });
     });
   });
 

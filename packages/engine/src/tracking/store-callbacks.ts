@@ -72,7 +72,7 @@ export function createStoreCallbacks(store: StoreLike): StatusCallbacks {
       store.append(
         'agent_completed',
         { agentId: info.agentId, profile: info.profile, sessionId: info.sessionId },
-        { agentId: info.agentId, taskId: info.taskId, phaseId: info.phaseId },
+        { agentId: info.agentId, taskId: info.taskId, phaseId: info.phaseId, stepIndex: info.stepIndex },
       );
     },
 
@@ -98,7 +98,7 @@ export function createStoreCallbacks(store: StoreLike): StatusCallbacks {
           stepName: info.stepName,
           agentId: info.agentId,
         },
-        { taskId: info.taskId, agentId: info.agentId },
+        { taskId: info.taskId, agentId: info.agentId, stepIndex: info.stepIndex },
       );
     },
 

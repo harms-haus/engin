@@ -124,6 +124,7 @@ export interface WorkflowStatusCallbacks {
     profile: string;
     phaseId: string;
     taskId?: string;
+    stepIndex?: number;
     sessionId?: string;
   }) => void;
   onTaskStart?: (info: {

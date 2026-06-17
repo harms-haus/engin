@@ -136,23 +136,23 @@ Source: `packages/shared/src/event-types.ts` (canonical; re-exported by the engi
 
 Source: `packages/shared/src/event-types.ts` (canonical; re-exported by the engine).
 
-| Field           | Type         | Description                                        |
-| --------------- | ------------ | -------------------------------------------------- |
-| `uid`           | `string`     | Stable key (`agentId::taskId`, or just `agentId`). |
-| `agentId`       | `string`     | Agent identifier.                                  |
-| `profile`       | `string`     | Profile ID used to create the agent.               |
-| `phaseId`       | `string`     | Phase the agent belongs to.                        |
-| `stepIndex?`    | `number`     | Step index within the task, when associated.       |
-| `taskId?`       | `string`     | Associated task, if any.                           |
-| `sessionId?`    | `string`     | Session identifier.                                |
-| `sessionPath?`  | `string`     | Session storage path.                              |
-| `active`        | `boolean`    | Whether the agent is currently running.            |
-| `log`           | `LogEntry[]` | Agent log entries (capped at 500).                 |
-| `toolCallCount` | `number`     | Total tool calls made.                             |
-| `inputTokens`   | `number`     | Accumulated input tokens.                          |
-| `outputTokens`  | `number`     | Accumulated output tokens.                         |
-| `taskTitle`     | `string`     | Title of the associated task (empty if none).      |
-| `completedAt?`  | `string`     | ISO timestamp when the agent completed.            |
+| Field           | Type         | Description                                                                                                                                                                                                               |
+| --------------- | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `uid`           | `string`     | Stable key. Format is `agentId::taskId::stepIndex` when the agent is associated with a task step, `agentId::taskId` for legacy task agents without a step index, or just `agentId` for non-task agents (scouts/planners). |
+| `agentId`       | `string`     | Agent identifier.                                                                                                                                                                                                         |
+| `profile`       | `string`     | Profile ID used to create the agent.                                                                                                                                                                                      |
+| `phaseId`       | `string`     | Phase the agent belongs to.                                                                                                                                                                                               |
+| `stepIndex?`    | `number`     | Step index within the task, when associated.                                                                                                                                                                              |
+| `taskId?`       | `string`     | Associated task, if any.                                                                                                                                                                                                  |
+| `sessionId?`    | `string`     | Session identifier.                                                                                                                                                                                                       |
+| `sessionPath?`  | `string`     | Session storage path.                                                                                                                                                                                                     |
+| `active`        | `boolean`    | Whether the agent is currently running.                                                                                                                                                                                   |
+| `log`           | `LogEntry[]` | Agent log entries (capped at 500).                                                                                                                                                                                        |
+| `toolCallCount` | `number`     | Total tool calls made.                                                                                                                                                                                                    |
+| `inputTokens`   | `number`     | Accumulated input tokens.                                                                                                                                                                                                 |
+| `outputTokens`  | `number`     | Accumulated output tokens.                                                                                                                                                                                                |
+| `taskTitle`     | `string`     | Title of the associated task (empty if none).                                                                                                                                                                             |
+| `completedAt?`  | `string`     | ISO timestamp when the agent completed.                                                                                                                                                                                   |
 
 ### `LogEntry`
 
@@ -178,7 +178,7 @@ interface WorkflowProjection {
   currentPhaseId: string;
   completedPhaseIds: string[];
   tasks: Record<string, TaskEntity>; // keyed by taskId
-  agents: Record<string, AgentEntity>; // keyed by agentKey (agentId::taskId)
+  agents: Record<string, AgentEntity>; // keyed by agentKey (agentId::taskId::stepIndex when step-scoped; see AgentEntity.uid)
   sidebar: { title: string; indicator: string };
   status: 'running' | 'complete' | 'failed';
   error?: string;
@@ -381,7 +381,7 @@ interface PromptableHarness {
 | `onPhaseStart`       | `{ phase, round }`                                                                   | A phase begins execution.                  |
 | `onPhaseComplete`    | `{ phase, durationMs }`                                                              | A phase finishes.                          |
 | `onAgentSpawn`       | `{ agentId, profile, phaseId, taskId?, stepIndex?, sessionId?, sessionPath? }`       | An agent session is created.               |
-| `onAgentComplete`    | `{ agentId, profile, phaseId, taskId?, sessionId? }`                                 | An agent finishes its prompt.              |
+| `onAgentComplete`    | `{ agentId, profile, phaseId, taskId?, stepIndex?, sessionId? }`                     | An agent finishes its prompt.              |
 | `onTaskStart`        | `{ taskId, title, agentId, phaseId?, startedAt? }`                                   | A task is claimed and dispatched.          |
 | `onTaskRegister`     | `{ taskId, phaseId, title, dependencies, steps: { name, profileId, isReadOnly }[] }` | A task is registered with its step layout. |
 | `onStepStart`        | `{ taskId, stepIndex, stepName, agentId }`                                           | A step begins execution.                   |
