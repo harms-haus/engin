@@ -132,6 +132,29 @@ describe('councilRunner', () => {
       expect(mockRunStep).toHaveBeenCalledTimes(3);
     });
 
+    it('passes the synthesizer output to completeTask so it lands on task.result', async () => {
+      let call = 0;
+      mockRunStep.mockImplementation(async () => {
+        call++;
+        // calls 1..2 are workers, call 3 is the synthesizer
+        const output = call <= 2 ? `worker-${call}` : 'merged-synthesis';
+        return { result: { type: 'approved', output }, trackedSession: makeTrackedSession().trackedSession };
+      });
+
+      const ctx = createCtx();
+      const runner = councilRunner({
+        workers: [
+          { name: 'writer', profileId: 'coder', isReadOnly: false },
+          { name: 'tester', profileId: 'coder', isReadOnly: false },
+        ],
+        synthesizer: { name: 'merge', profileId: 'coder', isReadOnly: false },
+      });
+
+      await runner(ctx);
+
+      expect(ctx.completeTask).toHaveBeenCalledWith('merged-synthesis');
+    });
+
     it('includes worker outputs in synthesizer prompt', async () => {
       let callCount = 0;
       mockRunStep.mockImplementation(async (_task: Task, _step: StepDefinition) => {

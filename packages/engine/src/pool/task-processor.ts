@@ -24,11 +24,11 @@ export interface TaskProcessorContext {
 
 /**
  * Safely mark a task as complete. Catches and logs errors from invalid
- * state transitions.
+ * state transitions. The `result` is persisted onto `task.result`.
  */
-export function safeCompleteTask(taskId: string, ctx: TaskProcessorContext): boolean {
+export function safeCompleteTask(taskId: string, result: unknown, ctx: TaskProcessorContext): boolean {
   try {
-    ctx.options.taskTracker.completeTask(taskId);
+    ctx.options.taskTracker.completeTask(taskId, result);
     return true;
   } catch (err) {
     const errorMsg = `safeCompleteTask failed for ${taskId}: ${safeErrorMessage(err)}`;

@@ -107,7 +107,7 @@ export function branchRunner(options: BranchRunnerOptions): TaskRunner {
 
       // ── Step 7: Settle based on result ──────────────────────────────
       if (result.type === 'approved') {
-        if (ctx.completeTask()) {
+        if (ctx.completeTask(result.output)) {
           disposeAllSessions();
           return { status: 'completed', output: result.output };
         }

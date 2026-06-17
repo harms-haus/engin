@@ -181,6 +181,28 @@ describe('TaskTracker', () => {
 
       expect(tracker.getTask('t1')!.status).toBe('complete');
     });
+
+    it('stores the provided result on the task', () => {
+      const tracker = new TaskTracker();
+      tracker.addTask(makeTask({ id: 't1' }));
+      tracker.claimTasks(1, 'agent-1');
+
+      tracker.completeTask('t1', { findings: ['x', 'y'] });
+
+      const task = tracker.getTask('t1')!;
+      expect(task.status).toBe('complete');
+      expect(task.result).toEqual({ findings: ['x', 'y'] });
+    });
+
+    it('leaves result undefined when no result is passed', () => {
+      const tracker = new TaskTracker();
+      tracker.addTask(makeTask({ id: 't1' }));
+      tracker.claimTasks(1, 'agent-1');
+
+      tracker.completeTask('t1');
+
+      expect(tracker.getTask('t1')!.result).toBeUndefined();
+    });
   });
 
   // ── failTask ───────────────────────────────────────────────────────

@@ -672,3 +672,33 @@ describe('completeTask failure handling', () => {
     expect(ctx.failTask).toHaveBeenCalledWith(expect.objectContaining({ error: 'Failed to submit' }));
   });
 });
+
+describe('completeTask receives output', () => {
+  it('passes the critic output to completeTask on first-round approval', async () => {
+    setupProfileMocks();
+    setupHarnessMocks();
+    const criticOutput = { approved: true, feedback: 'Looks great', severity: 'low' };
+    mockPromptForStructured.mockResolvedValue({ result: criticOutput, attempts: 1 });
+
+    const ctx = createRunnerContext();
+    const runner = reflectionRunner({ draftStep, criticStep, maxRounds: 3 });
+
+    await runner(ctx);
+
+    expect(ctx.completeTask).toHaveBeenCalledWith(criticOutput);
+  });
+
+  it('passes the final critic output to completeTask when max rounds exhausted with medium severity', async () => {
+    setupProfileMocks();
+    setupHarnessMocks();
+    const criticOutput = { approved: false, feedback: 'Minor issues', severity: 'medium' };
+    mockPromptForStructured.mockResolvedValue({ result: criticOutput, attempts: 1 });
+
+    const ctx = createRunnerContext();
+    const runner = reflectionRunner({ draftStep, criticStep, maxRounds: 1 });
+
+    await runner(ctx);
+
+    expect(ctx.completeTask).toHaveBeenCalledWith(criticOutput);
+  });
+});

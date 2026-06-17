@@ -151,7 +151,7 @@ export function reflectionRunner(options: ReflectionRunnerOptions): TaskRunner {
 
         // ── Step 4c: Critic approved → complete ─────────────────────────
         if (criticResult.type === 'approved') {
-          if (ctx.completeTask()) {
+          if (ctx.completeTask(criticResult.output)) {
             disposeAllTaskSessions();
             return { status: 'completed', output: criticResult.output };
           }
@@ -193,7 +193,7 @@ export function reflectionRunner(options: ReflectionRunnerOptions): TaskRunner {
       }
 
       // Medium/low/none → accept as completed with caveats
-      if (ctx.completeTask()) {
+      if (ctx.completeTask(finalCriticResult.output)) {
         disposeAllTaskSessions();
         return { status: 'completed', output: finalCriticResult.output };
       }

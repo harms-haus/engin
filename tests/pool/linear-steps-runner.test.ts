@@ -30,6 +30,18 @@ describe('linearStepsRunner', () => {
       expect(ctx.completeTask).toHaveBeenCalledTimes(1);
       expect(ctx.failTask).not.toHaveBeenCalled();
     });
+
+    it('passes the final step output to completeTask so it lands on task.result', async () => {
+      setupProfileMocks();
+      setupHarnessMocks(makeSession(() => 'scout report: found auth module'));
+      const ctx = createRunnerContext();
+      const runner = linearStepsRunner([{ name: 'scouting', profileId: 'coder', isReadOnly: true }]);
+
+      const outcome = await runner(ctx);
+
+      expect(outcome.status).toBe('completed');
+      expect(ctx.completeTask).toHaveBeenCalledWith('scout report: found auth module');
+    });
   });
 
   describe('multi-step success', () => {

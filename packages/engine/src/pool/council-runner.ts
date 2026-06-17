@@ -133,7 +133,7 @@ export function councilRunner(options: { workers: StepDefinition[]; synthesizer:
 
       // ── Step 8: Settle based on synthesizer result ─────────────────
       if (synthResult.result.type === 'approved') {
-        if (ctx.completeTask()) {
+        if (ctx.completeTask(synthResult.result.output)) {
           disposeAllSessions();
           return { status: 'completed', output: synthResult.result.output };
         }

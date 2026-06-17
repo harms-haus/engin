@@ -238,7 +238,7 @@ export class LanePool {
             cwd: this.options.cwd,
             apiKeys: this.options.apiKeys,
             maxStepRetries: this.options.maxStepRetries ?? 5,
-            completeTask: () => safeCompleteTask(task.id, processorCtx),
+            completeTask: (result?: unknown) => safeCompleteTask(task.id, result, processorCtx),
             failTask: (result?: unknown) => safeFailTask(task.id, result ?? { completed: false }, processorCtx),
           };
 

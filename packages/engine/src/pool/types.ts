@@ -75,8 +75,10 @@ export interface TaskRunnerContext {
   cwd: string;
   apiKeys?: Record<string, string>;
   maxStepRetries: number;
-  /** Safely settle the task as complete. Returns true on success. */
-  completeTask: () => boolean;
+  /** Safely settle the task as complete. The optional `result` is stored on
+   *  the task (e.g. the agent's final output) so downstream phases can read it
+   *  via `task.result`. Returns true on success. */
+  completeTask: (result?: unknown) => boolean;
   /** Safely settle the task as failed. */
   failTask: (result?: unknown) => void;
 }

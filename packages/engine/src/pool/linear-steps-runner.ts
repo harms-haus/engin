@@ -143,7 +143,7 @@ export function linearStepsRunner(steps: StepDefinition[]): TaskRunner {
           }
 
           // Medium/low → accept as completed with caveats
-          if (ctx.completeTask()) {
+          if (ctx.completeTask(result.output)) {
             disposeAllTaskSessions();
             return { status: 'completed', output: result.output };
           }
@@ -161,7 +161,7 @@ export function linearStepsRunner(steps: StepDefinition[]): TaskRunner {
       }
 
       // ── Step 5: All steps approved ─────────────────────────────────
-      if (ctx.completeTask()) {
+      if (ctx.completeTask(lastOutput)) {
         disposeAllTaskSessions();
         return { status: 'completed', output: lastOutput };
       }

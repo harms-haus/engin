@@ -133,7 +133,14 @@ export class TaskTracker extends EventEmitter {
     return toClaim;
   }
 
-  completeTask(id: string): void {
+  /**
+   * Mark a task as complete. The optional `result` (e.g. the agent's final
+   * output) is stored on `task.result` so downstream phases can read it back —
+   * mirroring how `failTask` stores its result. Without this, consumers that
+   * collect outputs via `task.result` (e.g. scouting reports) read `undefined`
+   * and the data is silently lost.
+   */
+  completeTask(id: string, result?: unknown): void {
     const task = this.tasks.get(id);
     if (!task) throw new Error(`Task "${id}" not found`);
     if (task.status !== 'active') {
@@ -141,6 +148,7 @@ export class TaskTracker extends EventEmitter {
     }
 
     task.status = 'complete';
+    task.result = result;
     this.recalculateStatuses(id);
     queueMicrotask(() => this.emit(TaskTracker.Events.TaskSettled));
   }

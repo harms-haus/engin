@@ -141,6 +141,25 @@ describe('mapRunner', () => {
       expect(ctx.failTask).not.toHaveBeenCalled();
     });
 
+    it('passes the collected outputs array to completeTask so it lands on task.result', async () => {
+      const items = ['item-a', 'item-b'];
+      const runner = mapRunner({ items: () => items, step: testStep });
+
+      mockRunStep.mockImplementation((itemTask: Task) => {
+        const ts = makeTrackedSession();
+        const lastChar = itemTask.prompt[itemTask.prompt.length - 1];
+        return Promise.resolve({
+          result: { type: 'approved' as const, output: `output-${lastChar}` },
+          trackedSession: ts,
+        });
+      });
+
+      const ctx = createRunnerContext();
+      await runner(ctx);
+
+      expect(ctx.completeTask).toHaveBeenCalledWith(['output-a', 'output-b']);
+    });
+
     it('calls runStep once per item with correct arguments', async () => {
       const items = ['apple', 'banana'];
       const runner = mapRunner({

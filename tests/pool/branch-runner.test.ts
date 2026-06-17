@@ -447,3 +447,19 @@ describe('branchRunner - onStepStart callback', () => {
     });
   });
 });
+
+describe('branchRunner - completeTask receives output', () => {
+  it('passes the step output to completeTask so it lands on task.result', async () => {
+    setupProfileMocks();
+    setupHarnessMocks(makeSession(() => 'branch output text'));
+    const ctx = createRunnerContext();
+
+    const runner = branchRunner({
+      branches: [{ condition: () => true, step: coderStep }],
+    });
+
+    await runner(ctx);
+
+    expect(ctx.completeTask).toHaveBeenCalledWith('branch output text');
+  });
+});

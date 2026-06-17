@@ -141,7 +141,7 @@ export function mapRunner(options: MapRunnerOptions): TaskRunner {
       // ── Step 7: Settle the task ──────────────────────────────────────
       if (errors.length === 0) {
         // All items succeeded
-        if (ctx.completeTask()) {
+        if (ctx.completeTask(outputs)) {
           disposeAllSessions();
           return { status: 'completed', output: outputs };
         }
