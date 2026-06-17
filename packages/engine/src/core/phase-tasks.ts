@@ -31,8 +31,26 @@ export interface RunStepTaskOptions {
   onStatus?: StatusCallbacks;
   /** When true, write/edit tools are stripped from the agent's toolset */
   isReadOnly?: boolean;
+  /**
+   * Optional write sandbox: when set, `write`/`edit` calls whose target path
+   * resolves outside these directories are blocked. Paths resolve against `cwd`.
+   * Ignored when `isReadOnly` is true (write/edit are already removed).
+   */
+  allowedWriteDirs?: string[];
   /** Zod schema for structured output. When absent, raw assistant text is returned. */
   schema?: ZodType<unknown>;
+  /**
+   * Optional validation gate for file-based agent output (used when `schema` is
+   * absent). Called after each agent turn: return `{ error: string }` to
+   * re-prompt the agent within the SAME session with that error appended, or
+   * `undefined` / `{}` to accept. Retries up to 3 attempts total, then throws.
+   *
+   * Use this when an agent writes its output to a file instead of returning
+   * structured text (e.g. a planner writing `plan.json`), and you want
+   * schema-like validation with retries — mirroring the structured-output path
+   * but reading from the filesystem instead of the response text.
+   */
+  validateOutput?: () => Promise<{ error?: string } | undefined> | ({ error?: string } | undefined);
   /** Optional registry of per-profile renderers that transform agent output into human-readable markdown */
   rendererRegistry?: RendererRegistry;
   /** Prompt to send to the agent */
@@ -71,7 +89,9 @@ export async function runStepTask<T = unknown>(opts: RunStepTaskOptions): Promis
     apiKeys,
     onStatus,
     isReadOnly = false,
+    allowedWriteDirs,
     schema,
+    validateOutput,
     rendererRegistry,
     prompt,
     signal,
@@ -131,6 +151,7 @@ export async function runStepTask<T = unknown>(opts: RunStepTaskOptions): Promis
       apiKeys,
       agentId: taskId,
       onAgentStatus: forwardAgentStatus(onStatus),
+      allowedWriteDirs,
     });
 
     // 6. Fire agent spawn
@@ -151,6 +172,23 @@ export async function runStepTask<T = unknown>(opts: RunStepTaskOptions): Promis
     if (schema) {
       const structuredResult = await promptForStructured(harness.session, prompt, schema, { maxRetries: 3 });
       result = structuredResult.result as T;
+    } else if (validateOutput) {
+      // File-based output: validate after each turn and retry within the same
+      // session (mirrors promptForStructured's retry, but reads from disk).
+      const maxAttempts = 3;
+      let validationError: string | undefined;
+      for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        const turnPrompt =
+          attempt === 0 || validationError === undefined ? prompt : buildValidationRetryPrompt(prompt, validationError);
+        await harness.session.prompt(turnPrompt);
+        const gate = await validateOutput();
+        validationError = gate?.error;
+        if (!validationError) break;
+      }
+      if (validationError) {
+        throw new Error(`Agent output failed validation after ${maxAttempts} attempts: ${validationError}`);
+      }
+      result = harness.session.getLastAssistantText() as T;
     } else {
       await harness.session.prompt(prompt);
       result = harness.session.getLastAssistantText() as T;
@@ -197,4 +235,20 @@ export async function runStepTask<T = unknown>(opts: RunStepTaskOptions): Promis
   // 11. On success — fire task complete and return result
   onStatus?.onTaskComplete?.({ taskId, title });
   return result;
+}
+
+// ─── Internal: validation-retry prompt builder ───────────────────────────────
+
+/**
+ * Rebuild a prompt to ask the agent to fix a validation failure on retry.
+ * Appends a delimited error block to the original prompt.
+ */
+function buildValidationRetryPrompt(originalPrompt: string, error: string): string {
+  return [
+    originalPrompt,
+    '',
+    '--- Previous attempt failed validation ---',
+    `Error: ${error}`,
+    'Please correct the output and try again.',
+  ].join('\n');
 }

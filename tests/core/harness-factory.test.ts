@@ -177,6 +177,29 @@ describe('createHarness', () => {
     expect(mockDefaultResourceLoaderInstance.reload).toHaveBeenCalled();
   });
 
+  it('passes no extensionFactories when allowedWriteDirs is absent', async () => {
+    await createHarness({ profile: makeProfile(), cwd: '/tmp' });
+
+    const opts = (DefaultResourceLoader as unknown as { mock: { calls: unknown[][] } }).mock.calls.at(-1)![0] as {
+      extensionFactories?: unknown[];
+    };
+    expect(opts.extensionFactories ?? []).toEqual([]);
+  });
+
+  it('installs a write-sandbox extension factory when allowedWriteDirs is set', async () => {
+    await createHarness({
+      profile: makeProfile(),
+      cwd: '/proj',
+      allowedWriteDirs: ['/proj/.engin/work/r1/artifacts'],
+    });
+
+    const opts = (DefaultResourceLoader as unknown as { mock: { calls: unknown[][] } }).mock.calls.at(-1)![0] as {
+      extensionFactories?: unknown[];
+    };
+    expect(opts.extensionFactories).toHaveLength(1);
+    expect(typeof opts.extensionFactories![0]).toBe('function');
+  });
+
   it('builds tool list from profile includeTools', async () => {
     await createHarness({
       profile: makeProfile({

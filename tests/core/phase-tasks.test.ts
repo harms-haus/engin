@@ -485,6 +485,105 @@ describe('runStepTask', () => {
     });
   });
 
+  // ─── validateOutput (file-based output) ──────────────────────────────
+
+  describe('validateOutput (file-based output)', () => {
+    it('re-prompts within the same session when validateOutput fails, then succeeds', async () => {
+      setupProfilesMock(defaultProfile);
+      let calls = 0;
+      const session = makeMockSession(() => `attempt ${++calls}`).session;
+      setupHarnessMock(session);
+
+      let gateCalls = 0;
+      const validateOutput = mock(() => {
+        gateCalls++;
+        // Fail twice, succeed on the third.
+        return gateCalls < 3 ? { error: 'plan missing' } : undefined;
+      });
+
+      const result = await runStepTask<string>(makeDefaultOptions({ validateOutput: validateOutput as never }));
+
+      // 3 agent turns total: initial + 2 retries.
+      expect(session.prompt).toHaveBeenCalledTimes(3);
+      // Retry prompts append the error feedback.
+      const prompts = (session.prompt as ReturnType<typeof mock>).mock.calls.map((c) => c[0] as string);
+      expect(prompts[0]).toBe('Do the thing'); // first attempt is the bare prompt
+      expect(prompts[1]).toContain('Previous attempt failed validation');
+      expect(prompts[1]).toContain('plan missing');
+      expect(prompts[2]).toContain('Previous attempt failed validation');
+      // validateOutput called once per turn.
+      expect(validateOutput).toHaveBeenCalledTimes(3);
+      // Returns the last assistant text.
+      expect(result).toBe('attempt 3');
+    });
+
+    it('throws and fires onTaskRejected when validateOutput never succeeds (3 attempts)', async () => {
+      setupProfilesMock(defaultProfile);
+      const session = makeMockSession(() => 'still bad').session;
+      setupHarnessMock(session);
+
+      const validateOutput = mock(() => ({ error: 'invalid schema' }));
+      const onStatus = createStatusCallbacksSpy();
+
+      await expect(
+        runStepTask(
+          makeDefaultOptions({
+            validateOutput: validateOutput as never,
+            onStatus: onStatus as unknown as StatusCallbacks,
+          }),
+        ),
+      ).rejects.toThrow(/failed validation after 3 attempts: invalid schema/);
+
+      expect(session.prompt).toHaveBeenCalledTimes(3);
+      expect(validateOutput).toHaveBeenCalledTimes(3);
+      expect(onStatus.onTaskRejected).toHaveBeenCalledTimes(1);
+      expect((onStatus.onTaskRejected.mock.calls[0]![0] as Record<string, unknown>).reason).toContain('invalid schema');
+    });
+
+    it('does not re-prompt when validateOutput passes on the first attempt', async () => {
+      setupProfilesMock(defaultProfile);
+      const session = makeMockSession(() => 'done').session;
+      setupHarnessMock(session);
+
+      const validateOutput = mock(() => undefined);
+      await runStepTask(makeDefaultOptions({ validateOutput: validateOutput as never }));
+
+      expect(session.prompt).toHaveBeenCalledTimes(1);
+      expect(validateOutput).toHaveBeenCalledTimes(1);
+    });
+
+    it('supports async validateOutput', async () => {
+      setupProfilesMock(defaultProfile);
+      const session = makeMockSession(() => 'done').session;
+      setupHarnessMock(session);
+
+      const validateOutput = mock(async () => undefined);
+      await runStepTask(makeDefaultOptions({ validateOutput: validateOutput as never }));
+
+      expect(session.prompt).toHaveBeenCalledTimes(1);
+      expect(validateOutput).toHaveBeenCalledTimes(1);
+    });
+
+    it('is ignored when schema is also provided (structured output wins)', async () => {
+      setupProfilesMock(defaultProfile);
+      const session = makeMockSession().session;
+      setupHarnessMock(session);
+      mockPromptForStructured.mockResolvedValue({ result: { ok: true }, attempts: 1 });
+
+      const validateOutput = mock(() => undefined);
+      await runStepTask(
+        makeDefaultOptions({
+          schema: z.object({ ok: z.boolean() }) as unknown as ZodType<unknown>,
+          validateOutput: validateOutput as never,
+        }),
+      );
+
+      // Structured path taken; validateOutput never consulted.
+      expect(mockPromptForStructured).toHaveBeenCalledTimes(1);
+      expect(validateOutput).not.toHaveBeenCalled();
+    });
+  });
+
   // ─── Error Handling ──────────────────────────────────────────────────
 
   describe('error handling', () => {

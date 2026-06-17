@@ -15,6 +15,7 @@ export * from './core/types.js';
 export * from './core/utils.js';
 export * from './core/workflow-loader.js';
 export * from './core/worktree-lifecycle.js';
+export * from './core/write-sandbox.js';
 
 // ─── Pool ────────────────────────────────────────────────────────────────
 export * from './pool/index.js';

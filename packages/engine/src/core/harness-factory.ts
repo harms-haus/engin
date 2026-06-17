@@ -11,6 +11,7 @@ import {
 
 import type { HarnessCreationOptions, TurnContentBlock } from './types.js';
 import { DEFAULT_TOOLS } from './utils.js';
+import { createWriteSandboxExtension } from './write-sandbox.js';
 
 // ─── Agent Event Types ──────────────────────────────────────────────────────
 
@@ -41,7 +42,7 @@ type AgentLevelEvent =
 export async function createHarness(
   options: HarnessCreationOptions,
 ): Promise<{ session: AgentSession; sessionId: string; dispose: () => void }> {
-  const { profile, cwd, apiKeys, onAgentStatus } = options;
+  const { profile, cwd, apiKeys, onAgentStatus, allowedWriteDirs } = options;
 
   // 1. Model
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -75,10 +76,20 @@ export async function createHarness(
   }
 
   // 4. Resource loader
+  //    When a write sandbox is requested, install it as an inline extension
+  //    factory so its `tool_call` handler is picked up by the AgentSession.
+  //    Inline factories load unconditionally (no project-trust gating) and run
+  //    headlessly — the handler needs no UI/command bindings.
+  const extensionFactories =
+    allowedWriteDirs && allowedWriteDirs.length > 0
+      ? [createWriteSandboxExtension({ allowedDirs: allowedWriteDirs, cwd })]
+      : [];
+
   const resourceLoader = new DefaultResourceLoader({
     cwd,
     agentDir: cwd,
     systemPromptOverride: () => profile.systemPrompt,
+    extensionFactories,
   });
   await resourceLoader.reload();
 
