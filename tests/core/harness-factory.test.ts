@@ -286,6 +286,48 @@ describe('createHarness', () => {
     expect(SessionManager.create).not.toHaveBeenCalled();
     expect(SessionManager.open).not.toHaveBeenCalled();
   });
+
+  describe('returns model contextWindow', () => {
+    it('reads contextWindow from getModel and returns it on the harness', async () => {
+      const MODEL_CONTEXT_WINDOW = 200000;
+      mockGetModel.mockReturnValue({ contextWindow: MODEL_CONTEXT_WINDOW });
+
+      const result = await createHarness({ profile: makeProfile(), cwd: '/tmp' });
+
+      // `session`, `sessionId`, `dispose` remain present.
+      expect(result.session).toBeDefined();
+      expect(result.sessionId).toBe('mock-session-id');
+      expect(typeof result.dispose).toBe('function');
+      // The newly-plumbed contextWindow equals the model's value.
+      expect((result as { contextWindow?: number }).contextWindow).toBe(MODEL_CONTEXT_WINDOW);
+    });
+
+    it('reflects a different model contextWindow unchanged', async () => {
+      const MODEL_CONTEXT_WINDOW = 32768;
+      mockGetModel.mockReturnValue({ contextWindow: MODEL_CONTEXT_WINDOW });
+
+      const result = await createHarness({ profile: makeProfile(), cwd: '/tmp' });
+
+      expect((result as { contextWindow?: number }).contextWindow).toBe(MODEL_CONTEXT_WINDOW);
+    });
+
+    it('passes the provider and model from the profile to getModel', async () => {
+      // Capture args via the implementation so the assertion does not depend on
+      // bun's internal mock-call introspection shape.
+      const getModelArgs: unknown[] = [];
+      mockGetModel.mockImplementation((...args: unknown[]) => {
+        getModelArgs.push(...args);
+        return { contextWindow: 1000 };
+      });
+
+      const profile = makeProfile();
+      await createHarness({ profile, cwd: '/tmp' });
+
+      expect(getModelArgs).toHaveLength(2);
+      expect(getModelArgs[0]).toBe(profile.provider);
+      expect(getModelArgs[1]).toBe(profile.model);
+    });
+  });
 });
 
 // Restore the real modules so mocks don't leak into other test files.

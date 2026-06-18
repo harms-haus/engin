@@ -663,3 +663,216 @@ describe('Type compatibility: PhaseEntity in projection.phases', () => {
     expect(proj.phases[3].taskIds).toEqual(['t3']);
   });
 });
+
+// ── AgentEntity: contextWindow & startedAt ─────────────────────────────────
+// These two new OPTIONAL fields are added alongside the existing token /
+// lifecycle fields. They are optional so that legacy events (which never
+// carried them) still produce valid AgentEntity values.
+
+describe('AgentEntity: contextWindow & startedAt', () => {
+  // A minimal, valid AgentEntity used as a base across these tests.
+  const baseAgent: AgentEntity = {
+    uid: 'a1::t1',
+    agentId: 'a1',
+    profile: 'coder',
+    phaseId: 'impl',
+    taskId: 't1',
+    active: true,
+    log: [],
+    toolCallCount: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    taskTitle: 'Build auth',
+  };
+
+  it('contextWindow is optional and defaults to undefined when omitted', () => {
+    const agent: AgentEntity = { ...baseAgent };
+    expect(agent.contextWindow).toBeUndefined();
+  });
+
+  it('startedAt is optional and defaults to undefined when omitted', () => {
+    const agent: AgentEntity = { ...baseAgent };
+    expect(agent.startedAt).toBeUndefined();
+  });
+
+  it('contextWindow can be set to the resolved model context size (number)', () => {
+    const agent: AgentEntity = { ...baseAgent, contextWindow: 200000 };
+    expect(agent.contextWindow).toBe(200000);
+    expect(typeof agent.contextWindow).toBe('number');
+  });
+
+  it('startedAt can be set to an ISO timestamp string', () => {
+    const iso = '2026-06-18T12:00:00.000Z';
+    const agent: AgentEntity = { ...baseAgent, startedAt: iso };
+    expect(agent.startedAt).toBe(iso);
+    expect(typeof agent.startedAt).toBe('string');
+    // The value round-trips through Date parsing (i.e. it is a real ISO time).
+    expect(new Date(agent.startedAt as string).toISOString()).toBe(iso);
+  });
+
+  it('both new fields coexist with every existing field (no regressions)', () => {
+    const agent: AgentEntity = {
+      uid: 'a1::t1',
+      agentId: 'a1',
+      profile: 'coder',
+      phaseId: 'impl',
+      stepIndex: 0,
+      taskId: 't1',
+      sessionId: 'sess-1',
+      sessionPath: '/tmp/sess',
+      active: false,
+      log: [{ id: 'l1', timestamp: '2026-06-18T12:00:00Z', type: 'text', content: 'hi' }],
+      toolCallCount: 3,
+      inputTokens: 1200,
+      outputTokens: 800,
+      taskTitle: 'Build auth',
+      completedAt: '2026-06-18T13:00:00.000Z',
+      contextWindow: 160000,
+      startedAt: '2026-06-18T12:00:00.000Z',
+    };
+    // Existing fields are unchanged.
+    expect(agent.uid).toBe('a1::t1');
+    expect(agent.stepIndex).toBe(0);
+    expect(agent.sessionId).toBe('sess-1');
+    expect(agent.sessionPath).toBe('/tmp/sess');
+    expect(agent.toolCallCount).toBe(3);
+    expect(agent.inputTokens).toBe(1200);
+    expect(agent.outputTokens).toBe(800);
+    expect(agent.taskTitle).toBe('Build auth');
+    expect(agent.completedAt).toBe('2026-06-18T13:00:00.000Z');
+    // New fields are present.
+    expect(agent.contextWindow).toBe(160000);
+    expect(agent.startedAt).toBe('2026-06-18T12:00:00.000Z');
+  });
+
+  it('a legacy agent (shaped like the pre-change schema) is still valid', () => {
+    // Backward compatibility: an agent carrying none of the new optional
+    // fields must still satisfy AgentEntity and behave correctly.
+    const legacy: AgentEntity = {
+      uid: 'legacy',
+      agentId: 'legacy',
+      profile: 'scout',
+      phaseId: 'scouting',
+      active: true,
+      log: [],
+      toolCallCount: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      taskTitle: 'Legacy task',
+    };
+    expect(legacy.contextWindow).toBeUndefined();
+    expect(legacy.startedAt).toBeUndefined();
+    // Required fields are unaffected.
+    expect(legacy.profile).toBe('scout');
+    expect(legacy.active).toBe(true);
+  });
+});
+
+describe('AgentEntity field semantics: context % and duration', () => {
+  it('contextWindow allows computing a context-utilization percentage', () => {
+    const agent: AgentEntity = {
+      uid: 'a1',
+      agentId: 'a1',
+      profile: 'coder',
+      phaseId: 'impl',
+      active: true,
+      log: [],
+      toolCallCount: 0,
+      inputTokens: 40000,
+      outputTokens: 0,
+      taskTitle: '',
+      contextWindow: 200000,
+    };
+    const used = agent.inputTokens + agent.outputTokens;
+    const pct = Math.round((used / (agent.contextWindow as number)) * 100);
+    expect(pct).toBe(20);
+  });
+
+  it('agents without contextWindow yield no defined context %', () => {
+    const agent: AgentEntity = {
+      uid: 'a1',
+      agentId: 'a1',
+      profile: 'coder',
+      phaseId: 'impl',
+      active: true,
+      log: [],
+      toolCallCount: 0,
+      inputTokens: 5000,
+      outputTokens: 0,
+      taskTitle: '',
+    };
+    const pct =
+      agent.contextWindow != null
+        ? Math.round(((agent.inputTokens + agent.outputTokens) / agent.contextWindow) * 100)
+        : undefined;
+    expect(pct).toBeUndefined();
+  });
+
+  it('startedAt + completedAt allow computing per-agent duration', () => {
+    const start = '2026-06-18T12:00:00.000Z';
+    const end = '2026-06-18T12:05:00.000Z';
+    const agent: AgentEntity = {
+      uid: 'a1',
+      agentId: 'a1',
+      profile: 'coder',
+      phaseId: 'impl',
+      active: false,
+      log: [],
+      toolCallCount: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      taskTitle: '',
+      startedAt: start,
+      completedAt: end,
+    };
+    const durationMs = new Date(agent.completedAt as string).getTime() - new Date(agent.startedAt as string).getTime();
+    expect(durationMs).toBe(5 * 60 * 1000);
+  });
+
+  it('startedAt alone (no completedAt) yields no end-to-end duration yet', () => {
+    const agent: AgentEntity = {
+      uid: 'a1',
+      agentId: 'a1',
+      profile: 'coder',
+      phaseId: 'impl',
+      active: true,
+      log: [],
+      toolCallCount: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      taskTitle: '',
+      startedAt: '2026-06-18T12:00:00.000Z',
+    };
+    // Without completedAt the agent is still running: no duration to compute.
+    expect(agent.completedAt).toBeUndefined();
+    expect(agent.startedAt).toBe('2026-06-18T12:00:00.000Z');
+  });
+});
+
+describe('createInitialProjection: optional agent fields need no defaults', () => {
+  it('initial agents record is empty (optional fields need no defaults)', () => {
+    const proj = createInitialProjection();
+    expect(proj.agents).toEqual({});
+    expect(Object.keys(proj.agents)).toHaveLength(0);
+  });
+
+  it('can store an agent that uses the new optional fields', () => {
+    const proj = createInitialProjection();
+    proj.agents['a1'] = {
+      uid: 'a1',
+      agentId: 'a1',
+      profile: 'coder',
+      phaseId: 'impl',
+      active: true,
+      log: [],
+      toolCallCount: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      taskTitle: '',
+      contextWindow: 128000,
+      startedAt: '2026-06-18T12:00:00.000Z',
+    };
+    expect(proj.agents['a1'].contextWindow).toBe(128000);
+    expect(proj.agents['a1'].startedAt).toBe('2026-06-18T12:00:00.000Z');
+  });
+});

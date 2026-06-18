@@ -148,6 +148,9 @@ export function evolve(state: WorkflowProjection, event: EventRecord): WorkflowP
           stepIndex: stepIndex ?? existing.stepIndex,
           sessionId: typeof event.data.sessionId === 'string' ? event.data.sessionId : existing.sessionId,
           sessionPath: typeof event.data.sessionPath === 'string' ? event.data.sessionPath : existing.sessionPath,
+          contextWindow:
+            typeof event.data.contextWindow === 'number' ? event.data.contextWindow : existing.contextWindow,
+          startedAt: existing.startedAt ?? event.metadata.timestamp,
           active: true,
           completedAt: undefined,
           taskTitle: existingTask?.title ?? existing.taskTitle,
@@ -183,6 +186,8 @@ export function evolve(state: WorkflowProjection, event: EventRecord): WorkflowP
         taskId,
         sessionId: typeof event.data.sessionId === 'string' ? event.data.sessionId : undefined,
         sessionPath: typeof event.data.sessionPath === 'string' ? event.data.sessionPath : undefined,
+        contextWindow: typeof event.data.contextWindow === 'number' ? event.data.contextWindow : undefined,
+        startedAt: event.metadata.timestamp,
         active: true,
         log: [],
         toolCallCount: 0,

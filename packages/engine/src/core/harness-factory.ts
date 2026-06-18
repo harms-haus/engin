@@ -38,10 +38,15 @@ type AgentLevelEvent =
  * 4. Create a {@link DefaultResourceLoader} with the profile's system prompt.
  * 5. Construct the session via {@link createAgentSession}.
  * 6. Optionally subscribe to agent status callbacks.
+ *
+ * @returns `{ session, sessionId, dispose, contextWindow }`. The
+ *          `contextWindow` field is the resolved model's context window
+ *          (a number on the pi-ai `Model` interface), surfaced so the spawn
+ *          callback chain can publish it on the `agent_spawned` event.
  */
 export async function createHarness(
   options: HarnessCreationOptions,
-): Promise<{ session: AgentSession; sessionId: string; dispose: () => void }> {
+): Promise<{ session: AgentSession; sessionId: string; dispose: () => void; contextWindow: number }> {
   const { profile, cwd, apiKeys, onAgentStatus, allowedWriteDirs } = options;
 
   // 1. Model
@@ -178,5 +183,5 @@ export async function createHarness(
     session.dispose();
   };
 
-  return { session, sessionId, dispose };
+  return { session, sessionId, dispose, contextWindow: model.contextWindow };
 }

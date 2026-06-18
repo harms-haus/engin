@@ -103,7 +103,7 @@ export async function spawnAgent(
   // 3. Create the harness. resumeSessionPath takes precedence over sessionDir
   //    (mirrors the existing call sites); when neither is set, createHarness
   //    falls back to an in-memory session.
-  const { session, dispose, sessionId } = await createHarness({
+  const { session, dispose, sessionId, contextWindow } = await createHarness({
     profile: adjustedProfile,
     cwd: opts.cwd,
     apiKeys: opts.apiKeys,
@@ -126,7 +126,7 @@ export async function spawnAgent(
   //    resume. The sessionId fallback preserves the historical in-memory behavior.
   const sessionPath = session.sessionFile ?? opts.resumeSessionPath ?? opts.sessionDir ?? sessionId;
 
-  // 6. Fire onAgentSpawn (after tracking) with sessionId + sessionPath.
+  // 6. Fire onAgentSpawn (after tracking) with sessionId + sessionPath + contextWindow.
   opts.onStatus?.onAgentSpawn?.({
     agentId: opts.agentId,
     profile: opts.profileId,
@@ -135,6 +135,7 @@ export async function spawnAgent(
     stepIndex: opts.stepIndex,
     sessionId,
     sessionPath,
+    contextWindow,
   });
 
   // 7. Fire onStepStart (after onAgentSpawn) so the step always has an agent linkage.

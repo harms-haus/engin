@@ -58,6 +58,7 @@ export function createStoreCallbacks(store: StoreLike): StatusCallbacks {
           profile: info.profile,
           sessionId: info.sessionId,
           sessionPath: info.sessionPath,
+          contextWindow: info.contextWindow,
         },
         {
           agentId: info.agentId,

@@ -7,6 +7,7 @@ import {
   wrapTextWithAnsi,
 } from '@earendil-works/pi-tui';
 import type { AgentEntity, LogEntry, StepEntity } from '@engin/shared';
+import { formatTokenCount } from '@engin/shared';
 import { formatToolCall } from '@engin/shared/format-tool-call';
 import { bold, cyan, dim, green, red, underline } from '../theme.js';
 
@@ -210,7 +211,19 @@ export class AgentLogWidget implements Component {
     } else {
       // ─── HEADER (line 0) ─────────────────────────────────────
       const title = selectedAgent.taskTitle || selectedAgent.profile || selectedAgent.uid;
-      const leftRaw = `  ${title} (profile: ${selectedAgent.profile}) • ${selectedAgent.toolCallCount} tool calls • ↑${selectedAgent.inputTokens} • ↓${selectedAgent.outputTokens}`;
+      // Cumulative-consumption multiple of the per-request context window.
+      // inputTokens + outputTokens are CUMULATIVE totals across all turns, while
+      // contextWindow is a per-request model cap, so this is NOT a bounded fill
+      // percentage (it can exceed 1×). Rendering as `N×` (rather than `N%`)
+      // avoids implying a bounded fill gauge.
+      const ctxMultiple = selectedAgent.contextWindow
+        ? Math.round(((selectedAgent.inputTokens + selectedAgent.outputTokens) / selectedAgent.contextWindow) * 100) /
+          100
+        : null;
+      let leftRaw = `  ${title} (profile: ${selectedAgent.profile}) • ${selectedAgent.toolCallCount} tool calls • ↑${formatTokenCount(selectedAgent.inputTokens)} • ↓${formatTokenCount(selectedAgent.outputTokens)}`;
+      if (ctxMultiple !== null) {
+        leftRaw += ` • ctx ${ctxMultiple}×`;
+      }
 
       let controlsRaw: string;
       if (this._expanded) {

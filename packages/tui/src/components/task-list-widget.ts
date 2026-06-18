@@ -11,6 +11,7 @@ export class TaskListWidget implements Component {
   private cachedWidth = -1;
   private cachedLines: string[] = [];
   private orderedCache: TaskEntity[] | null = null;
+  private idLabelCache: Map<string, string> | null = null;
   private _scrollOffset = 0;
   private readonly _maxVisibleLines = 20;
 
@@ -25,9 +26,31 @@ export class TaskListWidget implements Component {
     return this.orderedCache;
   }
 
+  /**
+   * Lazily builds a map of task id → compact display label (e.g. `t-01`),
+   * assigned in creation/registration order. Used for both the ID column and
+   * the dependencies column so the two stay cross-referenceable without
+   * printing the full (often slug-like) task id. Dependency ids that are not
+   * present in the current task set (e.g. cross-phase deps) have no label and
+   * fall back to their raw id when rendered.
+   */
+  private ensureIdLabels(): Map<string, string> {
+    if (this.idLabelCache === null) {
+      const ordered = this.ensureOrdered();
+      const width = Math.max(2, String(ordered.length).length);
+      const map = new Map<string, string>();
+      ordered.forEach((task, i) => {
+        map.set(task.id, 't-' + String(i + 1).padStart(width, '0'));
+      });
+      this.idLabelCache = map;
+    }
+    return this.idLabelCache;
+  }
+
   /** Clears the ordered cache (call whenever tasks or selection change). */
   private invalidateCache(): void {
     this.orderedCache = null;
+    this.idLabelCache = null;
     this.dirty = true;
   }
 
@@ -124,6 +147,7 @@ export class TaskListWidget implements Component {
 
     const ordered = this.ensureOrdered();
     const taskMap = new Map(this.tasks.map((t) => [t.id, t]));
+    const idLabels = this.ensureIdLabels();
 
     // ── Build the 5 column cells for each task ──
     const idCells: string[] = [];
@@ -140,8 +164,8 @@ export class TaskListWidget implements Component {
       const selected = task.id === this.selectedTaskId;
       const maybeBold = (cell: string): string => (selected && cell !== '' ? bold(cell) : cell);
 
-      // 1. ID column (muted)
-      idCells.push(maybeBold(dim(task.id)));
+      // 1. ID column — compact cross-referenceable label (t-01…), dimmed.
+      idCells.push(maybeBold(dim(idLabels.get(task.id) ?? task.id)));
 
       // 2. Status icon column (no color wrapper)
       iconCells.push(maybeBold(statusIcon(task.status)));
@@ -177,10 +201,11 @@ export class TaskListWidget implements Component {
       if (task.dependencies.length > 0) {
         const parts = task.dependencies.map((depId) => {
           const depTask = taskMap.get(depId);
+          const label = idLabels.get(depId) ?? depId;
           if (depTask === undefined || depTask.status !== 'complete') {
-            return normal(depId);
+            return normal(label);
           }
-          return dim(depId);
+          return dim(label);
         });
         deps = parts.join(', ');
       }

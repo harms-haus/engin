@@ -66,7 +66,11 @@ import { formatWorkflowEventLine } from '@engin/shared/format-workflow-event';
 // ── Constants ───────────────────────────────────────────────────────────────
 const ISO_NOW = '2026-06-15T00:00:00.000Z';
 const MAX_AGENT_LOG = 500; // @engin/shared/evolve MAX_AGENT_LOG
-const MAX_WORKFLOW_EVENT_LOG = 1000; // client-store internal cap
+// NOTE: workflowEventLog is capped at MAX_WORKFLOW_EVENT_LOG (10000) in
+// packages/shared/src/client-store.ts so memory stays bounded for long-running
+// workflows; entries beyond the cap are dropped FIFO (oldest first). The
+// comprehensive sub-cap retention coverage lives in
+// `tests/shared/client-store.event-log-cap.test.ts`.
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -1194,7 +1198,15 @@ describe('ClientStore – workflowEventLog building', () => {
       .map((event) => ({ seq: event.seq, line: formatWorkflowEventLine(event) }))
       .filter((e): e is { seq: number; line: string } => e.line !== null);
 
-    expect(store.getState().workflowEventLog).toEqual(expected);
+    // workflow_completed (totalDurationMs 5000 > 0) ALSO appends a two-line
+    // completion summary keyed to the completed event's seq. In this scenario
+    // agent a1 was spawned (startedAt stamped) but never completed and
+    // accumulated no tokens → 0 tokens, 0 agent time, 0%.
+    expect(store.getState().workflowEventLog).toEqual([
+      ...expected,
+      { seq: 9, line: '📊 Tokens: ↑0 in · ↓0 out' },
+      { seq: 9, line: '⏱ Time: 5.0s total · 0.0s agent (0%)' },
+    ]);
   });
 
   it('excludes events for which formatWorkflowEventLine returns null (verbose events)', () => {
@@ -1242,21 +1254,29 @@ describe('ClientStore – workflowEventLog building', () => {
     expect(log.map((e) => e.seq)).toEqual([1, 2, 3]);
   });
 
-  it('caps workflowEventLog at 1000 entries (oldest dropped)', () => {
+  it('caps workflowEventLog at MAX_WORKFLOW_EVENT_LOG (10000), dropping the oldest beyond it', () => {
+    // The workflow event log is bounded at MAX_WORKFLOW_EVENT_LOG (10000 in
+    // packages/shared/src/client-store.ts) so memory stays bounded for
+    // long-running workflows. Entries beyond the cap are dropped FIFO (oldest
+    // first); the newest entries and ample scroll-back are preserved.
+    const CAP = 10000; // MAX_WORKFLOW_EVENT_LOG in packages/shared/src/client-store.ts
+    const OVER = CAP + 25;
     const store = new ClientStore();
     const events: EventRecord[] = [];
-    for (let i = 1; i <= MAX_WORKFLOW_EVENT_LOG + 1; i++) {
+    for (let i = 1; i <= OVER; i++) {
       events.push(ev('workflow_started', { taskPrompt: `run-${i}` }, {}, i));
     }
     store.applyEvents(events);
 
     const log = store.getState().workflowEventLog;
-    expect(log).toHaveLength(MAX_WORKFLOW_EVENT_LOG);
-    // Oldest (seq 1) dropped; first entry is seq 2.
-    expect(log[0].seq).toBe(2);
-    expect(log[0].line).toContain('run-2');
-    expect(log[MAX_WORKFLOW_EVENT_LOG - 1].seq).toBe(MAX_WORKFLOW_EVENT_LOG + 1);
-    expect(log[MAX_WORKFLOW_EVENT_LOG - 1].line).toContain(`run-${MAX_WORKFLOW_EVENT_LOG + 1}`);
+    // Capped exactly at CAP; the oldest OVER - CAP entries were dropped.
+    expect(log).toHaveLength(CAP);
+    // Oldest retained entry is seq (OVER - CAP + 1); seq 1..(OVER - CAP) dropped.
+    expect(log[0].seq).toBe(OVER - CAP + 1);
+    expect(log[0].line).toContain(`run-${OVER - CAP + 1}`);
+    // Newest entry is retained.
+    expect(log[CAP - 1].seq).toBe(OVER);
+    expect(log[CAP - 1].line).toContain(`run-${OVER}`);
   });
 
   it('does not duplicate or reorder entries when applySnapshot preserves the log', () => {

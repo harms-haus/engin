@@ -25,11 +25,22 @@ function makeTask(
 }
 
 /**
- * Expected column prefix for a non-selected task row in the new table layout:
- *   dim(id) + 2-space gap + statusIcon + 2-space gap + status-colored title
+ * Compact display label mirroring the widget, for the task at 1-based registration index.
+ * e.g. index 1 → 't-01', index 10 → 't-10'.
  */
-function rowStart(task: TaskEntity): string {
-  return dim(task.id) + '  ' + statusIcon(task.status) + '  ' + statusColor(task.status)(task.title);
+function idLabel(indexOneBased: number, count = 99): string {
+  const width = Math.max(2, String(count).length);
+  return 't-' + String(indexOneBased).padStart(width, '0');
+}
+
+/**
+ * Expected column prefix for a non-selected task row in the new table layout:
+ *   dim(label) + 2-space gap + statusIcon + 2-space gap + status-colored title
+ */
+function rowStart(task: TaskEntity, indexOneBased: number, count = 99): string {
+  return (
+    dim(idLabel(indexOneBased, count)) + '  ' + statusIcon(task.status) + '  ' + statusColor(task.status)(task.title)
+  );
 }
 
 /**
@@ -107,11 +118,11 @@ describe('TaskListWidget', () => {
 
       expect(lines).toHaveLength(3);
 
-      // Creation order: complete (t1), active (t2), blocked (t3)
-      // New table prefix: dim(id) + '  ' + icon + '  ' + statusColor(title)
-      expect(lines[0].startsWith(rowStart(tasks[0]))).toBe(true);
-      expect(lines[1].startsWith(rowStart(tasks[1]))).toBe(true);
-      expect(lines[2].startsWith(rowStart(tasks[2]))).toBe(true);
+      // Creation order: complete (t1→t-01), active (t2→t-02), blocked (t3→t-03)
+      // New table prefix: dim(label) + '  ' + icon + '  ' + statusColor(title)
+      expect(lines[0].startsWith(rowStart(tasks[0], 1, 3))).toBe(true);
+      expect(lines[1].startsWith(rowStart(tasks[1], 2, 3))).toBe(true);
+      expect(lines[2].startsWith(rowStart(tasks[2], 3, 3))).toBe(true);
     });
 
     it('renders only actual tasks with no blank padding', () => {
@@ -122,7 +133,7 @@ describe('TaskListWidget', () => {
       expect(lines).toHaveLength(1);
       // Stripped of ANSI the row is exactly: id + 2 spaces + icon + 2 spaces + title
       // (step and deps columns are omitted since unused)
-      expect(stripAnsi(lines[0])).toBe('t1  ' + statusIcon('ready') + '  Only');
+      expect(stripAnsi(lines[0])).toBe('t-01  ' + statusIcon('ready') + '  Only');
     });
   });
 
@@ -131,7 +142,7 @@ describe('TaskListWidget', () => {
       const widget = new TaskListWidget();
       widget.updateTasks([makeTask({ id: 't1', title: 'Solo', status: 'ready' })]);
       const lines = widget.render(WIDTH);
-      expect(stripAnsi(lines[0])).toBe('t1  ' + statusIcon('ready') + '  Solo');
+      expect(stripAnsi(lines[0])).toBe('t-01  ' + statusIcon('ready') + '  Solo');
     });
 
     it('omits the step and dependencies columns entirely when no task uses them', () => {
@@ -156,8 +167,8 @@ describe('TaskListWidget', () => {
       ]);
       const lines = widget.render(WIDTH);
       // Title column width = 4 (max). 'A' is padded to 4 with trailing spaces.
-      expect(stripAnsi(lines[0])).toBe('t1  ' + statusIcon('ready') + '  A   ');
-      expect(stripAnsi(lines[1])).toBe('t2  ' + statusIcon('ready') + '  BBBB');
+      expect(stripAnsi(lines[0])).toBe('t-01  ' + statusIcon('ready') + '  A   ');
+      expect(stripAnsi(lines[1])).toBe('t-02  ' + statusIcon('ready') + '  BBBB');
     });
 
     it('shows the step column for active multi-step tasks', () => {
@@ -176,7 +187,7 @@ describe('TaskListWidget', () => {
       ]);
       const lines = widget.render(WIDTH);
       // Step is its own column (2-space gap), NOT appended to the title with ' - '.
-      expect(stripAnsi(lines[0])).toBe('t1  ' + statusIcon('active') + '  Run  step 1/2: plan');
+      expect(stripAnsi(lines[0])).toBe('t-01  ' + statusIcon('active') + '  Run  step 1/2: plan');
       expect(lines[0]).toContain(dim('step 1/2: plan'));
     });
 
@@ -194,7 +205,7 @@ describe('TaskListWidget', () => {
       ]);
       const lines = widget.render(WIDTH);
       // steps.length === 1 is not > 1, so the step column is omitted.
-      expect(stripAnsi(lines[0])).toBe('t1  ' + statusIcon('active') + '  Run - 5s');
+      expect(stripAnsi(lines[0])).toBe('t-01  ' + statusIcon('active') + '  Run - 5s');
       expect(lines[0]).not.toContain('step');
     });
 
@@ -214,10 +225,10 @@ describe('TaskListWidget', () => {
       const lines = widget.render(WIDTH);
       // t1 is the last row (creation order). Step column omitted, deps column present.
       // dep1 is complete → rendered with dim. No 'deps:' prefix anywhere.
-      // t1 (width 2) is padded to the ID column width (4, from 'dep1'),
-      // so there are 4 spaces between 't1' and the icon (2 pad + 2 gap).
-      expect(stripAnsi(lines[1])).toBe('t1    ' + statusIcon('complete') + '  Done - 5s  dep1');
-      expect(lines[1]).toContain(dim('dep1'));
+      // dep1 is index 0 (label t-01, width 4), t1 is index 1 (label t-02, width 4).
+      // Both labels have equal width, so there is no extra padding — just the normal 2-space gap.
+      expect(stripAnsi(lines[1])).toBe('t-02  ' + statusIcon('complete') + '  Done - 5s  t-01');
+      expect(lines[1]).toContain(dim('t-01'));
       expect(lines[1]).not.toContain('deps:');
     });
 
@@ -254,7 +265,7 @@ describe('TaskListWidget', () => {
       // Line 0 is NOT bold and starts with its plain column prefix
       expect(lines[0].startsWith('\x1b[1m')).toBe(false);
       expect(lines[0]).not.toContain('\x1b[1m');
-      expect(lines[0].startsWith(rowStart(makeTask({ id: 't1', title: 'First', status: 'ready' })))).toBe(true);
+      expect(lines[0].startsWith(rowStart(makeTask({ id: 't1', title: 'First', status: 'ready' }), 1, 2))).toBe(true);
 
       // Line 1: every column cell is individually bolded so the emphasis
       // survives each cell's ANSI reset — the icon AND title (not just the
@@ -263,7 +274,7 @@ describe('TaskListWidget', () => {
       expect(isWithinBold(lines[1], statusIcon('complete'))).toBe(true);
       expect(isWithinBold(lines[1], 'Second')).toBe(true);
       expect(stripAnsi(lines[1])).toBe(
-        stripAnsi(rowStart(makeTask({ id: 't2', title: 'Second', status: 'complete' }))),
+        stripAnsi(rowStart(makeTask({ id: 't2', title: 'Second', status: 'complete' }), 2, 2)),
       );
     });
   });
@@ -426,7 +437,7 @@ describe('TaskListWidget', () => {
       // The row's visible width is the natural table width (id + icon + title + gaps),
       // which is much less than WIDTH — the row is NOT padded to fill WIDTH.
       expect(visibleWidth(lines[0])).toBeLessThan(WIDTH);
-      expect(stripAnsi(lines[0])).toBe('t1  ' + statusIcon('ready') + '  Hi');
+      expect(stripAnsi(lines[0])).toBe('t-01  ' + statusIcon('ready') + '  Hi');
     });
 
     it('does not let an off-screen task widen columns and truncate visible deps (viewport-scoped widths)', () => {
@@ -453,7 +464,7 @@ describe('TaskListWidget', () => {
       // The first visible task (t1) has deps. Its deps column must render in
       // full (not truncated with '…') because the off-screen long title no
       // longer widens the title column for the visible viewport window.
-      const t1Row = lines.find((l) => stripAnsi(l).startsWith('t1'))!;
+      const t1Row = lines.find((l) => stripAnsi(l).startsWith('t-01'))!;
       expect(t1Row).toBeDefined();
       expect(stripAnsi(t1Row)).toContain('dependency-3');
       expect(stripAnsi(t1Row)).not.toContain('…');
@@ -508,10 +519,10 @@ describe('TaskListWidget', () => {
 
       // Order is exactly the insertion/registration order, regardless of status.
       // Each row begins with dim(id) + gap + icon + gap + colored title.
-      expect(lines[0].startsWith(rowStart(tasks[0]))).toBe(true);
-      expect(lines[1].startsWith(rowStart(tasks[1]))).toBe(true);
-      expect(lines[2].startsWith(rowStart(tasks[2]))).toBe(true);
-      expect(lines[3].startsWith(rowStart(tasks[3]))).toBe(true);
+      expect(lines[0].startsWith(rowStart(tasks[0], 1, 4))).toBe(true);
+      expect(lines[1].startsWith(rowStart(tasks[1], 2, 4))).toBe(true);
+      expect(lines[2].startsWith(rowStart(tasks[2], 3, 4))).toBe(true);
+      expect(lines[3].startsWith(rowStart(tasks[3], 4, 4))).toBe(true);
     });
 
     it('failed, cancelled, and complete appear in creation order, not grouped', () => {
@@ -526,10 +537,10 @@ describe('TaskListWidget', () => {
       const lines = widget.render(WIDTH);
       expect(lines).toHaveLength(4);
       // Creation order preserved: failed, cancelled, complete, active
-      expect(lines[0].startsWith(rowStart(tasks[0]))).toBe(true);
-      expect(lines[1].startsWith(rowStart(tasks[1]))).toBe(true);
-      expect(lines[2].startsWith(rowStart(tasks[2]))).toBe(true);
-      expect(lines[3].startsWith(rowStart(tasks[3]))).toBe(true);
+      expect(lines[0].startsWith(rowStart(tasks[0], 1, 4))).toBe(true);
+      expect(lines[1].startsWith(rowStart(tasks[1], 2, 4))).toBe(true);
+      expect(lines[2].startsWith(rowStart(tasks[2], 3, 4))).toBe(true);
+      expect(lines[3].startsWith(rowStart(tasks[3], 4, 4))).toBe(true);
     });
 
     it('newly registered tasks are appended at the bottom', () => {
@@ -539,8 +550,10 @@ describe('TaskListWidget', () => {
         makeTask({ id: 't2', title: 'Second', status: 'complete' }),
       ]);
       let lines = widget.render(WIDTH);
-      expect(lines[0].startsWith(rowStart(makeTask({ id: 't1', title: 'First', status: 'ready' })))).toBe(true);
-      expect(lines[1].startsWith(rowStart(makeTask({ id: 't2', title: 'Second', status: 'complete' })))).toBe(true);
+      expect(lines[0].startsWith(rowStart(makeTask({ id: 't1', title: 'First', status: 'ready' }), 1, 2))).toBe(true);
+      expect(lines[1].startsWith(rowStart(makeTask({ id: 't2', title: 'Second', status: 'complete' }), 2, 2))).toBe(
+        true,
+      );
 
       // A later-registered active task is appended, not promoted to the top
       widget.updateTasks([
@@ -549,9 +562,11 @@ describe('TaskListWidget', () => {
         makeTask({ id: 't3', title: 'Third', status: 'active' }),
       ]);
       lines = widget.render(WIDTH);
-      expect(lines[0].startsWith(rowStart(makeTask({ id: 't1', title: 'First', status: 'ready' })))).toBe(true);
-      expect(lines[1].startsWith(rowStart(makeTask({ id: 't2', title: 'Second', status: 'complete' })))).toBe(true);
-      expect(lines[2].startsWith(rowStart(makeTask({ id: 't3', title: 'Third', status: 'active' })))).toBe(true);
+      expect(lines[0].startsWith(rowStart(makeTask({ id: 't1', title: 'First', status: 'ready' }), 1, 3))).toBe(true);
+      expect(lines[1].startsWith(rowStart(makeTask({ id: 't2', title: 'Second', status: 'complete' }), 2, 3))).toBe(
+        true,
+      );
+      expect(lines[2].startsWith(rowStart(makeTask({ id: 't3', title: 'Third', status: 'active' }), 3, 3))).toBe(true);
     });
   });
 
@@ -618,7 +633,7 @@ describe('TaskListWidget', () => {
       expect(isWithinBold(lines[1], statusIcon('complete'))).toBe(true);
       expect(isWithinBold(lines[1], 'Task B')).toBe(true);
       expect(stripAnsi(lines[1])).toBe(
-        stripAnsi(rowStart(makeTask({ id: 't2', title: 'Task B', status: 'complete' }))),
+        stripAnsi(rowStart(makeTask({ id: 't2', title: 'Task B', status: 'complete' }), 2, 3)),
       );
       // Other lines should not be bold
       expect(lines[0]).not.toContain('\x1b[1m');
@@ -760,7 +775,7 @@ describe('TaskListWidget', () => {
         expect(stripped).not.toMatch(/ - /);
         expect(stripped).not.toMatch(/\d+[smh]/);
         // Row is exactly id + gap + icon + gap + title (step/deps omitted)
-        expect(stripped).toBe('t1  ' + statusIcon('ready') + '  Ready Task');
+        expect(stripped).toBe('t-01  ' + statusIcon('ready') + '  Ready Task');
       });
 
       it('blocked task shows ONLY id, icon, and title', () => {
@@ -780,7 +795,7 @@ describe('TaskListWidget', () => {
         const stripped = stripAnsi(line);
         expect(stripped).not.toMatch(/ - /);
         expect(stripped).not.toMatch(/\d+[smh]/);
-        expect(stripped).toBe('t1  ' + statusIcon('blocked') + '  Blocked Task');
+        expect(stripped).toBe('t-01  ' + statusIcon('blocked') + '  Blocked Task');
       });
     });
 
@@ -864,7 +879,7 @@ describe('TaskListWidget', () => {
         const stripped = stripAnsi(line);
         expect(stripped).not.toMatch(/ - /);
         expect(stripped).not.toMatch(/\d+[smh]/);
-        expect(stripped).toBe('t1  ' + statusIcon('complete') + '  Complete No Time');
+        expect(stripped).toBe('t-01  ' + statusIcon('complete') + '  Complete No Time');
       });
     });
 
@@ -923,7 +938,7 @@ describe('TaskListWidget', () => {
       expect(lines).toHaveLength(1);
       expect(lines[0]).not.toContain('deps:');
       // No bare deps column text either
-      expect(stripAnsi(lines[0])).toBe('t1  ' + statusIcon('active') + '  Solo - 5s');
+      expect(stripAnsi(lines[0])).toBe('t-01  ' + statusIcon('active') + '  Solo - 5s');
     });
 
     it('task with dependencies where all are complete renders each dep dim', () => {
@@ -943,14 +958,14 @@ describe('TaskListWidget', () => {
       const line = lines[lines.length - 1];
       // No 'deps:' prefix — deps are a bare column
       expect(line).not.toContain('deps:');
-      // Complete deps → dim-wrapped
-      expect(line).toContain(dim('dep1'));
-      expect(line).toContain(dim('dep2'));
+      // dep1 is complete → dim-wrapped, dep2 is complete → dim-wrapped
+      expect(line).toContain(dim('t-01'));
+      expect(line).toContain(dim('t-02'));
       // Neither dep is yellow-wrapped (old behavior removed)
-      expect(line).not.toContain(yellow('dep1'));
-      expect(line).not.toContain(yellow('dep2'));
+      expect(line).not.toContain(yellow('t-01'));
+      expect(line).not.toContain(yellow('t-02'));
       // Joined with ', '
-      expect(line).toContain(dim('dep1') + ', ' + dim('dep2'));
+      expect(line).toContain(dim('t-01') + ', ' + dim('t-02'));
     });
 
     it('task with a dependency that is active renders that dep id as plain text (no ANSI)', () => {
@@ -974,9 +989,9 @@ describe('TaskListWidget', () => {
       const line = lines[lines.length - 1];
       expect(line).not.toContain('deps:');
       // Blocking dep (active) → plain text, no dim/yellow wrapping
-      expect(line).toContain('dep1');
-      expect(line).not.toContain(dim('dep1'));
-      expect(line).not.toContain(yellow('dep1'));
+      expect(line).toContain('t-01');
+      expect(line).not.toContain(dim('t-01'));
+      expect(line).not.toContain(yellow('t-01'));
     });
 
     it('task with a ready dependency renders that dep id as plain text (no ANSI)', () => {
@@ -994,9 +1009,9 @@ describe('TaskListWidget', () => {
       const lines = widget.render(DEPS_WIDTH);
       const line = lines[lines.length - 1];
       expect(line).not.toContain('deps:');
-      expect(line).toContain('dep1');
-      expect(line).not.toContain(dim('dep1'));
-      expect(line).not.toContain(yellow('dep1'));
+      expect(line).toContain('t-01');
+      expect(line).not.toContain(dim('t-01'));
+      expect(line).not.toContain(yellow('t-01'));
     });
 
     it('task with a blocked dependency renders that dep id as plain text (no ANSI)', () => {
@@ -1014,9 +1029,9 @@ describe('TaskListWidget', () => {
       const lines = widget.render(DEPS_WIDTH);
       const line = lines[lines.length - 1];
       expect(line).not.toContain('deps:');
-      expect(line).toContain('dep1');
-      expect(line).not.toContain(dim('dep1'));
-      expect(line).not.toContain(yellow('dep1'));
+      expect(line).toContain('t-01');
+      expect(line).not.toContain(yellow('t-01'));
+      expect(line).not.toContain(dim('t-01'));
     });
 
     it('mixed deps: one complete (dim) + one incomplete (plain), comma-space joined', () => {
@@ -1036,14 +1051,14 @@ describe('TaskListWidget', () => {
       const line = lines[lines.length - 1];
       expect(line).not.toContain('deps:');
       // Complete dep → dim
-      expect(line).toContain(dim('dep1'));
-      expect(line).not.toContain(yellow('dep1'));
+      expect(line).toContain(dim('t-01'));
+      expect(line).not.toContain(yellow('t-01'));
       // Active (blocking) dep → plain text
-      expect(line).toContain('dep2');
-      expect(line).not.toContain(dim('dep2'));
-      expect(line).not.toContain(yellow('dep2'));
-      // Joined with ', ': dim(dep1) + ', ' + plain 'dep2'
-      expect(line).toContain(dim('dep1') + ', ' + 'dep2');
+      expect(line).toContain('t-02');
+      expect(line).not.toContain(dim('t-02'));
+      expect(line).not.toContain(yellow('t-02'));
+      // Joined with ', ': dim(t-01) + ', ' + plain 't-02'
+      expect(line).toContain(dim('t-01') + ', ' + 't-02');
     });
 
     it('dependency id not present in current task list renders as plain text (no ANSI)', () => {
@@ -1083,7 +1098,7 @@ describe('TaskListWidget', () => {
       const line = lines[lines.length - 1];
       const stripped = stripAnsi(line);
       const elapsedIdx = stripped.indexOf('5s');
-      const depsIdx = stripped.indexOf('dep1');
+      const depsIdx = stripped.indexOf('t-01');
       expect(elapsedIdx).toBeGreaterThanOrEqual(0);
       expect(depsIdx).toBeGreaterThanOrEqual(0);
       expect(depsIdx).toBeGreaterThan(elapsedIdx);
@@ -1103,16 +1118,15 @@ describe('TaskListWidget', () => {
       const lines = widget.render(DEPS_WIDTH);
       const line = lines[lines.length - 1];
       expect(line).not.toContain('deps:');
-      // dep1 complete → dim
-      expect(line).toContain(dim('dep1'));
+      // dep1 is index 0 (label t-01, complete) → dim
+      expect(line).toContain(dim('t-01'));
       const stripped = stripAnsi(line);
       // Ready shows no elapsed and no ' - ' separators; deps are a bare column
       expect(stripped).not.toMatch(/ - /);
       expect(stripped).not.toMatch(/\d+[smh]/);
-      // deps column (dim dep1) follows the title via a 2-space gap.
-      // t1 (width 2) is padded to the ID column width (4, from 'dep1'),
-      // so there are 4 spaces between 't1' and the icon (2 pad + 2 gap).
-      expect(stripped).toBe('t1    ' + statusIcon('ready') + '  My Task  dep1');
+      // dep1 (label t-01, width 4) and t1 (label t-02, width 4) have equal width,
+      // so there is no extra padding — just the normal 2-space gap.
+      expect(stripped).toBe('t-02  ' + statusIcon('ready') + '  My Task  t-01');
     });
 
     it('blocked task with dependencies shows deps column (blocking dep as plain text)', () => {
@@ -1130,9 +1144,9 @@ describe('TaskListWidget', () => {
       const line = lines[lines.length - 1];
       expect(line).not.toContain('deps:');
       // dep1 is ready (blocking) → plain text, not yellow/dim
-      expect(line).toContain('dep1');
-      expect(line).not.toContain(yellow('dep1'));
-      expect(line).not.toContain(dim('dep1'));
+      expect(line).toContain('t-01');
+      expect(line).not.toContain(yellow('t-01'));
+      expect(line).not.toContain(dim('t-01'));
       // blocked shows no elapsed
       const stripped = stripAnsi(line);
       expect(stripped).not.toMatch(/\d+[smh]/);
@@ -1153,10 +1167,10 @@ describe('TaskListWidget', () => {
       ]);
       const lines = widget.render(DEPS_WIDTH);
       const line = lines[lines.length - 1];
-      expect(line).toContain(dim('dep1'));
+      expect(line).toContain(dim('t-01'));
       const stripped = stripAnsi(line);
       const elapsedIdx = stripped.indexOf('5s');
-      const depsIdx = stripped.indexOf('dep1');
+      const depsIdx = stripped.indexOf('t-01');
       expect(elapsedIdx).toBeGreaterThanOrEqual(0);
       expect(depsIdx).toBeGreaterThan(elapsedIdx);
     });
@@ -1176,10 +1190,10 @@ describe('TaskListWidget', () => {
       ]);
       const lines = widget.render(DEPS_WIDTH);
       const line = lines[lines.length - 1];
-      expect(line).toContain(dim('dep1'));
+      expect(line).toContain(dim('t-01'));
       const stripped = stripAnsi(line);
       const elapsedIdx = stripped.indexOf('5s');
-      const depsIdx = stripped.indexOf('dep1');
+      const depsIdx = stripped.indexOf('t-01');
       expect(elapsedIdx).toBeGreaterThanOrEqual(0);
       expect(depsIdx).toBeGreaterThan(elapsedIdx);
     });
@@ -1199,7 +1213,7 @@ describe('TaskListWidget', () => {
     function taskIdFromLine(line: string): string | null {
       const stripped = stripAnsi(line);
       if (stripped === '' || isIndicator(line)) return null;
-      const match = stripped.match(/^([a-z]+\d+)/);
+      const match = stripped.match(/^(t-\d+)/);
       return match ? match[1] : null;
     }
 
@@ -1241,11 +1255,11 @@ describe('TaskListWidget', () => {
         // First 19 lines are task rows for indices 0..18 (t1..t19)
         const ids = renderedTaskIds(lines);
         expect(ids).toHaveLength(19);
-        expect(ids[0]).toBe('t1');
-        expect(ids[ids.length - 1]).toBe('t19');
+        expect(ids[0]).toBe('t-01');
+        expect(ids[ids.length - 1]).toBe('t-19');
         // Tasks below the fold are not rendered
-        expect(ids).not.toContain('t20');
-        expect(ids).not.toContain('t25');
+        expect(ids).not.toContain('t-20');
+        expect(ids).not.toContain('t-25');
       });
 
       it('does not cap or add indicators when there are fewer than 20 tasks', () => {
@@ -1298,8 +1312,8 @@ describe('TaskListWidget', () => {
         expect(isIndicator(lines[0])).toBe(true);
         // The last task (t25) is rendered; the first task (t1) is not
         const ids = renderedTaskIds(lines);
-        expect(ids).toContain('t25');
-        expect(ids).not.toContain('t1');
+        expect(ids).toContain('t-25');
+        expect(ids).not.toContain('t-01');
       });
 
       it('does not scroll when programmatically selecting an already-visible task', () => {
@@ -1351,7 +1365,7 @@ describe('TaskListWidget', () => {
         expect(widget.getSelectedTaskId()).toBe('t7');
         let lines = widget.render(WIDE);
         // First visible task is t7 (top of the scrolled viewport)
-        expect(firstTaskId(lines)).toBe('t7');
+        expect(firstTaskId(lines)).toBe('t-07');
         expect(isIndicator(lines[0])).toBe(true);
 
         // One more UP → index 5 scrolls the viewport up
@@ -1359,7 +1373,7 @@ describe('TaskListWidget', () => {
         expect(widget.getSelectedTaskId()).toBe('t6');
         lines = widget.render(WIDE);
         // First visible task is now t6 → the viewport scrolled up
-        expect(firstTaskId(lines)).toBe('t6');
+        expect(firstTaskId(lines)).toBe('t-06');
       });
 
       it('scrolling all the way back up removes the top indicator', () => {
@@ -1375,7 +1389,7 @@ describe('TaskListWidget', () => {
         // Back at the top: top indicator gone, bottom indicator present
         expect(isIndicator(lines[0])).toBe(false);
         expect(isIndicator(lines[lines.length - 1])).toBe(true);
-        expect(firstTaskId(lines)).toBe('t1');
+        expect(firstTaskId(lines)).toBe('t-01');
       });
 
       it('keeps the rendered height at 20 lines across different scroll positions', () => {
@@ -1404,7 +1418,7 @@ describe('TaskListWidget', () => {
         const lines = widget.render(WIDE);
         // Scroll offset reset → first line is a task row, not an indicator
         expect(isIndicator(lines[0])).toBe(false);
-        expect(firstTaskId(lines)).toBe('u1');
+        expect(firstTaskId(lines)).toBe('t-01');
       });
 
       it('does NOT reset the viewport when task IDs are unchanged (status-only update)', () => {

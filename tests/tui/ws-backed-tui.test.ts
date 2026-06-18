@@ -239,10 +239,17 @@ describe('createWsBackedTui', () => {
       expect(ctx.eventLog.lines).toEqual(['🚀 Workflow started: "ship it" (resumed: false)']);
     });
 
-    it('forwards workflow_completed line', () => {
+    it('forwards workflow_completed line plus the two summary lines', () => {
       const ctx = createTestDeps();
       ctx.clientStore.applyEvents([ev('workflow_completed', { totalDurationMs: 3456, agentCount: 5 }, {}, 1)]);
-      expect(ctx.eventLog.lines).toEqual(['🎉 Complete in 3.5s (5 agents)']);
+      // totalDurationMs > 0 → the shared ClientStore appends a two-line
+      // completion summary (empty agent set → 0 tokens / 0 agent time). All
+      // three entries share seq 1, so the adapter drains them together.
+      expect(ctx.eventLog.lines).toEqual([
+        '🎉 Complete in 3.5s (5 agents)',
+        '📊 Tokens: ↑0 in · ↓0 out',
+        '⏱ Time: 3.5s total · 0.0s agent (0%)',
+      ]);
     });
 
     it('forwards workflow_failed line', () => {

@@ -74,6 +74,10 @@ export class WorkflowTUI {
   private qrHandle: OverlayHandle | null = null;
   private pendingQrComponent: Component | null = null;
   private promptHandle: OverlayHandle | null = null;
+  /** True while `pauseForInspection()` is awaiting user input post-completion. */
+  private inspecting = false;
+  /** Resolver for the pending `pauseForInspection()` promise (null when idle). */
+  private resolvePause: (() => void) | null = null;
 
   constructor(options: WorkflowTUIOptions = {}) {
     this.agentLogLines = options.agentLogLines ?? 20;
@@ -133,8 +137,14 @@ export class WorkflowTUI {
         return undefined;
       }
 
-      // Ctrl+C: show detach/kill prompt (replaces old abort-counter logic)
+      // Ctrl+C: graceful exit while inspecting (resolves pauseForInspection
+      // so run() proceeds to post-terminal actions + cleanup); otherwise show
+      // the detach/kill prompt (existing behavior while the run is live).
       if (matchesKey(data, Key.ctrl('c'))) {
+        if (this.inspecting) {
+          this.resolvePause?.();
+          return { consume: true };
+        }
         this.showDetachKillPrompt();
         this.tui?.requestRender();
         return { consume: true };
@@ -325,61 +335,46 @@ export class WorkflowTUI {
 
   // ─── Pause for Inspection ───────────────────────────────────────
 
+  /**
+   * Keep the TUI open and fully navigable after the run completes, until the
+   * user explicitly exits.
+   *
+   * This does NOT tear down the main input listener (all navigation stays
+   * live), does NOT install a separate minimal listener, and does NOT
+   * auto-resolve when the ClientStore status reaches 'complete'/'failed'.
+   * Instead it sets the `inspecting` flag and awaits a promise that is
+   * resolved ONLY by:
+   *   • Ctrl+C delivered through the MAIN input listener (graceful exit —
+   *     see the Ctrl+C branch in `start()`), or
+   *   • the optional `signal` aborting.
+   * Ctrl+D continues to detach immediately (unchanged).
+   */
   async pauseForInspection(signal?: AbortSignal): Promise<void> {
     if (!this.tui || !this.running) return;
 
+    // An already-aborted signal resolves immediately without entering
+    // inspecting mode (no hint line, no state mutation).
+    if (signal?.aborted) return;
+
     return new Promise<void>((resolve) => {
-      // If already aborted, resolve immediately
-      if (signal?.aborted) {
-        resolve();
-        return;
-      }
-
-      // Show message
-      this.eventLog.addLine('');
-      this.eventLog.addLine('Workflow complete. Press Ctrl+C or Escape to quit.');
-      this.tui?.requestRender();
-
-      // Unsubscribe main input handler to prevent its Ctrl+C abort logic
-      const mainUnsub = this.inputUnsubscribe;
-      mainUnsub?.();
-
-      let resolved = false;
-      const done = () => {
-        if (resolved) return;
-        resolved = true;
-        pauseUnsub?.();
-        storeUnsub?.();
+      let settled = false;
+      const done = (): void => {
+        if (settled) return;
+        settled = true;
+        this.inspecting = false;
+        this.resolvePause = null;
+        signal?.removeEventListener('abort', done);
         resolve();
       };
 
-      // Add pause-specific input listener
-      const pauseUnsub = this.tui?.addInputListener((data: string) => {
-        if (matchesKey(data, Key.ctrl('c')) || matchesKey(data, 'escape')) {
-          done();
-          return { consume: true };
-        }
-        return undefined;
-      });
+      this.inspecting = true;
+      this.resolvePause = done;
 
-      // Subscribe to the client store so the pause also resolves when the run
-      // reaches a terminal status (complete/failed) — e.g. the workflow
-      // finishes on its own without the user pressing a key.
-      let storeUnsub: (() => void) | undefined;
-      if (this.clientStore) {
-        const status = this.clientStore.getState().status;
-        if (status === 'complete' || status === 'failed') {
-          done();
-          return;
-        }
-        storeUnsub = this.clientStore.subscribe((state) => {
-          if (state.status === 'complete' || state.status === 'failed') {
-            done();
-          }
-        });
-      }
+      // Single hint line so the user knows how to exit.
+      this.eventLog.addLine(dim('Workflow complete — Ctrl+C to exit · Ctrl+D to detach'));
+      this.tui?.requestRender();
 
-      // Listen for AbortSignal so web terminate button can resolve the pause
+      // Allow the optional AbortSignal to resolve the pause (e.g. web terminate).
       signal?.addEventListener('abort', done, { once: true });
     });
   }

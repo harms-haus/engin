@@ -79,6 +79,8 @@ export interface AgentEntity {
   toolCallCount: number;
   inputTokens: number;
   outputTokens: number;
+  contextWindow?: number;
+  startedAt?: string;
   taskTitle: string;
   completedAt?: string;
 }

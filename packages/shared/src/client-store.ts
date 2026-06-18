@@ -16,9 +16,16 @@ import type { EventRecord, WorkflowProjection } from './event-types.js';
 import { createInitialProjection, MAX_RUN_LOG } from './event-types.js';
 import { evolve } from './evolve.js';
 import { formatWorkflowEventLine } from './format-workflow-event.js';
+import { formatWorkflowSummary } from './format-workflow-summary.js';
 import { reconcileSelection, toProjection, writeProjectionToState } from './projection-helpers.js';
 
-const MAX_WORKFLOW_EVENT_LOG = 1000;
+// ─── Workflow Event-Log Cap ─────────────────────────────────────────────────
+// Maximum number of entries retained in `workflowEventLog`. Older entries are
+// dropped (FIFO) once this limit is exceeded so memory stays bounded for
+// long-running workflows. The cap is generous (well above the TUI's visible
+// window) to preserve ample scroll-back; the TUI only ever displays `maxLines`
+// rows, so a bounded buffer loses nothing the user can see in practice.
+const MAX_WORKFLOW_EVENT_LOG = 10000;
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -125,9 +132,34 @@ export class ClientStore {
         collected.push({ seq: event.seq, line });
       }
     }
+    // Workflow-completion summary: AFTER the per-event lines (so the '🎉
+    // Complete …' line precedes the two summary lines), compute a two-line
+    // aggregate from the POST-evolve projection.agents (so agents / tokens
+    // stamped earlier in this same batch are visible). Every summary entry
+    // shares the completed event's seq so they drain together in the TUI
+    // event-log pane. Only emitted when totalDurationMs is a positive number.
+    const completed = events.find((e) => e.type === 'workflow_completed');
+    if (completed && Number(completed.data.totalDurationMs) > 0) {
+      for (const line of formatWorkflowSummary(projection.agents, Number(completed.data.totalDurationMs))) {
+        collected.push({ seq: completed.seq, line });
+      }
+    }
     if (collected.length > 0) {
-      const combined = [...this.state.workflowEventLog, ...collected];
-      this.state.workflowEventLog = combined.slice(combined.length - MAX_WORKFLOW_EVENT_LOG);
+      // Append in place rather than spreading the whole log into a new array
+      // (the spread-and-reassign allocated/copied O(N) entries on every
+      // batch — O(N²) summed across a long workflow). Downstream consumers
+      // drain new entries by seq watermark on every `notify()`, so the same
+      // array reference being mutated is fine.
+      this.state.workflowEventLog.push(...collected);
+      // Bounded retention: trim the oldest entries (FIFO) once the cap is
+      // exceeded so memory stays bounded. Trimmed entries have already been
+      // drained by downstream seq-watermark consumers, so the same mutated
+      // array reference stays consistent. Slicing in place preserves the
+      // array-reference contract above.
+      const over = this.state.workflowEventLog.length - MAX_WORKFLOW_EVENT_LOG;
+      if (over > 0) {
+        this.state.workflowEventLog.splice(0, over);
+      }
     }
 
     this.notify();

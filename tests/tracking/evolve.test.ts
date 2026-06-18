@@ -583,6 +583,171 @@ describe('evolve', () => {
       const key0 = 'a1::t1::0';
       expect(state.agents[key0].log).toHaveLength(0);
     });
+
+    // ── contextWindow & startedAt population ───────────────────────────────
+    //
+    // agent_spawned must read `data.contextWindow` (a number) and
+    // `metadata.timestamp` (an ISO string) defensively. `startedAt` is stamped
+    // ONCE at first spawn and preserved across re-spawns; `contextWindow`
+    // always prefers the incoming value, falling back to the existing one.
+
+    it('sets contextWindow and startedAt on first spawn from event.data and metadata.timestamp', () => {
+      resetSeq();
+      let state = evolve(createInitialProjection(), makeEvent('workflow_started', { taskPrompt: 'x' }));
+      state = evolve(
+        state,
+        makeEvent(
+          'agent_spawned',
+          { agentId: 'a1', profile: 'coder', contextWindow: 200000 },
+          { timestamp: '2026-06-18T10:00:00Z', agentId: 'a1', taskId: 't1' },
+        ),
+      );
+      const key = 'a1::t1';
+      expect(state.agents[key].contextWindow).toBe(200000);
+      expect(state.agents[key].startedAt).toBe('2026-06-18T10:00:00Z');
+    });
+
+    it('re-spawn preserves startedAt from the first spawn while updating contextWindow', () => {
+      resetSeq();
+      let state = evolve(createInitialProjection(), makeEvent('workflow_started', { taskPrompt: 'x' }));
+
+      // First spawn
+      state = evolve(
+        state,
+        makeEvent(
+          'agent_spawned',
+          { agentId: 'a1', profile: 'coder', contextWindow: 100000 },
+          { timestamp: '2026-06-18T10:00:00Z', agentId: 'a1', taskId: 't1' },
+        ),
+      );
+      const key = 'a1::t1';
+      expect(state.agents[key].startedAt).toBe('2026-06-18T10:00:00Z');
+      expect(state.agents[key].contextWindow).toBe(100000);
+
+      // Re-spawn the same key: newer contextWindow, newer timestamp
+      state = evolve(
+        state,
+        makeEvent(
+          'agent_spawned',
+          { agentId: 'a1', profile: 'coder-v2', contextWindow: 200000 },
+          { timestamp: '2026-06-18T11:00:00Z', agentId: 'a1', taskId: 't1' },
+        ),
+      );
+
+      // startedAt must NOT be overwritten by the later timestamp
+      expect(state.agents[key].startedAt).toBe('2026-06-18T10:00:00Z');
+      // contextWindow must reflect the incoming value
+      expect(state.agents[key].contextWindow).toBe(200000);
+      // profile still updates (UPSERT metadata)
+      expect(state.agents[key].profile).toBe('coder-v2');
+      // agentCount must NOT double-count
+      expect(state.stats.agentCount).toBe(1);
+    });
+
+    it('fresh spawn without data.contextWindow leaves contextWindow undefined but still stamps startedAt', () => {
+      resetSeq();
+      let state = evolve(createInitialProjection(), makeEvent('workflow_started', { taskPrompt: 'x' }));
+      state = evolve(
+        state,
+        makeEvent(
+          'agent_spawned',
+          { agentId: 'a1', profile: 'coder' }, // no contextWindow
+          { timestamp: '2026-06-18T10:00:00Z', agentId: 'a1', taskId: 't1' },
+        ),
+      );
+      const key = 'a1::t1';
+      expect(state.agents[key].contextWindow).toBeUndefined();
+      expect(state.agents[key].startedAt).toBe('2026-06-18T10:00:00Z');
+    });
+
+    it('re-spawn without data.contextWindow preserves the existing contextWindow', () => {
+      resetSeq();
+      let state = evolve(createInitialProjection(), makeEvent('workflow_started', { taskPrompt: 'x' }));
+
+      // First spawn sets contextWindow
+      state = evolve(
+        state,
+        makeEvent(
+          'agent_spawned',
+          { agentId: 'a1', profile: 'coder', contextWindow: 200000 },
+          { timestamp: '2026-06-18T10:00:00Z', agentId: 'a1', taskId: 't1' },
+        ),
+      );
+      const key = 'a1::t1';
+      expect(state.agents[key].contextWindow).toBe(200000);
+
+      // Re-spawn omits contextWindow → must fall back to the existing value
+      state = evolve(
+        state,
+        makeEvent(
+          'agent_spawned',
+          { agentId: 'a1', profile: 'coder-v2' },
+          { timestamp: '2026-06-18T11:00:00Z', agentId: 'a1', taskId: 't1' },
+        ),
+      );
+      expect(state.agents[key].contextWindow).toBe(200000);
+      // startedAt still preserved from first spawn
+      expect(state.agents[key].startedAt).toBe('2026-06-18T10:00:00Z');
+    });
+
+    it('sets contextWindow and startedAt for a per-step agent key (agentId::taskId::stepIndex)', () => {
+      resetSeq();
+      let state = evolve(createInitialProjection(), makeEvent('workflow_started', { taskPrompt: 'x' }));
+
+      state = evolve(state, makeEvent('phase_registered', { id: 'p1', label: 'Phase 1', icon: '' }));
+      state = evolve(
+        state,
+        makeEvent('task_registered', {
+          taskId: 't1',
+          title: 'Do thing',
+          phaseId: 'p1',
+          steps: [{ name: 'implement', profileId: 'coder', isReadOnly: false }],
+          dependencies: [],
+        }),
+      );
+
+      state = evolve(
+        state,
+        makeEvent(
+          'agent_spawned',
+          { agentId: 'lane-0', profile: 'coder', contextWindow: 150000 },
+          { timestamp: '2026-06-18T10:00:00Z', agentId: 'lane-0', taskId: 't1', stepIndex: 0 },
+        ),
+      );
+      const key = 'lane-0::t1::0';
+      expect(state.agents[key].contextWindow).toBe(150000);
+      expect(state.agents[key].startedAt).toBe('2026-06-18T10:00:00Z');
+
+      // Re-spawn same per-step key: startedAt preserved, contextWindow updated
+      state = evolve(
+        state,
+        makeEvent(
+          'agent_spawned',
+          { agentId: 'lane-0', profile: 'coder-v2', contextWindow: 250000 },
+          { timestamp: '2026-06-18T12:00:00Z', agentId: 'lane-0', taskId: 't1', stepIndex: 0 },
+        ),
+      );
+      expect(state.agents[key].startedAt).toBe('2026-06-18T10:00:00Z');
+      expect(state.agents[key].contextWindow).toBe(250000);
+      expect(state.stats.agentCount).toBe(1);
+    });
+
+    it('coerces non-number contextWindow defensively on fresh spawn (falls back to undefined)', () => {
+      resetSeq();
+      let state = evolve(createInitialProjection(), makeEvent('workflow_started', { taskPrompt: 'x' }));
+      // A non-number contextWindow should be ignored → undefined on fresh entity
+      state = evolve(
+        state,
+        makeEvent(
+          'agent_spawned',
+          { agentId: 'a1', profile: 'coder', contextWindow: 'big' },
+          { timestamp: '2026-06-18T10:00:00Z', agentId: 'a1', taskId: 't1' },
+        ),
+      );
+      const key = 'a1::t1';
+      expect(state.agents[key].contextWindow).toBeUndefined();
+      expect(state.agents[key].startedAt).toBe('2026-06-18T10:00:00Z');
+    });
   });
 
   describe('agent_completed', () => {

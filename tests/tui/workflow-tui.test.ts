@@ -1550,244 +1550,617 @@ describe('WorkflowTUI', () => {
     });
   });
 
+  // ─── pauseForInspection (post-completion inspection) ─────────────────────
+  //
+  // After the run completes the TUI must STAY OPEN and remain fully
+  // navigable until the user explicitly exits. pauseForInspection() no longer:
+  //   • tears down the main input listener (all navigation stays live), nor
+  //   • installs a separate Ctrl+C/Escape-only listener, nor
+  //   • auto-resolves when the ClientStore status reaches 'complete'/'failed'.
+  //
+  // Instead it sets an `inspecting` flag and awaits a promise that is resolved
+  // ONLY by:
+  //   • Ctrl+C delivered through the MAIN input listener (graceful exit), or
+  //   • the optional AbortSignal aborting.
+  // Ctrl+D continues to detach immediately (unchanged).
+
   describe('pauseForInspection', () => {
-    function setupPauseTest() {
-      const addInputMock = mock((_listener: (data: string) => any) => () => {});
+    const CTRL_C = '\x03';
+    const CTRL_D = '\x04';
+    const ESCAPE = '\x1b';
+    const SPACE = ' ';
+    const RIGHT_ARROW = '\x1b[C';
+
+    /**
+     * Start a WorkflowTUI whose underlying TUI is mocked so we can:
+     *   • capture the MAIN input listener installed in start()
+     *   • spy on requestRender / showOverlay / addInputListener
+     * The REAL EventLog and Dashboard are used so we can assert on render
+     * output and navigation side effects.
+     */
+    function setupStartedPause(options: { clientStore?: ClientStore; onDetach?: () => void } = {}) {
+      let capturedCallback: ((data: string) => any) | null = null;
       const requestRenderMock = mock(() => {});
-      const addLineMock = mock(() => {});
-
-      const wtui = new WorkflowTUI();
-      (wtui as any).tui = {
-        showOverlay: mock(() => {}),
-        requestRender: requestRenderMock,
-        addInputListener: addInputMock,
-        addChild: mock(() => {}),
-        setFocus: mock(() => {}),
-        stop: mock(() => {}),
-        start: mock(() => {}),
-      } as any;
-      (wtui as any).running = true;
-      (wtui as any).eventLog = {
-        addLine: addLineMock,
-        setMaxLines: mock(() => {}),
-        render: mock(() => []),
+      const overlayHandle = {
+        hide: mock(() => {}),
+        setHidden: mock(() => {}),
+        isHidden: mock(() => false),
+        focus: mock(() => {}),
+        unfocus: mock(() => {}),
+        isFocused: mock(() => false),
       };
+      const showOverlayMock = mock(
+        (_c: { render: (w: number) => string[]; handleInput: (d: string) => void }, _o: Record<string, unknown>) =>
+          overlayHandle,
+      );
 
-      return { wtui, addInputMock, requestRenderMock, addLineMock };
+      const addListenerSpy = spyOn(TUI.prototype, 'addInputListener').mockImplementation(function (
+        this: any,
+        cb: (data: string) => any,
+      ) {
+        capturedCallback = cb;
+        this.requestRender = requestRenderMock;
+        this.showOverlay = showOverlayMock;
+        return () => {};
+      });
+      const tuiStartSpy = spyOn(TUI.prototype, 'start').mockImplementation(() => {});
+      const tuiStopSpy = spyOn(TUI.prototype, 'stop').mockImplementation(() => {});
+
+      const ctorOpts: { clientStore?: ClientStore; onDetach?: () => void } = {};
+      if (options.clientStore) ctorOpts.clientStore = options.clientStore;
+      if (options.onDetach) ctorOpts.onDetach = options.onDetach;
+      const wtui = new WorkflowTUI(ctorOpts);
+      wtui.start();
+
+      return {
+        wtui,
+        callback: () => capturedCallback!,
+        requestRenderMock,
+        showOverlayMock,
+        overlayHandle,
+        addListenerSpy,
+        cleanup() {
+          wtui.stop();
+          addListenerSpy.mockRestore();
+          tuiStartSpy.mockRestore();
+          tuiStopSpy.mockRestore();
+        },
+      };
     }
 
-    it('resolves immediately when signal is already aborted', async () => {
-      const { wtui, addInputMock } = setupPauseTest();
-
-      const signal = AbortSignal.abort();
-      const start = performance.now();
-      await wtui.pauseForInspection(signal);
-      const elapsed = performance.now() - start;
-
-      expect(elapsed).toBeLessThan(50);
-      expect(addInputMock).not.toHaveBeenCalled();
-    });
-
-    it('resolves when signal is aborted after a tick', async () => {
-      const { wtui, addInputMock } = setupPauseTest();
-
-      const controller = new AbortController();
-      const promise = wtui.pauseForInspection(controller.signal);
-
-      expect(addInputMock).toHaveBeenCalledTimes(1);
-
-      controller.abort();
-
-      await expect(promise).resolves.toBeUndefined();
-    });
-
-    it('adds event log messages and requests render on pause', async () => {
-      const { wtui, addLineMock, requestRenderMock } = setupPauseTest();
-
-      const controller = new AbortController();
-      const promise = wtui.pauseForInspection(controller.signal);
-
-      expect(addLineMock).toHaveBeenCalledWith('');
-      expect(addLineMock).toHaveBeenCalledWith('Workflow complete. Press Ctrl+C or Escape to quit.');
-      expect(requestRenderMock).toHaveBeenCalled();
-
-      controller.abort();
-      await promise;
-    });
-
-    it('resolves when Ctrl+C key is pressed via the pause input listener', async () => {
-      const { wtui, addInputMock } = setupPauseTest();
-
-      const controller = new AbortController();
-      const promise = wtui.pauseForInspection(controller.signal);
-
-      expect(addInputMock).toHaveBeenCalledTimes(1);
-      const listener = addInputMock.mock.calls[0][0];
-      expect(typeof listener).toBe('function');
-
-      const result = listener('\x03');
-      expect(result).toEqual({ consume: true });
-
-      await expect(promise).resolves.toBeUndefined();
-    });
-
-    it('resolves when Escape key is pressed via the pause input listener', async () => {
-      const { wtui, addInputMock } = setupPauseTest();
-
-      const controller = new AbortController();
-      const promise = wtui.pauseForInspection(controller.signal);
-
-      expect(addInputMock).toHaveBeenCalledTimes(1);
-      const listener = addInputMock.mock.calls[0][0];
-
-      const result = listener('\x1b');
-      expect(result).toEqual({ consume: true });
-
-      await expect(promise).resolves.toBeUndefined();
-    });
+    // ── guards ─────────────────────────────────────────────────────────
 
     it('does nothing when tui is null', async () => {
       const wtui = new WorkflowTUI();
-      await wtui.pauseForInspection();
+      await expect(wtui.pauseForInspection()).resolves.toBeUndefined();
+      expect(wtui.getEventLog().render(80).join('\n')).not.toContain('Workflow complete');
     });
 
     it('does nothing when not running', async () => {
       const wtui = new WorkflowTUI();
-      (wtui as any).tui = {
-        addInputListener: mock(() => {}),
-        requestRender: mock(() => {}),
-      };
+      (wtui as any).tui = { requestRender: mock(() => {}), addInputListener: mock(() => () => {}) } as any;
       (wtui as any).running = false;
 
-      await wtui.pauseForInspection();
+      await expect(wtui.pauseForInspection()).resolves.toBeUndefined();
+      expect(wtui.getEventLog().render(80).join('\n')).not.toContain('Workflow complete');
     });
 
-    it('resolves signal abort after pause listener setup prevents double-resolution', async () => {
-      const { wtui } = setupPauseTest();
+    // ── hint line + render ─────────────────────────────────────────────
 
-      const controller = new AbortController();
-      let resolveCount = 0;
-      const promise = wtui.pauseForInspection(controller.signal);
-      promise.then(() => resolveCount++);
+    it('adds a single hint line with the Ctrl+C / Ctrl+D exit instructions', async () => {
+      const { wtui, callback, cleanup } = setupStartedPause();
+      try {
+        const promise = wtui.pauseForInspection();
+        await Promise.resolve();
 
-      controller.abort();
-      await promise;
-      expect(resolveCount).toBe(1);
+        const joined = wtui.getEventLog().render(80).join('\n');
+        expect(joined).toContain('Workflow complete — Ctrl+C to exit · Ctrl+D to detach');
+        // Exactly one hint line (no legacy blank line + message pair).
+        const hintLines = wtui
+          .getEventLog()
+          .render(80)
+          .filter((l) => l.includes('Workflow complete'));
+        expect(hintLines).toHaveLength(1);
+
+        callback()(CTRL_C);
+        await promise;
+      } finally {
+        cleanup();
+      }
     });
 
-    it('resolves via Ctrl+C even when AbortSignal never fires', async () => {
-      const { wtui, addInputMock } = setupPauseTest();
+    it('requests a render after adding the hint line', async () => {
+      const { wtui, requestRenderMock, callback, cleanup } = setupStartedPause();
+      try {
+        const before = requestRenderMock.mock.calls.length;
+        const promise = wtui.pauseForInspection();
+        await Promise.resolve();
 
-      const promise = wtui.pauseForInspection();
+        expect(requestRenderMock.mock.calls.length).toBeGreaterThan(before);
 
-      expect(addInputMock).toHaveBeenCalledTimes(1);
-      const listener = addInputMock.mock.calls[0][0];
+        callback()(CTRL_C);
+        await promise;
+      } finally {
+        cleanup();
+      }
+    });
 
-      listener('\x03');
+    // ── keeps the MAIN listener active ─────────────────────────────────
 
-      await expect(promise).resolves.toBeUndefined();
+    it('does NOT install a separate input listener (main listener stays active)', async () => {
+      const { wtui, addListenerSpy, callback, cleanup } = setupStartedPause();
+      try {
+        // addInputListener called exactly once — during start() — to install
+        // the MAIN listener.
+        expect(addListenerSpy).toHaveBeenCalledTimes(1);
+
+        const promise = wtui.pauseForInspection();
+        await Promise.resolve();
+
+        // Still exactly one — pauseForInspection must NOT add its own listener.
+        expect(addListenerSpy).toHaveBeenCalledTimes(1);
+
+        callback()(CTRL_C);
+        await promise;
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('still handles navigation keys (space) while inspecting', async () => {
+      const { wtui, callback, requestRenderMock, cleanup } = setupStartedPause();
+      try {
+        const dashboard = wtui.getDashboard();
+        expect(dashboard.agentLog.isExpanded()).toBe(false);
+
+        const promise = wtui.pauseForInspection();
+        await Promise.resolve();
+
+        requestRenderMock.mockClear();
+
+        // Space toggles the agent log expand — the main listener still routes it.
+        const result = callback()(SPACE);
+        expect(result).toEqual({ consume: true });
+        expect(dashboard.agentLog.isExpanded()).toBe(true);
+        expect(requestRenderMock).toHaveBeenCalled();
+
+        callback()(CTRL_C);
+        await promise;
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('still handles phase navigation (right arrow) while inspecting', async () => {
+      const clientStore = new ClientStore();
+      const { wtui, callback, cleanup } = setupStartedPause({ clientStore });
+      try {
+        clientStore.applyEvents([
+          ev('phase_registered', { id: 'p1', label: 'P1', icon: '📋' }, {}, 1),
+          ev('phase_registered', { id: 'p2', label: 'P2', icon: '📋' }, {}, 2),
+          ev('phase_started', { phase: 'p1', round: 1 }, {}, 3),
+        ]);
+
+        const dashboard = wtui.getDashboard();
+        expect(dashboard.getSelection().selectedPhaseId).toBe('p1');
+
+        const promise = wtui.pauseForInspection();
+        await Promise.resolve();
+
+        // Right arrow navigates phases — the main listener still routes it.
+        const result = callback()(RIGHT_ARROW);
+        expect(result).toEqual({ consume: true });
+        expect(dashboard.getSelection().selectedPhaseId).toBe('p2');
+
+        callback()(CTRL_C);
+        await promise;
+      } finally {
+        cleanup();
+      }
+    });
+
+    // ── resolution via Ctrl+C (main listener) ──────────────────────────
+
+    it('resolves when Ctrl+C is delivered through the MAIN input listener', async () => {
+      const { wtui, callback, cleanup } = setupStartedPause();
+      try {
+        const promise = wtui.pauseForInspection();
+        await Promise.resolve();
+
+        let resolved = false;
+        promise.then(() => {
+          resolved = true;
+        });
+
+        const result = callback()(CTRL_C);
+        expect(result).toEqual({ consume: true });
+
+        await promise;
+        expect(resolved).toBe(true);
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('Ctrl+C while inspecting resolves WITHOUT showing the detach/kill prompt', async () => {
+      const { wtui, callback, showOverlayMock, cleanup } = setupStartedPause();
+      try {
+        const promise = wtui.pauseForInspection();
+        await Promise.resolve();
+
+        showOverlayMock.mockClear();
+
+        callback()(CTRL_C);
+        await promise;
+
+        // The detach/kill prompt must NOT be opened during inspection.
+        expect(showOverlayMock).not.toHaveBeenCalled();
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('Escape does NOT resolve the pause (only Ctrl+C exits)', async () => {
+      const { wtui, callback, cleanup } = setupStartedPause();
+      try {
+        const controller = new AbortController();
+        let resolved = false;
+        const promise = wtui.pauseForInspection(controller.signal);
+        promise.then(() => {
+          resolved = true;
+        });
+        await Promise.resolve();
+
+        // Escape falls through (unhandled) — the pause stays pending.
+        const result = callback()(ESCAPE);
+        expect(result).toBeUndefined();
+        await new Promise((r) => setTimeout(r, 10));
+        expect(resolved).toBe(false);
+
+        // Settle via signal so no dangling promise leaks across tests.
+        controller.abort();
+        await promise;
+      } finally {
+        cleanup();
+      }
+    });
+
+    // ── Ctrl+C while NOT inspecting still opens the prompt ─────────────
+
+    it('Ctrl+C while NOT inspecting still shows the detach/kill prompt (existing behavior)', () => {
+      const { callback, showOverlayMock, cleanup } = setupStartedPause();
+      try {
+        callback()(CTRL_C);
+        expect(showOverlayMock).toHaveBeenCalledTimes(1);
+      } finally {
+        cleanup();
+      }
+    });
+
+    // ── Ctrl+D unchanged (still detaches) ──────────────────────────────
+
+    it('Ctrl+D during inspection still calls onDetach (unchanged)', async () => {
+      const onDetachMock = mock(() => {});
+      const { wtui, callback, cleanup } = setupStartedPause({ onDetach: onDetachMock });
+      try {
+        const promise = wtui.pauseForInspection();
+        await Promise.resolve();
+
+        const result = callback()(CTRL_D);
+        expect(result).toEqual({ consume: true });
+        expect(onDetachMock).toHaveBeenCalledTimes(1);
+
+        // Ctrl+D detaches but does NOT resolve the pause; settle via Ctrl+C.
+        callback()(CTRL_C);
+        await promise;
+      } finally {
+        cleanup();
+      }
+    });
+
+    // ── AbortSignal ────────────────────────────────────────────────────
+
+    it('resolves immediately when signal is already aborted', async () => {
+      const { wtui, addListenerSpy, callback, cleanup } = setupStartedPause();
+      try {
+        const signal = AbortSignal.abort();
+        const start = performance.now();
+        const promise = wtui.pauseForInspection(signal);
+
+        // An already-aborted signal must resolve the pause without a keypress.
+        // Race against a fallback Ctrl+C delivery so the test can never hang
+        // if the early-return guard is absent.
+        await Promise.race([promise, new Promise((r) => setTimeout(r, 60))]);
+        const resolvedFast = performance.now() - start < 55;
+        if (!resolvedFast) {
+          callback()(CTRL_C);
+        }
+        await promise;
+
+        expect(resolvedFast).toBe(true);
+        // No separate pause listener was added beyond the single main one.
+        expect(addListenerSpy).toHaveBeenCalledTimes(1);
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('resolves when signal is aborted after a tick (while inspecting)', async () => {
+      const { wtui, cleanup } = setupStartedPause();
+      try {
+        const controller = new AbortController();
+        const promise = wtui.pauseForInspection(controller.signal);
+        await Promise.resolve();
+
+        controller.abort();
+        await expect(promise).resolves.toBeUndefined();
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('does NOT resolve while waiting (no Ctrl+C, no signal)', async () => {
+      const { wtui, cleanup } = setupStartedPause();
+      try {
+        const controller = new AbortController();
+        let resolved = false;
+        const promise = wtui.pauseForInspection(controller.signal);
+        promise.then(() => {
+          resolved = true;
+        });
+
+        await new Promise((r) => setTimeout(r, 15));
+        expect(resolved).toBe(false);
+
+        // Settle the dangling promise.
+        controller.abort();
+        await promise;
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('resolves only once (signal abort after Ctrl+C does not double-resolve)', async () => {
+      const { wtui, callback, cleanup } = setupStartedPause();
+      try {
+        const controller = new AbortController();
+        let resolveCount = 0;
+        const promise = wtui.pauseForInspection(controller.signal);
+        promise.then(() => {
+          resolveCount++;
+        });
+
+        callback()(CTRL_C);
+        await promise;
+
+        // Aborting the signal after resolution must not resolve again / throw.
+        controller.abort();
+        await new Promise((r) => setTimeout(r, 10));
+
+        expect(resolveCount).toBe(1);
+      } finally {
+        cleanup();
+      }
     });
   });
 
-  // ─── pauseForInspection: client-store completion ─────────────────────────
+  // ─── pauseForInspection: NO auto-resolve on completion ───────────────────
   //
-  // With the refactor, pauseForInspection now also resolves when the client
-  // store observes a run_complete / run_failed (status 'complete' or 'failed'),
-  // in addition to Escape/Ctrl+C and the optional AbortSignal.
+  // The post-completion inspection must NOT auto-resolve when the ClientStore
+  // reaches a terminal status. The TUI stays open, fully navigable, until the
+  // user presses Ctrl+C (graceful exit) or the AbortSignal fires. This
+  // supersedes the old behavior where a 'complete'/'failed' status — or a
+  // workflow_completed/workflow_failed event — resolved the pause immediately.
 
-  describe('pauseForInspection (client-store completion)', () => {
-    function setupClientStorePauseTest() {
+  describe('pauseForInspection (no auto-resolve on completion)', () => {
+    const CTRL_C = '\x03';
+    const SPACE = ' ';
+
+    function setupClientStorePause() {
       const clientStore = new ClientStore();
+      let capturedCallback: ((data: string) => any) | null = null;
+      const requestRenderMock = mock(() => {});
+      const showOverlayMock = mock(
+        (_c: { render: (w: number) => string[]; handleInput: (d: string) => void }, _o: Record<string, unknown>) => ({
+          hide: mock(() => {}),
+          setHidden: mock(() => {}),
+          isHidden: mock(() => false),
+          focus: mock(() => {}),
+          unfocus: mock(() => {}),
+          isFocused: mock(() => false),
+        }),
+      );
+
+      const addListenerSpy = spyOn(TUI.prototype, 'addInputListener').mockImplementation(function (
+        this: any,
+        cb: (data: string) => any,
+      ) {
+        capturedCallback = cb;
+        this.requestRender = requestRenderMock;
+        this.showOverlay = showOverlayMock;
+        return () => {};
+      });
+      const tuiStartSpy = spyOn(TUI.prototype, 'start').mockImplementation(() => {});
+      const tuiStopSpy = spyOn(TUI.prototype, 'stop').mockImplementation(() => {});
+
       const wtui = new WorkflowTUI({ clientStore });
-      (wtui as any).tui = {
-        showOverlay: mock(() => {}),
-        requestRender: mock(() => {}),
-        addInputListener: mock(() => () => {}),
-        addChild: mock(() => {}),
-        setFocus: mock(() => {}),
-        stop: mock(() => {}),
-        start: mock(() => {}),
-      } as any;
-      (wtui as any).running = true;
-      return { wtui, clientStore };
+      wtui.start();
+
+      return {
+        wtui,
+        clientStore,
+        callback: () => capturedCallback!,
+        requestRenderMock,
+        cleanup() {
+          wtui.stop();
+          addListenerSpy.mockRestore();
+          tuiStartSpy.mockRestore();
+          tuiStopSpy.mockRestore();
+        },
+      };
     }
 
-    it('resolves when the client store reaches "complete" status', async () => {
-      const { wtui, clientStore } = setupClientStorePauseTest();
+    it('does NOT auto-resolve when status is already "complete"', async () => {
+      const { wtui, clientStore, callback, cleanup } = setupClientStorePause();
+      try {
+        clientStore.setStatus('complete');
 
-      const promise = wtui.pauseForInspection();
-      // Yield once so any listener/subscription wiring settles.
-      await new Promise((r) => setTimeout(r, 5));
+        let resolved = false;
+        const promise = wtui.pauseForInspection();
+        promise.then(() => {
+          resolved = true;
+        });
+        await new Promise((r) => setTimeout(r, 15));
 
-      clientStore.setStatus('complete');
+        // Already-complete status must NOT auto-resolve the pause.
+        expect(resolved).toBe(false);
 
-      await expect(promise).resolves.toBeUndefined();
+        // It still resolves via Ctrl+C through the main listener.
+        callback()(CTRL_C);
+        await promise;
+        expect(resolved).toBe(true);
+      } finally {
+        cleanup();
+      }
     });
 
-    it('resolves when the client store reaches "failed" status', async () => {
-      const { wtui, clientStore } = setupClientStorePauseTest();
+    it('does NOT auto-resolve when status is already "failed"', async () => {
+      const { wtui, clientStore, callback, cleanup } = setupClientStorePause();
+      try {
+        clientStore.setStatus('failed');
 
-      const promise = wtui.pauseForInspection();
-      await new Promise((r) => setTimeout(r, 5));
+        let resolved = false;
+        const promise = wtui.pauseForInspection();
+        promise.then(() => {
+          resolved = true;
+        });
+        await new Promise((r) => setTimeout(r, 15));
+        expect(resolved).toBe(false);
 
-      clientStore.setStatus('failed');
-
-      await expect(promise).resolves.toBeUndefined();
+        callback()(CTRL_C);
+        await promise;
+      } finally {
+        cleanup();
+      }
     });
 
-    it('resolves when a workflow_completed event is applied to the client store', async () => {
-      const { wtui, clientStore } = setupClientStorePauseTest();
+    it('does NOT auto-resolve when status transitions to "complete" after pause', async () => {
+      const { wtui, clientStore, callback, cleanup } = setupClientStorePause();
+      try {
+        let resolved = false;
+        const promise = wtui.pauseForInspection();
+        promise.then(() => {
+          resolved = true;
+        });
+        await Promise.resolve();
 
-      const promise = wtui.pauseForInspection();
-      await new Promise((r) => setTimeout(r, 5));
+        clientStore.setStatus('complete');
+        await new Promise((r) => setTimeout(r, 15));
 
-      clientStore.applyEvents([ev('workflow_completed', { totalDurationMs: 1000, agentCount: 1 }, {}, 1)]);
+        // A status transition to terminal must NOT resolve the pause.
+        expect(resolved).toBe(false);
 
-      await expect(promise).resolves.toBeUndefined();
+        callback()(CTRL_C);
+        await promise;
+      } finally {
+        cleanup();
+      }
     });
 
-    it('resolves when a workflow_failed event is applied to the client store', async () => {
-      const { wtui, clientStore } = setupClientStorePauseTest();
+    it('does NOT auto-resolve when a workflow_completed event is applied', async () => {
+      const { wtui, clientStore, callback, cleanup } = setupClientStorePause();
+      try {
+        let resolved = false;
+        const promise = wtui.pauseForInspection();
+        promise.then(() => {
+          resolved = true;
+        });
+        await Promise.resolve();
 
-      const promise = wtui.pauseForInspection();
-      await new Promise((r) => setTimeout(r, 5));
+        clientStore.applyEvents([ev('workflow_completed', { totalDurationMs: 1000, agentCount: 1 }, {}, 1)]);
+        await new Promise((r) => setTimeout(r, 15));
+        expect(resolved).toBe(false);
 
-      clientStore.applyEvents([ev('workflow_failed', { phase: 'planning', error: 'boom' }, {}, 1)]);
-
-      await expect(promise).resolves.toBeUndefined();
+        callback()(CTRL_C);
+        await promise;
+      } finally {
+        cleanup();
+      }
     });
 
-    it('does not resolve while the client store is still "running"', async () => {
-      const { wtui, clientStore } = setupClientStorePauseTest();
+    it('does NOT auto-resolve when a workflow_failed event is applied', async () => {
+      const { wtui, clientStore, callback, cleanup } = setupClientStorePause();
+      try {
+        let resolved = false;
+        const promise = wtui.pauseForInspection();
+        promise.then(() => {
+          resolved = true;
+        });
+        await Promise.resolve();
 
-      let resolved = false;
-      const promise = wtui.pauseForInspection();
-      promise.then(() => {
-        resolved = true;
-      });
-      await new Promise((r) => setTimeout(r, 10));
+        clientStore.applyEvents([ev('workflow_failed', { phase: 'planning', error: 'boom' }, {}, 1)]);
+        await new Promise((r) => setTimeout(r, 15));
+        expect(resolved).toBe(false);
 
-      // Still running → must not have resolved.
-      expect(resolved).toBe(false);
-
-      // Drive it to completion so the dangling promise does not keep the
-      // process alive / leak listeners across tests.
-      clientStore.setStatus('complete');
-      await promise;
+        callback()(CTRL_C);
+        await promise;
+      } finally {
+        cleanup();
+      }
     });
 
-    it('still resolves via Escape key even with a client store attached', async () => {
-      const { wtui } = setupClientStorePauseTest();
+    it('does NOT register a client-store status subscription', async () => {
+      const { wtui, clientStore, callback, cleanup } = setupClientStorePause();
+      try {
+        // The ws-backed adapter already subscribes once (in the constructor).
+        const before = (clientStore as any).listeners.size;
+        const promise = wtui.pauseForInspection();
+        await Promise.resolve();
 
-      const promise = wtui.pauseForInspection();
-      // The pause input listener is added after the main handler is torn down.
-      const tuiMock = (wtui as any).tui;
-      const listener = tuiMock.addInputListener.mock.calls[tuiMock.addInputListener.mock.calls.length - 1][0];
+        // pauseForInspection must NOT add its own status listener.
+        expect((clientStore as any).listeners.size).toBe(before);
 
-      const result = listener('\x1b');
-      expect(result).toEqual({ consume: true });
+        callback()(CTRL_C);
+        await promise;
+      } finally {
+        cleanup();
+      }
+    });
 
-      await expect(promise).resolves.toBeUndefined();
+    // ── Verification: complete status + Ctrl+C via main listener + nav keys
+
+    it('verification: stays open at "complete", nav keys live, Ctrl+C exits', async () => {
+      const { wtui, clientStore, callback, requestRenderMock, cleanup } = setupClientStorePause();
+      try {
+        clientStore.applyEvents([
+          ev('phase_registered', { id: 'p1', label: 'P1', icon: '📋' }, {}, 1),
+          ev('phase_started', { phase: 'p1', round: 1 }, {}, 2),
+        ]);
+        clientStore.setStatus('complete');
+
+        // pauseForInspection must NOT resolve immediately despite 'complete'.
+        let resolved = false;
+        const promise = wtui.pauseForInspection();
+        promise.then(() => {
+          resolved = true;
+        });
+        await new Promise((r) => setTimeout(r, 10));
+        expect(resolved).toBe(false);
+
+        // Navigation keys are still handled while inspecting.
+        requestRenderMock.mockClear();
+        const spaceResult = callback()(SPACE);
+        expect(spaceResult).toEqual({ consume: true });
+        expect(requestRenderMock).toHaveBeenCalled();
+
+        // Ctrl+C through the main listener resolves the pause.
+        const ctrlCResult = callback()(CTRL_C);
+        expect(ctrlCResult).toEqual({ consume: true });
+        await promise;
+        expect(resolved).toBe(true);
+      } finally {
+        cleanup();
+      }
     });
   });
 });

@@ -12,7 +12,7 @@
     }
   },
   "dependencies": {
-    "@earendil-works/pi-tui": "^0.79.0",
+    "@earendil-works/pi-tui": "^0.79.7",
     "@harms-haus/engin-shared": "workspace:*"
   }
 }

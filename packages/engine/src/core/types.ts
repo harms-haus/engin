@@ -118,6 +118,8 @@ export interface WorkflowStatusCallbacks {
     stepIndex?: number;
     sessionId?: string;
     sessionPath?: string;
+    /** Resolved model's context window (from pi-ai `Model.contextWindow`). */
+    contextWindow?: number;
   }) => void;
   onAgentComplete?: (info: {
     agentId: string;
