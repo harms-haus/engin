@@ -26,27 +26,23 @@
 
 ### Package surface
 
-10. `import { ... } from '@harms-haus/engin'` — 126 exports available
-    - Key APIs: `RunManager`, `startDaemon`, `stopDaemon`, `isServerAlive`,
-      `WorkflowTUI`, `createWsBackedTui`, `loadWorkflow`, `listWorkflows`,
-      `EventStore`, `startControlServer`, `ControlServer` (type), `StatusBridge`,
-      `clearWorkflowCache`
+10. Package boundaries — `@harms-haus/engin` (the CLI) now exports only its command surface (~11 names: `initCommand`, `main`, `parseArgs`, `runCommand`, `resumeCommand`, `serverUpCommand`, `serverDownCommand`, `serverStatusCommand`, `USAGE`, `VERSION`, `CliOptions`) and no longer re-exports the engine or TUI. The workflow/server APIs (`RunManager`, `startDaemon`, `stopDaemon`, `isServerAlive`, `loadWorkflow`, `listWorkflows`, `EventStore`, `startControlServer`, `ControlServer`, `StatusBridge`, `clearWorkflowCache`) are imported from `@harms-haus/engin-engine`; the TUI (`WorkflowTUI`) is imported from `@harms-haus/engin-tui`.
 
 ---
 
 ## Verification Results (2026-06-16)
 
-| Check                                      | Result                                                        |
-| ------------------------------------------ | ------------------------------------------------------------- |
-| `bun install`                              | ✅ clean (448 installs, no changes)                           |
-| `bun run typecheck`                        | ✅ 0 errors (`tsc --noEmit` over `packages/*/src` + `tests/`) |
-| `bun run lint`                             | ✅ 0 errors (`eslint .`)                                      |
-| `bun run format`                           | ✅ clean (102 files formatted)                                |
-| `bun run format:check`                     | ✅ all files use Prettier                                     |
-| `bun test` (full suite)                    | ✅ 2796 pass / 0 fail across 92 files (6371 `expect()` calls) |
-| `cd packages/web && bun run test` (vitest) | ✅ 16 files, 389 pass / 0 fail                                |
-| `cd packages/web && bun run build`         | ✅ built in 567ms                                             |
-| Package surface (`@harms-haus/engin`)      | ✅ 126 exports, all key APIs present                          |
+| Check                                      | Result                                                                         |
+| ------------------------------------------ | ------------------------------------------------------------------------------ |
+| `bun install`                              | ✅ clean (448 installs, no changes)                                            |
+| `bun run typecheck`                        | ✅ 0 errors (`tsc --noEmit` over `packages/*/src` + `tests/`)                  |
+| `bun run lint`                             | ✅ 0 errors (`eslint .`)                                                       |
+| `bun run format`                           | ✅ clean (102 files formatted)                                                 |
+| `bun run format:check`                     | ✅ all files use Prettier                                                      |
+| `bun test` (full suite)                    | ✅ 2796 pass / 0 fail across 92 files (6371 `expect()` calls)                  |
+| `cd packages/web && bun run test` (vitest) | ✅ 16 files, 389 pass / 0 fail                                                 |
+| `cd packages/web && bun run build`         | ✅ built in 567ms                                                              |
+| Package surface (`@harms-haus/engin`)      | ✅ CLI exports only its command surface; engine/TUI APIs in their own packages |
 
 > **Flaky-test caveat:** the full suite includes one inherently-racy concurrency
 > test — `AuditLog cache (invalidate-on-write) > append during concurrent getEvents

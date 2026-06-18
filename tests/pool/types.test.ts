@@ -265,6 +265,22 @@ describe('TaskTracker failed status and reset', () => {
 
   it('resetStuckTasks does not touch ready/complete/failed tasks', () => {
     const tracker = new TaskTracker();
+    // Drive failed1 to 'failed' FIRST, while it is the only ready task, so the
+    // setup is independent of ready-task claim ordering (which is now
+    // insertion-order rather than alphabetical). The test's intent is purely
+    // about resetStuckTasks semantics, not claim priority.
+    tracker.addTask({
+      id: 'failed1',
+      title: 'F',
+      prompt: '...',
+      profile: 'coder',
+      files: [],
+      dependencies: [],
+      phaseId: 'phase-1',
+    });
+    tracker.claimTasks(1, 'agent-x');
+    tracker.failTask('failed1', 'err');
+
     tracker.addTask({
       id: 'ready1',
       title: 'R',
@@ -284,15 +300,6 @@ describe('TaskTracker failed status and reset', () => {
       phaseId: 'phase-1',
     });
     tracker.addTask({
-      id: 'failed1',
-      title: 'F',
-      prompt: '...',
-      profile: 'coder',
-      files: [],
-      dependencies: [],
-      phaseId: 'phase-1',
-    });
-    tracker.addTask({
       id: 'blocked1',
       title: 'B',
       prompt: '...',
@@ -302,16 +309,11 @@ describe('TaskTracker failed status and reset', () => {
       phaseId: 'phase-1',
     });
 
-    // Complete done1 so blocked1 stays blocked
+    // Complete done1 so blocked1 becomes ready (done1 has the most pressure
+    // via blocked1, so claimTasks(1) deterministically picks it regardless of
+    // the secondary tiebreak).
     tracker.claimTasks(1, 'agent-1');
     tracker.completeTask('done1');
-
-    // Claim and fail failed1
-    const claimed = tracker.claimTasks(1, 'agent-2');
-    const failedTask = claimed.find((t) => t.id === 'failed1');
-    if (failedTask) {
-      tracker.failTask('failed1', 'err');
-    }
 
     const statusesBefore = {
       ready1: tracker.getTask('ready1')!.status,

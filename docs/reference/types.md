@@ -1,7 +1,9 @@
 # Types reference
 
-All types below are exported from the top-level `@harms-haus/engin` entry point. Where a type
-is defined in a specific source file, that is noted.
+All types below are exported from the `@harms-haus/engin-engine` entry point
+(`packages/engine/src/index.ts`). The published CLI package (`@harms-haus/engin`) does not
+re-export these types — depend on `@harms-haus/engin-engine` directly. Where a type is defined
+in a specific source file, that is noted.
 
 ## Union types
 
@@ -302,22 +304,24 @@ type StepResult = { type: 'approved'; output: unknown } | { type: 'rejected'; fe
 
 ### `LanePoolOptions`
 
-| Field                | Required | Description                                                                                    |
-| -------------------- | -------- | ---------------------------------------------------------------------------------------------- |
-| `maxConcurrentLanes` | **Yes**  | Maximum concurrent lanes (workers).                                                            |
-| `profilesDirs`       | **Yes**  | Directories containing `.md` profiles.                                                         |
-| `sessionBaseDir`     | **Yes**  | Base directory for persisted sessions (`{base}/{taskId}/{execCount}-{stepIndex}-{stepName}/`). |
-| `cwd`                | **Yes**  | Working directory.                                                                             |
-| `taskTracker`        | **Yes**  | Shared `TaskTracker` lanes claim from.                                                         |
-| `getStepsForTask`    | No       | `(task) => StepDefinition[]`.                                                                  |
-| `getRunnerForTask`   | No       | `(task) => TaskRunner`. Takes precedence over `getStepsForTask`.                               |
-| `phaseId`            | **Yes**  | The phase this pool serves.                                                                    |
-| `apiKeys?`           | No       | Provider → API key overrides.                                                                  |
-| `onStatus?`          | No       | Status callbacks.                                                                              |
-| `auditLog?`          | No       | Audit log.                                                                                     |
-| `maxStepRetries?`    | No       | Max retries per step on rejection (default `5`).                                               |
-| `laneWaitTimeoutMs?` | No       | Lane idle poll interval (default `60000`).                                                     |
-| `signal?`            | No       | Abort signal.                                                                                  |
+| Field                | Required | Description                                                                                                                                                                |
+| -------------------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `maxConcurrentLanes` | **Yes**  | Maximum concurrent lanes (workers).                                                                                                                                        |
+| `profilesDirs`       | **Yes**  | Directories containing `.md` profiles.                                                                                                                                     |
+| `sessionBaseDir`     | **Yes**  | Base directory for persisted sessions (`{base}/{taskId}/{execCount}-{stepIndex}-{stepName}/`).                                                                             |
+| `cwd`                | **Yes**  | Working directory.                                                                                                                                                         |
+| `taskTracker`        | **Yes**  | Shared `TaskTracker` lanes claim from.                                                                                                                                     |
+| `getStepsForTask`    | No       | `(task) => StepDefinition[]`.                                                                                                                                              |
+| `getRunnerForTask`   | No       | `(task) => TaskRunner`. Takes precedence over `getStepsForTask`.                                                                                                           |
+| `phaseId`            | **Yes**  | The phase this pool serves.                                                                                                                                                |
+| `apiKeys?`           | No       | Provider → API key overrides.                                                                                                                                              |
+| `onStatus?`          | No       | Status callbacks.                                                                                                                                                          |
+| `auditLog?`          | No       | Audit log.                                                                                                                                                                 |
+| `maxStepRetries?`    | No       | Max retries per step on rejection (default `5`).                                                                                                                           |
+| `maxTaskRetries?`    | No       | Max times a failed task is reset and re-run from step 1 within one pool run (default `0`). Total attempts = `1 + maxTaskRetries`. Persisted sessions are cleared on retry. |
+| `rendererRegistry?`  | No       | Optional registry of custom output renderers keyed by profile name.                                                                                                        |
+| `laneWaitTimeoutMs?` | No       | Lane idle poll interval (default `60000`).                                                                                                                                 |
+| `signal?`            | No       | Abort signal.                                                                                                                                                              |
 
 ### `LanePoolResult`
 

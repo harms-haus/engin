@@ -92,10 +92,11 @@ directories (starting with `.`) are skipped during discovery.
 ```
 
 Each workflow directory is loaded natively by the Bun runtime — no extra loader or transpile
-step. Your `main.ts` imports from `@harms-haus/engin` and from `zod`:
+step. Your `main.ts` imports the engine primitives from `@harms-haus/engin-engine` and from
+`zod`:
 
 ```typescript
-import type { WorkflowModule, WorkflowRunOptions } from '@harms-haus/engin';
+import type { WorkflowModule, WorkflowRunOptions } from '@harms-haus/engin-engine';
 ```
 
 ### Name validation
@@ -141,7 +142,12 @@ Here is a complete, runnable workflow that scouts a codebase and prints the resu
 
 ```typescript
 // ~/.config/engin/workflows/apidoc/main.ts
-import { resolveProfilesDirs, runStepTask, type WorkflowModule, type WorkflowRunOptions } from '@harms-haus/engin';
+import {
+  resolveProfilesDirs,
+  runStepTask,
+  type WorkflowModule,
+  type WorkflowRunOptions,
+} from '@harms-haus/engin-engine';
 import { z } from 'zod';
 
 const ScoutSchema = z.object({
@@ -221,7 +227,7 @@ then by ID), and rejects cycles at insert time.
 Here is the shape you will use. We will fill it in as we build the `apidoc` writing phase.
 
 ```typescript
-import { LanePool, TaskTracker, resolveProfilesDirs } from '@harms-haus/engin';
+import { LanePool, TaskTracker, resolveProfilesDirs } from '@harms-haus/engin-engine';
 import { z } from 'zod';
 
 const ReviewSchema = z.object({
@@ -442,7 +448,7 @@ import {
   type Task,
   type WorkflowModule,
   type WorkflowRunOptions,
-} from '@harms-haus/engin';
+} from '@harms-haus/engin-engine';
 import { z } from 'zod';
 
 // ── Schemas ────────────────────────────────────────────────────────────────

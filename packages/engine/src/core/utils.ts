@@ -76,10 +76,8 @@ export function forwardAgentStatus(onStatus?: StatusCallbacks): AgentStatusCallb
 /** Default tool names used by the harness when no include/exclude list is specified. */
 export const DEFAULT_TOOLS: readonly string[] = Object.freeze(['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls']);
 
-/** Append a feedback entry to the task's reviewFeedback array, initializing if needed. */
-export function appendReviewFeedback(task: { reviewFeedback?: string[] }, feedback: string): void {
-  if (!task.reviewFeedback) {
-    task.reviewFeedback = [];
-  }
-  task.reviewFeedback.push(feedback);
-}
+// Re-export for backwards compatibility — `appendReviewFeedback` now lives in
+// `./task-feedback.js` (core layer) so that `tracking` can import it without a
+// `tracking → pool` dependency. New consumers should import directly from
+// `./task-feedback.js`.
+export { appendReviewFeedback } from './task-feedback.js';

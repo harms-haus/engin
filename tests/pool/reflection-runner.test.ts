@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
 import { z } from 'zod';
 
+import { RendererRegistry } from '../../packages/engine/src/core/renderer-registry.js';
 import { reflectionRunner } from '../../packages/engine/src/pool/reflection-runner.js';
 import {
   clearPoolMocks,
@@ -638,7 +639,10 @@ describe('default maxRounds', () => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe('completeTask failure handling', () => {
-  it('returns failed when completeTask returns false on approval', async () => {
+  it('settles as failed when completeTask returns false on critic approval (delegated to settleResult)', async () => {
+    // settleResult() branches on the boolean returned by completeTask:
+    // when false (task cancelled/raced), it calls failTask and returns
+    // { status: 'failed' }.
     setupProfileMocks();
     setupHarnessMocks();
     setupCriticMock(true, 'Approved');
@@ -652,7 +656,12 @@ describe('completeTask failure handling', () => {
 
     expect(outcome.status).toBe('failed');
     expect(outcome).toHaveProperty('error', 'Failed to submit');
-    expect(ctx.failTask).toHaveBeenCalledWith(expect.objectContaining({ error: 'Failed to submit' }));
+    // completeTask is invoked once with the critic output; when it returns
+    // false, settleResult calls failTask with the error.
+    expect(ctx.completeTask).toHaveBeenCalledTimes(1);
+    expect(ctx.completeTask).toHaveBeenCalledWith({ approved: true, feedback: 'Approved', severity: 'medium' });
+    expect(ctx.failTask).toHaveBeenCalledTimes(1);
+    expect(ctx.failTask).toHaveBeenCalledWith({ completed: false, error: 'Failed to submit' });
   });
 
   it('returns failed when completeTask returns false after max rounds with medium severity', async () => {
@@ -700,5 +709,106 @@ describe('completeTask receives output', () => {
     await runner(ctx);
 
     expect(ctx.completeTask).toHaveBeenCalledWith(criticOutput);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// shared-runner-utils-integration
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// The refactored runner delegates session tracking to createSessionMap(),
+// builds its StepExecutionContext via buildExecCtx(ctx), and wraps its
+// settle/error blocks with settleResult()/handleRunnerError() (runner-utils.ts).
+// These tests pin down the observable effects of that delegation. The most
+// significant behavioral change vs. the old inline code is that buildExecCtx
+// forwards the optional `rendererRegistry` field (previously omitted), so
+// per-profile renderers registered on the context now run during step
+// execution.
+
+describe('shared runner utilities integration', () => {
+  it('forwards ctx.rendererRegistry to runStep via buildExecCtx (fires onAgentRender)', async () => {
+    setupProfileMocks();
+    setupHarnessMocks();
+    setupCriticMock(true, 'Good');
+
+    const rendererRegistry = new RendererRegistry();
+    const renderFn = mock(() => 'RENDERED');
+    rendererRegistry.register('coder', renderFn);
+
+    const onAgentRender = mock(() => {});
+    const ctx = createRunnerContext({
+      rendererRegistry,
+      onStatus: { onAgentRender },
+    });
+    const runner = reflectionRunner({ draftStep, criticStep, maxRounds: 3 });
+
+    await runner(ctx);
+
+    // The draft step (profileId 'coder') produced the assistant text 'done'.
+    // buildExecCtx forwards rendererRegistry into the runStep execCtx, so the
+    // 'coder' renderer runs over 'done' and fires onAgentRender. With the old
+    // inline execCtx (which omitted rendererRegistry) this callback never fires.
+    expect(renderFn).toHaveBeenCalledTimes(1);
+    expect(renderFn).toHaveBeenCalledWith('done');
+    expect(onAgentRender).toHaveBeenCalledTimes(1);
+    expect(onAgentRender).toHaveBeenCalledWith(
+      expect.objectContaining({
+        rendered: 'RENDERED',
+        profile: 'coder',
+        agentId: ctx.agentId,
+        taskId: ctx.task.id,
+      }),
+    );
+  });
+
+  it('does not fire onAgentRender when no rendererRegistry is provided', async () => {
+    // buildExecCtx leaves rendererRegistry undefined when ctx omits it, so
+    // invokeRenderer() short-circuits and onAgentRender is never called.
+    setupProfileMocks();
+    setupHarnessMocks();
+    setupCriticMock(true, 'Good');
+
+    const onAgentRender = mock(() => {});
+    const ctx = createRunnerContext({
+      onStatus: { onAgentRender },
+    });
+    const runner = reflectionRunner({ draftStep, criticStep, maxRounds: 3 });
+
+    await runner(ctx);
+
+    expect(onAgentRender).not.toHaveBeenCalled();
+  });
+
+  it('forwards ctx.cwd and ctx.apiKeys into the harness via the buildExecCtx execCtx', async () => {
+    setupProfileMocks();
+    const harnessArgs: unknown[] = [];
+    mockCreateHarness.mockImplementation((...args: unknown[]) => {
+      harnessArgs.push(args);
+      return Promise.resolve({
+        session: makeSession(() => 'done'),
+        sessionId: 's-x',
+        dispose: mock(() => {}),
+      });
+    });
+    setupCriticMock(true, 'Good');
+
+    const apiKeys = { openai: 'sk-forwarded' };
+    const ctx = createRunnerContext({
+      sessionBaseDir: '/tmp/sb-fwd',
+      cwd: '/tmp/cwd-fwd',
+      apiKeys,
+    });
+    const runner = reflectionRunner({ draftStep, criticStep, maxRounds: 3 });
+
+    await runner(ctx);
+
+    // runStep builds harness options from execCtx.cwd / execCtx.apiKeys;
+    // buildExecCtx forwards these straight from ctx, so createHarness sees them.
+    expect(harnessArgs.length).toBeGreaterThanOrEqual(1);
+    // createHarness is invoked as createHarness(harnessOpts), so the options
+    // object is the first element of the captured args array.
+    const firstOpts = (harnessArgs[0] as unknown[])[0] as Record<string, unknown>;
+    expect(firstOpts.cwd).toBe('/tmp/cwd-fwd');
+    expect(firstOpts.apiKeys).toBe(apiKeys);
   });
 });

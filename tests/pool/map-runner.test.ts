@@ -22,73 +22,28 @@ mock.module('../../packages/engine/src/pool/step-execution.js', () => ({
 
 // ─── Imports after mock.module ─────────────────────────────────────────────
 
-import type { AgentProfile, Task } from '../../packages/engine/src/core/types.js';
-import { mapRunner } from '../../packages/engine/src/pool/map-runner.js';
-import type { StepDefinition, TaskRunnerContext } from '../../packages/engine/src/pool/types.js';
-import { makeMockSession } from '../helpers/make-session.js';
-import { makeTask } from '../helpers/make-task.js';
+import { RendererRegistry } from '../../packages/engine/src/core/renderer-registry.js';
+import type { Task } from '../../packages/engine/src/core/types.js';
+import { mapRunner, type MapRunnerOptions } from '../../packages/engine/src/pool/map-runner.js';
+import { composeItemPrompt } from '../../packages/engine/src/pool/prompt-builder.js';
+import type { StepDefinition } from '../../packages/engine/src/pool/types.js';
+import { createRunnerContext, makeTask, makeTrackedSession } from './helpers.js';
 
-// ─── Helpers ───────────────────────────────────────────────────────────────
-
-const defaultProfile: AgentProfile = {
-  id: 'coder',
-  name: 'Coder',
-  provider: 'openai',
-  model: 'gpt-4',
-  thinkingLevel: 'medium' as const,
-  systemPrompt: 'You are a coding agent.',
-  excludeTools: [],
-  includeTools: [],
-};
-
-function createProfiles(): Map<string, AgentProfile> {
-  const profiles = new Map<string, AgentProfile>();
-  profiles.set('coder', defaultProfile);
-  return profiles;
-}
-
-function defaultTask(overrides?: Partial<Task>): Task {
-  return makeTask({ ...overrides });
-}
-
-interface MockTrackedSession {
-  session: ReturnType<typeof makeMockSession>['session'];
-  dispose: () => void;
-  sessionPath: string;
-}
-
-function makeTrackedSession(disposeOverride?: () => void): MockTrackedSession {
-  const mockSession = makeMockSession();
-  return {
-    session: mockSession.session,
-    dispose: disposeOverride ?? mock(() => {}),
-    sessionPath: '/tmp/sessions/test-task/0-0-test-step',
-  };
-}
-
-interface RunnerContextOverrides {
-  task?: Task;
-  completeTask?: () => boolean;
-  failTask?: (result?: unknown) => void;
-  onStatus?: Record<string, unknown>;
-}
-
-function createRunnerContext(overrides: RunnerContextOverrides = {}): TaskRunnerContext {
-  const profiles = createProfiles();
-  return {
-    task: overrides.task ?? defaultTask(),
-    agentId: 'lane-0',
-    profiles,
-    onStatus: overrides.onStatus as TaskRunnerContext['onStatus'],
-    activeSessions: new Set(),
-    phaseId: 'implementing',
-    sessionBaseDir: '/tmp/sessions',
-    cwd: '/tmp/project',
-    apiKeys: undefined,
-    maxStepRetries: 5,
-    completeTask: overrides.completeTask ?? (mock(() => true) as () => boolean),
-    failTask: overrides.failTask ?? (mock(() => {}) as (result?: unknown) => void),
-  };
+// ─── Type bridge for the composeItemPrompt refactor (write-tests step) ───────
+//
+// `mapRunner` will gain an optional `composeItemPrompt` option once its source
+// is refactored (this is the write-tests step, so source edits are out of
+// scope). Until the field lands on MapRunnerOptions, this local augmentation
+// lets the tests below typecheck under `tsc --noEmit` while still exercising
+// the option at runtime. `mapOptions` is a transparent passthrough: it checks
+// the *object literal* against the target shape (so `composeItemPrompt` is a
+// known property and the inline lambdas get proper parameter types), then
+// returns a plain MapRunnerOptions. Once MapRunnerOptions declares the field,
+// `mapOptions` collapses to a no-op and can be deleted.
+type ComposeItemPromptFn = (task: Task, itemIndex: number, totalItems: number, item: unknown) => Task;
+type MapRunnerOptionsWithCompose = MapRunnerOptions & { composeItemPrompt?: ComposeItemPromptFn };
+function mapOptions(o: MapRunnerOptionsWithCompose): MapRunnerOptions {
+  return o;
 }
 
 // Simple step definition for testing
@@ -120,7 +75,7 @@ describe('mapRunner', () => {
       });
 
       mockRunStep.mockImplementation((itemTask: Task) => {
-        const ts = makeTrackedSession();
+        const ts = makeTrackedSession().trackedSession;
         // Last char of the full prompt = last char of the item string
         const prompt = itemTask.prompt;
         const lastChar = prompt[prompt.length - 1];
@@ -146,7 +101,7 @@ describe('mapRunner', () => {
       const runner = mapRunner({ items: () => items, step: testStep });
 
       mockRunStep.mockImplementation((itemTask: Task) => {
-        const ts = makeTrackedSession();
+        const ts = makeTrackedSession().trackedSession;
         const lastChar = itemTask.prompt[itemTask.prompt.length - 1];
         return Promise.resolve({
           result: { type: 'approved' as const, output: `output-${lastChar}` },
@@ -167,7 +122,7 @@ describe('mapRunner', () => {
         step: testStep,
       });
 
-      const trackedSessions: MockTrackedSession[] = [makeTrackedSession(), makeTrackedSession()];
+      const trackedSessions = [makeTrackedSession().trackedSession, makeTrackedSession().trackedSession];
       let callCount = 0;
 
       mockRunStep.mockImplementation(() => {
@@ -223,7 +178,11 @@ describe('mapRunner', () => {
         step: testStep,
       });
 
-      const trackedSessions: MockTrackedSession[] = [makeTrackedSession(), makeTrackedSession(), makeTrackedSession()];
+      const trackedSessions = [
+        makeTrackedSession().trackedSession,
+        makeTrackedSession().trackedSession,
+        makeTrackedSession().trackedSession,
+      ];
 
       let callIdx = 0;
       mockRunStep.mockImplementation(() => {
@@ -256,10 +215,10 @@ describe('mapRunner', () => {
       });
 
       const disposeFns = [mock(() => {}), mock(() => {}), mock(() => {})];
-      const trackedSessions: MockTrackedSession[] = [
-        makeTrackedSession(disposeFns[0]),
-        makeTrackedSession(disposeFns[1]),
-        makeTrackedSession(disposeFns[2]),
+      const trackedSessions = [
+        makeTrackedSession(disposeFns[0]).trackedSession,
+        makeTrackedSession(disposeFns[1]).trackedSession,
+        makeTrackedSession(disposeFns[2]).trackedSession,
       ];
 
       let callIdx = 0;
@@ -292,7 +251,10 @@ describe('mapRunner', () => {
       });
 
       const disposeFns = [mock(() => {}), mock(() => {})];
-      const okSessions = [makeTrackedSession(disposeFns[0]), makeTrackedSession(disposeFns[1])];
+      const okSessions = [
+        makeTrackedSession(disposeFns[0]).trackedSession,
+        makeTrackedSession(disposeFns[1]).trackedSession,
+      ];
 
       let callIdx = 0;
       let okIdx = 0;
@@ -331,7 +293,7 @@ describe('mapRunner', () => {
       });
 
       const DELAY_MS = 30;
-      const ts = makeTrackedSession();
+      const ts = makeTrackedSession().trackedSession;
 
       mockRunStep.mockImplementation(async () => {
         await new Promise((r) => setTimeout(r, DELAY_MS));
@@ -360,7 +322,7 @@ describe('mapRunner', () => {
       });
 
       const DELAY_MS = 40;
-      const ts = makeTrackedSession();
+      const ts = makeTrackedSession().trackedSession;
 
       mockRunStep.mockImplementation(async () => {
         await new Promise((r) => setTimeout(r, DELAY_MS));
@@ -390,7 +352,7 @@ describe('mapRunner', () => {
       });
 
       const DELAY_MS = 40;
-      const ts = makeTrackedSession();
+      const ts = makeTrackedSession().trackedSession;
 
       mockRunStep.mockImplementation(async () => {
         await new Promise((r) => setTimeout(r, DELAY_MS));
@@ -419,7 +381,7 @@ describe('mapRunner', () => {
       });
 
       const DELAY_MS = 30;
-      const ts = makeTrackedSession();
+      const ts = makeTrackedSession().trackedSession;
 
       mockRunStep.mockImplementation(async () => {
         await new Promise((r) => setTimeout(r, DELAY_MS));
@@ -448,10 +410,10 @@ describe('mapRunner', () => {
       });
 
       const disposes = [mock(() => {}), mock(() => {}), mock(() => {})];
-      const trackedSessions: MockTrackedSession[] = [
-        makeTrackedSession(disposes[0]),
-        makeTrackedSession(disposes[1]),
-        makeTrackedSession(disposes[2]),
+      const trackedSessions = [
+        makeTrackedSession(disposes[0]).trackedSession,
+        makeTrackedSession(disposes[1]).trackedSession,
+        makeTrackedSession(disposes[2]).trackedSession,
       ];
 
       let callIdx = 0;
@@ -485,10 +447,10 @@ describe('mapRunner', () => {
       });
 
       const disposes = [mock(() => {}), mock(() => {}), mock(() => {})];
-      const trackedSessions: MockTrackedSession[] = [
-        makeTrackedSession(disposes[0]),
-        makeTrackedSession(disposes[1]),
-        makeTrackedSession(disposes[2]),
+      const trackedSessions = [
+        makeTrackedSession(disposes[0]).trackedSession,
+        makeTrackedSession(disposes[1]).trackedSession,
+        makeTrackedSession(disposes[2]).trackedSession,
       ];
 
       let callIdx = 0;
@@ -528,7 +490,7 @@ describe('mapRunner', () => {
         step: testStep,
       });
 
-      const ts = makeTrackedSession();
+      const ts = makeTrackedSession().trackedSession;
       mockRunStep.mockImplementation((_itemTask: Task) => {
         return Promise.resolve({
           result: { type: 'approved' as const, output: 'ok' },
@@ -556,7 +518,7 @@ describe('mapRunner', () => {
         step: testStep,
       });
 
-      const ts = makeTrackedSession();
+      const ts = makeTrackedSession().trackedSession;
       mockRunStep.mockImplementation((_itemTask: Task) => {
         return Promise.resolve({
           result: { type: 'approved' as const, output: 'ok' },
@@ -586,7 +548,7 @@ describe('mapRunner', () => {
       });
 
       const disposes = [mock(() => {}), mock(() => {})];
-      const ts = [makeTrackedSession(disposes[0]), makeTrackedSession(disposes[1])];
+      const ts = [makeTrackedSession(disposes[0]).trackedSession, makeTrackedSession(disposes[1]).trackedSession];
 
       let idx = 0;
       mockRunStep.mockImplementation(() => {
@@ -612,7 +574,7 @@ describe('mapRunner', () => {
       });
 
       const disposes = [mock(() => {}), mock(() => {})];
-      const ts = [makeTrackedSession(disposes[0]), makeTrackedSession(disposes[1])];
+      const ts = [makeTrackedSession(disposes[0]).trackedSession, makeTrackedSession(disposes[1]).trackedSession];
 
       let idx = 0;
       let okIdx = 0;
@@ -664,7 +626,7 @@ describe('mapRunner', () => {
       });
 
       const disposes = [mock(() => {})];
-      const ts = makeTrackedSession(disposes[0]);
+      const ts = makeTrackedSession(disposes[0]).trackedSession;
 
       mockRunStep.mockImplementation(() => {
         return Promise.resolve({
@@ -696,7 +658,7 @@ describe('mapRunner', () => {
         step: testStep,
       });
 
-      const ts = makeTrackedSession();
+      const ts = makeTrackedSession().trackedSession;
       mockRunStep.mockImplementation(() => {
         return Promise.resolve({
           result: { type: 'approved' as const, output: 'the-output' },
@@ -718,7 +680,7 @@ describe('mapRunner', () => {
         step: testStep,
       });
 
-      const ts = makeTrackedSession();
+      const ts = makeTrackedSession().trackedSession;
       mockRunStep.mockImplementation(() => {
         return Promise.resolve({
           result: { type: 'rejected' as const, feedback: 'needs improvement' },
@@ -745,7 +707,7 @@ describe('mapRunner', () => {
         step: testStep,
       });
 
-      const ts = makeTrackedSession();
+      const ts = makeTrackedSession().trackedSession;
       mockRunStep.mockImplementation(() => {
         return Promise.resolve({
           result: { type: 'approved' as const, output: 'ok' },
@@ -753,7 +715,7 @@ describe('mapRunner', () => {
         });
       });
 
-      const task = defaultTask({ id: 'custom-task-id' });
+      const task = makeTask({ id: 'custom-task-id' });
       const ctx = createRunnerContext({ task });
       await runner(ctx);
 
@@ -770,7 +732,7 @@ describe('mapRunner', () => {
         step: testStep,
       });
 
-      const ts = makeTrackedSession();
+      const ts = makeTrackedSession().trackedSession;
       mockRunStep.mockImplementation((_task: Task) => {
         const delay = Math.random() * 20;
         return new Promise((resolve) =>
@@ -789,6 +751,516 @@ describe('mapRunner', () => {
       expect(outcome.status).toBe('completed');
       // Just verify length
       expect((outcome as { output: unknown[] }).output).toHaveLength(3);
+    });
+  });
+
+  // ─── Refactor (task): configurable prompt composition ────────────────────
+  //
+  // mapRunner now accepts an optional `composeItemPrompt(task, itemIndex,
+  // totalItems, item)` callback. When omitted it must fall back to the shared
+  // `composeItemPrompt` helper from prompt-builder.ts, preserving the exact
+  // `## Item X of Y` + item prompt format the runner previously inlined.
+
+  describe('composeItemPrompt option', () => {
+    it('uses the provided composeItemPrompt to build each item task', async () => {
+      const items = ['one', 'two'];
+      const runner = mapRunner(
+        mapOptions({
+          items: () => items,
+          step: testStep,
+          composeItemPrompt: (task, itemIndex, totalItems, item) => ({
+            ...task,
+            prompt: `CUSTOM|idx=${itemIndex}|total=${totalItems}|item=${item}`,
+          }),
+        }),
+      );
+
+      const ts = makeTrackedSession().trackedSession;
+      mockRunStep.mockImplementation(() =>
+        Promise.resolve({
+          result: { type: 'approved' as const, output: 'ok' },
+          trackedSession: ts,
+        }),
+      );
+
+      const ctx = createRunnerContext();
+      await runner(ctx);
+
+      const firstTask = mockRunStep.mock.calls[0][0] as Task;
+      expect(firstTask.prompt).toBe('CUSTOM|idx=0|total=2|item=one');
+      // A custom composer fully replaces the default header.
+      expect(firstTask.prompt).not.toContain('## Item');
+
+      const secondTask = mockRunStep.mock.calls[1][0] as Task;
+      expect(secondTask.prompt).toBe('CUSTOM|idx=1|total=2|item=two');
+    });
+
+    it('invokes composeItemPrompt once per item with (task, itemIndex, totalItems, item)', async () => {
+      const items = ['a', 'b', 'c'];
+      const compose = mock(
+        (task: Task, itemIndex: number, totalItems: number, item: unknown): Task => ({
+          ...task,
+          prompt: `p-${itemIndex}`,
+        }),
+      );
+      const runner = mapRunner(
+        mapOptions({
+          items: () => items,
+          step: testStep,
+          composeItemPrompt: compose,
+        }),
+      );
+
+      const ts = makeTrackedSession().trackedSession;
+      mockRunStep.mockImplementation(() =>
+        Promise.resolve({
+          result: { type: 'approved' as const, output: 'ok' },
+          trackedSession: ts,
+        }),
+      );
+
+      const task = makeTask({ id: 'task-xyz', prompt: 'base' });
+      const ctx = createRunnerContext({ task });
+      await runner(ctx);
+
+      expect(compose).toHaveBeenCalledTimes(3);
+      // itemIndex is 0-based; totalItems is the full collection length.
+      expect(compose).toHaveBeenCalledWith(task, 0, 3, 'a');
+      expect(compose).toHaveBeenCalledWith(task, 1, 3, 'b');
+      expect(compose).toHaveBeenCalledWith(task, 2, 3, 'c');
+    });
+
+    it('passes non-string items (objects/arrays) verbatim as the item argument', async () => {
+      const items = [{ name: 'widget' }, [1, 2, 3], 42];
+      const compose = mock((task: Task): Task => ({ ...task, prompt: 'p' }));
+      const runner = mapRunner(
+        mapOptions({
+          items: () => items,
+          step: testStep,
+          composeItemPrompt: compose,
+        }),
+      );
+
+      const ts = makeTrackedSession().trackedSession;
+      mockRunStep.mockImplementation(() =>
+        Promise.resolve({
+          result: { type: 'approved' as const, output: 'ok' },
+          trackedSession: ts,
+        }),
+      );
+
+      const task = makeTask({ prompt: 'base' });
+      await runner(createRunnerContext({ task }));
+
+      // The raw item (not its JSON form) must reach compose — it is the
+      // composer's job, not the runner's, to serialize.
+      expect(compose).toHaveBeenCalledWith(task, 0, 3, { name: 'widget' });
+      expect(compose).toHaveBeenCalledWith(task, 1, 3, [1, 2, 3]);
+      expect(compose).toHaveBeenCalledWith(task, 2, 3, 42);
+    });
+
+    it('passes the original ctx.task to composeItemPrompt and does not mutate it', async () => {
+      const items = ['x'];
+      let receivedTask: Task | undefined;
+      const runner = mapRunner(
+        mapOptions({
+          items: () => items,
+          step: testStep,
+          composeItemPrompt: (task) => {
+            receivedTask = task;
+            return { ...task, prompt: 'composed' };
+          },
+        }),
+      );
+
+      const ts = makeTrackedSession().trackedSession;
+      mockRunStep.mockImplementation(() =>
+        Promise.resolve({
+          result: { type: 'approved' as const, output: 'ok' },
+          trackedSession: ts,
+        }),
+      );
+
+      const task = makeTask({ id: 'orig-task', prompt: 'original-prompt' });
+      const ctx = createRunnerContext({ task });
+      await runner(ctx);
+
+      expect(receivedTask).toBe(task);
+      // The runner / composer must leave ctx.task.prompt untouched.
+      expect(task.prompt).toBe('original-prompt');
+    });
+
+    it('respects composeItemPrompt even under a concurrency cap', async () => {
+      const items = ['a', 'b', 'c', 'd'];
+      const runner = mapRunner(
+        mapOptions({
+          items: () => items,
+          step: testStep,
+          concurrency: 1,
+          composeItemPrompt: (task, itemIndex, _total, item) => ({
+            ...task,
+            prompt: `SEQ-${itemIndex}-${item}`,
+          }),
+        }),
+      );
+
+      const ts = makeTrackedSession().trackedSession;
+      mockRunStep.mockImplementation(() =>
+        Promise.resolve({
+          result: { type: 'approved' as const, output: 'ok' },
+          trackedSession: ts,
+        }),
+      );
+
+      const ctx = createRunnerContext();
+      await runner(ctx);
+
+      // Outputs are collected in input order regardless of concurrency.
+      const prompts = mockRunStep.mock.calls.map((c) => (c[0] as Task).prompt);
+      expect(prompts).toEqual(['SEQ-0-a', 'SEQ-1-b', 'SEQ-2-c', 'SEQ-3-d']);
+    });
+
+    it('passes totalItems as the full collection length, not the concurrency cap', async () => {
+      const items = ['a', 'b', 'c', 'd', 'e'];
+      const seenTotals: number[] = [];
+      const runner = mapRunner(
+        mapOptions({
+          items: () => items,
+          step: testStep,
+          concurrency: 2,
+          composeItemPrompt: (task, _i, total) => {
+            seenTotals.push(total);
+            return { ...task, prompt: 'x' };
+          },
+        }),
+      );
+
+      const ts = makeTrackedSession().trackedSession;
+      mockRunStep.mockImplementation(() =>
+        Promise.resolve({
+          result: { type: 'approved' as const, output: 'ok' },
+          trackedSession: ts,
+        }),
+      );
+
+      await runner(createRunnerContext());
+
+      // totalItems is the full collection length, independent of the concurrency
+      // cap. Assert order-independently — the *order* compose is called in is an
+      // implementation detail of the worker pool, but every call must receive 5.
+      expect(seenTotals).toHaveLength(5);
+      expect(seenTotals.every((t) => t === 5)).toBe(true);
+      expect(seenTotals).not.toContain(2);
+    });
+
+    it('does not invoke the default composer when a custom one is supplied', async () => {
+      // A custom composer yields prompts without the default '## Item X of Y'
+      // marker — proving the prompt-builder default was bypassed entirely.
+      const items = ['a', 'b'];
+      const runner = mapRunner(
+        mapOptions({
+          items: () => items,
+          step: testStep,
+          composeItemPrompt: (task, _i, _t, item) => ({ ...task, prompt: `ONLY-CUSTOM-${item}` }),
+        }),
+      );
+
+      const ts = makeTrackedSession().trackedSession;
+      mockRunStep.mockImplementation(() =>
+        Promise.resolve({
+          result: { type: 'approved' as const, output: 'ok' },
+          trackedSession: ts,
+        }),
+      );
+
+      await runner(createRunnerContext());
+
+      for (const call of mockRunStep.mock.calls) {
+        expect((call[0] as Task).prompt).not.toContain('## Item');
+      }
+    });
+
+    it('passing the shared composeItemPrompt helper as the option reproduces the default exactly', async () => {
+      // The option is a strict superset of the default: handing the shared
+      // helper in explicitly must be indistinguishable from omitting it.
+      const items = ['one', 'two', 'three'];
+      const runnerExplicit = mapRunner(
+        mapOptions({
+          items: () => items,
+          step: testStep,
+          composeItemPrompt,
+        }),
+      );
+      const runnerDefault = mapRunner({ items: () => items, step: testStep });
+
+      const ts = makeTrackedSession().trackedSession;
+      const impl = () =>
+        Promise.resolve({
+          result: { type: 'approved' as const, output: 'ok' },
+          trackedSession: ts,
+        });
+
+      const task = makeTask({ prompt: 'BASE' });
+
+      mockRunStep.mockImplementation(impl);
+      await runnerExplicit(createRunnerContext({ task }));
+      const explicitPrompts = mockRunStep.mock.calls.map((c) => (c[0] as Task).prompt);
+
+      mockRunStep.mockClear();
+      mockRunStep.mockImplementation(impl);
+      await runnerDefault(createRunnerContext({ task }));
+      const defaultPrompts = mockRunStep.mock.calls.map((c) => (c[0] as Task).prompt);
+
+      expect(explicitPrompts).toEqual(defaultPrompts);
+      // And both match the helper output directly.
+      expect(explicitPrompts).toEqual([
+        composeItemPrompt(task, 0, 3, 'one').prompt,
+        composeItemPrompt(task, 1, 3, 'two').prompt,
+        composeItemPrompt(task, 2, 3, 'three').prompt,
+      ]);
+    });
+  });
+
+  describe('default prompt composition (backward compatibility)', () => {
+    it('defaults to the composeItemPrompt helper from prompt-builder', async () => {
+      const items = ['alpha', 'beta'];
+      const runner = mapRunner({
+        items: () => items,
+        step: testStep,
+        // no composeItemPrompt → shared prompt-builder default
+      });
+
+      const ts = makeTrackedSession().trackedSession;
+      mockRunStep.mockImplementation(() =>
+        Promise.resolve({
+          result: { type: 'approved' as const, output: 'ok' },
+          trackedSession: ts,
+        }),
+      );
+
+      const task = makeTask({ prompt: 'BASE-PROMPT' });
+      const ctx = createRunnerContext({ task });
+      await runner(ctx);
+
+      // The composed prompt must equal what the shared helper produces.
+      const expectedFirst = composeItemPrompt(task, 0, 2, 'alpha');
+      const expectedSecond = composeItemPrompt(task, 1, 2, 'beta');
+      expect((mockRunStep.mock.calls[0][0] as Task).prompt).toBe(expectedFirst.prompt);
+      expect((mockRunStep.mock.calls[1][0] as Task).prompt).toBe(expectedSecond.prompt);
+    });
+
+    it('produces the exact ## Item X of Y header + item string for string items', async () => {
+      const items = ['hello', 'world'];
+      const runner = mapRunner({ items: () => items, step: testStep });
+
+      const ts = makeTrackedSession().trackedSession;
+      mockRunStep.mockImplementation(() =>
+        Promise.resolve({
+          result: { type: 'approved' as const, output: 'ok' },
+          trackedSession: ts,
+        }),
+      );
+
+      const task = makeTask({ prompt: 'BASE' });
+      await runner(createRunnerContext({ task }));
+
+      expect((mockRunStep.mock.calls[0][0] as Task).prompt).toBe('BASE\n## Item 1 of 2\nhello');
+      expect((mockRunStep.mock.calls[1][0] as Task).prompt).toBe('BASE\n## Item 2 of 2\nworld');
+    });
+
+    it('JSON.stringifies non-string items via the default composer', async () => {
+      const items = [{ k: 1 }, [9, 9]];
+      const runner = mapRunner({ items: () => items, step: testStep });
+
+      const ts = makeTrackedSession().trackedSession;
+      mockRunStep.mockImplementation(() =>
+        Promise.resolve({
+          result: { type: 'approved' as const, output: 'ok' },
+          trackedSession: ts,
+        }),
+      );
+
+      const task = makeTask({ prompt: 'BASE' });
+      await runner(createRunnerContext({ task }));
+
+      expect((mockRunStep.mock.calls[0][0] as Task).prompt).toBe('BASE\n## Item 1 of 2\n{"k":1}');
+      expect((mockRunStep.mock.calls[1][0] as Task).prompt).toBe('BASE\n## Item 2 of 2\n[9,9]');
+    });
+
+    it('spreads all other task fields onto the composed item task', async () => {
+      const items = ['x'];
+      const runner = mapRunner({ items: () => items, step: testStep });
+
+      const ts = makeTrackedSession().trackedSession;
+      mockRunStep.mockImplementation(() =>
+        Promise.resolve({
+          result: { type: 'approved' as const, output: 'ok' },
+          trackedSession: ts,
+        }),
+      );
+
+      const task = makeTask({ id: 'keep-id', title: 'Keep Title', profile: 'coder' });
+      await runner(createRunnerContext({ task }));
+
+      const composed = mockRunStep.mock.calls[0][0] as Task;
+      expect(composed.id).toBe('keep-id');
+      expect(composed.title).toBe('Keep Title');
+      expect(composed.profile).toBe('coder');
+    });
+  });
+
+  // ─── Refactor (task): shared runner utilities ───────────────────────────
+  //
+  // Session tracking, execCtx construction, and the error envelope should be
+  // delegated to runner-utils.ts (createSessionTracker / buildExecCtx /
+  // handleRunnerError). The behaviors below pin down their observable effects.
+
+  describe('task settle: completeTask return value', () => {
+    it('returns failed "Failed to submit" when completeTask returns false (all items ok)', async () => {
+      // Pins the settle branch that remains after extracting shared utils: the
+      // multi-output settle is NOT delegated to single-result settleResult, so
+      // the runner must still honor completeTask's boolean.
+      const items = ['a', 'b'];
+      const runner = mapRunner({ items: () => items, step: testStep });
+
+      const ts = makeTrackedSession().trackedSession;
+      mockRunStep.mockImplementation(() =>
+        Promise.resolve({
+          result: { type: 'approved' as const, output: 'ok' },
+          trackedSession: ts,
+        }),
+      );
+
+      const ctx = createRunnerContext({
+        completeTask: mock(() => false) as () => boolean,
+      });
+      const outcome = await runner(ctx);
+
+      expect(outcome.status).toBe('failed');
+      expect(outcome).toHaveProperty('error', 'Failed to submit');
+      expect(ctx.completeTask).toHaveBeenCalledTimes(1);
+      expect(ctx.failTask).toHaveBeenCalledWith(expect.objectContaining({ error: 'Failed to submit' }));
+    });
+
+    it('still disposes tracked sessions when completeTask returns false', async () => {
+      const items = ['a', 'b'];
+      const runner = mapRunner({ items: () => items, step: testStep });
+
+      const disposeFns = [mock(() => {}), mock(() => {})];
+      const sessions = [
+        makeTrackedSession(disposeFns[0]).trackedSession,
+        makeTrackedSession(disposeFns[1]).trackedSession,
+      ];
+      let i = 0;
+      mockRunStep.mockImplementation(() => {
+        const ts = sessions[i++];
+        return Promise.resolve({
+          result: { type: 'approved' as const, output: 'ok' },
+          trackedSession: ts,
+        });
+      });
+
+      const ctx = createRunnerContext({ completeTask: mock(() => false) as () => boolean });
+      await runner(ctx);
+
+      expect(disposeFns[0]).toHaveBeenCalledTimes(1);
+      expect(disposeFns[1]).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('shared runner utilities (buildExecCtx)', () => {
+    it('forwards rendererRegistry from ctx into the runStep execCtx', async () => {
+      // buildExecCtx propagates ctx.rendererRegistry — the previous inline
+      // construction omitted this field.
+      const items = ['a'];
+      const runner = mapRunner({ items: () => items, step: testStep });
+
+      const ts = makeTrackedSession().trackedSession;
+      mockRunStep.mockImplementation(() =>
+        Promise.resolve({
+          result: { type: 'approved' as const, output: 'ok' },
+          trackedSession: ts,
+        }),
+      );
+
+      const rendererRegistry = new RendererRegistry();
+      const ctx = createRunnerContext({ rendererRegistry });
+      await runner(ctx);
+
+      // runStep(task, step, agentId, runStepCtx, profiles, execCtx) — execCtx is arg 5.
+      const execCtx = mockRunStep.mock.calls[0][5];
+      expect(execCtx).toMatchObject({ rendererRegistry });
+    });
+
+    it('builds execCtx with all TaskRunnerContext fields forwarded', async () => {
+      const items = ['a'];
+      const runner = mapRunner({ items: () => items, step: testStep });
+
+      const ts = makeTrackedSession().trackedSession;
+      mockRunStep.mockImplementation(() =>
+        Promise.resolve({
+          result: { type: 'approved' as const, output: 'ok' },
+          trackedSession: ts,
+        }),
+      );
+
+      const onStatus = { onStepStart: mock(() => {}) };
+      const apiKeys = { openai: 'sk-xxx' };
+      const ctx = createRunnerContext({
+        sessionBaseDir: '/tmp/sb',
+        cwd: '/tmp/cwd',
+        apiKeys,
+        phaseId: 'review',
+        onStatus,
+      });
+      await runner(ctx);
+
+      const execCtx = mockRunStep.mock.calls[0][5] as Record<string, unknown>;
+      expect(execCtx.sessionBaseDir).toBe('/tmp/sb');
+      expect(execCtx.cwd).toBe('/tmp/cwd');
+      expect(execCtx.apiKeys).toBe(apiKeys);
+      expect(execCtx.phaseId).toBe('review');
+      expect(execCtx.onStatus).toBe(onStatus);
+      expect(execCtx.activeSessions).toBe(ctx.activeSessions);
+    });
+  });
+
+  describe('shared runner utilities (handleRunnerError envelope)', () => {
+    it('on unexpected error, disposes sessions before calling failTask', async () => {
+      const items = ['a'];
+      const runner = mapRunner({ items: () => items, step: testStep });
+
+      const sequence: string[] = [];
+      const disposeFn = mock(() => {
+        sequence.push('dispose');
+      });
+      const ts = makeTrackedSession(disposeFn).trackedSession;
+
+      mockRunStep.mockImplementation(() =>
+        Promise.resolve({
+          result: { type: 'approved' as const, output: 'ok' },
+          trackedSession: ts,
+        }),
+      );
+
+      // completeTask throws → outer try/catch → handleRunnerError path.
+      const failTask = mock((_r?: unknown) => {
+        sequence.push('failTask');
+      });
+      const ctx = createRunnerContext({
+        completeTask: () => {
+          throw new Error('unexpected');
+        },
+        failTask,
+      });
+
+      const outcome = await runner(ctx);
+
+      expect(outcome.status).toBe('failed');
+      expect(failTask).toHaveBeenCalledTimes(1);
+      expect(disposeFn).toHaveBeenCalledTimes(1);
+      // handleRunnerError disposes FIRST, then fails the task.
+      expect(sequence).toEqual(['dispose', 'failTask']);
     });
   });
 });

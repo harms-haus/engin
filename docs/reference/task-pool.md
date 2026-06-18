@@ -246,16 +246,16 @@ interface TaskRunnerContext {
   cwd: string;
   apiKeys?: Record<string, string>;
   maxStepRetries: number;
+  rendererRegistry?: RendererRegistry;
+  signal?: AbortSignal;
   /** Safely settle the task as complete. Returns true on success. */
-  completeTask: () => boolean;
+  completeTask: (result?: unknown) => boolean;
   /** Safely settle the task as failed. */
   failTask: (result?: unknown) => void;
 }
 ```
 
-- **`completeTask()`** — Calls `taskTracker.completeTask(id)` safely. Returns
-  `true` if the settlement succeeded, `false` if the tracker threw (e.g. invalid
-  state transition).
+- **`completeTask(result?)`** — Calls `taskTracker.completeTask(id, result)` safely. The optional `result` is stored on the task so downstream phases can read it via `task.result`. Returns `true` if the settlement succeeded, `false` if the tracker threw (e.g. invalid state transition / the task was cancelled).
 - **`failTask(result?)`** — Calls `taskTracker.failTask(id, result)` safely.
   The `result` can carry `{ completed, error, feedback, severity }`.
 
@@ -346,6 +346,8 @@ for ensembles, multi-perspective analysis, council voting, or any pattern
 where independent agents contribute and a single output is needed. Workers
 that fail individually are recorded — only if **all** workers fail does the
 task fail outright.
+
+**Options.** `councilRunner` accepts a `CouncilRunnerOptions` object with `workers` (the parallel worker steps) and `synthesizer` (the merge step), plus an optional `composeSynthesizerPrompt?: (task: Task, workerOutputs: unknown[]) => Task`. When `composeSynthesizerPrompt` is omitted, the runner uses the built-in `composeWorkerOutputsPrompt`, which appends a `## Worker Outputs` section (one `### Worker <n>` block per output) to the original task prompt — preserving the default behavior. Supply a custom composer to control how worker outputs are formatted into the synthesizer prompt (the composer must return a new `Task`; the original `ctx.task` is never mutated).
 
 **When to use.** Multiple perspectives that need to be merged into one
 coherent result.

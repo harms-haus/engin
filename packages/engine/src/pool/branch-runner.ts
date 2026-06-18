@@ -6,9 +6,9 @@
 // the task is failed.
 
 import type { Task } from '../core/types.js';
-import { safeErrorMessage } from '../core/utils.js';
-import { runStep, type StepExecutionContext } from './step-execution.js';
-import type { StepDefinition, TaskOutcome, TaskRunner, TaskRunnerContext, TrackedSession } from './types.js';
+import { buildExecCtx, createSessionTracker, handleRunnerError, settleResult } from './runner-utils.js';
+import { runStep } from './step-execution.js';
+import type { StepDefinition, TaskOutcome, TaskRunner, TaskRunnerContext } from './types.js';
 
 /**
  * A branch condition that selects a step when its predicate returns true.
@@ -40,18 +40,7 @@ export function branchRunner(options: BranchRunnerOptions): TaskRunner {
   const { branches, default: defaultStep } = options;
 
   return async (ctx: TaskRunnerContext): Promise<TaskOutcome> => {
-    const sessions: TrackedSession[] = [];
-
-    const disposeAllSessions = () => {
-      for (const ts of sessions) {
-        try {
-          ts.dispose();
-        } catch (err) {
-          console.error(`[${ctx.agentId}] Error disposing session for task ${ctx.task.id}:`, safeErrorMessage(err));
-        }
-      }
-      sessions.length = 0;
-    };
+    const tracker = createSessionTracker(ctx.agentId, ctx.task.id);
 
     try {
       // ── Step 1: Evaluate conditions in order ────────────────────────
@@ -74,50 +63,22 @@ export function branchRunner(options: BranchRunnerOptions): TaskRunner {
         }
       }
 
-      // ── Step 3: Initialize sessions (already done above) ────────────
-
-      // ── Step 4: Construct execution context ─────────────────────────
-      const execCtx: StepExecutionContext = {
-        sessionBaseDir: ctx.sessionBaseDir,
-        cwd: ctx.cwd,
-        apiKeys: ctx.apiKeys,
-        onStatus: ctx.onStatus,
-        activeSessions: ctx.activeSessions,
-        phaseId: ctx.phaseId,
-      };
-
-      // ── Step 5: Run the selected step ───────────────────────────────
+      // ── Step 3: Run the selected step ───────────────────────────────
       const { result, trackedSession } = await runStep(
         ctx.task,
         selectedStep,
         ctx.agentId,
         { stepIndex: 0, attempt: 0, execCount: 0 },
         ctx.profiles,
-        execCtx,
+        buildExecCtx(ctx),
       );
-      sessions.push(trackedSession);
+      tracker.add(trackedSession);
 
-      // ── Step 6: Settle based on result ──────────────────────────────
-      if (result.type === 'approved') {
-        if (ctx.completeTask(result.output)) {
-          disposeAllSessions();
-          return { status: 'completed', output: result.output };
-        }
-        ctx.failTask({ completed: false, error: 'Failed to submit' });
-        disposeAllSessions();
-        return { status: 'failed', error: 'Failed to submit' };
-      }
-
-      // result.type === 'rejected'
-      ctx.failTask({ completed: false, feedback: result.feedback });
-      disposeAllSessions();
-      return { status: 'failed', feedback: result.feedback };
+      // ── Step 4: Settle based on result ──────────────────────────────
+      return settleResult(ctx, result, tracker.disposeAll);
     } catch (err) {
-      // ── Step 7: Unexpected error — never re-throw ───────────────────
-      disposeAllSessions();
-      const errorMsg = safeErrorMessage(err);
-      ctx.failTask({ completed: false, error: errorMsg });
-      return { status: 'failed', error: errorMsg };
+      // ── Step 5: Unexpected error — never re-throw ───────────────────
+      return handleRunnerError(err, ctx, tracker.disposeAll);
     }
   };
 }

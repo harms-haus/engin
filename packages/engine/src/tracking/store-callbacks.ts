@@ -1,5 +1,5 @@
+import type { EventType } from '@engin/shared/event-types';
 import type { StatusCallbacks } from '../core/types.js';
-import type { EventType } from './event-types.js';
 
 interface StoreLike {
   append(

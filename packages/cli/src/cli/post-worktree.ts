@@ -1,16 +1,8 @@
 import {
-  abortMerge,
-  checkoutBranch,
-  commitChanges,
-  generateCommitMessage,
-  getCurrentBranch,
-  getDiff,
+  commitWorktreeChanges,
   getMainBranch,
-  mergeBranch,
-  pushAndCreatePR,
-  removeWorktree,
-  resolveConflictsWithAgent,
-  stageAll,
+  mergeWorktreeToMain,
+  pushWorktreeAndCreatePR,
 } from '@harms-haus/engin-engine';
 import readline from 'node:readline';
 
@@ -53,18 +45,12 @@ export async function commitInWorktree(options: PostWorktreeOptions): Promise<vo
   if (!profilesDirs) {
     throw new Error('commitInWorktree requires options.profilesDirs to be set');
   }
-  const diff = getDiff(options.worktreePath);
-  if (!diff) return;
-
-  stageAll(options.worktreePath);
-  const message = await generateCommitMessage(
+  await commitWorktreeChanges({
     profilesDirs,
-    options.worktreePath,
-    options.taskPrompt,
-    diff,
-    options.apiKeys,
-  );
-  commitChanges(options.worktreePath, message);
+    worktreePath: options.worktreePath,
+    taskPrompt: options.taskPrompt,
+    apiKeys: options.apiKeys,
+  });
 }
 
 // ─── Private: Handle merge to main ──────────────────────────────────────────
@@ -75,46 +61,42 @@ export async function handleMergeToMain(options: PostWorktreeOptions): Promise<v
   if (!repoRoot || !profilesDirs) {
     throw new Error('handleMergeToMain requires options.repoRoot and options.profilesDirs to be set');
   }
-  const savedBranch = getCurrentBranch(repoRoot);
 
-  await commitInWorktree(options);
-
+  // Resolved eagerly so the success message can name the target branch.
   const mainBranch = getMainBranch(repoRoot);
-  checkoutBranch(repoRoot, mainBranch);
 
-  const result = mergeBranch(repoRoot, options.branchName);
-
-  if (!result.success) {
-    const resolved = await resolveConflictsWithAgent(
+  let result;
+  try {
+    result = await mergeWorktreeToMain({
       profilesDirs,
       repoRoot,
-      result.conflicts,
-      options.taskPrompt,
-      options.apiKeys,
+      worktreePath: options.worktreePath,
+      branchName: options.branchName,
+      taskPrompt: options.taskPrompt,
+      apiKeys: options.apiKeys,
+    });
+  } catch (err) {
+    // A thrown error means the operation itself failed (commit, checkout,
+    // merge, conflict resolution, or branch restore) — the merge did NOT
+    // complete, so we must NOT print the success line. Surface the real
+    // error instead. (The shared module only surfaces worktree-removal
+    // failures via `cleanupError`, never via a throw.)
+    console.log(`❌ Merge of ${options.branchName} failed: ${err instanceof Error ? err.message : String(err)}`);
+    return;
+  }
+
+  if (!result.success) {
+    console.log(
+      `⚠️ Conflicts could not be resolved automatically. The worktree is preserved at ${options.worktreePath}.`,
     );
-
-    if (resolved) {
-      commitChanges(repoRoot, `Merge resolution: ${options.branchName} into ${mainBranch}`);
-    } else {
-      abortMerge(repoRoot);
-      console.log(
-        `⚠️ Conflicts could not be resolved automatically. The worktree is preserved at ${options.worktreePath}.`,
-      );
-      return;
-    }
+    return;
   }
 
-  // Try to restore the saved branch (ignore errors for detached HEAD)
-  try {
-    checkoutBranch(repoRoot, savedBranch);
-  } catch {
-    // Ignore - may be detached HEAD
-  }
-
-  // Try to remove the worktree
-  try {
-    removeWorktree(repoRoot, options.worktreePath);
-  } catch {
+  // The merge succeeded. Worktree removal is best-effort: when the shared
+  // module could not delete the on-disk directory it reports the failure via
+  // `cleanupError`. We warn the user that the worktree is still on disk while
+  // still reporting the successful merge.
+  if (result.cleanupError) {
     console.log(`⚠️ Warning: Could not remove worktree at ${options.worktreePath}`);
   }
 
@@ -130,19 +112,36 @@ export async function handlePushAndPR(options: PostWorktreeOptions): Promise<voi
     throw new Error('handlePushAndPR requires options.repoRoot and options.profilesDirs to be set');
   }
 
-  await commitInWorktree(options);
-
-  // Derive title from task prompt (truncate at 57 chars with ellipsis if over 60)
+  // Derive title from task prompt (truncate at 57 chars with ellipsis if over 60).
+  // Truncation lives in the caller — the shared pushWorktreeAndCreatePR
+  // forwards the title verbatim.
   let title = options.taskPrompt;
   if (title.length > 60) {
     title = title.slice(0, 57) + '...';
   }
 
-  await pushAndCreatePR(profilesDirs, repoRoot, options.branchName, options.taskPrompt, title, options.apiKeys);
-
+  // Only real push/PR (or commit) failures throw from the shared module —
+  // worktree-removal failures are surfaced via the return value so we can warn
+  // the user without misreporting the push/PR itself as failed.
+  let result;
   try {
-    removeWorktree(repoRoot, options.worktreePath);
-  } catch {
+    result = await pushWorktreeAndCreatePR({
+      profilesDirs,
+      repoRoot,
+      worktreePath: options.worktreePath,
+      branchName: options.branchName,
+      taskPrompt: options.taskPrompt,
+      title,
+      apiKeys: options.apiKeys,
+    });
+  } catch (err) {
+    console.log(`❌ Push/PR for ${options.branchName} failed: ${err instanceof Error ? err.message : String(err)}`);
+    return;
+  }
+
+  // The push + PR creation succeeded. Warn (but still report success) when the
+  // worktree directory could not be removed.
+  if (result.cleanupError) {
     console.log(`⚠️ Warning: Could not remove worktree at ${options.worktreePath}`);
   }
 

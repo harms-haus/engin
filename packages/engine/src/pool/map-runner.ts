@@ -8,8 +8,10 @@
 
 import type { Task } from '../core/types.js';
 import { safeErrorMessage } from '../core/utils.js';
-import { runStep, type StepExecutionContext } from './step-execution.js';
-import type { StepDefinition, TaskOutcome, TaskRunner, TaskRunnerContext, TrackedSession } from './types.js';
+import { composeItemPrompt } from './prompt-builder.js';
+import { buildExecCtx, createSessionTracker, handleRunnerError } from './runner-utils.js';
+import { runStep } from './step-execution.js';
+import type { StepDefinition, TaskOutcome, TaskRunner, TaskRunnerContext } from './types.js';
 
 // ─── Options ──────────────────────────────────────────────────────────────
 
@@ -20,6 +22,20 @@ export interface MapRunnerOptions {
   step: StepDefinition;
   /** Maximum concurrent workers. If omitted or >= items.length, all run in parallel. */
   concurrency?: number;
+  /**
+   * Optional callback that composes the item-specific task from the original
+   * task and the item being processed.
+   *
+   * When omitted the default {@link composeItemPrompt} helper is used,
+   * preserving the exact legacy prompt format (`## Item X of Y` appended to
+   * the task prompt). Returning a brand-new Task (rather than mutating the
+   * original) keeps `ctx.task` untouched.
+   *
+   * This keeps the runner a simple primitive: it fans out over items with
+   * concurrency control. The prompt composition is configurable from the
+   * call site.
+   */
+  composeItemPrompt?: (task: Task, itemIndex: number, totalItems: number, item: unknown) => Task;
 }
 
 // ─── Factory ──────────────────────────────────────────────────────────────
@@ -32,60 +48,41 @@ export interface MapRunnerOptions {
  * when some items fail, preventing session leaks.
  */
 export function mapRunner(options: MapRunnerOptions): TaskRunner {
+  const { items: getItems, step, concurrency: concurrencyOpt } = options;
+  // Default to the shared item-prompt composer, preserving the legacy prompt
+  // format unless the caller supplies a custom composition strategy.
+  const composeItem = options.composeItemPrompt ?? composeItemPrompt;
+
   return async (ctx: TaskRunnerContext): Promise<TaskOutcome> => {
-    const { task, agentId, profiles, onStatus, phaseId, sessionBaseDir, cwd, apiKeys } = ctx;
+    const { task, agentId, profiles, onStatus } = ctx;
 
-    // ── Step 2: Sessions for disposal tracking ─────────────────────────
-    const sessions: TrackedSession[] = [];
-
-    const disposeAllSessions = () => {
-      for (const ts of sessions) {
-        try {
-          ts.dispose();
-        } catch (err) {
-          console.error(`[${agentId}] Error disposing session for task ${task.id}:`, safeErrorMessage(err));
-        }
-      }
-      sessions.length = 0;
-    };
+    const tracker = createSessionTracker(agentId, task.id);
+    const execCtx = buildExecCtx(ctx);
 
     try {
       // ── Step 1: Extract items ────────────────────────────────────────
-      const items = options.items(ctx.task);
+      const items = getItems(task);
       if (items.length === 0) {
         ctx.failTask({ completed: false, error: 'No items to process' });
         return { status: 'failed', error: 'No items to process' };
       }
 
-      // ── Step 3: Execution context ────────────────────────────────────
-      const execCtx: StepExecutionContext = {
-        sessionBaseDir,
-        cwd,
-        apiKeys,
-        onStatus,
-        activeSessions: ctx.activeSessions,
-        phaseId,
-      };
-
-      // ── Step 4: Worker function ──────────────────────────────────────
+      // ── Step 2: Worker function ──────────────────────────────────────
       const processItem = async (item: unknown, index: number): Promise<{ output: unknown }> => {
         onStatus?.onStepStart?.({
           taskId: task.id,
           stepIndex: index,
-          stepName: options.step.name,
+          stepName: step.name,
           agentId,
         });
 
-        // Build an item-specific task with prompt including the item
-        const itemStr = typeof item === 'string' ? item : JSON.stringify(item);
-        const itemTask: Task = {
-          ...task,
-          prompt: task.prompt + '\n' + `## Item ${index + 1} of ${items.length}` + '\n' + itemStr,
-        };
+        // Compose the item-specific task via the (configurable) composer. The
+        // original ctx.task is never mutated — the composer returns a new Task.
+        const itemTask = composeItem(task, index, items.length, item);
 
         const { result, trackedSession } = await runStep(
           itemTask,
-          options.step,
+          step,
           agentId,
           { stepIndex: index, attempt: 0, execCount: 0 },
           profiles,
@@ -93,15 +90,15 @@ export function mapRunner(options: MapRunnerOptions): TaskRunner {
         );
 
         // CRITICAL: track the session immediately after runStep succeeds
-        sessions.push(trackedSession);
+        tracker.add(trackedSession);
 
         return { output: result.type === 'approved' ? result.output : result.feedback };
       };
 
-      // ── Step 5: Execute with concurrency control ─────────────────────
+      // ── Step 3: Execute with concurrency control ─────────────────────
       let results: PromiseSettledResult<{ output: unknown }>[];
 
-      const concurrency = options.concurrency !== undefined ? Math.max(1, options.concurrency) : undefined;
+      const concurrency = concurrencyOpt !== undefined ? Math.max(1, concurrencyOpt) : undefined;
 
       if (concurrency === undefined || concurrency >= items.length) {
         // Run all items in parallel — allSettled ensures all sessions are tracked
@@ -126,7 +123,7 @@ export function mapRunner(options: MapRunnerOptions): TaskRunner {
         await Promise.all(Array.from({ length: concurrency }, () => poolWorker()));
       }
 
-      // ── Step 6: Collect outputs and errors ───────────────────────────
+      // ── Step 4: Collect outputs and errors ───────────────────────────
       const outputs: unknown[] = [];
       const errors: string[] = [];
 
@@ -138,28 +135,30 @@ export function mapRunner(options: MapRunnerOptions): TaskRunner {
         }
       }
 
-      // ── Step 7: Settle the task ──────────────────────────────────────
+      // ── Step 5: Settle the task ──────────────────────────────────────
+      // NOTE: this multi-output settle is intentionally NOT delegated to the
+      // single-result `settleResult` helper. The map runner collects a whole
+      // outputs array (not a single StepResult) and must still honor
+      // completeTask's boolean (false → "Failed to submit"). Only session
+      // tracking, execCtx construction, and the outer error envelope are shared.
       if (errors.length === 0) {
         // All items succeeded
         if (ctx.completeTask(outputs)) {
-          disposeAllSessions();
+          tracker.disposeAll();
           return { status: 'completed', output: outputs };
         }
         ctx.failTask({ completed: false, error: 'Failed to submit' });
-        disposeAllSessions();
+        tracker.disposeAll();
         return { status: 'failed', error: 'Failed to submit' };
       }
 
       // Some or all items failed
       ctx.failTask({ completed: false, error: errors.join('; ') });
-      disposeAllSessions();
+      tracker.disposeAll();
       return { status: 'failed', error: `${errors.length} of ${items.length} items failed` };
     } catch (err) {
-      // ── Step 8: Unexpected error – never re-throw ────────────────────
-      disposeAllSessions();
-      const errorMsg = safeErrorMessage(err);
-      ctx.failTask({ completed: false, error: errorMsg });
-      return { status: 'failed', error: errorMsg };
+      // ── Step 6: Unexpected error – never re-throw ────────────────────
+      return handleRunnerError(err, ctx, tracker.disposeAll);
     }
   };
 }

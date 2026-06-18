@@ -3,12 +3,15 @@
 import { join } from 'node:path';
 import type { ZodType } from 'zod';
 import { assertSafeName } from '../pool/validation.js';
-import { createHarness } from './harness-factory.js';
+import type { AgentLifecycleHandle } from './agent-lifecycle.js';
+import { spawnAgent } from './agent-lifecycle.js';
 import { loadProfilesFromDirs } from './profile.js';
+import { invokeRenderer } from './renderer-invocation.js';
 import type { RendererRegistry } from './renderer-registry.js';
-import { extractJsonFromText, promptForStructured } from './structured-output.js';
+import { promptForStructured } from './structured-output.js';
 import type { AgentProfile, StatusCallbacks } from './types.js';
-import { forwardAgentStatus, safeErrorMessage } from './utils.js';
+import { safeErrorMessage } from './utils.js';
+import { runWithValidationRetry } from './validation-retry.js';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -70,14 +73,13 @@ export interface RunStepTaskOptions {
  * 1. Check abort signal (throws without callbacks if aborted)
  * 2. Fire `onTaskRegister` with the single-step definition
  * 3. Fire `onTaskStart`
- * 4. Load and adjust profile (strip write/edit if isReadOnly)
- * 5. Create harness via `createHarness`
- * 6. Fire `onAgentSpawn`
- * 7. Fire `onStepStart`
- * 8. Run the prompt (structured or free-form)
- * 9. In finally: fire `onAgentComplete`, dispose harness
- * 10. On error: fire `onTaskRejected` before re-throwing
- * 11. On success: fire `onTaskComplete` and return result
+ * 4. Load profiles, then spawn the agent via `spawnAgent`
+ *    (profile lookup + read-only adjustment + harness creation +
+ *     onAgentSpawn + onStepStart)
+ * 5. Run the prompt (structured or free-form)
+ * 6. In finally: fire `onAgentComplete`, dispose harness
+ * 7. On error: fire `onTaskRejected` before re-throwing
+ * 8. On success: fire `onTaskComplete` and return result
  */
 export async function runStepTask<T = unknown>(opts: RunStepTaskOptions): Promise<T> {
   const {
@@ -117,106 +119,63 @@ export async function runStepTask<T = unknown>(opts: RunStepTaskOptions): Promis
   onStatus?.onTaskStart?.({ taskId, title, agentId: taskId, phaseId, startedAt: Date.now() });
 
   let result: T;
-  let harness:
-    | {
-        session: {
-          prompt(text: string): Promise<void>;
-          getLastAssistantText(): string | undefined;
-          sessionId: string;
-          dispose(): void;
-        };
-        dispose: () => void;
-        sessionId: string;
-      }
-    | undefined;
+  let handle: AgentLifecycleHandle | undefined;
 
   try {
-    // 4. Load and adjust profile
+    // 4. Load profiles and spawn the agent (read-only adjustment + harness
+    //    creation + activeSessions-less tracking + onAgentSpawn + onStepStart).
+    //    runStepTask has no sessionDir/resumeSessionPath, so spawnAgent uses an
+    //    in-memory session and resolves sessionPath to the sessionId.
     const profiles = await loadProfilesFromDirs(profilesDirs);
-    const profile = profiles.get(profileId);
-    if (!profile) {
+    // Pre-check so the error message can reference the profiles directories
+    // (runStepTask-specific debugging context spawnAgent doesn't have).
+    if (!profiles.has(profileId)) {
       throw new Error(`Profile "${profileId}" not found in directories: ${profilesDirs.join(', ')}`);
     }
 
-    let adjustedProfile: AgentProfile = profile;
-    if (isReadOnly) {
-      adjustedProfile = {
-        ...profile,
-        excludeTools: [...new Set([...profile.excludeTools, 'write', 'edit'])],
-      };
-    }
-
-    // 5. Create harness
-    harness = await createHarness({
-      profile: adjustedProfile,
-      cwd,
-      apiKeys,
-      agentId: taskId,
-      onAgentStatus: forwardAgentStatus(onStatus),
-      allowedWriteDirs,
-    });
-
-    // 6. Fire agent spawn
-    onStatus?.onAgentSpawn?.({
-      agentId: taskId,
-      profile: profileId,
-      phaseId,
-      taskId,
-      stepIndex: 0,
-      sessionId: harness.sessionId,
-      sessionPath: harness.sessionId,
-    });
-
-    // 7. Fire step start
-    onStatus?.onStepStart?.({ taskId, stepIndex: 0, stepName, agentId: taskId });
+    handle = await spawnAgent(
+      {
+        profileId,
+        agentId: taskId,
+        cwd,
+        phaseId,
+        taskId,
+        stepIndex: 0,
+        stepName,
+        isReadOnly,
+        apiKeys,
+        allowedWriteDirs,
+        onStatus,
+      },
+      profiles,
+    );
 
     // 8. Run the prompt
     if (schema) {
-      const structuredResult = await promptForStructured(harness.session, prompt, schema, { maxRetries: 3 });
+      const structuredResult = await promptForStructured(handle.session, prompt, schema, { maxRetries: 3 });
       result = structuredResult.result as T;
     } else if (validateOutput) {
       // File-based output: validate after each turn and retry within the same
       // session (mirrors promptForStructured's retry, but reads from disk).
-      const maxAttempts = 3;
-      let validationError: string | undefined;
-      for (let attempt = 0; attempt < maxAttempts; attempt++) {
-        const turnPrompt =
-          attempt === 0 || validationError === undefined ? prompt : buildValidationRetryPrompt(prompt, validationError);
-        await harness.session.prompt(turnPrompt);
-        const gate = await validateOutput();
-        validationError = gate?.error;
-        if (!validationError) break;
-      }
-      if (validationError) {
-        throw new Error(`Agent output failed validation after ${maxAttempts} attempts: ${validationError}`);
-      }
-      result = harness.session.getLastAssistantText() as T;
+      result = (await runWithValidationRetry(handle.session, prompt, validateOutput)) as T;
     } else {
-      await harness.session.prompt(prompt);
-      result = harness.session.getLastAssistantText() as T;
+      await handle.session.prompt(prompt);
+      result = handle.session.getLastAssistantText() as T;
     }
 
-    // 8b. Renderer invocation — transform agent output into human-readable form
-    if (rendererRegistry) {
-      const renderer = rendererRegistry.get(profileId);
-      if (renderer) {
-        const rawText = harness.session.getLastAssistantText();
-        if (rawText) {
-          const jsonStr = extractJsonFromText(rawText);
-          let data: unknown = rawText;
-          if (jsonStr) {
-            try {
-              data = JSON.parse(jsonStr);
-            } catch {
-              data = rawText;
-            }
-          }
-          const rendered = renderer(data);
-          if (rendered) {
-            onStatus?.onAgentRender?.({ agentId: taskId, profile: profileId, taskId, rendered });
-          }
-        }
-      }
+    // 8b. Renderer invocation — transform agent output into human-readable form.
+    // getLastAssistantText() is fetched lazily (only when a renderer is
+    // registered for this profile) to mirror the original inline guard
+    // ordering and avoid an unnecessary retrieval when no renderer applies.
+    if (rendererRegistry?.get(profileId)) {
+      invokeRenderer(
+        rendererRegistry,
+        profileId,
+        handle.session.getLastAssistantText(),
+        taskId,
+        taskId,
+        onStatus?.onAgentRender,
+      );
     }
   } catch (err) {
     // 10. Error handling — fire onTaskRejected before re-throwing
@@ -224,13 +183,12 @@ export async function runStepTask<T = unknown>(opts: RunStepTaskOptions): Promis
     onStatus?.onTaskRejected?.({ taskId, title, reason: errorMessage });
     throw err;
   } finally {
-    // 9. Fire agent complete and dispose harness
-    if (harness) {
-      try {
-        onStatus?.onAgentComplete?.({ agentId: taskId, profile: profileId, phaseId, taskId, stepIndex: 0 });
-      } finally {
-        harness.dispose();
-      }
+    // 9. Fire agent complete and dispose harness. handle.complete() fires
+    //    onAgentComplete (mirrors the original try/finally ordering where the
+    //    callback runs before dispose); handle.dispose() tears down the harness.
+    if (handle) {
+      handle.complete();
+      handle.dispose();
     }
   }
 
@@ -352,20 +310,6 @@ export interface MultiStepTaskResult {
 // ─── Internal: prompt builders ──────────────────────────────────────────────
 
 /**
- * Rebuild a prompt to ask the agent to fix a validation failure on retry.
- * Appends a delimited error block to the original prompt.
- */
-function buildValidationRetryPrompt(originalPrompt: string, error: string): string {
-  return [
-    originalPrompt,
-    '',
-    '--- Previous attempt failed validation ---',
-    `Error: ${error}`,
-    'Please correct the output and try again.',
-  ].join('\n');
-}
-
-/**
  * Append the accumulated cross-step review feedback to a step's prompt. Mirrors
  * the implementation phase's `buildPrompt` feedback-history section so a
  * producing step sees every prior rejection it must address.
@@ -481,17 +425,11 @@ export async function runMultiStepTask(opts: RunMultiStepTaskOptions): Promise<M
       const execCount = stepExecutions.get(stepIndex) ?? 0;
       stepExecutions.set(stepIndex, execCount + 1);
 
-      // 4a. Resolve & adjust profile
-      const profile = profiles.get(step.profileId);
-      if (!profile) {
+      // 4a. Profile existence check (preserves the richer error message that
+      //     references the profiles directories; spawnAgent re-validates the
+      //     lookup as a defensive guard and owns the read-only adjustment).
+      if (!profiles.has(step.profileId)) {
         throw new Error(`Profile "${step.profileId}" not found in directories: ${profilesDirs.join(', ')}`);
-      }
-      let adjustedProfile: AgentProfile = profile;
-      if (step.isReadOnly) {
-        adjustedProfile = {
-          ...profile,
-          excludeTools: [...new Set([...profile.excludeTools, 'write', 'edit'])],
-        };
       }
 
       // 4b. Resolve prompt (may be lazy) and append accumulated feedback.
@@ -502,7 +440,7 @@ export async function runMultiStepTask(opts: RunMultiStepTaskOptions): Promise<M
         typeof step.prompt === 'function' ? await step.prompt([...results], { attempt: execCount }) : step.prompt;
       const promptText = appendFeedbackHistory(basePrompt, feedbackHistory);
 
-      // 4c. Create harness (own session for this step).
+      // 4c. Resolve session dir / resume path (own session for this step).
       //     - If a session for this step was persisted on a prior execution →
       //       resume it (so context — including inlined file contents — is
       //       retained across retries).
@@ -511,7 +449,7 @@ export async function runMultiStepTask(opts: RunMultiStepTaskOptions): Promise<M
       //     - Else → in-memory (historical behavior; no resume).
       const existingSessionPath = sessionPaths.get(stepIndex);
       // Validate task id and step name against path traversal before building
-      // the session directory (mirrors step-execution.ts:77-78). Only needed
+      // the session directory (mirrors step-execution.ts). Only needed
       // when sessionBaseDir is set — path interpolation happens only then.
       if (sessionBaseDir) {
         assertSafeName(taskId, 'task id');
@@ -520,15 +458,31 @@ export async function runMultiStepTask(opts: RunMultiStepTaskOptions): Promise<M
       const sessionDir = sessionBaseDir
         ? join(sessionBaseDir, taskId, `${execCount}-${stepIndex}-${step.stepName}`)
         : undefined;
-      const harness = await createHarness({
-        profile: adjustedProfile,
-        cwd,
-        apiKeys,
-        agentId: taskId,
-        onAgentStatus: forwardAgentStatus(onStatus),
-        allowedWriteDirs: step.allowedWriteDirs,
-        ...(existingSessionPath ? { resumeSessionPath: existingSessionPath } : sessionDir ? { sessionDir } : {}),
-      });
+
+      // 4d. Spawn the agent (profile lookup + read-only adjustment + harness
+      //     creation + onAgentSpawn + onStepStart). runMultiStepTask does not
+      //     track activeSessions (there is no abort listener here), so none is
+      //     passed; spawnAgent resolves sessionPath (sessionFile ??
+      //     resumeSessionPath ?? sessionDir ?? sessionId) identically to the
+      //     previous inline computation.
+      const handle = await spawnAgent(
+        {
+          profileId: step.profileId,
+          agentId: taskId,
+          cwd,
+          phaseId,
+          taskId,
+          stepIndex,
+          stepName: step.stepName,
+          isReadOnly: step.isReadOnly,
+          apiKeys,
+          allowedWriteDirs: step.allowedWriteDirs,
+          sessionDir,
+          resumeSessionPath: existingSessionPath,
+          onStatus,
+        },
+        profiles,
+      );
 
       // Capture the persisted session file path BEFORE the finally block
       // disposes the harness. session.sessionFile is resolved at harness
@@ -537,79 +491,44 @@ export async function runMultiStepTask(opts: RunMultiStepTaskOptions): Promise<M
       // step-execution.ts + linear-steps-runner.ts). For in-memory sessions
       // sessionFile is undefined, so nothing is captured and the next
       // execution stays in-memory (historical behavior).
-      if (harness.session.sessionFile) {
-        sessionPaths.set(stepIndex, harness.session.sessionFile);
+      if (handle.session.sessionFile) {
+        sessionPaths.set(stepIndex, handle.session.sessionFile);
       }
-
-      // 4d. Fire agent spawn + step start
-      onStatus?.onAgentSpawn?.({
-        agentId: taskId,
-        profile: step.profileId,
-        phaseId,
-        taskId,
-        stepIndex,
-        sessionId: harness.sessionId,
-        sessionPath: harness.session.sessionFile ?? existingSessionPath ?? sessionDir ?? harness.sessionId,
-      });
-      onStatus?.onStepStart?.({ taskId, stepIndex, stepName: step.stepName, agentId: taskId });
 
       let result: unknown;
       try {
         // 4e. Run the prompt
         if (step.schema) {
-          const structured = await promptForStructured(harness.session, promptText, step.schema, { maxRetries: 3 });
+          const structured = await promptForStructured(handle.session, promptText, step.schema, { maxRetries: 3 });
           result = structured.result;
         } else if (step.validateOutput) {
           // File-based output: validate after each turn and retry within the same session.
-          let validationError: string | undefined;
-          for (let attempt = 0; attempt < 3; attempt++) {
-            const turnPrompt =
-              attempt === 0 || validationError === undefined
-                ? promptText
-                : buildValidationRetryPrompt(promptText, validationError);
-            await harness.session.prompt(turnPrompt);
-            const gate = await step.validateOutput();
-            validationError = gate?.error;
-            if (!validationError) break;
-          }
-          if (validationError) {
-            throw new Error(`Agent output failed validation after 3 attempts: ${validationError}`);
-          }
-          result = harness.session.getLastAssistantText();
+          result = await runWithValidationRetry(handle.session, promptText, step.validateOutput);
         } else {
-          await harness.session.prompt(promptText);
-          result = harness.session.getLastAssistantText();
+          await handle.session.prompt(promptText);
+          result = handle.session.getLastAssistantText();
         }
 
-        // 4f. Renderer invocation
-        if (rendererRegistry) {
-          const renderer = rendererRegistry.get(step.profileId);
-          if (renderer) {
-            const rawText = harness.session.getLastAssistantText();
-            if (rawText) {
-              const jsonStr = extractJsonFromText(rawText);
-              let data: unknown = rawText;
-              if (jsonStr) {
-                try {
-                  data = JSON.parse(jsonStr);
-                } catch {
-                  data = rawText;
-                }
-              }
-              const rendered = renderer(data);
-              if (rendered) {
-                onStatus?.onAgentRender?.({ agentId: taskId, profile: step.profileId, taskId, rendered });
-              }
-            }
-          }
+        // 4f. Renderer invocation. getLastAssistantText() is fetched lazily
+        //     (only when a renderer is registered for this profile) to mirror
+        //     the original inline guard ordering.
+        if (rendererRegistry?.get(step.profileId)) {
+          invokeRenderer(
+            rendererRegistry,
+            step.profileId,
+            handle.session.getLastAssistantText(),
+            taskId,
+            taskId,
+            onStatus?.onAgentRender,
+          );
         }
       } finally {
-        // 4g. Fire agent complete + dispose (always, even on error)
-        try {
-          onStatus?.onAgentComplete?.({ agentId: taskId, profile: step.profileId, phaseId, taskId, stepIndex });
-        } finally {
-          harness.dispose();
-        }
+        // 4g. Fire agent complete + dispose (always, even on error).
+        //     handle.complete() fires onAgentComplete; handle.dispose() tears
+        //     down the harness (mirrors the original try/finally ordering where
+        //     the callback runs before dispose).
+        handle.complete();
+        handle.dispose();
       }
 
       results[stepIndex] = result;

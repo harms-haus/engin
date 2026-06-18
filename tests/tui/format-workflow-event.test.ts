@@ -2,6 +2,13 @@ import type { EventRecord } from '@engin/shared/event-types';
 import { formatWorkflowEventLine } from '@engin/shared/format-workflow-event';
 import { describe, expect, it } from 'bun:test';
 
+// ─── Export surface ─────────────────────────────────────────────────────────
+//
+// formatWorkflowEventLine's canonical home is @engin/shared/format-workflow-event.
+// The shared package cannot resolve ./theme.js, so stripAnsi must exist as an
+// inlined private helper — it must NOT be exported. No theme/TUI symbols should
+// leak into the shared module.
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function ev(
@@ -166,11 +173,38 @@ describe('formatWorkflowEventLine', () => {
       expect(line).toBe('📋 Task meta-t1: "Some task"');
     });
 
-    it('strips ANSI escape codes from title', () => {
+    it('strips ANSI CSI escape codes from title', () => {
       const ansiTitle = '\x1b[32mGreen Title\x1b[0m';
       const line = formatWorkflowEventLine(ev('task_started', { taskId: 't1', title: ansiTitle }));
       expect(line).toBe('📋 Task t1: "Green Title"');
       expect(line).not.toContain('\x1b');
+    });
+
+    it('strips ANSI OSC sequences terminated by BEL (ESC ] ... \\x07)', () => {
+      // ESC ] 0 ; title \u0007
+      const line = formatWorkflowEventLine(ev('task_started', { taskId: 't1', title: '\x1b]0;t\x07T' }));
+      expect(line).toBe('📋 Task t1: "T"');
+      expect(line).not.toContain('\x1b');
+    });
+
+    it('strips ANSI OSC sequences terminated by ST (ESC \\)', () => {
+      // ESC ] 0 ; x ESC \\
+      const line = formatWorkflowEventLine(ev('task_started', { taskId: 't1', title: '\x1b]0;x\x1b\\T' }));
+      expect(line).toBe('📋 Task t1: "T"');
+      expect(line).not.toContain('\x1b');
+    });
+
+    it('strips mixed CSI and OSC sequences in one string', () => {
+      const line = formatWorkflowEventLine(
+        ev('task_started', { taskId: 't1', title: '\x1b[31mR\x1b[0m\x1b]0;t\x07E' }),
+      );
+      expect(line).toBe('📋 Task t1: "RE"');
+      expect(line).not.toContain('\x1b');
+    });
+
+    it('passes through plain strings without escape char unchanged (fast path)', () => {
+      const line = formatWorkflowEventLine(ev('task_started', { taskId: 't1', title: 'plain title' }));
+      expect(line).toBe('📋 Task t1: "plain title"');
     });
   });
 
@@ -304,5 +338,16 @@ describe('formatWorkflowEventLine', () => {
       );
       expect(line).toBe('Step 3 started: test (task: t1, agent: a1)');
     });
+  });
+});
+
+describe('@engin/shared/format-workflow-event — export surface', () => {
+  it('exports only formatWorkflowEventLine (stripAnsi is NOT exported)', async () => {
+    const mod = (await import('@engin/shared/format-workflow-event')) as Record<string, unknown>;
+    expect(mod.formatWorkflowEventLine).toBe(formatWorkflowEventLine);
+    // stripAnsi must be inlined as a private helper, NOT re-exported.
+    expect(mod.stripAnsi).toBeUndefined();
+    // No theme/TUI symbols should leak into the shared package module.
+    expect(mod.theme).toBeUndefined();
   });
 });

@@ -148,6 +148,12 @@ function resetMocks() {
   mockGenerateCommitMessage.mockResolvedValue('feat: implement feature');
   mockResolveConflictsWithAgent.mockResolvedValue(true);
   mockPushAndCreatePR.mockResolvedValue(undefined);
+  // Bun's clearAllMocks() only clears call history — implementations set via
+  // mockImplementation/mockReturnValue persist. Re-establish safe defaults so
+  // a throwing implementation set by one test cannot leak into the next.
+  mockCheckoutBranch.mockImplementation(() => {});
+  mockMergeBranch.mockReturnValue({ success: true });
+  mockRemoveWorktree.mockImplementation(() => {});
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -886,6 +892,74 @@ describe('handleMergeToMain', () => {
     expect(logOutput).toContain('cool-feature');
     expect(logOutput).toContain('main');
   });
+
+  // ─── Regression: operation failures must NOT print the success line ──────
+
+  it('on a thrown operation error prints the real error and NOT the success line', async () => {
+    // An earlier step (checkout) failing must surface as an error, not a
+    // misleading "Merged ... into ..." success.
+    mockCheckoutBranch.mockImplementation(() => {
+      throw new Error('checkout blew up');
+    });
+
+    const logFn = mock((..._args: unknown[]) => {});
+    const orig = console.log;
+    console.log = logFn as unknown as typeof console.log;
+
+    await handleMergeToMain(makeOptions({ branchName: 'feature-branch' }));
+
+    console.log = orig;
+
+    const logOutput = logFn.mock.calls.map((c) => c.join(' ')).join('\n');
+    expect(logOutput).toMatch(/merge of feature-branch failed/i);
+    expect(logOutput).toContain('checkout blew up');
+    // Must NOT claim the merge succeeded.
+    expect(logOutput).not.toMatch(/Merged feature-branch into/i);
+    // Must NOT emit the cleanup warning for an operation failure.
+    expect(logOutput).not.toMatch(/Could not remove worktree/i);
+  });
+
+  it('on a thrown error still removes worktree cleanup warning is NOT printed', async () => {
+    // The cleanup warning is reserved for a successful merge whose removal
+    // failed; a genuine operation failure must not trigger it.
+    mockMergeBranch.mockImplementation(() => {
+      throw new Error('merge exploded');
+    });
+
+    const logFn = mock((..._args: unknown[]) => {});
+    const orig = console.log;
+    console.log = logFn as unknown as typeof console.log;
+
+    await handleMergeToMain(makeOptions());
+
+    console.log = orig;
+
+    const logOutput = logFn.mock.calls.map((c) => c.join(' ')).join('\n');
+    expect(logOutput).not.toMatch(/Could not remove worktree/i);
+    expect(logOutput).not.toMatch(/Merged .+ into/i);
+  });
+
+  it('on successful merge with cleanup failure prints BOTH warning and success', async () => {
+    // A genuine cleanup-removal failure (merge DID succeed) must still surface
+    // both the warning and the success message.
+    mockMergeBranch.mockReturnValue({ success: true });
+    mockGetMainBranch.mockReturnValue('main');
+    mockRemoveWorktree.mockImplementation(() => {
+      throw new Error('worktree busy');
+    });
+
+    const logFn = mock((..._args: unknown[]) => {});
+    const orig = console.log;
+    console.log = logFn as unknown as typeof console.log;
+
+    await handleMergeToMain(makeOptions({ branchName: 'cool-feature' }));
+
+    console.log = orig;
+
+    const logOutput = logFn.mock.calls.map((c) => c.join(' ')).join('\n');
+    expect(logOutput).toMatch(/Could not remove worktree/i);
+    expect(logOutput).toMatch(/Merged cool-feature into main/i);
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1000,6 +1074,9 @@ describe('handlePushAndPR', () => {
 
     const logOutput = logFn.mock.calls.map((c) => c.join(' ')).join('\n');
     expect(logOutput).toMatch(/warning/i);
+    // The push + PR succeeded, so the success message must still print
+    // (warn-but-succeed semantics for a cleanup-only failure).
+    expect(logOutput).toMatch(/success/i);
   });
 
   it('prints success message', async () => {
@@ -1014,6 +1091,31 @@ describe('handlePushAndPR', () => {
     const logOutput = logFn.mock.calls.map((c) => c.join(' ')).join('\n');
     expect(logOutput).toMatch(/success/i);
     expect(logOutput).toContain('pr-branch');
+  });
+
+  it('prints the error and does NOT print success when push/PR fails', async () => {
+    mockPushAndCreatePR.mockImplementation(async () => {
+      throw new Error('push rejected');
+    });
+
+    const logFn = mock((..._args: unknown[]) => {});
+    const orig = console.log;
+    console.log = logFn as unknown as typeof console.log;
+
+    await handlePushAndPR(makeOptions({ branchName: 'pr-branch' }));
+
+    console.log = orig;
+
+    const logOutput = logFn.mock.calls.map((c) => c.join(' ')).join('\n');
+
+    // The real failure is surfaced with the actual error message + branch.
+    expect(logOutput).toMatch(/failed/i);
+    expect(logOutput).toContain('pr-branch');
+    expect(logOutput).toContain('push rejected');
+
+    // The success line must NOT print when the push/PR failed.
+    expect(logOutput).not.toMatch(/success/i);
+    expect(logOutput).not.toContain('Successfully pushed');
   });
 });
 

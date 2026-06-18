@@ -400,4 +400,69 @@ describe('LanePool AbortSignal handling', () => {
       expect(a2).toHaveBeenCalled();
     });
   });
+
+  describe('abort fires before the session prompt starts (TOCTOU window)', () => {
+    /**
+     * runStep adds a freshly-created session to activeSessions before firing
+     * onAgentSpawn (and before awaiting buildPrompt). This guarantees that an
+     * abort signal firing in the [session created, prompt started] window —
+     * the Time-of-Check-Time-of-Use gap — still reaches and cancels the
+     * session instead of leaking it.
+     */
+    it('aborts a session whose prompt has not started yet', async () => {
+      setupProfileMocks();
+      const abortFn = mock(async () => {});
+      const session = {
+        ...makeSession(() => 'done'),
+        abort: abortFn,
+      };
+      mockCreateHarness.mockResolvedValue({
+        session,
+        sessionId: 's-1',
+        dispose: mock(() => {}),
+      });
+
+      const controller = new AbortController();
+      await createPoolAndTracker({
+        tasks: [makeTask({ id: 'task-1' })],
+        maxConcurrentLanes: 1,
+        signal: controller.signal,
+        onStatus: {
+          // Fires inside runStep AFTER activeSessions.add but BEFORE the prompt
+          // begins — i.e. squarely in the TOCTOU window.
+          onAgentSpawn: () => controller.abort(),
+        },
+      }).pool.run();
+
+      expect(abortFn).toHaveBeenCalledTimes(1);
+    });
+
+    it('settles the pool run without hanging when abort fires in the window', async () => {
+      setupProfileMocks();
+      const abortFn = mock(async () => {});
+      const session = {
+        ...makeSession(() => 'done'),
+        abort: abortFn,
+      };
+      mockCreateHarness.mockResolvedValue({
+        session,
+        sessionId: 's-1',
+        dispose: mock(() => {}),
+      });
+
+      const controller = new AbortController();
+      const result = await createPoolAndTracker({
+        tasks: [makeTask({ id: 'task-1' })],
+        maxConcurrentLanes: 1,
+        signal: controller.signal,
+        onStatus: {
+          onAgentSpawn: () => controller.abort(),
+        },
+      }).pool.run();
+
+      // The run resolves (does not hang) and the session was aborted exactly once.
+      expect(result).toBeDefined();
+      expect(abortFn).toHaveBeenCalledTimes(1);
+    });
+  });
 });

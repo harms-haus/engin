@@ -609,4 +609,232 @@ describe('EventStore', () => {
       expect(notified).toBe(1);
     });
   });
+
+  // ── dispose() ─────────────────────────────────────────────────────
+
+  describe('dispose', () => {
+    it('clears all subscribers', () => {
+      const store = new EventStore(dir);
+      let calls = 0;
+      store.subscribe(() => {
+        calls++;
+      });
+      store.append('workflow_started', { taskPrompt: 'a' });
+      expect(calls).toBe(1);
+
+      store.dispose();
+      // The subscriber set is emptied so callbacks do not leak past teardown.
+      expect((store as unknown as { subscribers: Set<unknown> }).subscribers.size).toBe(0);
+
+      // A post-dispose append is a no-op, so the cleared subscriber is never
+      // invoked again.
+      store.append('workflow_started', { taskPrompt: 'b' });
+      expect(calls).toBe(1);
+    });
+
+    it('append() after dispose returns a synthetic record with the incremented seq', () => {
+      const store = new EventStore(dir);
+      const r1 = store.append('workflow_started', { taskPrompt: 'pre' });
+      expect(r1.seq).toBe(1);
+
+      store.dispose();
+
+      // The returned record still carries the next seq and the passed
+      // type/data, but it is synthetic — the store does nothing else with it.
+      const r2 = store.append('phase_started', { phase: 'ignored' });
+      expect(r2.seq).toBe(2);
+      expect(r2.type).toBe('phase_started');
+      expect(r2.data.phase).toBe('ignored');
+      expect(r2.metadata.timestamp).toBeDefined();
+      expect(new Date(r2.metadata.timestamp).toISOString()).toBe(r2.metadata.timestamp);
+
+      // A third append keeps incrementing seq without doing any real work.
+      const r3 = store.append('phase_completed', { phase: 'ignored', durationMs: 1 });
+      expect(r3.seq).toBe(3);
+    });
+
+    it('append() after dispose does not evolve the projection', () => {
+      const store = new EventStore(dir);
+      store.append('workflow_started', { taskPrompt: 'frozen' });
+      const before = store.getProjection();
+      expect(before.taskPrompt).toBe('frozen');
+      expect(before.seq).toBe(1);
+
+      store.dispose();
+      store.append('phase_started', { phase: 'should-not-apply' });
+
+      const after = store.getProjection();
+      // Projection STATE is unchanged — no evolve ran on the disposed append.
+      expect(after.taskPrompt).toBe('frozen');
+      expect(after.currentPhaseId).toBe(before.currentPhaseId);
+      expect(after.status).toBe(before.status);
+    });
+
+    it('append() after dispose does not write to disk', async () => {
+      const store = new EventStore(dir);
+      store.append('workflow_started', { taskPrompt: 'persisted' });
+      await store.flush();
+
+      store.dispose();
+      store.append('workflow_started', { taskPrompt: 'dropped' });
+      store.append('workflow_started', { taskPrompt: 'dropped2' });
+      // Give any (incorrectly) scheduled write a chance to land.
+      await new Promise<void>((r) => queueMicrotask(r));
+      await store.flush();
+
+      const raw = await fs.readFile(path.join(dir, 'events.jsonl'), 'utf-8');
+      const lines = raw.trim().split('\n');
+      expect(lines).toHaveLength(1);
+      expect(JSON.parse(lines[0]).data.taskPrompt).toBe('persisted');
+    });
+
+    it('flush() after dispose resolves without error and writes nothing', async () => {
+      const store = new EventStore(dir);
+      store.append('workflow_started', { taskPrompt: 'one' });
+      await store.flush();
+
+      store.dispose();
+      // No pending writes (append is a no-op); flush returns early cleanly.
+      await expect(store.flush()).resolves.toBeUndefined();
+
+      const raw = await fs.readFile(path.join(dir, 'events.jsonl'), 'utf-8');
+      expect(raw.trim().split('\n')).toHaveLength(1);
+    });
+
+    it('saveSnapshot() after dispose returns early and writes no snapshot file', async () => {
+      const store = new EventStore(dir);
+      store.append('workflow_started', { taskPrompt: 'pre' });
+      store.dispose();
+
+      await store.saveSnapshot();
+
+      // Early return → no snapshot file created.
+      await expect(fs.readFile(path.join(dir, 'event-snapshot.json'), 'utf-8')).rejects.toThrow();
+    });
+
+    it('saveSnapshot() works before dispose but does not overwrite after dispose', async () => {
+      const store = new EventStore(dir);
+      store.append('workflow_started', { taskPrompt: 'snap' });
+      await store.saveSnapshot();
+      const snapshotPath = path.join(dir, 'event-snapshot.json');
+      const before = await fs.readFile(snapshotPath, 'utf-8');
+
+      store.dispose();
+      // A disposed append increments the internal seq counter, so a real
+      // saveSnapshot would change the persisted `seq`/`timestamp`. Verifying
+      // byte-equality proves the post-dispose saveSnapshot was a no-op.
+      store.append('workflow_started', { taskPrompt: 'ignored' });
+      await store.saveSnapshot();
+
+      const after = await fs.readFile(snapshotPath, 'utf-8');
+      expect(after).toBe(before);
+    });
+
+    it('append() after dispose does not add synthetic records to the ring buffer', () => {
+      const store = new EventStore(dir);
+      store.append('workflow_started', { taskPrompt: 'kept' }); // seq 1 — in buffer
+      expect(store.getEventsSince(0)).toHaveLength(1);
+
+      store.dispose();
+      // Synthetic appends are no-ops: they must NOT be pushed into the ring
+      // buffer, otherwise getEventsSince would surface records that were
+      // never evolved or persisted.
+      store.append('phase_started', { phase: 'ghost' }); // seq 2 — synthetic
+      store.append('phase_completed', { phase: 'ghost', durationMs: 1 }); // seq 3
+
+      const events = store.getEventsSince(0);
+      expect(events).toHaveLength(1);
+      expect(events[0].seq).toBe(1);
+      expect(events[0].type).toBe('workflow_started');
+    });
+
+    it('flush() after dispose does not throw even when writes were still pending', async () => {
+      const store = new EventStore(dir);
+      // Schedule a write but do NOT await it before disposing — simulates a
+      // store abandoned mid-drain (e.g. a reaped run handle). dispose() must
+      // not leave the writeQueue in a state that makes a subsequent flush()
+      // reject.
+      store.append('workflow_started', { taskPrompt: 'pending' });
+      store.dispose();
+
+      await expect(store.flush()).resolves.toBeUndefined();
+    });
+
+    it('dispose() is idempotent', () => {
+      const store = new EventStore(dir);
+      expect(() => {
+        store.dispose();
+        store.dispose();
+        store.dispose();
+      }).not.toThrow();
+    });
+
+    it('does not affect an independent store instance', () => {
+      const a = new EventStore(dir);
+      const b = new EventStore(dir);
+      a.dispose();
+
+      // Disposing `a` must not silence `b`.
+      let notified = 0;
+      b.subscribe(() => {
+        notified++;
+      });
+      b.append('workflow_started', { taskPrompt: 'still alive' });
+      expect(notified).toBe(1);
+      expect(b.getProjection().taskPrompt).toBe('still alive');
+    });
+  });
+
+  // ── writeQueue depth bounding ─────────────────────────────────────
+
+  describe('writeQueue depth bounding', () => {
+    it('persists every event in order and resolves flush across the depth threshold', async () => {
+      const store = new EventStore(dir);
+      // Trigger exactly one drain per microtask tick so each append chains a
+      // fresh link onto writeQueue. Cross the documented ~1000 threshold so
+      // the depth-reset code path is exercised without losing or reordering
+      // any records.
+      const N = 1050;
+      for (let i = 0; i < N; i++) {
+        store.append('sidebar_updated', { title: `t${i}` });
+        // Yield a microtask so the scheduled drainPending fires (chaining
+        // another writeQueue link) before the next append coalesces into it.
+        await Promise.resolve();
+      }
+
+      // flush() must settle the entire — possibly reset — chain.
+      await store.flush();
+
+      const raw = await fs.readFile(path.join(dir, 'events.jsonl'), 'utf-8');
+      const lines = raw.trim().split('\n');
+      expect(lines).toHaveLength(N);
+      for (let i = 0; i < N; i++) {
+        const rec = JSON.parse(lines[i]);
+        expect(rec.seq).toBe(i + 1);
+        expect(rec.data.title).toBe(`t${i}`);
+      }
+    });
+
+    it('flush() remains durable after the depth threshold has been crossed', async () => {
+      const store = new EventStore(dir);
+      // Build chain depth past the threshold.
+      for (let i = 0; i < 1050; i++) {
+        store.append('sidebar_updated', { title: `burst-${i}` });
+        await Promise.resolve();
+      }
+      await store.flush();
+
+      // A normal coalesced append + flush AFTER the reset must still persist.
+      store.append('workflow_started', { taskPrompt: 'after reset' });
+      store.append('phase_started', { phase: 'p' });
+      await store.flush();
+
+      const raw = await fs.readFile(path.join(dir, 'events.jsonl'), 'utf-8');
+      const lines = raw.trim().split('\n');
+      const lastTwo = lines.slice(-2);
+      expect(JSON.parse(lastTwo[0]).type).toBe('workflow_started');
+      expect(JSON.parse(lastTwo[1]).type).toBe('phase_started');
+      expect(JSON.parse(lastTwo[1]).seq).toBe(1052);
+    });
+  });
 });

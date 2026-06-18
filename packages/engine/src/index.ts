@@ -15,16 +15,17 @@ export * from './core/types.js';
 export * from './core/utils.js';
 export * from './core/workflow-loader.js';
 export * from './core/worktree-lifecycle.js';
+export * from './core/worktree-operations.js';
 export * from './core/write-sandbox.js';
 
 // ─── Pool ────────────────────────────────────────────────────────────────
 export * from './pool/index.js';
 
 // ─── Tracking ──────────────────────────────────────────────────────────────
+export * from '@engin/shared/event-types';
+export * from '@engin/shared/evolve';
 export * from './tracking/audit-log.js';
 export * from './tracking/event-store.js';
-export * from './tracking/event-types.js';
-export * from './tracking/evolve.js';
 export { createStoreCallbacks } from './tracking/store-callbacks.js';
 export * from './tracking/task-status.js';
 export * from './tracking/workflow-status.js';
@@ -34,5 +35,8 @@ export * from './server/auth.js';
 export * from './server/bind-guard.js';
 export * from './server/control-server.js';
 export * from './server/daemon.js';
+export * from './server/message-router.js';
 export * from './server/run-manager.js';
+export * from './server/static-serving.js';
 export * from './server/status-bridge.js';
+export * from './server/ws-origin-guard.js';

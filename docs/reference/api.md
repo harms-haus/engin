@@ -1,8 +1,13 @@
 # Programmatic API
 
-Everything below is exported from the top-level `@harms-haus/engin` entry point
-(`packages/cli/src/index.ts`), which re-exports the stable workflow-facing API from the
-engine and shared packages.
+Everything below is exported from the `@harms-haus/engin-engine` entry point
+(`packages/engine/src/index.ts`). The published CLI package (`@harms-haus/engin`,
+`packages/cli/src/index.ts`) exports only its own command surface — `initCommand`,
+`runCommand`, `resumeCommand`, `serverUpCommand`/`serverDownCommand`/`serverStatusCommand`,
+`parseArgs`, `main`, `USAGE`, `VERSION`, and the `CliOptions` type — and deliberately does
+**not** re-export the engine or TUI packages. Consumers that need the programmatic workflow
+API should depend on `@harms-haus/engin-engine` directly (see the import paths used in
+[Building a new workflow](../guides/building-workflows.md)).
 Types are collected separately in [Types reference](types.md).
 
 ## Workflow loading
@@ -276,5 +281,7 @@ From `@earendil-works/pi-agent-core`: the `ThinkingLevel` type.
 
 ## TUI and web
 
-The TUI (`WorkflowTUI`, widgets, theme helpers) and web (`ControlServer`, `StatusBridge`,
-protocol types) are also exported. See [TUI reference](tui.md) and [Web reference](web.md).
+The server components (`ControlServer`, `StatusBridge`, `RunManager`, protocol types) are
+also exported from `@harms-haus/engin-engine`. The TUI (`WorkflowTUI`, widgets, theme
+helpers) is exported from the separate `@harms-haus/engin-tui` package. See
+[TUI reference](tui.md) and [Web reference](web.md).

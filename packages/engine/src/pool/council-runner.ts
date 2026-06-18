@@ -9,48 +9,58 @@
 
 import type { Task } from '../core/types.js';
 import { safeErrorMessage } from '../core/utils.js';
-import { runStep, type StepExecutionContext } from './step-execution.js';
-import type { StepDefinition, TaskOutcome, TaskRunner, TaskRunnerContext, TrackedSession } from './types.js';
+import { composeWorkerOutputsPrompt } from './prompt-builder.js';
+import { buildExecCtx, createSessionTracker, handleRunnerError, settleResult } from './runner-utils.js';
+import { runStep } from './step-execution.js';
+import type { StepDefinition, TaskOutcome, TaskRunner, TaskRunnerContext } from './types.js';
+
+/** Options for {@link councilRunner}. */
+export interface CouncilRunnerOptions {
+  /** Worker steps run in parallel against the same task. */
+  workers: StepDefinition[];
+  /** Synthesizer step that merges worker outputs into a single result. */
+  synthesizer: StepDefinition;
+  /**
+   * Optional callback that composes the synthesizer task from the original
+   * task and the collected worker outputs.
+   *
+   * When omitted the default {@link composeWorkerOutputsPrompt} helper is
+   * used, preserving the exact legacy prompt format (`## Worker Outputs`
+   * appended to the task prompt). Returning a brand-new Task (rather than
+   * mutating the original) keeps `ctx.task` untouched.
+   *
+   * This keeps the runner a simple primitive: it runs workers, collects
+   * outputs, and passes them to a prompt composer. The orchestration logic
+   * (how to format worker outputs into a prompt) is configurable from the
+   * call site.
+   */
+  composeSynthesizerPrompt?: (task: Task, workerOutputs: unknown[]) => Task;
+}
 
 /**
  * Create a TaskRunner that runs multiple workers in parallel and
  * then passes their outputs to a synthesizer step that merges them
  * into a single result.
  */
-export function councilRunner(options: { workers: StepDefinition[]; synthesizer: StepDefinition }): TaskRunner {
+export function councilRunner(options: CouncilRunnerOptions): TaskRunner {
+  const { workers, synthesizer } = options;
+  // Default to the shared worker-outputs composer, preserving the legacy
+  // prompt format unless the caller supplies a custom composition strategy.
+  const composeSynthesizerPrompt = options.composeSynthesizerPrompt ?? composeWorkerOutputsPrompt;
+
   return async (ctx: TaskRunnerContext): Promise<TaskOutcome> => {
-    // ── Step 1: No workers ──────────────────────────────────────────────
-    if (options.workers.length === 0) {
-      ctx.failTask({ completed: false, error: 'No workers defined' });
-      return { status: 'failed', error: 'No workers defined' };
-    }
-
-    // ── Step 2: Tracked sessions + dispose helper ───────────────────────
-    const sessions: TrackedSession[] = [];
-    const disposeAllSessions = () => {
-      for (const ts of sessions) {
-        try {
-          ts.dispose();
-        } catch (err) {
-          console.error(`[${ctx.agentId}] Error disposing harness for task ${ctx.task.id}:`, safeErrorMessage(err));
-        }
-      }
-      sessions.length = 0;
-    };
-
-    // ── Step 3: Execution context ───────────────────────────────────────
-    const execCtx: StepExecutionContext = {
-      sessionBaseDir: ctx.sessionBaseDir,
-      cwd: ctx.cwd,
-      apiKeys: ctx.apiKeys,
-      onStatus: ctx.onStatus,
-      activeSessions: ctx.activeSessions,
-      phaseId: ctx.phaseId,
-    };
+    const tracker = createSessionTracker(ctx.agentId, ctx.task.id);
+    const execCtx = buildExecCtx(ctx);
 
     try {
-      // ── Step 4: Run all workers in parallel ─────────────────────────
-      const workerPromises = options.workers.map((worker, i) => {
+      // ── Step 1: No workers ──────────────────────────────────────────────
+      if (workers.length === 0) {
+        ctx.failTask({ completed: false, error: 'No workers defined' });
+        return { status: 'failed', error: 'No workers defined' };
+      }
+
+      // ── Step 2: Run all workers in parallel ─────────────────────────────
+      const workerPromises = workers.map((worker, i) => {
         ctx.onStatus?.onStepStart?.({
           taskId: ctx.task.id,
           stepIndex: i,
@@ -69,7 +79,7 @@ export function councilRunner(options: { workers: StepDefinition[]; synthesizer:
 
       const workerResults = await Promise.allSettled(workerPromises);
 
-      // ── Step 5: Process settled results (session-leak fix) ──────────
+      // ── Step 3: Process settled results (session-leak fix) ──────────────
       const outputs: unknown[] = [];
       const errors: string[] = [];
 
@@ -82,76 +92,52 @@ export function councilRunner(options: { workers: StepDefinition[]; synthesizer:
           } else {
             outputs.push(stepResult.feedback);
           }
-          // CRITICAL: track the session so disposeAllSessions cleans it up later.
+          // CRITICAL: track the session so tracker.disposeAll cleans it up later.
           // Without this, worker sessions leak because only the synthesizer's
           // session would be tracked.
-          sessions.push(trackedSession);
+          tracker.add(trackedSession);
         } else {
           // runStep already disposed its own session in its catch block on throw,
-          // so do NOT push anything to sessions for rejected results.
+          // so do NOT track anything for rejected results.
           errors.push(safeErrorMessage(result.reason));
         }
       }
 
-      // ── Step 6: All workers failed ─────────────────────────────────
+      // ── Step 4: All workers failed ─────────────────────────────────────
       if (outputs.length === 0 && errors.length > 0) {
         ctx.failTask({ completed: false, error: errors.join('; ') });
-        disposeAllSessions();
+        tracker.disposeAll();
         return { status: 'failed', error: 'All workers failed' };
       }
 
-      // ── Step 7: Run synthesizer ─────────────────────────────────────
+      // ── Step 5: Run synthesizer ────────────────────────────────────────
       ctx.onStatus?.onStepStart?.({
         taskId: ctx.task.id,
-        stepIndex: options.workers.length,
-        stepName: options.synthesizer.name,
+        stepIndex: workers.length,
+        stepName: synthesizer.name,
         agentId: ctx.agentId,
       });
 
-      // Build a modified task with worker outputs appended to the prompt
-      const workerOutputsText = outputs
-        .map((output, i) => {
-          const formatted = typeof output === 'string' ? output : JSON.stringify(output);
-          return `### Worker ${i}\n${formatted}`;
-        })
-        .join('\n\n');
-
-      const modifiedTask: Task = {
-        ...ctx.task,
-        prompt: ctx.task.prompt + '\n\n## Worker Outputs\n' + workerOutputsText,
-      };
+      // Compose the synthesizer task from the worker outputs. The composer is
+      // configurable from the call site; the default preserves the legacy
+      // prompt format. The original ctx.task is never mutated.
+      const synthTask = composeSynthesizerPrompt(ctx.task, outputs);
 
       const synthResult = await runStep(
-        modifiedTask,
-        options.synthesizer,
+        synthTask,
+        synthesizer,
         ctx.agentId,
-        { stepIndex: options.workers.length, attempt: 0, execCount: 0 },
+        { stepIndex: workers.length, attempt: 0, execCount: 0 },
         ctx.profiles,
         execCtx,
       );
-      sessions.push(synthResult.trackedSession);
+      tracker.add(synthResult.trackedSession);
 
-      // ── Step 8: Settle based on synthesizer result ─────────────────
-      if (synthResult.result.type === 'approved') {
-        if (ctx.completeTask(synthResult.result.output)) {
-          disposeAllSessions();
-          return { status: 'completed', output: synthResult.result.output };
-        }
-        ctx.failTask({ completed: false, error: 'Failed to submit' });
-        disposeAllSessions();
-        return { status: 'failed', error: 'Failed to submit' };
-      }
-
-      // Synthesizer rejected
-      ctx.failTask({ completed: false, feedback: synthResult.result.feedback });
-      disposeAllSessions();
-      return { status: 'failed', feedback: synthResult.result.feedback };
+      // ── Step 6: Settle based on synthesizer result ─────────────────────
+      return settleResult(ctx, synthResult.result, tracker.disposeAll);
     } catch (err) {
-      // ── Step 9: Unexpected error – never re-throw ──────────────────
-      disposeAllSessions();
-      const errorMsg = safeErrorMessage(err);
-      ctx.failTask({ completed: false, error: errorMsg });
-      return { status: 'failed', error: errorMsg };
+      // ── Step 7: Unexpected error – never re-throw ──────────────────────
+      return handleRunnerError(err, ctx, tracker.disposeAll);
     }
   };
 }

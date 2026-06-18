@@ -1,6 +1,13 @@
 import { formatToolCall } from '@engin/shared/format-tool-call';
 import { describe, expect, it } from 'bun:test';
 
+// ─── Export surface ─────────────────────────────────────────────────────────
+//
+// formatToolCall's canonical home is @engin/shared/format-tool-call. The
+// module-private helpers (truncateWithEllipsis, MAX_COMMAND_DISPLAY,
+// MAX_ARGS_DISPLAY) must remain unexported by the shared module so the public
+// surface is just formatToolCall.
+
 describe('formatToolCall', () => {
   // ── File tools ────────────────────────────────────────────────────────────
 
@@ -268,5 +275,15 @@ describe('formatToolCall', () => {
       const afterArrow = result.slice(arrow + 2);
       expect(afterArrow.endsWith('…')).toBe(true);
     });
+  });
+});
+
+describe('@engin/shared/format-tool-call — export surface', () => {
+  it('exports only formatToolCall (internal helpers stay private)', async () => {
+    const mod = (await import('@engin/shared/format-tool-call')) as Record<string, unknown>;
+    expect(mod.formatToolCall).toBe(formatToolCall);
+    expect(mod.truncateWithEllipsis).toBeUndefined();
+    expect(mod.MAX_COMMAND_DISPLAY).toBeUndefined();
+    expect(mod.MAX_ARGS_DISPLAY).toBeUndefined();
   });
 });

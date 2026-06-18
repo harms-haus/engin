@@ -3,30 +3,17 @@ import { basename } from 'node:path';
 
 import type { ClientMessage, RunSummary, ServerMessage } from '@engin/shared/protocol-types';
 import { getDefaultWorkDir, loadEnvFiles, resolveProfilesDirs } from '../core/config.js';
-import {
-  abortMerge,
-  checkoutBranch,
-  commitChanges,
-  getCurrentBranch,
-  getDiff,
-  getMainBranch,
-  mergeBranch,
-  removeWorktree,
-  stageAll,
-} from '../core/git.js';
-import { RendererRegistry } from '../core/renderer-registry.js';
-import type { StatusCallbacks, WorkflowModule, WorkflowRunOptions, WorktreeInfo } from '../core/types.js';
+import type { WorkflowModule, WorktreeInfo } from '../core/types.js';
 import { loadWorkflow } from '../core/workflow-loader.js';
-import {
-  generateCommitMessage,
-  pushAndCreatePR,
-  resolveConflictsWithAgent,
-  setupWorktree,
-} from '../core/worktree-lifecycle.js';
+import { setupWorktree } from '../core/worktree-lifecycle.js';
+import { cleanupWorktree, mergeWorktreeToMain, pushWorktreeAndCreatePR } from '../core/worktree-operations.js';
 import { EventStore } from '../tracking/event-store.js';
 import { createStoreCallbacks } from '../tracking/store-callbacks.js';
-import { installConsoleCapture, runWithConsoleCapture } from './console-capture.js';
+import { installConsoleCapture } from './console-capture.js';
+import { RunExecutor } from './run-executor.js';
+import { RunRegistry } from './run-registry.js';
 import { StatusBridge } from './status-bridge.js';
+import { SubscriptionManager } from './subscription-manager.js';
 
 // Install the global console capture ONCE at module load. The wrappers route
 // per-run console.warn/error/info output to the active run's store via
@@ -45,9 +32,9 @@ export type StartRunMessage = Omit<Extract<ClientMessage, { type: 'start_run' }>
 export type RunStatus = 'running' | 'complete' | 'failed';
 
 /**
- * Internal handle for a single workflow run. Stored in the RunManager's
- * in-memory registry for the lifetime of the run (plus a short reaper window
- * after completion so late clients can view the final state).
+ * Internal handle for a single workflow run. Stored in the {@link RunRegistry}
+ * for the lifetime of the run (plus a short reaper window after completion so
+ * late clients can view the final state).
  */
 export interface RunHandle {
   /** == basename(workDir), e.g. "1781118746110-develop". */
@@ -86,25 +73,39 @@ export interface StartRunResult {
   summary: RunSummary;
 }
 
-// ─── RunManager ──────────────────────────────────────────────────────────────
+// ─── RunManager (facade) ────────────────────────────────────────────────────
 
 /**
  * Owns the lifecycle of concurrent workflow runs in the control server.
  *
  * Each run is identified by its `runId` (the work-directory basename). The
- * manager registers a {@link RunHandle} in an in-memory map, launches the
- * workflow as a **fire-and-forget** async IIFE, and reaps the handle ~60 s
- * after the run reaches a terminal state.
+ * manager is now a thin facade that wires together three extracted concerns:
+ *
+ *   - {@link RunRegistry}          — the in-memory handle map, collision
+ *                                    detection, and reaper timer.
+ *   - {@link SubscriptionManager}  — per-run WebSocket subscriber fan-out.
+ *   - {@link RunExecutor}          — the workflow.run() lifecycle, store flush,
+ *                                    status transitions, terminal broadcasts,
+ *                                    and post-terminal reaper scheduling.
+ *
+ * It registers a {@link RunHandle}, launches the workflow as a
+ * **fire-and-forget** async operation (via the executor), and reaps the handle
+ * ~60 s after the run reaches a terminal state. The public API is unchanged
+ * from the pre-decomposition RunManager.
  */
 export class RunManager {
-  private readonly runs = new Map<string, RunHandle>();
+  private readonly registry = new RunRegistry();
+  private readonly subscriptions = new SubscriptionManager();
+  private readonly executor: RunExecutor;
 
   /**
    * @param onRunsChanged Called whenever the active-run set changes (start,
    * complete, fail, cancel, reap) so the control server can broadcast a
    * `runs` message to all clients.
    */
-  constructor(private readonly onRunsChanged: () => void) {}
+  constructor(private readonly onRunsChanged: () => void) {
+    this.executor = new RunExecutor(this.registry, onRunsChanged);
+  }
 
   // ─── startRun ─────────────────────────────────────────────────────────────
 
@@ -112,9 +113,9 @@ export class RunManager {
    * Register and launch a new workflow run.
    *
    * This method is **fire-and-forget**: it performs all synchronous setup,
-   * registers the handle, calls `onRunsChanged`, launches the workflow inside
-   * an async IIFE, and returns `{ runId, summary }` immediately — WITHOUT
-   * awaiting the workflow.
+   * registers the handle, calls `onRunsChanged`, launches the workflow (via
+   * {@link RunExecutor.execute}), and returns `{ runId, summary }` immediately
+   * — WITHOUT awaiting the workflow.
    *
    * @throws if a run with the same `runId` is already `running` (points the
    * caller at `engin resume`).
@@ -127,7 +128,7 @@ export class RunManager {
     const runId = basename(workDir);
 
     // (3) Collision check: refuse if this runId is already running.
-    const existing = this.runs.get(runId);
+    const existing = this.registry.get(runId);
     if (existing && existing.status === 'running') {
       throw new Error(`Run '${runId}' is already running. Use 'engin resume ${runId}' to reconnect.`);
     }
@@ -148,19 +149,20 @@ export class RunManager {
     const controller = new AbortController();
 
     // (9) Create a per-run StatusBridge whose broadcast callback tags every
-    //     message with runId and routes only to this run's subscribers.
+    //     message with runId and routes only to this run's subscribers. The
+    //     fan-out logic lives in SubscriptionManager; the bridge is handed a
+    //     closure that delegates to it once the handle exists. `handleRef` is
+    //     assigned below before any broadcast can fire (the store is not
+    //     mutated between bridge construction and registration, and the
+    //     executor is launched only after `handleRef` is set).
     const subscribers = new Set<ServerWebSocket>();
+    // Forward-declared: `broadcast` (→ bridge) references `handleRef`, but the
+    // handle itself needs the bridge — a circular dependency broken by this
+    // mutable binding. It is assigned once below before any broadcast fires.
+    // eslint-disable-next-line prefer-const
+    let handleRef: RunHandle;
     const broadcast = (msg: ServerMessage): void => {
-      const payload = JSON.stringify(msg);
-      for (const ws of subscribers) {
-        if (ws.readyState === 1) {
-          try {
-            ws.send(payload);
-          } catch {
-            // Ignore send errors on stale sockets.
-          }
-        }
-      }
+      this.subscriptions.broadcast(runId, msg, handleRef);
     };
     const bridge = new StatusBridge(broadcast, store, runId);
 
@@ -190,7 +192,7 @@ export class RunManager {
       ...(worktree ? { worktree } : {}),
     };
 
-    // (11) Register the handle in the map.
+    // (11) Build and register the handle in the map.
     const handle: RunHandle = {
       runId,
       cwd: msg.cwd,
@@ -207,109 +209,17 @@ export class RunManager {
       ...(worktree ? { worktree } : {}),
       ...(msg.apiKeys ? { apiKeys: msg.apiKeys } : {}),
     };
-    this.runs.set(runId, handle);
+    handleRef = handle;
+    this.registry.register(handle);
 
     // (12) Notify the control server that the active-run set changed.
     this.onRunsChanged();
 
-    // (13) Launch the workflow as a FIRE-AND-FORGET async IIFE. Do NOT await.
-    void this.executeWorkflow(handle, workflow, storeCallbacks, msg);
+    // (13) Launch the workflow as a FIRE-AND-FORGET async operation. Do NOT await.
+    void this.executor.execute(handle, workflow, storeCallbacks, msg);
 
     // (14) Return immediately.
     return { runId, summary };
-  }
-
-  // ─── Workflow execution (async IIFE body) ─────────────────────────────────
-
-  /**
-   * The async IIFE body that runs the workflow to completion. On success it
-   * flushes the store (durability BEFORE the status flip), marks the run
-   * complete, and broadcasts `run_complete`. On failure it flushes first
-   * (partial events stay durable), distinguishes AbortError from genuine
-   * errors, marks the run failed, and broadcasts `run_failed`. The finally
-   * block notifies the control server and schedules a 60 s reaper.
-   */
-  private async executeWorkflow(
-    handle: RunHandle,
-    workflow: WorkflowModule,
-    storeCallbacks: StatusCallbacks,
-    msg: StartRunMessage,
-  ): Promise<void> {
-    const { runId, store, controller, bridge } = handle;
-
-    // Create a fresh renderer registry for this run and give the workflow
-    // module an opportunity to register output renderers for its agent
-    // profiles. When no renderers are registered (or the workflow does not
-    // export registerRenderers), the registry is empty and all render calls
-    // return undefined — the correct default behavior.
-    const rendererRegistry = new RendererRegistry();
-    if (typeof workflow.registerRenderers === 'function') {
-      workflow.registerRenderers(rendererRegistry);
-    }
-
-    // Build the workflow run options.
-    const options: WorkflowRunOptions = {
-      cwd: handle.cwd,
-      workDir: handle.workDir,
-      onStatus: storeCallbacks,
-      signal: controller.signal,
-      rendererRegistry,
-    };
-    if (msg.maxConcurrent !== undefined) {
-      options.maxConcurrentTasks = msg.maxConcurrent;
-    }
-    if (msg.apiKeys !== undefined) {
-      options.apiKeys = msg.apiKeys;
-    }
-
-    // Run the workflow inside an async-local console capture context. Any
-    // console.warn/error/info call made during execution — including the
-    // flush/terminal/finally teardown below — is routed to THIS run's store as
-    // a `log` event by the globally-installed console wrappers (see
-    // console-capture.ts). This is concurrency-safe: concurrent runs each
-    // capture their own output with no per-run mutation of the process-global
-    // `console` object. console.log is intentionally not captured and the
-    // originals are always forwarded to (so the server log file still gets
-    // them). The context exits automatically when this scope settles, so no
-    // save/restore is needed.
-    await runWithConsoleCapture(store, async () => {
-      try {
-        await workflow.run(handle.taskPrompt, options);
-
-        // Durability: flush BEFORE flipping status so the terminal event
-        // records are on disk by the time clients see "complete".
-        await store.flush();
-
-        handle.status = 'complete';
-        handle.summary.status = 'complete';
-        bridge.broadcastTerminal({ type: 'run_complete', runId });
-      } catch (err: unknown) {
-        // Flush even on error so partial events are durable.
-        await store.flush();
-
-        // Distinguish AbortError (from controller.abort()) from genuine errors.
-        const isAbort = err instanceof Error && err.name === 'AbortError';
-        const message = isAbort ? 'Run cancelled' : err instanceof Error ? err.message : String(err);
-
-        handle.status = 'failed';
-        handle.summary.status = 'failed';
-
-        const phaseId = store.getProjection().currentPhaseId;
-        bridge.broadcastTerminal({ type: 'run_failed', runId, error: message, phase: phaseId });
-      } finally {
-        this.onRunsChanged();
-
-        // Schedule a reaper: once the run is no longer 'running', dispose the
-        // bridge and remove the handle from the registry after 60 s.
-        setTimeout(() => {
-          if (handle.status !== 'running') {
-            bridge.dispose();
-            this.runs.delete(runId);
-            this.onRunsChanged();
-          }
-        }, 60_000);
-      }
-    });
   }
 
   // ─── cancelRun ────────────────────────────────────────────────────────────
@@ -317,10 +227,10 @@ export class RunManager {
   /**
    * Cooperatively cancel a run by aborting its AbortController. Does NOT
    * throw if the runId is unknown (idempotent no-op). Does not remove the
-   * handle from the registry — the IIFE's catch / finally blocks handle that.
+   * handle from the registry — the executor's catch / finally blocks handle that.
    */
   cancelRun(runId: string): void {
-    const handle = this.runs.get(runId);
+    const handle = this.registry.get(runId);
     if (!handle) return;
     handle.controller.abort();
   }
@@ -332,15 +242,20 @@ export class RunManager {
    * client sends a `worktree_action` ClientMessage via routeMessage.
    *
    * - **keep**    — leave the worktree on disk (no-op).
-   * - **discard** — remove the worktree directory.
+   * - **discard** — remove the worktree directory (best-effort, silent on failure).
    * - **merge**   — commit changes in the worktree and merge the branch into
-   *   the main branch (with agent-based conflict resolution).
-   * - **pr**      — commit, push the branch, and create a pull request.
+   *   the main branch (with agent-based conflict resolution). On unresolved
+   *   conflicts the merge is aborted and the worktree is preserved for manual
+   *   intervention.
+   * - **pr**      — commit, push the branch, and create a pull request. The
+   *   worktree is removed after the PR is created.
    *
-   * No-ops silently if the runId is unknown or has no worktree.
+   * Delegates to the shared `worktree-operations` module so the git + agent
+   * orchestration is identical between the server and the CLI. No-ops silently
+   * if the runId is unknown or has no worktree.
    */
   async handleWorktreeAction(runId: string, action: 'keep' | 'discard' | 'merge' | 'pr'): Promise<void> {
-    const handle = this.runs.get(runId);
+    const handle = this.registry.get(runId);
     if (!handle || !handle.worktree) return;
 
     const wt = handle.worktree;
@@ -352,102 +267,52 @@ export class RunManager {
         return;
 
       case 'discard': {
-        try {
-          removeWorktree(repoRoot, wt.worktreePath);
-          handle.worktree = undefined;
-        } catch {
-          console.error(`⚠️ Could not remove worktree at ${wt.worktreePath}`);
-        }
+        // Best-effort, silent cleanup (errors are swallowed by cleanupWorktree).
+        await cleanupWorktree(repoRoot, wt.worktreePath);
+        handle.worktree = undefined;
         return;
       }
 
       case 'merge': {
-        let savedBranch: string | undefined;
         try {
-          // Commit changes in the worktree.
-          const diff = getDiff(wt.worktreePath);
-          if (diff) {
-            stageAll(wt.worktreePath);
-            const message = await generateCommitMessage(
-              profilesDirs,
-              wt.worktreePath,
-              handle.taskPrompt,
-              diff,
-              handle.apiKeys,
-            );
-            commitChanges(wt.worktreePath, message);
-          }
-
-          const mainBranch = getMainBranch(repoRoot);
-          savedBranch = getCurrentBranch(repoRoot);
-          checkoutBranch(repoRoot, mainBranch);
-          const result = mergeBranch(repoRoot, wt.branchName);
-
-          if (!result.success) {
-            const resolved = await resolveConflictsWithAgent(
-              profilesDirs,
-              repoRoot,
-              result.conflicts,
-              handle.taskPrompt,
-              handle.apiKeys,
-            );
-            if (resolved) {
-              commitChanges(repoRoot, `Merge resolution: ${wt.branchName} into ${mainBranch}`);
-            } else {
-              abortMerge(repoRoot);
-            }
-          }
+          await mergeWorktreeToMain({
+            profilesDirs,
+            repoRoot,
+            worktreePath: wt.worktreePath,
+            branchName: wt.branchName,
+            taskPrompt: handle.taskPrompt,
+            apiKeys: handle.apiKeys,
+          });
         } catch (err) {
           console.error(
             `⚠️ worktree action '${action}' failed for run ${runId}: ${err instanceof Error ? err.message : String(err)}`,
           );
-        }
-        if (savedBranch) {
-          try {
-            checkoutBranch(repoRoot, savedBranch);
-          } catch {
-            // Ignore - may be detached HEAD.
-          }
-        }
-        try {
-          removeWorktree(repoRoot, wt.worktreePath);
-        } catch {
-          // Best-effort cleanup.
         }
         return;
       }
 
       case 'pr': {
         try {
-          // Commit changes in the worktree.
-          const diff = getDiff(wt.worktreePath);
-          if (diff) {
-            stageAll(wt.worktreePath);
-            const message = await generateCommitMessage(
-              profilesDirs,
-              wt.worktreePath,
-              handle.taskPrompt,
-              diff,
-              handle.apiKeys,
-            );
-            commitChanges(wt.worktreePath, message);
-          }
-
+          // Title truncation is the caller's responsibility (the shared
+          // module forwards the title verbatim).
           let title = handle.taskPrompt;
           if (title.length > 60) {
             title = title.slice(0, 57) + '...';
           }
 
-          await pushAndCreatePR(profilesDirs, repoRoot, wt.branchName, handle.taskPrompt, title, handle.apiKeys);
+          await pushWorktreeAndCreatePR({
+            profilesDirs,
+            repoRoot,
+            worktreePath: wt.worktreePath,
+            branchName: wt.branchName,
+            taskPrompt: handle.taskPrompt,
+            title,
+            apiKeys: handle.apiKeys,
+          });
         } catch (err) {
           console.error(
             `⚠️ worktree action '${action}' failed for run ${runId}: ${err instanceof Error ? err.message : String(err)}`,
           );
-        }
-        try {
-          removeWorktree(repoRoot, wt.worktreePath);
-        } catch {
-          // Best-effort cleanup.
         }
         return;
       }
@@ -458,34 +323,34 @@ export class RunManager {
 
   /** Return a {@link RunSummary} for every registered run. */
   listRuns(): RunSummary[] {
-    return Array.from(this.runs.values(), (h) => h.summary);
+    return this.registry.listRuns();
   }
 
   /** Return the {@link RunSummary} for a single run, or `undefined`. */
   getRun(runId: string): RunSummary | undefined {
-    return this.runs.get(runId)?.summary;
+    return this.registry.get(runId)?.summary;
   }
 
   // ─── Subscription management ──────────────────────────────────────────────
 
   /** Subscribe a WebSocket to a run's broadcasts. */
   subscribe(ws: ServerWebSocket, runId: string): void {
-    const handle = this.runs.get(runId);
+    const handle = this.registry.get(runId);
     if (!handle) return;
-    handle.subscribers.add(ws);
+    this.subscriptions.subscribe(ws, runId, handle);
   }
 
   /** Unsubscribe a WebSocket from a specific run's broadcasts. */
   unsubscribe(ws: ServerWebSocket, runId: string): void {
-    const handle = this.runs.get(runId);
+    const handle = this.registry.get(runId);
     if (!handle) return;
-    handle.subscribers.delete(ws);
+    this.subscriptions.unsubscribe(ws, runId, handle);
   }
 
   /** Unsubscribe a WebSocket from ALL runs. */
   unsubscribeAll(ws: ServerWebSocket): void {
-    for (const handle of this.runs.values()) {
-      handle.subscribers.delete(ws);
+    for (const handle of this.registry.values()) {
+      this.subscriptions.unsubscribeAll(ws, handle);
     }
   }
 
@@ -497,7 +362,7 @@ export class RunManager {
    * snapshot, tagged with `runId`, directly to the requesting WebSocket.
    */
   handleResync(ws: ServerWebSocket, runId: string, lastSeq?: number): void {
-    const handle = this.runs.get(runId);
+    const handle = this.registry.get(runId);
     if (!handle) return;
     const msg = handle.bridge.handleResync(lastSeq);
     const payload = JSON.stringify(msg);
@@ -512,15 +377,21 @@ export class RunManager {
 
   /**
    * Cancel every active run, flush every store, and dispose every bridge.
-   * Used during graceful server shutdown. Idempotent.
+   * Used during graceful server shutdown. Idempotent. Does not remove handles
+   * from the registry — the executor's finally blocks reap them after their
+   * runs settle.
    */
   async shutdownAll(): Promise<void> {
+    // Snapshot the handles so abort/flush/dispose iterate a stable set even if
+    // a reaper fires concurrently during shutdown.
+    const handles = Array.from(this.registry.values());
+
     // Cancel all runs (cooperative abort).
-    for (const handle of this.runs.values()) {
+    for (const handle of handles) {
       handle.controller.abort();
     }
     // Flush all stores so partial events are durable.
-    for (const handle of this.runs.values()) {
+    for (const handle of handles) {
       try {
         await handle.store.flush();
       } catch {
@@ -528,7 +399,7 @@ export class RunManager {
       }
     }
     // Dispose all bridges.
-    for (const handle of this.runs.values()) {
+    for (const handle of handles) {
       handle.bridge.dispose();
     }
   }

@@ -88,6 +88,10 @@ export class EngineClient {
   /** Latest observed `seq` per runId, harvested from `snapshot`/`events`
    *  messages and explicit {@link resync} calls. Replayed on reconnect. */
   private readonly lastSeqByRunId = new Map<string, number>();
+  /** Pending one-shot resolvers for in-flight {@link requestRuns} calls. A
+   *  single incoming `runs` message drains and clears this set, so several
+   *  concurrent callers share one server response without interfering. */
+  private readonly requestRunsResolvers: ((runs: RunSummary[]) => void)[] = [];
 
   constructor(options: EngineClientOptions) {
     this.url = options.url;
@@ -158,11 +162,14 @@ export class EngineClient {
    * Resolves with `[]` when the client is not connected, the socket is not
    * open, or no response arrives within `timeoutMs` (default 3 000 ms).
    *
-   * Implementation detail: the method temporarily replaces the `onMessage`
-   * callback (saved in {@link EngineClientCallbacks}) with a wrapper that
-   * intercepts the first `runs` message and restores the original handler.
-   * Non-`runs` messages and subsequent `runs` messages pass through to the
-   * original handler.
+   * Implementation detail: rather than mutating the caller's `onMessage`
+   * callback (which under concurrent calls would overwrite the previous
+   * caller's interceptor and desync), each call registers a one-shot resolver
+   * in {@link requestRunsResolvers}. When a `runs` message arrives the
+   * connection's `onmessage` handler drains that set, resolving every pending
+   * caller with the same runs array, then clears it. The user's `onMessage` /
+   * `onRunsChanged` callbacks are untouched and still receive every message —
+   * including the resolving `runs` message.
    */
   requestRuns(timeoutMs = 3000): Promise<RunSummary[]> {
     return new Promise((resolve) => {
@@ -172,42 +179,45 @@ export class EngineClient {
       }
 
       let resolved = false;
+      let timer: ReturnType<typeof setTimeout> | null = null;
 
-      const originalOnMessage =
-        this.callbacks?.onMessage ??
-        (() => {
-          /* no-op fallback when no onMessage callback is registered */
-        });
-
-      const cleanup = () => {
-        if (this.callbacks) {
-          this.callbacks.onMessage = originalOnMessage;
+      const resolver = (runs: RunSummary[]): void => {
+        if (resolved) return;
+        resolved = true;
+        if (timer !== null) {
+          clearTimeout(timer);
         }
+        resolve(runs);
       };
 
-      const timer = setTimeout(() => {
-        if (!resolved) {
-          resolved = true;
-          cleanup();
-          resolve([]);
-        }
+      timer = setTimeout(() => {
+        this.removeRequestRunsResolver(resolver);
+        resolver([]);
       }, timeoutMs);
 
-      if (this.callbacks) {
-        this.callbacks.onMessage = (msg: ServerMessage) => {
-          if (msg.type === 'runs' && !resolved) {
-            resolved = true;
-            clearTimeout(timer);
-            cleanup();
-            resolve(msg.runs);
-            return;
-          }
-          originalOnMessage(msg);
-        };
-      }
-
+      this.requestRunsResolvers.push(resolver);
       this.send({ type: 'list_runs' });
     });
+  }
+
+  /** Drains every pending {@link requestRuns} resolver, resolving each with
+   *  the supplied runs list, then clears the set so a later `runs` message
+   *  does not re-resolve already-settled promises. */
+  private resolvePendingRequestRuns(runs: RunSummary[]): void {
+    if (this.requestRunsResolvers.length === 0) return;
+    const resolvers = this.requestRunsResolvers.splice(0);
+    for (const resolver of resolvers) {
+      resolver(runs);
+    }
+  }
+
+  /** Removes a single resolver from the pending set (used by the per-call
+   *  timeout so a timed-out caller is no longer resolved by a later message). */
+  private removeRequestRunsResolver(resolver: (runs: RunSummary[]) => void): void {
+    const idx = this.requestRunsResolvers.indexOf(resolver);
+    if (idx !== -1) {
+      this.requestRunsResolvers.splice(idx, 1);
+    }
   }
 
   // ── Run multiplexing ─────────────────────────────────────────────────────
@@ -314,6 +324,8 @@ export class EngineClient {
       // Convenience fan-out for the active-run list.
       if (msg.type === 'runs') {
         this.callbacks?.onRunsChanged?.(msg.runs);
+        // Resolve every in-flight requestRuns() caller with this list.
+        this.resolvePendingRequestRuns(msg.runs);
       }
     };
 

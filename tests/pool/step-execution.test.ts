@@ -716,6 +716,290 @@ describe('runStep (step-execution module)', () => {
     });
   });
 
+  // ─── TOCTOU: Session Tracking Order ──────────────────────────────────
+
+  describe('TOCTOU: session tracked before observable side effects', () => {
+    /**
+     * The abort listener registered in LanePool.run() iterates `activeSessions`
+     * and calls `abort()` on each. To close the Time-of-Check-Time-of-Use gap,
+     * a freshly-created session MUST be added to `activeSessions` before any
+     * status callback fires or any `await` yields control. Otherwise an abort
+     * signal firing in that window would miss the (untracked) session and leave
+     * it running/leaked.
+     */
+
+    function makeSessionWithAbort(textFn: (promptText: string) => string | undefined = () => 'done') {
+      return Object.assign(makeSession(textFn), {
+        abort: mock(async () => {}),
+      });
+    }
+
+    it('adds the session to activeSessions before firing onAgentSpawn', async () => {
+      const session = makeSessionWithAbort();
+      setupHarnessMocks(session);
+
+      const activeSessions = new Set<{ abort(): Promise<void> }>();
+      let trackedAtSpawn = false;
+      const execCtx = createStepExecutionContext({
+        activeSessions,
+        onStatus: {
+          onAgentSpawn: () => {
+            trackedAtSpawn = activeSessions.has(session);
+          },
+        } as unknown as StepExecutionContext['onStatus'],
+      });
+      const profiles = createProfilesMap(defaultProfile);
+
+      await runStep(makeTask(), baseStep, 'lane-0', defaultCtx, profiles, execCtx);
+
+      expect(trackedAtSpawn).toBe(true);
+    });
+
+    it('adds the session to activeSessions before firing onStepStart', async () => {
+      const session = makeSessionWithAbort();
+      setupHarnessMocks(session);
+
+      const activeSessions = new Set<{ abort(): Promise<void> }>();
+      let trackedAtStepStart = false;
+      const execCtx = createStepExecutionContext({
+        activeSessions,
+        onStatus: {
+          onStepStart: () => {
+            trackedAtStepStart = activeSessions.has(session);
+          },
+        } as unknown as StepExecutionContext['onStatus'],
+      });
+      const profiles = createProfilesMap(defaultProfile);
+
+      await runStep(makeTask(), baseStep, 'lane-0', defaultCtx, profiles, execCtx);
+
+      expect(trackedAtStepStart).toBe(true);
+    });
+
+    it('keeps the session tracked across the first await (before prompt runs)', async () => {
+      const session = makeSessionWithAbort();
+      setupHarnessMocks(session);
+
+      const activeSessions = new Set<{ abort(): Promise<void> }>();
+      let trackedAtPrompt = false;
+      const execCtx = createStepExecutionContext({ activeSessions });
+      const profiles = createProfilesMap(defaultProfile);
+
+      // buildPrompt is the first real await after activeSessions.add. If the
+      // session were added only after that await resolved, an abort firing
+      // during buildPrompt would miss it.
+      session.prompt = mock(async () => {
+        trackedAtPrompt = activeSessions.has(session);
+      }) as unknown as typeof session.prompt;
+
+      await runStep(makeTask(), baseStep, 'lane-0', defaultCtx, profiles, execCtx);
+
+      expect(trackedAtPrompt).toBe(true);
+    });
+
+    it('an abort triggered from onAgentSpawn reaches the already-tracked session', async () => {
+      const abortFn = mock(async () => {});
+      const session = Object.assign(
+        makeSession(() => 'done'),
+        { abort: abortFn },
+      );
+      setupHarnessMocks(session);
+
+      const activeSessions = new Set<{ abort(): Promise<void> }>();
+      const execCtx = createStepExecutionContext({
+        activeSessions,
+        onStatus: {
+          // Mirrors the LanePool abort listener firing immediately after the
+          // session is tracked (i.e. abort in the [tracked, prompt] window).
+          onAgentSpawn: () => {
+            for (const s of activeSessions) {
+              s.abort().catch(() => {
+                /* swallow — we're shutting down */
+              });
+            }
+          },
+        } as unknown as StepExecutionContext['onStatus'],
+      });
+      const profiles = createProfilesMap(defaultProfile);
+
+      await runStep(makeTask(), baseStep, 'lane-0', defaultCtx, profiles, execCtx);
+
+      expect(abortFn).toHaveBeenCalledTimes(1);
+    });
+
+    it('still removes the session from activeSessions when abort fires mid-run', async () => {
+      const abortFn = mock(async () => {});
+      const session = Object.assign(
+        makeSession(() => 'done'),
+        { abort: abortFn },
+      );
+      setupHarnessMocks(session);
+
+      const activeSessions = new Set<{ abort(): Promise<void> }>();
+      const execCtx = createStepExecutionContext({
+        activeSessions,
+        onStatus: {
+          onAgentSpawn: () => {
+            for (const s of activeSessions) {
+              s.abort().catch(() => {
+                /* swallow */
+              });
+            }
+          },
+        } as unknown as StepExecutionContext['onStatus'],
+      });
+      const profiles = createProfilesMap(defaultProfile);
+
+      await runStep(makeTask(), baseStep, 'lane-0', defaultCtx, profiles, execCtx);
+
+      // The finally block must always remove the session so it can't be
+      // re-aborted on a subsequent iteration of the abort listener.
+      expect(activeSessions.size).toBe(0);
+    });
+  });
+
+  // ─── Signal Abort TOCTOU Guard (non-structured step) ───────────────
+
+  describe('signal abort TOCTOU guard', () => {
+    /**
+     * Right before `session.prompt()`, runStep checks `execCtx.signal?.aborted`
+     * and throws AbortError. This closes the [session-tracked, prompt-started]
+     * TOCTOU window: `abort()` on an idle (not-yet-streaming) agent is a no-op,
+     * so without this explicit check an abort that fired after the session was
+     * tracked would still launch an LLM turn. The guard lives in the
+     * non-structured branch (structured steps route through promptForStructured).
+     */
+
+    it('throws an AbortError (DOMException) when the signal is already aborted before the prompt', async () => {
+      const session = makeSession(() => 'should-not-be-used');
+      setupHarnessMocks(session);
+
+      const execCtx = createStepExecutionContext({ signal: AbortSignal.abort() });
+      const profiles = createProfilesMap(defaultProfile);
+
+      let caught: unknown;
+      try {
+        await runStep(makeTask(), baseStep, 'lane-0', defaultCtx, profiles, execCtx);
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeInstanceOf(DOMException);
+      expect((caught as DOMException).name).toBe('AbortError');
+    });
+
+    it('does not call session.prompt when the signal is already aborted', async () => {
+      const session = makeSession(() => 'should-not-be-used');
+      setupHarnessMocks(session);
+
+      const execCtx = createStepExecutionContext({ signal: AbortSignal.abort() });
+      const profiles = createProfilesMap(defaultProfile);
+
+      await expect(runStep(makeTask(), baseStep, 'lane-0', defaultCtx, profiles, execCtx)).rejects.toThrow();
+
+      expect(session.prompt).not.toHaveBeenCalled();
+    });
+
+    it('runs the prompt normally when the signal is present but not aborted', async () => {
+      const session = makeSession(() => 'done');
+      setupHarnessMocks(session);
+
+      const controller = new AbortController();
+      const execCtx = createStepExecutionContext({ signal: controller.signal });
+      const profiles = createProfilesMap(defaultProfile);
+
+      const { result } = await runStep(makeTask(), baseStep, 'lane-0', defaultCtx, profiles, execCtx);
+
+      expect(session.prompt).toHaveBeenCalledTimes(1);
+      expect(result.type).toBe('approved');
+    });
+
+    it('runs the prompt normally when no signal is provided', async () => {
+      const session = makeSession(() => 'done');
+      setupHarnessMocks(session);
+
+      const execCtx = createStepExecutionContext();
+      const profiles = createProfilesMap(defaultProfile);
+
+      const { result } = await runStep(makeTask(), baseStep, 'lane-0', defaultCtx, profiles, execCtx);
+
+      expect(session.prompt).toHaveBeenCalledTimes(1);
+      expect(result.type).toBe('approved');
+    });
+
+    it('fires onAgentSpawn and onStepStart before throwing (agent is tracked so it is abortable)', async () => {
+      const session = makeSession(() => 'unused');
+      setupHarnessMocks(session);
+
+      const callOrder: string[] = [];
+      const execCtx = createStepExecutionContext({
+        signal: AbortSignal.abort(),
+        onStatus: {
+          onAgentSpawn: () => callOrder.push('spawn'),
+          onStepStart: () => callOrder.push('stepStart'),
+          onAgentComplete: () => callOrder.push('complete'),
+        } as unknown as StepExecutionContext['onStatus'],
+      });
+      const profiles = createProfilesMap(defaultProfile);
+
+      await expect(runStep(makeTask(), baseStep, 'lane-0', defaultCtx, profiles, execCtx)).rejects.toThrow();
+
+      // The signal check is inside the try block AFTER spawn + stepStart, so the
+      // agent is observable (and tracked in activeSessions) before the guard runs.
+      expect(callOrder).toContain('spawn');
+      expect(callOrder).toContain('stepStart');
+      expect(callOrder.indexOf('stepStart')).toBeGreaterThan(callOrder.indexOf('spawn'));
+    });
+
+    it('still fires onAgentComplete in the finally block when aborted', async () => {
+      const session = makeSession(() => 'unused');
+      setupHarnessMocks(session);
+
+      const onAgentComplete = mock(() => {});
+      const execCtx = createStepExecutionContext({
+        signal: AbortSignal.abort(),
+        onStatus: { onAgentComplete } as unknown as StepExecutionContext['onStatus'],
+      });
+      const profiles = createProfilesMap(defaultProfile);
+
+      await expect(runStep(makeTask(), baseStep, 'lane-0', defaultCtx, profiles, execCtx)).rejects.toThrow();
+
+      expect(onAgentComplete).toHaveBeenCalledTimes(1);
+    });
+
+    it('removes the session from activeSessions even when aborted', async () => {
+      const session = makeSession(() => 'unused');
+      setupHarnessMocks(session);
+
+      const activeSessions = new Set<{ abort(): Promise<void> }>();
+      const execCtx = createStepExecutionContext({
+        signal: AbortSignal.abort(),
+        activeSessions,
+      });
+      const profiles = createProfilesMap(defaultProfile);
+
+      await expect(runStep(makeTask(), baseStep, 'lane-0', defaultCtx, profiles, execCtx)).rejects.toThrow();
+
+      expect(activeSessions.size).toBe(0);
+    });
+
+    it('disposes the session on the abort error path', async () => {
+      const dispose = mock(() => {});
+      const session = makeSession(() => 'unused');
+      mockCreateHarness.mockResolvedValue({
+        session,
+        sessionId: 'test-session',
+        dispose,
+      });
+
+      const execCtx = createStepExecutionContext({ signal: AbortSignal.abort() });
+      const profiles = createProfilesMap(defaultProfile);
+
+      await expect(runStep(makeTask(), baseStep, 'lane-0', defaultCtx, profiles, execCtx)).rejects.toThrow();
+
+      expect(dispose).toHaveBeenCalledTimes(1);
+    });
+  });
+
   // ─── Error Handling ──────────────────────────────────────────────────
 
   describe('error handling', () => {

@@ -843,12 +843,12 @@ describe('T33: worktree info communicated server → client', () => {
     // the worktree and stores the WorktreeInfo on the RunHandle so it can
     // be communicated via run_started and the snapshot.
     //
-    // This test asserts the RunHandle has a worktree field.
-    // Currently RED: RunHandle doesn't have worktree info.
+    // RunManager was decomposed (run-manager decomposition): the in-memory
+    // handle map now lives on the extracted `RunRegistry`, accessed via the
+    // stable public `register` / `get` API rather than the old private
+    // `this.runs` Map.
     const runManager = createMockRunManager();
-
-    // Access the internal map to check handle shape
-    const runs = (runManager as any).runs as Map<string, any>;
+    const registry = (runManager as any).registry;
 
     // Simulate a run with worktree info
     const mockHandle = {
@@ -859,9 +859,10 @@ describe('T33: worktree info communicated server → client', () => {
         originalCwd: '/project',
       } as WorktreeInfo,
     };
-    runs.set('run-wt', mockHandle);
+    registry.register(mockHandle);
 
-    const handle = runs.get('run-wt');
+    const handle = registry.get('run-wt');
+    expect(handle).toBeDefined();
     expect(handle.worktree).toBeDefined();
     expect(handle.worktree.worktreePath).toBe('/project/.engin-worktree-feature');
     expect(handle.worktree.branchName).toBe('feature');

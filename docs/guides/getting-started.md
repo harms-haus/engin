@@ -82,7 +82,12 @@ See the [CLI reference](../reference/cli.md) for the full command list (includin
 You can also drive engin from TypeScript without the CLI:
 
 ```typescript
-import { createHarness, loadProfilesFromDirs, promptForStructured, resolveProfilesDirs } from '@harms-haus/engin';
+import {
+  createHarness,
+  loadProfilesFromDirs,
+  promptForStructured,
+  resolveProfilesDirs,
+} from '@harms-haus/engin-engine';
 import { z } from 'zod';
 
 const cwd = '/path/to/project';

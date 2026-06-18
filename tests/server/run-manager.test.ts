@@ -53,13 +53,14 @@
 // workflow-loader.test.ts. A file-marker handshake lets the test control when
 // the controllable workflow resolves, and the AbortSignal drives cancellation.
 
-import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { clearWorkflowCache } from '../../packages/engine/src/core/workflow-loader.js';
 import { RunManager } from '../../packages/engine/src/server/run-manager.js';
+import { EventStore } from '../../packages/engine/src/tracking/event-store.js';
 import { useTempDir } from '../helpers/use-temp-dir.js';
 
 // ─── Fixture workflow sources ───────────────────────────────────────────────
@@ -647,6 +648,51 @@ describe('RunManager', () => {
         expect(manager.listRuns().find((r) => r.runId === 'rp-1')).toBeUndefined();
         expect(calls.length).toBeGreaterThan(callsBefore);
       } finally {
+        globalThis.setTimeout = realSetTimeout as any;
+      }
+    });
+
+    it('disposes the run store when the handle is reaped', async () => {
+      // Intercept ONLY 60000ms timers (the reaper) so the rest of the runtime
+      // keeps using the real scheduler.
+      const realSetTimeout = globalThis.setTimeout;
+      const reapers: Array<() => void> = [];
+      globalThis.setTimeout = ((cb: any, delay?: number, ...args: any[]) => {
+        if (delay === 60000) {
+          reapers.push(cb as () => void);
+          return 0 as any;
+        }
+        return realSetTimeout(cb as any, delay, ...args);
+      }) as any;
+
+      // Spy on the prototype method so the store created internally by
+      // startRun (via EventStore.load) is covered. The spy calls through to
+      // the real implementation by default, so disposal actually takes effect.
+      const disposeSpy = spyOn(EventStore.prototype, 'dispose');
+
+      try {
+        const { manager } = createManager();
+        const workDir = makeWorkDir('rp-dispose');
+        await mkdir(workDir, { recursive: true });
+
+        // Pre-place the release marker so the workflow completes immediately.
+        await writeFile(join(workDir, 'release.marker'), '1');
+        await manager.startRun({ workflowName: 'develop', taskPrompt: 't', cwd, workDir } as any);
+
+        await waitFor(() => manager.listRuns()[0]?.status === 'complete');
+
+        // Sanity: the store has not been disposed during the run itself.
+        const callsBeforeReap = disposeSpy.mock.calls.length;
+
+        // The IIFE's finally block scheduled exactly one 60s reaper.
+        expect(reapers.length).toBeGreaterThanOrEqual(1);
+        for (const fire of reapers) fire();
+
+        // Reaping must dispose the run's store so subscribers are torn down
+        // and pending writes do not fire into a dead store.
+        expect(disposeSpy.mock.calls.length).toBeGreaterThan(callsBeforeReap);
+      } finally {
+        disposeSpy.mockRestore();
         globalThis.setTimeout = realSetTimeout as any;
       }
     });

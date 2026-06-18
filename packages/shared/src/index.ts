@@ -23,6 +23,7 @@ export { MAX_RUN_LOG, createInitialProjection } from './event-types.js';
 export { MAX_AGENT_LOG, evolve } from './evolve.js';
 export { formatToolCall } from './format-tool-call.js';
 export { formatWorkflowEventLine } from './format-workflow-event.js';
+export { capAgentLogs, reconcileSelection, toProjection, writeProjectionToState } from './projection-helpers.js';
 export { isServerMessage } from './protocol-types.js';
 
 // ─── Type exports from canonical homes ──────────────────────────────────────

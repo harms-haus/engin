@@ -42,7 +42,12 @@ mock.module('../../packages/engine/src/core/structured-output.js', () => ({
 
 import type { AgentProfile, Task } from '../../packages/engine/src/core/types.js';
 import { LanePool } from '../../packages/engine/src/pool/lane-pool.js';
-import type { StepDefinition, TaskRunner, TaskRunnerContext } from '../../packages/engine/src/pool/types.js';
+import type {
+  StepDefinition,
+  TaskRunner,
+  TaskRunnerContext,
+  TrackedSession,
+} from '../../packages/engine/src/pool/types.js';
 import { TaskTracker } from '../../packages/engine/src/tracking/task-status.js';
 import { makeMockSession } from '../helpers/make-session.js';
 import { makeTask as _makeTask } from '../helpers/make-task.js';
@@ -71,6 +76,18 @@ export const reviewerProfile = {
   name: 'Reviewer',
 };
 
+/**
+ * Build a `Map<string, AgentProfile>` pre-populated with the default coder and
+ * reviewer profiles. Convenient for constructing a `TaskRunnerContext.profiles`
+ * map without re-declaring the profile literals in each test file.
+ */
+export function createProfiles(): Map<string, AgentProfile> {
+  const profiles = new Map<string, AgentProfile>();
+  profiles.set('coder', defaultProfile);
+  profiles.set('reviewer', reviewerProfile);
+  return profiles;
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Session helpers
 // ═══════════════════════════════════════════════════════════════════════════
@@ -82,6 +99,42 @@ export function makeSession(textFn?: (promptText: string) => string | undefined)
 export function makeSessionWithAbort(textFn?: (promptText: string) => string | undefined) {
   const session = makeSession(textFn);
   return { ...session, abort: mock(async () => {}) };
+}
+
+/**
+ * Build a `TrackedSession`-compatible object for runner tests (mapRunner,
+ * councilRunner, …) along with the tracked `dispose` mock.
+ *
+ * Unifies the `MockTrackedSession` (map-runner) and `makeTrackedSession()`
+ * (council-runner) local helpers into one flexible factory. The returned
+ * `trackedSession` is a full `TrackedSession` (including `session.abort`), and
+ * `dispose` is the same mock attached as `trackedSession.dispose` so tests can
+ * assert on disposal without casting.
+ *
+ * Pass an optional `disposeFn` to inject a pre-created (and thus assertable)
+ * dispose mock; otherwise a fresh one is created.
+ */
+export interface TrackedSessionMock {
+  trackedSession: TrackedSession;
+  dispose: ReturnType<typeof mock>;
+}
+
+export function makeTrackedSession(disposeFn?: ReturnType<typeof mock>): TrackedSessionMock {
+  const dispose = disposeFn ?? mock(() => {});
+  const mockSession = makeMockSession();
+  const trackedSession: TrackedSession = {
+    session: {
+      abort: mock(async () => {}),
+      dispose: mockSession.session.dispose,
+      subscribe: mockSession.session.subscribe,
+      prompt: mockSession.session.prompt,
+      getLastAssistantText: mockSession.session.getLastAssistantText,
+      sessionId: mockSession.session.sessionId,
+    },
+    dispose,
+    sessionPath: '/tmp/sessions/test',
+  };
+  return { trackedSession, dispose };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -217,9 +270,7 @@ export function restorePoolMocks() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 export function createRunnerContext(overrides?: Partial<TaskRunnerContext>): TaskRunnerContext {
-  const profiles = new Map<string, AgentProfile>();
-  profiles.set('coder', defaultProfile);
-  profiles.set('reviewer', reviewerProfile);
+  const profiles = createProfiles();
 
   return {
     task: _makeTask(),

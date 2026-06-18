@@ -149,10 +149,16 @@ export class LanePool {
     if (max <= 0) return;
 
     const current = this.options.taskTracker.getTask(task.id);
-    if (!current || current.status !== 'failed') return;
+    if (!current || current.status !== 'failed') {
+      this.taskRetries.delete(task.id);
+      return;
+    }
 
     const used = this.taskRetries.get(task.id) ?? 0;
-    if (used >= max) return;
+    if (used >= max) {
+      this.taskRetries.delete(task.id);
+      return;
+    }
 
     this.taskRetries.set(task.id, used + 1);
     const attempt = used + 2; // human-readable: the initial run is attempt #1
@@ -184,133 +190,163 @@ export class LanePool {
     let consecutiveTimeouts = 0;
     let stallWarned = false; // Rate-limit the stall warning to once per lane
 
-    while (true) {
-      if (this.options.signal?.aborted) {
-        return;
-      }
+    // ── Persistent wake listeners (registered ONCE per lane) ─────────────
+    // Each lane installs a single persistent listener for TaskReady,
+    // TaskSettled, and the abort signal at the start of runLane, rather than
+    // re-registering per-iteration once() listeners (which leaked and churned
+    // O(tasks) registrations). `resolveWake` is rebound each loop iteration to
+    // that iteration's wake resolver, so a persistent listener always wakes the
+    // CURRENT await. All three listeners are removed in the `finally` below,
+    // guaranteeing zero leaks after the lane exits.
+    // `resolveWake` is rebound each loop iteration to that iteration's wake
+    // resolver (see below). It is `undefined` only before the first rebind —
+    // a wake in that window is a safe no-op (abort is still caught by the
+    // loop-top `signal?.aborted` check).
+    let resolveWake: (() => void) | undefined;
+    const onWake = () => resolveWake?.();
+    const onAbort = () => resolveWake?.();
+    taskTracker.on(TaskTracker.Events.TaskReady, onWake);
+    taskTracker.on(TaskTracker.Events.TaskSettled, onWake);
+    this.options.signal?.addEventListener('abort', onAbort);
 
-      // ── Register wait listeners FIRST to close the TOCTOU gap ──────────
-      // Any TaskReady/TaskSettled event that fires during the subsequent
-      // claimTasks/isPoolDone check is guaranteed to be caught.
-      let resolveWait!: () => void;
-      const wakePromise = new Promise<void>((resolve) => {
-        resolveWait = resolve;
-      });
+    // Hoisted so the `finally` can clear a pending stall timer if the lane
+    // exits mid-iteration (e.g. on abort during task processing).
+    let pendingTimer: ReturnType<typeof setTimeout> | undefined;
 
-      let cleanedUp = false;
-      const onWake = () => {
-        cleanup();
-        resolveWait();
-      };
-      const onAbort = () => {
-        cleanup();
-        resolveWait();
-      };
-      const timer = setTimeout(() => {
-        cleanup();
-        consecutiveTimeouts++;
-        if (consecutiveTimeouts >= STALL_WARN_THRESHOLD && !stallWarned) {
-          console.warn(
-            `[${agentId}] Lane appears stalled — no task progress for ` +
-              `${consecutiveTimeouts * waitTimeoutMs}ms. Tasks may be stuck.`,
-          );
-          stallWarned = true; // Warn at most once per lane
+    try {
+      while (true) {
+        if (this.options.signal?.aborted) {
+          return;
         }
-        resolveWait();
-      }, waitTimeoutMs);
-      const cleanup = () => {
-        if (cleanedUp) return;
-        cleanedUp = true;
-        clearTimeout(timer);
-        taskTracker.removeListener(TaskTracker.Events.TaskReady, onWake);
-        taskTracker.removeListener(TaskTracker.Events.TaskSettled, onWake);
-        this.options.signal?.removeEventListener('abort', onAbort);
-      };
 
-      taskTracker.once(TaskTracker.Events.TaskReady, onWake);
-      taskTracker.once(TaskTracker.Events.TaskSettled, onWake);
-      this.options.signal?.addEventListener('abort', onAbort, { once: true });
-
-      // ── Check for pool completion BEFORE claiming ──────────────────────
-      // This must precede claimTasks so a completed task is never re-armed
-      // (e.g. by a spy in tests). isPoolDone returns true only when every
-      // task is settled (done/failed) or deadlocked — never when any task
-      // is ready, claimed, or in-flight.
-      if (taskTracker.isPoolDone()) {
-        cleanup();
-        return;
-      }
-
-      const claimed = taskTracker.claimTasks(1, agentId);
-
-      if (claimed.length > 0) {
-        cleanup();
-        consecutiveTimeouts = 0; // Reset stall counter on successful claim
-        const task = claimed[0];
-
-        // Fire onTaskStart BEFORE calling the runner
-        this.options.onStatus?.onTaskStart?.({
-          taskId: task.id,
-          title: task.title,
-          agentId,
-          phaseId: this.options.phaseId,
-          startedAt: Date.now(),
+        // ── Per-iteration wake promise + stall timer ────────────────────
+        // Wire `resolveWake` to THIS iteration's resolver BEFORE the
+        // isPoolDone/claimTasks check to close the TOCTOU gap: any
+        // TaskReady/TaskSettled/abort event fired during the check resolves
+        // the promise we'll await if no task is claimed.
+        let wakeResolve!: () => void;
+        const wakePromise = new Promise<void>((resolve) => {
+          wakeResolve = resolve;
         });
-
-        const processorCtx: TaskProcessorContext = {
-          options: this.options,
-          activeSessions: this.activeSessions,
-          phaseId: this.options.phaseId,
+        let timedOut = false;
+        const timer = setTimeout(() => {
+          timedOut = true;
+          wakeResolve();
+        }, waitTimeoutMs);
+        pendingTimer = timer;
+        resolveWake = () => {
+          clearTimeout(timer);
+          wakeResolve();
         };
 
-        let failureReason: string | undefined;
-        try {
-          const runner = this.resolveRunner(task);
-          const runnerCtx: TaskRunnerContext = {
-            task,
-            agentId,
-            profiles,
-            onStatus: this.options.onStatus,
-            activeSessions: this.activeSessions,
-            phaseId: this.options.phaseId,
-            sessionBaseDir: this.options.sessionBaseDir,
-            cwd: this.options.cwd,
-            apiKeys: this.options.apiKeys,
-            maxStepRetries: this.options.maxStepRetries ?? 5,
-            rendererRegistry: this.options.rendererRegistry,
-            completeTask: (result?: unknown) => safeCompleteTask(task.id, result, processorCtx),
-            failTask: (result?: unknown) => safeFailTask(task.id, result ?? { completed: false }, processorCtx),
-          };
-
-          const outcome: TaskOutcome = await runner(runnerCtx);
-          if (outcome.status === 'completed') {
-            this.options.onStatus?.onTaskComplete?.({ taskId: task.id, title: task.title });
-          } else {
-            failureReason = outcome.feedback ?? outcome.error;
-            if (outcome.feedback) {
-              this.options.onStatus?.onTaskRejected?.({ taskId: task.id, title: task.title, reason: outcome.feedback });
-            } else if (outcome.error) {
-              // Runner returned a failed outcome with an error message; report it
-              reportError(agentId, outcome.error, undefined, task.id, processorCtx);
-            }
-          }
-        } catch (err) {
-          const error = safeErrorMessage(err);
-          failureReason = error;
-          reportError(agentId, error, undefined, task.id, processorCtx);
-          safeFailTask(task.id, { completed: false, error: true }, processorCtx);
+        // ── Check for pool completion BEFORE claiming ────────────────────
+        // This must precede claimTasks so a completed task is never re-armed
+        // (e.g. by a spy in tests). isPoolDone returns true only when every
+        // task is settled (done/failed) or deadlocked — never when any task
+        // is ready, claimed, or in-flight.
+        if (taskTracker.isPoolDone()) {
+          clearTimeout(timer);
+          pendingTimer = undefined;
+          return;
         }
 
-        // ── Same-run retry: if the task just failed and its budget isn't ──
-        // exhausted, clear its persisted sessions and reset it to `ready` so a
-        // lane re-claims it and restarts from step 1. Capped at
-        // `maxTaskRetries` extra attempts to avoid infinite loops.
-        this.maybeRetryFailedTask(task, agentId, failureReason);
-        continue;
-      }
+        const claimed = taskTracker.claimTasks(1, agentId);
 
-      // No task available — wait for an event, timeout, or abort
-      await wakePromise;
+        if (claimed.length > 0) {
+          clearTimeout(timer);
+          pendingTimer = undefined;
+          consecutiveTimeouts = 0; // Reset stall counter on successful claim
+          const task = claimed[0];
+
+          // Fire onTaskStart BEFORE calling the runner
+          this.options.onStatus?.onTaskStart?.({
+            taskId: task.id,
+            title: task.title,
+            agentId,
+            phaseId: this.options.phaseId,
+            startedAt: Date.now(),
+          });
+
+          const processorCtx: TaskProcessorContext = {
+            options: this.options,
+            activeSessions: this.activeSessions,
+            phaseId: this.options.phaseId,
+          };
+
+          let failureReason: string | undefined;
+          try {
+            const runner = this.resolveRunner(task);
+            const runnerCtx: TaskRunnerContext = {
+              task,
+              agentId,
+              profiles,
+              onStatus: this.options.onStatus,
+              activeSessions: this.activeSessions,
+              phaseId: this.options.phaseId,
+              sessionBaseDir: this.options.sessionBaseDir,
+              cwd: this.options.cwd,
+              apiKeys: this.options.apiKeys,
+              maxStepRetries: this.options.maxStepRetries ?? 5,
+              rendererRegistry: this.options.rendererRegistry,
+              signal: this.options.signal,
+              completeTask: (result?: unknown) => safeCompleteTask(task.id, result, processorCtx),
+              failTask: (result?: unknown) => safeFailTask(task.id, result ?? { completed: false }, processorCtx),
+            };
+
+            const outcome: TaskOutcome = await runner(runnerCtx);
+            if (outcome.status === 'completed') {
+              this.options.onStatus?.onTaskComplete?.({ taskId: task.id, title: task.title });
+            } else {
+              failureReason = outcome.feedback ?? outcome.error;
+              if (outcome.feedback) {
+                this.options.onStatus?.onTaskRejected?.({
+                  taskId: task.id,
+                  title: task.title,
+                  reason: outcome.feedback,
+                });
+              } else if (outcome.error) {
+                // Runner returned a failed outcome with an error message; report it
+                reportError(agentId, outcome.error, undefined, task.id, processorCtx);
+              }
+            }
+          } catch (err) {
+            const error = safeErrorMessage(err);
+            failureReason = error;
+            reportError(agentId, error, undefined, task.id, processorCtx);
+            safeFailTask(task.id, { completed: false, error: true }, processorCtx);
+          }
+
+          // ── Same-run retry: if the task just failed and its budget isn't ──
+          // exhausted, clear its persisted sessions and reset it to `ready` so a
+          // lane re-claims it and restarts from step 1. Capped at
+          // `maxTaskRetries` extra attempts to avoid infinite loops.
+          this.maybeRetryFailedTask(task, agentId, failureReason);
+          continue;
+        }
+
+        // No task available — wait for an event, timeout, or abort
+        await wakePromise;
+        pendingTimer = undefined;
+
+        // Only a stall-timeout (no event, no claim) advances the stall
+        // counter; a real wake leaves it untouched. The counter resets on the
+        // next successful claim. (Matches prior semantics.)
+        if (timedOut) {
+          consecutiveTimeouts++;
+          if (consecutiveTimeouts >= STALL_WARN_THRESHOLD && !stallWarned) {
+            console.warn(
+              `[${agentId}] Lane appears stalled — no task progress for ` +
+                `${consecutiveTimeouts * waitTimeoutMs}ms. Tasks may be stuck.`,
+            );
+            stallWarned = true; // Warn at most once per lane
+          }
+        }
+      }
+    } finally {
+      if (pendingTimer) clearTimeout(pendingTimer);
+      taskTracker.removeListener(TaskTracker.Events.TaskReady, onWake);
+      taskTracker.removeListener(TaskTracker.Events.TaskSettled, onWake);
+      this.options.signal?.removeEventListener('abort', onAbort);
     }
   }
 }

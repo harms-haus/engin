@@ -176,6 +176,117 @@ describe('StatusBridge', () => {
     });
   });
 
+  // ─── dispose guard (uncancellable microtask flushes) ─────────────────────
+  //
+  // scheduleFlush() defers work via queueMicrotask(), which CANNOT be
+  // cancelled.  If dispose() runs between scheduleFlush() and the microtask
+  // firing, the pending flush() must become a no-op so it does not broadcast
+  // to a dead/unsubscribed store.  Likewise broadcastTerminal() and the
+  // projection-change handler must refuse to do work once disposed.
+  // Finally, dispose() itself must be idempotent: calling it repeatedly must
+  // be safe and must invoke the store unsubscribe only once.
+
+  describe('dispose guard (uncancellable microtask flushes)', () => {
+    it('does not flush a pending microtask after dispose', async () => {
+      const { store, bridge, count, flushMicrotasks } = createSetup();
+      // Appending synchronously schedules a coalesced microtask flush.
+      store.append('workflow_started', { taskPrompt: 'race' });
+      // Dispose BEFORE the microtask fires — the flush is still queued.
+      bridge.dispose();
+      await flushMicrotasks();
+      // The pending flush must be a no-op: no events broadcast.
+      expect(count('events')).toBe(0);
+    });
+
+    it('does not flush a coalesced batch after dispose (multiple appends)', async () => {
+      const { store, bridge, count, flushMicrotasks } = createSetup();
+      store.append('workflow_started', { taskPrompt: 'a' });
+      store.append('sidebar_updated', { title: 'b' });
+      store.append('phase_started', { phaseId: 'c', round: 1 }, { phaseId: 'c' });
+      // Dispose before the single coalesced flush microtask fires.
+      bridge.dispose();
+      await flushMicrotasks();
+      expect(count('events')).toBe(0);
+    });
+
+    it('does not broadcast terminal lifecycle signals from projection changes (even after dispose)', () => {
+      // The bridge never auto-broadcasts terminal messages on projection
+      // changes (terminal ownership belongs to the RunManager via
+      // broadcastTerminal()).  This holds regardless of dispose state; the
+      // assert also guards the disposed-flag path so a re-introduced
+      // projection-change terminal detection would still fail this test.
+      const { store, bridge, messages } = createSetup();
+      bridge.dispose();
+      store.append('workflow_failed', { error: 'boom', phase: 'test' });
+      expect(messages.filter((m) => m.type === 'run_failed')).toHaveLength(0);
+      expect(messages.filter((m) => m.type === 'run_complete')).toHaveLength(0);
+    });
+
+    it('broadcastTerminal(run_complete) is a no-op after dispose', () => {
+      const { bridge, messages, runId } = createSetup();
+      bridge.dispose();
+      bridge.broadcastTerminal({ type: 'run_complete', runId });
+      expect(messages.filter((m) => m.type === 'run_complete')).toHaveLength(0);
+    });
+
+    it('broadcastTerminal(run_failed) is a no-op after dispose', () => {
+      const { bridge, messages, runId } = createSetup();
+      bridge.dispose();
+      bridge.broadcastTerminal({ type: 'run_failed', runId, error: 'kaboom', phase: 'plan' });
+      expect(messages.filter((m) => m.type === 'run_failed')).toHaveLength(0);
+    });
+
+    it('dispose is idempotent — calling it repeatedly does not throw', () => {
+      const { bridge } = createSetup();
+      expect(() => {
+        bridge.dispose();
+        bridge.dispose();
+        bridge.dispose();
+      }).not.toThrow();
+    });
+
+    it('dispose is idempotent — store unsubscribe is invoked only once', () => {
+      // Wrap store.subscribe so we can count how many times the returned
+      // unsubscribe is actually called.  Idempotent dispose() must guard the
+      // unsubscribe so repeated dispose() calls do not invoke it more than once.
+      const store = new EventStore('/tmp/bridge-idem-' + Math.random().toString(36).slice(2));
+      let unsubscribeCalls = 0;
+      const realSubscribe = store.subscribe.bind(store);
+      store.subscribe = (cb) => {
+        const unsub = realSubscribe(cb);
+        return () => {
+          unsubscribeCalls += 1;
+          unsub();
+        };
+      };
+
+      const bridge = new StatusBridge(() => {}, store, DEFAULT_RUN_ID);
+      bridge.dispose();
+      bridge.dispose();
+      bridge.dispose();
+
+      expect(unsubscribeCalls).toBe(1);
+    });
+
+    it('still broadcasts for a fresh sibling bridge created after disposing another', async () => {
+      // Regression guard: the disposed flag must be per-instance.  Disposing
+      // one bridge must not silence a freshly-created sibling sharing the
+      // same store.
+      const { store, bridge, runId, flushMicrotasks } = createSetup();
+      bridge.dispose();
+
+      const freshMessages: ServerMessage[] = [];
+      const fresh = new StatusBridge((m) => freshMessages.push(m), store, runId);
+      store.append('sidebar_updated', { title: 'fresh' });
+      await flushMicrotasks();
+
+      const freshEvents = freshMessages.filter((m) => m.type === 'events');
+      expect(freshEvents).toHaveLength(1);
+      expect(freshEvents[0].events).toHaveLength(1);
+      fresh.dispose();
+    });
+  });
+
   // ─── Event forwarding ─────────────────────────────────────────────────────
 
   describe('event forwarding', () => {
@@ -430,49 +541,59 @@ describe('StatusBridge', () => {
     });
   });
 
-  // ─── Terminal lifecycle broadcasts ─────────────────────────────────────
+  // ─── Terminal projection changes are NOT auto-broadcast ──────────────
   //
-  // When the projection status transitions to 'complete' or 'failed', the
-  // bridge must broadcast a dedicated run_complete / run_failed message
-  // IMMEDIATELY (not coalesced into the events batch), tagged with runId, so
-  // the web client can surface a status banner without waiting for the event
-  // flush.  The coalesced events batch still carries the terminal event
-  // records too.
+  // The bridge does NOT detect terminal lifecycle transitions.  Appending a
+  // `workflow_completed` / `workflow_failed` event to the store must NOT
+  // trigger a `run_complete` / `run_failed` broadcast — that would DUPLICATE
+  // the RunManager's explicit `bridge.broadcastTerminal(...)` call, which is
+  // the single source of terminal messages.  The terminal event records
+  // still travel inside the coalesced `events` batch (idempotent replay),
+  // but the dedicated terminal signal is emitted solely by the RunManager.
 
-  describe('terminal lifecycle broadcasts', () => {
-    it('broadcasts run_failed immediately on status → failed', () => {
-      const { store, messages, runId } = createSetup();
+  describe('terminal projection changes are not auto-broadcast', () => {
+    it('does NOT broadcast run_failed when a workflow_failed event is appended', async () => {
+      const { store, messages, flushMicrotasks } = createSetup();
 
-      // Synchronous append — the run_failed broadcast must be captured
-      // BEFORE any microtask flush.
       store.append('workflow_failed', { error: 'boom', phase: 'testing' });
 
-      const failed = messages.filter((m) => m.type === 'run_failed');
-      expect(failed).toHaveLength(1);
-      if (failed[0].type === 'run_failed') {
-        expect(failed[0].runId).toBe(runId);
-        expect(failed[0].error).toBe('boom');
-        expect(failed[0].phase).toBe('testing');
-      }
+      // Synchronous check: no terminal signal (nothing coalesced either).
+      expect(messages.filter((m) => m.type === 'run_failed')).toHaveLength(0);
+
+      // After the microtask flush: still no terminal signal — only the
+      // coalesced events batch carries the raw terminal event record.
+      await flushMicrotasks();
+      expect(messages.filter((m) => m.type === 'run_failed')).toHaveLength(0);
+      expect(messages.filter((m) => m.type === 'run_complete')).toHaveLength(0);
+
+      const events = messages.filter((m) => m.type === 'events');
+      expect(events).toHaveLength(1);
+      expect(events[0].events[0].type).toBe('workflow_failed');
     });
 
-    it('broadcasts run_complete immediately on status → complete', () => {
-      const { store, messages, runId } = createSetup();
+    it('does NOT broadcast run_complete when a workflow_completed event is appended', async () => {
+      const { store, messages, flushMicrotasks } = createSetup();
 
       store.append('workflow_completed', { totalDurationMs: 1000 });
 
-      const complete = messages.filter((m) => m.type === 'run_complete');
-      expect(complete).toHaveLength(1);
-      if (complete[0].type === 'run_complete') {
-        expect(complete[0].runId).toBe(runId);
-      }
+      // Synchronous check: no terminal signal.
+      expect(messages.filter((m) => m.type === 'run_complete')).toHaveLength(0);
+
+      await flushMicrotasks();
+      expect(messages.filter((m) => m.type === 'run_complete')).toHaveLength(0);
+      expect(messages.filter((m) => m.type === 'run_failed')).toHaveLength(0);
+
+      const events = messages.filter((m) => m.type === 'events');
+      expect(events).toHaveLength(1);
+      expect(events[0].events[0].type).toBe('workflow_completed');
     });
 
-    it('does NOT emit legacy workflow_complete / workflow_failed types', () => {
-      const { store, messages } = createSetup();
+    it('does NOT emit legacy workflow_complete / workflow_failed types', async () => {
+      const { store, messages, flushMicrotasks } = createSetup();
 
       store.append('workflow_completed', { totalDurationMs: 1000 });
       store.append('workflow_failed', { error: 'boom', phase: 'testing' });
+      await flushMicrotasks();
 
       // ServerMessage never carries the legacy workflow_complete /
       // workflow_failed types, so compare the discriminator as a string.
@@ -481,31 +602,41 @@ describe('StatusBridge', () => {
       expect(types.filter((t) => t === 'workflow_failed')).toHaveLength(0);
     });
 
-    it('broadcasts both terminal signal and coalesced events batch', async () => {
-      const { store, messages, runId, flushMicrotasks } = createSetup();
-
-      store.append('workflow_completed', { totalDurationMs: 1000, agentCount: 1 });
-
-      // Terminal signal should be present immediately (synchronous).
-      const complete = messages.filter((m) => m.type === 'run_complete');
-      expect(complete).toHaveLength(1);
-      expect(complete[0].runId).toBe(runId);
-
-      // The coalesced events batch is still delivered after the microtask flush.
-      await flushMicrotasks();
-      const events = messages.filter((m) => m.type === 'events');
-      expect(events).toHaveLength(1);
-      expect(events[0].runId).toBe(runId);
-      expect(events[0].events[0].type).toBe('workflow_completed');
-    });
-
-    it('does not re-broadcast terminal signal on non-lifecycle events', () => {
-      const { store, messages } = createSetup();
+    it('does not re-broadcast terminal signals on non-lifecycle events', async () => {
+      const { store, messages, flushMicrotasks } = createSetup();
       store.append('workflow_started', { taskPrompt: 'x' });
       store.append('sidebar_updated', { title: 'T' });
 
+      // No terminal signal synchronously, nor after the flush.
       expect(messages.filter((m) => m.type === 'run_complete')).toHaveLength(0);
       expect(messages.filter((m) => m.type === 'run_failed')).toHaveLength(0);
+
+      await flushMicrotasks();
+      expect(messages.filter((m) => m.type === 'run_complete')).toHaveLength(0);
+      expect(messages.filter((m) => m.type === 'run_failed')).toHaveLength(0);
+    });
+
+    it('terminal event records still appear inside the coalesced events batch', async () => {
+      // The terminal event records are durable: they are forwarded raw
+      // inside the events batch so the web client can replay them via its
+      // own evolve.  Only the dedicated run_complete / run_failed SIGNAL is
+      // delegated to the RunManager (via broadcastTerminal()).
+      const { store, messages, runId, flushMicrotasks } = createSetup();
+
+      store.append('workflow_started', { taskPrompt: 'x' });
+      store.append('workflow_completed', { totalDurationMs: 500 });
+
+      await flushMicrotasks();
+
+      const events = messages.filter((m) => m.type === 'events');
+      expect(events).toHaveLength(1);
+      expect(events[0].runId).toBe(runId);
+      expect(events[0].events).toHaveLength(2);
+      expect(events[0].events[0].type).toBe('workflow_started');
+      expect(events[0].events[1].type).toBe('workflow_completed');
+
+      // And critically: no terminal SIGNAL broadcast from the projection change.
+      expect(messages.filter((m) => m.type === 'run_complete')).toHaveLength(0);
     });
   });
 
@@ -591,15 +722,17 @@ describe('StatusBridge', () => {
 
   // ─── Only snapshot/events/terminal broadcasts ───────────────────────────
   //
-  // After the multi-run refactor the bridge must emit only snapshot, events,
-  // and dedicated terminal lifecycle messages (run_complete / run_failed),
-  // all tagged with runId.
+  // The bridge emits only snapshot, events, and dedicated terminal lifecycle
+  // messages (run_complete / run_failed), all tagged with runId.  Crucially,
+  // appending terminal event records (workflow_completed / workflow_failed)
+  // must NOT auto-broadcast a terminal signal — that is the RunManager's sole
+  // responsibility via broadcastTerminal().
 
   describe('only snapshot/events/terminal broadcasts', () => {
     const ALLOWED_TYPES = new Set(['snapshot', 'events', 'run_complete', 'run_failed']);
 
-    it('broadcasts only allowed types for a wide variety of event types', async () => {
-      const { store, messages, flushMicrotasks } = createSetup();
+    it('batches event types into events and emits terminal signals only via broadcastTerminal', async () => {
+      const { store, bridge, messages, runId, flushMicrotasks } = createSetup();
 
       // Exercise many event types that used to map to old per-event WS
       // messages.  All of them should now travel inside an events batch.
@@ -622,20 +755,38 @@ describe('StatusBridge', () => {
         },
         { agentId: 'a1' },
       );
+      // Terminal event records are also batched as ordinary events — they do
+      // NOT trigger a dedicated run_complete / run_failed broadcast.  That
+      // signal is emitted SOLELY by the RunManager via broadcastTerminal().
       store.append('workflow_completed', { totalDurationMs: 1000, agentCount: 1 });
       store.append('workflow_failed', { error: 'broken', phase: 'test' });
 
       await flushMicrotasks();
 
-      // Every captured message must have a retained type.
+      // Every captured message so far must have a retained type.
       for (const msg of messages) {
         expect(ALLOWED_TYPES.has(msg.type)).toBe(true);
       }
-      // At least one events message was broadcast.
-      expect(messages.filter((m) => m.type === 'events')).toHaveLength(1);
-      // Terminal lifecycle signals were broadcast.
+      // Exactly one coalesced events batch carries every appended event.
+      const events = messages.filter((m) => m.type === 'events');
+      expect(events).toHaveLength(1);
+      expect(events[0].events).toHaveLength(8);
+
+      // Terminal projection changes must NOT auto-broadcast a terminal
+      // signal — that is delegated solely to the RunManager.
+      expect(messages.filter((m) => m.type === 'run_complete')).toHaveLength(0);
+      expect(messages.filter((m) => m.type === 'run_failed')).toHaveLength(0);
+
+      // The ONLY way the bridge emits a terminal signal is broadcastTerminal().
+      bridge.broadcastTerminal({ type: 'run_complete', runId });
+      bridge.broadcastTerminal({ type: 'run_failed', runId, error: 'broken', phase: 'test' });
       expect(messages.filter((m) => m.type === 'run_complete')).toHaveLength(1);
       expect(messages.filter((m) => m.type === 'run_failed')).toHaveLength(1);
+
+      // Final guard: still only allowed types were ever emitted.
+      for (const msg of messages) {
+        expect(ALLOWED_TYPES.has(msg.type)).toBe(true);
+      }
     });
   });
 });

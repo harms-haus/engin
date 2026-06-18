@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
 import { z } from 'zod';
 
+import { RendererRegistry } from '../../packages/engine/src/core/renderer-registry.js';
 import { linearStepsRunner } from '../../packages/engine/src/pool/linear-steps-runner.js';
 import {
   clearPoolMocks,
@@ -11,6 +12,26 @@ import {
   setupHarnessMocks,
   setupProfileMocks,
 } from './helpers.js';
+
+// ── Shared step fixtures ───────────────────────────────────────────────────
+//
+// A non-structured "implement" step (always approved) and a structured
+// "review" step whose approved/feedback/severity fields are driven by the
+// mocked promptForStructured responses. These mirror the inline literals used
+// above but cut down on repetition in the refactor-preservation tests below.
+
+const implementStep = { name: 'implement', profileId: 'coder', isReadOnly: false };
+
+const reviewStep = {
+  name: 'review',
+  profileId: 'reviewer',
+  isReadOnly: true,
+  schema: z.object({
+    approved: z.boolean(),
+    feedback: z.string().optional(),
+    severity: z.string().optional(),
+  }),
+};
 
 beforeEach(() => {
   clearPoolMocks();
@@ -394,6 +415,404 @@ describe('linearStepsRunner', () => {
 
       // At least the harnesses that were created should be disposed
       expect(disposes.length).toBeGreaterThan(0);
+      for (const d of disposes) {
+        expect(d).toHaveBeenCalledTimes(1);
+      }
+    });
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // Refactor-preservation tests
+  //
+  // linear-steps-runner is being refactored to delegate boilerplate to the
+  // shared runner-utils helpers: createSessionMap (step-indexed session
+  // tracking), buildExecCtx (StepExecutionContext builder), handleRunnerError
+  // (error envelope), and settleResult (where it fits). The tests below pin
+  // down behaviors that the refactor MUST preserve — particularly the
+  // severity-based / completeTask-branching settle logic that intentionally
+  // stays custom and must NOT be replaced by settleResult (which never
+  // branches on completeTask's boolean).
+  // ═══════════════════════════════════════════════════════════════════════
+
+  describe('rendererRegistry threading (buildExecCtx must forward rendererRegistry)', () => {
+    it('fires onAgentRender with the rendered output when a renderer is registered for the step profile', async () => {
+      setupProfileMocks();
+      setupHarnessMocks(makeSession(() => '{"summary":"hello"}'));
+      const registry = new RendererRegistry();
+      registry.register('coder', (data) => `rendered:${JSON.stringify(data)}`);
+
+      const onAgentRender = mock((_info: unknown) => {});
+      const ctx = createRunnerContext({
+        rendererRegistry: registry,
+        onStatus: { onAgentRender } as Record<string, unknown>,
+      });
+      const runner = linearStepsRunner([implementStep]);
+
+      await runner(ctx);
+
+      expect(onAgentRender).toHaveBeenCalledTimes(1);
+      expect(onAgentRender).toHaveBeenCalledWith(
+        expect.objectContaining({
+          agentId: ctx.agentId,
+          profile: 'coder',
+          taskId: ctx.task.id,
+          rendered: 'rendered:{"summary":"hello"}',
+        }),
+      );
+    });
+
+    it('does not fire onAgentRender when no rendererRegistry is provided', async () => {
+      setupProfileMocks();
+      setupHarnessMocks(makeSession(() => 'plain text'));
+
+      const onAgentRender = mock((_info: unknown) => {});
+      const ctx = createRunnerContext({
+        onStatus: { onAgentRender } as Record<string, unknown>,
+      });
+      const runner = linearStepsRunner([implementStep]);
+
+      await runner(ctx);
+
+      expect(onAgentRender).not.toHaveBeenCalled();
+    });
+
+    it('threads the same registry instance to every step in a multi-step run', async () => {
+      setupProfileMocks();
+      setupHarnessMocks();
+      const registry = new RendererRegistry();
+      registry.register('coder', (data) => `rendered:${JSON.stringify(data)}`);
+      registry.register('reviewer', () => 'review-rendered');
+
+      const onAgentRender = mock((_info: unknown) => {});
+      const ctx = createRunnerContext({
+        rendererRegistry: registry,
+        onStatus: { onAgentRender } as Record<string, unknown>,
+      });
+      // Reviewer step has a schema; default to approving so it completes.
+      mockPromptForStructured.mockResolvedValue({
+        result: { approved: true, feedback: 'ok', severity: 'low' },
+        attempts: 1,
+      });
+      const runner = linearStepsRunner([implementStep, reviewStep]);
+
+      await runner(ctx);
+
+      // One render per step — confirms the registry reaches runStep for BOTH
+      // steps, i.e. buildExecCtx did not drop rendererRegistry mid-loop.
+      expect(onAgentRender).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('onDecision fires on each rejection', () => {
+    it('fires onDecision with the step name, attempt count, and feedback', async () => {
+      setupProfileMocks();
+      setupHarnessMocks();
+      mockPromptForStructured.mockResolvedValue({
+        result: { approved: false, feedback: 'Needs more tests', severity: 'critical' },
+        attempts: 1,
+      });
+
+      const onDecision = mock((_info: unknown) => {});
+      const ctx = createRunnerContext({
+        maxStepRetries: 1,
+        onStatus: { onDecision } as Record<string, unknown>,
+      });
+      const runner = linearStepsRunner([implementStep, reviewStep]);
+
+      await runner(ctx);
+
+      // With maxStepRetries=1 the single rejection fires onDecision once.
+      expect(onDecision).toHaveBeenCalledTimes(1);
+      expect(onDecision).toHaveBeenCalledWith(
+        expect.objectContaining({
+          agentId: ctx.agentId,
+          taskId: ctx.task.id,
+          reasoning: 'Needs more tests',
+          decision: 'Step "review" rejected (attempt 1/1), retrying',
+        }),
+      );
+    });
+
+    it('fires onDecision once per rejection across retries', async () => {
+      setupProfileMocks();
+      setupHarnessMocks();
+      let call = 0;
+      mockPromptForStructured.mockImplementation(() => {
+        call++;
+        return Promise.resolve({
+          result: call < 3 ? { approved: false, feedback: `feedback-${call}`, severity: 'medium' } : { approved: true },
+          attempts: 1,
+        });
+      });
+
+      const onDecision = mock((_info: unknown) => {});
+      const ctx = createRunnerContext({
+        maxStepRetries: 5,
+        onStatus: { onDecision } as Record<string, unknown>,
+      });
+      const runner = linearStepsRunner([implementStep, reviewStep]);
+
+      await runner(ctx);
+
+      expect(onDecision).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not fire onDecision when no step is rejected', async () => {
+      setupProfileMocks();
+      setupHarnessMocks();
+
+      const onDecision = mock((_info: unknown) => {});
+      const ctx = createRunnerContext({
+        onStatus: { onDecision } as Record<string, unknown>,
+      });
+      const runner = linearStepsRunner([implementStep]);
+
+      await runner(ctx);
+
+      expect(onDecision).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('reviewFeedback is appended on rejection', () => {
+    it('records each rejection feedback on task.reviewFeedback', async () => {
+      setupProfileMocks();
+      setupHarnessMocks();
+      let call = 0;
+      mockPromptForStructured.mockImplementation(() => {
+        call++;
+        return Promise.resolve({
+          result:
+            call === 1
+              ? { approved: false, feedback: 'first round', severity: 'medium' }
+              : { approved: false, feedback: 'second round', severity: 'critical' },
+          attempts: 1,
+        });
+      });
+
+      const ctx = createRunnerContext({ maxStepRetries: 2 });
+      const runner = linearStepsRunner([implementStep, reviewStep]);
+
+      await runner(ctx);
+
+      expect(ctx.task.reviewFeedback).toEqual(['first round', 'second round']);
+    });
+
+    it('does not add reviewFeedback when no step is rejected', async () => {
+      setupProfileMocks();
+      setupHarnessMocks();
+
+      const ctx = createRunnerContext();
+      const runner = linearStepsRunner([implementStep]);
+
+      await runner(ctx);
+
+      expect(ctx.task.reviewFeedback).toBeUndefined();
+    });
+  });
+
+  // ── Custom settle logic (must NOT be replaced by settleResult) ───────────
+  //
+  // settleResult unconditionally returns 'completed' for approved results and
+  // never branches on completeTask's boolean. The linear runner intentionally
+  // keeps branching: if completeTask returns false the task is failed. These
+  // tests lock that behavior in so the refactor cannot silently swap in
+  // settleResult for these paths.
+
+  describe('custom settle: completeTask returns false after all steps approved', () => {
+    it('fails with "Failed to submit completed task" rather than reporting completed', async () => {
+      setupProfileMocks();
+      setupHarnessMocks();
+
+      const ctx = createRunnerContext({
+        completeTask: mock(() => false) as () => boolean,
+      });
+      const runner = linearStepsRunner([implementStep]);
+
+      const outcome = await runner(ctx);
+
+      expect(outcome.status).toBe('failed');
+      expect(outcome).toHaveProperty('error', 'Failed to submit completed task');
+      expect(ctx.failTask).toHaveBeenCalledWith(
+        expect.objectContaining({ error: 'Failed to submit completed task for review' }),
+      );
+    });
+  });
+
+  describe('custom settle: completeTask returns false on medium-severity exhaustion', () => {
+    it('fails with "Failed to submit" rather than accepting as completed', async () => {
+      setupProfileMocks();
+      setupHarnessMocks();
+      mockPromptForStructured.mockResolvedValue({
+        result: { approved: false, feedback: 'minor issues', severity: 'medium' },
+        attempts: 1,
+      });
+
+      const ctx = createRunnerContext({
+        maxStepRetries: 1,
+        completeTask: mock(() => false) as () => boolean,
+      });
+      const runner = linearStepsRunner([implementStep, reviewStep]);
+
+      const outcome = await runner(ctx);
+
+      expect(outcome.status).toBe('failed');
+      expect(outcome).toHaveProperty('error', 'Failed to submit');
+      expect(ctx.failTask).toHaveBeenCalledWith(
+        expect.objectContaining({ error: 'Failed to submit task for review after max retries exceeded' }),
+      );
+    });
+  });
+
+  describe('severity-based settle', () => {
+    it('returns failed when severity is high', async () => {
+      setupProfileMocks();
+      setupHarnessMocks();
+      mockPromptForStructured.mockResolvedValue({
+        result: { approved: false, feedback: 'Major issue', severity: 'high' },
+        attempts: 1,
+      });
+
+      const ctx = createRunnerContext({ maxStepRetries: 1 });
+      const runner = linearStepsRunner([implementStep, reviewStep]);
+
+      const outcome = await runner(ctx);
+
+      expect(outcome.status).toBe('failed');
+      expect(outcome).toHaveProperty('feedback', 'Major issue');
+      expect(ctx.failTask).toHaveBeenCalledWith(expect.objectContaining({ feedback: 'Major issue', severity: 'high' }));
+      expect(ctx.completeTask).not.toHaveBeenCalled();
+    });
+
+    it('returns completed when the rejected output has no severity field (defaults to medium)', async () => {
+      setupProfileMocks();
+      setupHarnessMocks();
+      mockPromptForStructured.mockResolvedValue({
+        result: { approved: false, feedback: 'meh' },
+        attempts: 1,
+      });
+
+      const ctx = createRunnerContext({ maxStepRetries: 1 });
+      // Review step without a severity field in its schema.
+      const runner = linearStepsRunner([
+        implementStep,
+        {
+          name: 'review',
+          profileId: 'reviewer',
+          isReadOnly: true,
+          schema: z.object({ approved: z.boolean(), feedback: z.string().optional() }),
+        },
+      ]);
+
+      const outcome = await runner(ctx);
+
+      expect(outcome.status).toBe('completed');
+      expect(ctx.completeTask).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('error envelope: non-Error thrown values are coerced (handleRunnerError)', () => {
+    it('coerces a thrown string into the failure error message via safeErrorMessage', async () => {
+      setupProfileMocks();
+      mockCreateHarness.mockRejectedValue('a plain string failure');
+
+      const ctx = createRunnerContext();
+      const runner = linearStepsRunner([implementStep]);
+
+      const outcome = await runner(ctx);
+
+      expect(outcome.status).toBe('failed');
+      expect(outcome).toHaveProperty('error', 'a plain string failure');
+      expect(ctx.failTask).toHaveBeenCalledWith(expect.objectContaining({ error: 'a plain string failure' }));
+    });
+
+    it('coerces a thrown number into the failure error message', async () => {
+      setupProfileMocks();
+      mockCreateHarness.mockRejectedValue(404);
+
+      const ctx = createRunnerContext();
+      const runner = linearStepsRunner([implementStep]);
+
+      const outcome = await runner(ctx);
+
+      expect(outcome.status).toBe('failed');
+      expect(outcome).toHaveProperty('error', '404');
+    });
+  });
+
+  describe('error disposal ordering (handleRunnerError: dispose before failTask)', () => {
+    it('disposes all tracked sessions before calling failTask', async () => {
+      setupProfileMocks();
+      const sequence: string[] = [];
+      const disposes: ReturnType<typeof mock>[] = [];
+      let harnessCall = 0;
+      mockCreateHarness.mockImplementation(() => {
+        harnessCall++;
+        // Capture the call number in a const so the dispose closure logs the
+        // number that was current when this harness was created (not the
+        // latest value of harnessCall at disposal time).
+        const callNum = harnessCall;
+        const dispose = mock(() => {
+          sequence.push(`dispose-${callNum}`);
+        });
+        disposes.push(dispose);
+        // First step succeeds and its session is tracked; second step throws.
+        if (harnessCall === 1) {
+          return { session: makeSession(() => 'done'), sessionId: 's-1', dispose };
+        }
+        throw new Error('second step boom');
+      });
+
+      const failTask = mock((_result?: unknown) => {
+        sequence.push('failTask');
+      });
+      const ctx = createRunnerContext({ failTask });
+      const runner = linearStepsRunner([implementStep, reviewStep]);
+
+      await runner(ctx);
+
+      // The first step's tracked session must be disposed on the error path,
+      // and that disposal must happen BEFORE failTask runs.
+      expect(disposes[0]).toHaveBeenCalledTimes(1);
+      const firstDisposeIdx = sequence.indexOf('dispose-1');
+      const failTaskIdx = sequence.indexOf('failTask');
+      expect(firstDisposeIdx).toBeGreaterThanOrEqual(0);
+      expect(failTaskIdx).toBeGreaterThan(firstDisposeIdx);
+    });
+  });
+
+  describe('session replacement on back-up retry (createSessionMap.set disposes old)', () => {
+    it('disposes the previous session for a step when it re-runs after a back-up', async () => {
+      setupProfileMocks();
+      const disposes: ReturnType<typeof mock>[] = [];
+      let harnessCall = 0;
+      mockCreateHarness.mockImplementation(() => {
+        harnessCall++;
+        const dispose = mock(() => {});
+        disposes.push(dispose);
+        return { session: makeSession(() => 'done'), sessionId: `s-${harnessCall}`, dispose };
+      });
+
+      let structuredCall = 0;
+      mockPromptForStructured.mockImplementation(() => {
+        structuredCall++;
+        return Promise.resolve({
+          result:
+            structuredCall === 1
+              ? { approved: false, feedback: 'retry please', severity: 'medium' }
+              : { approved: true },
+          attempts: 1,
+        });
+      });
+
+      const ctx = createRunnerContext({ maxStepRetries: 3 });
+      const runner = linearStepsRunner([implementStep, reviewStep]);
+
+      await runner(ctx);
+
+      // Execution: implement(1), review(2, reject), implement(3, retry), review(4, approve)
+      expect(disposes).toHaveLength(4);
+      // Each session disposed exactly once: old sessions disposed on overwrite,
+      // final sessions disposed on disposeAll(). No leaks, no double-dispose.
       for (const d of disposes) {
         expect(d).toHaveBeenCalledTimes(1);
       }

@@ -1,10 +1,11 @@
 import { rmSync } from 'node:fs';
 import { join } from 'node:path';
-import { createHarness } from '../core/harness-factory.js';
+import { spawnAgent } from '../core/agent-lifecycle.js';
+import { invokeRenderer } from '../core/renderer-invocation.js';
 import type { RendererRegistry } from '../core/renderer-registry.js';
-import { extractJsonFromText, promptForStructured } from '../core/structured-output.js';
+import { promptForStructured } from '../core/structured-output.js';
 import type { AgentProfile, Task } from '../core/types.js';
-import { forwardAgentStatus, safeErrorMessage } from '../core/utils.js';
+import { safeErrorMessage } from '../core/utils.js';
 import { buildPrompt } from './prompt-builder.js';
 import type { LanePoolOptions, StepDefinition, StepResult, TrackedSession } from './types.js';
 import { assertSafeName } from './validation.js';
@@ -28,6 +29,10 @@ export interface StepExecutionContext {
   phaseId: string;
   /** Optional registry of custom output renderers keyed by profile name. */
   rendererRegistry?: RendererRegistry;
+  /** Abort signal for cooperative cancellation. Checked before `session.prompt()`
+   *  so an abort that fires during the [session-created, prompt-started] TOCTOU
+   *  window still cancels the session instead of launching an LLM turn. */
+  signal?: AbortSignal;
 }
 
 /**
@@ -58,21 +63,6 @@ export async function runStep(
   execCtx: StepExecutionContext,
   existingSessionPath?: string,
 ): Promise<{ result: StepResult; trackedSession: TrackedSession }> {
-  // Use pre-loaded profile
-  const profile = profiles.get(step.profileId);
-  if (!profile) {
-    throw new Error(`Profile "${step.profileId}" not found in directories: ${execCtx.sessionBaseDir}`);
-  }
-
-  // Adjust profile for read-only steps — strip write and edit tools
-  let adjustedProfile: AgentProfile = profile;
-  if (step.isReadOnly) {
-    adjustedProfile = {
-      ...profile,
-      excludeTools: [...new Set([...profile.excludeTools, 'write', 'edit'])],
-    };
-  }
-
   // Validate task id and step name against path traversal
   assertSafeName(task.id, 'task id');
   assertSafeName(step.name, 'step name');
@@ -80,57 +70,49 @@ export async function runStep(
   // Compute session directory
   const sessionDirPath = join(execCtx.sessionBaseDir, task.id, `${ctx.execCount}-${ctx.stepIndex}-${step.name}`);
 
-  // Build harness options
-  const harnessOpts = {
-    profile: adjustedProfile,
-    cwd: execCtx.cwd,
-    apiKeys: execCtx.apiKeys,
-    ...(existingSessionPath ? { resumeSessionPath: existingSessionPath } : { sessionDir: sessionDirPath }),
-    agentId,
-    onAgentStatus: forwardAgentStatus(execCtx.onStatus),
-  };
+  // Pre-check the profile so the error message can reference the session base
+  // dir (runStep-specific debugging context that spawnAgent doesn't have).
+  // spawnAgent re-validates the lookup as a defensive guard; this check simply
+  // fails fast with the richer message callers rely on.
+  if (!profiles.has(step.profileId)) {
+    throw new Error(`Profile "${step.profileId}" not found in directories: ${execCtx.sessionBaseDir}`);
+  }
 
-  // Create harness
-  const { session, dispose } = await createHarness(harnessOpts);
+  // Spawn the agent: profile lookup + read-only adjustment + harness creation +
+  // activeSessions tracking + onAgentSpawn + onStepStart. spawnAgent tracks the
+  // session BEFORE firing any callback (TOCTOU safety) and computes the
+  // resolved sessionPath (sessionFile ?? resumeSessionPath ?? sessionDir).
+  const handle = await spawnAgent(
+    {
+      profileId: step.profileId,
+      agentId,
+      cwd: execCtx.cwd,
+      phaseId: execCtx.phaseId,
+      taskId: task.id,
+      stepIndex: ctx.stepIndex,
+      stepName: step.name,
+      isReadOnly: step.isReadOnly,
+      apiKeys: execCtx.apiKeys,
+      sessionDir: sessionDirPath,
+      resumeSessionPath: existingSessionPath,
+      onStatus: execCtx.onStatus,
+      activeSessions: execCtx.activeSessions,
+    },
+    profiles,
+  );
+  const { session } = handle;
 
   // Store the concrete .jsonl session FILE path — not the session DIRECTORY.
   // sessionDirPath is a directory; passing it as resumeSessionPath on the next
   // attempt makes SessionManager.open() -> readSync() throw EISDIR (on Linux a
-  // directory can be open()'d read-only but not read()). session.sessionFile is
-  // the real file path, resolved at harness construction (before the first turn
-  // is flushed), so it is correct on both first run and resume. The fallbacks
-  // preserve behavior for any edge case where sessionFile is unavailable.
+  // directory can be open()'d read-only but not read()). handle.sessionPath is
+  // resolved by spawnAgent (sessionFile ?? resumeSessionPath ?? sessionDir) at
+  // harness construction, so it is correct on both first run and resume.
   const trackedSession: TrackedSession = {
     session,
-    dispose,
-    sessionPath: session.sessionFile ?? existingSessionPath ?? sessionDirPath,
+    dispose: handle.dispose,
+    sessionPath: handle.sessionPath,
   };
-
-  // Track the session so the abort listener can cancel in-progress prompts
-  execCtx.activeSessions.add(session);
-
-  // NOTE: onAgentSpawn is fired AFTER activeSessions.add to provide sessionId/sessionPath.
-  // Edge case: if an abort signal fires between activeSessions.add and this callback,
-  // the finally block will fire onAgentComplete without a matching onAgentSpawn for this
-  // agent. Consumers should treat onAgentComplete for an unregistered agent as a no-op.
-  execCtx.onStatus?.onAgentSpawn?.({
-    agentId,
-    profile: step.profileId,
-    phaseId: execCtx.phaseId,
-    taskId: task.id,
-    stepIndex: ctx.stepIndex,
-    sessionId: session.sessionId,
-    sessionPath: trackedSession.sessionPath,
-  });
-
-  // Fire onStepStart AFTER onAgentSpawn so the step always has an agentKey linkage.
-  // This ensures the event order in the EventStore is: agent_spawned → step_started.
-  execCtx.onStatus?.onStepStart?.({
-    taskId: task.id,
-    stepIndex: ctx.stepIndex,
-    stepName: step.name,
-    agentId,
-  });
 
   try {
     // Build prompt
@@ -167,57 +149,48 @@ export async function runStep(
     }
 
     // Non-structured step — always approved
+    // Guard the TOCTOU window: activeSessions.add() ran before this point, so
+    // an abort that fired during [session-tracked, prompt-started] was already
+    // delivered to session.abort(). But AgentSession.prompt() does NOT re-check
+    // the abort state, and abort() on an idle (not-yet-streaming) agent is a
+    // no-op — without this explicit check the prompt would still launch its
+    // LLM turn after an abort. Throw AbortError so the runner fails the task
+    // and the lane loop exits promptly.
+    if (execCtx.signal?.aborted) {
+      throw new DOMException('Aborted', 'AbortError');
+    }
     await session.prompt(promptText);
     const output = session.getLastAssistantText();
     return { result: { type: 'approved', output }, trackedSession };
   } catch (err) {
     // Exception path: dispose the session since processTask won't track it
     try {
-      dispose();
+      handle.dispose();
     } catch (disposeErr) {
       console.error(`[step-execution] Error disposing session for task ${task.id}:`, safeErrorMessage(disposeErr));
     }
     throw err;
   } finally {
-    execCtx.activeSessions.delete(session);
-
     // Invoke registered renderer (if any) before firing the completion callback.
     // This lets UI consumers display a custom rendering of the agent's final output.
-    if (execCtx.rendererRegistry) {
-      const renderFn = execCtx.rendererRegistry.get(step.profileId);
-      if (renderFn) {
-        const rawText = session.getLastAssistantText();
-        if (rawText) {
-          let data: unknown = rawText;
-          try {
-            const jsonStr = extractJsonFromText(rawText);
-            if (jsonStr) {
-              data = JSON.parse(jsonStr);
-            }
-          } catch {
-            // JSON.parse failed — fall back to raw text
-          }
-          const rendered = renderFn(data);
-          if (rendered) {
-            execCtx.onStatus?.onAgentRender?.({
-              agentId,
-              profile: step.profileId,
-              taskId: task.id,
-              rendered,
-            });
-          }
-        }
-      }
+    // getLastAssistantText() is fetched lazily (only when a renderer is registered
+    // for this profile) to mirror the original inline guard ordering.
+    if (execCtx.rendererRegistry?.get(step.profileId)) {
+      invokeRenderer(
+        execCtx.rendererRegistry,
+        step.profileId,
+        session.getLastAssistantText(),
+        agentId,
+        task.id,
+        execCtx.onStatus?.onAgentRender,
+      );
     }
 
-    // Fire completion callback — always runs even if dispose failed
-    execCtx.onStatus?.onAgentComplete?.({
-      agentId,
-      profile: step.profileId,
-      phaseId: execCtx.phaseId,
-      taskId: task.id,
-      stepIndex: ctx.stepIndex,
-      sessionId: session.sessionId,
-    });
+    // Fire completion callback + remove the session from activeSessions.
+    // handle.complete() fires onAgentComplete (always runs even if dispose
+    // failed) and untracks the session so it can't be re-aborted. Disposal of
+    // the underlying harness is separate (handled above on the error path, or
+    // deferred to the caller via trackedSession.dispose on the success path).
+    handle.complete();
   }
 }

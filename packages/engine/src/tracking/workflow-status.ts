@@ -4,7 +4,37 @@ import { AuditLog } from './audit-log.js';
 import { TaskTracker } from './task-status.js';
 import { loadWorkflowState, saveWorkflowState, serializeWorkflowState } from './workflow-serializer.js';
 
+/**
+ * Conservative default for the number of concurrent lanes a workflow may run.
+ *
+ * The tracker cannot know the real value (it is configured on the lane pool,
+ * which attaches up to `maxConcurrentLanes` listeners per TaskTracker event),
+ * so this upper bound sizes {@link TaskTracker}'s `maxListeners` with enough
+ * headroom that the tracker's own 3 listeners plus the lane pool's listeners
+ * never trip a Node `MaxListenersExceededWarning`.
+ */
+const DEFAULT_MAX_CONCURRENT_LANES = 8;
+
 export class WorkflowStatusTracker {
+  /**
+   * Best-effort safety net for trackers whose caller forgot to call
+   * {@link dispose}. When a tracker becomes unreachable the registry callback
+   * tears down its EventEmitter listeners — *if* the object is still alive at
+   * finalization time.
+   *
+   * The held value is a `WeakRef` (not `this` directly) and the callback does
+   * not close over any instance, so the registry never strongly pins the
+   * tracker — the classic FinalizationRegistry leak. Callbacks are
+   * non-deterministic and may fire late or never, so this is a backstop, not
+   * the primary cleanup path (explicit `dispose()` / abort signal remain so).
+   */
+  private static readonly finalizationRegistry = new FinalizationRegistry((held: WeakRef<WorkflowStatusTracker>) => {
+    const tracker = held.deref();
+    if (tracker) {
+      tracker.dispose();
+    }
+  });
+
   private _taskPrompt = '';
   private _currentPhaseId = '';
   private _completedPhaseIds: string[] = [];
@@ -27,6 +57,7 @@ export class WorkflowStatusTracker {
   private _saveLock: Promise<void> = Promise.resolve();
   private _worktree?: WorktreeInfo;
   private _spawnedAgents: PersistedAgentRecord[] = [];
+  private _disposed = false;
 
   constructor(workDir: string, signal?: AbortSignal) {
     this.workDir = workDir;
@@ -52,6 +83,14 @@ export class WorkflowStatusTracker {
         },
         { once: true },
       );
+    } else {
+      // No caller-supplied signal: register a GC safety net so that a forgotten
+      // dispose() still has a chance to tear down the leaked EventEmitter
+      // listeners. The held value is a WeakRef so the registry never strongly
+      // pins this tracker (the classic FinalizationRegistry leak). The callback
+      // is non-deterministic and may fire late or never — this is a backstop,
+      // not the primary cleanup path.
+      WorkflowStatusTracker.finalizationRegistry.register(this, new WeakRef(this));
     }
   }
 
@@ -80,6 +119,11 @@ export class WorkflowStatusTracker {
   }
 
   private attachAutoPersist(): void {
+    // Raise the per-instance limit above Node's default (10) so this tracker's
+    // own 3 listeners plus downstream consumers (e.g. the lane pool, which adds
+    // up to maxConcurrentLanes listeners per event) do not trip a Node
+    // MaxListenersExceededWarning.
+    this._taskTracker.setMaxListeners(DEFAULT_MAX_CONCURRENT_LANES + 5);
     this._onTaskSettled = () => {
       this.persistState();
     };
@@ -95,6 +139,11 @@ export class WorkflowStatusTracker {
   }
 
   dispose(): void {
+    // Idempotent: safe to invoke from any context (manual call, abort handler,
+    // or the FinalizationRegistry backstop) which may fire zero, one, or many
+    // times and possibly late. Once disposed, subsequent calls are no-ops.
+    if (this._disposed) return;
+    this._disposed = true;
     if (this._onTaskSettled) {
       this._taskTracker.removeListener(TaskTracker.Events.TaskSettled, this._onTaskSettled);
       this._onTaskSettled = undefined;

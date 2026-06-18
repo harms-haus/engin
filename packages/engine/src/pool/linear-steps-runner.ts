@@ -12,10 +12,11 @@
 //      ctx.failTask called, and { status: 'failed', error: msg } returned.
 //   4. Returns TaskOutcome directly instead of mutating the TaskTracker.
 
-import { appendReviewFeedback, safeErrorMessage } from '../core/utils.js';
+import { appendReviewFeedback } from '../core/task-feedback.js';
+import { buildExecCtx, createSessionMap, handleRunnerError } from './runner-utils.js';
 import { extractSeverity, isFailingSeverity } from './severity.js';
-import { runStep, type StepExecutionContext } from './step-execution.js';
-import type { StepDefinition, TaskOutcome, TaskRunner, TaskRunnerContext, TrackedSession } from './types.js';
+import { runStep } from './step-execution.js';
+import type { StepDefinition, TaskOutcome, TaskRunner, TaskRunnerContext } from './types.js';
 
 /**
  * Create a TaskRunner that executes the given steps sequentially.
@@ -25,7 +26,7 @@ import type { StepDefinition, TaskOutcome, TaskRunner, TaskRunnerContext, Tracke
  */
 export function linearStepsRunner(steps: StepDefinition[]): TaskRunner {
   return async (ctx: TaskRunnerContext): Promise<TaskOutcome> => {
-    const { task, agentId, profiles, onStatus, phaseId, sessionBaseDir, cwd, apiKeys, maxStepRetries } = ctx;
+    const { task, agentId, profiles, onStatus, maxStepRetries } = ctx;
 
     // ── Step 1: No steps ───────────────────────────────────────────────
     if (steps.length === 0) {
@@ -36,29 +37,12 @@ export function linearStepsRunner(steps: StepDefinition[]): TaskRunner {
     // ── Step 2: Per-step state ─────────────────────────────────────────
     const stepAttempts = new Map<number, number>();
     const stepExecutions = new Map<number, number>();
-    const taskSessions = new Map<number, TrackedSession>();
-
-    const disposeAllTaskSessions = () => {
-      for (const ts of taskSessions.values()) {
-        try {
-          ts.dispose();
-        } catch (err) {
-          console.error(`[${agentId}] Error disposing harness for task ${task.id}:`, safeErrorMessage(err));
-        }
-      }
-      taskSessions.clear();
-    };
+    // createSessionMap provides step-indexed tracking with automatic disposal
+    // of the previous entry on overwrite (via set()) and a uniform disposeAll().
+    const taskSessions = createSessionMap(agentId, task.id);
 
     // ── Step 3: Execution context ──────────────────────────────────────
-    const execCtx: StepExecutionContext = {
-      sessionBaseDir,
-      cwd,
-      apiKeys,
-      onStatus,
-      activeSessions: ctx.activeSessions,
-      phaseId,
-      rendererRegistry: ctx.rendererRegistry,
-    };
+    const execCtx = buildExecCtx(ctx);
 
     // ── Step 4: Main loop ─────────────────────────────────────────────
     try {
@@ -74,11 +58,8 @@ export function linearStepsRunner(steps: StepDefinition[]): TaskRunner {
         stepExecutions.set(currentStepIndex, execCount + 1);
 
         // Step 4c: Check for existing session to resume
-        let existingSessionPath: string | undefined;
-        const existing = taskSessions.get(currentStepIndex);
-        if (existing) {
-          existingSessionPath = existing.sessionPath;
-        }
+        const existing = taskSessions.sessions.get(currentStepIndex);
+        const existingSessionPath = existing?.sessionPath;
 
         // Step 4d: Execute the step
         const { result, trackedSession } = await runStep(
@@ -91,18 +72,9 @@ export function linearStepsRunner(steps: StepDefinition[]): TaskRunner {
           existingSessionPath,
         );
 
-        // Step 4e: Dispose old session for this step, store new one
-        const oldSession = taskSessions.get(currentStepIndex);
-        if (oldSession) {
-          try {
-            oldSession.dispose();
-          } catch (err) {
-            console.error(
-              `[${agentId}] Error disposing old session for step ${currentStepIndex} of task ${task.id}:`,
-              safeErrorMessage(err),
-            );
-          }
-        }
+        // Step 4e: Dispose old session for this step, store new one.
+        // createSessionMap.set() disposes the previous entry at this key
+        // (errors swallowed + logged) before overwriting it.
         taskSessions.set(currentStepIndex, trackedSession);
 
         // Step 4f: Approved → move forward
@@ -131,13 +103,13 @@ export function linearStepsRunner(steps: StepDefinition[]): TaskRunner {
           if (isFailingSeverity(severity)) {
             // Critical/high → task failed
             ctx.failTask({ completed: false, feedback: result.feedback, severity });
-            disposeAllTaskSessions();
+            taskSessions.disposeAll();
             return { status: 'failed', feedback: result.feedback };
           }
 
           // Medium/low → accept as completed with caveats
           if (ctx.completeTask(result.output)) {
-            disposeAllTaskSessions();
+            taskSessions.disposeAll();
             return { status: 'completed', output: result.output };
           }
 
@@ -145,7 +117,7 @@ export function linearStepsRunner(steps: StepDefinition[]): TaskRunner {
             completed: false,
             error: 'Failed to submit task for review after max retries exceeded',
           });
-          disposeAllTaskSessions();
+          taskSessions.disposeAll();
           return { status: 'failed', error: 'Failed to submit' };
         }
 
@@ -155,19 +127,16 @@ export function linearStepsRunner(steps: StepDefinition[]): TaskRunner {
 
       // ── Step 5: All steps approved ─────────────────────────────────
       if (ctx.completeTask(lastOutput)) {
-        disposeAllTaskSessions();
+        taskSessions.disposeAll();
         return { status: 'completed', output: lastOutput };
       }
 
       ctx.failTask({ completed: false, error: 'Failed to submit completed task for review' });
-      disposeAllTaskSessions();
+      taskSessions.disposeAll();
       return { status: 'failed', error: 'Failed to submit completed task' };
     } catch (err) {
       // ── Step 6: Unexpected error – never re-throw ───────────────────
-      disposeAllTaskSessions();
-      const errorMsg = safeErrorMessage(err);
-      ctx.failTask({ completed: false, error: errorMsg });
-      return { status: 'failed', error: errorMsg };
+      return handleRunnerError(err, ctx, taskSessions.disposeAll);
     }
   };
 }

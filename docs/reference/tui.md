@@ -249,7 +249,7 @@ helpers have signature `(str: string) => string`.
 
 ### `formatToolCall(toolName, args)`
 
-Source: `packages/shared/src/format-tool-call.ts` (re-exported by the TUI).
+Source: `packages/shared/src/format-tool-call.ts` (exported by `@engin/shared`).
 Plain-text, per-tool formatting with icons:
 
 | Tool                           | Format                                              |

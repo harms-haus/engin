@@ -1,8 +1,8 @@
+import type { EventRecord, EventType, WorkflowProjection } from '@engin/shared/event-types';
+import { createInitialProjection } from '@engin/shared/event-types';
+import { evolve } from '@engin/shared/evolve';
 import { appendFile, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { EventRecord, EventType, WorkflowProjection } from './event-types.js';
-import { createInitialProjection } from './event-types.js';
-import { evolve } from './evolve.js';
 
 // Capture the real console.error at module load time (before any RunManager or
 // TUI console override is installed). Internal write-error logging uses this
@@ -30,6 +30,7 @@ export class EventStore {
   private readonly snapshotPath: string;
   private dirEnsured = false;
   private writeQueue: Promise<void> = Promise.resolve();
+  private disposed = false;
 
   // ── Write coalescing (F2) ────────────────────────────────────────────────
   // Records appended within the same microtask tick are accumulated in
@@ -55,6 +56,23 @@ export class EventStore {
     data: Record<string, unknown>,
     metadata?: { agentId?: string; taskId?: string; phaseId?: string },
   ): EventRecord {
+    // After dispose the store is frozen: append is a no-op for every side
+    // effect (no ring-buffer push, no evolve, no disk write, no subscriber
+    // notification) but still returns a synthetic EventRecord carrying the
+    // next seq and the passed type/data so callers that rely on a monotonically
+    // increasing seq keep counting.
+    if (this.disposed) {
+      return {
+        seq: ++this.seq,
+        type,
+        data,
+        metadata: {
+          timestamp: new Date().toISOString(),
+          ...metadata,
+        },
+      };
+    }
+
     const record: EventRecord = {
       seq: ++this.seq,
       type,
@@ -140,6 +158,7 @@ export class EventStore {
   }
 
   async saveSnapshot(): Promise<void> {
+    if (this.disposed) return;
     await this.ensureDir();
 
     const data: SnapshotData = {
@@ -152,6 +171,34 @@ export class EventStore {
     const tmpPath = this.snapshotPath + '.tmp';
     await writeFile(tmpPath, JSON.stringify(data, null, 2), 'utf-8');
     await rename(tmpPath, this.snapshotPath);
+  }
+
+  /**
+   * Tear down the store: clear subscribers and cancel any pending coalesced
+   * write so it never lands on disk. After dispose, {@link append} is a no-op
+   * for all side effects (it still returns a synthetic {@link EventRecord}
+   * carrying the next seq so callers that assign seq keep counting),
+   * {@link flush} resolves cleanly, and {@link saveSnapshot} writes nothing.
+   *
+   * Idempotent: subsequent calls are a no-op. Disposing one instance does not
+   * affect any other instance — all cleared state is per-instance.
+   */
+  dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+
+    // Drop subscribers so callbacks do not leak past teardown.
+    this.subscribers.clear();
+
+    // Cancel any scheduled microtask drain: clearing the flag + pending batch
+    // makes the already-queued queueMicrotask(drainPending) a no-op (it
+    // returns early on an empty batch), so no further disk writes fire. The
+    // in-flight writeQueue (if any) is left to settle on its own — it already
+    // swallows its own errors, so a later flush() resolves safely.
+    if (this.writeScheduled) {
+      this.writeScheduled = false;
+      this.pendingRecords = [];
+    }
   }
 
   static async load(workDir: string, opts?: { maxRingBuffer?: number }): Promise<EventStore> {

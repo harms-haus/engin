@@ -90,6 +90,11 @@ export interface TaskRunnerContext {
   maxStepRetries: number;
   /** Optional registry of custom output renderers keyed by profile name */
   rendererRegistry?: RendererRegistry;
+  /** Abort signal for cooperative cancellation (e.g. SIGINT). Forwarded into the
+   *  {@link StepExecutionContext} so runStep can re-check the abort state before
+   *  starting a prompt, closing the TOCTOU window between session creation and
+   *  `session.prompt()`. */
+  signal?: AbortSignal;
   /** Safely settle the task as complete. The optional `result` is stored on
    *  the task (e.g. the agent's final output) so downstream phases can read it
    *  via `task.result`. Returns true on success. */

@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'bun:test';
-import type { EventRecord, EventType } from '../../packages/engine/src/tracking/event-types.js';
+// The event-types shim (packages/engine/src/tracking/event-types.ts) has been
+// deleted; types now come straight from @engin/shared/event-types.
+import type { EventRecord, EventType } from '@engin/shared/event-types';
 import { createStoreCallbacks } from '../../packages/engine/src/tracking/store-callbacks.js';
 
 // ── Mock EventStore ──────────────────────────────────────────────────────────

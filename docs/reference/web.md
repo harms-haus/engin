@@ -118,7 +118,6 @@ already consume a projection; they are scoped to the selected run via the store.
 | `web/src/components/AgentLog.tsx`  | Agent detail log with step tab bar.                                                     |
 | `web/src/components/EventLog.tsx`  | Scrollable workflow-level event log.                                                    |
 | `web/src/store/workflow-store.ts`  | Zustand store: projection + selection + runs list.                                      |
-| `web/src/store/evolve-client.ts`   | Re-exports `evolve` from `@engin/shared`.                                               |
 | `web/src/hooks/useWebSocket.ts`    | React adapter over the shared `EngineClient`.                                           |
 | `web/src/protocol-types.ts`        | Re-exports protocol + state types from `@engin/shared`.                                 |
 

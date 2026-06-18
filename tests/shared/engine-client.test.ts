@@ -929,3 +929,258 @@ describe('EngineClient – connect/disconnect/connect cycle', () => {
     spy.mockRestore();
   });
 });
+
+// ─── requestRuns() ─────────────────────────────────────────────────────────
+//
+// requestRuns(timeoutMs) sends { type:'list_runs' } and returns a one-shot
+// Promise that resolves with the server's active-run list. Behavioural rules:
+//   - resolves with the runs array when a 'runs' message arrives;
+//   - resolves with [] when not connected / socket not open, or on timeout;
+//   - does NOT mutate the user-supplied callbacks.onMessage (regression: an
+//     earlier implementation swapped onMessage with a wrapper, which under
+//     concurrent calls overwrote the previous wrapper and dropped the first
+//     caller's resolver, creating a desync);
+//   - keeps forwarding every server message — including the resolving 'runs'
+//     message — to the user's onMessage, and keeps firing onRunsChanged;
+//   - supports concurrent calls: a single 'runs' message resolves ALL pending
+//     requestRuns() promises.
+
+describe('EngineClient – requestRuns()', () => {
+  it('sends list_runs and resolves with the runs array on a runs message', async () => {
+    const client = makeClient({ url: 'ws://test' });
+    client.connect(makeCallbacks());
+    const ws = MockWebSocket.instances[0];
+    ws.simulateOpen();
+    ws.sentMessages.length = 0;
+
+    const runs = [runSummary('r1'), runSummary('r2')];
+    const promise = client.requestRuns(1000);
+
+    expect(sentTypes(ws)).toContain('list_runs');
+
+    ws.simulateMessage({ type: 'runs', runs });
+    const result = await promise;
+
+    expect(result).toEqual(runs);
+  });
+
+  it('resolves with [] immediately when the socket is not open (and sends no list_runs)', async () => {
+    const client = makeClient({ url: 'ws://test' });
+    client.connect(makeCallbacks());
+    // Socket created but never opened → not connected.
+    const ws = MockWebSocket.instances[0];
+
+    const result = await client.requestRuns();
+
+    expect(result).toEqual([]);
+    expect(sentTypes(ws)).not.toContain('list_runs');
+  });
+
+  it('resolves with [] when no runs message arrives before the timeout', async () => {
+    const client = makeClient({ url: 'ws://test' });
+    client.connect(makeCallbacks());
+    const ws = MockWebSocket.instances[0];
+    ws.simulateOpen();
+    ws.sentMessages.length = 0;
+
+    const result = await client.requestRuns(50);
+
+    expect(result).toEqual([]);
+    expect(sentTypes(ws)).toContain('list_runs');
+  });
+
+  it('forwards non-runs messages to onMessage while a request is pending', async () => {
+    const onMessage = mock<(msg: ServerMessage) => void>();
+    const client = makeClient({ url: 'ws://test' });
+    client.connect(makeCallbacks({ onMessage }));
+    const ws = MockWebSocket.instances[0];
+    ws.simulateOpen();
+
+    const promise = client.requestRuns(1000);
+    ws.simulateMessage({ type: 'run_complete', runId: 'r1' });
+    ws.simulateMessage({ type: 'run_failed', runId: 'r2', error: 'boom', phase: 'exec' });
+    ws.simulateMessage({ type: 'runs', runs: [] });
+    await promise;
+
+    const seen = onMessage.mock.calls.map((c) => (c[0] as ServerMessage).type);
+    expect(seen).toContain('run_complete');
+    expect(seen).toContain('run_failed');
+  });
+
+  it('forwards the resolving runs message to onMessage (does not swallow it)', async () => {
+    const onMessage = mock<(msg: ServerMessage) => void>();
+    const client = makeClient({ url: 'ws://test' });
+    client.connect(makeCallbacks({ onMessage }));
+    const ws = MockWebSocket.instances[0];
+    ws.simulateOpen();
+
+    const runs = [runSummary('r1')];
+    const promise = client.requestRuns(1000);
+    ws.simulateMessage({ type: 'runs', runs });
+    await promise;
+
+    expect(onMessage).toHaveBeenCalledTimes(1);
+    expect((onMessage.mock.calls[0][0] as ServerMessage).type).toBe('runs');
+  });
+
+  it('fires onRunsChanged for the runs message that resolves the request', async () => {
+    const onRunsChanged = mock<(runs: RunSummary[]) => void>();
+    const client = makeClient({ url: 'ws://test' });
+    client.connect(makeCallbacks({ onRunsChanged }));
+    const ws = MockWebSocket.instances[0];
+    ws.simulateOpen();
+
+    const runs = [runSummary('r1')];
+    const promise = client.requestRuns(1000);
+    ws.simulateMessage({ type: 'runs', runs });
+    await promise;
+
+    expect(onRunsChanged).toHaveBeenCalledTimes(1);
+    expect(onRunsChanged.mock.calls[0][0]).toEqual(runs);
+  });
+
+  it('does not mutate the user-supplied callbacks.onMessage reference', async () => {
+    const onMessage = mock<(msg: ServerMessage) => void>();
+    const callbacks = makeCallbacks({ onMessage });
+    const originalRef = callbacks.onMessage;
+
+    const client = makeClient({ url: 'ws://test' });
+    client.connect(callbacks);
+    const ws = MockWebSocket.instances[0];
+    ws.simulateOpen();
+
+    const promise = client.requestRuns(1000);
+    // While a request is in flight the user's handler must NOT be swapped out.
+    expect(callbacks.onMessage).toBe(originalRef);
+
+    ws.simulateMessage({ type: 'runs', runs: [] });
+    await promise;
+
+    // And it must remain the same handler after resolution.
+    expect(callbacks.onMessage).toBe(originalRef);
+  });
+
+  it('does not permanently intercept onMessage (later messages flow normally)', async () => {
+    const onMessage = mock<(msg: ServerMessage) => void>();
+    const client = makeClient({ url: 'ws://test' });
+    client.connect(makeCallbacks({ onMessage }));
+    const ws = MockWebSocket.instances[0];
+    ws.simulateOpen();
+
+    const promise = client.requestRuns(1000);
+    ws.simulateMessage({ type: 'runs', runs: [] });
+    await promise;
+
+    onMessage.mockReset();
+    ws.simulateMessage({ type: 'run_complete', runId: 'rX' });
+    ws.simulateMessage({ type: 'runs', runs: [runSummary('z1')] });
+
+    expect(onMessage).toHaveBeenCalledTimes(2);
+  });
+});
+
+// ─── requestRuns() concurrency (callback-mutation regression) ──────────────
+//
+// The headline bug: when requestRuns() was called concurrently, the second
+// call overwrote the first call's installed onMessage wrapper. The first
+// caller's interceptor was lost, so it never resolved (until its timeout) and
+// the two callers fell out of sync. The fix must let a single 'runs' message
+// resolve every pending caller without touching the user's callbacks.
+
+describe('EngineClient – requestRuns() concurrency (no callback mutation)', () => {
+  it('resolves BOTH concurrent requestRuns() calls from a single runs message', async () => {
+    const client = makeClient({ url: 'ws://test' });
+    client.connect(makeCallbacks());
+    const ws = MockWebSocket.instances[0];
+    ws.simulateOpen();
+    ws.sentMessages.length = 0;
+
+    const runs = [runSummary('r1'), runSummary('r2')];
+
+    // Two callers issue the request before either has resolved.
+    const pA = client.requestRuns(500);
+    const pB = client.requestRuns(500);
+
+    // The server may answer both list_runs with a single consolidated message.
+    ws.simulateMessage({ type: 'runs', runs });
+
+    const [a, b] = await Promise.all([pA, pB]);
+
+    expect(a).toEqual(runs);
+    expect(b).toEqual(runs);
+  });
+
+  it('resolves many concurrent requestRuns() calls from a single runs message', async () => {
+    const client = makeClient({ url: 'ws://test' });
+    client.connect(makeCallbacks());
+    const ws = MockWebSocket.instances[0];
+    ws.simulateOpen();
+
+    const runs = [runSummary('only')];
+    const pending = Array.from({ length: 5 }, () => client.requestRuns(500));
+
+    ws.simulateMessage({ type: 'runs', runs });
+
+    const results = await Promise.all(pending);
+
+    expect(results).toHaveLength(5);
+    for (const r of results) {
+      expect(r).toEqual(runs);
+    }
+  });
+
+  it('sends a list_runs for each concurrent requestRuns() call', () => {
+    const client = makeClient({ url: 'ws://test' });
+    client.connect(makeCallbacks());
+    const ws = MockWebSocket.instances[0];
+    ws.simulateOpen();
+    ws.sentMessages.length = 0;
+
+    client.requestRuns(500);
+    client.requestRuns(500);
+    client.requestRuns(500);
+
+    expect(sentTypes(ws).filter((t) => t === 'list_runs')).toHaveLength(3);
+  });
+
+  it('does not mutate callbacks.onMessage while concurrent requests are pending', () => {
+    const onMessage = mock<(msg: ServerMessage) => void>();
+    const callbacks = makeCallbacks({ onMessage });
+    const originalRef = callbacks.onMessage;
+
+    const client = makeClient({ url: 'ws://test' });
+    client.connect(callbacks);
+    const ws = MockWebSocket.instances[0];
+    ws.simulateOpen();
+
+    // Stack two requests; neither has resolved yet.
+    client.requestRuns(500);
+    client.requestRuns(500);
+
+    // The second call must NOT have overwritten the first's handler — the
+    // user's onMessage reference must be untouched altogether.
+    expect(callbacks.onMessage).toBe(originalRef);
+  });
+
+  it('keeps delivering messages to onMessage under concurrent requests', async () => {
+    const onMessage = mock<(msg: ServerMessage) => void>();
+    const client = makeClient({ url: 'ws://test' });
+    client.connect(makeCallbacks({ onMessage }));
+    const ws = MockWebSocket.instances[0];
+    ws.simulateOpen();
+
+    const pA = client.requestRuns(500);
+    const pB = client.requestRuns(500);
+
+    // A non-runs message must reach the user even with two requests pending.
+    ws.simulateMessage({ type: 'run_complete', runId: 'r1' });
+    // The resolving runs message must reach the user too (and resolve both).
+    ws.simulateMessage({ type: 'runs', runs: [runSummary('a')] });
+
+    await Promise.all([pA, pB]);
+
+    const seen = onMessage.mock.calls.map((c) => (c[0] as ServerMessage).type);
+    expect(seen).toContain('run_complete');
+    expect(seen.filter((t) => t === 'runs')).toHaveLength(1);
+  });
+});

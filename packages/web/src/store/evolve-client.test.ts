@@ -9,7 +9,10 @@
 
 import { describe, expect, it } from 'vitest';
 import type { EventRecord, WorkflowProjection } from '../protocol-types';
-import { evolveClient } from './evolve-client';
+// The evolve-client shim has been deleted; evolve is sourced directly from the
+// shared package. The local alias keeps these parity tests (and their
+// `evolveClient(...)` call-sites) unchanged.
+import { evolve as evolveClient } from '@engin/shared/evolve';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 

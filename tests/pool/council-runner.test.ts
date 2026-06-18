@@ -26,72 +26,8 @@ mock.module('../../packages/engine/src/pool/step-execution.js', () => ({
 
 import type { Task } from '../../packages/engine/src/core/types.js';
 import { councilRunner } from '../../packages/engine/src/pool/council-runner.js';
-import type { StepDefinition, TaskRunnerContext, TrackedSession } from '../../packages/engine/src/pool/types.js';
-import { clearPoolMocks } from './helpers.js';
-
-// ─── Helpers ───────────────────────────────────────────────────────────────
-
-/** Create a mock TrackedSession with a tracked dispose mock. */
-function makeTrackedSession(disposeFn?: ReturnType<typeof mock>): {
-  trackedSession: TrackedSession;
-  dispose: ReturnType<typeof mock>;
-} {
-  const dispose = disposeFn ?? mock(() => {});
-  return {
-    trackedSession: {
-      session: {
-        abort: mock(async () => {}),
-        dispose: mock(() => {}),
-        subscribe: mock(() => () => {}),
-        prompt: mock(async () => {}),
-        getLastAssistantText: mock(() => 'output'),
-        sessionId: 'test-session',
-      },
-      dispose,
-      sessionPath: '/tmp/sessions/test',
-    },
-    dispose,
-  };
-}
-
-/** Create a minimal task for test context. */
-function makeTask(overrides?: Partial<Task>): Task {
-  return {
-    id: 'task-1',
-    title: 'Test task',
-    prompt: 'Do the thing',
-    profile: 'coder',
-    files: ['src/index.ts'],
-    dependencies: [],
-    status: 'ready',
-    phaseId: 'phase-1',
-    ...overrides,
-  };
-}
-
-/** TestContext extends TaskRunnerContext so mock functions keep their `.mock` property. */
-interface TestContext extends TaskRunnerContext {
-  completeTask: ReturnType<typeof mock>;
-  failTask: ReturnType<typeof mock>;
-}
-
-/** Create a runner context with mock complete/fail. */
-function createCtx(overrides?: Partial<TestContext>): TestContext {
-  return {
-    task: makeTask(),
-    agentId: 'lane-0',
-    profiles: new Map(),
-    onStatus: undefined,
-    activeSessions: new Set<{ abort(): Promise<void> }>(),
-    phaseId: 'implementing',
-    sessionBaseDir: '/tmp/sessions',
-    cwd: '/tmp/project',
-    maxStepRetries: 5,
-    completeTask: mock(() => true),
-    failTask: mock(() => {}),
-    ...overrides,
-  } as TestContext;
-}
+import type { StepDefinition, TaskRunnerContext } from '../../packages/engine/src/pool/types.js';
+import { clearPoolMocks, createRunnerContext, makeTrackedSession } from './helpers.js';
 
 // ─── Setup ──────────────────────────────────────────────────────────────────
 
@@ -114,7 +50,7 @@ describe('councilRunner', () => {
         trackedSession: makeTrackedSession().trackedSession,
       });
 
-      const ctx = createCtx();
+      const ctx = createRunnerContext();
       const runner = councilRunner({
         workers: [
           { name: 'writer', profileId: 'coder', isReadOnly: false },
@@ -141,7 +77,7 @@ describe('councilRunner', () => {
         return { result: { type: 'approved', output }, trackedSession: makeTrackedSession().trackedSession };
       });
 
-      const ctx = createCtx();
+      const ctx = createRunnerContext();
       const runner = councilRunner({
         workers: [
           { name: 'writer', profileId: 'coder', isReadOnly: false },
@@ -173,7 +109,7 @@ describe('councilRunner', () => {
         };
       });
 
-      const ctx = createCtx();
+      const ctx = createRunnerContext();
       const runner = councilRunner({
         workers: [
           { name: 'impl', profileId: 'coder', isReadOnly: false },
@@ -195,6 +131,297 @@ describe('councilRunner', () => {
     });
   });
 
+  // ─── composeSynthesizerPrompt option (task: receive pre-composed prompts) ──
+  //
+  // councilRunner now accepts an optional `composeSynthesizerPrompt`
+  // callback. When provided it is used to build the synthesizer task; when
+  // omitted the default `composeWorkerOutputsPrompt` helper from
+  // prompt-builder.ts is used (preserving the exact legacy prompt format).
+  describe('composeSynthesizerPrompt option', () => {
+    it('default composer produces the exact legacy prompt format when omitted', async () => {
+      let callCount = 0;
+      mockRunStep.mockImplementation(async () => {
+        callCount++;
+        if (callCount <= 2) {
+          return {
+            result: { type: 'approved', output: callCount === 1 ? 'out-0' : 'out-1' },
+            trackedSession: makeTrackedSession().trackedSession,
+          };
+        }
+        return {
+          result: { type: 'approved', output: 'merged' },
+          trackedSession: makeTrackedSession().trackedSession,
+        };
+      });
+
+      const ctx = createRunnerContext();
+      const originalPrompt = ctx.task.prompt;
+      const runner = councilRunner({
+        workers: [
+          { name: 'w0', profileId: 'coder', isReadOnly: false },
+          { name: 'w1', profileId: 'coder', isReadOnly: false },
+        ],
+        synthesizer: { name: 'synth', profileId: 'coder', isReadOnly: false },
+        // composeSynthesizerPrompt intentionally omitted → default composer
+      });
+
+      await runner(ctx);
+
+      const synthTask = mockRunStep.mock.calls[2][0] as Task;
+      // Exact format previously inlined in council-runner.ts, now provided by
+      // the default composeWorkerOutputsPrompt helper. The original prompt is
+      // preserved (appended to, not replaced).
+      expect(synthTask.prompt).toBe(
+        originalPrompt + '\n\n## Worker Outputs\n' + '### Worker 0\nout-0\n\n### Worker 1\nout-1',
+      );
+      expect(synthTask.prompt.startsWith(originalPrompt)).toBe(true);
+    });
+
+    it('calls the provided composeSynthesizerPrompt with (ctx.task, workerOutputs)', async () => {
+      let callCount = 0;
+      mockRunStep.mockImplementation(async () => {
+        callCount++;
+        if (callCount <= 2) {
+          return {
+            result: { type: 'approved', output: callCount === 1 ? 'alpha' : 'beta' },
+            trackedSession: makeTrackedSession().trackedSession,
+          };
+        }
+        return {
+          result: { type: 'approved', output: 'merged' },
+          trackedSession: makeTrackedSession().trackedSession,
+        };
+      });
+
+      const ctx = createRunnerContext();
+
+      const composeSpy = mock((_task: Task, _outputs: unknown[]): Task => _task);
+
+      const runner = councilRunner({
+        workers: [
+          { name: 'w0', profileId: 'coder', isReadOnly: false },
+          { name: 'w1', profileId: 'coder', isReadOnly: false },
+        ],
+        synthesizer: { name: 'synth', profileId: 'coder', isReadOnly: false },
+        composeSynthesizerPrompt: composeSpy,
+      });
+
+      await runner(ctx);
+
+      // Called exactly once, with the runner context's original task and the
+      // collected worker outputs (in worker order).
+      expect(composeSpy).toHaveBeenCalledTimes(1);
+      expect(composeSpy).toHaveBeenCalledWith(ctx.task, ['alpha', 'beta']);
+    });
+
+    it('passes the task returned by composeSynthesizerPrompt verbatim to the synthesizer runStep', async () => {
+      let callCount = 0;
+      mockRunStep.mockImplementation(async () => {
+        callCount++;
+        if (callCount <= 1) {
+          return {
+            result: { type: 'approved', output: 'worker-output' },
+            trackedSession: makeTrackedSession().trackedSession,
+          };
+        }
+        return {
+          result: { type: 'approved', output: 'merged' },
+          trackedSession: makeTrackedSession().trackedSession,
+        };
+      });
+
+      const ctx = createRunnerContext();
+
+      const customTask: Task = {
+        ...ctx.task,
+        title: 'custom-synth-title',
+        prompt: 'COMPLETELY DIFFERENT PROMPT',
+      };
+
+      const runner = councilRunner({
+        workers: [{ name: 'w0', profileId: 'coder', isReadOnly: false }],
+        synthesizer: { name: 'synth', profileId: 'coder', isReadOnly: false },
+        composeSynthesizerPrompt: () => customTask,
+      });
+
+      await runner(ctx);
+
+      // The synthesizer call (2nd runStep) must receive the composer's return
+      // value by reference (no cloning / re-wrapping by the runner).
+      const synthTask = mockRunStep.mock.calls[1][0] as Task;
+      expect(synthTask).toBe(customTask);
+      expect(synthTask.prompt).toBe('COMPLETELY DIFFERENT PROMPT');
+      expect(synthTask.title).toBe('custom-synth-title');
+    });
+
+    it('maps worker results to outputs: approved→output, rejected→feedback (in order)', async () => {
+      let callCount = 0;
+      mockRunStep.mockImplementation(async () => {
+        callCount++;
+        if (callCount === 1) {
+          // Worker 0 rejected (non-throwing) → feedback is used as its output
+          return {
+            result: { type: 'rejected', feedback: 'revise-me', output: undefined },
+            trackedSession: makeTrackedSession().trackedSession,
+          };
+        }
+        if (callCount === 2) {
+          // Worker 1 approved → output is used
+          return {
+            result: { type: 'approved', output: 'good-output' },
+            trackedSession: makeTrackedSession().trackedSession,
+          };
+        }
+        return {
+          result: { type: 'approved', output: 'merged' },
+          trackedSession: makeTrackedSession().trackedSession,
+        };
+      });
+
+      const ctx = createRunnerContext();
+      const captured: unknown[] = [];
+      const runner = councilRunner({
+        workers: [
+          { name: 'w0', profileId: 'coder', isReadOnly: false },
+          { name: 'w1', profileId: 'coder', isReadOnly: false },
+        ],
+        synthesizer: { name: 'synth', profileId: 'coder', isReadOnly: false },
+        composeSynthesizerPrompt: (task: Task, outputs: unknown[]) => {
+          captured.push(...outputs);
+          return task;
+        },
+      });
+
+      await runner(ctx);
+
+      // Order preserved: index 0 is the rejected worker's feedback, index 1 is
+      // the approved worker's output.
+      expect(captured).toEqual(['revise-me', 'good-output']);
+    });
+
+    it('does NOT call composeSynthesizerPrompt when all workers fail', async () => {
+      mockRunStep.mockRejectedValue(new Error('Worker crashed'));
+
+      const ctx = createRunnerContext();
+      const composeSpy = mock((task: Task, _outputs: unknown[]): Task => task);
+
+      const runner = councilRunner({
+        workers: [
+          { name: 'w0', profileId: 'coder', isReadOnly: false },
+          { name: 'w1', profileId: 'coder', isReadOnly: false },
+        ],
+        synthesizer: { name: 'synth', profileId: 'coder', isReadOnly: false },
+        composeSynthesizerPrompt: composeSpy,
+      });
+
+      const outcome = await runner(ctx);
+
+      expect(outcome.status).toBe('failed');
+      // The synthesizer (and therefore the composer) is skipped entirely when
+      // every worker throws.
+      expect(composeSpy).not.toHaveBeenCalled();
+    });
+
+    it('does not mutate the original ctx.task (default composer spreads into a new Task)', async () => {
+      let callCount = 0;
+      mockRunStep.mockImplementation(async () => {
+        callCount++;
+        if (callCount <= 1) {
+          return {
+            result: { type: 'approved', output: 'worker-out' },
+            trackedSession: makeTrackedSession().trackedSession,
+          };
+        }
+        return {
+          result: { type: 'approved', output: 'merged' },
+          trackedSession: makeTrackedSession().trackedSession,
+        };
+      });
+
+      const ctx = createRunnerContext();
+      const originalPrompt = ctx.task.prompt;
+
+      const runner = councilRunner({
+        workers: [{ name: 'w0', profileId: 'coder', isReadOnly: false }],
+        synthesizer: { name: 'synth', profileId: 'coder', isReadOnly: false },
+        // default composer
+      });
+
+      await runner(ctx);
+
+      // ctx.task.prompt must be untouched — the composer returns a brand-new
+      // Task object instead of mutating the original.
+      expect(ctx.task.prompt).toBe(originalPrompt);
+    });
+
+    it('JSON-stringifies non-string worker outputs in the default composer', async () => {
+      let callCount = 0;
+      const objOutput = { score: 42, notes: 'looks good' };
+      mockRunStep.mockImplementation(async () => {
+        callCount++;
+        if (callCount <= 1) {
+          return {
+            result: { type: 'approved', output: objOutput },
+            trackedSession: makeTrackedSession().trackedSession,
+          };
+        }
+        return {
+          result: { type: 'approved', output: 'merged' },
+          trackedSession: makeTrackedSession().trackedSession,
+        };
+      });
+
+      const ctx = createRunnerContext();
+      const runner = councilRunner({
+        workers: [{ name: 'w0', profileId: 'coder', isReadOnly: false }],
+        synthesizer: { name: 'synth', profileId: 'coder', isReadOnly: false },
+      });
+
+      await runner(ctx);
+
+      const synthTask = mockRunStep.mock.calls[1][0] as Task;
+      // Non-string outputs are JSON.stringify-ed by the default composer
+      // (matching the legacy inline behavior).
+      expect(synthTask.prompt).toContain(JSON.stringify(objOutput));
+    });
+  });
+
+  // ─── Shared runner-utils integration ───────────────────────────────────────
+  //
+  // The refactored runner builds its StepExecutionContext via buildExecCtx(ctx)
+  // (runner-utils.ts). Unlike the old inline object, buildExecCtx forwards the
+  // optional `rendererRegistry` field from the context.
+  describe('shared runner utilities integration', () => {
+    it('forwards ctx fields (incl. rendererRegistry) to runStep via buildExecCtx', async () => {
+      mockRunStep.mockResolvedValue({
+        result: { type: 'approved', output: 'out' },
+        trackedSession: makeTrackedSession().trackedSession,
+      });
+
+      const rendererRegistry = { __marker: 'custom-renderer' } as unknown as TaskRunnerContext['rendererRegistry'];
+      const ctx = createRunnerContext({ rendererRegistry });
+
+      const runner = councilRunner({
+        workers: [{ name: 'w0', profileId: 'coder', isReadOnly: false }],
+        synthesizer: { name: 'synth', profileId: 'coder', isReadOnly: false },
+      });
+
+      await runner(ctx);
+
+      // execCtx is the 6th positional argument (index 5) to runStep.
+      const execCtx = mockRunStep.mock.calls[0][5] as {
+        rendererRegistry?: unknown;
+        sessionBaseDir?: string;
+        cwd?: string;
+        phaseId?: string;
+      };
+      expect(execCtx.rendererRegistry).toBe(rendererRegistry);
+      expect(execCtx.sessionBaseDir).toBe(ctx.sessionBaseDir);
+      expect(execCtx.cwd).toBe(ctx.cwd);
+      expect(execCtx.phaseId).toBe(ctx.phaseId);
+    });
+  });
+
   describe('synthesizer rejection', () => {
     it('returns failed with feedback when synthesizer rejects', async () => {
       let callCount = 0;
@@ -213,7 +440,7 @@ describe('councilRunner', () => {
         };
       });
 
-      const ctx = createCtx();
+      const ctx = createRunnerContext();
       const runner = councilRunner({
         workers: [{ name: 'writer', profileId: 'coder', isReadOnly: false }],
         synthesizer: {
@@ -247,7 +474,7 @@ describe('councilRunner', () => {
         };
       });
 
-      const ctx = createCtx();
+      const ctx = createRunnerContext();
       const runner = councilRunner({
         workers: [
           { name: 'worker-a', profileId: 'coder', isReadOnly: false },
@@ -267,7 +494,7 @@ describe('councilRunner', () => {
     it('fails the task when all workers throw', async () => {
       mockRunStep.mockRejectedValue(new Error('Worker crashed'));
 
-      const ctx = createCtx();
+      const ctx = createRunnerContext();
       const runner = councilRunner({
         workers: [
           { name: 'worker-a', profileId: 'coder', isReadOnly: false },
@@ -281,7 +508,7 @@ describe('councilRunner', () => {
       expect(outcome.status).toBe('failed');
       expect(outcome).toHaveProperty('error', 'All workers failed');
       expect(ctx.failTask).toHaveBeenCalled();
-      const failCallArg = ctx.failTask.mock.calls[0][0] as Record<string, unknown>;
+      const failCallArg = (ctx.failTask as ReturnType<typeof mock>).mock.calls[0][0] as Record<string, unknown>;
       expect(failCallArg.error).toContain('Worker crashed');
       expect(ctx.completeTask).not.toHaveBeenCalled();
     });
@@ -311,7 +538,7 @@ describe('councilRunner', () => {
         };
       });
 
-      const ctx = createCtx();
+      const ctx = createRunnerContext();
       const runner = councilRunner({
         workers: [
           {
@@ -338,7 +565,7 @@ describe('councilRunner', () => {
 
   describe('no workers', () => {
     it('returns failed with error when workers array is empty', async () => {
-      const ctx = createCtx();
+      const ctx = createRunnerContext();
       const runner = councilRunner({
         workers: [],
         synthesizer: { name: 'synth', profileId: 'coder', isReadOnly: false },
@@ -367,7 +594,7 @@ describe('councilRunner', () => {
         };
       });
 
-      const ctx = createCtx();
+      const ctx = createRunnerContext();
       const runner = councilRunner({
         workers: [
           { name: 'w1', profileId: 'coder', isReadOnly: false },
@@ -407,7 +634,7 @@ describe('councilRunner', () => {
         };
       });
 
-      const ctx = createCtx();
+      const ctx = createRunnerContext();
       const runner = councilRunner({
         workers: [
           { name: 'w1', profileId: 'coder', isReadOnly: false },
@@ -448,7 +675,7 @@ describe('councilRunner', () => {
         };
       });
 
-      const ctx = createCtx();
+      const ctx = createRunnerContext();
       const runner = councilRunner({
         workers: [
           { name: 'w1', profileId: 'coder', isReadOnly: false },
@@ -469,7 +696,7 @@ describe('councilRunner', () => {
     it('disposes nothing when all workers throw (no sessions tracked)', async () => {
       mockRunStep.mockRejectedValue(new Error('Worker crashed'));
 
-      const ctx = createCtx();
+      const ctx = createRunnerContext();
       const runner = councilRunner({
         workers: [
           { name: 'w1', profileId: 'coder', isReadOnly: false },
@@ -504,7 +731,7 @@ describe('councilRunner', () => {
         throw new Error('Synth runtime failure');
       });
 
-      const ctx = createCtx();
+      const ctx = createRunnerContext();
       const runner = councilRunner({
         workers: [{ name: 'w1', profileId: 'coder', isReadOnly: false }],
         synthesizer: { name: 'synth', profileId: 'coder', isReadOnly: false },
@@ -539,7 +766,7 @@ describe('councilRunner', () => {
         };
       });
 
-      const ctx = createCtx();
+      const ctx = createRunnerContext();
       const runner = councilRunner({
         workers: [
           { name: 'slow-a', profileId: 'coder', isReadOnly: false },
@@ -569,7 +796,7 @@ describe('councilRunner', () => {
       });
 
       const onStepStart = mock(() => {});
-      const ctx = createCtx({ onStatus: { onStepStart } });
+      const ctx = createRunnerContext({ onStatus: { onStepStart } });
       const runner = councilRunner({
         workers: [
           { name: 'alpha', profileId: 'coder', isReadOnly: false },
@@ -591,7 +818,7 @@ describe('councilRunner', () => {
     it('does NOT re-throw errors from runStep', async () => {
       mockRunStep.mockRejectedValue(new Error('Internal error'));
 
-      const ctx = createCtx();
+      const ctx = createRunnerContext();
       const runner = councilRunner({
         workers: [{ name: 'w1', profileId: 'coder', isReadOnly: false }],
         synthesizer: { name: 'synth', profileId: 'coder', isReadOnly: false },
@@ -608,13 +835,16 @@ describe('councilRunner', () => {
       expect(threw).toBe(false);
     });
 
-    it('handles completeTask returning false', async () => {
+    it('settles as failed when completeTask returns false (delegated to settleResult)', async () => {
+      // settleResult() branches on the boolean returned by completeTask:
+      // when false (task cancelled/raced), it calls failTask and returns
+      // { status: 'failed' }.
       mockRunStep.mockResolvedValue({
-        result: { type: 'approved', output: 'output' },
+        result: { type: 'approved', output: 'merged-output' },
         trackedSession: makeTrackedSession().trackedSession,
       });
 
-      const ctx = createCtx({
+      const ctx = createRunnerContext({
         completeTask: mock(() => false),
       });
       const runner = councilRunner({
@@ -626,7 +856,12 @@ describe('councilRunner', () => {
 
       expect(outcome.status).toBe('failed');
       expect(outcome).toHaveProperty('error', 'Failed to submit');
-      expect(ctx.failTask).toHaveBeenCalledWith(expect.objectContaining({ error: 'Failed to submit' }));
+      // completeTask is invoked once with the synthesizer output; when it
+      // returns false, settleResult calls failTask with the error.
+      expect(ctx.completeTask).toHaveBeenCalledTimes(1);
+      expect(ctx.completeTask).toHaveBeenCalledWith('merged-output');
+      expect(ctx.failTask).toHaveBeenCalledTimes(1);
+      expect(ctx.failTask).toHaveBeenCalledWith({ completed: false, error: 'Failed to submit' });
     });
   });
 });

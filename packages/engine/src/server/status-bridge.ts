@@ -1,6 +1,6 @@
+import type { EventRecord, WorkflowProjection } from '@engin/shared/event-types';
 import type { ServerMessage } from '@engin/shared/protocol-types';
 import type { EventStore } from '../tracking/event-store.js';
-import type { EventRecord, WorkflowProjection } from '../tracking/event-types.js';
 
 // ─── StatusBridge ───────────────────────────────────────────────────────────
 
@@ -19,11 +19,12 @@ export type BridgeMessage = Extract<ServerMessage, { type: 'snapshot' | 'events'
  * - Between snapshots the bridge coalesces store changes into a single
  *   `{ type: 'events' }` message per microtask tick, forwarding raw
  *   {@link EventRecord}s. The web client replays them via its own evolve.
- * - Terminal lifecycle transitions (→ complete / → failed) are broadcast
- *   IMMEDIATELY via `{ type: 'run_complete' }` / `{ type: 'run_failed' }`,
- *   not coalesced, so clients can surface a status banner without waiting for
- *   the event batch flush.  The coalesced events batch also carries the
- *   terminal event records (idempotent).
+ * - Terminal lifecycle messages (`run_complete` / `run_failed`) are the SOLE
+ *   responsibility of the {@link RunManager}: it calls `broadcastTerminal()`
+ *   explicitly when a workflow reaches a terminal state.  The bridge does NOT
+ *   auto-detect terminal transitions from projection changes — that would
+ *   duplicate the RunManager's explicit signal.  The coalesced events batch
+ *   still carries the raw terminal event records (idempotent replay).
  */
 export class StatusBridge {
   private unsubscribe: () => void;
@@ -34,14 +35,14 @@ export class StatusBridge {
   /** Whether a microtask flush is already scheduled. */
   private flushPending = false;
 
+  /** Whether the bridge has been disposed. Guards against uncancellable microtask flushes. */
+  private disposed = false;
+
   /** Reference to the store. */
   private readonly store: EventStore;
 
   /** The run this bridge is scoped to; tags every broadcast message. */
   private readonly runId: string;
-
-  /** Last projection status we observed (for terminal lifecycle detection). */
-  private prevStatus: WorkflowProjection['status'];
 
   constructor(
     private broadcast: (msg: ServerMessage) => void,
@@ -53,9 +54,7 @@ export class StatusBridge {
 
     // Initialise lastSentSeq to the store's current seq so that pre-subscribe
     // history is NOT re-broadcast — late joiners get it via getSnapshot().
-    const snap = store.getSnapshot();
-    this.lastSentSeq = snap.seq;
-    this.prevStatus = snap.state.status;
+    this.lastSentSeq = store.getSnapshot().seq;
 
     // Subscribe to future projection changes.
     this.unsubscribe = store.subscribe((projection) => this.onProjectionChange(projection));
@@ -98,8 +97,13 @@ export class StatusBridge {
 
   /**
    * Unsubscribe from the store. Call during teardown to avoid leaks.
+   *
+   * Idempotent: subsequent calls are safely ignored.  The store unsubscribe
+   * is invoked exactly once.
    */
   dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
     this.unsubscribe();
   }
 
@@ -108,37 +112,26 @@ export class StatusBridge {
    * `run_failed`) directly.  This is the canonical hook the RunManager calls
    * when a workflow reaches a terminal lifecycle state; it broadcasts the
    * message IMMEDIATELY (synchronously, not coalesced) to subscribers.
+   *
+   * No-op after {@link dispose} has been called.
    */
   broadcastTerminal(msg: Extract<BridgeMessage, { type: 'run_complete' | 'run_failed' }>): void {
+    if (this.disposed) return;
     this.broadcast(msg);
   }
 
   // ─── Private helpers ──────────────────────────────────────────────────────
 
   /**
-   * Handle a projection change from the store.  Terminal lifecycle
-   * transitions (→ complete / → failed) are broadcast IMMEDIATELY — not
-   * coalesced — as `run_complete` / `run_failed` so clients can surface a
-   * status banner without waiting for the event batch flush.  All projection
-   * changes (including terminal ones) also schedule a coalesced events flush.
+   * Handle a projection change from the store.  Every change (terminal or
+   * otherwise) schedules a coalesced events flush — the bridge does NOT
+   * auto-detect terminal transitions here, since terminal broadcasts are the
+   * sole responsibility of the {@link RunManager} via `broadcastTerminal()`.
+   *
+   * No-op after {@link dispose} has been called.
    */
-  private onProjectionChange(projection: WorkflowProjection): void {
-    const prev = this.prevStatus;
-    this.prevStatus = projection.status;
-
-    if (prev !== projection.status) {
-      if (projection.status === 'complete') {
-        this.broadcast({ type: 'run_complete', runId: this.runId });
-      } else if (projection.status === 'failed') {
-        this.broadcast({
-          type: 'run_failed',
-          runId: this.runId,
-          error: projection.error ?? '',
-          phase: projection.failedPhase ?? '',
-        });
-      }
-    }
-
+  private onProjectionChange(_projection: WorkflowProjection): void {
+    if (this.disposed) return;
     this.scheduleFlush();
   }
 
@@ -156,8 +149,13 @@ export class StatusBridge {
 
   /**
    * Collect all events since lastSentSeq and broadcast them in one message.
+   *
+   * No-op after {@link dispose} has been called (guards against uncancellable
+   * microtask flushes that were scheduled before disposal).
    */
   private flush(): void {
+    if (this.disposed) return;
+
     this.flushPending = false;
 
     const latestSeq = this.store.getSnapshot().seq;

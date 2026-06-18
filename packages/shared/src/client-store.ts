@@ -12,10 +12,11 @@
  * lines are produced via `formatWorkflowEventLine`.
  */
 
-import type { AgentEntity, EventRecord, WorkflowProjection } from './event-types.js';
+import type { EventRecord, WorkflowProjection } from './event-types.js';
 import { createInitialProjection, MAX_RUN_LOG } from './event-types.js';
-import { evolve, MAX_AGENT_LOG } from './evolve.js';
+import { evolve } from './evolve.js';
 import { formatWorkflowEventLine } from './format-workflow-event.js';
+import { reconcileSelection, toProjection, writeProjectionToState } from './projection-helpers.js';
 
 const MAX_WORKFLOW_EVENT_LOG = 1000;
 
@@ -37,7 +38,7 @@ export interface RunLogEntry {
   timestamp: string;
 }
 
-export interface ClientStoreState extends Omit<WorkflowProjection, 'runLog'> {
+export type ClientStoreState = Omit<WorkflowProjection, 'runLog'> & {
   /** Runtime console output (RunLogEntry[]), overriding the projection's LogEntry[]. */
   runLog: RunLogEntry[];
   workflowEventLog: WorkflowEventLogEntry[];
@@ -46,110 +47,11 @@ export interface ClientStoreState extends Omit<WorkflowProjection, 'runLog'> {
   selectedStepIndex: number | null;
   userPinnedPhase: boolean;
   userPinnedStep: boolean;
-}
+};
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
-
-/** Defensive cap on agent log length. */
-function capAgentLogs(agents: Record<string, AgentEntity>): Record<string, AgentEntity> {
-  const out: Record<string, AgentEntity> = {};
-  for (const [k, v] of Object.entries(agents)) {
-    if (v.log.length > MAX_AGENT_LOG) {
-      out[k] = { ...v, log: v.log.slice(v.log.length - MAX_AGENT_LOG) };
-    } else {
-      out[k] = v;
-    }
-  }
-  return out;
-}
-
-/** Reconstruct a WorkflowProjection from the current store state. */
-function toProjection(s: ClientStoreState): WorkflowProjection {
-  return {
-    seq: s.seq,
-    taskPrompt: s.taskPrompt,
-    phases: s.phases,
-    currentPhaseId: s.currentPhaseId,
-    completedPhaseIds: s.completedPhaseIds,
-    tasks: s.tasks,
-    agents: s.agents,
-    sidebar: s.sidebar,
-    status: s.status,
-    error: s.error,
-    failedPhase: s.failedPhase,
-    stats: s.stats,
-    // The client store's runLog is RunLogEntry[] (managed via appendRunLog),
-    // distinct from the projection's LogEntry[] runLog. `log` events are routed
-    // to appendRunLog by the transport — never through applyEvents — so a fresh
-    // empty array is the correct seed for the evolve fold.
-    runLog: [],
-  };
-}
-
-/**
- * Write every normalized projection field into the state. Uses defensive
- * (shallow) copies for externally-sourced collections. Does NOT write `seq`
- * (set separately after evolve) or `runLog` (managed via appendRunLog).
- *
- * @param fromSnapshot When true, defensively cap agent logs (untrusted
- *   external source). When false (event-folding path), evolve already enforces
- *   the cap so the redundant iteration is skipped.
- */
-function writeProjectionToState(state: ClientStoreState, p: WorkflowProjection, fromSnapshot = false): void {
-  state.agents = fromSnapshot ? capAgentLogs(p.agents) : p.agents;
-  state.tasks = { ...p.tasks };
-  state.phases = [...p.phases];
-  state.currentPhaseId = p.currentPhaseId;
-  state.completedPhaseIds = [...p.completedPhaseIds];
-  state.sidebar = { ...p.sidebar };
-  state.status = p.status;
-  state.taskPrompt = p.taskPrompt;
-  state.error = p.error;
-  state.failedPhase = p.failedPhase;
-  state.stats = { ...p.stats };
-}
-
-/**
- * Reconcile selection state after projection updates (snapshot or events).
- * Implements follow rules:
- * - Phase follow: if selectedPhaseId is not null, not completed, and differs
- *   from currentPhaseId → snap to currentPhaseId.
- * - Task follow: if selectedTaskId is null or no longer belongs to the selected
- *   phase → auto-select the first active task (or first task).
- * - Step follow: if !userPinnedStep → sync with activeStepIndex of the selected task.
- */
-function reconcileSelection(state: ClientStoreState): void {
-  // Phase follow
-  if (state.selectedPhaseId !== null && state.currentPhaseId) {
-    const isCompleted = state.completedPhaseIds.includes(state.selectedPhaseId);
-    if (!isCompleted && state.selectedPhaseId !== state.currentPhaseId) {
-      state.selectedPhaseId = state.currentPhaseId;
-      state.userPinnedPhase = false;
-    }
-  } else if (state.selectedPhaseId === null && state.currentPhaseId) {
-    state.selectedPhaseId = state.currentPhaseId;
-  }
-
-  // Task follow
-  if (state.selectedPhaseId) {
-    const tasksInPhase = Object.values(state.tasks).filter((t) => t.phaseId === state.selectedPhaseId);
-    if (state.selectedTaskId === null || !tasksInPhase.some((t) => t.id === state.selectedTaskId)) {
-      const firstActive = tasksInPhase.find((t) => t.status === 'active');
-      state.selectedTaskId = firstActive?.id ?? tasksInPhase[0]?.id ?? null;
-      // Reset step selection when task changes.
-      state.selectedStepIndex = null;
-      state.userPinnedStep = false;
-    }
-  }
-
-  // Step follow
-  if (state.selectedTaskId !== null && !state.userPinnedStep) {
-    const task = state.tasks[state.selectedTaskId];
-    if (task?.activeStepIndex !== undefined) {
-      state.selectedStepIndex = task.activeStepIndex;
-    }
-  }
-}
+// capAgentLogs / toProjection / writeProjectionToState / reconcileSelection
+// live in ./projection-helpers.js (shared with web workflow-store).
 
 // ─── Store ──────────────────────────────────────────────────────────────────
 

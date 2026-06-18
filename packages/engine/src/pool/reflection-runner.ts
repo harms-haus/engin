@@ -5,10 +5,11 @@
 // again (with session resume). This loop continues until the critic approves
 // or maxRounds is exhausted.
 
-import { appendReviewFeedback, safeErrorMessage } from '../core/utils.js';
+import { appendReviewFeedback } from '../core/task-feedback.js';
+import { buildExecCtx, createSessionMap, handleRunnerError, settleResult } from './runner-utils.js';
 import { extractSeverity, isFailingSeverity } from './severity.js';
-import { runStep, type StepExecutionContext } from './step-execution.js';
-import type { StepDefinition, TaskOutcome, TaskRunner, TaskRunnerContext, TrackedSession } from './types.js';
+import { runStep } from './step-execution.js';
+import type { StepDefinition, TaskOutcome, TaskRunner, TaskRunnerContext } from './types.js';
 
 // ─── Options ─────────────────────────────────────────────────────────────
 
@@ -33,31 +34,15 @@ export function reflectionRunner(options: ReflectionRunnerOptions): TaskRunner {
   const maxRounds = Math.max(1, options.maxRounds ?? 3);
 
   return async (ctx: TaskRunnerContext): Promise<TaskOutcome> => {
-    const { task, agentId, profiles, onStatus, phaseId, sessionBaseDir, cwd, apiKeys } = ctx;
+    const { task, agentId, profiles, onStatus } = ctx;
 
     // ── Step 1: Session tracking ────────────────────────────────────────
-    const taskSessions = new Map<number, TrackedSession>();
-
-    const disposeAllTaskSessions = () => {
-      for (const ts of taskSessions.values()) {
-        try {
-          ts.dispose();
-        } catch (err) {
-          console.error(`[${agentId}] Error disposing harness for task ${task.id}:`, safeErrorMessage(err));
-        }
-      }
-      taskSessions.clear();
-    };
+    // createSessionMap keys sessions by step index (0 = draft, 1 = critic) and
+    // disposes the previous entry when overwriting a key (session resume).
+    const sessionMap = createSessionMap(agentId, task.id);
 
     // ── Step 2: Execution context ───────────────────────────────────────
-    const execCtx: StepExecutionContext = {
-      sessionBaseDir,
-      cwd,
-      apiKeys,
-      onStatus,
-      activeSessions: ctx.activeSessions,
-      phaseId,
-    };
+    const execCtx = buildExecCtx(ctx);
 
     // ── Step 3: Per-step execution state ────────────────────────────────
     let draftExecCount = 0;
@@ -73,7 +58,7 @@ export function reflectionRunner(options: ReflectionRunnerOptions): TaskRunner {
         // event ordering (agent_spawned → step_started).
         draftExecCount++;
 
-        const existingDraftSession = taskSessions.get(0);
+        const existingDraftSession = sessionMap.sessions.get(0);
         const draftExistingSessionPath = existingDraftSession?.sessionPath;
 
         const { result: draftResult, trackedSession: draftTrackedSession } = await runStep(
@@ -86,21 +71,13 @@ export function reflectionRunner(options: ReflectionRunnerOptions): TaskRunner {
           draftExistingSessionPath,
         );
 
-        // Dispose old draft session if exists, store new one
-        const oldDraftSession = taskSessions.get(0);
-        if (oldDraftSession) {
-          try {
-            oldDraftSession.dispose();
-          } catch (err) {
-            console.error(`[${agentId}] Error disposing old draft session for task ${task.id}:`, safeErrorMessage(err));
-          }
-        }
-        taskSessions.set(0, draftTrackedSession);
+        // set() disposes the previous draft session (if any) before storing the new one
+        sessionMap.set(0, draftTrackedSession);
 
         // If draft result is 'rejected' (structured output failure), fail immediately
         if (draftResult.type === 'rejected') {
           ctx.failTask({ completed: false, feedback: draftResult.feedback });
-          disposeAllTaskSessions();
+          sessionMap.disposeAll();
           return { status: 'failed', feedback: draftResult.feedback };
         }
 
@@ -109,7 +86,7 @@ export function reflectionRunner(options: ReflectionRunnerOptions): TaskRunner {
         // event ordering (agent_spawned → step_started).
         criticExecCount++;
 
-        const existingCriticSession = taskSessions.get(1);
+        const existingCriticSession = sessionMap.sessions.get(1);
         const criticExistingSessionPath = existingCriticSession?.sessionPath;
 
         const { result: criticResult, trackedSession: criticTrackedSession } = await runStep(
@@ -122,33 +99,15 @@ export function reflectionRunner(options: ReflectionRunnerOptions): TaskRunner {
           criticExistingSessionPath,
         );
 
-        // Dispose old critic session if exists, store new one
-        const oldCriticSession = taskSessions.get(1);
-        if (oldCriticSession) {
-          try {
-            oldCriticSession.dispose();
-          } catch (err) {
-            console.error(
-              `[${agentId}] Error disposing old critic session for task ${task.id}:`,
-              safeErrorMessage(err),
-            );
-          }
-        }
-        taskSessions.set(1, criticTrackedSession);
+        // set() disposes the previous critic session (if any) before storing the new one
+        sessionMap.set(1, criticTrackedSession);
 
         // Capture last result for post-loop use
         lastCriticResult = criticResult;
 
         // ── Step 4c: Critic approved → complete ─────────────────────────
         if (criticResult.type === 'approved') {
-          if (ctx.completeTask(criticResult.output)) {
-            disposeAllTaskSessions();
-            return { status: 'completed', output: criticResult.output };
-          }
-
-          ctx.failTask({ completed: false, error: 'Failed to submit' });
-          disposeAllTaskSessions();
-          return { status: 'failed', error: 'Failed to submit' };
+          return settleResult(ctx, criticResult, sessionMap.disposeAll);
         }
 
         // ── Step 4d: Critic rejected → append feedback and retry ────────
@@ -165,10 +124,14 @@ export function reflectionRunner(options: ReflectionRunnerOptions): TaskRunner {
       }
 
       // ── Step 5: Max rounds exhausted ──────────────────────────────────
-      // lastCriticResult is guaranteed to be set here because maxRounds > 0
+      // lastCriticResult is guaranteed to be set here because maxRounds > 0.
+      // The settle logic here is more complex than settleResult's simple
+      // approved/rejected mapping: it branches on severity to decide whether
+      // to fail (critical/high) or accept with caveats (medium/low/none),
+      // and respects the completeTask boolean for the accepted case.
       if (!lastCriticResult) {
         ctx.failTask({ completed: false, error: 'No critic result produced' });
-        disposeAllTaskSessions();
+        sessionMap.disposeAll();
         return { status: 'failed', error: 'No critic result produced' };
       }
       const finalCriticResult = lastCriticResult;
@@ -178,25 +141,22 @@ export function reflectionRunner(options: ReflectionRunnerOptions): TaskRunner {
       if (isFailingSeverity(severity)) {
         // Critical/high → task failed
         ctx.failTask({ completed: false, feedback, severity });
-        disposeAllTaskSessions();
+        sessionMap.disposeAll();
         return { status: 'failed', feedback };
       }
 
       // Medium/low/none → accept as completed with caveats
       if (ctx.completeTask(finalCriticResult.output)) {
-        disposeAllTaskSessions();
+        sessionMap.disposeAll();
         return { status: 'completed', output: finalCriticResult.output };
       }
 
       ctx.failTask({ completed: false, error: 'Failed to submit' });
-      disposeAllTaskSessions();
+      sessionMap.disposeAll();
       return { status: 'failed', error: 'Failed to submit' };
     } catch (err) {
       // ── Step 6: Unexpected error – never re-throw ────────────────────
-      disposeAllTaskSessions();
-      const errorMsg = safeErrorMessage(err);
-      ctx.failTask({ completed: false, error: errorMsg });
-      return { status: 'failed', error: errorMsg };
+      return handleRunnerError(err, ctx, sessionMap.disposeAll);
     }
   };
 }

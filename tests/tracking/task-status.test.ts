@@ -59,19 +59,22 @@ describe('TaskTracker', () => {
   // ── getReadyTasks ──────────────────────────────────────────────────
 
   describe('getReadyTasks', () => {
-    it('returns only ready tasks; ties broken alphabetically', () => {
+    it('returns only ready tasks; equal-pressure ties keep insertion order', () => {
       const tracker = new TaskTracker();
-      // c depends on a and b → both ready, both block c (equal pressure)
+      // c depends on a and b → both ready, both block c (equal pressure).
+      // Add the ready predecessors OUT of alphabetical order to prove the
+      // tiebreak is insertion order, not alphabetic.
       tracker.addTask({ ...makeTask({ id: 'c', dependencies: ['a', 'b'] }), status: undefined });
-      tracker.addTask(makeTask({ id: 'a' }));
       tracker.addTask(makeTask({ id: 'b' }));
+      tracker.addTask(makeTask({ id: 'a' }));
 
       const ready = tracker.getReadyTasks();
 
       expect(ready).toHaveLength(2);
-      // a and b block the same task (c) → tie on pressure → sorted alphabetically
-      expect(ready[0].id).toBe('a');
-      expect(ready[1].id).toBe('b');
+      // a and b block the same task (c) → tie on pressure → insertion order
+      // wins (b was added before a). Alphabetical would have put a first.
+      expect(ready[0].id).toBe('b');
+      expect(ready[1].id).toBe('a');
       // c is blocked and excluded
     });
 
@@ -141,7 +144,8 @@ describe('TaskTracker', () => {
       tracker.addTask({ ...makeTask({ id: 'c', dependencies: ['b'] }), status: undefined });
 
       // Claim + complete b → c becomes ready. c is now a leaf too, so the only
-      // ready tasks are leaves (a, c); tie broken by fewer deps then id.
+      // ready tasks are leaves (a, c); equal pressure → insertion order (a was
+      // added before c).
       tracker.claimTasks(1, 'agent-1');
       tracker.completeTask('b');
 
@@ -149,11 +153,40 @@ describe('TaskTracker', () => {
       expect(ready.map((t) => t.id)).toEqual(['a', 'c']);
     });
 
+    it('equal-pressure ties use insertion order, NOT fewer-dependencies', () => {
+      // Regression guard: the old behavior broke ties by dependency count
+      // (fewer deps first), which starved heavier tasks. Insertion order must
+      // win instead.
+      const tracker = new TaskTracker();
+      // `big` has two (already-satisfied) deps but nothing depends on it →
+      // pressure 0. `small` is a pure leaf → pressure 0. Equal pressure.
+      // `big` is added BEFORE `small`, so insertion order ranks it first.
+      tracker.addTask(makeTask({ id: 'p1', status: 'complete' }));
+      tracker.addTask(makeTask({ id: 'p2', status: 'complete' }));
+      tracker.addTask({ ...makeTask({ id: 'big', dependencies: ['p1', 'p2'] }), status: undefined });
+      tracker.addTask(makeTask({ id: 'small' }));
+
+      // Both ready, both pressure 0 → insertion order: big before small.
+      // The old fewer-deps-first rule would have produced ['small', 'big'].
+      expect(tracker.getReadyTasks().map((t) => t.id)).toEqual(['big', 'small']);
+    });
+
+    it('equal-pressure ties keep insertion order across multiple leaves', () => {
+      // Three independent leaves, added out of alphabetical order.
+      const tracker = new TaskTracker();
+      tracker.addTask(makeTask({ id: 'charlie' }));
+      tracker.addTask(makeTask({ id: 'alpha' }));
+      tracker.addTask(makeTask({ id: 'bravo' }));
+
+      // All pressure 0 → insertion order is preserved, NOT alphabetical.
+      expect(tracker.getReadyTasks().map((t) => t.id)).toEqual(['charlie', 'alpha', 'bravo']);
+    });
+
     it('rebuilds pressure ranking after tasks are added (cache invalidation)', () => {
       const tracker = new TaskTracker();
       tracker.addTask(makeTask({ id: 'a' }));
       tracker.addTask(makeTask({ id: 'b' }));
-      // Both leaves so far → alphabetical
+      // Both leaves so far → equal pressure → insertion order (a before b)
       expect(tracker.getReadyTasks().map((t) => t.id)).toEqual(['a', 'b']);
 
       // Now make b block a new task c
@@ -1428,5 +1461,159 @@ describe('TaskTracker', () => {
       expect(tracker.getTask('b')!.status).toBe('ready'); // failed → ready
       expect(tracker.getTask('c')!.status).toBe('cancelled'); // not reset
     });
+  });
+});
+
+// ── warnedDeadlocked pruning ────────────────────────────────────────
+//
+// `warnedDeadlocked` records tasks that isPoolDone() has already warned
+// about (blocked with missing dependencies) so the warning is not repeated on
+// every poll. It must be pruned as tasks leave the blocked/ready states —
+// otherwise it grows without bound over a long-running workflow.
+//
+// The set is a pure internal optimization whose only externally observable
+// effect is suppressing duplicate warnings. A genuinely deadlocked task
+// cannot naturally return to a warnable state after settling, so the pruning
+// has no other behavioral consequence; these tests therefore inspect the set
+// directly through a small accessor.
+describe('TaskTracker warnedDeadlocked pruning', () => {
+  function warnedSet(tracker: TaskTracker): Set<string> {
+    return (tracker as unknown as { warnedDeadlocked: Set<string> }).warnedDeadlocked;
+  }
+
+  // Call isPoolDone once (silencing its warning) to populate the set.
+  function primeDeadlocked(tracker: TaskTracker): void {
+    const spy = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      tracker.isPoolDone();
+    } finally {
+      spy.mockRestore();
+    }
+  }
+
+  it('isPoolDone records a deadlocked task in warnedDeadlocked (baseline)', () => {
+    const tracker = new TaskTracker();
+    tracker.addTask({ ...makeTask({ id: 'a', dependencies: ['ghost'] }), status: undefined });
+
+    expect(warnedSet(tracker).has('a')).toBe(false);
+    primeDeadlocked(tracker);
+    expect(warnedSet(tracker).has('a')).toBe(true);
+  });
+
+  it('cancelTask removes a deadlocked task from warnedDeadlocked', () => {
+    const tracker = new TaskTracker();
+    tracker.addTask({ ...makeTask({ id: 'a', dependencies: ['ghost'] }), status: undefined });
+    primeDeadlocked(tracker);
+    expect(warnedSet(tracker).has('a')).toBe(true);
+
+    tracker.cancelTask('a');
+
+    expect(tracker.getTask('a')!.status).toBe('cancelled');
+    expect(warnedSet(tracker).has('a')).toBe(false);
+  });
+
+  it('claimTasks prunes a formerly-deadlocked task once it becomes ready', () => {
+    // Realistic stale-entry flow: 'a' is deadlocked (missing 'ghost'), gets
+    // warned, then 'ghost' is added and completed so 'a' unblocks. The stale
+    // warnedDeadlocked entry must be cleared when 'a' is claimed.
+    const tracker = new TaskTracker();
+    tracker.addTask({ ...makeTask({ id: 'a', dependencies: ['ghost'] }), status: undefined });
+    primeDeadlocked(tracker);
+    expect(warnedSet(tracker).has('a')).toBe(true);
+
+    // Add the previously-missing dependency and complete it → 'a' unblocks.
+    tracker.addTask(makeTask({ id: 'ghost' }));
+    tracker.claimTasks(1, 'agent-1'); // claims 'ghost'
+    tracker.completeTask('ghost');
+    expect(tracker.getTask('a')!.status).toBe('ready');
+    // Stale entry lingers while 'a' is still ready.
+    expect(warnedSet(tracker).has('a')).toBe(true);
+
+    tracker.claimTasks(1, 'agent-2'); // claims 'a' → transitions out of ready
+
+    expect(tracker.getTask('a')!.status).toBe('active');
+    expect(warnedSet(tracker).has('a')).toBe(false);
+  });
+
+  it('completeTask prunes warnedDeadlocked for the completed task', () => {
+    const tracker = new TaskTracker();
+    tracker.addTask(makeTask({ id: 'a' }));
+    tracker.claimTasks(1, 'agent-1');
+    // Simulate a stale entry left from an earlier deadlocked state.
+    warnedSet(tracker).add('a');
+
+    tracker.completeTask('a');
+
+    expect(tracker.getTask('a')!.status).toBe('complete');
+    expect(warnedSet(tracker).has('a')).toBe(false);
+  });
+
+  it('failTask prunes warnedDeadlocked for the failed task', () => {
+    const tracker = new TaskTracker();
+    tracker.addTask(makeTask({ id: 'a' }));
+    tracker.claimTasks(1, 'agent-1');
+    warnedSet(tracker).add('a'); // stale entry
+
+    tracker.failTask('a');
+
+    expect(tracker.getTask('a')!.status).toBe('failed');
+    expect(warnedSet(tracker).has('a')).toBe(false);
+  });
+
+  it('warnedDeadlocked stays bounded as deadlocked tasks are cancelled', () => {
+    const tracker = new TaskTracker();
+    for (const id of ['d1', 'd2', 'd3']) {
+      tracker.addTask({ ...makeTask({ id, dependencies: ['ghost'] }), status: undefined });
+    }
+    primeDeadlocked(tracker);
+    expect(warnedSet(tracker).size).toBe(3);
+
+    tracker.cancelTask('d1');
+    expect(warnedSet(tracker).size).toBe(2);
+    tracker.cancelTask('d2');
+    expect(warnedSet(tracker).size).toBe(1);
+    tracker.cancelTask('d3');
+    expect(warnedSet(tracker).size).toBe(0);
+  });
+
+  it('warnedDeadlocked retains only currently-deadlocked tasks across a mixed lifecycle', () => {
+    const tracker = new TaskTracker();
+    tracker.addTask({ ...makeTask({ id: 'dead1', dependencies: ['ghost1'] }), status: undefined });
+    tracker.addTask({ ...makeTask({ id: 'dead2', dependencies: ['ghost2'] }), status: undefined });
+    tracker.addTask(makeTask({ id: 'live' }));
+
+    primeDeadlocked(tracker);
+    expect(warnedSet(tracker).has('dead1')).toBe(true);
+    expect(warnedSet(tracker).has('dead2')).toBe(true);
+
+    // Cancel one deadlocked task; the other stays deadlocked.
+    tracker.cancelTask('dead1');
+    expect(warnedSet(tracker).has('dead1')).toBe(false);
+    expect(warnedSet(tracker).has('dead2')).toBe(true);
+
+    // Settling an unrelated live task must not disturb the remaining entry.
+    tracker.claimTasks(1, 'agent-1');
+    tracker.completeTask('live');
+    expect(warnedSet(tracker).has('dead2')).toBe(true);
+  });
+
+  it('does not re-warn for a task already in warnedDeadlocked (preserves dedup)', () => {
+    const tracker = new TaskTracker();
+    tracker.addTask({ ...makeTask({ id: 'a', dependencies: ['ghost'] }), status: undefined });
+
+    const warnCalls: unknown[][] = [];
+    const spy = spyOn(console, 'warn').mockImplementation((...args: unknown[]) => {
+      warnCalls.push(args);
+    });
+
+    try {
+      tracker.isPoolDone();
+      tracker.isPoolDone();
+      tracker.isPoolDone();
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(warnCalls).toHaveLength(1);
   });
 });

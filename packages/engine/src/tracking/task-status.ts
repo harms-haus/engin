@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events';
+import { appendReviewFeedback } from '../core/task-feedback.js';
 import type { Task, TaskStatus } from '../core/types.js';
-import { appendReviewFeedback } from '../core/utils.js';
 
 export class TaskTracker extends EventEmitter {
   static readonly Events = {
@@ -99,12 +99,19 @@ export class TaskTracker extends EventEmitter {
   }
 
   getReadyTasks(): Task[] {
+    // Collect ready tasks in insertion order (Map iteration order).
     const ready: Task[] = [];
     for (const task of this.tasks.values()) {
       if (task.status === 'ready') {
         ready.push(task);
       }
     }
+    // The comparator ranks ONLY by blocking pressure; equal-pressure tasks
+    // compare as 0. Array.prototype.sort is stable (ES2019+), so those ties
+    // keep their insertion order above — i.e. first-added first-served. This
+    // is the documented secondary ordering for tasks that don't block (or
+    // block the same amount of) downstream work. Do NOT re-collect out of
+    // insertion order without revisiting this invariant.
     return ready.sort((a, b) => this.compareByBlockingPressure(a, b));
   }
 
@@ -123,16 +130,20 @@ export class TaskTracker extends EventEmitter {
    * (e.g. a dependent still has other unsatisfied dependencies): every
    * completed predecessor still reduces the dependent's remaining blockers.
    *
-   * Ties are broken by fewer existing dependencies (lighter tasks first), then
-   * by id for a stable, deterministic order.
+   * This is the ONLY ranking key. Tasks with equal pressure compare as 0, and
+   * {@link getReadyTasks} relies on the stability of `Array.prototype.sort`
+   * to keep them in insertion order (first-to-last). Do NOT add secondary keys
+   * such as dependency count or alphabetical id here — that would override the
+   * intended first-added-first-served tiebreak (and previously caused tasks
+   * with fewer dependencies to be starved in favor of lighter ones, which is
+   * not the desired behavior).
    */
   private compareByBlockingPressure(a: Task, b: Task): number {
     const pressureA = this.getTransitiveDependentCount(a.id);
     const pressureB = this.getTransitiveDependentCount(b.id);
-    if (pressureA !== pressureB) return pressureB - pressureA; // descending: more pressure first
-    const depLenDiff = a.dependencies.length - b.dependencies.length;
-    if (depLenDiff !== 0) return depLenDiff; // ascending: fewer deps first
-    return a.id.localeCompare(b.id); // deterministic tiebreak
+    // Descending: a task that unblocks more downstream work is claimed first.
+    // Equal pressure → 0 → stable sort preserves insertion order (first-to-last).
+    return pressureB - pressureA;
   }
 
   /**
@@ -197,6 +208,7 @@ export class TaskTracker extends EventEmitter {
     for (const task of toClaim) {
       task.status = 'active';
       task.assignedAgent = agentId;
+      this.warnedDeadlocked.delete(task.id);
     }
 
     if (toClaim.length > 0) {
@@ -225,6 +237,7 @@ export class TaskTracker extends EventEmitter {
 
     task.status = 'complete';
     task.result = result;
+    this.warnedDeadlocked.delete(id);
     this.recalculateStatuses(id);
     queueMicrotask(() => this.emit(TaskTracker.Events.TaskSettled));
   }
@@ -239,6 +252,7 @@ export class TaskTracker extends EventEmitter {
     task.status = 'failed';
     task.result = result;
     task.assignedAgent = undefined;
+    this.warnedDeadlocked.delete(id);
     this.recalculateStatuses(id);
     queueMicrotask(() => this.emit(TaskTracker.Events.TaskSettled));
   }
@@ -287,6 +301,7 @@ export class TaskTracker extends EventEmitter {
     }
 
     task.status = 'cancelled';
+    this.warnedDeadlocked.delete(id);
     queueMicrotask(() => this.emit(TaskTracker.Events.TaskSettled));
   }
 

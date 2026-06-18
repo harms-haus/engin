@@ -182,7 +182,10 @@ describe('branchRunner', () => {
       expect(ctx.failTask).not.toHaveBeenCalled();
     });
 
-    it('calls failTask when completeTask returns false', async () => {
+    it('settles as failed when completeTask returns false (delegated to settleResult)', async () => {
+      // settleResult() branches on the boolean returned by completeTask:
+      // when false (task cancelled/raced), it calls failTask and returns
+      // { status: 'failed' }.
       setupProfileMocks();
       setupHarnessMocks();
       const ctx = createRunnerContext({
@@ -197,8 +200,12 @@ describe('branchRunner', () => {
 
       expect(outcome.status).toBe('failed');
       expect(outcome).toHaveProperty('error', 'Failed to submit');
-      expect(ctx.failTask).toHaveBeenCalledWith(expect.objectContaining({ error: 'Failed to submit' }));
+      // completeTask is invoked once with the step output; when it returns
+      // false, settleResult calls failTask with the error.
       expect(ctx.completeTask).toHaveBeenCalledTimes(1);
+      expect(ctx.completeTask).toHaveBeenCalledWith('done');
+      expect(ctx.failTask).toHaveBeenCalledTimes(1);
+      expect(ctx.failTask).toHaveBeenCalledWith({ completed: false, error: 'Failed to submit' });
     });
   });
 });
@@ -307,7 +314,10 @@ describe('branchRunner - session disposal', () => {
     expect(dispose).toHaveBeenCalledTimes(1);
   });
 
-  it('disposes the session when completeTask returns false', async () => {
+  it('disposes the session when completeTask returns false (cancelled/raced)', async () => {
+    // settleResult() disposes sessions on the approved path after calling
+    // failTask when completeTask returns false, so tracked sessions are
+    // always cleaned up.
     setupProfileMocks();
     const dispose = mock(() => {});
     mockCreateHarness.mockResolvedValue({
@@ -324,10 +334,13 @@ describe('branchRunner - session disposal', () => {
       branches: [{ condition: () => true, step: coderStep }],
     });
 
-    await runner(ctx);
+    const outcome = await runner(ctx);
 
     expect(dispose).toHaveBeenCalledTimes(1);
-    expect(ctx.failTask).toHaveBeenCalledWith(expect.objectContaining({ error: 'Failed to submit' }));
+    expect(outcome.status).toBe('failed');
+    expect(outcome).toHaveProperty('error', 'Failed to submit');
+    expect(ctx.failTask).toHaveBeenCalledTimes(1);
+    expect(ctx.failTask).toHaveBeenCalledWith({ completed: false, error: 'Failed to submit' });
   });
 
   it('disposes the session when no match and no default', async () => {

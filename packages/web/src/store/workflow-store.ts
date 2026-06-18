@@ -3,7 +3,17 @@
  * Uses Immer middleware for safe structural updates.
  */
 
+import { MAX_RUN_LOG } from '@engin/shared/event-types';
+import { evolve as evolveClient } from '@engin/shared/evolve';
 import { formatWorkflowEventLine } from '@engin/shared/format-workflow-event';
+import {
+  reconcileSelection,
+  toProjection,
+  writeProjectionToState,
+  type ProjectionFields,
+  type SelectionState,
+  type WritableProjectionState,
+} from '@engin/shared/projection-helpers';
 import type { Draft } from 'immer';
 import { create } from 'zustand';
 import { immer } from 'zustand/middleware/immer';
@@ -17,7 +27,6 @@ import type {
   TaskEntity,
   WorkflowProjection,
 } from '../protocol-types';
-import { evolveClient, MAX_AGENT_LOG, MAX_RUN_LOG } from './evolve-client';
 
 const MAX_WORKFLOW_EVENT_LOG = 1000;
 
@@ -48,92 +57,47 @@ export function setStoreUnsubscribeRunFn(fn: ((runId: string) => void) | null): 
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
-
-/** Reconstruct a WorkflowProjection from the current store state. */
-function toProjection(s: WorkflowStoreState): WorkflowProjection {
-  return {
-    seq: s.seq,
-    taskPrompt: s.taskPrompt,
-    phases: s.phases,
-    currentPhaseId: s.currentPhaseId,
-    completedPhaseIds: s.completedPhaseIds,
-    tasks: s.tasksById,
-    agents: s.agentsById,
-    sidebar: s.sidebar,
-    status: s.status,
-    error: s.error,
-    failedPhase: s.failedPhase,
-    stats: s.stats,
-    runLog: [],
-  };
-}
-
-/** Defensive cap on agent log length. */
-function capAgentLogs(agents: Record<string, AgentEntity>): Record<string, AgentEntity> {
-  const out: Record<string, AgentEntity> = {};
-  for (const [k, v] of Object.entries(agents)) {
-    if (v.log.length > MAX_AGENT_LOG) {
-      out[k] = { ...v, log: v.log.slice(v.log.length - MAX_AGENT_LOG) };
-    } else {
-      out[k] = v;
-    }
-  }
-  return out;
-}
-
-/** Write every normalized projection field into the Immer draft (except seq). Uses defensive copies for externally-sourced collections. */
-function writeProjectionToState(state: Draft<WorkflowStoreState>, p: WorkflowProjection): void {
-  state.agentsById = capAgentLogs(p.agents);
-  state.tasksById = { ...p.tasks };
-  state.phases = [...p.phases];
-  state.currentPhaseId = p.currentPhaseId;
-  state.completedPhaseIds = [...p.completedPhaseIds];
-  state.sidebar = { ...p.sidebar };
-  state.status = p.status;
-  state.taskPrompt = p.taskPrompt;
-  state.error = p.error;
-  state.failedPhase = p.failedPhase;
-  state.stats = { ...p.stats };
-}
+// capAgentLogs / toProjection / writeProjectionToState / reconcileSelection
+// live in @engin/shared/projection-helpers (shared with the TUI ClientStore).
+// The web store's projection fields carry the suffixed names `agentsById` /
+// `tasksById` (Immer-typed `Draft<WorkflowStoreState>`), whereas the shared
+// helpers speak the CANONICAL projection names (`agents` / `tasks`).
+// {@link canonicalView} bridges that gap so the helpers can read/write the
+// Immer draft directly — Immer records the underlying mutations — without
+// duplicating any projection/selection logic in this module.
 
 /**
- * Reconcile selection state after projection updates (snapshot or events).
- * Implements follow rules:
- * - Phase follow: if selectedPhaseId not null, not completed, and differs from currentPhaseId → set to currentPhaseId.
- * - Task follow: if selectedTaskId null or not in selected phase tasks → auto-select first active.
- * - Step follow: if !userPinnedStep → sync with activeStepIndex of selected task.
+ * Expose the store's `agentsById` / `tasksById` Immer-draft fields under the
+ * canonical projection names (`agents` / `tasks`) the shared helpers expect.
+ *
+ * Reads and writes pass straight through to the underlying Immer draft, so
+ * mutations performed by the shared {@link writeProjectionToState} and
+ * {@link reconcileSelection} are tracked by Immer exactly as if the store used
+ * the canonical field names directly (the ClientStore does — its state already
+ * carries `agents` / `tasks`). Every other field shares its name between the
+ * two stores and is forwarded untouched.
  */
-function reconcileSelection(state: Draft<WorkflowStoreState>): void {
-  // Phase follow
-  if (state.selectedPhaseId !== null && state.currentPhaseId) {
-    const isCompleted = state.completedPhaseIds.includes(state.selectedPhaseId);
-    if (!isCompleted && state.selectedPhaseId !== state.currentPhaseId) {
-      state.selectedPhaseId = state.currentPhaseId;
-      state.userPinnedPhase = false;
-    }
-  } else if (state.selectedPhaseId === null && state.currentPhaseId) {
-    state.selectedPhaseId = state.currentPhaseId;
-  }
-
-  // Task follow
-  if (state.selectedPhaseId) {
-    const tasksInPhase = Object.values(state.tasksById).filter((t) => t.phaseId === state.selectedPhaseId);
-    if (state.selectedTaskId === null || !tasksInPhase.some((t) => t.id === state.selectedTaskId)) {
-      const firstActive = tasksInPhase.find((t) => t.status === 'active');
-      state.selectedTaskId = firstActive?.id ?? tasksInPhase[0]?.id ?? null;
-      // Reset step selection when task changes
-      state.selectedStepIndex = null;
-      state.userPinnedStep = false;
-    }
-  }
-
-  // Step follow
-  if (state.selectedTaskId !== null && !state.userPinnedStep) {
-    const task = state.tasksById[state.selectedTaskId];
-    if (task?.activeStepIndex !== undefined) {
-      state.selectedStepIndex = task.activeStepIndex;
-    }
-  }
+function canonicalView(state: Draft<WorkflowStoreState>): WritableProjectionState & SelectionState & ProjectionFields {
+  return new Proxy(state as object, {
+    get(t, p) {
+      const s = t as WorkflowStoreState;
+      if (p === 'agents') return s.agentsById;
+      if (p === 'tasks') return s.tasksById;
+      return Reflect.get(s, p);
+    },
+    set(t, p, value) {
+      const s = t as WorkflowStoreState;
+      if (p === 'agents') {
+        s.agentsById = value as Record<string, AgentEntity>;
+        return true;
+      }
+      if (p === 'tasks') {
+        s.tasksById = value as Record<string, TaskEntity>;
+        return true;
+      }
+      return Reflect.set(s, p, value);
+    },
+  }) as WritableProjectionState & SelectionState & ProjectionFields;
 }
 
 // ─── Store state interface ──────────────────────────────────────────────────
@@ -252,7 +216,10 @@ export const useWorkflowStore = create<WorkflowStoreState>()(
     applySnapshot: (runId, snapshot, seq) =>
       set((state) => {
         if (state.selectedRunId !== runId) return;
-        writeProjectionToState(state, snapshot);
+        // fromSnapshot = true → the shared helper defensively caps untrusted
+        // external agent logs (the snapshot arrives verbatim from the server)
+        // at the MAX_AGENT_LOG boundary defined in @engin/shared/evolve.
+        writeProjectionToState(canonicalView(state), snapshot, true);
         // Only clear the event log on a genuine fresh start (first connect) or
         // server reset (seq went backwards). On reconnection, preserve accumulated
         // event lines — they are immutable seq-keyed facts.
@@ -260,20 +227,22 @@ export const useWorkflowStore = create<WorkflowStoreState>()(
           state.workflowEventLog = [];
         }
         state.seq = seq;
-        reconcileSelection(state);
+        reconcileSelection(canonicalView(state));
       }),
 
     applyEvents: (runId, events) =>
       set((s) => {
         if (s.selectedRunId !== runId) return;
         if (events.length === 0) return;
-        let projection = toProjection(s);
+        let projection = toProjection(canonicalView(s));
         for (const event of events) {
           projection = evolveClient(projection, event);
         }
-        writeProjectionToState(s, projection);
+        // fromSnapshot defaults to false: evolve already enforces the agent-log
+        // cap, so the folded result can be written in by reference.
+        writeProjectionToState(canonicalView(s), projection);
         s.seq = projection.seq;
-        reconcileSelection(s);
+        reconcileSelection(canonicalView(s));
 
         // Build workflow-level event lines from this batch
         const collected: WorkflowEventLogEntry[] = [];
@@ -370,7 +339,7 @@ export const useWorkflowStore = create<WorkflowStoreState>()(
         state.selectedStepIndex = null;
         state.userPinnedStep = false;
         // Run follow rules to settle on initial task/step
-        reconcileSelection(state);
+        reconcileSelection(canonicalView(state));
       }),
 
     selectTask: (id: string | null) =>
@@ -379,7 +348,7 @@ export const useWorkflowStore = create<WorkflowStoreState>()(
         state.selectedStepIndex = null;
         state.userPinnedStep = false;
         // Run follow rules to settle on initial step
-        reconcileSelection(state);
+        reconcileSelection(canonicalView(state));
       }),
 
     selectStep: (index: number | null) =>

@@ -7,7 +7,7 @@ import {
   wrapTextWithAnsi,
 } from '@earendil-works/pi-tui';
 import type { AgentEntity, LogEntry, StepEntity } from '@engin/shared';
-import { formatToolCall } from '../format-tool-call.js';
+import { formatToolCall } from '@engin/shared/format-tool-call';
 import { bold, cyan, dim, green, red, underline } from '../theme.js';
 
 // Re-export LogEntry as AgentLogEntry for backward compatibility
