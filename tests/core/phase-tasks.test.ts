@@ -1,6 +1,7 @@
 // ─── runStepTask Tests ──────────────────────────────────────────────────────
 
 import { afterAll, beforeEach, describe, expect, it, mock } from 'bun:test';
+import { join } from 'node:path';
 import type { ZodType } from 'zod';
 import { z } from 'zod';
 import type { RenderFunction } from '../../packages/engine/src/core/renderer-registry.js';
@@ -374,6 +375,28 @@ describe('runStepTask', () => {
       expect(mockCreateHarness).toHaveBeenCalledTimes(1);
       const harnessCall = mockCreateHarness.mock.calls[0]![0] as Record<string, unknown>;
       expect(harnessCall.onAgentStatus).toBeUndefined();
+    });
+
+    it('derives a persisted sessionDir from sessionBaseDir and passes it to the harness', async () => {
+      setupProfilesMock(defaultProfile);
+      setupHarnessMock();
+
+      await runStepTask(makeDefaultOptions({ sessionBaseDir: '/work/sessions' }));
+
+      expect(mockCreateHarness).toHaveBeenCalledTimes(1);
+      const harnessCall = mockCreateHarness.mock.calls[0]![0] as Record<string, unknown>;
+      // Mirrors runMultiStepTask: {sessionBaseDir}/{taskId}/{stepName}
+      expect(harnessCall.sessionDir).toBe(join('/work/sessions', 'task-1', 'implement'));
+    });
+
+    it('does not pass sessionDir when sessionBaseDir is absent (in-memory session)', async () => {
+      setupProfilesMock(defaultProfile);
+      setupHarnessMock();
+
+      await runStepTask(makeDefaultOptions());
+
+      const harnessCall = mockCreateHarness.mock.calls[0]![0] as Record<string, unknown>;
+      expect(harnessCall.sessionDir).toBeUndefined();
     });
   });
 

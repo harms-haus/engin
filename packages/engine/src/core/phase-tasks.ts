@@ -42,6 +42,14 @@ export interface RunStepTaskOptions {
    * Ignored when `isReadOnly` is true (write/edit are already removed).
    */
   allowedWriteDirs?: string[];
+  /**
+   * Base directory for a persisted session. When set, the agent's session is
+   * written to `{sessionBaseDir}/{taskId}/{stepName}` on disk (so a failed
+   * structured-output attempt — e.g. a reviewer that produced no JSON —
+   * leaves a debuggable/resumable trace instead of vanishing with the
+   * in-memory session). When absent, an in-memory session is used.
+   */
+  sessionBaseDir?: string;
   /** Zod schema for structured output. When absent, raw assistant text is returned. */
   schema?: ZodType<unknown>;
   /**
@@ -94,6 +102,7 @@ export async function runStepTask<T = unknown>(opts: RunStepTaskOptions): Promis
     onStatus,
     isReadOnly = false,
     allowedWriteDirs,
+    sessionBaseDir,
     schema,
     validateOutput,
     rendererRegistry,
@@ -124,14 +133,23 @@ export async function runStepTask<T = unknown>(opts: RunStepTaskOptions): Promis
   try {
     // 4. Load profiles and spawn the agent (read-only adjustment + harness
     //    creation + activeSessions-less tracking + onAgentSpawn + onStepStart).
-    //    runStepTask has no sessionDir/resumeSessionPath, so spawnAgent uses an
-    //    in-memory session and resolves sessionPath to the sessionId.
+    //    When `sessionBaseDir` is provided the session is persisted to
+    //    `{sessionBaseDir}/{taskId}/{stepName}`; otherwise spawnAgent falls
+    //    back to an in-memory session and resolves sessionPath to the sessionId.
     const profiles = await loadProfilesFromDirs(profilesDirs);
     // Pre-check so the error message can reference the profiles directories
     // (runStepTask-specific debugging context spawnAgent doesn't have).
     if (!profiles.has(profileId)) {
       throw new Error(`Profile "${profileId}" not found in directories: ${profilesDirs.join(', ')}`);
     }
+
+    // Resolve an optional persisted-session directory (mirrors runMultiStepTask).
+    // Validate against path traversal only when we actually interpolate paths.
+    if (sessionBaseDir) {
+      assertSafeName(taskId, 'task id');
+      assertSafeName(stepName, 'step name');
+    }
+    const sessionDir = sessionBaseDir ? join(sessionBaseDir, taskId, stepName) : undefined;
 
     handle = await spawnAgent(
       {
@@ -145,6 +163,7 @@ export async function runStepTask<T = unknown>(opts: RunStepTaskOptions): Promis
         isReadOnly,
         apiKeys,
         allowedWriteDirs,
+        sessionDir,
         onStatus,
       },
       profiles,

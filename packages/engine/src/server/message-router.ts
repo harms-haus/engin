@@ -8,6 +8,7 @@
 import type { ClientMessage, ServerMessage } from '@engin/shared/protocol-types';
 import type { ServerWebSocket } from 'bun';
 
+import { safeErrorMessage } from '../core/utils.js';
 import { authorize } from './auth.js';
 import type { RunManager, StartRunMessage } from './run-manager.js';
 
@@ -65,7 +66,26 @@ export function createMessageRouter(runManager: RunManager): MessageRouter {
             runManager.subscribe(ws, result.runId);
           })
           .catch((err) => {
-            console.error('startRun failed:', err instanceof Error ? err.message : String(err));
+            const errMsg = safeErrorMessage(err);
+            console.error('startRun failed:', errMsg);
+            // Best-effort: notify the requesting socket that the run failed to
+            // start. Otherwise the client never receives a `run_started` and
+            // blocks forever on a terminal that will never arrive. We have no
+            // runId here (startRun threw before returning one), so send '' as a
+            // best-effort marker (and '' for phase, which is required by the
+            // run_failed ServerMessage shape but unknown at this point).
+            try {
+              ws.send(
+                JSON.stringify({
+                  type: 'run_failed',
+                  runId: '',
+                  error: errMsg,
+                  phase: '',
+                } satisfies ServerMessage),
+              );
+            } catch {
+              // Socket may be dead/closed — best-effort; ignore send failures.
+            }
           });
         break;
       }

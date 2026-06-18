@@ -244,7 +244,13 @@ export class RunSessionClient {
             if (msg.runId === runId) resolveTerminal();
             break;
           case 'run_failed':
-            if (msg.runId === runId) {
+            // A start-time failure is signaled by the server sending run_failed
+            // with an empty runId (it has none yet). In the CLI/TUI there is
+            // exactly one run per socket, so a run_failed arriving before we
+            // attached (runId still undefined) is unambiguously our own start
+            // failure. Accepting it here resolves terminalPromise so the run
+            // path no longer hangs forever when the workflow fails to load/start.
+            if (msg.runId === runId || (runId === undefined && msg.runId === '')) {
               runFailedReason = msg.error;
               resolveTerminal();
             }
@@ -368,7 +374,9 @@ export class RunSessionClient {
 
       // ── TUI inspection pause ────────────────────────────────────────────
       if (tuiInstance) {
-        await tuiInstance.pauseForInspection(undefined);
+        if (runId !== undefined) {
+          await tuiInstance.pauseForInspection(undefined);
+        }
         tuiInstance.stop();
         tuiInstance = undefined;
       }
@@ -383,7 +391,8 @@ export class RunSessionClient {
       // here (after the TUI inspection pause and post-terminal action) and
       // set process.exitCode so CI/automation can detect the failure.
       if (runFailedReason !== undefined) {
-        console.error(`${formatTime()} ❌ Run failed: ${runFailedReason}`);
+        const label = runId === undefined ? '❌ Failed to start workflow' : '❌ Run failed';
+        console.error(`${formatTime()} ${label}: ${runFailedReason}`);
         process.exitCode = 1;
       }
     } finally {

@@ -113,7 +113,7 @@ export async function promptForStructured<T>(
   const maxRetries = options?.maxRetries ?? 3;
   const originalPrompt = prompt;
   const schemaDesc = schemaToString(schema);
-  let currentPrompt = `${prompt}\n\nRespond with valid JSON matching this schema:\n${schemaDesc}`;
+  let currentPrompt = `${prompt}\n\n${buildSchemaInstruction(schemaDesc)}`;
   let lastError: string | undefined;
 
   for (let attempt = 0; attempt < maxRetries; attempt++) {
@@ -122,8 +122,15 @@ export async function promptForStructured<T>(
 
     const jsonStr = extractJsonFromText(text);
     if (jsonStr === null) {
-      lastError = 'No JSON found in response';
-      currentPrompt = buildRetryPrompt(originalPrompt, lastError, schemaDesc);
+      // An empty/whitespace-only reply almost always means the model ended its
+      // turn on a thinking block or a `tool_use` (or hit max output tokens) —
+      // `getLastAssistantText()` returns only `text` blocks, so there is nothing
+      // to extract. Surface that distinctly so the retry can target it.
+      const empty = text.trim().length === 0;
+      lastError = empty
+        ? 'No JSON found in response (empty reply — no text block was produced)'
+        : 'No JSON found in response';
+      currentPrompt = buildRetryPrompt(originalPrompt, schemaDesc, lastError, empty ? 'empty' : 'no-json');
       continue;
     }
 
@@ -132,7 +139,7 @@ export async function promptForStructured<T>(
       parsed = parseJsonWithRepair(jsonStr);
     } catch (err) {
       lastError = `JSON parse error: ${err instanceof Error ? err.message : String(err)}`;
-      currentPrompt = buildRetryPrompt(originalPrompt, lastError, schemaDesc);
+      currentPrompt = buildRetryPrompt(originalPrompt, schemaDesc, lastError, 'parse');
       continue;
     }
 
@@ -142,7 +149,7 @@ export async function promptForStructured<T>(
     }
 
     lastError = `Schema validation error: ${result.error.message}`;
-    currentPrompt = buildRetryPrompt(originalPrompt, lastError, schemaDesc);
+    currentPrompt = buildRetryPrompt(originalPrompt, schemaDesc, lastError, 'validation');
   }
 
   throw new Error(`Failed to produce structured output after ${maxRetries} attempts: ${lastError}`);
@@ -164,13 +171,57 @@ export function schemaToString(schema: ZodType): string {
 
 // ─── Internal Helpers ───────────────────────────────────────────────────────
 
-function buildRetryPrompt(originalPrompt: string, error: string, schemaDesc: string): string {
+/**
+ * Build the JSON-format instruction appended to the initial (and retry) prompt.
+ *
+ * Emphasizes that the ENTIRE reply must be the JSON object — no prose, no
+ * markdown fences, and crucially NO tool calls. This matters for
+ * structured-output steps running on models with extended thinking or retained
+ * read tools: without an explicit "emit the JSON as text, do not call tools"
+ * instruction, such a model can end its turn on a thinking block or a
+ * `tool_use` with no text block, yielding an empty `getLastAssistantText()`
+ * → "No JSON found in response".
+ */
+function buildSchemaInstruction(schemaDesc: string): string {
+  return [
+    '## Response Format (required)',
+    'Respond with ONLY a single valid JSON object matching the schema below.',
+    '- No prose, explanations, or commentary before or after the JSON.',
+    '- No markdown code fences (```), no headings — output the raw JSON object.',
+    '- Do NOT call any tools and do NOT end your turn on a thinking block. Emit the JSON object directly as text.',
+    '',
+    'JSON schema:',
+    schemaDesc,
+  ].join('\n');
+}
+
+/**
+ * Build a retry prompt that re-asserts the format contract and adds a
+ * reason-specific hint so the model knows exactly how the previous reply fell
+ * short (empty / no-json / unparseable / schema-violating).
+ */
+function buildRetryPrompt(
+  originalPrompt: string,
+  schemaDesc: string,
+  error: string,
+  reason: 'empty' | 'no-json' | 'parse' | 'validation',
+): string {
+  const hint =
+    reason === 'empty'
+      ? 'Your previous reply contained NO text at all — it ended on a thinking block or a tool call, or was truncated. You MUST reply with the JSON object as text now: do not call any tools, and do not finish without emitting the JSON.'
+      : reason === 'no-json'
+        ? 'Your previous reply contained no parseable JSON. Reply with ONLY the raw JSON object — no surrounding prose and no code fences.'
+        : reason === 'parse'
+          ? 'Your previous reply looked like JSON but failed to parse. Reply with ONLY a corrected, valid JSON object.'
+          : 'Your previous reply was valid JSON but did not match the schema. Reply with ONLY a JSON object that conforms to the schema.';
+
   return [
     originalPrompt,
     '',
-    `--- Previous attempt failed ---`,
+    buildSchemaInstruction(schemaDesc),
+    '',
+    '--- Previous attempt failed ---',
     `Error: ${error}`,
-    `Expected schema: ${schemaDesc}`,
-    `Please respond with valid JSON matching the schema above.`,
+    hint,
   ].join('\n');
 }

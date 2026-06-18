@@ -440,3 +440,60 @@ describe('schemaToString – priority Zod type cases', () => {
     expect(result).not.toContain('ZodCatch');
   });
 });
+
+// ─── promptForStructured – JSON-only format instruction ──────────────────────
+
+describe('promptForStructured – JSON-only format instruction', () => {
+  const schema = z.object({ ok: z.boolean() });
+
+  function makeHarness(responses: string[]): PromptableHarness {
+    let callIndex = 0;
+    let lastText: string | undefined;
+    return {
+      prompt: mock(async (_text: string) => {
+        lastText = responses[callIndex] ?? responses[responses.length - 1];
+        callIndex++;
+      }),
+      getLastAssistantText: () => lastText,
+    };
+  }
+
+  it('initial prompt demands a JSON-only reply and forbids tool calls / thinking-only turns', async () => {
+    const harness = makeHarness(['{"ok":true}']);
+    await promptForStructured(harness, 'do the thing', schema);
+
+    const firstPrompt = (harness.prompt as ReturnType<typeof mock>).mock.calls[0][0] as string;
+    expect(firstPrompt).toMatch(/only a single valid JSON object/i);
+    expect(firstPrompt).toMatch(/do not call any tools/i);
+    expect(firstPrompt).toMatch(/no markdown code fences/i);
+    expect(firstPrompt).toContain('schema');
+  });
+
+  it('flags an EMPTY response distinctly and nudges the retry to emit text (not a tool call)', async () => {
+    const harness = makeHarness(['', '{"ok":true}']);
+    const output = await promptForStructured(harness, 'do the thing', schema, { maxRetries: 3 });
+    expect(output.attempts).toBe(2);
+
+    const retryPrompt = (harness.prompt as ReturnType<typeof mock>).mock.calls[1][0] as string;
+    // The empty-reply branch surfaces "no text" and re-asserts the no-tools rule.
+    expect(retryPrompt).toMatch(/no text|empty/i);
+    expect(retryPrompt).toMatch(/do not call any tools|without emitting/i);
+    // And still references the canonical error + schema.
+    expect(retryPrompt).toContain('No JSON found in response');
+    expect(retryPrompt).toContain('Previous attempt failed');
+  });
+
+  it('thrown error notes the empty reply when every attempt is empty', async () => {
+    const harness = makeHarness(['', '', '']);
+    await expect(promptForStructured(harness, 'x', schema, { maxRetries: 3 })).rejects.toThrow(
+      /No JSON found in response \(empty reply/,
+    );
+  });
+
+  it('non-empty non-JSON response uses the standard "No JSON found" error (no empty qualifier)', async () => {
+    const harness = makeHarness(['just some prose, no braces here']);
+    await expect(promptForStructured(harness, 'x', schema, { maxRetries: 1 })).rejects.toThrow(
+      'Failed to produce structured output after 1 attempts: No JSON found in response',
+    );
+  });
+});
