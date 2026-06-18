@@ -97,6 +97,7 @@ function createMockDashboard() {
       setSelectedTaskId: () => {},
       getSelectedTaskId: () => null,
       getVisibleTaskCount: () => 0,
+      getRenderedLineCount: () => 0,
       invalidate: () => {},
       handleInput: () => {},
       render: () => [] as string[],

@@ -2,6 +2,9 @@ import type { TaskStatus } from '@engin/shared';
 
 // ─── ANSI Style Helpers ──────────────────────────────────────────────────────
 
+/** Default foreground — no ANSI wrapping. Used for plain (unstyled) cells. */
+export const normal = (str: string): string => str;
+
 export const cyan = (str: string): string => `\x1b[36m${str}\x1b[0m`;
 export const dim = (str: string): string => `\x1b[2m${str}\x1b[0m`;
 export const bold = (str: string): string => `\x1b[1m${str}\x1b[0m`;

@@ -11,6 +11,7 @@ import {
   formatElapsed,
   green,
   magenta,
+  normal,
   red,
   statusColor,
   statusIcon,
@@ -60,6 +61,10 @@ describe('ANSI style functions', () => {
 
   it('darkRed wraps with 38;5;131m and resets', () => {
     expect(darkRed('hi')).toBe('\x1b[38;5;131mhi\x1b[0m');
+  });
+
+  it('normal returns input unchanged with no ANSI wrapping', () => {
+    expect(normal('hi')).toBe('hi');
   });
 });
 

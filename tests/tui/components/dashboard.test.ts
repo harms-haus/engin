@@ -564,6 +564,42 @@ describe('Dashboard', () => {
       expect(d.getComputedHeight()).toBe(1 + 2 + 4 + 4);
     });
 
+    it('caps task list height at 20 lines when more than 20 tasks exist', () => {
+      const d = new Dashboard(4);
+      const tasks: TaskEntity[] = [];
+      for (let i = 0; i < 25; i++) {
+        tasks.push(makeTask({ id: `t${i}`, phaseId: 'a', status: 'ready' }));
+      }
+      d.taskList.updateTasks(tasks);
+      // 25 tasks registered, but the viewport caps rendered rows at 20.
+      // 1 (phaseBar) + 20 (capped tasks) + 4 (agentLog collapsed) + 4 (borders) = 29
+      expect(d.getComputedHeight()).toBe(1 + 20 + 4 + 4);
+    });
+
+    it('does not cap task list height when exactly 20 tasks exist (boundary)', () => {
+      const d = new Dashboard(4);
+      const tasks: TaskEntity[] = [];
+      for (let i = 0; i < 20; i++) {
+        tasks.push(makeTask({ id: `t${i}`, phaseId: 'a', status: 'ready' }));
+      }
+      d.taskList.updateTasks(tasks);
+      // Exactly 20 tasks — at the cap boundary, height equals full count.
+      // 1 (phaseBar) + 20 (tasks) + 4 (agentLog collapsed) + 4 (borders) = 29
+      expect(d.getComputedHeight()).toBe(1 + 20 + 4 + 4);
+    });
+
+    it('caps at 20 even with a large number of tasks', () => {
+      const d = new Dashboard(4);
+      const tasks: TaskEntity[] = [];
+      for (let i = 0; i < 50; i++) {
+        tasks.push(makeTask({ id: `t${i}`, phaseId: 'a', status: 'ready' }));
+      }
+      d.taskList.updateTasks(tasks);
+      // 50 tasks, but height only accounts for 20 lines (matches render viewport).
+      // 1 (phaseBar) + 20 (capped tasks) + 4 (agentLog collapsed) + 4 (borders) = 29
+      expect(d.getComputedHeight()).toBe(1 + 20 + 4 + 4);
+    });
+
     it('uses default agentLogLines of 20', () => {
       const d = new Dashboard();
       expect(d.getComputedHeight()).toBe(1 + 0 + 20 + 4);
@@ -664,6 +700,20 @@ describe('Dashboard', () => {
       const d = new Dashboard();
       const lines = d.render(WIDTH);
       expect(lines).toHaveLength(1 + 0 + 20 + 4);
+    });
+
+    it('render line count matches getComputedHeight when more than 20 tasks exist', () => {
+      const d = new Dashboard(4);
+      const tasks: TaskEntity[] = [];
+      for (let i = 0; i < 25; i++) {
+        tasks.push(makeTask({ id: `t${i}`, phaseId: 'a', status: 'ready' }));
+      }
+      d.taskList.updateTasks(tasks);
+      const lines = d.render(WIDTH);
+      // Both the render output and the computed height must account for exactly
+      // 20 task lines (the TaskListWidget viewport cap) — not 25.
+      expect(lines).toHaveLength(1 + 20 + 4 + 4);
+      expect(lines.length).toBe(d.getComputedHeight());
     });
   });
 

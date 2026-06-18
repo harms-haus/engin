@@ -79,7 +79,8 @@ export class Dashboard implements Component {
   getComputedHeight(): number {
     // PhaseBar always renders exactly 1 line; no need to call render()
     const phaseBarLines = 1;
-    const contentLines = phaseBarLines + this._taskList.getVisibleTaskCount() + this._agentLog.getExpandedLineCount();
+    const taskListLines = this._taskList.getRenderedLineCount();
+    const contentLines = phaseBarLines + taskListLines + this._agentLog.getExpandedLineCount();
     // +4 border lines: top + 2 separators + bottom
     return contentLines + 4;
   }

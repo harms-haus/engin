@@ -69,17 +69,17 @@ keeps the last projection visible; on reconnect it sends
 
 ### Keyboard shortcuts
 
-| Key                   | Action                                                                                 |
-| --------------------- | -------------------------------------------------------------------------------------- |
-| `Ctrl+C`              | Show the detach/kill prompt (↑/↓ select · Enter confirm · Esc cancel).                 |
-| `Ctrl+D`              | Detach immediately.                                                                    |
-| `←` / `→`             | Select phase (cycle through registered phases).                                        |
-| `↑` / `↓`             | Select task (when the agent log is collapsed) or scroll the agent log (when expanded). |
-| `Tab` / `Shift+Tab`   | Cycle steps/agents within the selected task (forward/backward).                        |
-| `Space`               | Expand/collapse the agent log widget.                                                  |
-| `Shift+↑` / `Shift+↓` | Scroll the agent log by 10 lines (expanded only).                                      |
-| `PgUp` / `PgDn`       | Scroll the event log up / down.                                                        |
-| `Home` / `End`        | Jump to top / bottom of the event log (resumes auto-scroll).                           |
+| Key                   | Action                                                                                                                         |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `Ctrl+C`              | Show the detach/kill prompt (↑/↓ select · Enter confirm · Esc cancel).                                                         |
+| `Ctrl+D`              | Detach immediately.                                                                                                            |
+| `←` / `→`             | Select phase (cycle through registered phases).                                                                                |
+| `↑` / `↓`             | Select task and edge-scroll the task list into view (when the agent log is collapsed) or scroll the agent log (when expanded). |
+| `Tab` / `Shift+Tab`   | Cycle steps/agents within the selected task (forward/backward).                                                                |
+| `Space`               | Expand/collapse the agent log widget.                                                                                          |
+| `Shift+↑` / `Shift+↓` | Scroll the agent log by 10 lines (expanded only).                                                                              |
+| `PgUp` / `PgDn`       | Scroll the event log up / down.                                                                                                |
+| `Home` / `End`        | Jump to top / bottom of the event log (resumes auto-scroll).                                                                   |
 
 > In TUI mode the process-level SIGINT handler is suppressed; the raw-mode input
 > listener handles Ctrl+C. In non-TTY (stdout renderer) mode the SIGINT handler
@@ -154,8 +154,9 @@ Pushes projection state into all child widgets, then runs the follow rules:
 - `Tab`/`Shift+Tab` → AgentLog; set `userPinnedStep`; cycle `selectedStepIndex` over
   steps that have an `agentKey`.
 
-`getComputedHeight()` = phase bar (1) + visible task count + expanded agent log
-lines + 4 border lines.
+`getComputedHeight()` = phase bar (1) + min(20, visible task count) + expanded
+agent log lines + 4 border lines. The task-count term is capped at 20 to match the
+TaskListWidget viewport.
 
 ## Widgets
 
@@ -182,12 +183,39 @@ Single-line phase progress indicator.
 
 ### `TaskListWidget`
 
-Grid of tasks in the current phase, one row per task. Sorted by status priority
-(`active` → `ready` → `blocked` → settled).
+Table of tasks in the current phase, one row per task, listed in creation/registration
+order (the order tasks arrive via `updateTasks`). Tasks are **not** sorted or grouped by
+status.
 
-- Active tasks with a known `activeStepIndex` show `step <i+1>/<len>: <name>`.
-- Elapsed time is shown for active/settled tasks with a `startedAt`.
-- Left border and icon come from `statusColor` / `statusIcon`.
+Each row is a fixed set of columns separated by 2-space gaps; every cell is padded to
+the width of the widest cell in its column:
+
+1. **ID** — the task id, dimmed.
+2. **Icon** — `statusIcon(status)` with no colour wrapper.
+3. **Title** — `statusColor(status)(title)`, followed by a dash and the elapsed time
+   (dimmed) for `active`/`complete`/`failed`/`cancelled` tasks that have a `startedAt`.
+   Elapsed is frozen at `completedAt` when present, otherwise it is wall-clock.
+4. **Step** — the label `step <i+1>/<len>: <name>` (dimmed), shown **only** for `active`
+   tasks that have **more than one step** and a valid `activeStepIndex`. Single-step
+   active tasks show no step.
+5. **Dependencies** — the task dependency ids joined with comma-space. Completed
+   dependencies are dimmed; incomplete or unknown dependencies are plain text. There
+   is no `deps:` prefix.
+
+The step and dependencies columns are omitted entirely when no task in the phase uses
+them, so there are no trailing gaps. The selected task's entire row is rendered in
+**bold**. Rows wider than the terminal are truncated with an ellipsis; rows are never
+padded out to the full terminal width.
+
+#### Viewport (20-line cap)
+
+When a phase contains more than 20 tasks, only 20 lines are rendered. A dim ellipsis
+(`...`) indicator is shown above the window when scrolled down and/or below it when
+more tasks remain off-screen. Moving the selection with the up/down arrows
+edge-scrolls the window so the selected task stays visible. The viewport resets to the
+top when the set of task ids changes (e.g. a phase switch) but is preserved across
+status-only refreshes. `getVisibleTaskCount` still reports the total number of tasks;
+the dashboard applies `min(20, count)` for layout.
 
 ### `AgentLogWidget`
 
@@ -226,8 +254,9 @@ Ctrl+C to dismiss (`onDismiss`).
 Source: `packages/tui/src/theme.ts`. ANSI escape-sequence helpers. All colour
 helpers have signature `(str: string) => string`.
 
-**Foreground:** `cyan`, `dim`, `bold`, `underline`, `green`, `red`, `yellow`,
-`blue`, `magenta`, `darkRed` (256-colour 131).
+**Foreground:** `normal` (identity — no ANSI wrapping, for unstyled cells),
+`cyan`, `dim`, `bold`, `underline`, `green`, `red`, `yellow`, `blue`, `magenta`,
+`darkRed` (256-colour 131).
 
 **Background:** `bgDark` (256-colour 236), `bgStatusBar` (256-colour 237).
 
