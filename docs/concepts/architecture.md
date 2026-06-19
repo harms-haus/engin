@@ -139,7 +139,9 @@ shared `evolve` reducer.
  SERVER (one EventStore per run)                      CLIENTS (TUI / web)
  ┌─────────────────────────────────────┐
  │ workflow.run()                      │
- │   onStatus ─ createStoreCallbacks ─►│ append()
+ │   onStatus ◄── composeHooks ───────►│ append()
+ │     (storeCallbacks, workflow.hooks)│
+ │   hookRegistry ─► engine primitives │
  │                                     │   EventRecord (durable to events.jsonl)
  │                                     ▼
  │                          ┌────────────────────┐
@@ -162,6 +164,19 @@ shared `evolve` reducer.
                                  reconcileSelection, runs list) │  evolve, same follow rules)│
                                                                 └───────────────────────────┘
 ```
+
+The workflow's `options.onStatus` is not the raw `createStoreCallbacks` surface. The engine's
+`RunExecutor` first composes it through `composeHooks(storeCallbacks, workflow.hooks)`
+([Hooks](../reference/hooks.md)). The composed `onStatus` forwards every callback **verbatim**
+to the store — the store is the terminal sink and **always** fires — while the returned
+`HookRegistry` is threaded into the engine primitives (`LanePool`, `PhaseRunner`, `Scheduler`,
+`WorktreeManager`) so influence/observe hooks fire at their lifecycle seams. Hooks compose **on
+top of** `StatusCallbacks` without replacing it: a workflow with no `hooks` field gets an
+`onStatus` behaviorally identical to `storeCallbacks` and an empty registry. Observe hooks
+(`onStructuredOutput`, `onDecision`, …) are a _secondary_ fan-out into separate sinks (e.g.
+the `AuditLog`); the audit-log `onDecision` hook and the event-store `StatusCallbacks.onDecision`
+callback fire independently. See
+[Event store & status → Composition with workflow hooks](../reference/event-store.md#composition-with-workflow-hooks-composehooks).
 
 1. A workflow calls `options.onStatus.onPhaseStart(...)` (or any other callback).
 2. `createStoreCallbacks(store)` maps that callback 1:1 to an `EventType` and calls

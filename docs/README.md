@@ -37,18 +37,19 @@ Read in this order:
 
 ### Reference
 
-| Document                                         | What it covers                                                                                                    |
-| ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------- |
-| [CLI reference](reference/cli.md)                | `run`, `resume`, `server up/down/status`, every flag, default, exit code, and the detach/kill semantics.          |
-| [Server reference](reference/server.md)          | The daemon, `RunManager`, the multi-run WebSocket protocol, auth attach-points, and the `--lan` guard.            |
-| [Worktrees reference](reference/worktrees.md)    | The per-task worktree system, `.worktreecopy`, branch naming, merge serialization, and the final-merge UX.        |
-| [Configuration](reference/configuration.md)      | Config directory resolution, `.env` loading, API-key resolution precedence, and resuming runs.                    |
-| [Programmatic API](reference/api.md)             | Every exported function and class with signatures and semantics.                                                  |
-| [Types reference](reference/types.md)            | Every exported type and interface.                                                                                |
-| [Event store & status](reference/event-store.md) | The event-sourced status model: `EventStore`, the `evolve` reducer, the projection, the `log` event, and clients. |
-| [Task pool & execution](reference/task-pool.md)  | `LanePool`, `TaskTracker`, step execution, retries, and the prompt builder.                                       |
-| [TUI dashboard](reference/tui.md)                | The terminal client: `WorkflowTUI`, widgets, keyboard shortcuts, the detach/kill prompt, and theme.               |
-| [Web client](reference/web.md)                   | The React client, the shared `EngineClient`, the zustand store, and the runs frame.                               |
+| Document                                         | What it covers                                                                                                                                                                                                           |
+| ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| [CLI reference](reference/cli.md)                | `run`, `resume`, `server up/down/status`, every flag, default, exit code, and the detach/kill semantics.                                                                                                                 |
+| [Server reference](reference/server.md)          | The daemon, `RunManager`, the multi-run WebSocket protocol, auth attach-points, and the `--lan` guard.                                                                                                                   |
+| [Worktrees reference](reference/worktrees.md)    | The per-task worktree system, `.worktreecopy`, branch naming, merge serialization, and the final-merge UX.                                                                                                               |
+| [Configuration](reference/configuration.md)      | Config directory resolution, `.env` loading, API-key resolution precedence, and resuming runs.                                                                                                                           |
+| [Programmatic API](reference/api.md)             | Every exported function and class with signatures and semantics.                                                                                                                                                         |
+| [Types reference](reference/types.md)            | Every exported type and interface.                                                                                                                                                                                       |
+| [Event store & status](reference/event-store.md) | The event-sourced status model: `EventStore`, the `evolve` reducer, the projection, the `log` event, and clients.                                                                                                        |
+| [Task pool & execution](reference/task-pool.md)  | `LanePool`, `TaskTracker`, step execution, retries, and the prompt builder.                                                                                                                                              |
+| [Hooks](reference/hooks.md)                      | The hook system: the `WorkflowHooks` catalog, composition rules (`observe`/`pipeline`/`first-wins`/`all-run`), `HookRegistry`, `composeHooks`, default implementations, wiring, and the `fixLoop`/final-review boundary. |
+| [TUI dashboard](reference/tui.md)                | The terminal client: `WorkflowTUI`, widgets, keyboard shortcuts, the detach/kill prompt, and theme.                                                                                                                      |
+| [Web client](reference/web.md)                   | The React client, the shared `EngineClient`, the zustand store, and the runs frame.                                                                                                                                      |
 
 ### Development
 

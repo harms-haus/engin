@@ -62,7 +62,7 @@ export function formatWorkflowEventLine(ev: EventRecord): string | null {
         '" (phase: ' +
         String(d.phaseId ?? m.phaseId ?? '') +
         ', ' +
-        String(d.stepCount ?? 0) +
+        String(Array.isArray(d.steps) ? d.steps.length : (d.stepCount ?? 0)) +
         ' steps)'
       );
 

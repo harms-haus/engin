@@ -102,11 +102,13 @@ class LanePool {
 }
 ```
 
-### `LanePoolOptions` — worktree-related field
+### `LanePoolOptions` — worktree & hook fields
 
-| Field              | Type              | Description                                                                                                                |
-| ------------------ | ----------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| `worktreeManager?` | `WorktreeManager` | Per-run worktree manager enabling per-task worktree isolation (create on claim, squash-merge on success, cull on failure). |
+| Field              | Type              | Description                                                                                                                                                                                                                      |
+| ------------------ | ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `worktreeManager?` | `WorktreeManager` | Per-run worktree manager enabling per-task worktree isolation (create on claim, squash-merge on success, cull on failure).                                                                                                       |
+| `hookRegistry?`    | `HookRegistry`    | Optional registry of workflow hooks. Forward `options.hookRegistry` (engine-assembled via `composeHooks`) to activate the pool/step/scheduler hooks. When absent, `runStep` calls `buildPrompt` directly — zero behavior change. |
+| `auditLog?`        | `AuditLog`        | Audit log. When present **alongside** `hookRegistry`, `LanePool.run()` auto-registers the default auditor so `structured_output` / `decision` events land in the log without any manual `auditLog.append` call in workflow code. |
 
 ### How `run()` works
 
@@ -215,6 +217,112 @@ the per-step **execution count**, not the rejection attempt.
   re-thrown. In `finally`, the session is removed from `activeSessions` and `onAgentComplete`
   fires **always**.
 
+## Pool-level hooks
+
+The pool layer is the primary consumer of the engine's hook system. Hooks are an **extension
+seam** that lets a workflow influence and observe execution without forking the engine; the
+full catalog, composition rules (`observe` / `pipeline` / `first-wins` / `all-run`), and known
+wiring gaps are documented in [Hooks](hooks.md). This section covers only the seams that fire
+inside the pool layer.
+
+A workflow **declares** hooks on its `WorkflowModule` via the optional `hooks` field; the
+engine composes them with the store callbacks via `composeHooks` and exposes the assembled
+registry as `options.hookRegistry`. To activate pool/step/scheduler hooks, the workflow
+**forwards** that registry into its `LanePool` (or `runStepTask`):
+
+```typescript
+const pool = new LanePool({
+  // …
+  hookRegistry: options.hookRegistry, // ← activates beforeStepPrompt / beforeTask / auditor
+});
+```
+
+When `hookRegistry` is absent (or has no subscribers for a given name), every seam below
+short-circuits to the legacy code path — zero behavior change.
+
+### `beforeStepPrompt` (pipeline, fires in `runStep`)
+
+Source: `packages/engine/src/pool/step-execution.ts`. When the threaded `hookRegistry` has at
+least one `beforeStepPrompt` subscriber, `runStep` produces the prompt by invoking the
+**pipeline** hook (seeded with `task.prompt`) **instead of** calling `buildPrompt` directly.
+The pipeline's final return value replaces the prompt sent to the agent. The hook receives
+both `cwd` and an optional `worktreeCwd` so file context resolves against the per-task
+worktree when one is in use (see [§7 of hooks.md](hooks.md#7-the-two-cwd-world)). When no
+subscriber is registered, `buildPrompt` runs unchanged.
+
+### `beforeTask` (first-wins, fires in `resolveRunner`)
+
+Source: `packages/engine/src/pool/lane-pool.ts`. For each claimed task, `resolveRunner`
+invokes the `beforeTask` **first-wins** hook seeded with `{ task, steps }` (the seed step list
+from `getStepsForTask`). A subscriber may return:
+
+- `{ skip: true }` → the task is **cancelled** in the tracker; no steps run, no worktree is
+  created, no merge lifecycle fires, no retry is budgeted.
+- `{ steps: [...] }` → **override** the seed step list.
+- `undefined` → **abstain**; the seed is kept (`getRunnerForTask`, if provided, still takes
+  precedence over steps).
+
+> **NOTE — Step definitions shown at task registration** (`onTaskRegister`, used by the TUI/web AgentLog + step-progress) come from `getStepsForTask`. A `beforeTask` hook resolves steps at CLAIM time (later) and its result does **NOT** retroactively populate the registration-time step list — so for visible step/agent layout, also provide `getStepsForTask` as the synchronous seed.
+
+### `auditLog` + the default auditor (registered by `LanePool.run()`)
+
+When `LanePool.run()` is constructed with **both** `auditLog` and `hookRegistry`, it registers
+the default auditor (`createDefaultAuditor(auditLog)`) as a subscriber for `onStructuredOutput`
+and `onDecision` **before** spawning lanes. Because both are **observe** hooks (fan-out), a
+workflow that provides its own subscribers under the same names sees **both** fire — the
+workflow's subscriber AND the auditor — with no manual `auditLog.append` call required. When
+either option is absent, no auditor is registered (backward compat).
+
+### Scheduler hooks
+
+The lane-scheduling core lives in `packages/engine/src/pool/scheduler.ts` (constructed by
+`LanePool.run()`, which forwards `hookRegistry`). The Scheduler owns three hook seams:
+
+| Hook             | Rule       | Args                                         | Default (no subscriber)                                                                |
+| ---------------- | ---------- | -------------------------------------------- | -------------------------------------------------------------------------------------- |
+| `claimPolicy`    | first-wins | `{ tracker, laneId, maxClaim }`              | `claimTasks(1, laneId)` (claim one ready task).                                        |
+| `concurrencyKey` | first-wins | `{ task }`                                   | No concurrency limit (tasks run concurrently across lanes).                            |
+| `onLaneStall`    | observe    | `{ laneId, consecutiveTimeouts, threshold }` | `console.warn` the historical stall warning (fires once after `threshold`, default 5). |
+
+**`claimPolicy` limitation.** The hook may return a batch of `Task[]`; the Scheduler marks
+**every** returned task `active`. However, the lane loop currently consumes only `claimed[0]`
+per wake cycle, so a batch of _N_ is processed one at a time across successive wakes rather
+than concurrently in a single claim. Treat the batch contract as "select the next task(s); the
+Scheduler still drains one at a time."
+
+**Known wiring gaps (consistent with [hooks.md](hooks.md#known-wiring-gaps-honest-summary)).**
+`onLaneIdle` and `wakeStrategy` are declared in `types.ts` but are **not invoked** from the
+Scheduler today — registering a subscriber is harmless but will not fire. They are reserved
+for future scheduler work.
+
+### `fixLoop` — single-task review → fix → re-review
+
+Source: `packages/engine/src/pool/fix-loop.ts`. `fixLoop` is a composable **single-task**
+review/fix primitive (not a hook) that a task runner calls. It composes with `runStep` for
+**both** the review and the fixer steps — it does not re-implement agent spawning or session
+management. Loop contract:
+
+1. Run the review step via `runStep`. If approved → `{ status: 'completed', output }`.
+2. If rejected, enter the fix loop (up to `maxRounds`, default 3):
+   - **Before** each fixer attempt, invoke `shouldIsolate` (first-wins) with the latest review
+     feedback as the `error`. A `true` result **isolates**: the fixer is not run, the worktree
+     is **preserved** (cull skipped), and `{ status: 'failed', feedback }` is returned.
+   - Run each fixer step via `runStep` in order. A fixer step that **rejects or throws** fires
+     `onLaneError` (observe) — but does **not** abort the round. Review rejections do not fire
+     `onLaneError` (they are the loop's normal control-flow signal).
+   - Re-run the review. If approved → `{ status: 'completed', output }`.
+3. On exhaustion → `{ status: 'failed', feedback }`, and (when a worktree is in use) **cull**
+   the task worktree via `cullTaskWorktree(task.id)` — **unless** `shouldIsolate` returned
+   `true`, in which case the worktree is **preserved** for inspection. Cull failures are
+   swallowed + warned.
+
+`fixLoop` uses **inline fallbacks** (`shouldIsolate` → `false`, lane errors swallowed) when no
+subscriber is registered, so a caller that passes no `hookRegistry` gets the exact pre-hook
+behavior. The bundled **final-review** phase does **not** use `fixLoop` — it is a
+multi-dimensional, per-finding parallel review built on `LanePool` + `runStepTask`; see the
+[appendix in hooks.md](hooks.md#appendix-the-fixloop-primitive-and-the-final-review-boundary)
+for the design boundary.
+
 ## Task runners — polymorphic task bodies
 
 The body of a task — what actually executes when a lane claims it — is now
@@ -264,7 +372,30 @@ interface TaskRunnerContext {
   cwd: string;
   apiKeys?: Record<string, string>;
   maxStepRetries: number;
+  /** Optional registry of custom output renderers keyed by profile name */
   rendererRegistry?: RendererRegistry;
+  /** Optional registry of workflow hooks. Forwarded into the
+   *  {@link StepExecutionContext} so `runStep` can invoke `beforeStepPrompt`
+   *  (and the observe hooks `onStructuredOutput` / `onDecision`) when
+   *  subscribers are present. */
+  hookRegistry?: HookRegistry;
+  /** Audit log for recording events. Forwarded into the
+   *  {@link StepExecutionContext}. The default auditor
+   *  ({@link createDefaultAuditor}) is registered against `hookRegistry` by
+   *  `LanePool.run()` when BOTH `auditLog` and `hookRegistry` are present on
+   *  {@link LanePoolOptions}, so structured-output / decision events land in
+   *  the durable log WITHOUT any manual `auditLog.append` call in workflow
+   *  code. */
+  auditLog?: AuditLog;
+  /** Per-task worktree path (set by LanePool when a worktree is created for
+   *  this task). Distinct from `cwd` (the run/pool cwd): forwarded into the
+   *  {@link StepExecutionContext} so the `beforeStepPrompt` hook can resolve
+   *  files against the isolated worktree. */
+  worktreeCwd?: string;
+  /** Abort signal for cooperative cancellation (e.g. SIGINT). Forwarded into the
+   *  {@link StepExecutionContext} so runStep can re-check the abort state before
+   *  starting a prompt, closing the TOCTOU window between session creation and
+   *  `session.prompt()`. */
   signal?: AbortSignal;
   worktreeManager?: WorktreeManager;
   /** Safely settle the task as complete. Returns true on success. */
@@ -493,4 +624,5 @@ Source: `packages/engine/src/pool/validation.ts` and `packages/engine/src/pool/s
 - [Building a new workflow](../guides/building-workflows.md) — using `LanePool` and
   `runStepTask` together.
 - [Event store & status](event-store.md) — what every lifecycle callback becomes.
+- [Hooks](hooks.md) — the full hook catalog, composition rules, and the `fixLoop` boundary.
 - [Types reference](types.md) — `LanePoolOptions`, `StepDefinition`, `Task`, `TaskEntity`.

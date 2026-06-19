@@ -394,7 +394,7 @@ describe('LanePool per-task worktree lifecycle', () => {
 
     // createTaskWorktree receives the task id and prompt, and runs BEFORE the runner.
     expect(wm.createTaskWorktree).toHaveBeenCalledTimes(1);
-    expect(wm.createTaskWorktree).toHaveBeenCalledWith('task-1', 'do the thing');
+    expect(wm.createTaskWorktree).toHaveBeenCalledWith('task-1', 'do the thing', expect.anything());
     // The runner observed the worktree path as cwd and the manager was forwarded.
     expect(runnerCwd).toBe('/tmp/wt/task-1');
     expect(runnerWorktreeManager).toBe(wm);
@@ -526,5 +526,43 @@ describe('LanePool per-task worktree lifecycle', () => {
     // Worktree creation failed → cwd stays at the configured cwd; the task still completes.
     expect(runnerCwd).toBe('/original/project');
     expect(tracker.getTask('task-1')!.status).toBe('complete');
+  });
+
+  // ── Task threading for worktree-lifecycle hooks ──────────────────────────
+  //
+  // The worktree-lifecycle hooks (beforeTaskWorktreeCreate, onTaskMerge,
+  // onMergeConflict, …) need the FULL Task — not just id + prompt — so they can
+  // read task.profile (e.g. the default scout-skip), task.title, task.files,
+  // etc. LanePool has the full Task in its runner context and must forward it
+  // to createTaskWorktree so the WorktreeManager can pass it through to the
+  // hook args.
+
+  it('threads the full Task to createTaskWorktree so worktree hooks receive task.profile', async () => {
+    setupProfileMocks();
+    const wm = createMockWorktreeManager({ createPath: '/tmp/wt/scout-1' });
+    const task = makeTask({ id: 'scout-1', prompt: 'scout the codebase', profile: 'scout' });
+    const { pool } = createPoolWithWorktree({
+      tasks: [task],
+      worktreeManager: wm as unknown as WorktreeManager,
+      getRunnerForTask: () => async (ctx) => {
+        ctx.completeTask();
+        return { status: 'completed' };
+      },
+    });
+
+    await pool.run();
+
+    // createTaskWorktree received the Task as the 3rd arg (backward-compatible
+    // optional param). The mock records all call args, including extras beyond
+    // its declared params, so we cast to access the 3rd positional arg.
+    expect(wm.createTaskWorktree).toHaveBeenCalledTimes(1);
+    const callArgs = wm.createTaskWorktree.mock.calls[0] as unknown[];
+    expect(callArgs[0]).toBe('scout-1'); // taskId (1st arg)
+    expect(callArgs[1]).toBe('scout the codebase'); // taskPrompt (2nd arg)
+    // The 3rd arg is the full Task — carrying profile so hooks can read it.
+    // (Compared by identity-fields, not reference: the tracker may normalize
+    // the task object, so toBe would fail on a different-but-equal reference.)
+    expect(callArgs[2]).toEqual(expect.objectContaining({ id: task.id, profile: task.profile }));
+    expect((callArgs[2] as Task).profile).toBe('scout');
   });
 });

@@ -291,10 +291,23 @@ describe('createWsBackedTui', () => {
       expect(ctx.eventLog.lines).toContain('✅ Agent a1 complete');
     });
 
-    it('forwards task_registered line (uses stepCount from data)', () => {
+    it('forwards task_registered line (uses steps array length)', () => {
       const ctx = createTestDeps();
       ctx.clientStore.applyEvents([
-        ev('task_registered', { taskId: 't1', title: 'Task', phaseId: 'p1', stepCount: 2, steps: [] }, {}, 1),
+        ev(
+          'task_registered',
+          {
+            taskId: 't1',
+            title: 'Task',
+            phaseId: 'p1',
+            steps: [
+              { name: 'a', profileId: 'x' },
+              { name: 'b', profileId: 'y' },
+            ],
+          },
+          {},
+          1,
+        ),
       ]);
       expect(ctx.eventLog.lines).toEqual(['📋 Task registered: "Task" (phase: p1, 2 steps)']);
     });

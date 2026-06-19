@@ -12,9 +12,12 @@
 //
 // The module under test is imported from './runner-utils.js'.
 
+import { tmpdir } from 'node:os';
+
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import type { RendererRegistry } from '../core/renderer-registry.js';
 import type { AgentProfile, Task } from '../core/types.js';
+import { AuditLog } from '../tracking/audit-log.js';
 import {
   buildExecCtx,
   createSessionMap,
@@ -377,6 +380,32 @@ describe('buildExecCtx', () => {
     const b = buildExecCtx(ctx);
     expect(a).not.toBe(b);
     expect(a).toEqual(b);
+  });
+
+  // ── auditLog forwarding (default-auditor wiring) ───────────────────────
+  //
+  // NOTE (TDD): `auditLog` is a PLANNED optional field on TaskRunnerContext /
+  // StepExecutionContext (the "Wire default auditor" task). Until those types
+  // declare it, the field is set via a plain-object ctx (spread + cast to the
+  // interface, which is a valid superset cast) and read off execCtx via a
+  // minimal cast — so this file type-checks today and goes GREEN once
+  // buildExecCtx forwards `auditLog` alongside the other optional fields.
+
+  it('forwards auditLog from ctx to execCtx (reference identity)', () => {
+    const auditLog = new AuditLog(tmpdir());
+    const ctx = { ...makeCtx(), auditLog } as TaskRunnerContext;
+
+    const execCtx = buildExecCtx(ctx);
+
+    expect((execCtx as { auditLog?: AuditLog }).auditLog).toBe(auditLog);
+  });
+
+  it('leaves auditLog undefined when ctx omits it', () => {
+    const ctx = makeCtx();
+
+    const execCtx = buildExecCtx(ctx);
+
+    expect((execCtx as { auditLog?: AuditLog }).auditLog).toBeUndefined();
   });
 });
 

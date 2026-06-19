@@ -19,6 +19,31 @@
 //     driven by the user via `RunManager.handleWorktreeAction` once the run
 //     reaches a terminal state.
 //
+// WORKFLOW-LEVEL HOOK WIRING (this task): `execute` owns a SUBSET of the
+// workflow-level hooks declared in hooks/types.ts. After `composeHooks`
+// builds the registry, `execute` registers the DEFAULT implementations of
+// the engine-owned hooks (see run-executor.test.ts suite 7):
+//
+//   - `onWorkflowResume` / `onWorkflowAbort` — always registered (engine
+//     lifecycle). The engine FIRES them: `onWorkflowResume` on resume
+//     detection (the store already has events), `onWorkflowAbort` in the
+//     AbortError branch of the catch block BEFORE the handle is marked failed.
+//   - `beforeRunMerge` / `onRunMergeConflict` — registered only on the git
+//     path (the run-end final-merge pair). The engine does NOT fire them
+//     here — `RunManager.handleWorktreeAction` invokes them once the run is
+//     terminal and the user requests the merge. The defaults reproduce the
+//     legacy squash-merge / agent-resolution UX.
+//
+// DESIGN SPLIT: the `onPersist` / `onRestore` defaults are NOT registered by
+// the engine — the WorkflowStatusTracker they capture is created by the
+// WORKFLOW (spir.ts), so the workflow registers those defaults itself. The
+// engine only fires / registers hooks it owns; it does not fabricate a
+// tracker.
+//
+// All wiring is ADDITIVE: when no workflow-provided hooks are present, the
+// defaults reproduce the prior behavior EXACTLY (existing workflows are
+// unaffected).
+//
 // CRITICAL INVARIANT (called out by the decomposition task):
 //   `execute` MUST call `bridge.broadcastTerminal(...)` to emit the terminal
 //   `run_complete` / `run_failed` messages. After task-29 removes the
@@ -39,6 +64,20 @@ import { RendererRegistry } from '../core/renderer-registry.js';
 import { generateTitleAndBranch } from '../core/title-generator.js';
 import type { StatusCallbacks, WorkflowModule, WorkflowRunOptions } from '../core/types.js';
 import { WorktreeManager } from '../core/worktree-manager.js';
+import { composeHooks } from '../hooks/compose.js';
+import {
+  createDefaultBeforeTaskWorktreeCreate,
+  createDefaultOnCommitFailure,
+  createDefaultOnMergeConflict,
+  createDefaultOnRunMergeConflict,
+  createDefaultPopulateWorktree,
+  defaultAfterTaskWorktreeCreate,
+  defaultBeforeRunMerge,
+  defaultOnTaskMerge,
+  defaultOnWorkflowAbort,
+  defaultOnWorkflowResume,
+} from '../hooks/defaults/index.js';
+import type { HookContext, HookProvider } from '../hooks/types.js';
 import { runWithConsoleCapture } from './console-capture.js';
 import type { RunHandle, StartRunMessage } from './run-manager.js';
 import type { RunRegistry } from './run-registry.js';
@@ -91,18 +130,36 @@ export class RunExecutor {
    *   - **non-git cwd** — it warns via `console.warn` and runs in-place
    *     (`options.cwd = handle.cwd`, no worktree, no manager).
    *
+   * After composing the workflow-provided hooks with the store callbacks via
+   * `composeHooks`, the executor registers the DEFAULT implementations of
+   * the engine-owned workflow-level hooks into the same registry:
+   * `onWorkflowResume` and `onWorkflowAbort` always; `beforeRunMerge` and
+   * `onRunMergeConflict` on the git path only. (The `onPersist` / `onRestore`
+   * defaults are NOT registered here — the tracker they capture is owned by
+   * the workflow.)
+   *
+   * RESUME: before launching `workflow.run()`, the executor probes the store
+   * for prior events. If any exist (this is a RESUME of a previously-started
+   * run), it fires `registry.invokeObserve('onWorkflowResume', { workDir,
+   * tracker: undefined }, ctx)` so the workflow can restore sidebar state,
+   * clear stale sessions, etc. On a fresh run (empty store) the hook is NOT
+   * fired.
+   *
    * On success it flushes the store (durability BEFORE the status flip), marks
    * the run complete, and broadcasts `run_complete` via
    * {@link StatusBridge.broadcastTerminal}. On failure it flushes first
    * (partial events stay durable), distinguishes `AbortError` (from
-   * `controller.abort()`) from genuine errors, marks the run failed, and
-   * broadcasts `run_failed`. The worktree is PRESERVED on failure (no cleanup)
-   * so the user can inspect or retry — the run-end final merge is driven by
-   * the user via `RunManager.handleWorktreeAction` once the run is terminal,
-   * using the `handle.summary.worktree` info carried in the `run_complete`
-   * broadcast. The finally block notifies the control server that the
-   * active-run set changed and schedules a reaper that disposes the bridge
-   * and removes the handle after the reap delay.
+   * `controller.abort()`) from genuine errors. In the AbortError branch it
+   * fires `registry.invokeObserve('onWorkflowAbort', { reason: 'Aborted',
+   * workDir }, ctx)` BEFORE marking the run failed — `onWorkflowAbort` is a
+   * distinct seam from any future `onWorkflowFailed` semantics. Then it marks
+   * the run failed and broadcasts `run_failed`. The worktree is PRESERVED on
+   * failure (no cleanup) so the user can inspect or retry — the run-end final
+   * merge is driven by the user via `RunManager.handleWorktreeAction` once the
+   * run is terminal, using the `handle.summary.worktree` info carried in the
+   * `run_complete` broadcast. The finally block notifies the control server
+   * that the active-run set changed and schedules a reaper that disposes the
+   * bridge and removes the handle after the reap delay.
    *
    * The workflow execution body runs inside a {@link runWithConsoleCapture}
    * scope so any `console.warn`/`error`/`info` output made during execution
@@ -129,6 +186,30 @@ export class RunExecutor {
       workflow.registerRenderers(rendererRegistry);
     }
 
+    // ─── Hook composition seam ───────────────────────────────────────────
+    //
+    // Compose the engine's status-callback surface with workflow-provided
+    // hooks BEFORE the worktree setup so the registry can be threaded into
+    // the {@link WorktreeManager} (which invokes the worktree-lifecycle hooks
+    // during `setupMainWorktree()` and `createTaskWorktree()`). `composeHooks`
+    // returns:
+    //  - `onStatus`     — a {@link StatusCallbacks} wrapper that delegates
+    //                     every STATUS_CALLBACK_METHOD to `storeCallbacks`
+    //                     verbatim (zero behavior change). Observe/influence
+    //                     firing is NOT done here — it is deferred to the
+    //                     engine primitives that own a proper HookContext.
+    //  - `registry`     — a fresh {@link HookRegistry} carrying the workflow's
+    //                     influence hooks (empty when `workflow.hooks` is
+    //                     undefined — the existing-workflows path).
+    //
+    // When `workflow.hooks` is undefined, `workflow.hooks ?? []` feeds an
+    // empty provider list into `composeHooks`, yielding an empty registry AND
+    // a composed `onStatus` that is behaviorally identical to
+    // `storeCallbacks` — the firmest guarantee in the hook system (existing
+    // workflows are unaffected).
+    const hookProviders: HookProvider = workflow.hooks ?? [];
+    const { onStatus: composedStatus, registry: hookRegistry } = composeHooks(storeCallbacks, hookProviders);
+
     // ─── Worktree setup ──────────────────────────────────────────────────
     //
     // When the cwd is a git repo, isolate the run inside a main worktree on a
@@ -137,12 +218,44 @@ export class RunExecutor {
     // The workflow sees the worktree as its cwd via `options.cwd` (the
     // transparency mechanism). When git is NOT available, warn and run
     // in-place against the original cwd.
+    //
+    // On the git path the worktree-lifecycle DEFAULT implementations
+    // (`populateWorktree`, `beforeTaskWorktreeCreate`, `onTaskMerge`, …) are
+    // registered into the SAME registry BEFORE the WorktreeManager is
+    // constructed, so `setupMainWorktree()` — which invokes the
+    // `populateWorktree` pipeline hook — observes the default subscriber
+    // (and any workflow-provided override registered earlier by
+    // `composeHooks`). The registry is then threaded to the WorktreeManager
+    // via the `hookRegistry` option.
     const isGit = isGitRepo(handle.cwd);
     let worktreeManager: WorktreeManager | undefined;
+    // Lifted out of the `if (isGit)` block so the merge-default registration
+    // below can build `createDefaultOnRunMergeConflict` from the same
+    // `profilesDirs` computed here. It stays `undefined` on the non-git
+    // path — the merge + worktree defaults are NOT registered in that case
+    // (there is no worktree to merge).
+    let profilesDirs: string[] | undefined;
 
     if (isGit) {
       const repoRoot = getRepoRoot(handle.cwd);
-      const profilesDirs = resolveProfilesDirs(handle.cwd, handle.workflowName);
+      profilesDirs = resolveProfilesDirs(handle.cwd, handle.workflowName);
+
+      // Register the worktree-lifecycle DEFAULTS (git path only) BEFORE
+      // constructing the WorktreeManager so `setupMainWorktree()` sees them.
+      // They compose WITH any workflow-provided subscriber registered earlier
+      // by `composeHooks` (observe fan-out fires both; pipeline runs both in
+      // order; first-wins lets the workflow's earlier-registered hook
+      // decide). The defaults reproduce the legacy `.worktreecopy` /
+      // squash-merge / agent-resolution UX when the workflow opts out.
+      hookRegistry.register({
+        beforeTaskWorktreeCreate: createDefaultBeforeTaskWorktreeCreate(),
+        populateWorktree: createDefaultPopulateWorktree(handle.cwd),
+        afterTaskWorktreeCreate: defaultAfterTaskWorktreeCreate,
+        onTaskMerge: defaultOnTaskMerge,
+        onMergeConflict: createDefaultOnMergeConflict(profilesDirs, msg.apiKeys),
+        onCommitFailure: createDefaultOnCommitFailure(profilesDirs, msg.apiKeys),
+      });
+
       const { branchName: rawBranch } = await generateTitleAndBranch({
         profilesDirs,
         taskPrompt: handle.taskPrompt,
@@ -161,6 +274,7 @@ export class RunExecutor {
         mainWorktreePath,
         profilesDirs,
         apiKeys: msg.apiKeys,
+        hookRegistry,
       });
       await worktreeManager.setupMainWorktree();
 
@@ -181,14 +295,87 @@ export class RunExecutor {
       console.warn(`[run-executor] cwd is not a git repository. Running without worktrees.`);
     }
 
+    // ─── Default workflow-hook registration ─────────────────────────────
+    //
+    // The engine owns a SUBSET of the workflow-level hooks: the ones driven
+    // by the engine's own lifecycle (resume, abort) and the git-driven
+    // run-end final-merge pair (beforeRunMerge / onRunMergeConflict). It
+    // registers their DEFAULT implementations into the SAME registry
+    // `composeHooks` built, so:
+    //
+    //  - the engine-fired observe hooks (onWorkflowResume, onWorkflowAbort)
+    //    have a well-defined (identity / log) behavior even when the
+    //    workflow registers no subscriber; AND
+    //  - the git-path merge hooks reproduce the legacy squash-merge /
+    //    agent-resolution UX when the workflow opts out.
+    //
+    // DESIGN SPLIT (called out by the task and pinned by suite 7 of
+    // run-executor.test.ts): the engine fires onWorkflowResume /
+    // onWorkflowAbort (engine lifecycle) and registers the merge defaults
+    // (git-driven; `profilesDirs` is computed in the git branch above). The
+    // `onPersist` / `onRestore` defaults are NOT registered by the engine —
+    // the WorkflowStatusTracker they capture is created by the WORKFLOW
+    // (spir.ts), so the workflow registers those defaults itself. The engine
+    // only fires hooks it owns; it does not fabricate a tracker.
+    //
+    // The defaults are appended AFTER `composeHooks` registers the
+    // workflow's own providers, so a workflow-provided subscriber composes
+    // WITH the default under the same name (observe fan-out fires both;
+    // first-wins lets the workflow's earlier-registered hook decide).
+    hookRegistry.register({
+      onWorkflowResume: defaultOnWorkflowResume,
+      onWorkflowAbort: defaultOnWorkflowAbort,
+      ...(profilesDirs
+        ? {
+            beforeRunMerge: defaultBeforeRunMerge,
+            onRunMergeConflict: createDefaultOnRunMergeConflict(profilesDirs, msg.apiKeys),
+          }
+        : {}),
+    });
+
+    // The per-run {@link HookContext} shared by every hook the engine fires
+    // from this `execute` invocation. `cwd` is the ORIGINAL cwd (handle.cwd),
+    // NOT the worktree path — hooks that need the worktree path receive it
+    // via their args (e.g. BeforeRunMergeArgs.worktree). `signal` is the
+    // run's AbortController signal so hooks can cooperate with cancellation.
+    const hookCtx: HookContext = {
+      registry: hookRegistry,
+      cwd: handle.cwd,
+      workDir: handle.workDir,
+      signal: controller.signal,
+    };
+
+    // ─── Resume detection ─────────────────────────────────────────────────
+    //
+    // Before launching the workflow, probe the store for prior events. When
+    // the store already has events (this is a RESUME of a previously-started
+    // run, e.g. an EventStore.load() that replayed a pre-existing
+    // events.jsonl), fire the `onWorkflowResume` observe hook so the
+    // workflow can restore sidebar state, clear stale sessions, warm caches,
+    // etc. BEFORE workflow.run() executes. On a fresh run (empty store) the
+    // hook is NOT fired — the default is registered but never invoked.
+    //
+    // `getEventsSince(0)` returns every record with seq > 0, i.e. every
+    // event in the ring buffer (loaded from disk on EventStore.load OR
+    // appended in this session). A non-empty result means prior state exists.
+    const isResume = store.getEventsSince(0).length > 0;
+    if (isResume) {
+      await hookRegistry.invokeObserve('onWorkflowResume', { workDir: handle.workDir, tracker: undefined }, hookCtx);
+    }
+
     // Build the workflow run options. When git is available, `cwd` becomes
     // the MAIN WORKTREE PATH (the transparency mechanism). The worktree
     // manager + info are forwarded so the workflow can spawn per-task
-    // worktrees off the main one.
+    // worktrees off the main one. `onStatus` is the COMPOSED surface (not the
+    // raw storeCallbacks) and `hookRegistry` is forwarded so workflow code
+    // that constructs LanePool / calls runStepTask can pass `hookRegistry:
+    // options.hookRegistry` and the engine primitives can invoke hooks at the
+    // proper lifecycle seams.
     const options: WorkflowRunOptions = {
       cwd: isGit && worktreeManager ? worktreeManager.mainWorktreePath : handle.cwd,
       workDir: handle.workDir,
-      onStatus: storeCallbacks,
+      onStatus: composedStatus,
+      hookRegistry,
       signal: controller.signal,
       rendererRegistry,
       ...(worktreeManager ? { worktreeManager } : {}),
@@ -230,6 +417,21 @@ export class RunExecutor {
 
         // Distinguish AbortError (from controller.abort()) from genuine errors.
         const isAbort = err instanceof Error && err.name === 'AbortError';
+
+        // Abort hook: fire `onWorkflowAbort` BEFORE flipping the handle
+        // status to 'failed'. This distinguishes a cooperative abort (from
+        // controller.abort()) from a genuine failure — `onWorkflowAbort` is
+        // a distinct seam from any future `onWorkflowFailed` semantics
+        // (§7). The hook is observe fan-out: a workflow that registered no
+        // subscriber still gets the default (which logs the reason via
+        // console.warn, captured to this run's store as a `log` event by
+        // the surrounding runWithConsoleCapture scope). Awaited so the
+        // workflow can perform synchronous abort cleanup (e.g. tearing down
+        // child processes) before the terminal broadcast fires.
+        if (isAbort) {
+          await hookRegistry.invokeObserve('onWorkflowAbort', { reason: 'Aborted', workDir: handle.workDir }, hookCtx);
+        }
+
         const message = isAbort ? 'Run cancelled' : err instanceof Error ? err.message : String(err);
 
         handle.status = 'failed';

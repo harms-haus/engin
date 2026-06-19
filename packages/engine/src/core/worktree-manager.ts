@@ -21,6 +21,14 @@
 
 import { join } from 'node:path';
 
+import type {
+  BeforeTaskWorktreeResult,
+  CommitFailureResolution,
+  ConflictResolution,
+  HookContext,
+  HookRegistry,
+  TaskMergeDecision,
+} from '../hooks/types.js';
 import { assertSafeName } from '../pool/validation.js';
 import {
   abortMerge,
@@ -36,7 +44,7 @@ import {
   stageFiles,
   worktreePrune,
 } from './git.js';
-import type { WorktreeInfo } from './types.js';
+import type { Task, WorktreeInfo } from './types.js';
 import { resolveConflictsWithAgent } from './worktree-lifecycle.js';
 import { commitWorktreeChanges } from './worktree-operations.js';
 
@@ -57,6 +65,17 @@ export interface WorktreeManagerOptions {
   profilesDirs: string[];
   /** API keys for agent operations. */
   apiKeys?: Record<string, string>;
+  /**
+   * Optional hook registry for the worktree-lifecycle hooks
+   * (`populateWorktree`, `beforeTaskWorktreeCreate`, `onTaskMerge`, …). When
+   * ABSENT, every method behaves EXACTLY as today — direct calls to
+   * `populateWorktree`, `resolveConflictsWithAgent`, etc. (backward compat).
+   * When PRESENT, the methods invoke the corresponding hooks, falling back
+   * to the direct calls only when a hook abstains. The engine (run-executor)
+   * registers the DEFAULT implementations into this registry alongside any
+   * workflow-provided subscribers.
+   */
+  hookRegistry?: HookRegistry;
 }
 
 export interface TaskWorktreeInfo {
@@ -97,11 +116,22 @@ export class WorktreeManager {
   private readonly workDir: string;
   private readonly profilesDirs: string[];
   private readonly apiKeys?: Record<string, string>;
+  /** Threaded hook registry; `undefined` on the backward-compat path. */
+  private readonly hookRegistry?: HookRegistry;
 
   /** taskId → TaskWorktreeInfo, for all per-task worktrees ever created. */
   private readonly taskWorktrees = new Map<string, TaskWorktreeInfo>();
   /** taskId → taskPrompt, stored at creation time for use during merge. */
   private readonly taskPrompts = new Map<string, string>();
+  /** taskId → Task, stored at creation time so the merge / conflict hooks
+   *  receive the full task object. When `createTaskWorktree` was called
+   *  without a Task (backward compat), a minimal Task is synthesized. */
+  private readonly taskTasks = new Map<string, Task>();
+  /** taskId set for tasks whose `beforeTaskWorktreeCreate` hook returned
+   *  `{ skip: true }` (they run against the main worktree directly — no
+   *  isolated branch). `mergeTaskBranch` / `cullTaskWorktree` short-circuit
+   *  for these (there is no branch to merge or remove). */
+  private readonly skippedTasks = new Set<string>();
 
   /**
    * Serialisation chain for task-branch merges. Each `mergeTaskBranch` call
@@ -128,6 +158,7 @@ export class WorktreeManager {
     this.mainWorktreePath = opts.mainWorktreePath;
     this.profilesDirs = opts.profilesDirs;
     this.apiKeys = opts.apiKeys;
+    this.hookRegistry = opts.hookRegistry;
   }
 
   // ─── Main Worktree (SOLE CREATOR) ─────────────────────────────────────────
@@ -138,7 +169,9 @@ export class WorktreeManager {
    *
    * 1. Prunes orphaned worktree metadata left by crashed runs.
    * 2. Creates the main worktree at `mainWorktreePath` on `mainBranch`.
-   * 3. Populates it from `.worktreecopy` in `sourceCwd`.
+   * 3. Populates it via the `populateWorktree` pipeline hook (when a
+   *    `hookRegistry` is configured) or the direct `.worktreecopy` primitive
+   *    (backward compat).
    *
    * The branch name is NOT generated here — the caller provides `mainBranch`
    * in the constructor (from `generateTitleAndBranch`).
@@ -151,8 +184,57 @@ export class WorktreeManager {
     //    from the real repo's current HEAD/main.
     createWorktree(this.repoRoot, this.mainBranch, this.mainWorktreePath);
 
-    // 3. Populate from `.worktreecopy` (copy/symlink the user's entries).
-    populateWorktree(this.sourceCwd, this.mainWorktreePath);
+    // 3. Populate via the hook pipeline (default delegates to the
+    //    `.worktreecopy` primitive) or the direct primitive (backward compat).
+    //    No task context for the MAIN worktree — `task` is undefined.
+    await this.invokePopulate(this.mainWorktreePath);
+  }
+
+  /**
+   * Populates a worktree either via the `populateWorktree` pipeline hook
+   * (when a `hookRegistry` is configured) or via the direct
+   * `core/git.ts::populateWorktree` primitive (backward compat). The default
+   * (registered by run-executor) delegates to the same primitive, so the
+   * behavior is identical when no workflow override is present; a workflow
+   * override can chain additional work (e.g. `bun install`) via pipeline
+   * fan-out.
+   *
+   * `task` is forwarded to the hook args so a workflow's `populateWorktree`
+   * subscriber can branch on the task (e.g. install different dependencies
+   * per task profile). It is `undefined` for the MAIN worktree
+   * (setupMainWorktree has no task context) — the property is OMITTED from
+   * the args object so `args.task` reads as `undefined`.
+   */
+  private async invokePopulate(worktreePath: string, task?: Task): Promise<void> {
+    if (this.hookRegistry) {
+      await this.hookRegistry.invokePipeline(
+        'populateWorktree',
+        undefined,
+        { worktreePath, sourceCwd: this.sourceCwd, ...(task ? { task } : {}) },
+        this.makeHookCtx(),
+      );
+    } else {
+      populateWorktree(this.sourceCwd, worktreePath);
+    }
+  }
+
+  /**
+   * Builds the {@link HookContext} for worktree-lifecycle hook invocations.
+   * `cwd` is the original source cwd (the user's repo), `workDir` is the run
+   * dir, and `registry` is the threaded hook registry. `signal` is left
+   * undefined — the WorktreeManager does not own an abort signal; callers
+   * that need cancellation cooperate via the run-level signal elsewhere.
+   */
+  private makeHookCtx(): HookContext {
+    // Every caller is inside an `if (this.hookRegistry)` guard, so the
+    // registry is always defined here. The throw makes that precondition
+    // explicit and narrows the type without a non-null assertion.
+    if (!this.hookRegistry) throw new Error('makeHookCtx called without a hookRegistry');
+    return {
+      registry: this.hookRegistry,
+      cwd: this.sourceCwd,
+      workDir: this.workDir,
+    };
   }
 
   // ─── Per-Task Worktrees ───────────────────────────────────────────────────
@@ -164,10 +246,22 @@ export class WorktreeManager {
    * Branch: `engin/{mainSlug}--{taskId}` (flat `--` separator, never `/`).
    * Path:   `{workDir}/task-worktrees/{taskId}/`.
    *
+   * HOOKS (when a `hookRegistry` is configured):
+   *  - `beforeTaskWorktreeCreate` (first-wins): a workflow can skip isolation
+   *    (e.g. read-only scout tasks run against the main worktree directly) or
+   *    override the base branch / extra files. When `{ skip: true }`, no
+   *    worktree is created — the task runs against the main worktree and
+   *    `mergeTaskBranch` short-circuits.
+   *  - `populateWorktree` (pipeline): populates the worktree (default delegates
+   *    to the `.worktreecopy` primitive; a workflow can chain additional work).
+   *  - `afterTaskWorktreeCreate` (observe): fire-and-forget fan-out so a
+   *    workflow can react to the new worktree.
+   *
    * Returns the absolute worktree path. The taskPrompt (if any) is stored for
-   * later use by {@link mergeTaskBranch}.
+   * later use by {@link mergeTaskBranch}. The `task` (if provided) is stored
+   * so the merge / conflict hooks receive the full task object.
    */
-  async createTaskWorktree(taskId: string, taskPrompt?: string): Promise<string> {
+  async createTaskWorktree(taskId: string, taskPrompt?: string, task?: Task): Promise<string> {
     // Validate taskId BEFORE it is interpolated into a filesystem path
     // ({workDir}/task-worktrees/{taskId}) or a git branch name
     // (engin/{mainSlug}--{taskId}). This centralises the path-traversal /
@@ -175,6 +269,35 @@ export class WorktreeManager {
     // (see assertSafeName), protecting every caller regardless of whether
     // session persistence is configured.
     assertSafeName(taskId, 'task id');
+
+    // Resolve the Task for hook args: use the caller-provided task when
+    // available, otherwise synthesize a minimal one from taskId + prompt.
+    const effectiveTask: Task = task ?? this.synthesizeTask(taskId, taskPrompt);
+
+    // beforeTaskWorktreeCreate (first-wins): a workflow can skip isolation
+    // (e.g. read-only scout tasks run against the main worktree directly).
+    // When `{ skip: true }`, no worktree is created — the task's cwd is the
+    // main worktree path, and mergeTaskBranch / cullTaskWorktree short-circuit.
+    if (this.hookRegistry) {
+      const decision = (await this.hookRegistry.invokeFirstWins(
+        'beforeTaskWorktreeCreate',
+        { task: effectiveTask, worktreeManager: this },
+        this.makeHookCtx(),
+      )) as BeforeTaskWorktreeResult | undefined;
+      if (decision?.skip) {
+        // Track as a skipped task so mergeTaskBranch / cullTaskWorktree
+        // short-circuit (no on-disk worktree or branch to merge or remove).
+        this.skippedTasks.add(taskId);
+        this.taskWorktrees.set(taskId, {
+          path: this.mainWorktreePath,
+          branch: this.mainBranch,
+          status: 'active',
+        });
+        this.taskPrompts.set(taskId, taskPrompt ?? '');
+        this.taskTasks.set(taskId, effectiveTask);
+        return this.mainWorktreePath;
+      }
+    }
 
     const taskBranch = this.taskBranchName(taskId);
     const taskWorktreePath = join(this.workDir, 'task-worktrees', taskId);
@@ -184,25 +307,74 @@ export class WorktreeManager {
     // work.
     createWorktree(this.mainWorktreePath, taskBranch, taskWorktreePath);
 
-    populateWorktree(this.sourceCwd, taskWorktreePath);
+    await this.invokePopulate(taskWorktreePath, effectiveTask);
 
     this.taskWorktrees.set(taskId, { path: taskWorktreePath, branch: taskBranch, status: 'active' });
     this.taskPrompts.set(taskId, taskPrompt ?? '');
+    this.taskTasks.set(taskId, effectiveTask);
+
+    // afterTaskWorktreeCreate (observe): fire-and-forget fan-out so a
+    // workflow can react to the new worktree (e.g. emit a status event for
+    // TUI per-task branch display). Fired ONLY when a worktree was actually
+    // created (not on the skip path).
+    if (this.hookRegistry) {
+      await this.hookRegistry.invokeObserve(
+        'afterTaskWorktreeCreate',
+        { task: effectiveTask, worktreePath: taskWorktreePath, branch: taskBranch },
+        this.makeHookCtx(),
+      );
+    }
 
     return taskWorktreePath;
+  }
+
+  /**
+   * Synthesizes a minimal {@link Task} from a taskId + prompt for hook args
+   * when the caller did not provide a full Task object (backward compat with
+   * the `createTaskWorktree(taskId, taskPrompt?)` signature used by
+   * phase-tasks.ts). The synthesized task carries enough context (id, title,
+   * prompt) for a hook subscriber to branch on; fields the caller did not
+   * supply default to empty values.
+   */
+  private synthesizeTask(taskId: string, taskPrompt?: string): Task {
+    return {
+      id: taskId,
+      title: taskPrompt || taskId,
+      prompt: taskPrompt ?? '',
+      profile: '',
+      files: [],
+      dependencies: [],
+      status: 'active',
+      phaseId: '',
+    };
   }
 
   /**
    * Commits and squash-merges a task branch into the main-wt branch, SERIALIZED
    * via {@link mergeChain} so concurrent merges never interleave.
    *
+   * HOOKS (when a `hookRegistry` is configured):
+   *  - `onTaskMerge` (first-wins): a workflow can veto the merge. The default
+   *    returns `{ proceed: true, strategy: 'squash' }`. When `{ proceed: false }`,
+   *    the merge is skipped (`{ success: false }`).
+   *  - `onCommitFailure` (first-wins): when `commitWorktreeChanges` throws, a
+   *    workflow can decide how to handle the lint/hook rejection. The default
+   *    returns `{ strategy: 'agent' }` (but `commitWorktreeChanges` already
+   *    ran its internal agent fix-up, so the hook is an additional seam for
+   *    workflow-specific handling; non-`skip` strategies re-throw).
+   *  - `onMergeConflict` (first-wins): when the squash-merge conflicts, a
+   *    workflow chooses the resolution strategy. The default returns
+   *    `{ strategy: 'agent' }` (delegates to `resolveConflictsWithAgent`).
+   *    `'manual'` leaves the conflicts for the user; `'abort'` aborts the merge.
+   *
    * 1. Validates the task worktree exists and is still active.
-   * 2. Commits pending changes in the task worktree (outside the serialized
+   * 2. Short-circuits skipped tasks (read-only — no branch to merge).
+   * 3. Commits pending changes in the task worktree (outside the serialized
    *    section — different worktrees don't contend).
-   * 3. Inside the serialized section: squash-merges the task branch into the
+   * 4. Inside the serialized section: squash-merges the task branch into the
    *    main worktree. On conflict, an agent attempts resolution; on success
    *    (clean or resolved) the merge is committed.
-   * 4. On a successful merge, culls the task worktree.
+   * 5. On a successful merge, culls the task worktree.
    *
    * Returns `{ success, conflictsResolved }`. `conflictsResolved` is true only
    * when conflicts arose AND were resolved by the agent.
@@ -213,17 +385,67 @@ export class WorktreeManager {
       throw new Error(`mergeTaskBranch: task worktree '${taskId}' is not active`);
     }
 
+    // Skipped tasks (read-only, ran against the main worktree directly) have
+    // no separate branch to merge. Short-circuit with success and clear the
+    // tracking — there is nothing to commit, merge, or cull.
+    if (this.skippedTasks.has(taskId)) {
+      this.skippedTasks.delete(taskId);
+      this.taskWorktrees.delete(taskId);
+      this.taskPrompts.delete(taskId);
+      this.taskTasks.delete(taskId);
+      return { success: true, conflictsResolved: false };
+    }
+
     const taskPrompt = this.taskPrompts.get(taskId) ?? '';
+    const task = this.taskTasks.get(taskId) ?? this.synthesizeTask(taskId, taskPrompt);
 
     // Commit pending changes in the task worktree BEFORE entering the
     // serialized section — different task worktrees don't contend with each
-    // other, only the merge into the shared main-wt branch does.
-    await commitWorktreeChanges({
-      profilesDirs: this.profilesDirs,
-      worktreePath: info.path,
-      taskPrompt,
-      apiKeys: this.apiKeys,
-    });
+    // other, only the merge into the shared main-wt branch does. On commit
+    // failure, invoke `onCommitFailure` so a workflow can decide how to
+    // handle lint / pre-commit-hook rejections. The commit runs BEFORE the
+    // `onTaskMerge` decision so the task branch carries the task's final
+    // state regardless of whether the merge proceeds.
+    try {
+      await commitWorktreeChanges({
+        profilesDirs: this.profilesDirs,
+        worktreePath: info.path,
+        taskPrompt,
+        apiKeys: this.apiKeys,
+      });
+    } catch (commitErr) {
+      if (!this.hookRegistry) throw commitErr;
+      const errors = [commitErr instanceof Error ? commitErr.message : String(commitErr)];
+      const resolution = (await this.hookRegistry.invokeFirstWins(
+        'onCommitFailure',
+        { task, errors, worktreePath: info.path },
+        this.makeHookCtx(),
+      )) as CommitFailureResolution | undefined;
+      // 'skip' → abandon the merge (return failure without re-throwing).
+      // 'agent' / 'fail' / undefined → re-throw. `commitWorktreeChanges`
+      // already ran its internal agent fix-up; the hook is an additional
+      // seam for workflow-specific handling, not a second auto-repair pass.
+      if (resolution?.strategy === 'skip') {
+        return { success: false, conflictsResolved: false };
+      }
+      throw commitErr;
+    }
+
+    // onTaskMerge (first-wins): a workflow can veto the merge. The default
+    // (registered by run-executor) returns `{ proceed: true, strategy: 'squash' }`.
+    // When `{ proceed: false }`, skip the merge entirely (do NOT cull — the
+    // caller decides the fate of the un-merged branch). Invoked AFTER the
+    // commit so the task branch is finalized before the merge decision.
+    if (this.hookRegistry) {
+      const mergeDecision = (await this.hookRegistry.invokeFirstWins(
+        'onTaskMerge',
+        { task, worktreePath: info.path, branch: info.branch },
+        this.makeHookCtx(),
+      )) as TaskMergeDecision | undefined;
+      if (mergeDecision && !mergeDecision.proceed) {
+        return { success: false, conflictsResolved: false };
+      }
+    }
 
     // Chain the merge onto mergeChain. Reassign mergeChain BEFORE awaiting so
     // a concurrent caller observes this in-flight merge and waits for it
@@ -234,6 +456,32 @@ export class WorktreeManager {
       if (result.success) {
         commitChanges(this.mainWorktreePath, `Merge task: ${taskId}`);
         return { success: true, conflictsResolved: false };
+      }
+
+      // onMergeConflict (first-wins): a workflow chooses the resolution
+      // strategy. The default returns `{ strategy: 'agent' }` (delegates to
+      // `resolveConflictsWithAgent`). `'manual'` leaves the conflicts for the
+      // user; `'abort'` aborts the in-progress merge. When no registry is
+      // configured (backward compat), resolve directly with the agent.
+      if (this.hookRegistry) {
+        const conflictResolution = (await this.hookRegistry.invokeFirstWins(
+          'onMergeConflict',
+          {
+            task,
+            conflicts: result.conflicts,
+            worktreePath: this.mainWorktreePath,
+            mainBranch: this.mainBranch,
+          },
+          this.makeHookCtx(),
+        )) as ConflictResolution | undefined;
+        if (conflictResolution && conflictResolution.strategy !== 'agent') {
+          // 'manual' or 'abort' — do not auto-resolve. For 'abort', roll back
+          // the in-progress merge so the main worktree is left clean.
+          if (conflictResolution.strategy === 'abort') {
+            abortMerge(this.mainWorktreePath);
+          }
+          return { success: false, conflictsResolved: false };
+        }
       }
 
       const resolvedResult = await resolveConflictsWithAgent(
@@ -253,9 +501,11 @@ export class WorktreeManager {
       commitChanges(this.mainWorktreePath, `Merge task: ${taskId}`);
       return { success: true, conflictsResolved: true };
     });
-    this.mergeChain = serialized.catch(() => {
+    this.mergeChain = serialized.catch((err) => {
       // Swallow rejections so a failed merge does not break the chain for
-      // subsequent queued merges.
+      // subsequent queued merges — but log so the swallowed failure remains
+      // debuggable (the {success:false} result is still surfaced to callers).
+      console.warn('[WorktreeManager] mergeChain rejection swallowed:', err instanceof Error ? err.message : err);
     });
 
     const result = await serialized;
@@ -278,6 +528,15 @@ export class WorktreeManager {
     const info = this.taskWorktrees.get(taskId);
     if (!info || info.status !== 'active') {
       // Idempotent: nothing to cull.
+      return;
+    }
+
+    // Skipped tasks have no on-disk worktree or branch — just clear tracking.
+    if (this.skippedTasks.has(taskId)) {
+      this.skippedTasks.delete(taskId);
+      this.taskWorktrees.delete(taskId);
+      this.taskPrompts.delete(taskId);
+      this.taskTasks.delete(taskId);
       return;
     }
 
@@ -304,6 +563,7 @@ export class WorktreeManager {
 
     info.status = 'culled';
     this.taskPrompts.delete(taskId);
+    this.taskTasks.delete(taskId);
   }
 
   /**

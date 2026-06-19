@@ -227,27 +227,29 @@ Serialized form of `WorkflowStatusTracker`. Written to `.engin-state.json`.
 
 Options passed to a workflow's `run()`.
 
-| Field                 | Type                     | Description                                                                                                                                              |
-| --------------------- | ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `cwd`                 | `string`                 | Working directory. For git-repo runs this is the **main worktree path** (`{run-id}/worktree`), not the original cwd.                                     |
-| `workDir`             | `string`                 | Directory for workflow state persistence.                                                                                                                |
-| `maxConcurrentTasks?` | `number`                 | Maximum parallel agents (default 5).                                                                                                                     |
-| `apiKeys?`            | `Record<string, string>` | Provider → API key overrides.                                                                                                                            |
-| `onStatus?`           | `StatusCallbacks`        | Callbacks for workflow/agent events.                                                                                                                     |
-| `verbose?`            | `boolean`                | Verbose console output instead of TUI dashboard.                                                                                                         |
-| `signal?`             | `AbortSignal`            | Abort signal for cooperative cancellation.                                                                                                               |
-| `tracker?`            | `unknown`                | Pre-created `WorkflowStatusTracker`, if any.                                                                                                             |
-| `worktree?`           | `WorktreeInfo`           | Main worktree information (set alongside `worktreeManager` for git-repo runs).                                                                           |
-| `worktreeManager?`    | `WorktreeManager`        | Per-run worktree manager. Forward to `runStepTask` / `runMultiStepTask` / `LanePool` to enable per-task worktrees. Absent for the non-git fallback path. |
-| `rendererRegistry?`   | `RendererRegistry`       | Registry of per-profile renderers that transform agent JSON output into human-readable markdown.                                                         |
+| Field                 | Type                     | Description                                                                                                                                                                                                           |
+| --------------------- | ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cwd`                 | `string`                 | Working directory. For git-repo runs this is the **main worktree path** (`{run-id}/worktree`), not the original cwd.                                                                                                  |
+| `workDir`             | `string`                 | Directory for workflow state persistence.                                                                                                                                                                             |
+| `maxConcurrentTasks?` | `number`                 | Maximum parallel agents (default 5).                                                                                                                                                                                  |
+| `apiKeys?`            | `Record<string, string>` | Provider → API key overrides.                                                                                                                                                                                         |
+| `onStatus?`           | `StatusCallbacks`        | Callbacks for workflow/agent events.                                                                                                                                                                                  |
+| `verbose?`            | `boolean`                | Verbose console output instead of TUI dashboard.                                                                                                                                                                      |
+| `signal?`             | `AbortSignal`            | Abort signal for cooperative cancellation.                                                                                                                                                                            |
+| `tracker?`            | `unknown`                | Pre-created `WorkflowStatusTracker`, if any.                                                                                                                                                                          |
+| `worktree?`           | `WorktreeInfo`           | Main worktree information (set alongside `worktreeManager` for git-repo runs).                                                                                                                                        |
+| `worktreeManager?`    | `WorktreeManager`        | Per-run worktree manager. Forward to `runStepTask` / `runMultiStepTask` / `LanePool` to enable per-task worktrees. Absent for the non-git fallback path.                                                              |
+| `rendererRegistry?`   | `RendererRegistry`       | Registry of per-profile renderers that transform agent JSON output into human-readable markdown.                                                                                                                      |
+| `hookRegistry?`       | `HookRegistry`           | The engine-assembled hook registry (built by `composeHooks` from `WorkflowModule.hooks`). Forward to `LanePool` / `runStepTask` / `PhaseRunner` to activate their hooks. Absent when the workflow exports no `hooks`. |
 
 ### `WorkflowModule`
 
-| Field          | Type                                                                 | Description                              |
-| -------------- | -------------------------------------------------------------------- | ---------------------------------------- |
-| `run`          | `(taskPrompt: string, options: WorkflowRunOptions) => Promise<void>` | The workflow entry point (**required**). |
-| `name?`        | `string`                                                             | Human-readable workflow name.            |
-| `description?` | `string`                                                             | Workflow description.                    |
+| Field          | Type                                                                 | Description                                                                                                                                                                         |
+| -------------- | -------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `run`          | `(taskPrompt: string, options: WorkflowRunOptions) => Promise<void>` | The workflow entry point (**required**).                                                                                                                                            |
+| `name?`        | `string`                                                             | Human-readable workflow name.                                                                                                                                                       |
+| `description?` | `string`                                                             | Workflow description.                                                                                                                                                               |
+| `hooks?`       | `HookProvider`                                                       | Optional workflow-provided hooks. The engine composes these with the store callbacks via `composeHooks`; a single `WorkflowHooks` object or an array of them (registered in order). |
 
 ### `WorkflowEntry`
 
@@ -362,22 +364,23 @@ file.
 
 ### `RunStepTaskOptions`
 
-| Field              | Required           | Description                                                                                                                                                                                                                                 |
-| ------------------ | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `profilesDirs`     | **Yes**            | Directories containing `.md` profiles.                                                                                                                                                                                                      |
-| `phaseId`          | **Yes**            | Phase identifier for status callbacks.                                                                                                                                                                                                      |
-| `taskId`           | **Yes**            | Unique task identifier.                                                                                                                                                                                                                     |
-| `title`            | **Yes**            | Human-readable task title.                                                                                                                                                                                                                  |
-| `stepName`         | **Yes**            | Step name (displayed in the UI).                                                                                                                                                                                                            |
-| `profileId`        | **Yes**            | Profile ID to load.                                                                                                                                                                                                                         |
-| `cwd`              | **Yes**            | Working directory for the agent.                                                                                                                                                                                                            |
-| `prompt`           | **Yes**            | Prompt to send.                                                                                                                                                                                                                             |
-| `apiKeys?`         | No                 | Provider → API key overrides.                                                                                                                                                                                                               |
-| `onStatus?`        | No                 | Status callbacks.                                                                                                                                                                                                                           |
-| `isReadOnly?`      | No                 | Strip write/edit (default `false`).                                                                                                                                                                                                         |
-| `schema?`          | `ZodType<unknown>` | Zod schema for structured output.                                                                                                                                                                                                           |
-| `signal?`          | No                 | Abort signal (checked once at start).                                                                                                                                                                                                       |
-| `worktreeManager?` | `WorktreeManager`  | Per-run worktree manager. When set, `runStepTask` creates a per-task worktree, runs the agent inside it, squash-merges the task branch on success, and culls it on failure. Forward `options.worktreeManager` to enable per-task isolation. |
+| Field              | Required           | Description                                                                                                                                                                                                                                                                   |
+| ------------------ | ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `profilesDirs`     | **Yes**            | Directories containing `.md` profiles.                                                                                                                                                                                                                                        |
+| `phaseId`          | **Yes**            | Phase identifier for status callbacks.                                                                                                                                                                                                                                        |
+| `taskId`           | **Yes**            | Unique task identifier.                                                                                                                                                                                                                                                       |
+| `title`            | **Yes**            | Human-readable task title.                                                                                                                                                                                                                                                    |
+| `stepName`         | **Yes**            | Step name (displayed in the UI).                                                                                                                                                                                                                                              |
+| `profileId`        | **Yes**            | Profile ID to load.                                                                                                                                                                                                                                                           |
+| `cwd`              | **Yes**            | Working directory for the agent.                                                                                                                                                                                                                                              |
+| `prompt`           | **Yes**            | Prompt to send.                                                                                                                                                                                                                                                               |
+| `apiKeys?`         | No                 | Provider → API key overrides.                                                                                                                                                                                                                                                 |
+| `onStatus?`        | No                 | Status callbacks.                                                                                                                                                                                                                                                             |
+| `isReadOnly?`      | No                 | Strip write/edit (default `false`).                                                                                                                                                                                                                                           |
+| `schema?`          | `ZodType<unknown>` | Zod schema for structured output.                                                                                                                                                                                                                                             |
+| `signal?`          | No                 | Abort signal (checked once at start).                                                                                                                                                                                                                                         |
+| `worktreeManager?` | `WorktreeManager`  | Per-run worktree manager. When set, `runStepTask` creates a per-task worktree, runs the agent inside it, squash-merges the task branch on success, and culls it on failure. Forward `options.worktreeManager` to enable per-task isolation.                                   |
+| `hookRegistry?`    | `HookRegistry`     | Optional registry of workflow hooks. When provided AND it has subscribers for `beforeStepPrompt`, the step prompt is passed through the pipeline hook and the pipeline's return value replaces the prompt sent to the agent. Absent or no subscribers → zero behavior change. |
 
 ### `StepDefinition<T = unknown>`
 
@@ -398,25 +401,26 @@ type StepResult = { type: 'approved'; output: unknown } | { type: 'rejected'; fe
 
 ### `LanePoolOptions`
 
-| Field                | Required          | Description                                                                                                                                                                |
-| -------------------- | ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `maxConcurrentLanes` | **Yes**           | Maximum concurrent lanes (workers).                                                                                                                                        |
-| `profilesDirs`       | **Yes**           | Directories containing `.md` profiles.                                                                                                                                     |
-| `sessionBaseDir`     | **Yes**           | Base directory for persisted sessions (`{base}/{taskId}/{execCount}-{stepIndex}-{stepName}/`).                                                                             |
-| `cwd`                | **Yes**           | Working directory.                                                                                                                                                         |
-| `taskTracker`        | **Yes**           | Shared `TaskTracker` lanes claim from.                                                                                                                                     |
-| `getStepsForTask`    | No                | `(task) => StepDefinition[]`.                                                                                                                                              |
-| `getRunnerForTask`   | No                | `(task) => TaskRunner`. Takes precedence over `getStepsForTask`.                                                                                                           |
-| `phaseId`            | **Yes**           | The phase this pool serves.                                                                                                                                                |
-| `apiKeys?`           | No                | Provider → API key overrides.                                                                                                                                              |
-| `onStatus?`          | No                | Status callbacks.                                                                                                                                                          |
-| `auditLog?`          | No                | Audit log.                                                                                                                                                                 |
-| `maxStepRetries?`    | No                | Max retries per step on rejection (default `5`).                                                                                                                           |
-| `maxTaskRetries?`    | No                | Max times a failed task is reset and re-run from step 1 within one pool run (default `0`). Total attempts = `1 + maxTaskRetries`. Persisted sessions are cleared on retry. |
-| `rendererRegistry?`  | No                | Optional registry of custom output renderers keyed by profile name.                                                                                                        |
-| `laneWaitTimeoutMs?` | No                | Lane idle poll interval (default `60000`).                                                                                                                                 |
-| `signal?`            | No                | Abort signal.                                                                                                                                                              |
-| `worktreeManager?`   | `WorktreeManager` | Per-run worktree manager. When set, each claimed task gets its own worktree (branched off the main worktree) that is squash-merged on success and culled on failure/retry. |
+| Field                | Required          | Description                                                                                                                                                                                                                                          |
+| -------------------- | ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `maxConcurrentLanes` | **Yes**           | Maximum concurrent lanes (workers).                                                                                                                                                                                                                  |
+| `profilesDirs`       | **Yes**           | Directories containing `.md` profiles.                                                                                                                                                                                                               |
+| `sessionBaseDir`     | **Yes**           | Base directory for persisted sessions (`{base}/{taskId}/{execCount}-{stepIndex}-{stepName}/`).                                                                                                                                                       |
+| `cwd`                | **Yes**           | Working directory.                                                                                                                                                                                                                                   |
+| `taskTracker`        | **Yes**           | Shared `TaskTracker` lanes claim from.                                                                                                                                                                                                               |
+| `getStepsForTask`    | No                | `(task) => StepDefinition[]`.                                                                                                                                                                                                                        |
+| `getRunnerForTask`   | No                | `(task) => TaskRunner`. Takes precedence over `getStepsForTask`.                                                                                                                                                                                     |
+| `phaseId`            | **Yes**           | The phase this pool serves.                                                                                                                                                                                                                          |
+| `apiKeys?`           | No                | Provider → API key overrides.                                                                                                                                                                                                                        |
+| `onStatus?`          | No                | Status callbacks.                                                                                                                                                                                                                                    |
+| `auditLog?`          | No                | Audit log. When present alongside `hookRegistry`, `LanePool.run()` auto-registers the default auditor (`onStructuredOutput` / `onDecision`) so structured-output and decision events land in the durable log without manual `auditLog.append` calls. |
+| `maxStepRetries?`    | No                | Max retries per step on rejection (default `5`).                                                                                                                                                                                                     |
+| `maxTaskRetries?`    | No                | Max times a failed task is reset and re-run from step 1 within one pool run (default `0`). Total attempts = `1 + maxTaskRetries`. Persisted sessions are cleared on retry.                                                                           |
+| `rendererRegistry?`  | No                | Optional registry of custom output renderers keyed by profile name.                                                                                                                                                                                  |
+| `laneWaitTimeoutMs?` | No                | Lane idle poll interval (default `60000`).                                                                                                                                                                                                           |
+| `signal?`            | No                | Abort signal.                                                                                                                                                                                                                                        |
+| `worktreeManager?`   | `WorktreeManager` | Per-run worktree manager. When set, each claimed task gets its own worktree (branched off the main worktree) that is squash-merged on success and culled on failure/retry.                                                                           |
+| `hookRegistry?`      | `HookRegistry`    | Optional registry of workflow hooks. Forward `options.hookRegistry` (engine-assembled via `composeHooks`) to activate the pool/step/scheduler hooks. When absent, `runStep` calls `buildPrompt` directly — zero behavior change.                     |
 
 ### `LanePoolResult`
 
@@ -512,6 +516,108 @@ A discriminated union representing the content of an assistant turn:
 | `toolCall` | `{ type: 'toolCall'; id, name, arguments: Record<string, unknown> }` | Tool call with parameters.       |
 
 `contentBlocks` is only populated when the turn's message has `role: 'assistant'`.
+
+## Hook types
+
+Source: **`packages/engine/src/hooks/types.ts`** (the canonical `WorkflowHooks` interface and
+all hook argument/result types live here — **not** `core/types.ts`). The composition
+implementation ships in `hooks/registry.ts` / `hooks/compose.ts`. See [Hooks](hooks.md) for the
+full catalog, composition rules, default implementations, and wiring status. If a type here
+ever disagrees with `types.ts`, the code wins.
+
+### Mechanism types
+
+| Type / field             | Shape                                                                                                                                                                                                                                                               |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `CompositionRule`        | `'observe' \| 'pipeline' \| 'first-wins' \| 'all-run'` — how multiple subscribers to one hook name are combined.                                                                                                                                                    |
+| `HookContext`            | `{ registry: HookRegistry; cwd: string; workDir: string; signal?: AbortSignal }`. Built by the engine (NOT the workflow) and passed to every hook invocation. `cwd` is the original repo cwd, not the per-task worktree path.                                       |
+| `ObserveHook<Args>`      | `(args, ctx) => void \| Promise<void>` — fire-and-forget fan-out (rule: `'observe'`).                                                                                                                                                                               |
+| `PipelineHook<V, Args>`  | `(value, args, ctx) => V \| Promise<V>` — ordered value transform (rule: `'pipeline'`).                                                                                                                                                                             |
+| `FirstWinsHook<R, Args>` | `(args, ctx) => R \| undefined \| Promise<R \| undefined>` — first non-`undefined` wins (rule: `'first-wins'`). Only `undefined` abstains (`false`/`0`/`''` are decisions).                                                                                         |
+| `AllRunHook<C, Args>`    | `(args, ctx) => C \| Promise<C>` — every subscriber contributes, folded by the hook's reducer (rule: `'all-run'`).                                                                                                                                                  |
+| `HookDefinition`         | `{ name: string; rule: CompositionRule; reducer?: (acc, next) => unknown }`. The reducer is required for `'all-run'` hooks.                                                                                                                                         |
+| `HookRegistry`           | Interface: `register(hooks)`, `invokeObserve(name, args, ctx)`, `invokePipeline(name, initialValue, args, ctx)`, `invokeFirstWins(name, args, ctx)`, `invokeAllRun(name, args, ctx)`, `hasSubscribers(name)`. Each `invoke*` is generic over `keyof WorkflowHooks`. |
+| `WorkflowHooks`          | The hook catalog interface — **29 hook fields**, grown by declaration merging across `types.ts`. Each field is `SomeHook<Args> \| SomeHook<Args>[]`. See [Hooks §3](hooks.md#3-hook-catalog) for every field's signature, rule, and wiring status.                  |
+| `HookProvider`           | `WorkflowHooks \| WorkflowHooks[]` — what `WorkflowModule.hooks` accepts (a single object or an array registered in order).                                                                                                                                         |
+
+### Per-hook argument / result types
+
+These are the `Args`/`Result` shapes the hook functions receive/return, grouped by lifecycle
+level (matching [Hooks §3](hooks.md#3-hook-catalog)). `Task` and `StepDefinition` are defined
+in `core/types.ts`; `WorktreeInfo` in `core/types.ts`.
+
+#### Step level
+
+| Type                   | Fields                                                                                    |
+| ---------------------- | ----------------------------------------------------------------------------------------- |
+| `BeforeStepPromptArgs` | `{ task: Task; step: StepDefinition; prompt: string; cwd: string; worktreeCwd?: string }` |
+| `CollectContextArgs`   | `{ task: Task; step: StepDefinition; cwd: string; worktreeCwd?: string }`                 |
+| `ContextBlock`         | `{ label: string; content: string }`                                                      |
+
+#### Lane / failure isolation (used by `fixLoop`)
+
+| Type                | Fields                                                           |
+| ------------------- | ---------------------------------------------------------------- |
+| `OnLaneErrorArgs`   | `{ laneId: string; task: Task; error: string; phaseId: string }` |
+| `ShouldIsolateArgs` | `{ task: Task; error: string; laneId: string }`                  |
+
+#### Workflow level
+
+| Type                     | Fields                                                                   |
+| ------------------------ | ------------------------------------------------------------------------ |
+| `OnWorkflowResumeArgs`   | `{ workDir: string; tracker: unknown }`                                  |
+| `OnWorkflowAbortArgs`    | `{ reason: string; workDir: string }`                                    |
+| `OnPersistArgs`          | `{ workDir: string }`                                                    |
+| `OnRestoreArgs`          | `{ workDir: string }`                                                    |
+| `BeforeRunMergeArgs`     | `{ worktree?: WorktreeInfo; repoRoot: string; mainBranch: string }`      |
+| `RunMergeDecision`       | `{ proceed: boolean; strategy?: 'squash' \| 'merge' \| 'rebase' }`       |
+| `OnRunMergeConflictArgs` | `{ conflicts: string[]; worktreePath: string; repoRoot: string }`        |
+| `ConflictResolution`     | `{ strategy: 'agent' \| 'manual' \| 'abort'; resolvedFiles?: string[] }` |
+
+#### Audit observe hooks
+
+| Type                     | Fields                                                                                        |
+| ------------------------ | --------------------------------------------------------------------------------------------- |
+| `OnStructuredOutputArgs` | `{ agentId: string; output: unknown; taskId?: string; phaseId?: string; stepIndex?: number }` |
+| `OnDecisionArgs`         | `{ agentId: string; decision: string; reasoning: string; taskId?: string; phaseId?: string }` |
+
+#### Phase / task level
+
+| Type                        | Fields                                                                                |
+| --------------------------- | ------------------------------------------------------------------------------------- |
+| `BeforePhaseArgs`           | `{ phaseId: string; state: Record<string, unknown> }`                                 |
+| `BeforePhaseResult`         | `{ skip?: boolean; statePatch?: Record<string, unknown> }`                            |
+| `AfterPhaseArgs`            | `{ phaseId: string; result: unknown; durationMs: number }`                            |
+| `BeforePhaseTransitionArgs` | `{ from: string; to: string; state: Record<string, unknown> }`                        |
+| `PhaseTransition`           | `{ type: 'advance' \| 'loop' \| 'jump'; target?: string }`                            |
+| `ShouldRetryPhaseArgs`      | `{ phaseId: string; result: unknown; round: number; state: Record<string, unknown> }` |
+| `OnPhaseSettledArgs`        | `{ phaseId: string; tasks: Task[]; state: Record<string, unknown> }`                  |
+| `BeforeTaskArgs`            | `{ task: Task; steps: StepDefinition[] }`                                             |
+| `BeforeTaskResult`          | `{ skip?: boolean; steps?: StepDefinition[]; files?: string[] }`                      |
+
+#### Scheduler / execution level
+
+| Type                 | Fields                                                                               |
+| -------------------- | ------------------------------------------------------------------------------------ |
+| `ClaimPolicyArgs`    | `{ tracker: unknown; laneId: string; maxClaim: number }`                             |
+| `ConcurrencyKeyArgs` | `{ task: Task }`                                                                     |
+| `WakeStrategyArgs`   | `{ laneId: string; reason: 'task-ready' \| 'task-settled' \| 'timeout' \| 'abort' }` |
+| `OnLaneIdleArgs`     | `{ laneId: string; consecutiveTimeouts: number }`                                    |
+| `OnLaneStallArgs`    | `{ laneId: string; consecutiveTimeouts: number; threshold: number }`                 |
+
+#### Worktree lifecycle
+
+| Type                       | Fields                                                                          |
+| -------------------------- | ------------------------------------------------------------------------------- |
+| `BeforeTaskWorktreeArgs`   | `{ task: Task; worktreeManager: unknown }`                                      |
+| `BeforeTaskWorktreeResult` | `{ skip?: boolean; baseBranch?: string; extraFiles?: string[] }`                |
+| `AfterTaskWorktreeArgs`    | `{ task: Task; worktreePath: string; branch: string }`                          |
+| `PopulateWorktreeArgs`     | `{ worktreePath: string; sourceCwd: string; task?: Task }`                      |
+| `OnTaskMergeArgs`          | `{ task: Task; worktreePath: string; branch: string }`                          |
+| `TaskMergeDecision`        | `{ proceed: boolean; strategy?: 'squash' \| 'merge' }`                          |
+| `OnMergeConflictArgs`      | `{ task: Task; conflicts: string[]; worktreePath: string; mainBranch: string }` |
+| `OnCommitFailureArgs`      | `{ task: Task; errors: string[]; worktreePath: string }`                        |
+| `CommitFailureResolution`  | `{ strategy: 'agent' \| 'skip' \| 'fail'; resolvedFiles?: string[] }`           |
 
 ## TUI option types
 

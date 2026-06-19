@@ -7,6 +7,8 @@ import { promptForStructured } from '../core/structured-output.js';
 import type { AgentProfile, Task } from '../core/types.js';
 import { safeErrorMessage } from '../core/utils.js';
 import type { WorktreeManager } from '../core/worktree-manager.js';
+import type { HookRegistry } from '../hooks/types.js';
+import type { AuditLog } from '../tracking/audit-log.js';
 import { buildPrompt } from './prompt-builder.js';
 import type { LanePoolOptions, StepDefinition, StepResult, TrackedSession } from './types.js';
 import { assertSafeName } from './validation.js';
@@ -30,6 +32,25 @@ export interface StepExecutionContext {
   phaseId: string;
   /** Optional registry of custom output renderers keyed by profile name. */
   rendererRegistry?: RendererRegistry;
+  /** Optional registry of workflow hooks. When present AND has subscribers for
+   *  `beforeStepPrompt`, `runStep` invokes the pipeline hook (seeded with
+   *  `task.prompt`) instead of calling `buildPrompt` directly. When absent,
+   *  `buildPrompt` runs unchanged — zero behavior change. When present AND
+   *  has subscribers for `onStructuredOutput` / `onDecision`, those observe
+   *  hooks fire after a structured result resolves / a review rejection,
+   *  respectively. */
+  hookRegistry?: HookRegistry;
+  /** Audit log for recording events. Forwarded from {@link TaskRunnerContext}
+   *  for symmetry; the default auditor is registered against `hookRegistry`
+   *  by `LanePool.run()`, so this field is primarily informational here
+   *  (the auditor reads the log through its captured reference, not via
+   *  this field). */
+  auditLog?: AuditLog;
+  /** Per-task worktree path (distinct from `cwd`, the run/pool cwd). Set by
+   *  LanePool when a per-task worktree is created so the `beforeStepPrompt`
+   *  hook can resolve files against the isolated worktree. `undefined` when
+   *  no worktree is in use. */
+  worktreeCwd?: string;
   /** Abort signal for cooperative cancellation. Checked before `session.prompt()`
    *  so an abort that fires during the [session-created, prompt-started] TOCTOU
    *  window still cancels the session instead of launching an LLM turn. */
@@ -118,8 +139,35 @@ export async function runStep(
   };
 
   try {
-    // Build prompt
-    const promptText = await buildPrompt(task, step, execCtx.cwd, { skipFiles: !!existingSessionPath });
+    // Build prompt.
+    //
+    // `beforeStepPrompt` hook seam: when a `hookRegistry` is threaded through
+    // LanePoolOptions → TaskRunnerContext → StepExecutionContext AND it has at
+    // least one subscriber for `beforeStepPrompt`, the prompt is produced by
+    // invoking the pipeline hook (seeded with `task.prompt`) instead of calling
+    // `buildPrompt` directly. The pipeline's return value replaces the prompt
+    // sent to the agent.
+    //
+    // This seam ONLY ACTIVATES when BOTH (a) the engine constructs a
+    // hookRegistry (via `composeHooks` in run-executor) AND (b) the workflow
+    // forwards it to LanePool via `hookRegistry: options.hookRegistry`. If
+    // either condition is unmet, `buildPrompt` is called directly — zero
+    // behavior change. `hasSubscribers` is the gate so an empty/no-subscriber
+    // registry still falls through to `buildPrompt` (avoiding a pointless
+    // `invokePipeline` round-trip that would just return the seed unchanged).
+    const promptText = execCtx.hookRegistry?.hasSubscribers('beforeStepPrompt')
+      ? ((await execCtx.hookRegistry.invokePipeline(
+          'beforeStepPrompt',
+          task.prompt,
+          { task, step, prompt: task.prompt, cwd: execCtx.cwd, worktreeCwd: execCtx.worktreeCwd },
+          {
+            registry: execCtx.hookRegistry,
+            cwd: execCtx.worktreeCwd ?? execCtx.cwd,
+            workDir: execCtx.cwd,
+            signal: execCtx.signal,
+          },
+        )) as string)
+      : await buildPrompt(task, step, execCtx.cwd, { skipFiles: !!existingSessionPath });
 
     if (step.schema) {
       // Structured output step (review)
@@ -134,6 +182,29 @@ export async function runStep(
         // Treat as critical — the reviewer never produced valid output, so fail-safe.
         // The error is observable via the rejection feedback and reportError() → onError → store.
         return { result: { type: 'rejected', feedback: errorMsg, output: { severity: 'critical' } }, trackedSession };
+      }
+
+      // `onStructuredOutput` observe hook seam: fire AFTER the structured
+      // result resolves but BEFORE the approval gate, so EVERY structured
+      // result is observed (whether it ends up approved or rejected). The
+      // default implementation (registered by LanePool.run() when an
+      // `auditLog` is available, see hooks/defaults/auditor.ts) appends a
+      // `structured_output` event to the durable AuditLog — WITHOUT any
+      // manual `auditLog.append` call in workflow code. Zero behavior change
+      // when no `hookRegistry` or no subscribers: the `hasSubscribers` gate
+      // skips the `invokeObserve` round-trip entirely. The hook context
+      // mirrors the `beforeStepPrompt` seam (same cwd / workDir / signal).
+      if (execCtx.hookRegistry?.hasSubscribers('onStructuredOutput')) {
+        await execCtx.hookRegistry.invokeObserve(
+          'onStructuredOutput',
+          { agentId, output: structuredResult, taskId: task.id, phaseId: execCtx.phaseId, stepIndex: ctx.stepIndex },
+          {
+            registry: execCtx.hookRegistry,
+            cwd: execCtx.worktreeCwd ?? execCtx.cwd,
+            workDir: execCtx.cwd,
+            signal: execCtx.signal,
+          },
+        );
       }
 
       const approved = step.isApproved

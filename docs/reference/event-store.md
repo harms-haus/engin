@@ -131,6 +131,36 @@ implementation that fans every callback into `store.append()` with the appropria
 `onWorkflowFailed` stores `error.message` plus `errorName`/`errorStack`/`phase` in
 the event data; the reducer reads `data.error` for `projection.error`.
 
+### Composition with workflow hooks (`composeHooks`)
+
+Source: `packages/engine/src/hooks/compose.ts`. The store callbacks above are the **terminal
+sink** — they always fire, unconditionally. When a workflow exports a `hooks` field, the
+engine's `RunExecutor` composes them with the store callbacks via a single seam:
+
+```typescript
+const { onStatus, registry } = composeHooks(storeCallbacks, workflow.hooks ?? []);
+// onStatus  → passed to the workflow as options.onStatus (the store callbacks ALWAYS fire)
+// registry  → threaded to engine primitives (LanePool, PhaseRunner, Scheduler, WorktreeManager)
+//             and surfaced to the workflow as options.hookRegistry
+```
+
+Two firm guarantees pin this seam:
+
+- **Store callbacks ALWAYS fire.** The composed `onStatus` forwards every
+  `STATUS_CALLBACK_METHOD` verbatim to `storeCallbacks[method]` and **never** reaches into the
+  registry. A workflow with no `hooks` (or an empty registry) is byte-for-byte unchanged —
+  `composeHooks(storeCallbacks, []).onStatus` is behaviorally identical to `storeCallbacks`, and
+  the returned registry is empty.
+- **Observe hooks fire IN ADDITION.** Observe subscribers (`onStructuredOutput`, `onDecision`,
+  `afterPhase`, …) are a _secondary_ fan-out into a separate sink (e.g. the `AuditLog`). They
+  never replace the event store. In particular, the audit-log `onDecision` hook and the
+  event-store `StatusCallbacks.onDecision` callback fire **independently into different sinks**
+  — do not conflate them. Firing is deferred to the engine primitives (which own a real
+  `HookContext`), keeping `onStatus` synchronous.
+
+See [Hooks](hooks.md) for the full composition model and the catalog of influence/observe
+hooks.
+
 ## The `log` event type
 
 Because the server and the TUI are now separate processes, the TUI can no longer

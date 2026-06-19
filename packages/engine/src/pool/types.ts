@@ -1,6 +1,7 @@
 import type { RendererRegistry } from '../core/renderer-registry.js';
 import type { AgentProfile, StatusCallbacks, StepDefinition, Task } from '../core/types.js';
 import type { WorktreeManager } from '../core/worktree-manager.js';
+import type { HookRegistry } from '../hooks/types.js';
 import type { AuditLog } from '../tracking/audit-log.js';
 import type { TaskTracker } from '../tracking/task-status.js';
 
@@ -51,6 +52,9 @@ export interface LanePoolOptions {
   signal?: AbortSignal;
   /** Optional registry of custom output renderers keyed by profile name */
   rendererRegistry?: RendererRegistry;
+  /** Optional registry of workflow hooks (e.g. `beforeStepPrompt`). When
+   *  absent, `runStep` calls `buildPrompt` directly — zero behavior change. */
+  hookRegistry?: HookRegistry;
   /** Phase identifier set by the workflow orchestrator — required */
   phaseId: string;
   /** WorktreeManager for isolated git worktree execution */
@@ -93,6 +97,24 @@ export interface TaskRunnerContext {
   maxStepRetries: number;
   /** Optional registry of custom output renderers keyed by profile name */
   rendererRegistry?: RendererRegistry;
+  /** Optional registry of workflow hooks. Forwarded into the
+   *  {@link StepExecutionContext} so `runStep` can invoke `beforeStepPrompt`
+   *  (and the observe hooks `onStructuredOutput` / `onDecision`) when
+   *  subscribers are present. */
+  hookRegistry?: HookRegistry;
+  /** Audit log for recording events. Forwarded into the
+   *  {@link StepExecutionContext}. The default auditor
+   *  ({@link createDefaultAuditor}) is registered against `hookRegistry` by
+   *  `LanePool.run()` when BOTH `auditLog` and `hookRegistry` are present on
+   *  {@link LanePoolOptions}, so structured-output / decision events land in
+   *  the durable log WITHOUT any manual `auditLog.append` call in workflow
+   *  code. */
+  auditLog?: AuditLog;
+  /** Per-task worktree path (set by LanePool when a worktree is created for
+   *  this task). Distinct from `cwd` (the run/pool cwd): forwarded into the
+   *  {@link StepExecutionContext} so the `beforeStepPrompt` hook can resolve
+   *  files against the isolated worktree. */
+  worktreeCwd?: string;
   /** Abort signal for cooperative cancellation (e.g. SIGINT). Forwarded into the
    *  {@link StepExecutionContext} so runStep can re-check the abort state before
    *  starting a prompt, closing the TOCTOU window between session creation and

@@ -31,7 +31,9 @@ import { describe, expect, it } from 'bun:test';
 
 import type { RunMultiStepTaskOptions, RunStepTaskOptions } from '../../packages/engine/src/core/phase-tasks.js';
 import type { Task, WorkflowRunOptions } from '../../packages/engine/src/core/types.js';
+import type { WorktreeManagerOptions } from '../../packages/engine/src/core/worktree-manager.js';
 import { WorktreeManager } from '../../packages/engine/src/core/worktree-manager.js';
+import type { HookRegistry } from '../../packages/engine/src/hooks/types.js';
 import type { StepExecutionContext } from '../../packages/engine/src/pool/step-execution.js';
 import type { LanePoolOptions, TaskRunnerContext } from '../../packages/engine/src/pool/types.js';
 import { TaskTracker } from '../../packages/engine/src/tracking/task-status.js';
@@ -86,6 +88,18 @@ assertType<OptionalFieldIs<RunStepTaskOptions, 'worktreeManager', WorktreeManage
 );
 assertType<OptionalFieldIs<RunMultiStepTaskOptions, 'worktreeManager', WorktreeManager>>(
   'RunMultiStepTaskOptions.worktreeManager is optional WorktreeManager',
+);
+
+// ─── WorktreeManagerOptions.hookRegistry ───────────────────────────────────
+//
+// The worktree-hook wiring task adds an OPTIONAL `hookRegistry?: HookRegistry`
+// to WorktreeManagerOptions so the manager can invoke worktree-lifecycle hooks
+// (populateWorktree, beforeTaskWorktreeCreate, onTaskMerge, …) instead of
+// hard-coding the direct git/agent primitives. The field MUST be optional
+// (backward compat: existing callers that omit it compile unchanged).
+
+assertType<OptionalFieldIs<WorktreeManagerOptions, 'hookRegistry', HookRegistry>>(
+  'WorktreeManagerOptions.hookRegistry is optional HookRegistry',
 );
 
 // ─── Fixtures ──────────────────────────────────────────────────────────────
@@ -280,3 +294,36 @@ describe('WorktreeManager import target', () => {
     expect(mgr.sourceCwd).toBe('/repo');
   });
 });
+
+// ─── WorktreeManagerOptions.hookRegistry — runtime acceptance + backward compat ──
+
+describe('WorktreeManagerOptions.hookRegistry — acceptance + backward compat', () => {
+  it('accepts an optional hookRegistry (round-trips a registry instance via opts)', () => {
+    // The constructor accepts hookRegistry without throwing. The registry is
+    // stored internally (verified behaviourally in worktree-manager-hooks.test.ts).
+    // A minimal stand-in is sufficient here — the constructor only stores it.
+    const fakeRegistry = { hasSubscribers: () => false } as unknown as HookRegistry;
+    const mgr = new WorktreeManager({
+      ...makeManagerOptsBase(),
+      hookRegistry: fakeRegistry,
+    });
+    expect(mgr).toBeInstanceOf(WorktreeManager);
+  });
+
+  it('can be constructed WITHOUT hookRegistry (backward compat)', () => {
+    const mgr = new WorktreeManager(makeManagerOptsBase());
+    expect(mgr).toBeInstanceOf(WorktreeManager);
+  });
+});
+
+/** Base WorktreeManagerOptions without hookRegistry (used by the acceptance tests above). */
+function makeManagerOptsBase(): WorktreeManagerOptions {
+  return {
+    repoRoot: '/repo',
+    sourceCwd: '/repo',
+    workDir: '/run',
+    mainBranch: 'engin/main',
+    mainWorktreePath: '/run/worktree',
+    profilesDirs: ['/profiles'],
+  };
+}

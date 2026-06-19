@@ -96,6 +96,32 @@ export function linearStepsRunner(steps: StepDefinition[]): TaskRunner {
           taskId: task.id,
         });
 
+        // `onDecision` observe hook seam: fire ALONGSIDE the existing
+        // `onStatus?.onDecision?.(...)` store callback — BOTH fire into
+        // different sinks (event store vs. audit log). The default auditor
+        // (registered by LanePool.run() when an `auditLog` is available)
+        // appends a `decision` event to the durable AuditLog. Zero behavior
+        // change when no `hookRegistry` or no subscribers. The hook context
+        // mirrors the `beforeStepPrompt` seam (same cwd / workDir / signal).
+        if (ctx.hookRegistry?.hasSubscribers('onDecision')) {
+          await ctx.hookRegistry.invokeObserve(
+            'onDecision',
+            {
+              agentId,
+              decision: `Step "${step.name}" rejected (attempt ${newAttempt}/${maxStepRetries}), retrying`,
+              reasoning: result.feedback,
+              taskId: task.id,
+              phaseId: ctx.phaseId,
+            },
+            {
+              registry: ctx.hookRegistry,
+              cwd: ctx.worktreeCwd ?? ctx.cwd,
+              workDir: ctx.cwd,
+              signal: ctx.signal,
+            },
+          );
+        }
+
         // Step 4h: Max retries reached
         if (newAttempt >= maxStepRetries) {
           const severity = extractSeverity(result.output);

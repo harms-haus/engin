@@ -2,9 +2,11 @@
 import { clearProfileCache, loadProfilesFromDirs } from '../core/profile.js';
 import type { AgentProfile, Task } from '../core/types.js';
 import { safeErrorMessage } from '../core/utils.js';
-import { TaskTracker } from '../tracking/task-status.js';
+import { createDefaultAuditor } from '../hooks/defaults/auditor.js';
+import type { BeforeTaskResult, HookContext } from '../hooks/types.js';
 // buildPrompt is used via prompt-builder module directly
 import { linearStepsRunner } from './linear-steps-runner.js';
+import { Scheduler } from './scheduler.js';
 import { clearTaskSessions } from './step-execution.js';
 import type { TaskProcessorContext } from './task-processor.js';
 import { reportError, safeCompleteTask, safeFailTask } from './task-processor.js';
@@ -23,6 +25,14 @@ import type { LanePoolOptions, LanePoolResult, TaskOutcome, TaskRunner, TaskRunn
  * 3. On step rejection, backs up to the previous step and retries
  *    (up to `maxStepRetries` per step).
  * 4. On completion or failure, marks the task accordingly.
+ *
+ * The reusable lane-scheduling CORE (spawning lanes, the claim → wake loop,
+ * the `claimPolicy` / `concurrencyKey` / `onLaneStall` hooks) has been
+ * extracted to {@link Scheduler}. `LanePool` owns everything the Scheduler
+ * deliberately does NOT: lifecycle firing, retry budgeting, runner
+ * resolution, worktree setup, profile loading, and default auditor
+ * registration. `run()` constructs a {@link Scheduler} and binds
+ * {@link LanePool.processTask} as its `runTask`.
  */
 export class LanePool {
   private readonly options: LanePoolOptions;
@@ -30,6 +40,8 @@ export class LanePool {
   private readonly activeSessions = new Set<{ abort(): Promise<void> }>();
   /** Per-task count of same-run retries already consumed (keyed by task id). */
   private readonly taskRetries = new Map<string, number>();
+  /** Pending skip reason set by the `beforeTask` hook; consumed in the SKIP path of processTask. */
+  private pendingSkipReason?: string;
 
   constructor(options: LanePoolOptions) {
     this.options = options;
@@ -38,19 +50,62 @@ export class LanePool {
   // ── Runner Resolution ──────────────────────────────────────────────────
 
   /**
+   * Sentinel returned by {@link resolveRunner} when the `beforeTask` hook
+   * requests that a task be SKIPPED. {@link processTask} cancels the task in
+   * the tracker and returns immediately without running any steps, firing the
+   * merge lifecycle, or budgeting a retry.
+   */
+  private static readonly SKIP = Symbol('LanePool.skip');
+
+  /**
    * Resolve a TaskRunner for the given task.
    *
-   * Priority:
-   * 1. If `getRunnerForTask` is provided, use it.
-   * 2. Otherwise, if `getStepsForTask` is provided, wrap it in `linearStepsRunner`.
-   * 3. Otherwise, throw.
+   * Resolution order:
+   * 1. Seed the step list from `getStepsForTask` (if provided).
+   * 2. When a `hookRegistry` with at least one `beforeTask` subscriber is
+   *    threaded through {@link LanePoolOptions}, invoke the first-wins hook
+   *    seeded with `{ task, steps }`. A subscriber may:
+   *      • return `{ skip: true }`  → the task is skipped (this method returns
+   *        the {@link SKIP} sentinel; {@link processTask} cancels the task).
+   *      • return `{ steps: [...] }` → override the seed step list.
+   *      • return `undefined`        → abstain (the seed is kept).
+   *    Zero behavior change when no `hookRegistry` or no `beforeTask`
+   *    subscribers: the seed from `getStepsForTask` drives the steps.
+   * 3. If `getRunnerForTask` is provided, use it (takes precedence over steps).
+   * 4. Otherwise wrap the resolved steps in `linearStepsRunner`.
+   * 5. Otherwise throw.
    */
-  private resolveRunner(task: Task): TaskRunner {
+  private async resolveRunner(task: Task): Promise<TaskRunner | typeof LanePool.SKIP> {
+    const hookRegistry = this.options.hookRegistry;
+    const seed = this.options.getStepsForTask?.(task) ?? [];
+
+    // `beforeTask` first-wins hook seam: mirrors the `beforeStepPrompt` /
+    // `onStructuredOutput` seams in step-execution.ts — gated on
+    // `hasSubscribers` so an empty / no-subscriber registry falls through to
+    // the seed (backward compat: identical to today when no hookRegistry).
+    let steps = seed;
+    if (hookRegistry && hookRegistry.hasSubscribers('beforeTask')) {
+      const result = (await hookRegistry.invokeFirstWins('beforeTask', { task, steps: seed }, {
+        registry: hookRegistry,
+        cwd: this.options.cwd,
+        workDir: this.options.cwd,
+        signal: this.options.signal,
+      } satisfies HookContext)) as BeforeTaskResult | undefined;
+
+      if (result?.skip === true) {
+        this.pendingSkipReason = result.reason;
+        return LanePool.SKIP;
+      }
+      if (Array.isArray(result?.steps) && result.steps.length > 0) {
+        steps = result.steps;
+      }
+    }
+
     if (this.options.getRunnerForTask) {
       return this.options.getRunnerForTask(task);
     }
-    if (this.options.getStepsForTask) {
-      return linearStepsRunner(this.options.getStepsForTask(task));
+    if (steps.length > 0) {
+      return linearStepsRunner(steps);
     }
     throw new Error(`No runner or steps provided for task "${task.id}"`);
   }
@@ -60,6 +115,11 @@ export class LanePool {
   /**
    * Run the pool: spawn `maxConcurrentLanes` workers and wait for all tasks
    * to complete or fail.
+   *
+   * The lane loop is delegated to {@link Scheduler}; this method owns the
+   * pre-lane setup (onTaskRegister, profile loading, default auditor
+   * registration, abort-session wiring) and binds {@link LanePool.processTask}
+   * as the Scheduler's `runTask` callback.
    */
   async run(): Promise<LanePoolResult> {
     const { maxConcurrentLanes, taskTracker } = this.options;
@@ -107,29 +167,64 @@ export class LanePool {
     };
     this.options.signal?.addEventListener('abort', abortActiveSessions, { once: true });
 
-    try {
-      const laneRunners = Array.from({ length: maxConcurrentLanes }, (_, i) => this.runLane(i, profiles));
-      const settled = await Promise.allSettled(laneRunners);
+    // Register the default auditor BEFORE starting lanes so structured-output
+    // and decision events land in the durable AuditLog WITHOUT any manual
+    // `auditLog.append` call in workflow code. The auditor is registered as a
+    // hook SUBSCRIBER; observe = fan-out, so a workflow that provides its OWN
+    // `onStructuredOutput` / `onDecision` subscribers sees BOTH fire (the
+    // workflow's subscriber AND the default auditor). Registered only when
+    // BOTH `auditLog` and `hookRegistry` are present — when either is absent,
+    // no auditor is registered (backward compat: manual `auditLog.append`
+    // calls in workflow code still work).
+    if (this.options.auditLog && this.options.hookRegistry) {
+      const auditor = createDefaultAuditor(this.options.auditLog);
+      this.options.hookRegistry.register({
+        onStructuredOutput: auditor.onStructuredOutput,
+        onDecision: auditor.onDecision,
+      });
+    }
 
-      // Log any lane that threw an uncaught error
-      settled.forEach((result, index) => {
-        if (result.status === 'rejected') {
-          const agentId = `lane-${index}`;
-          const error = safeErrorMessage(result.reason);
-          reportError(agentId, error, undefined, undefined, {
+    try {
+      const scheduler = new Scheduler({
+        maxConcurrentLanes,
+        taskTracker,
+        hookRegistry: this.options.hookRegistry,
+        signal: this.options.signal,
+        laneWaitTimeoutMs: this.options.laneWaitTimeoutMs,
+        // The Scheduler drives the lane loop; LanePool.processTask owns
+        // lifecycle firing, runner resolution, worktree setup, and retry
+        // budgeting. The outer try/catch below mirrors the prior
+        // Promise.allSettled rejected-lane logging: an unexpected error that
+        // escapes processTask's own try/catch (e.g. from maybeRetryFailedTask)
+        // is reported via `reportError` and re-thrown so the Scheduler's lane
+        // rejects — reproducing the previous behavior where any uncaught lane
+        // error was logged and then swallowed by Promise.allSettled.
+        runTask: async (task, laneId) => {
+          try {
+            await this.processTask(task, laneId, profiles);
+          } catch (err) {
+            const error = safeErrorMessage(err);
+            reportError(laneId, error, undefined, task.id, {
+              options: this.options,
+              activeSessions: this.activeSessions,
+              phaseId: this.options.phaseId,
+            });
+            throw err;
+          }
+        },
+        // The Scheduler silently swallows lane rejections (one crashed lane
+        // must not abort the others); this callback re-surfaces them to
+        // `reportError` so the legacy lane-crash logging is preserved.
+        onLaneError: (laneId, err) => {
+          const error = safeErrorMessage(err);
+          reportError(laneId, error, undefined, undefined, {
             options: this.options,
             activeSessions: this.activeSessions,
             phaseId: this.options.phaseId,
           });
-        }
+        },
       });
-
-      // Count results from the tracker by status
-      const allTasks = taskTracker.getAllTasks();
-      const completedTasks = allTasks.filter((t) => t.status === 'complete').length;
-      const failedTasks = allTasks.filter((t) => t.status === 'failed').length;
-
-      return { completedTasks, failedTasks };
+      return await scheduler.run();
     } finally {
       this.options.signal?.removeEventListener('abort', abortActiveSessions);
     }
@@ -144,7 +239,7 @@ export class LanePool {
    *
    * The worktree is culled in BOTH the retry and permanent-failure paths:
    *   • retry — so the next attempt starts from a fresh worktree (the
-   *     `createTaskWorktree` call in `runLane` re-creates it on the next claim).
+   *     `createTaskWorktree` call in `processTask` re-creates it on the next claim).
    *   • permanent failure — so the failed branch is force-removed rather than
    *     left dangling for the user to clean up manually.
    *
@@ -203,268 +298,210 @@ export class LanePool {
     });
   }
 
-  // ── Lane Runner ─────────────────────────────────────────────────────────
+  // ── Task Processor (Scheduler's runTask) ────────────────────────────────
 
   /**
-   * Single lane (worker) loop. Continuously claims and processes tasks until
-   * all tasks are done.
+   * Process a single claimed task: fire lifecycle events, resolve + invoke the
+   * runner, manage per-task worktrees and merges, and budget same-run retries.
+   *
+   * This is the caller-supplied `runTask` bound into the {@link Scheduler}.
+   * It owns everything the Scheduler deliberately does NOT:
+   *   - Lifecycle firing (onTaskStart / onTaskComplete / onTaskRejected).
+   *   - Runner resolution + the worktree create/merge lifecycle.
+   *   - Retry budgeting ({@link maybeRetryFailedTask}).
+   *
+   * Unexpected errors (anything that escapes the inner try/catch) are logged
+   * via {@link reportError} and re-thrown so the Scheduler's lane rejects —
+   * reproducing the prior `Promise.allSettled` rejected-lane logging path.
    */
-  private async runLane(laneIndex: number, profiles: Map<string, AgentProfile>): Promise<void> {
-    const { taskTracker } = this.options;
-    const agentId = `lane-${laneIndex}`;
-    const waitTimeoutMs = this.options.laneWaitTimeoutMs ?? 60000;
-    const STALL_WARN_THRESHOLD = 5;
-    let consecutiveTimeouts = 0;
-    let stallWarned = false; // Rate-limit the stall warning to once per lane
+  private async processTask(task: Task, agentId: string, profiles: Map<string, AgentProfile>): Promise<void> {
+    // Fire onTaskStart BEFORE calling the runner
+    this.options.onStatus?.onTaskStart?.({
+      taskId: task.id,
+      title: task.title,
+      agentId,
+      phaseId: this.options.phaseId,
+      startedAt: Date.now(),
+    });
 
-    // ── Persistent wake listeners (registered ONCE per lane) ─────────────
-    // Each lane installs a single persistent listener for TaskReady,
-    // TaskSettled, and the abort signal at the start of runLane, rather than
-    // re-registering per-iteration once() listeners (which leaked and churned
-    // O(tasks) registrations). `resolveWake` is rebound each loop iteration to
-    // that iteration's wake resolver, so a persistent listener always wakes the
-    // CURRENT await. All three listeners are removed in the `finally` below,
-    // guaranteeing zero leaks after the lane exits.
-    // `resolveWake` is rebound each loop iteration to that iteration's wake
-    // resolver (see below). It is `undefined` only before the first rebind —
-    // a wake in that window is a safe no-op (abort is still caught by the
-    // loop-top `signal?.aborted` check).
-    let resolveWake: (() => void) | undefined;
-    const onWake = () => resolveWake?.();
-    const onAbort = () => resolveWake?.();
-    taskTracker.on(TaskTracker.Events.TaskReady, onWake);
-    taskTracker.on(TaskTracker.Events.TaskSettled, onWake);
-    this.options.signal?.addEventListener('abort', onAbort);
+    const processorCtx: TaskProcessorContext = {
+      options: this.options,
+      activeSessions: this.activeSessions,
+      phaseId: this.options.phaseId,
+    };
 
-    // Hoisted so the `finally` can clear a pending stall timer if the lane
-    // exits mid-iteration (e.g. on abort during task processing).
-    let pendingTimer: ReturnType<typeof setTimeout> | undefined;
-
+    let failureReason: string | undefined;
     try {
-      while (true) {
-        if (this.options.signal?.aborted) {
-          return;
-        }
+      const resolved = await this.resolveRunner(task);
 
-        // ── Per-iteration wake promise + stall timer ────────────────────
-        // Wire `resolveWake` to THIS iteration's resolver BEFORE the
-        // isPoolDone/claimTasks check to close the TOCTOU gap: any
-        // TaskReady/TaskSettled/abort event fired during the check resolves
-        // the promise we'll await if no task is claimed.
-        let wakeResolve!: () => void;
-        const wakePromise = new Promise<void>((resolve) => {
-          wakeResolve = resolve;
+      // ── beforeTask skip path ─────────────────────────────────────────────
+      // When the `beforeTask` hook returned `{ skip: true }`, cancel the task
+      // (currently `active` — just claimed — so `cancelTask` is a valid
+      // transition) and return WITHOUT running any steps, setting up a
+      // worktree, firing the merge lifecycle, or budgeting a retry. The task
+      // reaches the terminal `cancelled` status; `isPoolDone()` treats
+      // `cancelled` as settled so the scheduler's lane loop proceeds.
+      if (resolved === LanePool.SKIP) {
+        const reason = this.pendingSkipReason ?? 'Skipped by beforeTask hook';
+        this.pendingSkipReason = undefined;
+        try {
+          this.options.taskTracker.cancelTask(task.id);
+        } catch {
+          // Defensive: the task may already be settled by a sibling lane.
+        }
+        // Surface the skip to the status projection: cancelTask mutates the
+        // tracker only and emits no event, so without this the TUI/web would
+        // show the task stuck at 'active' forever.
+        this.options.onStatus?.onTaskRejected?.({
+          taskId: task.id,
+          title: task.title,
+          reason,
         });
-        let timedOut = false;
-        const timer = setTimeout(() => {
-          timedOut = true;
-          wakeResolve();
-        }, waitTimeoutMs);
-        pendingTimer = timer;
-        resolveWake = () => {
-          clearTimeout(timer);
-          wakeResolve();
-        };
+        return;
+      }
+      const resolvedRunner = resolved;
 
-        // ── Check for pool completion BEFORE claiming ────────────────────
-        // This must precede claimTasks so a completed task is never re-armed
-        // (e.g. by a spy in tests). isPoolDone returns true only when every
-        // task is settled (done/failed) or deadlocked — never when any task
-        // is ready, claimed, or in-flight.
-        if (taskTracker.isPoolDone()) {
-          clearTimeout(timer);
-          pendingTimer = undefined;
-          return;
-        }
+      // ── Per-task worktree setup ──────────────────────────────────────────
+      // When a worktreeManager is configured, claim a fresh per-task
+      // worktree BEFORE calling the runner so the agent's `cwd` (and
+      // every spawned session) operates inside the isolated branch.
+      //
+      // If the worktree is created successfully, the runner's
+      // `completeTask` is DEFERRED: rather than settling the task in
+      // the tracker immediately, the result is captured and the task is
+      // settled only AFTER `mergeTaskBranch` runs. This lets a failed
+      // merge downgrade the outcome to `failed` before the task is
+      // marked `complete` in the tracker (a transition the tracker
+      // itself forbids).
+      //
+      // If worktree creation throws, the agent falls back to the
+      // configured `cwd` and the existing (immediate-settle) path runs.
+      const useWorktree = !!this.options.worktreeManager;
+      let worktreeCreated = false;
+      let deferredResult: unknown;
+      let deferredCompletion = false;
 
-        const claimed = taskTracker.claimTasks(1, agentId);
-
-        if (claimed.length > 0) {
-          clearTimeout(timer);
-          pendingTimer = undefined;
-          consecutiveTimeouts = 0; // Reset stall counter on successful claim
-          const task = claimed[0];
-
-          // Fire onTaskStart BEFORE calling the runner
-          this.options.onStatus?.onTaskStart?.({
-            taskId: task.id,
-            title: task.title,
-            agentId,
-            phaseId: this.options.phaseId,
-            startedAt: Date.now(),
-          });
-
-          const processorCtx: TaskProcessorContext = {
-            options: this.options,
-            activeSessions: this.activeSessions,
-            phaseId: this.options.phaseId,
-          };
-
-          let failureReason: string | undefined;
-          try {
-            const runner = this.resolveRunner(task);
-
-            // ── Per-task worktree setup ──────────────────────────────────
-            // When a worktreeManager is configured, claim a fresh per-task
-            // worktree BEFORE calling the runner so the agent's `cwd` (and
-            // every spawned session) operates inside the isolated branch.
-            //
-            // If the worktree is created successfully, the runner's
-            // `completeTask` is DEFERRED: rather than settling the task in
-            // the tracker immediately, the result is captured and the task is
-            // settled only AFTER `mergeTaskBranch` runs. This lets a failed
-            // merge downgrade the outcome to `failed` before the task is
-            // marked `complete` in the tracker (a transition the tracker
-            // itself forbids).
-            //
-            // If worktree creation throws, the agent falls back to the
-            // configured `cwd` and the existing (immediate-settle) path runs.
-            const useWorktree = !!this.options.worktreeManager;
-            let worktreeCreated = false;
-            let deferredResult: unknown;
-            let deferredCompletion = false;
-
-            const runnerCtx: TaskRunnerContext = {
-              task,
-              agentId,
-              profiles,
-              onStatus: this.options.onStatus,
-              activeSessions: this.activeSessions,
-              phaseId: this.options.phaseId,
-              sessionBaseDir: this.options.sessionBaseDir,
-              cwd: this.options.cwd,
-              apiKeys: this.options.apiKeys,
-              maxStepRetries: this.options.maxStepRetries ?? 5,
-              rendererRegistry: this.options.rendererRegistry,
-              signal: this.options.signal,
-              worktreeManager: this.options.worktreeManager,
-              // In worktree mode, defer settlement until after merge so a
-              // failed merge can flip the outcome to `failed`. The closure
-              // reads `worktreeCreated` at call time — which is set BEFORE
-              // the runner is invoked below — so the deferred path is taken
-              // only when the worktree was actually created.
-              completeTask: (result?: unknown) => {
-                if (worktreeCreated) {
-                  deferredResult = result;
-                  deferredCompletion = true;
-                  return true;
-                }
-                return safeCompleteTask(task.id, result, processorCtx);
-              },
-              failTask: (result?: unknown) => safeFailTask(task.id, result ?? { completed: false }, processorCtx),
-            };
-
-            const worktreeManager = this.options.worktreeManager;
-            if (useWorktree && worktreeManager) {
-              try {
-                const taskWorktreePath = await worktreeManager.createTaskWorktree(task.id, task.prompt);
-                // Override cwd to the worktree path so every spawned session
-                // runs inside the isolated branch.
-                runnerCtx.cwd = taskWorktreePath;
-                worktreeCreated = true;
-              } catch (err) {
-                // Fall back to the configured cwd; the task still runs.
-                console.warn(`[${agentId}] Failed to create worktree for task ${task.id}: ${safeErrorMessage(err)}`);
-              }
-            }
-
-            let outcome: TaskOutcome = await runner(runnerCtx);
-
-            // ── Merge on success (worktree mode only) ──────────────────
-            // After the runner reports `completed`, squash-merge the task
-            // branch into the main-wt branch. If the merge fails (conflicts
-            // the agent couldn't resolve, or an unexpected throw), the task
-            // is settled as `failed` instead of `completed`.
-            if (outcome.status === 'completed' && worktreeCreated && worktreeManager) {
-              let mergeSucceeded = true;
-              let mergeError: string | undefined;
-              try {
-                const mergeResult = await worktreeManager.mergeTaskBranch(task.id);
-                mergeSucceeded = mergeResult.success;
-                if (!mergeSucceeded) {
-                  mergeError = 'Worktree merge failed';
-                }
-              } catch (err) {
-                mergeSucceeded = false;
-                mergeError = safeErrorMessage(err);
-              }
-
-              if (mergeSucceeded) {
-                // Merge succeeded — now settle the task as completed using
-                // the deferred result the runner supplied via completeTask.
-                // Only settle if the runner actually called completeTask;
-                // otherwise the task is left in its current (non-complete)
-                // state, matching the non-worktree behavior for a runner that
-                // returns `completed` without settling.
-                if (deferredCompletion) {
-                  safeCompleteTask(task.id, deferredResult, processorCtx);
-                }
-              } else {
-                // Merge failed — settle as failed so the task is NOT
-                // reported as complete. safeFailTask works here because the
-                // task was never actually settled in the deferred path.
-                const reason = mergeError ?? 'Merge failed';
-                safeFailTask(task.id, { completed: false, error: reason }, processorCtx);
-                outcome = { status: 'failed', error: reason };
-                failureReason = reason;
-              }
-            }
-
-            if (outcome.status === 'completed') {
-              this.options.onStatus?.onTaskComplete?.({ taskId: task.id, title: task.title });
-            } else {
-              failureReason = outcome.feedback ?? outcome.error;
-              if (outcome.feedback) {
-                this.options.onStatus?.onTaskRejected?.({
-                  taskId: task.id,
-                  title: task.title,
-                  reason: outcome.feedback,
-                });
-              } else if (outcome.error) {
-                // Runner returned a failed outcome with an error message; report it
-                reportError(agentId, outcome.error, undefined, task.id, processorCtx);
-              }
-            }
-          } catch (err) {
-            const error = safeErrorMessage(err);
-            failureReason = error;
-            reportError(agentId, error, undefined, task.id, processorCtx);
-            safeFailTask(task.id, { completed: false, error: true }, processorCtx);
+      const runnerCtx: TaskRunnerContext = {
+        task,
+        agentId,
+        profiles,
+        onStatus: this.options.onStatus,
+        activeSessions: this.activeSessions,
+        phaseId: this.options.phaseId,
+        sessionBaseDir: this.options.sessionBaseDir,
+        cwd: this.options.cwd,
+        apiKeys: this.options.apiKeys,
+        maxStepRetries: this.options.maxStepRetries ?? 5,
+        rendererRegistry: this.options.rendererRegistry,
+        hookRegistry: this.options.hookRegistry,
+        auditLog: this.options.auditLog,
+        signal: this.options.signal,
+        worktreeManager: this.options.worktreeManager,
+        // In worktree mode, defer settlement until after merge so a
+        // failed merge can flip the outcome to `failed`. The closure
+        // reads `worktreeCreated` at call time — which is set BEFORE
+        // the runner is invoked below — so the deferred path is taken
+        // only when the worktree was actually created.
+        completeTask: (result?: unknown) => {
+          if (worktreeCreated) {
+            deferredResult = result;
+            deferredCompletion = true;
+            return true;
           }
+          return safeCompleteTask(task.id, result, processorCtx);
+        },
+        failTask: (result?: unknown) => safeFailTask(task.id, result ?? { completed: false }, processorCtx),
+      };
 
-          // ── Same-run retry: if the task just failed and its budget isn't ──
-          // exhausted, cull its worktree (if any), clear its persisted sessions,
-          // and reset it to `ready` so a lane re-claims it and restarts from
-          // step 1. Capped at `maxTaskRetries` extra attempts to avoid
-          // infinite loops. The worktree is also culled on permanent failure
-          // (budget exhausted) so the failed branch is force-removed.
-          await this.maybeRetryFailedTask(task, agentId, failureReason);
-          continue;
-        }
-
-        // No task available — wait for an event, timeout, or abort
-        await wakePromise;
-        pendingTimer = undefined;
-
-        // Only a stall-timeout (no event, no claim) advances the stall
-        // counter; a real wake leaves it untouched. The counter resets on the
-        // next successful claim. (Matches prior semantics.)
-        if (timedOut) {
-          consecutiveTimeouts++;
-          if (consecutiveTimeouts >= STALL_WARN_THRESHOLD && !stallWarned) {
-            console.warn(
-              `[${agentId}] Lane appears stalled — no task progress for ` +
-                `${consecutiveTimeouts * waitTimeoutMs}ms. Tasks may be stuck.`,
-            );
-            stallWarned = true; // Warn at most once per lane
-          }
+      const worktreeManager = this.options.worktreeManager;
+      if (useWorktree && worktreeManager) {
+        try {
+          const taskWorktreePath = await worktreeManager.createTaskWorktree(task.id, task.prompt, task);
+          // Override cwd to the worktree path so every spawned session
+          // runs inside the isolated branch.
+          runnerCtx.cwd = taskWorktreePath;
+          // Surface the per-task worktree path on the runner context so
+          // the `beforeStepPrompt` hook (and any file-resolution logic)
+          // can resolve files against the isolated worktree rather than
+          // the run/pool cwd.
+          runnerCtx.worktreeCwd = taskWorktreePath;
+          worktreeCreated = true;
+        } catch (err) {
+          // Fall back to the configured cwd; the task still runs.
+          console.warn(`[${agentId}] Failed to create worktree for task ${task.id}: ${safeErrorMessage(err)}`);
         }
       }
-    } finally {
-      if (pendingTimer) clearTimeout(pendingTimer);
-      taskTracker.removeListener(TaskTracker.Events.TaskReady, onWake);
-      taskTracker.removeListener(TaskTracker.Events.TaskSettled, onWake);
-      this.options.signal?.removeEventListener('abort', onAbort);
+
+      let outcome: TaskOutcome = await resolvedRunner(runnerCtx);
+
+      // ── Merge on success (worktree mode only) ────────────────────────
+      // After the runner reports `completed`, squash-merge the task
+      // branch into the main-wt branch. If the merge fails (conflicts
+      // the agent couldn't resolve, or an unexpected throw), the task
+      // is settled as `failed` instead of `completed`.
+      if (outcome.status === 'completed' && worktreeCreated && worktreeManager) {
+        let mergeSucceeded = true;
+        let mergeError: string | undefined;
+        try {
+          const mergeResult = await worktreeManager.mergeTaskBranch(task.id);
+          mergeSucceeded = mergeResult.success;
+          if (!mergeSucceeded) {
+            mergeError = 'Worktree merge failed';
+          }
+        } catch (err) {
+          mergeSucceeded = false;
+          mergeError = safeErrorMessage(err);
+        }
+
+        if (mergeSucceeded) {
+          // Merge succeeded — now settle the task as completed using
+          // the deferred result the runner supplied via completeTask.
+          // Only settle if the runner actually called completeTask;
+          // otherwise the task is left in its current (non-complete)
+          // state, matching the non-worktree behavior for a runner that
+          // returns `completed` without settling.
+          if (deferredCompletion) {
+            safeCompleteTask(task.id, deferredResult, processorCtx);
+          }
+        } else {
+          // Merge failed — settle as failed so the task is NOT
+          // reported as complete. safeFailTask works here because the
+          // task was never actually settled in the deferred path.
+          const reason = mergeError ?? 'Merge failed';
+          safeFailTask(task.id, { completed: false, error: reason }, processorCtx);
+          outcome = { status: 'failed', error: reason };
+          failureReason = reason;
+        }
+      }
+
+      if (outcome.status === 'completed') {
+        this.options.onStatus?.onTaskComplete?.({ taskId: task.id, title: task.title });
+      } else {
+        failureReason = outcome.feedback ?? outcome.error;
+        if (outcome.feedback) {
+          this.options.onStatus?.onTaskRejected?.({
+            taskId: task.id,
+            title: task.title,
+            reason: outcome.feedback,
+          });
+        } else if (outcome.error) {
+          // Runner returned a failed outcome with an error message; report it
+          reportError(agentId, outcome.error, undefined, task.id, processorCtx);
+        }
+      }
+    } catch (err) {
+      const error = safeErrorMessage(err);
+      failureReason = error;
+      reportError(agentId, error, undefined, task.id, processorCtx);
+      safeFailTask(task.id, { completed: false, error: true }, processorCtx);
     }
+
+    // ── Same-run retry: if the task just failed and its budget isn't ────────
+    // exhausted, cull its worktree (if any), clear its persisted sessions,
+    // and reset it to `ready` so a lane re-claims it and restarts from
+    // step 1. Capped at `maxTaskRetries` extra attempts to avoid
+    // infinite loops. The worktree is also culled on permanent failure
+    // (budget exhausted) so the failed branch is force-removed.
+    await this.maybeRetryFailedTask(task, agentId, failureReason);
   }
 }

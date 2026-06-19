@@ -120,6 +120,32 @@ export function reflectionRunner(options: ReflectionRunnerOptions): TaskRunner {
           taskId: task.id,
         });
 
+        // `onDecision` observe hook seam: fire ALONGSIDE the existing
+        // `onStatus?.onDecision?.(...)` store callback — BOTH fire into
+        // different sinks (event store vs. audit log). The default auditor
+        // (registered by LanePool.run() when an `auditLog` is available)
+        // appends a `decision` event to the durable AuditLog. Zero behavior
+        // change when no `hookRegistry` or no subscribers. The hook context
+        // mirrors the `beforeStepPrompt` seam (same cwd / workDir / signal).
+        if (ctx.hookRegistry?.hasSubscribers('onDecision')) {
+          await ctx.hookRegistry.invokeObserve(
+            'onDecision',
+            {
+              agentId,
+              decision: `Critic rejected (round ${round + 1}/${maxRounds}), retrying`,
+              reasoning: criticResult.feedback ?? 'No feedback provided',
+              taskId: task.id,
+              phaseId: ctx.phaseId,
+            },
+            {
+              registry: ctx.hookRegistry,
+              cwd: ctx.worktreeCwd ?? ctx.cwd,
+              workDir: ctx.cwd,
+              signal: ctx.signal,
+            },
+          );
+        }
+
         // Continue to next round
       }
 

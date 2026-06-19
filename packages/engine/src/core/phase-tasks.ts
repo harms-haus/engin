@@ -2,6 +2,7 @@
 
 import { join } from 'node:path';
 import type { ZodType } from 'zod';
+import type { HookRegistry } from '../hooks/types.js';
 import { assertSafeName } from '../pool/validation.js';
 import type { AgentLifecycleHandle } from './agent-lifecycle.js';
 import { spawnAgent } from './agent-lifecycle.js';
@@ -9,7 +10,7 @@ import { loadProfilesFromDirs } from './profile.js';
 import { invokeRenderer } from './renderer-invocation.js';
 import type { RendererRegistry } from './renderer-registry.js';
 import { promptForStructured } from './structured-output.js';
-import type { AgentProfile, StatusCallbacks } from './types.js';
+import type { AgentProfile, StatusCallbacks, StepDefinition, Task } from './types.js';
 import { safeErrorMessage } from './utils.js';
 import { runWithValidationRetry } from './validation-retry.js';
 import type { WorktreeManager } from './worktree-manager.js';
@@ -67,6 +68,20 @@ export interface RunStepTaskOptions {
   validateOutput?: () => Promise<{ error?: string } | undefined> | ({ error?: string } | undefined);
   /** Optional registry of per-profile renderers that transform agent output into human-readable markdown */
   rendererRegistry?: RendererRegistry;
+  /**
+   * Optional registry of workflow hooks. When provided AND it has subscribers
+   * for `beforeStepPrompt`, the step prompt is passed through the pipeline
+   * hook (seeded with the original prompt) and the pipeline's return value
+   * replaces the prompt sent to the agent. Absent or no subscribers → zero
+   * behavior change.
+   */
+  hookRegistry?: HookRegistry;
+  /**
+   * Files to inline into the prompt via the engine's default `beforeStepPrompt` /
+   * `collectContext` hook (seeded onto the synthesized `task.files`). Absent or
+   * empty → no file context (unless a subscriber contributes it another way).
+   */
+  files?: string[];
   /** Prompt to send to the agent */
   prompt: string;
   /** Abort signal for cooperative cancellation */
@@ -109,6 +124,8 @@ export async function runStepTask<T = unknown>(opts: RunStepTaskOptions): Promis
     schema,
     validateOutput,
     rendererRegistry,
+    hookRegistry,
+    files,
     prompt,
     signal,
     worktreeManager,
@@ -186,16 +203,62 @@ export async function runStepTask<T = unknown>(opts: RunStepTaskOptions): Promis
       profiles,
     );
 
+    // 7b. `beforeStepPrompt` hook seam: when a hookRegistry with subscribers
+    //     is threaded in, the pipeline transforms the prompt (seeded with the
+    //     original prompt) and its return value replaces the prompt sent to
+    //     the agent. Mirrors step-execution.ts's hook seam. Zero behavior
+    //     change when no hookRegistry or no subscribers: the original prompt
+    //     is used verbatim. effectiveCwd (the worktree path, or the original
+    //     cwd when no worktree is in use) is forwarded as both `cwd` and
+    //     `worktreeCwd` so subscribers see where the agent will actually run.
+    const task: Task = {
+      id: taskId,
+      title,
+      prompt,
+      profile: profileId,
+      files: files ?? [],
+      dependencies: [],
+      status: 'ready',
+      phaseId,
+    };
+    const step: StepDefinition = {
+      name: stepName,
+      profileId,
+      isReadOnly,
+    };
+    const effectivePrompt = hookRegistry?.hasSubscribers('beforeStepPrompt')
+      ? ((await hookRegistry.invokePipeline(
+          'beforeStepPrompt',
+          prompt,
+          { task, step, prompt, cwd: effectiveCwd, worktreeCwd: effectiveCwd },
+          { registry: hookRegistry, cwd: effectiveCwd, workDir: cwd, signal },
+        )) as string)
+      : prompt;
+
     // 8. Run the prompt
     if (schema) {
-      const structuredResult = await promptForStructured(handle.session, prompt, schema, { maxRetries: 3 });
+      const structuredResult = await promptForStructured(handle.session, effectivePrompt, schema, { maxRetries: 3 });
       result = structuredResult.result as T;
+
+      // 8a. `onStructuredOutput` observe hook seam: fire AFTER the structured
+      //     result resolves. Mirrors step-execution.ts. The default
+      //     implementation (registered by LanePool.run() when an `auditLog`
+      //     is available, or by the workflow directly for the runStepTask
+      //     path) appends a `structured_output` event to the durable AuditLog.
+      //     Zero behavior change when no `hookRegistry` or no subscribers.
+      if (hookRegistry?.hasSubscribers('onStructuredOutput')) {
+        await hookRegistry.invokeObserve(
+          'onStructuredOutput',
+          { agentId: taskId, output: structuredResult.result, taskId, phaseId, stepIndex: 0 },
+          { registry: hookRegistry, cwd: effectiveCwd, workDir: cwd, signal },
+        );
+      }
     } else if (validateOutput) {
       // File-based output: validate after each turn and retry within the same
       // session (mirrors promptForStructured's retry, but reads from disk).
-      result = (await runWithValidationRetry(handle.session, prompt, validateOutput)) as T;
+      result = (await runWithValidationRetry(handle.session, effectivePrompt, validateOutput)) as T;
     } else {
-      await handle.session.prompt(prompt);
+      await handle.session.prompt(effectivePrompt);
       result = handle.session.getLastAssistantText() as T;
     }
 
@@ -343,6 +406,21 @@ export interface RunMultiStepTaskOptions {
   /** Optional registry of per-profile renderers that transform agent output into human-readable markdown */
   rendererRegistry?: RendererRegistry;
   /**
+   * Optional registry of workflow hooks. When provided AND it has subscribers
+   * for `beforeStepPrompt`, each step's resolved prompt is passed through the
+   * pipeline hook (seeded with the step prompt) and the pipeline's return
+   * value replaces the prompt sent to the agent. Absent or no subscribers →
+   * zero behavior change.
+   */
+  hookRegistry?: HookRegistry;
+  /**
+   * Files to inline into each step's prompt via the engine's default
+   * `beforeStepPrompt` / `collectContext` hook (seeded onto the synthesized
+   * `task.files` shared by every step). Absent or empty → no file context
+   * (unless a subscriber contributes it another way).
+   */
+  files?: string[];
+  /**
    * Base directory for persisted session storage. When set, step sessions are
    * persisted to disk and resumed across retries (so context — including
    * inlined file contents — is retained). When absent, sessions are in-memory
@@ -427,6 +505,8 @@ export async function runMultiStepTask(opts: RunMultiStepTaskOptions): Promise<M
     apiKeys,
     onStatus,
     rendererRegistry,
+    hookRegistry,
+    files,
     sessionBaseDir,
     signal,
     maxStepRetries = 3,
@@ -490,6 +570,21 @@ export async function runMultiStepTask(opts: RunMultiStepTaskOptions): Promise<M
   }
 
   try {
+    // Synthesize a minimal Task for the hook args. runMultiStepTask has no
+    // single canonical prompt/profile (those are per-step), so `prompt` and
+    // `profile` are left empty — the meaningful per-step prompt is carried in
+    // the `step` and `prompt` fields of the hook args.
+    const task: Task = {
+      id: taskId,
+      title,
+      prompt: '',
+      profile: '',
+      files: files ?? [],
+      dependencies: [],
+      status: 'ready',
+      phaseId,
+    };
+
     let stepIndex = 0;
 
     while (stepIndex < steps.length) {
@@ -519,6 +614,26 @@ export async function runMultiStepTask(opts: RunMultiStepTaskOptions): Promise<M
       const basePrompt =
         typeof step.prompt === 'function' ? await step.prompt([...results], { attempt: execCount }) : step.prompt;
       const promptText = appendFeedbackHistory(basePrompt, feedbackHistory);
+
+      // 4b-2. `beforeStepPrompt` hook seam: when a hookRegistry with
+      //       subscribers is threaded in, the pipeline transforms the resolved
+      //       step prompt (seeded with `promptText`) and its return value
+      //       replaces the prompt sent to the agent. Mirrors runStepTask /
+      //       step-execution.ts. Zero behavior change when no hookRegistry or
+      //       no subscribers.
+      const stepDefinition: StepDefinition = {
+        name: step.stepName,
+        profileId: step.profileId,
+        isReadOnly: step.isReadOnly ?? false,
+      };
+      const effectivePrompt = hookRegistry?.hasSubscribers('beforeStepPrompt')
+        ? ((await hookRegistry.invokePipeline(
+            'beforeStepPrompt',
+            promptText,
+            { task, step: stepDefinition, prompt: promptText, cwd: effectiveCwd, worktreeCwd: effectiveCwd },
+            { registry: hookRegistry, cwd: effectiveCwd, workDir: cwd, signal },
+          )) as string)
+        : promptText;
 
       // 4c. Resolve session dir / resume path (own session for this step).
       //     - If a session for this step was persisted on a prior execution →
@@ -579,13 +694,28 @@ export async function runMultiStepTask(opts: RunMultiStepTaskOptions): Promise<M
       try {
         // 4e. Run the prompt
         if (step.schema) {
-          const structured = await promptForStructured(handle.session, promptText, step.schema, { maxRetries: 3 });
+          const structured = await promptForStructured(handle.session, effectivePrompt, step.schema, { maxRetries: 3 });
           result = structured.result;
+
+          // 4e-2. `onStructuredOutput` observe hook seam: fire AFTER the
+          //        structured result resolves. Mirrors step-execution.ts /
+          //        runStepTask. The default implementation (registered by
+          //        LanePool.run() when an `auditLog` is available, or by the
+          //        workflow directly for the runMultiStepTask path) appends a
+          //        `structured_output` event to the durable AuditLog. Zero
+          //        behavior change when no `hookRegistry` or no subscribers.
+          if (hookRegistry?.hasSubscribers('onStructuredOutput')) {
+            await hookRegistry.invokeObserve(
+              'onStructuredOutput',
+              { agentId: taskId, output: structured.result, taskId, phaseId, stepIndex },
+              { registry: hookRegistry, cwd: effectiveCwd, workDir: cwd, signal },
+            );
+          }
         } else if (step.validateOutput) {
           // File-based output: validate after each turn and retry within the same session.
-          result = await runWithValidationRetry(handle.session, promptText, step.validateOutput);
+          result = await runWithValidationRetry(handle.session, effectivePrompt, step.validateOutput);
         } else {
-          await handle.session.prompt(promptText);
+          await handle.session.prompt(effectivePrompt);
           result = handle.session.getLastAssistantText();
         }
 
@@ -632,6 +762,27 @@ export async function runMultiStepTask(opts: RunMultiStepTaskOptions): Promise<M
         reasoning: feedback,
         taskId,
       });
+
+      // 4i-2. `onDecision` observe hook seam: fire ALONGSIDE the existing
+      //       `onStatus?.onDecision?.(...)` store callback — BOTH fire into
+      //       different sinks (event store vs. audit log). Mirrors
+      //       linear-steps-runner.ts / reflection-runner.ts. The default
+      //       auditor (registered by LanePool.run() when an `auditLog` is
+      //       available) appends a `decision` event to the durable AuditLog.
+      //       Zero behavior change when no `hookRegistry` or no subscribers.
+      if (hookRegistry?.hasSubscribers('onDecision')) {
+        await hookRegistry.invokeObserve(
+          'onDecision',
+          {
+            agentId: taskId,
+            decision: `Step "${step.stepName}" rejected (attempt ${attempt}/${maxStepRetries})`,
+            reasoning: feedback,
+            taskId,
+            phaseId,
+          },
+          { registry: hookRegistry, cwd: effectiveCwd, workDir: cwd, signal },
+        );
+      }
 
       if (attempt >= maxStepRetries) {
         // Exhausted — best-effort: return what we have, marked not approved.

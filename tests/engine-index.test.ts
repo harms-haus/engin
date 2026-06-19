@@ -312,9 +312,10 @@ describe('index.ts — Core section re-exports the new modules in order', () => 
     }
   });
 
-  it('adds exactly two Core wildcard exports (20 total after the change)', () => {
-    // 18 pre-existing core exports + 2 new = 20.
-    expect(coreSpecifiers).toHaveLength(ORIGINAL_CORE_SPECIFIERS.length + 2);
+  it('adds exactly three Core wildcard exports (21 total after the change)', () => {
+    // 18 pre-existing core exports + 3 new (phase-runner, worktree-fixup,
+    // worktree-manager) = 21.
+    expect(coreSpecifiers).toHaveLength(ORIGINAL_CORE_SPECIFIERS.length + 3);
   });
 });
 

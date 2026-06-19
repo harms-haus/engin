@@ -4,6 +4,7 @@ export type { ThinkingLevel };
 
 // ─── Peer dependency re-exports (not re-exported by pi-coding-agent) ───────
 import type { ThinkingLevel } from '@earendil-works/pi-agent-core';
+import type { HookProvider, HookRegistry } from '../hooks/types.js';
 import type { RendererRegistry } from './renderer-registry.js';
 import type { WorktreeManager } from './worktree-manager.js';
 
@@ -234,6 +235,8 @@ export interface WorkflowRunOptions {
   rendererRegistry?: RendererRegistry;
   /** WorktreeManager for isolated git worktree execution */
   worktreeManager?: WorktreeManager;
+  /** The engine-assembled hook registry. Forwarded to LanePool / runStepTask / runMultiStepTask so engine primitives can invoke hooks. */
+  hookRegistry?: HookRegistry;
 }
 
 // ─── Workflow Entry ───────────────────────────────────────────────────────
@@ -248,6 +251,8 @@ export interface WorkflowModule {
   run(taskPrompt: string, options: WorkflowRunOptions): Promise<void>;
   /** Optional hook for workflows to register output renderers for agent profiles. Called by the engine after module load. */
   registerRenderers?: (registry: RendererRegistry) => void;
+  /** Optional workflow-provided hooks. The engine composes these with the store callbacks via composeHooks. */
+  hooks?: HookProvider;
   name?: string;
   description?: string;
 }

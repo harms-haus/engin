@@ -110,8 +110,9 @@ export function createSessionMap(
  * Build a {@link StepExecutionContext} from a {@link TaskRunnerContext}.
  *
  * This is the identical object every runner constructs inline before calling
- * `runStep`. Optional fields (`apiKeys`, `rendererRegistry`) are forwarded as-is
- * so they remain `undefined` when the context omits them.
+ * `runStep`. Optional fields (`apiKeys`, `rendererRegistry`, `hookRegistry`,
+ * `worktreeCwd`, `auditLog`) are forwarded as-is so they remain `undefined`
+ * when the context omits them.
  */
 export function buildExecCtx(ctx: TaskRunnerContext): StepExecutionContext {
   return {
@@ -122,6 +123,9 @@ export function buildExecCtx(ctx: TaskRunnerContext): StepExecutionContext {
     activeSessions: ctx.activeSessions,
     phaseId: ctx.phaseId,
     rendererRegistry: ctx.rendererRegistry,
+    hookRegistry: ctx.hookRegistry,
+    auditLog: ctx.auditLog,
+    worktreeCwd: ctx.worktreeCwd,
     signal: ctx.signal,
     worktreeManager: ctx.worktreeManager,
   };

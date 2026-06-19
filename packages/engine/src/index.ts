@@ -3,6 +3,7 @@ export * from './core/agent-loop.js';
 export * from './core/config.js';
 export * from './core/git.js';
 export * from './core/harness-factory.js';
+export * from './core/phase-runner.js';
 export * from './core/phase-tasks.js';
 export * from './core/profile.js';
 export * from './core/renderer-registry.js';
@@ -19,6 +20,7 @@ export * from './core/worktree-lifecycle.js';
 export * from './core/worktree-manager.js';
 export * from './core/worktree-operations.js';
 export * from './core/write-sandbox.js';
+export * from './hooks/index.js';
 
 // ─── Pool ────────────────────────────────────────────────────────────────
 export * from './pool/index.js';
