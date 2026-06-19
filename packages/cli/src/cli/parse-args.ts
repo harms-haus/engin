@@ -11,7 +11,6 @@ export interface CliOptions {
   workDir?: string;
   maxConcurrent: number;
   verbose: boolean;
-  worktree: boolean;
   apiKeys: Record<string, string>;
   warnings: string[];
   /** Session name for the resume command (the directory name under .engin/work/) */
@@ -65,7 +64,6 @@ Options:
   --work-dir <path>       Workflow working directory (run only)
   --max-concurrent <n>    Max concurrent tasks (default: 5, run only)
   --verbose               Enable verbose logging
-  --worktree              Run workflow in a git worktree
   --api-key <provider=key>  API key (repeatable)
   --host <host>           Web server bind host (default: 127.0.0.1)
   --lan                   Bind on all interfaces for LAN/QR access (default: localhost only)
@@ -80,6 +78,14 @@ Options:
  */
 const HOST_LAN_DEPRECATION_WARNING = "Server binding options (--host, --lan) are now configured via 'engin server up'.";
 
+/**
+ * Informational warning emitted when the removed `--worktree` flag is still
+ * passed. Worktrees are now automatic for git repos, so the flag is a no-op;
+ * we surface migration guidance instead of a generic "Unknown flag" error.
+ */
+const WORKTREE_DEPRECATION_WARNING =
+  '--worktree is no longer needed: git-repository runs now use worktrees automatically.';
+
 // ─── Argument Parsing ───────────────────────────────────────────────────────
 
 export function parseArgs(argv: string[]): CliOptions {
@@ -90,7 +96,6 @@ export function parseArgs(argv: string[]): CliOptions {
       cwd: process.cwd(),
       maxConcurrent: 5,
       verbose: false,
-      worktree: false,
       apiKeys: {},
       warnings: [],
       host: undefined,
@@ -106,7 +111,6 @@ export function parseArgs(argv: string[]): CliOptions {
       cwd: process.cwd(),
       maxConcurrent: 5,
       verbose: false,
-      worktree: false,
       apiKeys: {},
       warnings: [],
       host: undefined,
@@ -118,6 +122,7 @@ export function parseArgs(argv: string[]): CliOptions {
   // 3. Separate positionals from flags
   const positionals: string[] = [];
   const flags: string[] = [];
+  let worktreeProvided = false;
   let i = 0;
   while (i < argv.length) {
     const arg = argv[i];
@@ -141,8 +146,6 @@ export function parseArgs(argv: string[]): CliOptions {
       flags.push(arg, val);
     } else if (arg === '--verbose') {
       flags.push(arg);
-    } else if (arg === '--worktree') {
-      flags.push(arg);
     } else if (arg === '--api-key') {
       const val = argv[++i];
       if (val === undefined || val.startsWith('--')) {
@@ -165,6 +168,11 @@ export function parseArgs(argv: string[]): CliOptions {
         throw new Error(`Missing value for ${arg}\n${USAGE}`);
       }
       flags.push(arg, val);
+    } else if (arg === '--worktree') {
+      // Removed flag: worktrees are now automatic for git repos. Consumed as a
+      // no-op (not pushed to `flags`) with a one-time informational warning so
+      // existing scripts/aliases don't hard-fail with a generic error.
+      worktreeProvided = true;
     } else if (arg.startsWith('--')) {
       throw new Error(`Unknown flag: "${arg}"\n${USAGE}`);
     } else {
@@ -176,9 +184,11 @@ export function parseArgs(argv: string[]): CliOptions {
   // 4. Parse common flags
   let cwd = process.cwd();
   let verbose = false;
-  let worktree = false;
   const apiKeys: Record<string, string> = {};
   const warnings: string[] = [];
+  if (worktreeProvided) {
+    warnings.push(WORKTREE_DEPRECATION_WARNING);
+  }
   let apiKeyWarningIssued = false;
   let workDir: string | undefined;
   let maxConcurrent = 5;
@@ -204,8 +214,6 @@ export function parseArgs(argv: string[]): CliOptions {
       maxConcurrent = parsed;
     } else if (flag === '--verbose') {
       verbose = true;
-    } else if (flag === '--worktree') {
-      worktree = true;
     } else if (flag === '--host') {
       host = flags[++j];
       hostProvided = true;
@@ -246,7 +254,6 @@ export function parseArgs(argv: string[]): CliOptions {
       cwd,
       maxConcurrent,
       verbose,
-      worktree,
       apiKeys,
       warnings,
       host,
@@ -266,7 +273,6 @@ export function parseArgs(argv: string[]): CliOptions {
       cwd,
       maxConcurrent,
       verbose,
-      worktree,
       apiKeys,
       warnings,
       host,
@@ -279,7 +285,7 @@ export function parseArgs(argv: string[]): CliOptions {
     if (positionals.length > 1) {
       throw new Error(`Unexpected argument: "${positionals[1]}"\n${USAGE}`);
     }
-    return { command: 'init', cwd, verbose, worktree, maxConcurrent, apiKeys, warnings, host, lan, port };
+    return { command: 'init', cwd, verbose, maxConcurrent, apiKeys, warnings, host, lan, port };
   }
 
   if (command === 'resume') {
@@ -296,7 +302,6 @@ export function parseArgs(argv: string[]): CliOptions {
       workDir,
       maxConcurrent,
       verbose,
-      worktree,
       apiKeys,
       warnings,
       sessionName,
@@ -319,7 +324,6 @@ export function parseArgs(argv: string[]): CliOptions {
       serverAction,
       cwd,
       verbose,
-      worktree,
       maxConcurrent,
       apiKeys,
       warnings,
@@ -350,7 +354,6 @@ export function parseArgs(argv: string[]): CliOptions {
     workDir,
     maxConcurrent,
     verbose,
-    worktree,
     apiKeys,
     warnings,
     host,

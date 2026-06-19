@@ -19,7 +19,10 @@
  */
 
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
+import type { Task } from '../../packages/engine/src/core/types.js';
+import type { WorktreeManager } from '../../packages/engine/src/core/worktree-manager.js';
 import { LanePool } from '../../packages/engine/src/pool/lane-pool.js';
+import type { TaskRunner } from '../../packages/engine/src/pool/types.js';
 import {
   clearPoolMocks,
   createPoolAndTracker,
@@ -28,6 +31,7 @@ import {
   mockCreateHarness,
   setupHarnessMocks,
   setupProfileMocks,
+  TaskTracker,
 } from './helpers.js';
 
 beforeEach(() => {
@@ -285,5 +289,242 @@ describe('LanePool taskRetries map pruning', () => {
       expect(tracker.getTask('task-y')!.status).toBe('failed');
       expect(taskRetriesOf(pool).size).toBe(0);
     });
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Per-task worktree lifecycle
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// When a `worktreeManager` is supplied via `LanePoolOptions`, each claimed
+// task executes inside a fresh git worktree:
+//   • `createTaskWorktree(taskId, prompt)` runs BEFORE the runner and its
+//     returned path overrides `ctx.cwd` (and `ctx.worktreeManager` is forwarded).
+//   • `mergeTaskBranch(taskId)` runs on a completed outcome; a failed merge
+//     fails the task instead of completing it.
+//   • `cullTaskWorktree(taskId)` runs on failure — before a retry, and again
+//     when the retry budget is exhausted (permanent failure).
+// When no `worktreeManager` is configured the lifecycle is untouched.
+
+/** Options for {@link createMockWorktreeManager}. */
+interface MockWorktreeManagerOptions {
+  createPath?: string;
+  createThrows?: boolean;
+  mergeResult?: { success: boolean; conflictsResolved: boolean };
+}
+
+/**
+ * A mock `WorktreeManager` whose lifecycle methods record their invocation
+ * order into `log` (e.g. `'create:task-1'`, `'cull:task-1'`). The mock does NOT
+ * internally cull on a successful merge (the real manager does), so every
+ * `cullTaskWorktree` call observed here originates from the pool layer itself.
+ */
+function createMockWorktreeManager(options?: MockWorktreeManagerOptions) {
+  const log: string[] = [];
+  const mergeResult = options?.mergeResult ?? { success: true, conflictsResolved: false };
+  return {
+    log,
+    createTaskWorktree: mock(async (taskId: string, _prompt?: string): Promise<string> => {
+      if (options?.createThrows) throw new Error('worktree-create-failed');
+      log.push(`create:${taskId}`);
+      return options?.createPath ?? `/tmp/worktrees/${taskId}`;
+    }),
+    mergeTaskBranch: mock(async (taskId: string): Promise<{ success: boolean; conflictsResolved: boolean }> => {
+      log.push(`merge:${taskId}`);
+      return mergeResult;
+    }),
+    cullTaskWorktree: mock(async (taskId: string): Promise<void> => {
+      log.push(`cull:${taskId}`);
+    }),
+  };
+}
+
+/** Options for {@link createPoolWithWorktree}. */
+interface PoolWithWorktreeOptions {
+  tasks?: Task[];
+  worktreeManager?: WorktreeManager;
+  maxConcurrentLanes?: number;
+  maxTaskRetries?: number;
+  cwd?: string;
+  getRunnerForTask?: (task: Task) => TaskRunner;
+}
+
+/** Build a `LanePool` + `TaskTracker`, forwarding an optional worktreeManager. */
+function createPoolWithWorktree(options: PoolWithWorktreeOptions) {
+  const tracker = new TaskTracker();
+  const tasks = options.tasks ?? [makeTask()];
+  for (const task of tasks) tracker.addTask(task);
+
+  const pool = new LanePool({
+    maxConcurrentLanes: options.maxConcurrentLanes ?? 1,
+    profilesDirs: ['/mock/profiles'],
+    sessionBaseDir: '/tmp/sessions',
+    cwd: options.cwd ?? '/tmp/project',
+    phaseId: 'implementing',
+    taskTracker: tracker,
+    getStepsForTask: (_task: Task) => [{ name: 'implement', profileId: 'coder', isReadOnly: false }],
+    getRunnerForTask: options.getRunnerForTask,
+    maxTaskRetries: options.maxTaskRetries,
+    worktreeManager: options.worktreeManager,
+    laneWaitTimeoutMs: 50,
+  });
+
+  return { pool, tracker };
+}
+
+describe('LanePool per-task worktree lifecycle', () => {
+  it('creates the worktree before the runner runs, forwards cwd + worktreeManager, and merges on success', async () => {
+    setupProfileMocks();
+    const wm = createMockWorktreeManager({ createPath: '/tmp/wt/task-1' });
+    let runnerCwd: string | undefined;
+    let runnerWorktreeManager: unknown;
+    const { pool, tracker } = createPoolWithWorktree({
+      tasks: [makeTask({ id: 'task-1', prompt: 'do the thing' })],
+      worktreeManager: wm as unknown as WorktreeManager,
+      getRunnerForTask: () => async (ctx) => {
+        wm.log.push('runner');
+        runnerCwd = ctx.cwd;
+        runnerWorktreeManager = ctx.worktreeManager;
+        ctx.completeTask();
+        return { status: 'completed' };
+      },
+    });
+
+    await pool.run();
+
+    // createTaskWorktree receives the task id and prompt, and runs BEFORE the runner.
+    expect(wm.createTaskWorktree).toHaveBeenCalledTimes(1);
+    expect(wm.createTaskWorktree).toHaveBeenCalledWith('task-1', 'do the thing');
+    // The runner observed the worktree path as cwd and the manager was forwarded.
+    expect(runnerCwd).toBe('/tmp/wt/task-1');
+    expect(runnerWorktreeManager).toBe(wm);
+    // The task completed (the merge succeeded).
+    expect(tracker.getTask('task-1')!.status).toBe('complete');
+    // Full lifecycle order: create → runner → merge.
+    expect(wm.log).toEqual(['create:task-1', 'runner', 'merge:task-1']);
+  });
+
+  it('marks the task failed when mergeTaskBranch fails after a successful run', async () => {
+    setupProfileMocks();
+    const wm = createMockWorktreeManager({
+      mergeResult: { success: false, conflictsResolved: false },
+    });
+    const { pool, tracker } = createPoolWithWorktree({
+      tasks: [makeTask({ id: 'task-1' })],
+      worktreeManager: wm as unknown as WorktreeManager,
+      maxTaskRetries: 0, // merge failure is permanent — not retried
+      getRunnerForTask: () => async (ctx) => {
+        ctx.completeTask();
+        return { status: 'completed' };
+      },
+    });
+
+    const result = await pool.run();
+
+    expect(wm.mergeTaskBranch).toHaveBeenCalledTimes(1);
+    expect(wm.mergeTaskBranch).toHaveBeenCalledWith('task-1');
+    // A failed merge must NOT leave the task reported as complete.
+    expect(tracker.getTask('task-1')!.status).toBe('failed');
+    expect(result.failedTasks).toBe(1);
+    expect(result.completedTasks).toBe(0);
+  });
+
+  it('culls the failed worktree before retrying the task', async () => {
+    setupProfileMocks();
+    const wm = createMockWorktreeManager();
+    const attempts: Record<string, number> = {};
+    const { pool, tracker } = createPoolWithWorktree({
+      tasks: [makeTask({ id: 'task-1' })],
+      worktreeManager: wm as unknown as WorktreeManager,
+      maxConcurrentLanes: 1, // sequential → deterministic retry ordering
+      maxTaskRetries: 1,
+      getRunnerForTask: (task) => async (ctx) => {
+        attempts[task.id] = (attempts[task.id] ?? 0) + 1;
+        if (attempts[task.id] === 1) {
+          ctx.failTask({ completed: false, error: 'fail' });
+          return { status: 'failed', error: 'fail' };
+        }
+        ctx.completeTask();
+        return { status: 'completed' };
+      },
+    });
+
+    await pool.run();
+
+    // Two attempts (initial + retry) → two worktrees created.
+    expect(wm.createTaskWorktree).toHaveBeenCalledTimes(2);
+    // The task eventually succeeded on the retry.
+    expect(tracker.getTask('task-1')!.status).toBe('complete');
+    // Lifecycle order: create → cull(retry) → create(retry) → merge(success).
+    // The cull of the failed attempt MUST precede the retry's fresh worktree.
+    expect(wm.log).toEqual(['create:task-1', 'cull:task-1', 'create:task-1', 'merge:task-1']);
+  });
+
+  it('culls the worktree when a task permanently fails (retry budget exhausted)', async () => {
+    setupProfileMocks();
+    const wm = createMockWorktreeManager();
+    const { pool, tracker } = createPoolWithWorktree({
+      tasks: [makeTask({ id: 'task-1' })],
+      worktreeManager: wm as unknown as WorktreeManager,
+      maxConcurrentLanes: 1,
+      maxTaskRetries: 1,
+      getRunnerForTask: () => async (ctx) => {
+        ctx.failTask({ completed: false, error: 'always fails' });
+        return { status: 'failed', error: 'always fails' };
+      },
+    });
+
+    await pool.run();
+
+    // 1 initial + 1 retry = 2 attempts; every worktree is culled (retry + permanent fail).
+    expect(tracker.getTask('task-1')!.status).toBe('failed');
+    expect(wm.createTaskWorktree).toHaveBeenCalledTimes(2);
+    expect(wm.cullTaskWorktree).toHaveBeenCalledTimes(2);
+    expect(wm.log).toEqual(['create:task-1', 'cull:task-1', 'create:task-1', 'cull:task-1']);
+  });
+
+  it('does not touch the worktree lifecycle when no worktreeManager is configured', async () => {
+    setupProfileMocks();
+    let runnerCwd: string | undefined;
+    const { pool, tracker } = createPoolWithWorktree({
+      tasks: [makeTask({ id: 'task-1' })],
+      worktreeManager: undefined,
+      cwd: '/original/project',
+      getRunnerForTask: () => async (ctx) => {
+        runnerCwd = ctx.cwd;
+        // No manager is forwarded in the backward-compatible (no-worktree) path.
+        expect(ctx.worktreeManager).toBeUndefined();
+        ctx.completeTask();
+        return { status: 'completed' };
+      },
+    });
+
+    await pool.run();
+
+    // cwd is unchanged and the task completes normally.
+    expect(runnerCwd).toBe('/original/project');
+    expect(tracker.getTask('task-1')!.status).toBe('complete');
+  });
+
+  it('falls back to the original cwd when createTaskWorktree throws', async () => {
+    setupProfileMocks();
+    const wm = createMockWorktreeManager({ createThrows: true });
+    let runnerCwd: string | undefined;
+    const { pool, tracker } = createPoolWithWorktree({
+      tasks: [makeTask({ id: 'task-1' })],
+      worktreeManager: wm as unknown as WorktreeManager,
+      cwd: '/original/project',
+      getRunnerForTask: () => async (ctx) => {
+        runnerCwd = ctx.cwd;
+        ctx.completeTask();
+        return { status: 'completed' };
+      },
+    });
+
+    await pool.run();
+
+    // Worktree creation failed → cwd stays at the configured cwd; the task still completes.
+    expect(runnerCwd).toBe('/original/project');
+    expect(tracker.getTask('task-1')!.status).toBe('complete');
   });
 });

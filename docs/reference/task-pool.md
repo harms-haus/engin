@@ -102,6 +102,12 @@ class LanePool {
 }
 ```
 
+### `LanePoolOptions` — worktree-related field
+
+| Field              | Type              | Description                                                                                                                |
+| ------------------ | ----------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `worktreeManager?` | `WorktreeManager` | Per-run worktree manager enabling per-task worktree isolation (create on claim, squash-merge on success, cull on failure). |
+
 ### How `run()` works
 
 1. **Early-out** on `signal?.aborted` (returns zeros) or an empty tracker (returns zeros
@@ -132,12 +138,24 @@ Each lane (`agentId = lane-<index>`) runs a loop:
 3. `claimTasks(1, agentId)`.
 4. **If claimed** — clean up wait sources, reset the consecutive-timeout counter, and
    `processTask(...)`. On throw, report the error and safely fail the task.
+   4a. **Per-task worktree (when `worktreeManager` is set).** Before calling the runner, the
+   lane calls `worktreeManager.createTaskWorktree(task.id, task.prompt)` and overrides
+   `runnerCtx.cwd` to the returned worktree path so the agent runs inside an isolated
+   branch. On a `completed` outcome, the lane calls `worktreeManager.mergeTaskBranch(task.id)`
+   (serialized squash-merge into the main-wt branch); the task's `completeTask` settlement is
+   deferred until the merge succeeds, so a failed merge flips the outcome to `failed`. On
+   failure/retry and on permanent failure, `maybeRetryFailedTask` force-culls the task
+   worktree + branch. When `worktreeManager` is absent, none of this runs and tasks execute
+   against `cwd` directly.
 5. **If nothing claimed** — `await wakePromise` (resolves on a task event, the timeout, or
    abort).
 
 There is **no exponential backoff**. The lane idle poll is a fixed `laneWaitTimeoutMs`
 (default `60000` ms). A lane warns **once** if it stalls for `STALL_WARN_THRESHOLD` (5)
 consecutive timeouts.
+
+See the [Worktrees reference](worktrees.md) for the full per-task worktree lifecycle,
+`.worktreecopy` population, and merge serialization.
 
 ## Step execution and retries
 
@@ -248,6 +266,7 @@ interface TaskRunnerContext {
   maxStepRetries: number;
   rendererRegistry?: RendererRegistry;
   signal?: AbortSignal;
+  worktreeManager?: WorktreeManager;
   /** Safely settle the task as complete. Returns true on success. */
   completeTask: (result?: unknown) => boolean;
   /** Safely settle the task as failed. */

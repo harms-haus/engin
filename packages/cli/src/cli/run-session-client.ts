@@ -12,6 +12,7 @@ import type { ClientMessage, ServerMessage } from '@engin/shared/protocol-types'
 import { isServerAlive, readServerToken, startDaemon } from '@harms-haus/engin-engine';
 import { WorkflowTUI } from '@harms-haus/engin-tui';
 import { formatTime } from './console-status.js';
+import type { WorktreeMergeResult } from './post-worktree.js';
 import { setupNonTtySigintHandler } from './sigint.js';
 import { type StdoutRenderer, createStdoutRenderer } from './stdout-renderer.js';
 
@@ -48,6 +49,15 @@ export interface PostTerminalContext {
   /** T33: Worktree info captured from run_started (may be undefined when
    *  the run did not use a worktree). */
   capturedWorktree?: { worktreePath: string; branchName: string; originalCwd?: string };
+  /**
+   * Waits for the next `worktree_merge_result` ServerMessage for this run.
+   *
+   * Used by the post-terminal final-merge prompt to await the outcome of a
+   * `worktree_action { action: 'merge' | 'resolve' }` sent through
+   * {@link engineClient}. Resolves with the result payload (outcome +
+   * optional cleanupError / worktreePath / branchName).
+   */
+  waitForResult: () => Promise<WorktreeMergeResult>;
 }
 
 /**
@@ -171,6 +181,13 @@ export class RunSessionClient {
     // runCommand) can build the worktree prompt after the run completes.
     let capturedWorktree: { worktreePath: string; branchName: string; originalCwd?: string } | undefined;
 
+    // T33: Pending one-shot resolver for the next `worktree_merge_result`
+    // message. Set by `waitForResult` (below) and drained by the
+    // `worktree_merge_result` case in the onMessage handler. At most one
+    // resolver is pending at a time — the final-merge prompt awaits each
+    // result serially before issuing the next action.
+    let pendingWorktreeResultResolver: ((result: WorktreeMergeResult) => void) | null = null;
+
     // ── Read server auth token (T35) ──────────────────────────────────
     // The token is read BEFORE creating the EngineClient so it can be passed
     // as `authToken` in the constructor options. EngineClient then sends
@@ -253,6 +270,23 @@ export class RunSessionClient {
             if (msg.runId === runId || (runId === undefined && msg.runId === '')) {
               runFailedReason = msg.error;
               resolveTerminal();
+            }
+            break;
+          case 'worktree_merge_result':
+            // T33: Forward the merge outcome to the pending final-merge prompt
+            // (if any). Only results for our run are delivered; others are
+            // ignored. The resolver is drained and cleared so a later result
+            // does not re-resolve an already-settled promise.
+            if (msg.runId === runId && pendingWorktreeResultResolver !== null) {
+              const resolver = pendingWorktreeResultResolver;
+              pendingWorktreeResultResolver = null;
+              resolver({
+                outcome: msg.outcome,
+                ...(msg.cleanupError !== undefined ? { cleanupError: msg.cleanupError } : {}),
+                ...(msg.worktreePath !== undefined ? { worktreePath: msg.worktreePath } : {}),
+                ...(msg.branchName !== undefined ? { branchName: msg.branchName } : {}),
+                ...(msg.error !== undefined ? { error: msg.error } : {}),
+              });
             }
             break;
         }
@@ -383,7 +417,14 @@ export class RunSessionClient {
 
       // ── Post-terminal action (e.g. worktree prompt) ─────────────────────
       if (postTerminalAction && runId) {
-        await postTerminalAction({ runId, engineClient, capturedWorktree });
+        // T33: `waitForResult` lets the final-merge prompt await the next
+        // `worktree_merge_result` for this run (resolved by the onMessage
+        // handler above). Each call arms a fresh one-shot resolver.
+        const waitForResult = (): Promise<WorktreeMergeResult> =>
+          new Promise<WorktreeMergeResult>((resolve) => {
+            pendingWorktreeResultResolver = resolve;
+          });
+        await postTerminalAction({ runId, engineClient, capturedWorktree, waitForResult });
       }
 
       // ── Surface run failure as non-zero exit ────────────────────────────

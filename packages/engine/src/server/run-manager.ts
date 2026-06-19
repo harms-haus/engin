@@ -2,11 +2,10 @@ import type { ServerWebSocket } from 'bun';
 import { basename } from 'node:path';
 
 import type { ClientMessage, RunSummary, ServerMessage } from '@engin/shared/protocol-types';
-import { getDefaultWorkDir, loadEnvFiles, resolveProfilesDirs } from '../core/config.js';
+import { getDefaultWorkDir, loadEnvFiles } from '../core/config.js';
 import type { WorkflowModule, WorktreeInfo } from '../core/types.js';
 import { loadWorkflow } from '../core/workflow-loader.js';
-import { setupWorktree } from '../core/worktree-lifecycle.js';
-import { cleanupWorktree, mergeWorktreeToMain, pushWorktreeAndCreatePR } from '../core/worktree-operations.js';
+import type { WorktreeManager } from '../core/worktree-manager.js';
 import { EventStore } from '../tracking/event-store.js';
 import { createStoreCallbacks } from '../tracking/store-callbacks.js';
 import { installConsoleCapture } from './console-capture.js';
@@ -63,6 +62,19 @@ export interface RunHandle {
   subscribers: Set<ServerWebSocket>;
   /** T33: Worktree info when the run uses a git worktree. */
   worktree?: WorktreeInfo;
+  /**
+   * Per-run {@link WorktreeManager} owning the main + per-task worktrees.
+   * Populated asynchronously by {@link RunExecutor.execute} once the main
+   * worktree has been created. `undefined` while the executor is still
+   * setting up (or for the non-git fallback path).
+   */
+  worktreeManager?: WorktreeManager;
+  /**
+   * Conflicts captured from the most recent `handleWorktreeAction('merge')`
+   * that produced conflicts, so a follow-up `handleWorktreeAction('resolve')`
+   * can forward them to `WorktreeManager.resolveFinalMergeConflicts`.
+   */
+  pendingMergeConflicts?: string[];
   /** T33: API keys for agent-based git operations (merge/PR). */
   apiKeys?: Record<string, string>;
 }
@@ -169,19 +181,12 @@ export class RunManager {
     // (10) Build the RunSummary.
     const startedAt = new Date().toISOString();
 
-    // T33: When worktree is requested, create the worktree BEFORE launching
-    // the workflow. Store WorktreeInfo on the handle and include it in the
-    // RunSummary so the client receives it via the run_started reply.
-    let worktree: WorktreeInfo | undefined;
-    if (msg.worktree) {
-      const profilesDirs = resolveProfilesDirs(msg.cwd, msg.workflowName);
-      // setupWorktree disposes its harness on failure; any partially-created
-      // worktree directory is a known limitation (setupWorktree does not expose
-      // partial cleanup on throw).
-      const setupResult = await setupWorktree(msg.cwd, profilesDirs, msg.taskPrompt, msg.apiKeys);
-      worktree = setupResult.worktreeInfo;
-    }
-
+    // The `msg.worktree` gate has been removed — worktree setup now happens
+    // asynchronously inside RunExecutor.execute (it involves LLM calls to
+    // generate the branch slug and must not block startRun's fire-and-forget
+    // contract). The executor creates the WorktreeManager, sets
+    // `handle.worktree` and `handle.worktreeManager`, and updates
+    // `handle.summary.worktree` once the main worktree exists.
     const summary: RunSummary = {
       runId,
       cwd: msg.cwd,
@@ -189,7 +194,6 @@ export class RunManager {
       taskPrompt: msg.taskPrompt,
       status: 'running',
       startedAt,
-      ...(worktree ? { worktree } : {}),
     };
 
     // (11) Build and register the handle in the map.
@@ -206,7 +210,6 @@ export class RunManager {
       summary,
       startedAt,
       subscribers,
-      ...(worktree ? { worktree } : {}),
       ...(msg.apiKeys ? { apiKeys: msg.apiKeys } : {}),
     };
     handleRef = handle;
@@ -238,82 +241,128 @@ export class RunManager {
   // ─── handleWorktreeAction ────────────────────────────────────────────────
 
   /**
-   * T33: Perform a post-run worktree action on the server. Called when the
-   * client sends a `worktree_action` ClientMessage via routeMessage.
+   * Drive the two-prompt, human-in-the-loop final merge UX for a run's
+   * worktree. Called when the client sends a `worktree_action` ClientMessage
+   * via routeMessage.
    *
-   * - **keep**    — leave the worktree on disk (no-op).
-   * - **discard** — remove the worktree directory (best-effort, silent on failure).
-   * - **merge**   — commit changes in the worktree and merge the branch into
-   *   the main branch (with agent-based conflict resolution). On unresolved
-   *   conflicts the merge is aborted and the worktree is preserved for manual
-   *   intervention.
-   * - **pr**      — commit, push the branch, and create a pull request. The
-   *   worktree is removed after the PR is created.
+   * The WorktreeManager (set asynchronously on the handle by RunExecutor)
+   * owns the underlying git + agent operations; this method orchestrates the
+   * outcome-to-broadcast mapping and the cleanup-on-success-only rule:
    *
-   * Delegates to the shared `worktree-operations` module so the git + agent
-   * orchestration is identical between the server and the CLI. No-ops silently
-   * if the runId is unknown or has no worktree.
+   * - **merge**    — squash-merge the main-wt branch into real `main` via
+   *   `finalMergeToMain`. Clean merge → `cleanup` + outcome `clean`
+   *   (with optional `cleanupError`). Conflicts → outcome `conflicts` with
+   *   the worktree/branch paths (the merge is left in-progress for a follow-up
+   *   `resolve` / `decline`); the conflict list is stashed on the handle so a
+   *   subsequent `resolve` can forward it. Non-conflict failure → outcome
+   *   `failed`. Cleanup runs ONLY on a clean merge.
+   * - **resolve**  — invoke `resolveFinalMergeConflicts` with the conflicts
+   *   stashed by the preceding `merge` (plus the task prompt). Resolved →
+   *   `cleanup` + outcome `resolved` (with optional `cleanupError`). Failure
+   *   → outcome `failed`. Cleanup runs ONLY on a successful resolve.
+   * - **decline**  — abort the in-progress merge via `abortFinalMerge` and
+   *   broadcast outcome `declined` with the worktree/branch paths. NEVER cleans
+   *   up — the user has chosen to handle the merge manually.
+   *
+   * The result is broadcast to the run's subscribers via
+   * {@link StatusBridge.broadcastWorktreeResult} as a `worktree_merge_result`
+   * ServerMessage. No-ops silently if the runId is unknown or the handle has
+   * no `worktreeManager` (e.g. the non-git fallback path).
    */
-  async handleWorktreeAction(runId: string, action: 'keep' | 'discard' | 'merge' | 'pr'): Promise<void> {
+  async handleWorktreeAction(runId: string, action: 'merge' | 'resolve' | 'decline'): Promise<void> {
     const handle = this.registry.get(runId);
-    if (!handle || !handle.worktree) return;
+    if (!handle || !handle.worktreeManager) return;
 
-    const wt = handle.worktree;
-    const repoRoot = wt.originalCwd || handle.cwd;
-    const profilesDirs = resolveProfilesDirs(handle.cwd, handle.workflowName);
+    const wtm = handle.worktreeManager;
+    // `handle.worktree` is the canonical WorktreeInfo (set by the executor
+    // alongside `worktreeManager`). Fall back to the manager's own descriptor
+    // for defensive symmetry — in production the two always agree.
+    const worktreeInfo = handle.worktree ?? wtm.getWorktreeInfo();
+    const worktreePath = worktreeInfo.worktreePath;
+    const branchName = worktreeInfo.branchName;
 
     switch (action) {
-      case 'keep':
-        return;
-
-      case 'discard': {
-        // Best-effort, silent cleanup (errors are swallowed by cleanupWorktree).
-        await cleanupWorktree(repoRoot, wt.worktreePath);
-        handle.worktree = undefined;
-        return;
-      }
-
       case 'merge': {
-        try {
-          await mergeWorktreeToMain({
-            profilesDirs,
-            repoRoot,
-            worktreePath: wt.worktreePath,
-            branchName: wt.branchName,
-            taskPrompt: handle.taskPrompt,
-            apiKeys: handle.apiKeys,
+        const result = await wtm.finalMergeToMain();
+        if (result.success) {
+          const cleanupResult = await wtm.cleanup();
+          handle.bridge.broadcastWorktreeResult({
+            type: 'worktree_merge_result',
+            runId,
+            outcome: 'clean',
+            ...(cleanupResult.cleanupError ? { cleanupError: cleanupResult.cleanupError } : {}),
           });
-        } catch (err) {
-          console.error(
-            `⚠️ worktree action '${action}' failed for run ${runId}: ${err instanceof Error ? err.message : String(err)}`,
-          );
+          return;
         }
+        if (result.conflicts.length > 0) {
+          // Stash the conflicts so a follow-up `resolve` can forward them to
+          // the agent resolver without re-deriving them from the repo state.
+          handle.pendingMergeConflicts = result.conflicts;
+          handle.bridge.broadcastWorktreeResult({
+            type: 'worktree_merge_result',
+            runId,
+            outcome: 'conflicts',
+            worktreePath,
+            branchName,
+          });
+          return;
+        }
+        // Non-conflict failure (e.g. checkout/commit blew up) — preserve the
+        // worktree for manual intervention; do NOT clean up.
+        handle.bridge.broadcastWorktreeResult({
+          type: 'worktree_merge_result',
+          runId,
+          outcome: 'failed',
+          worktreePath,
+          branchName,
+          ...(result.error ? { error: result.error } : {}),
+        });
         return;
       }
 
-      case 'pr': {
-        try {
-          // Title truncation is the caller's responsibility (the shared
-          // module forwards the title verbatim).
-          let title = handle.taskPrompt;
-          if (title.length > 60) {
-            title = title.slice(0, 57) + '...';
-          }
-
-          await pushWorktreeAndCreatePR({
-            profilesDirs,
-            repoRoot,
-            worktreePath: wt.worktreePath,
-            branchName: wt.branchName,
-            taskPrompt: handle.taskPrompt,
-            title,
-            apiKeys: handle.apiKeys,
+      case 'resolve': {
+        // Reuse the conflicts captured by the preceding `merge`. Default to an
+        // empty list if none are stashed — the resolver will then no-op and
+        // report failure, which is the correct surfacing for an out-of-order
+        // `resolve`.
+        const conflicts = handle.pendingMergeConflicts ?? [];
+        const resolveResult = await wtm.resolveFinalMergeConflicts(conflicts, handle.taskPrompt);
+        if (resolveResult.resolved) {
+          const cleanupResult = await wtm.cleanup();
+          handle.bridge.broadcastWorktreeResult({
+            type: 'worktree_merge_result',
+            runId,
+            outcome: 'resolved',
+            ...(cleanupResult.cleanupError ? { cleanupError: cleanupResult.cleanupError } : {}),
           });
-        } catch (err) {
-          console.error(
-            `⚠️ worktree action '${action}' failed for run ${runId}: ${err instanceof Error ? err.message : String(err)}`,
-          );
+          return;
         }
+        handle.bridge.broadcastWorktreeResult({
+          type: 'worktree_merge_result',
+          runId,
+          outcome: 'failed',
+          worktreePath,
+          branchName,
+          ...(resolveResult.error ? { error: resolveResult.error } : {}),
+        });
+        return;
+      }
+
+      case 'decline': {
+        // Best-effort abort; the merge may or may not be in progress.
+        try {
+          await wtm.abortFinalMerge();
+        } catch {
+          // No merge in progress — nothing to abort (e.g. the user declined
+          // before any merge was ever attempted).
+        }
+        handle.bridge.broadcastWorktreeResult({
+          type: 'worktree_merge_result',
+          runId,
+          outcome: 'declined',
+          worktreePath,
+          branchName,
+        });
         return;
       }
     }

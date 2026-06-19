@@ -5,6 +5,7 @@ import {
   getServerLogPath,
   getServerPidfilePath,
   initDefaultConfig,
+  isGitRepo,
   isServerAlive,
   readPidfile,
   startDaemon,
@@ -16,7 +17,7 @@ import { join } from 'node:path';
 import * as readline from 'node:readline';
 import { formatTime, shouldUseTui } from './console-status.js';
 import type { CliOptions } from './parse-args.js';
-import { promptPostWorktreeAction } from './post-worktree.js';
+import { promptFinalMerge } from './post-worktree.js';
 import type { PostTerminalContext, SetupResult } from './run-session-client.js';
 import { RunSessionClient } from './run-session-client.js';
 import type { PickerSelection } from './session-selector.js';
@@ -30,13 +31,48 @@ export async function initCommand(_options: CliOptions): Promise<void> {
   console.log('Initialized engin directory structure at ' + globalDir);
 }
 
-// ─── Run/Resume Daemon-Client Options ───────────────────────────────────────
+// ─── Run/Resume Daemon-Client Options ───────────────────────────────
 
 /** Default server port when none is specified. */
 const DEFAULT_SERVER_PORT = 3619;
 
 /** Default bind host when none is specified. */
 const DEFAULT_SERVER_HOST = '127.0.0.1';
+
+// ─── Non-git Fallback Prompt ────────────────────────────────────────────────
+
+/**
+ * Ask a yes/No question on stdin/stdout, defaulting to `defaultValue` when the
+ * user presses return (or stdin closes).
+ *
+ * Used by {@link runCommand} to confirm proceeding in a non-git directory.
+ * Accepts `y`/`yes` (case-insensitive) as affirmative; anything else —
+ * including empty input — follows `defaultValue`.
+ */
+async function promptYesNo(prompt: string, defaultValue: boolean): Promise<boolean> {
+  const hint = defaultValue ? '[Y/n]' : '[y/N]';
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+  try {
+    return await new Promise<boolean>((resolve) => {
+      rl.question(`${prompt} ${hint} `, (answer) => {
+        const normalized = answer.trim().toLowerCase();
+        if (normalized === '') {
+          resolve(defaultValue);
+          return;
+        }
+        resolve(normalized === 'y' || normalized === 'yes');
+      });
+      // Guard against stdin closing without input (EOF, piped input, CI):
+      // resolve the default so the process never deadlocks.
+      rl.on('close', () => resolve(defaultValue));
+    });
+  } finally {
+    rl.close();
+  }
+}
 
 // ─── Run Command ────────────────────────────────────────────────────────────
 
@@ -48,11 +84,33 @@ export async function runCommand(options: CliOptions): Promise<void> {
   // Validate workflow name before sending it to the daemon.
   validateWorkflowName(workflowName);
 
+  // ── Non-git fallback prompt ──────────────────────────────────────────
+  // Worktrees are automatic for git repos. When the cwd is NOT a git
+  // repository, prompt before proceeding — the run will execute in-place
+  // with no worktree (the server detects non-git and skips the worktree
+  // setup). Default is No so accidental Enter aborts safely.
+  if (!isGitRepo(options.cwd)) {
+    const confirmed = await promptYesNo(
+      `Warning: '${options.cwd}' is not a git repository. Continue without git and worktrees?`,
+      false,
+    );
+    if (!confirmed) {
+      console.log('Aborted. Run `git init` to initialize a repository first.');
+      process.exit(1);
+    }
+    // User confirmed — proceed without worktrees. The server will detect
+    // non-git and run in-place.
+  }
+
   const port = options.port ?? DEFAULT_SERVER_PORT;
   const host = options.host ?? DEFAULT_SERVER_HOST;
   const useTui = shouldUseTui({ verbose: options.verbose, isTty: !!process.stdout.isTTY });
 
   // Build the start_run message.
+  // NOTE: `worktree` is intentionally omitted — the server now decides
+  // whether to use a worktree based on whether the cwd is a git repository.
+  // The client learns the worktree identity (if any) from the `run_started`
+  // summary's `worktree` field.
   const startRunMessage: ClientMessage = {
     type: 'start_run',
     workflowName,
@@ -60,7 +118,6 @@ export async function runCommand(options: CliOptions): Promise<void> {
     cwd: options.cwd,
     maxConcurrent: options.maxConcurrent,
     ...(Object.keys(options.apiKeys).length > 0 ? { apiKeys: options.apiKeys } : {}),
-    ...(options.worktree ? { worktree: true } : {}),
     ...(options.workDir ? { workDir: options.workDir } : {}),
   };
 
@@ -70,23 +127,24 @@ export async function runCommand(options: CliOptions): Promise<void> {
     useTui,
     verbose: options.verbose,
     setup: async (_engineClient) => {
-      // T33: When --worktree is set, wire the postTerminalAction so the
-      // post-run worktree prompt sends the decision to the server instead
-      // of performing local git operations.
-      let postTerminalAction: ((ctx: PostTerminalContext) => Promise<void>) | undefined;
-      if (options.worktree) {
-        postTerminalAction = async (ctx) => {
-          await promptPostWorktreeAction({
-            worktreePath: ctx.capturedWorktree?.worktreePath ?? '',
-            branchName: ctx.capturedWorktree?.branchName ?? '',
-            taskPrompt: options.taskPrompt as string,
-            runId: ctx.runId,
-            sendDecision: async (action) => {
-              ctx.engineClient.send({ type: 'worktree_action', runId: ctx.runId, action });
-            },
-          });
-        };
-      }
+      // Always wire the post-terminal action. The action itself no-ops
+      // when no worktree was captured (non-git run) — server-side worktree
+      // detection decides, and the client learns the worktree identity
+      // from the `run_started` summary's `worktree` field.
+      const postTerminalAction: (ctx: PostTerminalContext) => Promise<void> = async (ctx) => {
+        // No worktree captured (non-git run) — skip the prompt entirely.
+        if (!ctx.capturedWorktree) return;
+        await promptFinalMerge({
+          worktreePath: ctx.capturedWorktree.worktreePath,
+          branchName: ctx.capturedWorktree.branchName,
+          taskPrompt: options.taskPrompt as string,
+          runId: ctx.runId,
+          sendAction: async (action) => {
+            ctx.engineClient.send({ type: 'worktree_action', runId: ctx.runId, action });
+          },
+          waitForResult: ctx.waitForResult,
+        });
+      };
       return { mode: 'start', startRunMessage, postTerminalAction };
     },
   }).run();
@@ -167,6 +225,9 @@ async function buildResumeStartResult(
   validateWorkflowName(workflowName);
 
   // ── Build the start_run message ────────────────────────────────────
+  // NOTE: `worktree` is intentionally omitted — the server detects git
+  // automatically from the cwd. For resume, the worktree identity recovered
+  // from the state file is used to wire the post-terminal action below.
   const startRunMessage: ClientMessage = {
     type: 'start_run',
     workflowName,
@@ -175,21 +236,21 @@ async function buildResumeStartResult(
     workDir,
     maxConcurrent: options.maxConcurrent,
     ...(Object.keys(options.apiKeys).length > 0 ? { apiKeys: options.apiKeys } : {}),
-    ...(worktreeInfo ? { worktree: true } : {}),
   };
 
   // ── Post-terminal worktree action ──────────────────────────────────
   let postTerminalAction: ((ctx: PostTerminalContext) => Promise<void>) | undefined;
   if (worktreeInfo) {
-    postTerminalAction = async ({ runId, engineClient }) => {
-      await promptPostWorktreeAction({
+    postTerminalAction = async ({ runId, engineClient, waitForResult }) => {
+      await promptFinalMerge({
         worktreePath: worktreeInfo.worktreePath,
         branchName: worktreeInfo.branchName,
         taskPrompt,
         runId,
-        sendDecision: async (action) => {
+        sendAction: async (action) => {
           engineClient.send({ type: 'worktree_action', runId, action });
         },
+        waitForResult,
       });
     };
   }

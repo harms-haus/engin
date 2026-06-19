@@ -1,23 +1,17 @@
 // ─── Worktree Lifecycle Functions ────────────────────────────────────────────
 // These functions implement agent-based operations for worktree management.
 
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
-import {
-  copyFilesToWorktree,
-  createWorktree,
-  getRepoRoot,
-  isGitRepo,
-  pushBranch,
-  readWorktreeCopyList,
-  removeWorktree,
-  stageAll,
-} from './git.js';
+import { getRepoRoot, isGitRepo, pushBranch, sanitizeBranchSlug, stageFiles } from './git.js';
 import { createHarness } from './harness-factory.js';
 import { loadProfilesFromDirs } from './profile.js';
 import { promptForStructured } from './structured-output.js';
+import { generateTitleAndBranch } from './title-generator.js';
 import type { WorktreeInfo } from './types.js';
+import { runTooledFixup } from './worktree-fixup.js';
+import { WorktreeManager } from './worktree-manager.js';
 
 // ─── Shared Helpers ──────────────────────────────────────────────────────────
 
@@ -31,9 +25,16 @@ async function loadWorkerProfile(profilesDirs: string[]) {
 }
 
 // ─── setupWorktree ───────────────────────────────────────────────────────────
+//
+// Refactored to delegate ALL worktree creation to a {@link WorktreeManager}
+// (via `setupMainWorktree()`) and to source the branch name from
+// {@link generateTitleAndBranch}. setupWorktree MUST NOT create the worktree
+// itself — doing so caused the double-worktree bug where both setupWorktree
+// and WorktreeManager tried to create the same worktree.
 
 export async function setupWorktree(
   cwd: string,
+  workDir: string,
   profilesDirs: string[],
   taskPrompt: string,
   apiKeys?: Record<string, string>,
@@ -43,55 +44,55 @@ export async function setupWorktree(
   }
 
   const repoRoot = getRepoRoot(cwd);
-  const profile = await loadWorkerProfile(profilesDirs);
-  const harness = await createHarness({ profile, cwd: repoRoot, apiKeys });
 
-  try {
-    // Generate branch name via agent
-    let branchName: string;
-    try {
-      const { result } = await promptForStructured(
-        harness.session,
-        `Generate a short, descriptive git branch name for the following task:\n\n${taskPrompt}`,
-        z.object({ branchName: z.string() }),
-      );
-      // Sanitize: lowercase, replace non-alphanumeric-non-dash chars, collapse dashes
-      branchName = result.branchName
-        .toLowerCase()
-        .replace(/[^a-z0-9-]/g, '-')
-        .replace(/-+/g, '-')
-        .replace(/^-|-$/g, '');
-      if (!branchName) {
-        branchName = `engin-worktree-${Date.now()}`;
+  // Generate the branch name (and title) via a single LLM call.
+  // generateTitleAndBranch owns its own harness and degrades to a
+  // deterministic fallback on any failure — so it never throws.
+  const { branchName: rawBranchName } = await generateTitleAndBranch({
+    profilesDirs,
+    taskPrompt,
+    cwd,
+    apiKeys,
+  });
+  const slug = sanitizeBranchSlug(rawBranchName);
+  const mainBranch = `engin/${slug}`;
+
+  // The main worktree lives INSIDE the run dir — not in {repoRoot}/../ as
+  // the old implementation did. WorktreeManager is the SOLE creator.
+  const mainWorktreePath = join(workDir, 'worktree');
+
+  const manager = new WorktreeManager({
+    repoRoot,
+    sourceCwd: cwd,
+    workDir,
+    mainBranch,
+    mainWorktreePath,
+    profilesDirs,
+    apiKeys,
+  });
+  await manager.setupMainWorktree();
+
+  return {
+    worktreePath: mainWorktreePath,
+    branchName: mainBranch,
+    worktreeInfo: {
+      worktreePath: mainWorktreePath,
+      branchName: mainBranch,
+      originalCwd: cwd,
+    },
+    manager,
+    cleanup: async () => {
+      // Best-effort: swallow manager.cleanup rejections so cleanup never
+      // throws out of a finally block. WorktreeManager.cleanup is itself
+      // best-effort and surfaces failures via `cleanupError` rather than
+      // throwing.
+      try {
+        await manager.cleanup();
+      } catch {
+        // Best-effort cleanup — ignore.
       }
-    } catch {
-      branchName = `engin-worktree-${Date.now()}`;
-    }
-
-    const worktreePath = join(repoRoot, '..', '.engin-worktree-' + branchName);
-    createWorktree(repoRoot, branchName, worktreePath);
-
-    // Copy files from .worktreecopy if list is non-empty
-    const filesToCopy = readWorktreeCopyList(cwd);
-    if (filesToCopy.length > 0) {
-      copyFilesToWorktree(cwd, worktreePath, filesToCopy);
-    }
-
-    return {
-      worktreePath,
-      branchName,
-      worktreeInfo: {
-        worktreePath,
-        branchName,
-        originalCwd: cwd,
-      },
-      cleanup: async () => {
-        removeWorktree(repoRoot, worktreePath);
-      },
-    };
-  } finally {
-    harness.dispose();
-  }
+    },
+  };
 }
 
 // ─── generateCommitMessage ───────────────────────────────────────────────────
@@ -122,6 +123,21 @@ export async function generateCommitMessage(
 }
 
 // ─── resolveConflictsWithAgent ───────────────────────────────────────────────
+//
+// Resolves merge conflicts by delegating to the shared, self-verifying tooled
+// fix-up primitive (`runTooledFixup`). That primitive spawns its own agent
+// session with write/edit/bash tools, hands it the full conflict context for
+// ALL conflicted files at once, and self-verifies with `tsc --noEmit` +
+// `eslint` before reporting success — retrying up to `maxAttempts` times.
+//
+// This fixes every weakness of the previous `promptForStructured`-based loop:
+//   1. Context-starved  -> real per-file content (with conflict markers) is fed in.
+//   2. One file at a time -> the whole conflict set is resolved in ONE session.
+//   3. No verification  -> `runTooledFixup` runs tsc + eslint after each turn.
+//   4. stageAll sweeps  -> only `stageFiles(repoRoot, conflicts)` is staged.
+//   5. Silent writeFileSync catch -> the agent edits files directly via tools.
+//   6. No size cap      -> the conflict context is capped at 8000 chars.
+//   7. Single-shot      -> a retry budget of 3 attempts is requested.
 
 export async function resolveConflictsWithAgent(
   profilesDirs: string[],
@@ -129,43 +145,53 @@ export async function resolveConflictsWithAgent(
   conflicts: string[],
   taskPrompt: string,
   apiKeys?: Record<string, string>,
-): Promise<boolean> {
+): Promise<{ resolved: boolean; error?: string }> {
   if (conflicts.length === 0) {
-    return true;
+    return { resolved: true };
   }
 
-  const profile = await loadWorkerProfile(profilesDirs);
-  const harness = await createHarness({ profile, cwd: repoRoot, apiKeys });
-
-  try {
-    for (const conflict of conflicts) {
-      let fileContent: string;
-      try {
-        fileContent = readFileSync(join(repoRoot, conflict), 'utf-8');
-      } catch {
-        fileContent = '';
-      }
-
-      const { result } = await promptForStructured(
-        harness.session,
-        `Resolve the merge conflict in the following file.\n\nTask: ${taskPrompt}\n\nFile: ${conflict}\n\nContent:\n${fileContent}`,
-        z.object({ resolvedContent: z.string() }),
-      );
-
-      try {
-        writeFileSync(join(repoRoot, conflict), result.resolvedContent, 'utf-8');
-      } catch {
-        // Write failed, but continue processing
-      }
+  // Build conflict context: read each conflicted file's current content (with
+  // conflict markers intact) so the agent sees both sides of every conflict.
+  // The whole set is concatenated and capped at MAX_CONTEXT chars.
+  const MAX_CONTEXT = 8000;
+  let conflictContext = '';
+  for (const conflict of conflicts) {
+    let fileContent: string;
+    try {
+      fileContent = readFileSync(join(repoRoot, conflict), 'utf-8');
+    } catch {
+      fileContent = '';
     }
 
-    stageAll(repoRoot);
-    return true;
-  } catch {
-    return false;
-  } finally {
-    harness.dispose();
+    conflictContext += `File: ${conflict}\n${fileContent}\n\n`;
+
+    if (conflictContext.length > MAX_CONTEXT) {
+      conflictContext = `${conflictContext.slice(0, MAX_CONTEXT)}... (truncated)`;
+      break;
+    }
   }
+
+  const errorContext = `Merge conflicts detected in the following files:\n\n${conflictContext}\n\nTask context: ${taskPrompt}`;
+
+  // Delegate the repair to the self-verifying tooled fix-up primitive, which
+  // edits the files directly via tools and retries up to maxAttempts times.
+  const fixupResult = await runTooledFixup({
+    profilesDirs,
+    worktreePath: repoRoot,
+    taskPrompt,
+    errorContext,
+    apiKeys,
+    maxAttempts: 3,
+  });
+
+  if (!fixupResult.success) {
+    return { resolved: false, ...(fixupResult.lastError ? { error: fixupResult.lastError } : {}) };
+  }
+
+  // Stage ONLY the conflicted files — never a sweeping `stageAll` that would
+  // also sweep up untracked / scratch files the agent may have produced.
+  stageFiles(repoRoot, conflicts);
+  return { resolved: true };
 }
 
 // ─── pushAndCreatePR ─────────────────────────────────────────────────────────
@@ -217,5 +243,7 @@ export interface WorktreeSetupResult {
   worktreePath: string;
   branchName: string;
   worktreeInfo: WorktreeInfo;
+  /** The WorktreeManager that owns the main worktree lifecycle. */
+  manager: WorktreeManager;
   cleanup: () => Promise<void>;
 }

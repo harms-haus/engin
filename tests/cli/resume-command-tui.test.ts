@@ -73,7 +73,7 @@ const mockCreateStoreCallbacks = mock<() => unknown>();
 const mockStartControlServer = mock<() => Promise<unknown>>();
 
 // Post-worktree spy
-const mockPromptPostWorktreeAction = mock<(options: Record<string, unknown>) => Promise<void>>();
+const mockPromptFinalMerge = mock<(options: Record<string, unknown>) => Promise<void>>();
 
 // Session selector spies
 const mockResolveSessionName = mock<(sessionName: string, cwd: string) => Promise<unknown>>();
@@ -230,7 +230,7 @@ mock.module('../../packages/cli/src/cli/session-selector.js', () => ({
 }));
 
 mock.module('../../packages/cli/src/cli/post-worktree.js', () => ({
-  promptPostWorktreeAction: mockPromptPostWorktreeAction,
+  promptFinalMerge: mockPromptFinalMerge,
 }));
 
 mock.module('../../packages/engine/src/core/config.js', () => ({
@@ -360,7 +360,6 @@ describe('resumeCommand — daemon-client integration (T27)', () => {
       cwd: overrides.cwd,
       maxConcurrent: 3,
       verbose: false,
-      worktree: false,
       apiKeys: overrides.apiKeys ?? {},
       warnings: [],
       host: overrides.host,
@@ -416,7 +415,7 @@ describe('resumeCommand — daemon-client integration (T27)', () => {
     mockEventStoreLoad.mockReset();
     mockCreateStoreCallbacks.mockReset();
     mockStartControlServer.mockReset();
-    mockPromptPostWorktreeAction.mockReset();
+    mockPromptFinalMerge.mockReset();
     mockResolveSessionName.mockReset();
     mockInteractiveSelectRun.mockReset();
     mockQueryActiveRuns.mockReset();
@@ -907,8 +906,8 @@ describe('resumeCommand — daemon-client integration (T27)', () => {
       expect(startRunMsg).toBeDefined();
     });
 
-    it('calls promptPostWorktreeAction after TUI pause resolves', async () => {
-      mockPromptPostWorktreeAction.mockResolvedValue(undefined);
+    it('calls promptFinalMerge after TUI pause resolves', async () => {
+      mockPromptFinalMerge.mockResolvedValue(undefined);
       const { make } = setupRun({ taskPrompt: 'resumed worktree task', worktree: mockWorktreeInfo });
 
       const cmd = resumeCommand(make());
@@ -917,7 +916,7 @@ describe('resumeCommand — daemon-client integration (T27)', () => {
         { type: 'run_complete', runId: 'r1' },
       ]);
 
-      expect(mockPromptPostWorktreeAction).toHaveBeenCalledTimes(1);
+      expect(mockPromptFinalMerge).toHaveBeenCalledTimes(1);
     });
 
     it('disconnects EngineClient during worktree resume teardown', async () => {
@@ -1018,7 +1017,6 @@ describe('resumeCommand — daemon-client integration (T27)', () => {
         cwd: tempDir,
         maxConcurrent: 3,
         verbose: false,
-        worktree: false,
         apiKeys: {},
         warnings: [],
       };
@@ -1088,7 +1086,6 @@ describe('resumeCommand — daemon-client integration (T27)', () => {
         cwd: tempDir,
         maxConcurrent: 3,
         verbose: false,
-        worktree: false,
         apiKeys: {},
         warnings: [],
       };

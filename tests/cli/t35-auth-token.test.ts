@@ -21,6 +21,10 @@ const realDaemon = Object.assign({}, await import('../../packages/engine/src/ser
 // so it can be restored in afterAll. Without this, the mock leaks into
 // tests/shared/engine-client.test.ts and breaks its MockWebSocket assertions.
 const realEngineClient = Object.assign({}, await import('@engin/shared/engine-client'));
+// git.js: the run-command non-git fallback prompt (added when --worktree was
+// removed) calls isGitRepo(cwd). Capture + override so runCommand does not
+// block on stdin here; the non-git branch is covered by run-command-non-git.test.ts.
+const realGit = Object.assign({}, await import('../../packages/engine/src/core/git.js'));
 
 // ─── T35 mocks ──────────────────────────────────────────────────────────────
 
@@ -30,6 +34,7 @@ const capturedEngineClientOpts: Array<{ url: string; authToken?: string }> = [];
 const mockReadServerToken = mock<() => Promise<string | null>>();
 const mockStartDaemon = mock<(opts: { port: number; host: string }) => Promise<{ pid: number; port: number }>>();
 const mockIsServerAlive = mock<(port: number) => Promise<boolean>>();
+const mockIsGitRepo = mock<(dir: string) => boolean>(() => true);
 
 // ─── Mock modules (hoisted before imports by Bun test runtime) ───────────────
 
@@ -42,6 +47,11 @@ mock.module('../../packages/engine/src/server/daemon.js', () => ({
   ...realDaemon,
   startDaemon: mockStartDaemon,
   isServerAlive: mockIsServerAlive,
+}));
+
+mock.module('../../packages/engine/src/core/git.js', () => ({
+  ...realGit,
+  isGitRepo: mockIsGitRepo,
 }));
 
 /**
@@ -97,6 +107,7 @@ afterAll(() => {
   mock.module('../../packages/engine/src/server/auth.js', () => realAuth);
   mock.module('../../packages/engine/src/server/daemon.js', () => realDaemon);
   mock.module('@engin/shared/engine-client', () => realEngineClient);
+  mock.module('../../packages/engine/src/core/git.js', () => realGit);
 });
 
 // ─── Test suite ──────────────────────────────────────────────────────────────
@@ -138,7 +149,6 @@ describe('T35: CLI reads server token for EngineClient auth', () => {
       cwd: '/tmp',
       maxConcurrent: 5,
       verbose: true, // disable TUI — shouldUseTui returns false
-      worktree: false,
       apiKeys: {},
       warnings: [],
       ...overrides,

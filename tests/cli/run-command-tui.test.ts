@@ -35,6 +35,7 @@ const realWorktreeLifecycle = Object.assign({}, await import('../../packages/eng
 const realSessionSelector = Object.assign({}, await import('../../packages/cli/src/cli/session-selector.js'));
 const realControlServer = Object.assign({}, await import('../../packages/engine/src/server/control-server.js'));
 const realStatusBridge = Object.assign({}, await import('../../packages/engine/src/server/status-bridge.js'));
+const realGit = Object.assign({}, await import('../../packages/engine/src/core/git.js'));
 
 // ─── Mock functions ──────────────────────────────────────────────────────
 
@@ -65,10 +66,15 @@ const mockCreateStoreCallbacks = mock<() => unknown>();
 const mockStartControlServer = mock<() => Promise<unknown>>();
 
 // Post-worktree spy
-const mockPromptPostWorktreeAction = mock<(options: Record<string, unknown>) => Promise<void>>();
+const mockPromptFinalMerge = mock<(options: Record<string, unknown>) => Promise<void>>();
 
 // Config spies
 const mockResolveProfilesDirs = mock<(cwd: string, workflowName?: string) => string[]>();
+
+// git probe: the run-command non-git fallback prompt (added when --worktree was
+// removed) calls isGitRepo(cwd). Default true so runCommand never blocks on
+// stdin. The non-git branch is covered by run-command-non-git.test.ts.
+const mockIsGitRepo = mock<(dir: string) => boolean>(() => true);
 
 // Capture constructor arguments / state
 let capturedTuiOptions: {
@@ -213,7 +219,12 @@ mock.module('../../packages/cli/src/cli/session-selector.js', () => ({
 }));
 
 mock.module('../../packages/cli/src/cli/post-worktree.js', () => ({
-  promptPostWorktreeAction: mockPromptPostWorktreeAction,
+  promptFinalMerge: mockPromptFinalMerge,
+}));
+
+mock.module('../../packages/engine/src/core/git.js', () => ({
+  ...realGit,
+  isGitRepo: mockIsGitRepo,
 }));
 
 // ─── Import SUT after mocks ──────────────────────────────────────────────
@@ -238,6 +249,7 @@ afterAll(() => {
   mock.module('../../packages/engine/src/core/worktree-lifecycle.js', () => realWorktreeLifecycle);
   mock.module('../../packages/cli/src/cli/session-selector.js', () => realSessionSelector);
   mock.module('../../packages/cli/src/cli/post-worktree.js', () => realPostWorktree);
+  mock.module('../../packages/engine/src/core/git.js', () => realGit);
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -254,7 +266,6 @@ function makeOptions(overrides: Record<string, unknown> = {}) {
     workDir: undefined as string | undefined,
     maxConcurrent: 3,
     verbose: false,
-    worktree: false,
     apiKeys: {},
     warnings: [],
     host: undefined,
@@ -323,7 +334,7 @@ describe('runCommand — daemon-client integration (T27)', () => {
     mockEventStoreLoad.mockReset();
     mockCreateStoreCallbacks.mockReset();
     mockStartControlServer.mockReset();
-    mockPromptPostWorktreeAction.mockReset();
+    mockPromptFinalMerge.mockReset();
     mockResolveProfilesDirs.mockReset();
 
     capturedTuiOptions = null;
@@ -910,19 +921,38 @@ describe('runCommand — daemon-client integration (T27)', () => {
   // ─── Worktree handling ─────────────────────────────────────────────────
 
   describe('worktree handling', () => {
-    it('calls promptPostWorktreeAction when worktree option is set', async () => {
-      mockPromptPostWorktreeAction.mockResolvedValue(undefined);
+    // With --worktree removed, the post-run final-merge prompt is driven by
+    // whether the run captured a worktree (from the run_started summary),
+    // NOT by a CLI flag.
+    it('calls promptFinalMerge when the run captures a worktree (from run_started summary)', async () => {
+      mockPromptFinalMerge.mockClear();
+      mockPromptFinalMerge.mockResolvedValue(undefined);
 
-      const cmd = runCommand(makeOptions({ worktree: true }));
+      const cmd = runCommand(makeOptions());
+      await deliverAndAwait(cmd, [
+        {
+          type: 'run_started',
+          runId: 'r1',
+          summary: makeRunSummary('r1', {
+            worktree: { worktreePath: '/tmp/wt-r1', branchName: 'engin/r1' },
+          }),
+        },
+        { type: 'run_complete', runId: 'r1' },
+      ]);
+
+      expect(mockPromptFinalMerge).toHaveBeenCalledTimes(1);
+    });
+
+    it('does NOT call promptFinalMerge when no worktree was captured (non-git run)', async () => {
+      mockPromptFinalMerge.mockClear();
+
+      const cmd = runCommand(makeOptions());
       await deliverAndAwait(cmd, [
         { type: 'run_started', runId: 'r1', summary: makeRunSummary('r1') },
         { type: 'run_complete', runId: 'r1' },
       ]);
 
-      // The command should have set up worktree handling.
-      // promptPostWorktreeAction may be called if the command resolves
-      // worktree info from the server response.
-      // (Exact behavior depends on implementation.)
+      expect(mockPromptFinalMerge).not.toHaveBeenCalled();
     });
   });
 

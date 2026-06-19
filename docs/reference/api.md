@@ -270,6 +270,40 @@ JSONL-backed audit log. `append`, `getEvents({ taskId?, type? })`, `getEventsByT
 `getStats`, `clear`. Results are cached in-memory (capped at 5000 events); the cache is
 invalidated on each `append`.
 
+## Worktree utilities
+
+### `WorktreeManager`
+
+The sole owner of main-worktree creation and the per-task worktree lifecycle.
+Constructor takes `WorktreeManagerOptions`; key methods: `setupMainWorktree()`,
+`createTaskWorktree(taskId, taskPrompt?)`, `mergeTaskBranch(taskId)`,
+`cullTaskWorktree(taskId)`, `finalMergeToMain()`,
+`resolveFinalMergeConflicts(conflicts, taskPrompt)`, `abortFinalMerge()`, `cleanup()`,
+`getWorktreeInfo()`. See [Types reference → Worktree types](types.md#worktree-types)
+and [Worktrees reference](worktrees.md) for the full method table and semantics.
+
+### `createLintValidationGate(worktreePath): () => Promise<{ error?: string } | undefined>`
+
+Returns a `validateOutput` callback for `runStepTask` / `runMultiStepTask`. Runs
+`eslint --fix` + `prettier --write` (fire-and-forget), then a final `eslint` check;
+returns `{ error }` when lint errors remain, else `undefined`. The argument is the
+directory to lint — bind it to the directory the agent actually writes to (see the
+caveat in [Building a new workflow](../guides/building-workflows.md#createLlintvalidationgate--the-primary-lint-defence)).
+
+### `runTooledFixup(opts: FixupOptions): Promise<FixupResult>`
+
+Shared, self-verifying, tooled fix-up agent (write/edit/bash enabled, sandboxed to
+the worktree). Drives free-form `session.prompt()`, self-verifies with `tsc --noEmit`
+
+- `eslint` after each turn, retries up to `maxAttempts` (default 3). Used by both
+  the hardened conflict resolver and the commit-failure safety net.
+
+### `generateTitleAndBranch(options): Promise<{ title, branchName }>`
+
+LLM-generates a workflow title and a kebab-case branch slug from the task prompt
+(schema: `TitleAndBranchSchema`); falls back deterministically on failure. Used by
+the run executor to derive the `engin/{mainSlug}` branch.
+
 ## Re-exports from dependencies
 
 From `@earendil-works/pi-coding-agent`: `AgentSession`, `SessionManager`,

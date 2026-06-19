@@ -1,112 +1,92 @@
-import { afterAll, afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
+// ─── Two-prompt final merge UX (replaces the 3-option prompt) ──────────────
+//
+// Test-first specification for the post-worktree.ts refactor described in
+// worktrees.prompt.md §8 flow step 5 and server-refactor.prompt.md §9.
+//
+// BEFORE this refactor:
+//   - `promptPostWorktreeAction` shows a 3-option menu (keep/merge/PR) and
+//     performs local git operations (checkout/merge/push/PR) via git.ts.
+//   - `commitInWorktree`, `handleMergeToMain`, `handlePushAndPR` live in the
+//     same module and call `@harms-haus/engin-engine` directly.
+//
+// AFTER this refactor:
+//   - `promptFinalMerge(options, createRl?)` drives a two-prompt, yes/No,
+//     human-in-the-loop final merge. It performs NO local git operations —
+//     it delegates every action to the server via `options.sendAction` and
+//     awaits each merge outcome via `options.waitForResult`.
+//   - The git handlers (`commitInWorktree`/`handleMergeToMain`/
+//     `handlePushAndPR`) and the `PostWorktreeAction`/`WorktreeDecision`
+//     types are removed.
+//   - `ReadlineQuestioner` is reused for both prompts.
+//
+// Flow under test:
+//   Prompt 1: "Merge into main? yes/No: "
+//     yes  → sendAction('merge') → waitForResult()
+//            outcome 'clean'|'resolved' → ✅ success (+cleanup warning)
+//            outcome 'conflicts'        → Prompt 2
+//            outcome 'failed'           → ⚠️ merge-failed preservation
+//            outcome 'declined'         → 📂 preservation (manual hint)
+//     No   → sendAction('decline') → 📂 preservation (no waitForResult)
+//
+//   Prompt 2 (only after 'conflicts'):
+//     "Conflicts exist on the merge. Should engin handle it? yes/No: "
+//     yes  → sendAction('resolve') → waitForResult() → handle 2nd result
+//     No   → sendAction('decline') → 📂 preservation (no 2nd waitForResult)
+//
+// STATUS: these tests are RED until the implement phase exports
+// `promptFinalMerge` (and the `FinalMergeOptions` / `WorktreeMergeResult`
+// types) from packages/cli/src/cli/post-worktree.ts. The protocol types
+// (`worktree_action { action: 'merge'|'resolve'|'decline' }` and
+// `worktree_merge_result`) already exist in packages/shared/protocol-types.ts.
 
-// ─── Capture real modules before mocking ────────────────────────────────────
-
-const realGit = Object.assign({}, await import('../../packages/engine/src/core/git.js'));
-const realWorktreeLifecycle = Object.assign({}, await import('../../packages/engine/src/core/worktree-lifecycle.js'));
-
-// ─── Mock functions for git ─────────────────────────────────────────────────
-
-const mockGetRepoRoot = mock((_dir: string): string => '/fake/repo');
-const mockGetMainBranch = mock((_dir: string): string => 'main');
-const mockGetCurrentBranch = mock((_dir: string): string => 'feature-branch');
-const mockCheckoutBranch = mock((_repoRoot: string, _branch: string): void => {});
-const mockMergeBranch = mock(
-  (_repoRoot: string, _branch: string): { success: true } | { success: false; conflicts: string[] } => ({
-    success: true,
-  }),
-);
-const mockAbortMerge = mock((_repoRoot: string): void => {});
-const mockRemoveWorktree = mock((_repoRoot: string, _worktreePath: string): void => {});
-const mockStageAll = mock((_dir: string): void => {});
-const mockCommitChanges = mock((_dir: string, _message: string): void => {});
-const mockGetDiff = mock((_dir: string): string => 'diff content');
-
-const mockGenerateCommitMessage = mock(
-  async (
-    _profilesDirs: string[],
-    _worktreePath: string,
-    _taskPrompt: string,
-    _diff: string,
-    _apiKeys?: Record<string, string>,
-  ): Promise<string> => 'feat: implement feature',
-);
-const mockResolveConflictsWithAgent = mock(
-  async (
-    _profilesDirs: string[],
-    _repoRoot: string,
-    _conflicts: string[],
-    _taskPrompt: string,
-    _apiKeys?: Record<string, string>,
-  ): Promise<boolean> => true,
-);
-const mockPushAndCreatePR = mock(
-  async (
-    _profilesDirs: string[],
-    _repoRoot: string,
-    _branchName: string,
-    _taskPrompt: string,
-    _title: string,
-    _apiKeys?: Record<string, string>,
-  ): Promise<void> => {},
-);
-
-// ─── Mock modules ────────────────────────────────────────────────────────────
-
-mock.module('../../packages/engine/src/core/git.js', () => ({
-  getRepoRoot: mockGetRepoRoot,
-  getMainBranch: mockGetMainBranch,
-  getCurrentBranch: mockGetCurrentBranch,
-  checkoutBranch: mockCheckoutBranch,
-  mergeBranch: mockMergeBranch,
-  abortMerge: mockAbortMerge,
-  removeWorktree: mockRemoveWorktree,
-  stageAll: mockStageAll,
-  commitChanges: mockCommitChanges,
-  getDiff: mockGetDiff,
-}));
-
-mock.module('../../packages/engine/src/core/worktree-lifecycle.js', () => ({
-  generateCommitMessage: mockGenerateCommitMessage,
-  resolveConflictsWithAgent: mockResolveConflictsWithAgent,
-  pushAndCreatePR: mockPushAndCreatePR,
-}));
+import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 
 // ─── Import SUT after mocks ──────────────────────────────────────────────────
+//
+// NOTE: these names do not exist in the source yet (write-tests phase). The
+// module will fail to load with "Export named 'promptFinalMerge' not found"
+// until the implement phase adds them. This is the expected RED state.
 
 import {
-  type PostWorktreeAction,
-  type PostWorktreeOptions,
+  type FinalMergeOptions,
   type ReadlineQuestioner,
-  commitInWorktree,
-  handleMergeToMain,
-  handlePushAndPR,
-  promptPostWorktreeAction,
+  type WorktreeMergeResult,
+  promptFinalMerge,
 } from '../../packages/cli/src/cli/post-worktree.js';
-
-// ─── Restore original modules ────────────────────────────────────────────────
-
-afterAll(() => {
-  mock.module('../../packages/engine/src/core/git.js', () => realGit);
-  mock.module('../../packages/engine/src/core/worktree-lifecycle.js', () => realWorktreeLifecycle);
-});
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-function makeOptions(overrides?: Partial<PostWorktreeOptions>): PostWorktreeOptions {
+/** Build a minimal, valid FinalMergeOptions with overridable fields. */
+function makeOptions(overrides?: Partial<FinalMergeOptions>): FinalMergeOptions {
   return {
-    profilesDirs: ['/profiles'],
-    repoRoot: '/fake/repo',
-    worktreePath: '/fake/repo/.git/worktrees/feature-branch',
-    branchName: 'feature-branch',
-    originalCwd: '/fake/repo',
+    worktreePath: '/fake/repo/.engin/work/run-1/worktree',
+    branchName: 'engin/run-1',
     taskPrompt: 'Implement the login feature',
+    runId: 'run-1',
+    sendAction: mock<(action: 'merge' | 'resolve' | 'decline') => Promise<void>>(async () => {}),
+    waitForResult: makeWaitForResult([{ outcome: 'clean' }]),
     ...overrides,
   };
 }
 
 /**
- * Create a mock ReadlineQuestioner that captures question callbacks.
+ * Build a `waitForResult` mock that returns the supplied results in order.
+ * Throws if the queue is exhausted (a test bug — the impl called it more
+ * times than expected).
+ */
+function makeWaitForResult(results: WorktreeMergeResult[]) {
+  const queue = [...results];
+  return mock(async (): Promise<WorktreeMergeResult> => {
+    if (queue.length === 0) {
+      throw new Error('makeWaitForResult: result queue exhausted');
+    }
+    return queue.shift()!;
+  });
+}
+
+/**
+ * A mock `ReadlineQuestioner` that captures the most-recently-asked
+ * question's callback so a test can deliver an answer via `_answer(...)`.
  */
 function createMockReadline(): ReadlineQuestioner & {
   _answer: (answer: string) => void;
@@ -114,6 +94,7 @@ function createMockReadline(): ReadlineQuestioner & {
   _question: ReturnType<typeof mock>;
 } {
   let pendingCallback: ((answer: string) => void) | null = null;
+  let closeListener: (() => void) | null = null;
 
   const rl = {
     _close: mock(() => {}),
@@ -130,42 +111,39 @@ function createMockReadline(): ReadlineQuestioner & {
     question(_prompt: string, callback: (answer: string) => void) {
       rl._question(_prompt, callback);
     },
+    on(event: 'close', listener: () => void) {
+      if (event === 'close') {
+        closeListener = listener;
+      }
+    },
     close() {
       rl._close();
+      // Real readline emits 'close' on stdin EOF or an explicit close().
+      // Simulate that so the SUT's close guard is exercisable in tests.
+      if (closeListener) {
+        const listener = closeListener;
+        closeListener = null;
+        listener();
+      }
     },
   };
   return rl;
 }
 
-// ─── Reset mocks ─────────────────────────────────────────────────────────────
-
-function resetMocks() {
-  mock.clearAllMocks();
-  mockGetRepoRoot.mockReturnValue('/fake/repo');
-  mockGetMainBranch.mockReturnValue('main');
-  mockGetCurrentBranch.mockReturnValue('feature-branch');
-  mockGetDiff.mockReturnValue('diff content');
-  mockGenerateCommitMessage.mockResolvedValue('feat: implement feature');
-  mockResolveConflictsWithAgent.mockResolvedValue(true);
-  mockPushAndCreatePR.mockResolvedValue(undefined);
-  // Bun's clearAllMocks() only clears call history — implementations set via
-  // mockImplementation/mockReturnValue persist. Re-establish safe defaults so
-  // a throwing implementation set by one test cannot leak into the next.
-  mockCheckoutBranch.mockImplementation(() => {});
-  mockMergeBranch.mockReturnValue({ success: true });
-  mockRemoveWorktree.mockImplementation(() => {});
+/** Flush the microtask queue once so async continuations in the SUT settle. */
+function flushMicrotasks(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// promptPostWorktreeAction
+// promptFinalMerge
 // ═══════════════════════════════════════════════════════════════════════════════
 
-describe('promptPostWorktreeAction', () => {
+describe('promptFinalMerge', () => {
   let logSpy: ReturnType<typeof mock>;
   let originalLog: typeof console.log;
 
   beforeEach(() => {
-    resetMocks();
     originalLog = console.log;
     logSpy = mock((..._args: unknown[]) => {});
     console.log = logSpy as unknown as typeof console.log;
@@ -173,1006 +151,839 @@ describe('promptPostWorktreeAction', () => {
 
   afterEach(() => {
     console.log = originalLog;
-    // Clean up any leftover SIGINT handlers
+    // Clean up any leftover SIGINT handlers registered by the SUT.
     const listeners = process.listeners('SIGINT');
-    for (const l of listeners) process.removeListener('SIGINT', l as any);
+    for (const l of listeners) process.removeListener('SIGINT', l as (...args: unknown[]) => void);
   });
 
-  // ─── Menu display ────────────────────────────────────────────────────────
+  /** Join every console.log call into one string for substring assertions. */
+  function logOutput(): string {
+    return logSpy.mock.calls.map((c) => c.join(' ')).join('\n');
+  }
 
-  it('prints the menu with all three options', async () => {
+  // ─── Prompt 1 presentation ───────────────────────────────────────────────
+
+  it('Prompt 1 asks "Merge into main?" with a yes/No (default-No) affordance', async () => {
     const rl = createMockReadline();
-    const promise = promptPostWorktreeAction(makeOptions(), () => rl);
-    await new Promise((r) => setTimeout(r, 0));
-    rl._answer('1');
+    const promise = promptFinalMerge(makeOptions(), () => rl);
+    await flushMicrotasks();
+
+    expect(rl._question).toHaveBeenCalledTimes(1);
+    const promptText = rl._question.mock.calls[0][0] as string;
+    expect(promptText).toMatch(/merge into main/i);
+    // Capital "N" in "yes/No" advertises that No is the default.
+    expect(promptText).toContain('yes/No');
+
+    rl._answer('No');
+    await promise;
+  });
+
+  // ─── Prompt 1 yes → merge → clean/resolved → success ─────────────────────
+
+  it('Prompt 1 "yes" sends "merge", waits for a result, and a "clean" result prints success', async () => {
+    const sendAction = mock<(action: 'merge' | 'resolve' | 'decline') => Promise<void>>(async () => {});
+    const waitForResult = makeWaitForResult([{ outcome: 'clean' }]);
+    const rl = createMockReadline();
+
+    const promise = promptFinalMerge(makeOptions({ sendAction, waitForResult }), () => rl);
+    await flushMicrotasks();
+    rl._answer('yes');
     await promise;
 
-    const logOutput = logSpy.mock.calls.map((c) => c.join(' ')).join('\n');
-    expect(logOutput).toContain('Workflow completed in worktree');
-    expect(logOutput).toContain('Do nothing (keep worktree)');
-    expect(logOutput).toContain('Merge to main');
-    expect(logOutput).toContain('Push and create pull request');
+    expect(sendAction).toHaveBeenCalledTimes(1);
+    expect(sendAction).toHaveBeenCalledWith('merge');
+    expect(waitForResult).toHaveBeenCalledTimes(1);
+
+    const out = logOutput();
+    expect(out).toContain('✅');
+    expect(out).toMatch(/merged into main/i);
   });
 
-  it('prompts with "Choose (1-3): "', async () => {
-    const rl = createMockReadline();
-    const promise = promptPostWorktreeAction(makeOptions(), () => rl);
-    await new Promise((r) => setTimeout(r, 0));
-    rl._answer('1');
-    await promise;
-
-    expect(rl._question).toHaveBeenCalledWith(expect.stringContaining('Choose (1-3)'), expect.any(Function));
-  });
-
-  // ─── Option 1: Do nothing ────────────────────────────────────────────────
-
-  it('option 1 prints worktree preserved message with path', async () => {
-    const rl = createMockReadline();
-    const options = makeOptions({ worktreePath: '/tmp/worktree-test' });
-    const promise = promptPostWorktreeAction(options, () => rl);
-    await new Promise((r) => setTimeout(r, 0));
-    rl._answer('1');
-    await promise;
-
-    const logOutput = logSpy.mock.calls.map((c) => c.join(' ')).join('\n');
-    expect(logOutput).toContain('Worktree preserved');
-    expect(logOutput).toContain('/tmp/worktree-test');
-  });
-
-  it('option 1 does not call any git operations', async () => {
-    const rl = createMockReadline();
-    const promise = promptPostWorktreeAction(makeOptions(), () => rl);
-    await new Promise((r) => setTimeout(r, 0));
-    rl._answer('1');
-    await promise;
-
-    expect(mockCheckoutBranch).not.toHaveBeenCalled();
-    expect(mockMergeBranch).not.toHaveBeenCalled();
-    expect(mockRemoveWorktree).not.toHaveBeenCalled();
-    expect(mockPushAndCreatePR).not.toHaveBeenCalled();
-  });
-
-  // ─── Option 2: Merge to main ─────────────────────────────────────────────
-
-  it('option 2 commits changes in worktree when diff is non-empty', async () => {
-    mockGetDiff.mockReturnValue('some diff content');
-    const rl = createMockReadline();
-    const promise = promptPostWorktreeAction(makeOptions(), () => rl);
-    await new Promise((r) => setTimeout(r, 0));
-    rl._answer('2');
-    await promise;
-
-    expect(mockGetDiff).toHaveBeenCalledWith('/fake/repo/.git/worktrees/feature-branch');
-    expect(mockStageAll).toHaveBeenCalledWith('/fake/repo/.git/worktrees/feature-branch');
-    expect(mockGenerateCommitMessage).toHaveBeenCalled();
-    expect(mockCommitChanges).toHaveBeenCalledWith(
-      '/fake/repo/.git/worktrees/feature-branch',
-      'feat: implement feature',
-    );
-  });
-
-  it('option 2 skips commit when diff is empty', async () => {
-    mockGetDiff.mockReturnValue('');
-    const rl = createMockReadline();
-    const promise = promptPostWorktreeAction(makeOptions(), () => rl);
-    await new Promise((r) => setTimeout(r, 0));
-    rl._answer('2');
-    await promise;
-
-    expect(mockGetDiff).toHaveBeenCalled();
-    expect(mockStageAll).not.toHaveBeenCalled();
-    expect(mockGenerateCommitMessage).not.toHaveBeenCalled();
-    expect(mockCommitChanges).not.toHaveBeenCalled();
-  });
-
-  it('option 2 checks out main branch and merges', async () => {
-    mockGetMainBranch.mockReturnValue('main');
-    const rl = createMockReadline();
-    const promise = promptPostWorktreeAction(makeOptions(), () => rl);
-    await new Promise((r) => setTimeout(r, 0));
-    rl._answer('2');
-    await promise;
-
-    expect(mockGetMainBranch).toHaveBeenCalledWith('/fake/repo');
-    expect(mockCheckoutBranch).toHaveBeenCalledWith('/fake/repo', 'main');
-    expect(mockMergeBranch).toHaveBeenCalledWith('/fake/repo', 'feature-branch');
-  });
-
-  it('option 2 on clean merge prints success message', async () => {
-    mockMergeBranch.mockReturnValue({ success: true });
-    mockGetMainBranch.mockReturnValue('main');
-    const rl = createMockReadline();
-    const promise = promptPostWorktreeAction(makeOptions({ branchName: 'my-feature' }), () => rl);
-    await new Promise((r) => setTimeout(r, 0));
-    rl._answer('2');
-    await promise;
-
-    const logOutput = logSpy.mock.calls.map((c) => c.join(' ')).join('\n');
-    expect(logOutput).toContain('my-feature');
-    expect(logOutput).toContain('main');
-  });
-
-  it('option 2 restores saved branch after merge', async () => {
-    mockGetCurrentBranch.mockReturnValue('previous-branch');
-    mockMergeBranch.mockReturnValue({ success: true });
-    const rl = createMockReadline();
-    const promise = promptPostWorktreeAction(makeOptions(), () => rl);
-    await new Promise((r) => setTimeout(r, 0));
-    rl._answer('2');
-    await promise;
-
-    // After merge, should try to restore the previously saved branch
-    expect(mockCheckoutBranch).toHaveBeenCalledWith('/fake/repo', 'previous-branch');
-  });
-
-  it('option 2 ignores errors when restoring branch (detached HEAD)', async () => {
-    mockGetCurrentBranch.mockReturnValue('previous-branch');
-    mockMergeBranch.mockReturnValue({ success: true });
-    // checkout main succeeds, restore previous branch fails
-    mockCheckoutBranch
-      .mockImplementationOnce(() => {}) // checkout main
-      .mockImplementationOnce(() => {
-        throw new Error('detached HEAD');
-      }); // restore previous branch
-
-    const rl = createMockReadline();
-    const promise = promptPostWorktreeAction(makeOptions(), () => rl);
-    await new Promise((r) => setTimeout(r, 0));
-    rl._answer('2');
-
-    // Should not throw
-    await expect(promise).resolves.toBeUndefined();
-  });
-
-  it('option 2 tries to remove worktree after successful merge', async () => {
-    mockMergeBranch.mockReturnValue({ success: true });
-    const rl = createMockReadline();
-    const promise = promptPostWorktreeAction(makeOptions(), () => rl);
-    await new Promise((r) => setTimeout(r, 0));
-    rl._answer('2');
-    await promise;
-
-    expect(mockRemoveWorktree).toHaveBeenCalledWith('/fake/repo', '/fake/repo/.git/worktrees/feature-branch');
-  });
-
-  it('option 2 prints warning when worktree removal fails', async () => {
-    mockMergeBranch.mockReturnValue({ success: true });
-    mockRemoveWorktree.mockImplementation(() => {
-      throw new Error('worktree busy');
+  it('calls sendAction("merge") BEFORE waitForResult() (action precedes result)', async () => {
+    const order: string[] = [];
+    const sendAction = mock<(action: 'merge' | 'resolve' | 'decline') => Promise<void>>(async (action) => {
+      order.push(`action:${action}`);
+    });
+    const waitForResult = mock(async (): Promise<WorktreeMergeResult> => {
+      order.push('result');
+      return { outcome: 'clean' };
     });
     const rl = createMockReadline();
-    const promise = promptPostWorktreeAction(makeOptions(), () => rl);
-    await new Promise((r) => setTimeout(r, 0));
-    rl._answer('2');
+
+    const promise = promptFinalMerge(makeOptions({ sendAction, waitForResult }), () => rl);
+    await flushMicrotasks();
+    rl._answer('yes');
     await promise;
 
-    const logOutput = logSpy.mock.calls.map((c) => c.join(' ')).join('\n');
-    expect(logOutput).toMatch(/warning/i);
+    expect(order).toEqual(['action:merge', 'result']);
   });
 
-  // ─── Option 2: Merge conflicts ───────────────────────────────────────────
-
-  it('option 2 resolves conflicts with agent when merge has conflicts', async () => {
-    mockMergeBranch.mockReturnValue({ success: false, conflicts: ['file1.ts', 'file2.ts'] });
-    mockResolveConflictsWithAgent.mockResolvedValue(true);
+  it('a "resolved" result prints the success message', async () => {
+    const waitForResult = makeWaitForResult([{ outcome: 'resolved' }]);
     const rl = createMockReadline();
-    const promise = promptPostWorktreeAction(makeOptions(), () => rl);
-    await new Promise((r) => setTimeout(r, 0));
-    rl._answer('2');
+
+    const promise = promptFinalMerge(makeOptions({ waitForResult }), () => rl);
+    await flushMicrotasks();
+    rl._answer('yes');
     await promise;
 
-    expect(mockResolveConflictsWithAgent).toHaveBeenCalled();
+    expect(logOutput()).toMatch(/merged into main/i);
   });
 
-  it('option 2 commits with merge resolution message after successful conflict resolution', async () => {
-    mockMergeBranch.mockReturnValue({ success: false, conflicts: ['file1.ts'] });
-    mockResolveConflictsWithAgent.mockResolvedValue(true);
+  it('prints a cleanup warning (with the cleanupError) when a clean result carries one', async () => {
+    const waitForResult = makeWaitForResult([
+      { outcome: 'clean', cleanupError: 'permission denied removing worktree dir' },
+    ]);
     const rl = createMockReadline();
-    const promise = promptPostWorktreeAction(makeOptions(), () => rl);
-    await new Promise((r) => setTimeout(r, 0));
-    rl._answer('2');
+
+    const promise = promptFinalMerge(makeOptions({ waitForResult }), () => rl);
+    await flushMicrotasks();
+    rl._answer('yes');
     await promise;
 
-    // After resolving conflicts, should commit with a merge resolution message
-    const commitCalls = mockCommitChanges.mock.calls;
-    const lastCommit = commitCalls[commitCalls.length - 1];
-    expect(lastCommit).toBeDefined();
-    expect(lastCommit[1]).toMatch(/merge/i);
+    const out = logOutput();
+    // Merge still succeeded.
+    expect(out).toMatch(/merged into main/i);
+    // ...and the best-effort cleanup failure is surfaced to the user.
+    expect(out).toContain('⚠️');
+    expect(out).toContain('permission denied removing worktree dir');
   });
 
-  it('option 2 aborts merge and warns when conflict resolution fails', async () => {
-    mockMergeBranch.mockReturnValue({ success: false, conflicts: ['file1.ts'] });
-    mockResolveConflictsWithAgent.mockResolvedValue(false);
+  // ─── Prompt 1 yes → merge → failed / declined → preservation ─────────────
+
+  it('a "failed" result prints merge-failed preservation with worktree + branch', async () => {
+    const waitForResult = makeWaitForResult([
+      { outcome: 'failed', worktreePath: '/wt/failed', branchName: 'engin/broken' },
+    ]);
     const rl = createMockReadline();
-    const promise = promptPostWorktreeAction(makeOptions(), () => rl);
-    await new Promise((r) => setTimeout(r, 0));
-    rl._answer('2');
-    await promise;
 
-    expect(mockAbortMerge).toHaveBeenCalledWith('/fake/repo');
-    const logOutput = logSpy.mock.calls.map((c) => c.join(' ')).join('\n');
-    expect(logOutput).toMatch(/conflict/i);
-    expect(logOutput).toMatch(/could not be resolved/i);
-  });
-
-  it('option 2 preserves worktree when conflicts cannot be resolved', async () => {
-    mockMergeBranch.mockReturnValue({ success: false, conflicts: ['file1.ts'] });
-    mockResolveConflictsWithAgent.mockResolvedValue(false);
-    const rl = createMockReadline();
-    const promise = promptPostWorktreeAction(makeOptions(), () => rl);
-    await new Promise((r) => setTimeout(r, 0));
-    rl._answer('2');
-    await promise;
-
-    // Should NOT remove worktree when conflict resolution fails
-    expect(mockRemoveWorktree).not.toHaveBeenCalled();
-    const logOutput = logSpy.mock.calls.map((c) => c.join(' ')).join('\n');
-    expect(logOutput).toMatch(/preserved/i);
-  });
-
-  // ─── Option 3: Push and create PR ─────────────────────────────────────────
-
-  it('option 3 commits changes in worktree when diff is non-empty', async () => {
-    mockGetDiff.mockReturnValue('some diff content');
-    const rl = createMockReadline();
-    const promise = promptPostWorktreeAction(makeOptions(), () => rl);
-    await new Promise((r) => setTimeout(r, 0));
-    rl._answer('3');
-    await promise;
-
-    expect(mockGetDiff).toHaveBeenCalledWith('/fake/repo/.git/worktrees/feature-branch');
-    expect(mockStageAll).toHaveBeenCalledWith('/fake/repo/.git/worktrees/feature-branch');
-    expect(mockGenerateCommitMessage).toHaveBeenCalled();
-    expect(mockCommitChanges).toHaveBeenCalled();
-  });
-
-  it('option 3 skips commit when diff is empty', async () => {
-    mockGetDiff.mockReturnValue('');
-    const rl = createMockReadline();
-    const promise = promptPostWorktreeAction(makeOptions(), () => rl);
-    await new Promise((r) => setTimeout(r, 0));
-    rl._answer('3');
-    await promise;
-
-    expect(mockStageAll).not.toHaveBeenCalled();
-    expect(mockCommitChanges).not.toHaveBeenCalled();
-  });
-
-  it('option 3 derives title from task prompt', async () => {
-    const rl = createMockReadline();
-    const options = makeOptions({ taskPrompt: 'Implement the login feature' });
-    const promise = promptPostWorktreeAction(options, () => rl);
-    await new Promise((r) => setTimeout(r, 0));
-    rl._answer('3');
-    await promise;
-
-    const callArgs = mockPushAndCreatePR.mock.calls[0];
-    const title = callArgs[4] as string;
-    expect(title).toBe('Implement the login feature');
-  });
-
-  it('option 3 truncates long task prompt title to 57 chars with ellipsis', async () => {
-    const longPrompt = 'A'.repeat(100);
-    const rl = createMockReadline();
-    const options = makeOptions({ taskPrompt: longPrompt });
-    const promise = promptPostWorktreeAction(options, () => rl);
-    await new Promise((r) => setTimeout(r, 0));
-    rl._answer('3');
-    await promise;
-
-    const titleArg = mockPushAndCreatePR.mock.calls[0][4] as string;
-    // Title should be truncated: 57 chars + "..." = 60 chars total
-    expect(titleArg.length).toBeLessThanOrEqual(60);
-    expect(titleArg).toMatch(/\.\.\.$/);
-    expect(titleArg.length).toBe(60); // 57 + 3 for ellipsis
-  });
-
-  it('option 3 does not truncate short task prompt', async () => {
-    const shortPrompt = 'Fix the bug';
-    const rl = createMockReadline();
-    const options = makeOptions({ taskPrompt: shortPrompt });
-    const promise = promptPostWorktreeAction(options, () => rl);
-    await new Promise((r) => setTimeout(r, 0));
-    rl._answer('3');
-    await promise;
-
-    const titleArg = mockPushAndCreatePR.mock.calls[0][4] as string;
-    expect(titleArg).toBe(shortPrompt);
-    expect(titleArg).not.toContain('...');
-  });
-
-  it('option 3 passes apiKeys to pushAndCreatePR', async () => {
-    const rl = createMockReadline();
-    const options = makeOptions({ apiKeys: { openai: 'sk-test' } });
-    const promise = promptPostWorktreeAction(options, () => rl);
-    await new Promise((r) => setTimeout(r, 0));
-    rl._answer('3');
-    await promise;
-
-    expect(mockPushAndCreatePR).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.anything(),
-      expect.anything(),
-      expect.anything(),
-      expect.anything(),
-      expect.objectContaining({ openai: 'sk-test' }),
+    const promise = promptFinalMerge(
+      makeOptions({ worktreePath: '/wt/failed', branchName: 'engin/broken', waitForResult }),
+      () => rl,
     );
-  });
-
-  it('option 3 tries to remove worktree after PR creation', async () => {
-    const rl = createMockReadline();
-    const options = makeOptions({ worktreePath: '/fake/repo/.git/worktrees/pr-branch' });
-    const promise = promptPostWorktreeAction(options, () => rl);
-    await new Promise((r) => setTimeout(r, 0));
-    rl._answer('3');
+    await flushMicrotasks();
+    rl._answer('yes');
     await promise;
 
-    expect(mockRemoveWorktree).toHaveBeenCalledWith('/fake/repo', '/fake/repo/.git/worktrees/pr-branch');
+    const out = logOutput();
+    expect(out).toContain('⚠️');
+    expect(out).toMatch(/merge failed/i);
+    expect(out).toContain('/wt/failed');
+    expect(out).toContain('engin/broken');
   });
 
-  it('option 3 prints warning when worktree removal fails', async () => {
-    mockRemoveWorktree.mockImplementation(() => {
-      throw new Error('worktree in use');
-    });
+  it('a "failed" result with an error reason surfaces it in the merge-failed message', async () => {
+    const waitForResult = makeWaitForResult([
+      {
+        outcome: 'failed',
+        worktreePath: '/wt/failed',
+        branchName: 'engin/broken',
+        error: 'agent could not resolve conflicts',
+      },
+    ]);
     const rl = createMockReadline();
-    const promise = promptPostWorktreeAction(makeOptions(), () => rl);
-    await new Promise((r) => setTimeout(r, 0));
-    rl._answer('3');
+
+    const promise = promptFinalMerge(
+      makeOptions({ worktreePath: '/wt/failed', branchName: 'engin/broken', waitForResult }),
+      () => rl,
+    );
+    await flushMicrotasks();
+    rl._answer('yes');
     await promise;
 
-    const logOutput = logSpy.mock.calls.map((c) => c.join(' ')).join('\n');
-    expect(logOutput).toMatch(/warning/i);
+    const out = logOutput();
+    expect(out).toMatch(/merge failed: agent could not resolve conflicts/i);
+    // The re-attach hint is always present.
+    expect(out).toMatch(/engin resume run-1/);
   });
 
-  it('option 3 prints success message after PR creation', async () => {
+  it('a "declined" result prints preservation with a manual-merge hint', async () => {
+    const waitForResult = makeWaitForResult([
+      { outcome: 'declined', worktreePath: '/wt/declined', branchName: 'engin/declined' },
+    ]);
     const rl = createMockReadline();
-    const promise = promptPostWorktreeAction(makeOptions(), () => rl);
-    await new Promise((r) => setTimeout(r, 0));
-    rl._answer('3');
+
+    const promise = promptFinalMerge(
+      makeOptions({ worktreePath: '/wt/declined', branchName: 'engin/declined', waitForResult }),
+      () => rl,
+    );
+    await flushMicrotasks();
+    rl._answer('yes');
     await promise;
 
-    const logOutput = logSpy.mock.calls.map((c) => c.join(' ')).join('\n');
-    expect(logOutput).toMatch(/success/i);
+    const out = logOutput();
+    expect(out).toMatch(/preserved/i);
+    expect(out).toContain('/wt/declined');
+    expect(out).toContain('engin/declined');
+    expect(out).toMatch(/manual/i);
   });
 
-  // ─── Input validation ────────────────────────────────────────────────────
+  // ─── Prompt 1 yes → conflicts → Prompt 2 ─────────────────────────────────
 
-  it('re-prompts on invalid input then accepts valid input', async () => {
+  it('conflicts → Prompt 2 "yes" sends "resolve", and a "resolved" result prints success', async () => {
+    const sendAction = mock<(action: 'merge' | 'resolve' | 'decline') => Promise<void>>(async () => {});
+    const waitForResult = makeWaitForResult([{ outcome: 'conflicts' }, { outcome: 'resolved' }]);
     const rl = createMockReadline();
-    const promise = promptPostWorktreeAction(makeOptions(), () => rl);
-    await new Promise((r) => setTimeout(r, 0));
 
-    // First invalid answer
-    rl._answer('abc');
-    await new Promise((r) => setTimeout(r, 0));
+    const promise = promptFinalMerge(makeOptions({ sendAction, waitForResult }), () => rl);
+    await flushMicrotasks();
+    rl._answer('yes'); // Prompt 1
+    await flushMicrotasks();
 
-    // Second valid answer
-    rl._answer('1');
-    await promise;
-
+    // The conflicts outcome must have triggered Prompt 2.
     expect(rl._question).toHaveBeenCalledTimes(2);
-  });
+    const prompt2 = rl._question.mock.calls[1][0] as string;
+    expect(prompt2).toMatch(/conflict/i);
+    expect(prompt2).toMatch(/handle/i);
+    expect(prompt2).toContain('yes/No');
 
-  it('re-prompts on out-of-range input (4)', async () => {
-    const rl = createMockReadline();
-    const promise = promptPostWorktreeAction(makeOptions(), () => rl);
-    await new Promise((r) => setTimeout(r, 0));
-
-    rl._answer('4');
-    await new Promise((r) => setTimeout(r, 0));
-
-    rl._answer('1');
+    rl._answer('yes'); // Prompt 2
     await promise;
 
-    expect(rl._question).toHaveBeenCalledTimes(2);
+    expect(sendAction).toHaveBeenCalledWith('merge');
+    expect(sendAction).toHaveBeenCalledWith('resolve');
+    expect(sendAction).toHaveBeenCalledTimes(2);
+    expect(waitForResult).toHaveBeenCalledTimes(2);
+    expect(logOutput()).toMatch(/merged into main/i);
   });
 
-  it('re-prompts on zero input', async () => {
+  it('conflicts → Prompt 2 "yes" → resolve → "clean" also prints success', async () => {
+    const sendAction = mock<(action: 'merge' | 'resolve' | 'decline') => Promise<void>>(async () => {});
+    const waitForResult = makeWaitForResult([{ outcome: 'conflicts' }, { outcome: 'clean' }]);
     const rl = createMockReadline();
-    const promise = promptPostWorktreeAction(makeOptions(), () => rl);
-    await new Promise((r) => setTimeout(r, 0));
 
-    rl._answer('0');
-    await new Promise((r) => setTimeout(r, 0));
-
-    rl._answer('1');
+    const promise = promptFinalMerge(makeOptions({ sendAction, waitForResult }), () => rl);
+    await flushMicrotasks();
+    rl._answer('yes');
+    await flushMicrotasks();
+    rl._answer('yes');
     await promise;
 
-    expect(rl._question).toHaveBeenCalledTimes(2);
+    expect(sendAction).toHaveBeenCalledWith('resolve');
+    expect(logOutput()).toMatch(/merged into main/i);
   });
 
-  it('re-prompts on empty input', async () => {
+  it('conflicts → Prompt 2 "yes" → resolve → "failed" prints merge-failed preservation', async () => {
+    const sendAction = mock<(action: 'merge' | 'resolve' | 'decline') => Promise<void>>(async () => {});
+    const waitForResult = makeWaitForResult([
+      { outcome: 'conflicts' },
+      { outcome: 'failed', worktreePath: '/wt/x', branchName: 'engin/x' },
+    ]);
     const rl = createMockReadline();
-    const promise = promptPostWorktreeAction(makeOptions(), () => rl);
-    await new Promise((r) => setTimeout(r, 0));
 
+    const promise = promptFinalMerge(
+      makeOptions({ worktreePath: '/wt/x', branchName: 'engin/x', sendAction, waitForResult }),
+      () => rl,
+    );
+    await flushMicrotasks();
+    rl._answer('yes');
+    await flushMicrotasks();
+    rl._answer('yes');
+    await promise;
+
+    expect(sendAction).toHaveBeenCalledWith('resolve');
+    const out = logOutput();
+    expect(out).toMatch(/merge failed/i);
+    expect(out).toContain('/wt/x');
+  });
+
+  it('conflicts → Prompt 2 "No" sends "decline" and prints preservation (no 2nd waitForResult)', async () => {
+    const sendAction = mock<(action: 'merge' | 'resolve' | 'decline') => Promise<void>>(async () => {});
+    const waitForResult = makeWaitForResult([{ outcome: 'conflicts' }]);
+    const rl = createMockReadline();
+
+    const promise = promptFinalMerge(
+      makeOptions({ worktreePath: '/wt/preserve', branchName: 'engin/preserve', sendAction, waitForResult }),
+      () => rl,
+    );
+    await flushMicrotasks();
+    rl._answer('yes'); // Prompt 1
+    await flushMicrotasks();
+    rl._answer('No'); // Prompt 2 — decline conflict resolution
+    await promise;
+
+    // 'merge' sent for Prompt 1, 'decline' sent for Prompt 2; no 'resolve'.
+    expect(sendAction).toHaveBeenCalledWith('merge');
+    expect(sendAction).toHaveBeenCalledWith('decline');
+    expect(sendAction).not.toHaveBeenCalledWith('resolve');
+    expect(sendAction).toHaveBeenCalledTimes(2);
+    // Only the first result (conflicts) was awaited — declining does not
+    // wait for a second merge result.
+    expect(waitForResult).toHaveBeenCalledTimes(1);
+
+    const out = logOutput();
+    expect(out).toMatch(/preserved/i);
+    expect(out).toContain('/wt/preserve');
+  });
+
+  // ─── Prompt 1 No / default-No ────────────────────────────────────────────
+
+  it('Prompt 1 "No" sends "decline" and prints preservation (does not wait for a result)', async () => {
+    const sendAction = mock<(action: 'merge' | 'resolve' | 'decline') => Promise<void>>(async () => {});
+    const waitForResult = mock(async (): Promise<WorktreeMergeResult> => ({ outcome: 'declined' }));
+    const rl = createMockReadline();
+
+    const promise = promptFinalMerge(
+      makeOptions({ worktreePath: '/wt/keep', branchName: 'engin/keep', sendAction, waitForResult }),
+      () => rl,
+    );
+    await flushMicrotasks();
+    rl._answer('No');
+    await promise;
+
+    expect(sendAction).toHaveBeenCalledTimes(1);
+    expect(sendAction).toHaveBeenCalledWith('decline');
+    expect(sendAction).not.toHaveBeenCalledWith('merge');
+    // Declining at Prompt 1 must NOT wait for a merge result.
+    expect(waitForResult).not.toHaveBeenCalled();
+
+    const out = logOutput();
+    expect(out).toMatch(/preserved/i);
+    expect(out).toContain('/wt/keep');
+  });
+
+  it('empty input defaults to No (sends "decline", prints preservation)', async () => {
+    const sendAction = mock<(action: 'merge' | 'resolve' | 'decline') => Promise<void>>(async () => {});
+    const waitForResult = mock(async (): Promise<WorktreeMergeResult> => ({ outcome: 'declined' }));
+    const rl = createMockReadline();
+
+    const promise = promptFinalMerge(
+      makeOptions({ worktreePath: '/wt/empty', branchName: 'engin/empty', sendAction, waitForResult }),
+      () => rl,
+    );
+    await flushMicrotasks();
     rl._answer('');
-    await new Promise((r) => setTimeout(r, 0));
-
-    rl._answer('1');
     await promise;
 
-    expect(rl._question).toHaveBeenCalledTimes(2);
+    expect(sendAction).toHaveBeenCalledWith('decline');
+    expect(sendAction).not.toHaveBeenCalledWith('merge');
+    expect(waitForResult).not.toHaveBeenCalled();
+    expect(logOutput()).toMatch(/preserved/i);
+  });
+
+  // ─── yes/y case-insensitivity (Prompt 1) ─────────────────────────────────
+
+  it('accepts "y" (lowercase) as yes', async () => {
+    const sendAction = mock<(action: 'merge' | 'resolve' | 'decline') => Promise<void>>(async () => {});
+    const rl = createMockReadline();
+    const promise = promptFinalMerge(
+      makeOptions({ sendAction, waitForResult: makeWaitForResult([{ outcome: 'clean' }]) }),
+      () => rl,
+    );
+    await flushMicrotasks();
+    rl._answer('y');
+    await promise;
+    expect(sendAction).toHaveBeenCalledWith('merge');
+  });
+
+  it('accepts "YES" / "Y" (uppercase) as yes', async () => {
+    for (const answer of ['YES', 'Y', 'Yes']) {
+      const sendAction = mock<(action: 'merge' | 'resolve' | 'decline') => Promise<void>>(async () => {});
+      const rl = createMockReadline();
+      const promise = promptFinalMerge(
+        makeOptions({ sendAction, waitForResult: makeWaitForResult([{ outcome: 'clean' }]) }),
+        () => rl,
+      );
+      await flushMicrotasks();
+      rl._answer(answer);
+      await promise;
+      expect(sendAction).toHaveBeenCalledWith('merge');
+    }
+  });
+
+  it('treats "no" / "n" as No (sends decline)', async () => {
+    for (const answer of ['no', 'n']) {
+      const sendAction = mock<(action: 'merge' | 'resolve' | 'decline') => Promise<void>>(async () => {});
+      const waitForResult = mock(async (): Promise<WorktreeMergeResult> => ({ outcome: 'declined' }));
+      const rl = createMockReadline();
+      const promise = promptFinalMerge(makeOptions({ sendAction, waitForResult }), () => rl);
+      await flushMicrotasks();
+      rl._answer(answer);
+      await promise;
+      expect(sendAction).toHaveBeenCalledWith('decline');
+      expect(sendAction).not.toHaveBeenCalledWith('merge');
+    }
   });
 
   // ─── SIGINT handling ─────────────────────────────────────────────────────
 
-  it('SIGINT closes readline and resolves as nothing', async () => {
+  it('SIGINT closes readline, prints preservation with the path, and resolves', async () => {
     const rl = createMockReadline();
-    const promise = promptPostWorktreeAction(makeOptions(), () => rl);
-    await new Promise((r) => setTimeout(r, 0));
+    const promise = promptFinalMerge(makeOptions({ worktreePath: '/wt/sigint' }), () => rl);
+    await flushMicrotasks();
 
-    // The module registers process.once('SIGINT', handler)
-    // Find it and invoke it
-    const sigintListeners = process.listeners('SIGINT') as (() => void)[];
-    expect(sigintListeners.length).toBeGreaterThan(0);
+    const listeners = process.listeners('SIGINT') as ((...args: unknown[]) => void)[];
+    expect(listeners.length).toBeGreaterThan(0);
+    // Invoke the most-recently-registered handler (the SUT's).
+    listeners[listeners.length - 1]();
 
-    const handler = sigintListeners[sigintListeners.length - 1];
-    handler();
-
-    await promise;
-
-    // Should close the readline interface
-    expect(rl._close).toHaveBeenCalled();
-    // Should treat as "nothing" action - just print preserved message
-    const logOutput = logSpy.mock.calls.map((c) => c.join(' ')).join('\n');
-    expect(logOutput).toContain('Worktree preserved');
-  });
-
-  it('SIGINT handler does not call git operations', async () => {
-    const rl = createMockReadline();
-    const promise = promptPostWorktreeAction(makeOptions(), () => rl);
-    await new Promise((r) => setTimeout(r, 0));
-
-    const sigintListeners = process.listeners('SIGINT') as (() => void)[];
-    const handler = sigintListeners[sigintListeners.length - 1];
-    handler();
-
-    await promise;
-
-    expect(mockCheckoutBranch).not.toHaveBeenCalled();
-    expect(mockMergeBranch).not.toHaveBeenCalled();
-    expect(mockPushAndCreatePR).not.toHaveBeenCalled();
-  });
-
-  // ─── Readline interface ──────────────────────────────────────────────────
-
-  it('closes readline interface after valid input', async () => {
-    const rl = createMockReadline();
-    const promise = promptPostWorktreeAction(makeOptions(), () => rl);
-    await new Promise((r) => setTimeout(r, 0));
-
-    rl._answer('1');
     await promise;
 
     expect(rl._close).toHaveBeenCalled();
+    const out = logOutput();
+    expect(out).toMatch(/preserved/i);
+    expect(out).toContain('/wt/sigint');
   });
 
-  it('removes SIGINT handler after valid input', async () => {
-    const removeSpy = mock((_event: string, _handler: () => void) => {});
-    const originalRemoveListener = process.removeListener.bind(process);
-    process.removeListener = removeSpy as unknown as typeof process.removeListener;
+  // ─── stdin EOF / close guard (mirrors promptYesNo/confirmStop) ────────────
 
+  it('resolves with preservation output (instead of hanging) when stdin closes before an answer is given', async () => {
+    const sendAction = mock<(action: 'merge' | 'resolve' | 'decline') => Promise<void>>(async () => {});
+    const waitForResult = mock(async (): Promise<WorktreeMergeResult> => ({ outcome: 'clean' }));
     const rl = createMockReadline();
-    const promise = promptPostWorktreeAction(makeOptions(), () => rl);
-    await new Promise((r) => setTimeout(r, 0));
 
-    rl._answer('1');
+    const promise = promptFinalMerge(
+      makeOptions({ worktreePath: '/wt/eof', branchName: 'engin/eof', sendAction, waitForResult }),
+      () => rl,
+    );
+    await flushMicrotasks();
+
+    // Simulate stdin closing (EOF, exhausted piped input, CI, closed terminal)
+    // WITHOUT delivering an answer — the pending question callback never fires.
+    rl.close();
+
+    // The promise must resolve rather than hang; wrap in a timeout race so a
+    // regression (forgotten close guard) fails the test instead of stalling it.
+    await Promise.race([
+      promise,
+      new Promise((_, reject) => setTimeout(() => reject(new Error('promise hung on stdin close')), 1000)),
+    ]);
+
+    // The worktree is preserved, and no action was sent (no answer arrived).
+    const out = logOutput();
+    expect(out).toMatch(/preserved/i);
+    expect(out).toContain('/wt/eof');
+    expect(out).toContain('engin/eof');
+    expect(out).toMatch(/manual/i);
+    expect(sendAction).not.toHaveBeenCalled();
+    expect(waitForResult).not.toHaveBeenCalled();
+  });
+
+  it('a normal completion does not double-fire the close guard (no duplicate preservation output)', async () => {
+    const sendAction = mock<(action: 'merge' | 'resolve' | 'decline') => Promise<void>>(async () => {});
+    const waitForResult = mock(async (): Promise<WorktreeMergeResult> => ({ outcome: 'declined' }));
+    const rl = createMockReadline();
+
+    const promise = promptFinalMerge(
+      makeOptions({ worktreePath: '/wt/nodup', branchName: 'engin/nodup', sendAction, waitForResult }),
+      () => rl,
+    );
+    await flushMicrotasks();
+    rl._answer('No'); // decline path → finish() calls rl.close() → 'close' fires
     await promise;
 
-    // Should have called removeListener for SIGINT
-    expect(removeSpy).toHaveBeenCalledWith('SIGINT', expect.any(Function));
+    // The decline path prints preservation exactly once; the close guard
+    // (which would also print preservation) must NOT re-trigger.
+    const preservationLines = logOutput()
+      .split('\n')
+      .filter((line) => /preserved/i.test(line));
+    expect(preservationLines).toHaveLength(1);
+  });
 
-    process.removeListener = originalRemoveListener;
+  // ─── Readline + handler lifecycle ────────────────────────────────────────
+
+  it('closes the readline interface after the flow completes', async () => {
+    const rl = createMockReadline();
+    const promise = promptFinalMerge(makeOptions(), () => rl);
+    await flushMicrotasks();
+    rl._answer('No');
+    await promise;
+
+    expect(rl._close).toHaveBeenCalled();
+  });
+
+  it('removes its SIGINT handler after the flow completes', async () => {
+    const rl = createMockReadline();
+    const promise = promptFinalMerge(makeOptions(), () => rl);
+    await flushMicrotasks();
+
+    const beforeCount = process.listenerCount('SIGINT');
+    rl._answer('No');
+    await promise;
+
+    const afterCount = process.listenerCount('SIGINT');
+    expect(afterCount).toBe(beforeCount - 1);
+  });
+
+  // ─── Progress indicator (no silent terminal) ──────────────────────────
+
+  it('Prompt 1 "yes" prints an in-progress line before awaiting the result', async () => {
+    const waitForResult = makeWaitForResult([{ outcome: 'clean' }]);
+    const rl = createMockReadline();
+
+    const promise = promptFinalMerge(makeOptions({ waitForResult }), () => rl);
+    await flushMicrotasks();
+    rl._answer('yes');
+    await promise;
+
+    const out = logOutput();
+    expect(out).toMatch(/merging into main/i);
+    expect(out).toContain('⏳');
+  });
+
+  it('Prompt 2 "yes" prints an in-progress "Resolving conflicts" line', async () => {
+    const waitForResult = makeWaitForResult([{ outcome: 'conflicts' }, { outcome: 'resolved' }]);
+    const rl = createMockReadline();
+
+    const promise = promptFinalMerge(makeOptions({ waitForResult }), () => rl);
+    await flushMicrotasks();
+    rl._answer('yes'); // Prompt 1
+    await flushMicrotasks();
+    rl._answer('yes'); // Prompt 2
+    await promise;
+
+    const out = logOutput();
+    expect(out).toMatch(/resolving conflicts/i);
+    expect(out).toContain('⏳');
+  });
+
+  // ─── Rejection paths (lost connection) ────────────────────────────────
+
+  it('Prompt 1 "yes" with a rejecting sendAction prints a lost-connection message and resolves (no waitForResult)', async () => {
+    const sendAction = mock(async () => {
+      throw new Error('WS closed');
+    });
+    const waitForResult = makeWaitForResult([{ outcome: 'clean' }]);
+    const rl = createMockReadline();
+
+    const promise = promptFinalMerge(
+      makeOptions({ worktreePath: '/wt/rej', branchName: 'engin/rej', runId: 'run-rej', sendAction, waitForResult }),
+      () => rl,
+    );
+    await flushMicrotasks();
+    rl._answer('yes');
+    await promise;
+
+    // sendAction rejected before waitForResult was ever called.
+    expect(waitForResult).not.toHaveBeenCalled();
+
+    const out = logOutput();
+    expect(out).toContain('⚠️');
+    expect(out).toMatch(/lost connection to the server/i);
+    expect(out).toContain('/wt/rej');
+    expect(out).toContain('engin/rej');
+    expect(out).toContain('engin resume run-rej');
+  });
+
+  it('Prompt 1 "yes" with a rejecting waitForResult prints a lost-connection message and resolves', async () => {
+    const sendAction = mock(async () => {});
+    const waitForResult = mock(async () => {
+      throw new Error('WS dropped mid-result');
+    });
+    const rl = createMockReadline();
+
+    const promise = promptFinalMerge(
+      makeOptions({ worktreePath: '/wt/rej2', branchName: 'engin/rej2', runId: 'run-rej2', sendAction, waitForResult }),
+      () => rl,
+    );
+    await flushMicrotasks();
+    rl._answer('yes');
+    await promise;
+
+    expect(sendAction).toHaveBeenCalledWith('merge');
+    expect(waitForResult).toHaveBeenCalledTimes(1);
+
+    const out = logOutput();
+    expect(out).toMatch(/lost connection to the server/i);
+    expect(out).toContain('/wt/rej2');
+    expect(out).toContain('engin/rej2');
+    expect(out).toContain('engin resume run-rej2');
+  });
+
+  it('Prompt 1 "No" with a rejecting decline sendAction prints a lost-connection message and resolves', async () => {
+    const sendAction = mock(async () => {
+      throw new Error('WS closed');
+    });
+    const waitForResult = mock(async (): Promise<WorktreeMergeResult> => ({ outcome: 'declined' }));
+    const rl = createMockReadline();
+
+    const promise = promptFinalMerge(
+      makeOptions({
+        worktreePath: '/wt/decl-rej',
+        branchName: 'engin/decl-rej',
+        runId: 'decl-rej',
+        sendAction,
+        waitForResult,
+      }),
+      () => rl,
+    );
+    await flushMicrotasks();
+    rl._answer('No');
+    await promise;
+
+    // Declining at Prompt 1 must NOT wait for a result, even on rejection.
+    expect(waitForResult).not.toHaveBeenCalled();
+    expect(logOutput()).toMatch(/lost connection to the server/i);
+    expect(logOutput()).toContain('engin resume decl-rej');
+  });
+
+  it('Prompt 2 "yes" with a rejecting resolve sendAction prints a lost-connection message', async () => {
+    let call = 0;
+    const sendAction = mock(async (action: 'merge' | 'resolve' | 'decline') => {
+      call += 1;
+      if (action === 'resolve') throw new Error('WS closed during resolve');
+    });
+    const waitForResult = makeWaitForResult([{ outcome: 'conflicts' }]);
+    const rl = createMockReadline();
+
+    const promise = promptFinalMerge(
+      makeOptions({
+        worktreePath: '/wt/p2-rej',
+        branchName: 'engin/p2-rej',
+        runId: 'p2-rej',
+        sendAction,
+        waitForResult,
+      }),
+      () => rl,
+    );
+    await flushMicrotasks();
+    rl._answer('yes'); // Prompt 1 — merge → conflicts
+    await flushMicrotasks();
+    rl._answer('yes'); // Prompt 2 — resolve rejects
+    await promise;
+
+    expect(sendAction).toHaveBeenCalledWith('resolve');
+    // Only the conflicts result was awaited; the resolve never reached waitForResult.
+    expect(waitForResult).toHaveBeenCalledTimes(1);
+    expect(logOutput()).toMatch(/lost connection to the server/i);
+    expect(logOutput()).toContain('engin resume p2-rej');
+  });
+
+  it('Prompt 2 "No" with a rejecting decline sendAction prints a lost-connection message', async () => {
+    let call = 0;
+    const sendAction = mock(async (action: 'merge' | 'resolve' | 'decline') => {
+      call += 1;
+      if (call === 2) throw new Error('WS closed during decline');
+    });
+    const waitForResult = makeWaitForResult([{ outcome: 'conflicts' }]);
+    const rl = createMockReadline();
+
+    const promise = promptFinalMerge(
+      makeOptions({
+        worktreePath: '/wt/p2-decl-rej',
+        branchName: 'engin/p2-decl-rej',
+        runId: 'p2-decl-rej',
+        sendAction,
+        waitForResult,
+      }),
+      () => rl,
+    );
+    await flushMicrotasks();
+    rl._answer('yes'); // Prompt 1
+    await flushMicrotasks();
+    rl._answer('No'); // Prompt 2 — decline rejects
+    await promise;
+
+    expect(sendAction).toHaveBeenLastCalledWith('decline');
+    expect(waitForResult).toHaveBeenCalledTimes(1);
+    expect(logOutput()).toMatch(/lost connection to the server/i);
+    expect(logOutput()).toContain('engin resume p2-decl-rej');
+  });
+
+  it('a rejection does not produce an unhandled-rejection (the prompt resolves cleanly)', async () => {
+    // If the `.catch` were missing, bun:test would surface the rejection as a
+    // test failure. This test asserts the prompt resolves normally instead.
+    const sendAction = mock(async () => {
+      throw new Error('boom');
+    });
+    const waitForResult = makeWaitForResult([{ outcome: 'clean' }]);
+    const rl = createMockReadline();
+
+    const promise = promptFinalMerge(makeOptions({ sendAction, waitForResult }), () => rl);
+    await flushMicrotasks();
+    rl._answer('yes');
+    // Resolves (no .catch would leave this hanging + emit an unhandled rejection).
+    await expect(promise).resolves.toBeUndefined();
+  });
+
+  // ─── Timeout paths (silent server) ────────────────────────────────────
+  //
+  // `resultTimeoutMs` is injected (3rd arg) so we don't have to wait 60s.
+  // A never-resolving `waitForResult` simulates a server that crashed, dropped
+  // the WS, or failed to re-broadcast the single merge-result message after a
+  // reconnect.
+
+  it('Prompt 1 "yes" times out when the server never responds, prints a timeout message and resolves', async () => {
+    const sendAction = mock(async () => {});
+    const waitForResult = mock(() => new Promise<WorktreeMergeResult>(() => {})); // never resolves
+    const rl = createMockReadline();
+
+    const promise = promptFinalMerge(
+      makeOptions({ worktreePath: '/wt/to', branchName: 'engin/to', sendAction, waitForResult }),
+      () => rl,
+      10, // 10ms timeout
+    );
+    await flushMicrotasks();
+    rl._answer('yes');
+    await promise;
+
+    const out = logOutput();
+    expect(out).toContain('⚠️');
+    expect(out).toMatch(/no response from the server within \d+s/i);
+    expect(out).toContain('/wt/to');
+    expect(out).toContain('engin/to');
+  });
+
+  it('Prompt 2 "yes" times out when the resolve result never arrives', async () => {
+    const sendAction = mock(async () => {});
+    // First result (conflicts) resolves; second (resolve) never does.
+    let firstCall = true;
+    const waitForResult = mock(() => {
+      if (firstCall) {
+        firstCall = false;
+        return Promise.resolve<WorktreeMergeResult>({ outcome: 'conflicts' });
+      }
+      return new Promise<WorktreeMergeResult>(() => {});
+    });
+    const rl = createMockReadline();
+
+    const promise = promptFinalMerge(
+      makeOptions({ worktreePath: '/wt/p2-to', branchName: 'engin/p2-to', sendAction, waitForResult }),
+      () => rl,
+      10,
+    );
+    await flushMicrotasks();
+    rl._answer('yes'); // Prompt 1 → conflicts
+    await flushMicrotasks();
+    rl._answer('yes'); // Prompt 2 → resolve hangs
+    await promise;
+
+    const out = logOutput();
+    expect(out).toMatch(/no response from the server within \d+s/i);
+    expect(out).toContain('/wt/p2-to');
+    expect(out).toContain('engin/p2-to');
+  });
+
+  it('a normal result cancels the timeout timer (no late timeout fires after success)', async () => {
+    // If the timer were not cleared in the racing `.finally`, it would fire
+    // ~10ms later — long after `finish()` — and try to print again. `settled`
+    // guards the call, but we assert the timer is cleared (no second warning).
+    const sendAction = mock(async () => {});
+    const waitForResult = makeWaitForResult([{ outcome: 'clean' }]);
+    const rl = createMockReadline();
+
+    const promise = promptFinalMerge(makeOptions({ sendAction, waitForResult }), () => rl, 10);
+    await flushMicrotasks();
+    rl._answer('yes');
+    await promise;
+
+    // Wait well past the (10ms) timeout to prove it never fired.
+    await new Promise((r) => setTimeout(r, 30));
+
+    const out = logOutput();
+    expect(out).toMatch(/merged into main/i);
+    expect(out).not.toMatch(/no response from the server/i);
   });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// commitInWorktree (unit tests)
+// FinalMergeOptions contract
 // ═══════════════════════════════════════════════════════════════════════════════
 
-describe('commitInWorktree', () => {
-  let originalLog: typeof console.log;
-
-  beforeEach(() => {
-    resetMocks();
-    originalLog = console.log;
-    console.log = mock((..._args: unknown[]) => {}) as unknown as typeof console.log;
-  });
-
-  afterEach(() => {
-    console.log = originalLog;
-  });
-
-  it('commits when diff is non-empty', async () => {
-    mockGetDiff.mockReturnValue('some diff');
-    mockGenerateCommitMessage.mockResolvedValue('fix: resolve bug');
-
-    await commitInWorktree(makeOptions());
-
-    expect(mockGetDiff).toHaveBeenCalledWith('/fake/repo/.git/worktrees/feature-branch');
-    expect(mockStageAll).toHaveBeenCalledWith('/fake/repo/.git/worktrees/feature-branch');
-    expect(mockGenerateCommitMessage).toHaveBeenCalledWith(
-      ['/profiles'],
-      '/fake/repo/.git/worktrees/feature-branch',
-      'Implement the login feature',
-      'some diff',
-      undefined,
-    );
-    expect(mockCommitChanges).toHaveBeenCalledWith('/fake/repo/.git/worktrees/feature-branch', 'fix: resolve bug');
-  });
-
-  it('does nothing when diff is empty', async () => {
-    mockGetDiff.mockReturnValue('');
-
-    await commitInWorktree(makeOptions());
-
-    expect(mockStageAll).not.toHaveBeenCalled();
-    expect(mockCommitChanges).not.toHaveBeenCalled();
-  });
-
-  it('passes apiKeys to generateCommitMessage', async () => {
-    mockGetDiff.mockReturnValue('diff');
-    mockGenerateCommitMessage.mockResolvedValue('msg');
-
-    await commitInWorktree(makeOptions({ apiKeys: { openai: 'sk-test' } }));
-
-    expect(mockGenerateCommitMessage).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.anything(),
-      expect.anything(),
-      expect.anything(),
-      { openai: 'sk-test' },
-    );
-  });
-});
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// handleMergeToMain (unit tests)
-// ═══════════════════════════════════════════════════════════════════════════════
-
-describe('handleMergeToMain', () => {
-  let originalLog: typeof console.log;
-
-  beforeEach(() => {
-    resetMocks();
-    originalLog = console.log;
-    console.log = mock((..._args: unknown[]) => {}) as unknown as typeof console.log;
-  });
-
-  afterEach(() => {
-    console.log = originalLog;
-  });
-
-  it('saves current branch before starting', async () => {
-    mockGetCurrentBranch.mockReturnValue('saved-branch');
-    mockMergeBranch.mockReturnValue({ success: true });
-
-    await handleMergeToMain(makeOptions());
-
-    expect(mockGetCurrentBranch).toHaveBeenCalledWith('/fake/repo');
-  });
-
-  it('commits in worktree before merging', async () => {
-    mockGetDiff.mockReturnValue('diff content');
-
-    await handleMergeToMain(makeOptions());
-
-    expect(mockGetDiff).toHaveBeenCalled();
-    expect(mockStageAll).toHaveBeenCalled();
-  });
-
-  it('checks out main branch and merges feature branch', async () => {
-    mockGetMainBranch.mockReturnValue('main');
-
-    await handleMergeToMain(makeOptions({ branchName: 'my-feature' }));
-
-    expect(mockGetMainBranch).toHaveBeenCalledWith('/fake/repo');
-    expect(mockCheckoutBranch).toHaveBeenCalledWith('/fake/repo', 'main');
-    expect(mockMergeBranch).toHaveBeenCalledWith('/fake/repo', 'my-feature');
-  });
-
-  it('on conflict calls resolveConflictsWithAgent', async () => {
-    mockMergeBranch.mockReturnValue({ success: false, conflicts: ['file1.ts'] });
-    mockResolveConflictsWithAgent.mockResolvedValue(true);
-
-    await handleMergeToMain(makeOptions());
-
-    expect(mockResolveConflictsWithAgent).toHaveBeenCalledWith(
-      ['/profiles'],
-      '/fake/repo',
-      ['file1.ts'],
-      'Implement the login feature',
-      undefined,
-    );
-  });
-
-  it('on successful conflict resolution commits with merge message', async () => {
-    mockMergeBranch.mockReturnValue({ success: false, conflicts: ['a.ts'] });
-    mockResolveConflictsWithAgent.mockResolvedValue(true);
-    mockGetMainBranch.mockReturnValue('main');
-
-    await handleMergeToMain(makeOptions({ branchName: 'feat-x' }));
-
-    // Find the merge resolution commit
-    const commitCalls = mockCommitChanges.mock.calls;
-    const mergeCommit = commitCalls.find((c) => (c[1] as string).includes('Merge resolution'));
-    expect(mergeCommit).toBeDefined();
-    expect(mergeCommit![0]).toBe('/fake/repo');
-  });
-
-  it('on failed conflict resolution aborts merge and warns', async () => {
-    mockMergeBranch.mockReturnValue({ success: false, conflicts: ['a.ts'] });
-    mockResolveConflictsWithAgent.mockResolvedValue(false);
-
-    const logFn = mock((..._args: unknown[]) => {});
-    const orig = console.log;
-    console.log = logFn as unknown as typeof console.log;
-
-    await handleMergeToMain(makeOptions());
-
-    console.log = orig;
-
-    expect(mockAbortMerge).toHaveBeenCalledWith('/fake/repo');
-    const logOutput = logFn.mock.calls.map((c) => c.join(' ')).join('\n');
-    expect(logOutput).toMatch(/conflict/i);
-    expect(logOutput).toMatch(/could not be resolved/i);
-  });
-
-  it('on failed conflict resolution does not remove worktree', async () => {
-    mockMergeBranch.mockReturnValue({ success: false, conflicts: ['a.ts'] });
-    mockResolveConflictsWithAgent.mockResolvedValue(false);
-
-    await handleMergeToMain(makeOptions());
-
-    expect(mockRemoveWorktree).not.toHaveBeenCalled();
-  });
-
-  it('restores saved branch after successful merge', async () => {
-    mockGetCurrentBranch.mockReturnValue('previous');
-    mockMergeBranch.mockReturnValue({ success: true });
-
-    await handleMergeToMain(makeOptions());
-
-    expect(mockCheckoutBranch).toHaveBeenCalledWith('/fake/repo', 'previous');
-  });
-
-  it('ignores error when restoring saved branch', async () => {
-    mockGetCurrentBranch.mockReturnValue('previous');
-    mockMergeBranch.mockReturnValue({ success: true });
-    mockCheckoutBranch
-      .mockImplementationOnce(() => {}) // checkout main
-      .mockImplementationOnce(() => {
-        throw new Error('detached HEAD');
-      });
-
-    // Should not throw
-    await expect(handleMergeToMain(makeOptions())).resolves.toBeUndefined();
-  });
-
-  it('removes worktree on success', async () => {
-    mockMergeBranch.mockReturnValue({ success: true });
-
-    await handleMergeToMain(makeOptions({ worktreePath: '/path/to/wt' }));
-
-    expect(mockRemoveWorktree).toHaveBeenCalledWith('/fake/repo', '/path/to/wt');
-  });
-
-  it('warns on worktree removal failure', async () => {
-    mockMergeBranch.mockReturnValue({ success: true });
-    mockRemoveWorktree.mockImplementation(() => {
-      throw new Error('busy');
-    });
-
-    const logFn = mock((..._args: unknown[]) => {});
-    const orig = console.log;
-    console.log = logFn as unknown as typeof console.log;
-
-    await handleMergeToMain(makeOptions());
-
-    console.log = orig;
-
-    const logOutput = logFn.mock.calls.map((c) => c.join(' ')).join('\n');
-    expect(logOutput).toMatch(/warning/i);
-  });
-
-  it('prints success message with branch names', async () => {
-    mockMergeBranch.mockReturnValue({ success: true });
-    mockGetMainBranch.mockReturnValue('main');
-
-    const logFn = mock((..._args: unknown[]) => {});
-    const orig = console.log;
-    console.log = logFn as unknown as typeof console.log;
-
-    await handleMergeToMain(makeOptions({ branchName: 'cool-feature' }));
-
-    console.log = orig;
-
-    const logOutput = logFn.mock.calls.map((c) => c.join(' ')).join('\n');
-    expect(logOutput).toContain('cool-feature');
-    expect(logOutput).toContain('main');
-  });
-
-  // ─── Regression: operation failures must NOT print the success line ──────
-
-  it('on a thrown operation error prints the real error and NOT the success line', async () => {
-    // An earlier step (checkout) failing must surface as an error, not a
-    // misleading "Merged ... into ..." success.
-    mockCheckoutBranch.mockImplementation(() => {
-      throw new Error('checkout blew up');
-    });
-
-    const logFn = mock((..._args: unknown[]) => {});
-    const orig = console.log;
-    console.log = logFn as unknown as typeof console.log;
-
-    await handleMergeToMain(makeOptions({ branchName: 'feature-branch' }));
-
-    console.log = orig;
-
-    const logOutput = logFn.mock.calls.map((c) => c.join(' ')).join('\n');
-    expect(logOutput).toMatch(/merge of feature-branch failed/i);
-    expect(logOutput).toContain('checkout blew up');
-    // Must NOT claim the merge succeeded.
-    expect(logOutput).not.toMatch(/Merged feature-branch into/i);
-    // Must NOT emit the cleanup warning for an operation failure.
-    expect(logOutput).not.toMatch(/Could not remove worktree/i);
-  });
-
-  it('on a thrown error still removes worktree cleanup warning is NOT printed', async () => {
-    // The cleanup warning is reserved for a successful merge whose removal
-    // failed; a genuine operation failure must not trigger it.
-    mockMergeBranch.mockImplementation(() => {
-      throw new Error('merge exploded');
-    });
-
-    const logFn = mock((..._args: unknown[]) => {});
-    const orig = console.log;
-    console.log = logFn as unknown as typeof console.log;
-
-    await handleMergeToMain(makeOptions());
-
-    console.log = orig;
-
-    const logOutput = logFn.mock.calls.map((c) => c.join(' ')).join('\n');
-    expect(logOutput).not.toMatch(/Could not remove worktree/i);
-    expect(logOutput).not.toMatch(/Merged .+ into/i);
-  });
-
-  it('on successful merge with cleanup failure prints BOTH warning and success', async () => {
-    // A genuine cleanup-removal failure (merge DID succeed) must still surface
-    // both the warning and the success message.
-    mockMergeBranch.mockReturnValue({ success: true });
-    mockGetMainBranch.mockReturnValue('main');
-    mockRemoveWorktree.mockImplementation(() => {
-      throw new Error('worktree busy');
-    });
-
-    const logFn = mock((..._args: unknown[]) => {});
-    const orig = console.log;
-    console.log = logFn as unknown as typeof console.log;
-
-    await handleMergeToMain(makeOptions({ branchName: 'cool-feature' }));
-
-    console.log = orig;
-
-    const logOutput = logFn.mock.calls.map((c) => c.join(' ')).join('\n');
-    expect(logOutput).toMatch(/Could not remove worktree/i);
-    expect(logOutput).toMatch(/Merged cool-feature into main/i);
-  });
-});
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// handlePushAndPR (unit tests)
-// ═══════════════════════════════════════════════════════════════════════════════
-
-describe('handlePushAndPR', () => {
-  let originalLog: typeof console.log;
-
-  beforeEach(() => {
-    resetMocks();
-    originalLog = console.log;
-    console.log = mock((..._args: unknown[]) => {}) as unknown as typeof console.log;
-  });
-
-  afterEach(() => {
-    console.log = originalLog;
-  });
-
-  it('commits in worktree before pushing', async () => {
-    mockGetDiff.mockReturnValue('diff content');
-
-    await handlePushAndPR(makeOptions());
-
-    expect(mockGetDiff).toHaveBeenCalled();
-    expect(mockStageAll).toHaveBeenCalled();
-  });
-
-  it('skips commit when diff is empty', async () => {
-    mockGetDiff.mockReturnValue('');
-
-    await handlePushAndPR(makeOptions());
-
-    expect(mockStageAll).not.toHaveBeenCalled();
-    expect(mockCommitChanges).not.toHaveBeenCalled();
-  });
-
-  it('passes title derived from task prompt to pushAndCreatePR', async () => {
-    await handlePushAndPR(makeOptions({ taskPrompt: 'Add login page' }));
-
-    expect(mockPushAndCreatePR).toHaveBeenCalledWith(
-      ['/profiles'],
-      '/fake/repo',
-      'feature-branch',
-      'Add login page',
-      'Add login page',
-      undefined,
-    );
-  });
-
-  it('truncates title over 60 chars to 57 + ellipsis', async () => {
-    const longPrompt = 'B'.repeat(80);
-    await handlePushAndPR(makeOptions({ taskPrompt: longPrompt }));
-
-    const callArgs = mockPushAndCreatePR.mock.calls[0];
-    const title = callArgs[4] as string;
-    expect(title.length).toBe(60);
-    expect(title).toBe('B'.repeat(57) + '...');
-  });
-
-  it('does not truncate title at exactly 60 chars', async () => {
-    const exactPrompt = 'C'.repeat(60);
-    await handlePushAndPR(makeOptions({ taskPrompt: exactPrompt }));
-
-    const callArgs = mockPushAndCreatePR.mock.calls[0];
-    const title = callArgs[4] as string;
-    expect(title).toBe(exactPrompt);
-    expect(title).not.toContain('...');
-  });
-
-  it('truncates title at 61 chars', async () => {
-    const prompt61 = 'D'.repeat(61);
-    await handlePushAndPR(makeOptions({ taskPrompt: prompt61 }));
-
-    const callArgs = mockPushAndCreatePR.mock.calls[0];
-    const title = callArgs[4] as string;
-    expect(title.length).toBe(60);
-    expect(title.endsWith('...')).toBe(true);
-  });
-
-  it('passes apiKeys to pushAndCreatePR', async () => {
-    await handlePushAndPR(makeOptions({ apiKeys: { anthropic: 'sk-ant' } }));
-
-    expect(mockPushAndCreatePR).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.anything(),
-      expect.anything(),
-      expect.anything(),
-      expect.anything(),
-      { anthropic: 'sk-ant' },
-    );
-  });
-
-  it('removes worktree after PR creation', async () => {
-    await handlePushAndPR(makeOptions({ worktreePath: '/path/to/wt' }));
-
-    expect(mockRemoveWorktree).toHaveBeenCalledWith('/fake/repo', '/path/to/wt');
-  });
-
-  it('warns on worktree removal failure', async () => {
-    mockRemoveWorktree.mockImplementation(() => {
-      throw new Error('busy');
-    });
-
-    const logFn = mock((..._args: unknown[]) => {});
-    const orig = console.log;
-    console.log = logFn as unknown as typeof console.log;
-
-    await handlePushAndPR(makeOptions());
-
-    console.log = orig;
-
-    const logOutput = logFn.mock.calls.map((c) => c.join(' ')).join('\n');
-    expect(logOutput).toMatch(/warning/i);
-    // The push + PR succeeded, so the success message must still print
-    // (warn-but-succeed semantics for a cleanup-only failure).
-    expect(logOutput).toMatch(/success/i);
-  });
-
-  it('prints success message', async () => {
-    const logFn = mock((..._args: unknown[]) => {});
-    const orig = console.log;
-    console.log = logFn as unknown as typeof console.log;
-
-    await handlePushAndPR(makeOptions({ branchName: 'pr-branch' }));
-
-    console.log = orig;
-
-    const logOutput = logFn.mock.calls.map((c) => c.join(' ')).join('\n');
-    expect(logOutput).toMatch(/success/i);
-    expect(logOutput).toContain('pr-branch');
-  });
-
-  it('prints the error and does NOT print success when push/PR fails', async () => {
-    mockPushAndCreatePR.mockImplementation(async () => {
-      throw new Error('push rejected');
-    });
-
-    const logFn = mock((..._args: unknown[]) => {});
-    const orig = console.log;
-    console.log = logFn as unknown as typeof console.log;
-
-    await handlePushAndPR(makeOptions({ branchName: 'pr-branch' }));
-
-    console.log = orig;
-
-    const logOutput = logFn.mock.calls.map((c) => c.join(' ')).join('\n');
-
-    // The real failure is surfaced with the actual error message + branch.
-    expect(logOutput).toMatch(/failed/i);
-    expect(logOutput).toContain('pr-branch');
-    expect(logOutput).toContain('push rejected');
-
-    // The success line must NOT print when the push/PR failed.
-    expect(logOutput).not.toMatch(/success/i);
-    expect(logOutput).not.toContain('Successfully pushed');
-  });
-});
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// Type exports
-// ═══════════════════════════════════════════════════════════════════════════════
-
-describe('PostWorktreeAction type', () => {
-  it('accepts the three valid action values', () => {
-    const actions: PostWorktreeAction[] = ['nothing', 'merge', 'pr'];
-    expect(actions).toHaveLength(3);
-    expect(actions).toContain('nothing');
-    expect(actions).toContain('merge');
-    expect(actions).toContain('pr');
-  });
-});
-
-describe('PostWorktreeOptions interface', () => {
-  it('has all required fields', () => {
-    const opts: PostWorktreeOptions = {
-      profilesDirs: ['/profiles'],
-      repoRoot: '/repo',
-      worktreePath: '/repo/.git/worktrees/branch',
-      branchName: 'branch',
-      originalCwd: '/repo',
+describe('FinalMergeOptions', () => {
+  it('requires worktreePath, branchName, taskPrompt, runId, sendAction, waitForResult', () => {
+    const opts: FinalMergeOptions = {
+      worktreePath: '/wt',
+      branchName: 'engin/x',
       taskPrompt: 'do the thing',
+      runId: 'run-1',
+      sendAction: async () => {},
+      waitForResult: async () => ({ outcome: 'clean' }),
     };
-    expect(opts.profilesDirs).toEqual(['/profiles']);
-    expect(opts.repoRoot).toBe('/repo');
-    expect(opts.worktreePath).toBe('/repo/.git/worktrees/branch');
-    expect(opts.branchName).toBe('branch');
-    expect(opts.originalCwd).toBe('/repo');
+
+    expect(opts.worktreePath).toBe('/wt');
+    expect(opts.branchName).toBe('engin/x');
     expect(opts.taskPrompt).toBe('do the thing');
+    expect(opts.runId).toBe('run-1');
+    expect(typeof opts.sendAction).toBe('function');
+    expect(typeof opts.waitForResult).toBe('function');
   });
 
-  it('accepts optional apiKeys', () => {
-    const opts: PostWorktreeOptions = {
-      profilesDirs: ['/profiles'],
-      repoRoot: '/repo',
-      worktreePath: '/repo/.git/worktrees/branch',
-      branchName: 'branch',
-      originalCwd: '/repo',
-      taskPrompt: 'do the thing',
-      apiKeys: { openai: 'sk-test' },
+  it('sendAction accepts the three documented actions: merge | resolve | decline', async () => {
+    const sent: string[] = [];
+    const opts: FinalMergeOptions = {
+      worktreePath: '/wt',
+      branchName: 'engin/x',
+      taskPrompt: 't',
+      runId: 'r',
+      sendAction: async (action: 'merge' | 'resolve' | 'decline') => {
+        sent.push(action);
+      },
+      waitForResult: async () => ({ outcome: 'clean' }),
     };
-    expect(opts.apiKeys).toEqual({ openai: 'sk-test' });
+
+    await opts.sendAction('merge');
+    await opts.sendAction('resolve');
+    await opts.sendAction('decline');
+
+    expect(sent).toEqual(['merge', 'resolve', 'decline']);
   });
 
-  it('allows apiKeys to be undefined', () => {
-    const opts: PostWorktreeOptions = {
-      profilesDirs: ['/profiles'],
-      repoRoot: '/repo',
-      worktreePath: '/repo/.git/worktrees/branch',
-      branchName: 'branch',
-      originalCwd: '/repo',
-      taskPrompt: 'do the thing',
+  it('carries no git-operation fields (no profilesDirs / repoRoot / apiKeys)', () => {
+    // The server performs all git operations; the client only sends decisions.
+    // These fields must NOT exist on FinalMergeOptions — assigning one is a
+    // compile error, verified here by constructing a minimal object.
+    const opts: FinalMergeOptions = {
+      worktreePath: '/wt',
+      branchName: 'engin/x',
+      taskPrompt: 't',
+      runId: 'r',
+      sendAction: async () => {},
+      waitForResult: async () => ({ outcome: 'clean' }),
     };
-    expect(opts.apiKeys).toBeUndefined();
+    expect((opts as Record<string, unknown>).profilesDirs).toBeUndefined();
+    expect((opts as Record<string, unknown>).repoRoot).toBeUndefined();
+    expect((opts as Record<string, unknown>).apiKeys).toBeUndefined();
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// WorktreeMergeResult contract
+// ═══════════════════════════════════════════════════════════════════════════════
+
+describe('WorktreeMergeResult', () => {
+  it('outcome accepts all five documented values', () => {
+    const outcomes: WorktreeMergeResult['outcome'][] = ['clean', 'conflicts', 'resolved', 'failed', 'declined'];
+    expect(outcomes).toHaveLength(5);
+    expect(new Set(outcomes).size).toBe(5);
+  });
+
+  it('cleanupError, worktreePath, branchName are all optional', () => {
+    const minimal: WorktreeMergeResult = { outcome: 'clean' };
+    expect(minimal.cleanupError).toBeUndefined();
+    expect(minimal.worktreePath).toBeUndefined();
+    expect(minimal.branchName).toBeUndefined();
+  });
+
+  it('survives a JSON round-trip', () => {
+    const result: WorktreeMergeResult = {
+      outcome: 'failed',
+      cleanupError: 'worktree busy',
+      worktreePath: '/wt',
+      branchName: 'engin/x',
+    };
+    expect(JSON.parse(JSON.stringify(result))).toEqual(result);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ReadlineQuestioner (reused primitive)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+describe('ReadlineQuestioner', () => {
+  it('exposes question(prompt, callback) and close()', () => {
+    const rl: ReadlineQuestioner = createMockReadline();
+    expect(typeof rl.question).toBe('function');
+    expect(typeof rl.close).toBe('function');
+
+    let captured = 'untouched';
+    rl.question('prompt?', (answer) => {
+      captured = answer;
+    });
+    (rl as any)._answer('the-answer');
+    expect(captured).toBe('the-answer');
+
+    rl.close();
+    expect((rl as any)._close).toHaveBeenCalledTimes(1);
   });
 });

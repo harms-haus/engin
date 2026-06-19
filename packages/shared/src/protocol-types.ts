@@ -72,7 +72,18 @@ export type ServerMessage =
       timestamp: string;
     }
   | { type: 'auth_required' }
-  | { type: 'error'; runId?: string; code: string; message: string };
+  | { type: 'error'; runId?: string; code: string; message: string }
+  | {
+      type: 'worktree_merge_result';
+      runId: string;
+      outcome: 'clean' | 'conflicts' | 'resolved' | 'failed' | 'declined';
+      cleanupError?: string;
+      worktreePath?: string;
+      branchName?: string;
+      /** Short, safe diagnostic for a 'failed' outcome (e.g. git stderr or
+       *  agent-resolution failure reason). Absent on non-failure outcomes. */
+      error?: string;
+    };
 
 // ─── Client to Server Messages ──────────────────────────────────────────────
 
@@ -87,13 +98,12 @@ export type ClientMessage =
       workDir?: string;
       maxConcurrent?: number;
       apiKeys?: Record<string, string>;
-      worktree?: boolean;
     }
   | { type: 'subscribe'; runId: string }
   | { type: 'unsubscribe'; runId: string }
   | { type: 'resync'; runId: string; lastSeq?: number }
   | { type: 'cancel_run'; runId: string }
-  | { type: 'worktree_action'; runId: string; action: 'merge' | 'pr' | 'discard' | 'keep' };
+  | { type: 'worktree_action'; runId: string; action: 'merge' | 'resolve' | 'decline' };
 
 // ─── Type guard ─────────────────────────────────────────────────────────────
 
@@ -111,6 +121,7 @@ export function isServerMessage(data: unknown): data is ServerMessage {
     case 'log':
     case 'auth_required':
     case 'error':
+    case 'worktree_merge_result':
       return true;
     default:
       return false;

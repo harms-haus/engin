@@ -1,5 +1,6 @@
 import type { RendererRegistry } from '../core/renderer-registry.js';
 import type { AgentProfile, StatusCallbacks, StepDefinition, Task } from '../core/types.js';
+import type { WorktreeManager } from '../core/worktree-manager.js';
 import type { AuditLog } from '../tracking/audit-log.js';
 import type { TaskTracker } from '../tracking/task-status.js';
 
@@ -52,6 +53,8 @@ export interface LanePoolOptions {
   rendererRegistry?: RendererRegistry;
   /** Phase identifier set by the workflow orchestrator — required */
   phaseId: string;
+  /** WorktreeManager for isolated git worktree execution */
+  worktreeManager?: WorktreeManager;
 }
 
 /** Distributive Omit that preserves discriminated union structure. */
@@ -101,6 +104,8 @@ export interface TaskRunnerContext {
   completeTask: (result?: unknown) => boolean;
   /** Safely settle the task as failed. */
   failTask: (result?: unknown) => void;
+  /** WorktreeManager for isolated git worktree execution */
+  worktreeManager?: WorktreeManager;
 }
 
 /** Function signature for executing a task within a lane. */

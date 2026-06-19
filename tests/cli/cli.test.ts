@@ -102,11 +102,11 @@ describe('parseArgs — server command', () => {
     });
 
     it('sets common flags correctly for server up', () => {
-      const result = parseArgs(['server', 'up', '--verbose', '--worktree', '--cwd', '/tmp']);
+      // --worktree was removed (worktrees are now automatic for git repos).
+      const result = parseArgs(['server', 'up', '--verbose', '--cwd', '/tmp']);
       expect(result.command).toBe('server');
       expect(result).toHaveProperty('serverAction', 'up');
       expect(result.verbose).toBe(true);
-      expect(result.worktree).toBe(true);
       expect(result.cwd).toBe('/tmp');
     });
   });
@@ -225,6 +225,20 @@ describe('parseArgs — run/resume host/lan warnings', () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// parseArgs — removed --worktree flag is a no-op with a migration warning
+// ═══════════════════════════════════════════════════════════════════════════════
+
+describe('parseArgs — removed --worktree flag migration warning', () => {
+  it('parses "run wf prompt --worktree" successfully and emits the informational warning', () => {
+    const result = parseArgs(['wf', 'prompt', '--worktree']);
+    expect(result.command).toBe('run');
+    expect(result.workflowName).toBe('wf');
+    expect(result.taskPrompt).toBe('prompt');
+    expect(result.warnings).toEqual(expect.arrayContaining([expect.stringMatching(/--worktree is no longer needed/i)]));
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // USAGE string — includes server command documentation
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -292,7 +306,6 @@ describe('serverUpCommand', () => {
       cwd: '/tmp',
       maxConcurrent: 5,
       verbose: false,
-      worktree: false,
       apiKeys: {},
       warnings: [],
       ...overrides,
@@ -388,7 +401,6 @@ describe('serverDownCommand', () => {
       cwd: '/tmp',
       maxConcurrent: 5,
       verbose: false,
-      worktree: false,
       apiKeys: {},
       warnings: [],
       ...overrides,
@@ -481,7 +493,6 @@ describe('serverStatusCommand', () => {
       cwd: '/tmp',
       maxConcurrent: 5,
       verbose: false,
-      worktree: false,
       apiKeys: {},
       warnings: [],
       ...overrides,
@@ -741,7 +752,6 @@ describe('T35: LAN binding hard gate', () => {
       cwd: '/tmp',
       maxConcurrent: 5,
       verbose: false,
-      worktree: false,
       apiKeys: {},
       warnings: [],
       ...overrides,

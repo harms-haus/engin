@@ -1,17 +1,35 @@
 import { afterAll, beforeEach, describe, expect, it, mock } from 'bun:test';
+import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import type { WorktreeInfo } from '../../packages/engine/src/core/types.js';
+import type { WorktreeManagerOptions } from '../../packages/engine/src/core/worktree-manager.js';
 import { makeProfile } from '../helpers/make-profile.js';
+import { useTempDir } from '../helpers/use-temp-dir.js';
 
 // ─── Capture real modules before mocking ────────────────────────────────────
 const realProfile = Object.assign({}, await import('../../packages/engine/src/core/profile.js'));
 const realHarnessFactory = Object.assign({}, await import('../../packages/engine/src/core/harness-factory.js'));
 const realGit = Object.assign({}, await import('../../packages/engine/src/core/git.js'));
 const realStructuredOutput = Object.assign({}, await import('../../packages/engine/src/core/structured-output.js'));
+const realWorktreeFixup = Object.assign({}, await import('../../packages/engine/src/core/worktree-fixup.js'));
+const realWorktreeManager = Object.assign({}, await import('../../packages/engine/src/core/worktree-manager.js'));
+const realTitleGenerator = Object.assign({}, await import('../../packages/engine/src/core/title-generator.js'));
 
 // ─── Mock state ─────────────────────────────────────────────────────────────
 
 let mockGetWorkerProfileResult: ReturnType<typeof makeProfile> | null = null;
 let mockGetWorkerProfileError: string | null = null;
+
+const mockLoadProfilesFromDirs = mock(async (_dirs: string[]) => {
+  if (mockGetWorkerProfileError) {
+    // Return empty map — the module should detect missing 'worker' and throw
+    return new Map();
+  }
+  const profile = mockGetWorkerProfileResult ?? makeProfile({ id: 'worker' });
+  const map = new Map();
+  map.set('worker', profile);
+  return map;
+});
 
 const mockCreateHarness = mock(async () => ({
   session: {
@@ -31,12 +49,32 @@ const mockPromptForStructured = mock(async (_harness: unknown, _prompt: string, 
   attempts: 1,
 }));
 
+// Shape of the options object passed to runTooledFixup by resolveConflictsWithAgent.
+interface FixupCallOpts {
+  profilesDirs: string[];
+  worktreePath: string;
+  taskPrompt: string;
+  errorContext: string;
+  additionalContext?: string;
+  apiKeys?: Record<string, string>;
+  profileId?: string;
+  maxAttempts?: number;
+}
+
+const mockRunTooledFixup = mock(
+  async (_opts: FixupCallOpts): Promise<{ success: boolean; attempts: number; lastError?: string }> => ({
+    success: true,
+    attempts: 1,
+  }),
+);
+
 const mockIsGitRepo = mock(() => true);
 const mockGetRepoRoot = mock(() => '/fake/repo/root');
 const mockCreateWorktree = mock(() => {});
 const mockRemoveWorktree = mock(() => {});
 const mockListConflictedFiles = mock(() => []);
 const mockStageAll = mock(() => {});
+const mockStageFiles = mock(() => {});
 const mockCommitChanges = mock(() => {});
 const mockCheckoutBranch = mock(() => {});
 const mockMergeBranch = mock(() => ({ success: true }));
@@ -47,20 +85,69 @@ const mockReadWorktreeCopyList = mock((): string[] => []);
 const mockCopyFilesToWorktree = mock(() => {});
 const mockGetMainBranch = mock(() => 'main');
 const mockGetCurrentBranch = mock(() => 'main');
+const mockSanitizeBranchSlug = mock((text: string): string => text);
+
+// ─── generateTitleAndBranch mock ────────────────────────────────────────────
+
+interface TitleGeneratorCallOpts {
+  profilesDirs: string[];
+  taskPrompt: string;
+  cwd: string;
+  apiKeys?: Record<string, string>;
+}
+
+const mockGenerateTitleAndBranch = mock(
+  async (_opts: TitleGeneratorCallOpts): Promise<{ title: string; branchName: string }> => ({
+    title: 'Test Task',
+    branchName: 'test-task',
+  }),
+);
+
+// ─── WorktreeManager mock ───────────────────────────────────────────────────
+//
+// setupWorktree must delegate ALL worktree creation to a WorktreeManager. We
+// mock the class so we can assert the construction options, that
+// setupMainWorktree() is called, and that cleanup delegates to the manager.
+
+const mockSetupMainWorktree = mock(async (): Promise<void> => {});
+const mockManagerCleanup = mock(async (): Promise<{ cleanupError?: string }> => ({}));
+const mockManagerGetWorktreeInfo = mock(
+  (): WorktreeInfo => ({
+    worktreePath: '',
+    branchName: '',
+    originalCwd: '',
+  }),
+);
+
+/** Options passed to the most recent `new WorktreeManager(...)` call. */
+let lastManagerOpts: WorktreeManagerOptions | null = null;
+/** All constructor option objects captured, in call order. */
+const managerOptsCalls: WorktreeManagerOptions[] = [];
+
+class MockWorktreeManager {
+  readonly mainBranch: string;
+  readonly mainWorktreePath: string;
+  readonly repoRoot: string;
+  readonly sourceCwd: string;
+
+  constructor(opts: WorktreeManagerOptions) {
+    lastManagerOpts = opts;
+    managerOptsCalls.push(opts);
+    this.mainBranch = opts.mainBranch;
+    this.mainWorktreePath = opts.mainWorktreePath;
+    this.repoRoot = opts.repoRoot;
+    this.sourceCwd = opts.sourceCwd;
+  }
+
+  setupMainWorktree = mockSetupMainWorktree;
+  cleanup = mockManagerCleanup;
+  getWorktreeInfo = mockManagerGetWorktreeInfo;
+}
 
 // ─── Mock module setup ──────────────────────────────────────────────────────
 
 mock.module('../../packages/engine/src/core/profile.ts', () => ({
-  loadProfilesFromDirs: mock(async (_dirs: string[]) => {
-    if (mockGetWorkerProfileError) {
-      // Return empty map — the module should detect missing 'worker' and throw
-      return new Map();
-    }
-    const profile = mockGetWorkerProfileResult ?? makeProfile({ id: 'worker' });
-    const map = new Map();
-    map.set('worker', profile);
-    return map;
-  }),
+  loadProfilesFromDirs: mockLoadProfilesFromDirs,
 }));
 
 mock.module('../../packages/engine/src/core/harness-factory.ts', () => ({
@@ -71,6 +158,18 @@ mock.module('../../packages/engine/src/core/structured-output.ts', () => ({
   promptForStructured: mockPromptForStructured,
 }));
 
+mock.module('../../packages/engine/src/core/worktree-fixup.ts', () => ({
+  runTooledFixup: mockRunTooledFixup,
+}));
+
+mock.module('../../packages/engine/src/core/title-generator.ts', () => ({
+  generateTitleAndBranch: mockGenerateTitleAndBranch,
+}));
+
+mock.module('../../packages/engine/src/core/worktree-manager.ts', () => ({
+  WorktreeManager: MockWorktreeManager,
+}));
+
 mock.module('../../packages/engine/src/core/git.ts', () => ({
   isGitRepo: mockIsGitRepo,
   getRepoRoot: mockGetRepoRoot,
@@ -78,6 +177,7 @@ mock.module('../../packages/engine/src/core/git.ts', () => ({
   removeWorktree: mockRemoveWorktree,
   listConflictedFiles: mockListConflictedFiles,
   stageAll: mockStageAll,
+  stageFiles: mockStageFiles,
   commitChanges: mockCommitChanges,
   checkoutBranch: mockCheckoutBranch,
   mergeBranch: mockMergeBranch,
@@ -88,6 +188,7 @@ mock.module('../../packages/engine/src/core/git.ts', () => ({
   copyFilesToWorktree: mockCopyFilesToWorktree,
   getMainBranch: mockGetMainBranch,
   getCurrentBranch: mockGetCurrentBranch,
+  sanitizeBranchSlug: mockSanitizeBranchSlug,
 }));
 
 // ─── Imports (after mocks) ─────────────────────────────────────────────────
@@ -106,12 +207,35 @@ function resetMocks() {
   mock.clearAllMocks();
   mockGetWorkerProfileResult = null;
   mockGetWorkerProfileError = null;
+  lastManagerOpts = null;
+  managerOptsCalls.length = 0;
+}
+
+/** Mimics the real sanitizeBranchSlug so default integration tests are realistic. */
+function realSanitize(text: string): string {
+  const slug = text
+    .toLowerCase()
+    .replace(/[^a-z0-9-]/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '');
+  return slug.length > 0 ? slug : `engin-worktree-${Date.now()}`;
 }
 
 // ─── Setup ──────────────────────────────────────────────────────────────────
 
 beforeEach(() => {
   resetMocks();
+
+  // Default: loadProfilesFromDirs returns a Map with the 'worker' profile
+  mockLoadProfilesFromDirs.mockImplementation(async (_dirs: string[]) => {
+    if (mockGetWorkerProfileError) {
+      return new Map();
+    }
+    const profile = mockGetWorkerProfileResult ?? makeProfile({ id: 'worker' });
+    const map = new Map();
+    map.set('worker', profile);
+    return map;
+  });
 
   // Default: createHarness returns a valid harness with dispose
   mockCreateHarness.mockResolvedValue({
@@ -137,7 +261,6 @@ beforeEach(() => {
       for (const key of Object.keys(shape)) {
         result[key] = 'mock-value';
       }
-      // If 'branchName' is in the shape, provide a nice kebab-case name
       if ('branchName' in shape) {
         result.branchName = 'feature-test-task';
       }
@@ -168,9 +291,25 @@ beforeEach(() => {
   mockPushBranch.mockReturnValue(undefined);
   mockGetDiff.mockReturnValue('diff content here');
   mockStageAll.mockReturnValue(undefined);
+  mockStageFiles.mockReturnValue(undefined);
+  mockRunTooledFixup.mockResolvedValue({ success: true, attempts: 1 });
   mockListConflictedFiles.mockReturnValue([]);
   mockGetMainBranch.mockReturnValue('main');
   mockGetCurrentBranch.mockReturnValue('main');
+
+  // ── setupWorktree delegation defaults ────────────────────────────────────
+  mockGenerateTitleAndBranch.mockResolvedValue({
+    title: 'Test Task',
+    branchName: 'test-task',
+  });
+  mockSanitizeBranchSlug.mockImplementation(realSanitize);
+  mockSetupMainWorktree.mockResolvedValue(undefined);
+  mockManagerCleanup.mockResolvedValue({});
+  mockManagerGetWorktreeInfo.mockReturnValue({
+    worktreePath: '',
+    branchName: '',
+    originalCwd: '',
+  });
 });
 
 // Restore the real modules so mocks don't leak into other test files.
@@ -179,225 +318,322 @@ afterAll(() => {
   mock.module('../../packages/engine/src/core/harness-factory.ts', () => realHarnessFactory);
   mock.module('../../packages/engine/src/core/git.ts', () => realGit);
   mock.module('../../packages/engine/src/core/structured-output.ts', () => realStructuredOutput);
+  mock.module('../../packages/engine/src/core/worktree-fixup.ts', () => realWorktreeFixup);
+  mock.module('../../packages/engine/src/core/worktree-manager.ts', () => realWorktreeManager);
+  mock.module('../../packages/engine/src/core/title-generator.ts', () => realTitleGenerator);
 });
 
 // ─── setupWorktree ──────────────────────────────────────────────────────────
+//
+// The refactored setupWorktree DELEGATES worktree creation to a WorktreeManager
+// (calling setupMainWorktree) and uses generateTitleAndBranch instead of a
+// bespoke promptForStructured branch-name call. This avoids the double-worktree
+// bug where both setupWorktree and WorktreeManager tried to create the same
+// worktree.
 
 describe('setupWorktree', () => {
+  // ─── Input validation ───────────────────────────────────────────────────────
+
   it('throws if cwd is not a git repository', async () => {
     mockIsGitRepo.mockReturnValue(false);
 
-    await expect(setupWorktree('/not/a/repo', [], 'test task')).rejects.toThrow(
+    await expect(setupWorktree('/not/a/repo', '/run/work', [], 'test task')).rejects.toThrow(
       'Not a git repository. --worktree requires a git repo.',
     );
   });
 
   it('calls isGitRepo with the provided cwd', async () => {
-    await setupWorktree('/my/project', ['/profiles'], 'test task');
+    await setupWorktree('/my/project', '/run/work', ['/profiles'], 'test task');
 
     expect(mockIsGitRepo).toHaveBeenCalledWith('/my/project');
   });
 
-  it('gets repo root via getRepoRoot', async () => {
-    await setupWorktree('/my/project', ['/profiles'], 'test task');
+  it('does not delegate to the manager when cwd is not a git repo', async () => {
+    mockIsGitRepo.mockReturnValue(false);
+
+    await expect(setupWorktree('/not/a/repo', '/run/work', [], 'test task')).rejects.toThrow();
+
+    expect(mockGenerateTitleAndBranch).not.toHaveBeenCalled();
+    expect(managerOptsCalls).toHaveLength(0);
+    expect(mockSetupMainWorktree).not.toHaveBeenCalled();
+  });
+
+  it('gets repo root via getRepoRoot(cwd)', async () => {
+    await setupWorktree('/my/project', '/run/work', ['/profiles'], 'test task');
 
     expect(mockGetRepoRoot).toHaveBeenCalledWith('/my/project');
   });
 
-  it('throws if worker profile is not found', async () => {
-    mockGetWorkerProfileError = 'not found';
+  // ─── Branch name generation via generateTitleAndBranch ──────────────────────
 
-    await expect(setupWorktree('/my/project', ['/profiles'], 'test task')).rejects.toThrow(/worker/i);
+  it('calls generateTitleAndBranch instead of promptForStructured for branch name generation', async () => {
+    await setupWorktree('/my/project', '/run/work', ['/profiles'], 'Implement login feature');
+
+    expect(mockGenerateTitleAndBranch).toHaveBeenCalledTimes(1);
+    // The old per-function promptForStructured branch-name call must be gone.
+    expect(mockPromptForStructured).not.toHaveBeenCalled();
   });
 
-  it('creates a harness with the worker profile', async () => {
-    await setupWorktree('/my/project', ['/profiles'], 'test task', { openai: 'sk-key' });
-
-    expect(mockCreateHarness).toHaveBeenCalledWith(
-      expect.objectContaining({
-        apiKeys: { openai: 'sk-key' },
-      }),
-    );
-  });
-
-  it('prompts agent for branch name generation', async () => {
-    await setupWorktree('/my/project', ['/profiles'], 'Implement login feature');
-
-    expect(mockPromptForStructured).toHaveBeenCalledWith(
-      expect.anything(), // harness
-      expect.stringContaining('Implement login feature'),
-      expect.anything(), // schema
-    );
-  });
-
-  it('uses agent-generated branch name when available', async () => {
-    mockPromptForStructured.mockResolvedValue({
-      result: { branchName: 'implement-login' },
-      attempts: 1,
+  it('passes profilesDirs, taskPrompt, cwd, and apiKeys to generateTitleAndBranch', async () => {
+    await setupWorktree('/my/project', '/run/work', ['/profiles'], 'Build the API', {
+      openai: 'sk-key',
     });
 
-    const result = await setupWorktree('/my/project', ['/profiles'], 'Implement login feature');
-
-    expect(result.branchName).toBe('implement-login');
+    expect(mockGenerateTitleAndBranch).toHaveBeenCalledWith({
+      profilesDirs: ['/profiles'],
+      taskPrompt: 'Build the API',
+      cwd: '/my/project',
+      apiKeys: { openai: 'sk-key' },
+    });
   });
 
-  it('sanitizes branch name by replacing non-alphanumeric-non-dash chars', async () => {
-    mockPromptForStructured.mockResolvedValue({
-      result: { branchName: 'fix bug #123!!!' },
-      attempts: 1,
+  it('passes undefined apiKeys to generateTitleAndBranch when omitted', async () => {
+    await setupWorktree('/my/project', '/run/work', ['/profiles'], 'Build the API');
+
+    expect(mockGenerateTitleAndBranch).toHaveBeenCalledWith(expect.objectContaining({ apiKeys: undefined }));
+  });
+
+  it('does not create a harness directly (generateTitleAndBranch owns its own harness)', async () => {
+    await setupWorktree('/my/project', '/run/work', ['/profiles'], 'test task');
+
+    expect(mockCreateHarness).not.toHaveBeenCalled();
+  });
+
+  it('does not load the worker profile directly (no longer needed for branch name)', async () => {
+    await setupWorktree('/my/project', '/run/work', ['/profiles'], 'test task');
+
+    expect(mockLoadProfilesFromDirs).not.toHaveBeenCalled();
+  });
+
+  // ─── Slug + main branch computation ─────────────────────────────────────────
+
+  it('sanitizes the raw branch name from generateTitleAndBranch via sanitizeBranchSlug', async () => {
+    mockGenerateTitleAndBranch.mockResolvedValue({ title: 'T', branchName: 'My Feature!!!' });
+    mockSanitizeBranchSlug.mockReturnValue('sanitized-slug');
+
+    await setupWorktree('/my/project', '/run/work', ['/profiles'], 'test task');
+
+    expect(mockSanitizeBranchSlug).toHaveBeenCalledWith('My Feature!!!');
+  });
+
+  it('prefixes the sanitized slug with engin/ to form the main branch name', async () => {
+    mockGenerateTitleAndBranch.mockResolvedValue({ title: 'T', branchName: 'raw' });
+    mockSanitizeBranchSlug.mockReturnValue('my-feature');
+
+    const result = await setupWorktree('/my/project', '/run/work', ['/profiles'], 'test task');
+
+    expect(result.branchName).toBe('engin/my-feature');
+  });
+
+  it('pipes the raw branchName through real-style sanitization by default', async () => {
+    // Default mockSanitizeBranchSlug mimics the real implementation.
+    mockGenerateTitleAndBranch.mockResolvedValue({ title: 'T', branchName: 'Fix Bug #123!!!' });
+
+    const result = await setupWorktree('/my/project', '/run/work', ['/profiles'], 'test task');
+
+    // spaces, '#', '!' become dashes; consecutive dashes collapse; edges trim.
+    expect(result.branchName).toBe('engin/fix-bug-123');
+  });
+
+  it('passes the manager the engin/<slug> branch even when the raw name is empty', async () => {
+    mockGenerateTitleAndBranch.mockResolvedValue({ title: 'T', branchName: '' });
+    mockSanitizeBranchSlug.mockReturnValue('engin-worktree-1700000000000');
+
+    await setupWorktree('/my/project', '/run/work', ['/profiles'], 'test task');
+
+    expect(managerOptsCalls[0]?.mainBranch).toBe('engin/engin-worktree-1700000000000');
+  });
+
+  // ─── WorktreeManager delegation (the double-worktree fix) ────────────────────
+
+  it('constructs a WorktreeManager with repoRoot, sourceCwd, workDir, mainBranch, mainWorktreePath, profilesDirs, apiKeys', async () => {
+    mockGenerateTitleAndBranch.mockResolvedValue({ title: 'T', branchName: 'raw' });
+    mockSanitizeBranchSlug.mockReturnValue('my-feature');
+
+    await setupWorktree('/my/project', '/run/work', ['/profiles'], 'test task', {
+      openai: 'sk-key',
     });
 
-    const result = await setupWorktree('/my/project', ['/profiles'], 'fix bug');
-
-    // Non-alphanumeric, non-dash chars should be replaced with dash
-    expect(result.branchName).toMatch(/^[a-z0-9-]+$/);
-  });
-
-  it('collapses multiple consecutive dashes in branch name', async () => {
-    mockPromptForStructured.mockResolvedValue({
-      result: { branchName: 'fix---bug---test' },
-      attempts: 1,
+    expect(managerOptsCalls).toHaveLength(1);
+    expect(managerOptsCalls[0]).toEqual({
+      repoRoot: '/fake/repo/root',
+      sourceCwd: '/my/project',
+      workDir: '/run/work',
+      mainBranch: 'engin/my-feature',
+      mainWorktreePath: join('/run/work', 'worktree'),
+      profilesDirs: ['/profiles'],
+      apiKeys: { openai: 'sk-key' },
     });
-
-    const result = await setupWorktree('/my/project', ['/profiles'], 'fix bug');
-
-    expect(result.branchName).not.toContain('---');
-    // Should have collapsed to single dashes
-    expect(result.branchName).toBe('fix-bug-test');
   });
 
-  it('falls back to engin-worktree- prefix when prompt fails', async () => {
-    mockPromptForStructured.mockRejectedValue(new Error('Prompt failed'));
+  it('constructs exactly one WorktreeManager', async () => {
+    await setupWorktree('/my/project', '/run/work', ['/profiles'], 'test task');
 
-    const result = await setupWorktree('/my/project', ['/profiles'], 'test task');
-
-    expect(result.branchName).toMatch(/^engin-worktree-\d+$/);
+    expect(managerOptsCalls).toHaveLength(1);
   });
 
-  it('creates worktree with correct repo root, branch name, and path', async () => {
-    mockPromptForStructured.mockResolvedValue({
-      result: { branchName: 'my-feature' },
-      attempts: 1,
-    });
+  it('calls manager.setupMainWorktree() after construction', async () => {
+    await setupWorktree('/my/project', '/run/work', ['/profiles'], 'test task');
 
-    await setupWorktree('/my/project', ['/profiles'], 'test task');
-
-    expect(mockCreateWorktree).toHaveBeenCalledWith(
-      '/fake/repo/root',
-      'my-feature',
-      join('/fake/repo/root', '..', '.engin-worktree-my-feature'),
-    );
+    expect(mockSetupMainWorktree).toHaveBeenCalledTimes(1);
   });
 
-  it('copies files from .worktreecopy when list is non-empty', async () => {
-    mockPromptForStructured.mockResolvedValue({
-      result: { branchName: 'my-feature' },
-      attempts: 1,
-    });
-    mockReadWorktreeCopyList.mockReturnValue(['.env', 'config.json']);
+  it('does NOT call createWorktree directly (delegates to WorktreeManager.setupMainWorktree)', async () => {
+    await setupWorktree('/my/project', '/run/work', ['/profiles'], 'test task');
 
-    await setupWorktree('/my/project', ['/profiles'], 'test task');
-
-    expect(mockCopyFilesToWorktree).toHaveBeenCalledWith(
-      '/my/project',
-      join('/fake/repo/root', '..', '.engin-worktree-my-feature'),
-      ['.env', 'config.json'],
-    );
+    expect(mockCreateWorktree).not.toHaveBeenCalled();
   });
 
-  it('does not call copyFilesToWorktree when .worktreecopy list is empty', async () => {
-    mockPromptForStructured.mockResolvedValue({
-      result: { branchName: 'my-feature' },
-      attempts: 1,
-    });
-    mockReadWorktreeCopyList.mockReturnValue([]);
-
-    await setupWorktree('/my/project', ['/profiles'], 'test task');
+  it('does NOT call copyFilesToWorktree directly (delegates to WorktreeManager)', async () => {
+    await setupWorktree('/my/project', '/run/work', ['/profiles'], 'test task');
 
     expect(mockCopyFilesToWorktree).not.toHaveBeenCalled();
   });
 
-  it('returns a result with worktreePath, branchName, worktreeInfo, and cleanup', async () => {
-    mockPromptForStructured.mockResolvedValue({
-      result: { branchName: 'test-branch' },
-      attempts: 1,
+  it('does NOT call readWorktreeCopyList directly (delegates to WorktreeManager)', async () => {
+    await setupWorktree('/my/project', '/run/work', ['/profiles'], 'test task');
+
+    expect(mockReadWorktreeCopyList).not.toHaveBeenCalled();
+  });
+
+  it('does NOT call removeWorktree during setup (cleanup is deferred to the manager)', async () => {
+    await setupWorktree('/my/project', '/run/work', ['/profiles'], 'test task');
+
+    expect(mockRemoveWorktree).not.toHaveBeenCalled();
+  });
+
+  // ─── Path computation ───────────────────────────────────────────────────────
+
+  it('computes the main worktree path as {workDir}/worktree', async () => {
+    const result = await setupWorktree('/my/project', '/run/work', ['/profiles'], 'test task');
+
+    expect(result.worktreePath).toBe(join('/run/work', 'worktree'));
+    expect(managerOptsCalls[0]?.mainWorktreePath).toBe(join('/run/work', 'worktree'));
+  });
+
+  it('places the main worktree inside workDir, not in {repoRoot}/..', async () => {
+    mockGetRepoRoot.mockReturnValue('/fake/repo/root');
+
+    const result = await setupWorktree('/my/project', '/custom/run/dir', ['/profiles'], 'test task');
+
+    expect(result.worktreePath).toBe(join('/custom/run/dir', 'worktree'));
+    // Must NOT use the old {repoRoot}/../.engin-worktree-* location.
+    expect(result.worktreePath).not.toContain('/fake/repo/root');
+  });
+
+  // ─── Result shape ───────────────────────────────────────────────────────────
+
+  it('returns the manager instance in the result', async () => {
+    const result = await setupWorktree('/my/project', '/run/work', ['/profiles'], 'test task');
+
+    expect(result.manager).toBeDefined();
+    expect(result.manager).toBeInstanceOf(MockWorktreeManager);
+  });
+
+  it('returns the same manager instance that setupMainWorktree was called on', async () => {
+    const result = await setupWorktree('/my/project', '/run/work', ['/profiles'], 'test task');
+
+    // setupMainWorktree was invoked exactly once, on the returned manager.
+    expect(mockSetupMainWorktree).toHaveBeenCalledTimes(1);
+    expect(result.manager.setupMainWorktree).toBe(mockSetupMainWorktree);
+  });
+
+  it('returns worktreePath equal to the main worktree path', async () => {
+    const result = await setupWorktree('/my/project', '/run/work', ['/profiles'], 'test task');
+
+    expect(result.worktreePath).toBe(join('/run/work', 'worktree'));
+  });
+
+  it('returns branchName equal to the engin/<slug> main branch', async () => {
+    mockGenerateTitleAndBranch.mockResolvedValue({ title: 'T', branchName: 'raw' });
+    mockSanitizeBranchSlug.mockReturnValue('login-feature');
+
+    const result = await setupWorktree('/my/project', '/run/work', ['/profiles'], 'test task');
+
+    expect(result.branchName).toBe('engin/login-feature');
+  });
+
+  it('returns worktreeInfo with worktreePath, branchName, and originalCwd', async () => {
+    mockGenerateTitleAndBranch.mockResolvedValue({ title: 'T', branchName: 'raw' });
+    mockSanitizeBranchSlug.mockReturnValue('the-slug');
+
+    const result = await setupWorktree('/my/project', '/run/work', ['/profiles'], 'test task');
+
+    expect(result.worktreeInfo).toEqual({
+      worktreePath: join('/run/work', 'worktree'),
+      branchName: 'engin/the-slug',
+      originalCwd: '/my/project',
     });
+  });
 
-    const result = await setupWorktree('/my/project', ['/profiles'], 'test task');
+  it('returns a cleanup function', async () => {
+    const result = await setupWorktree('/my/project', '/run/work', ['/profiles'], 'test task');
 
-    expect(result).toHaveProperty('worktreePath');
-    expect(result).toHaveProperty('branchName');
-    expect(result).toHaveProperty('worktreeInfo');
-    expect(result).toHaveProperty('cleanup');
     expect(typeof result.cleanup).toBe('function');
   });
 
-  it('returns worktreeInfo with worktreePath and branchName', async () => {
-    mockPromptForStructured.mockResolvedValue({
-      result: { branchName: 'test-branch' },
-      attempts: 1,
-    });
+  // ─── cleanup delegation ─────────────────────────────────────────────────────
 
-    const result = await setupWorktree('/my/project', ['/profiles'], 'test task');
+  it('cleanup calls manager.cleanup()', async () => {
+    const result = await setupWorktree('/my/project', '/run/work', ['/profiles'], 'test task');
 
-    expect(result.worktreeInfo.branchName).toBe('test-branch');
-    expect(result.worktreeInfo.worktreePath).toBe(join('/fake/repo/root', '..', '.engin-worktree-test-branch'));
-  });
+    expect(mockManagerCleanup).not.toHaveBeenCalled();
 
-  it('cleanup function calls removeWorktree', async () => {
-    mockPromptForStructured.mockResolvedValue({
-      result: { branchName: 'cleanup-test' },
-      attempts: 1,
-    });
-
-    const result = await setupWorktree('/my/project', ['/profiles'], 'test task');
     await result.cleanup();
 
-    expect(mockRemoveWorktree).toHaveBeenCalledWith(
-      '/fake/repo/root',
-      join('/fake/repo/root', '..', '.engin-worktree-cleanup-test'),
+    expect(mockManagerCleanup).toHaveBeenCalledTimes(1);
+  });
+
+  it('cleanup does NOT call removeWorktree directly (delegates to the manager)', async () => {
+    const result = await setupWorktree('/my/project', '/run/work', ['/profiles'], 'test task');
+
+    await result.cleanup();
+
+    expect(mockRemoveWorktree).not.toHaveBeenCalled();
+  });
+
+  it('cleanup is best-effort and swallows manager.cleanup rejections', async () => {
+    mockManagerCleanup.mockRejectedValue(new Error('cleanup boom'));
+    const result = await setupWorktree('/my/project', '/run/work', ['/profiles'], 'test task');
+
+    await expect(result.cleanup()).resolves.toBeUndefined();
+  });
+
+  // ─── apiKeys forwarding ─────────────────────────────────────────────────────
+
+  it('forwards apiKeys to the WorktreeManager constructor', async () => {
+    await setupWorktree('/my/project', '/run/work', ['/profiles'], 'test task', {
+      anthropic: 'sk-ant',
+    });
+
+    expect(managerOptsCalls[0]?.apiKeys).toEqual({ anthropic: 'sk-ant' });
+  });
+
+  it('forwards undefined apiKeys to the WorktreeManager when omitted', async () => {
+    await setupWorktree('/my/project', '/run/work', ['/profiles'], 'test task');
+
+    expect(managerOptsCalls[0]?.apiKeys).toBeUndefined();
+  });
+
+  // ─── Error propagation ──────────────────────────────────────────────────────
+
+  it('does not construct the manager when getRepoRoot throws', async () => {
+    mockGetRepoRoot.mockImplementation(() => {
+      throw new Error('not a repo');
+    });
+
+    await expect(setupWorktree('/my/project', '/run/work', ['/profiles'], 'test task')).rejects.toThrow('not a repo');
+
+    expect(managerOptsCalls).toHaveLength(0);
+    expect(mockSetupMainWorktree).not.toHaveBeenCalled();
+  });
+
+  it('propagates errors from manager.setupMainWorktree', async () => {
+    mockSetupMainWorktree.mockRejectedValue(new Error('worktree create failed'));
+
+    await expect(setupWorktree('/my/project', '/run/work', ['/profiles'], 'test task')).rejects.toThrow(
+      'worktree create failed',
     );
-  });
-
-  it('disposes the harness even when prompt succeeds', async () => {
-    const mockDispose = mock();
-    mockCreateHarness.mockResolvedValue({
-      session: {
-        prompt: mock(async () => {}),
-        subscribe: mock(() => mock()),
-        getLastAssistantText: mock(() => ''),
-        messages: [],
-        sessionId: 'test-session-id',
-        dispose: mock(),
-      },
-      sessionId: 'test-session-id',
-      dispose: mockDispose,
-    });
-
-    await setupWorktree('/my/project', ['/profiles'], 'test task');
-
-    expect(mockDispose).toHaveBeenCalled();
-  });
-
-  it('disposes the harness when prompt fails (fallback branch name)', async () => {
-    const mockDispose = mock();
-    mockCreateHarness.mockResolvedValue({
-      session: {
-        prompt: mock(async () => {}),
-        subscribe: mock(() => mock()),
-        getLastAssistantText: mock(() => ''),
-        messages: [],
-        sessionId: 'test-session-id',
-        dispose: mock(),
-      },
-      sessionId: 'test-session-id',
-      dispose: mockDispose,
-    });
-    mockPromptForStructured.mockRejectedValue(new Error('Agent failed'));
-
-    await setupWorktree('/my/project', ['/profiles'], 'test task');
-
-    expect(mockDispose).toHaveBeenCalled();
   });
 });
 
@@ -522,129 +758,171 @@ describe('generateCommitMessage', () => {
 });
 
 // ─── resolveConflictsWithAgent ──────────────────────────────────────────────
+//
+// The hardened implementation delegates to the tooled fix-up primitive
+// (`runTooledFixup`) instead of `promptForStructured`/`createHarness`. That
+// primitive spawns its OWN self-verifying (tsc + eslint) agent with a retry
+// budget and edits files directly via tools — so there is no manual
+// `writeFileSync`, no silent catches, and `stageFiles` stages ONLY the
+// conflicted files (never a sweeping `stageAll`).
 
 describe('resolveConflictsWithAgent', () => {
-  it('returns true when all conflicted files are resolved successfully', async () => {
-    // Mock readFileSync via the module that imports it
-    // Since we mock the git module, and the source uses readFileSync directly,
-    // we need to test behavior through the function
+  // Real temp dir so the implementation's readFileSync sees real conflict files
+  // (avoids having to mock node:fs and lets us assert on the actual content that
+  // gets fed into the fix-up prompt).
+  const { getDir } = useTempDir();
 
-    mockPromptForStructured.mockResolvedValue({
-      result: { resolvedContent: 'resolved content for file' },
-      attempts: 1,
-    });
+  it('returns true immediately when the conflicts array is empty', async () => {
+    const result = await resolveConflictsWithAgent(['/profiles'], getDir(), [], 'Fix conflicts');
 
-    const result = await resolveConflictsWithAgent(
-      ['/profiles'],
-      '/fake/repo',
-      ['conflicted-file.ts'],
-      'Fix the merge conflicts',
-    );
-
-    expect(result).toBe(true);
-    expect(mockStageAll).toHaveBeenCalledWith('/fake/repo');
-  });
-
-  it('processes each conflicted file individually', async () => {
-    mockPromptForStructured.mockResolvedValue({
-      result: { resolvedContent: 'resolved' },
-      attempts: 1,
-    });
-
-    await resolveConflictsWithAgent(['/profiles'], '/fake/repo', ['file1.ts', 'file2.ts', 'file3.ts'], 'Fix conflicts');
-
-    // Should have called promptForStructured once per file
-    expect(mockPromptForStructured).toHaveBeenCalledTimes(3);
-  });
-
-  it('returns false when any file resolution fails', async () => {
-    mockPromptForStructured
-      .mockResolvedValueOnce({ result: { resolvedContent: 'ok' }, attempts: 1 })
-      .mockRejectedValueOnce(new Error('Failed to resolve'));
-
-    const result = await resolveConflictsWithAgent(
-      ['/profiles'],
-      '/fake/repo',
-      ['file1.ts', 'file2.ts'],
-      'Fix conflicts',
-    );
-
-    expect(result).toBe(false);
-  });
-
-  it('does not call stageAll when resolution fails', async () => {
-    mockPromptForStructured.mockRejectedValue(new Error('Failed'));
-
-    await resolveConflictsWithAgent(['/profiles'], '/fake/repo', ['file1.ts'], 'Fix conflicts');
-
+    expect(result).toEqual({ resolved: true });
+    // Short-circuits before spawning any agent or touching the index
+    expect(mockRunTooledFixup).not.toHaveBeenCalled();
+    expect(mockStageFiles).not.toHaveBeenCalled();
     expect(mockStageAll).not.toHaveBeenCalled();
   });
 
-  it('passes apiKeys to harness creation', async () => {
-    mockPromptForStructured.mockResolvedValue({
-      result: { resolvedContent: 'resolved' },
-      attempts: 1,
+  it('returns true when fixup succeeds and stages only the conflicted files', async () => {
+    await writeFile(join(getDir(), 'conflict.ts'), '<<<<<<< HEAD\nmine\n=======\ntheirs\n>>>>>>> branch\n');
+    mockRunTooledFixup.mockResolvedValue({ success: true, attempts: 1 });
+
+    const result = await resolveConflictsWithAgent(['/profiles'], getDir(), ['conflict.ts'], 'Fix conflicts');
+
+    expect(result).toEqual({ resolved: true });
+    // Weakness #4 fix: stage ONLY the conflicted files — never a sweeping stageAll
+    expect(mockStageFiles).toHaveBeenCalledWith(getDir(), ['conflict.ts']);
+    expect(mockStageAll).not.toHaveBeenCalled();
+  });
+
+  it('stages every conflicted file when there are multiple', async () => {
+    await writeFile(join(getDir(), 'a.ts'), 'a conflict\n');
+    await writeFile(join(getDir(), 'b.ts'), 'b conflict\n');
+    mockRunTooledFixup.mockResolvedValue({ success: true, attempts: 2 });
+
+    const result = await resolveConflictsWithAgent(['/profiles'], getDir(), ['a.ts', 'b.ts'], 'Fix conflicts');
+
+    expect(result).toEqual({ resolved: true });
+    expect(mockStageFiles).toHaveBeenCalledWith(getDir(), ['a.ts', 'b.ts']);
+    expect(mockStageAll).not.toHaveBeenCalled();
+  });
+
+  it('resolves the whole conflict set in a single fixup session (not one per file)', async () => {
+    // Weakness #2 fix: resolve all conflicts together in one agent session
+    await writeFile(join(getDir(), 'a.ts'), 'aaa\n');
+    await writeFile(join(getDir(), 'b.ts'), 'bbb\n');
+    await writeFile(join(getDir(), 'c.ts'), 'ccc\n');
+    mockRunTooledFixup.mockResolvedValue({ success: true, attempts: 1 });
+
+    await resolveConflictsWithAgent(['/profiles'], getDir(), ['a.ts', 'b.ts', 'c.ts'], 'Fix conflicts');
+
+    expect(mockRunTooledFixup).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns false when fixup reports failure and does not stage anything', async () => {
+    await writeFile(join(getDir(), 'conflict.ts'), 'conflict content\n');
+    mockRunTooledFixup.mockResolvedValue({ success: false, attempts: 3, lastError: 'tsc --noEmit failed' });
+
+    const result = await resolveConflictsWithAgent(['/profiles'], getDir(), ['conflict.ts'], 'Fix conflicts');
+
+    expect(result).toEqual({ resolved: false, error: 'tsc --noEmit failed' });
+    expect(mockStageFiles).not.toHaveBeenCalled();
+    expect(mockStageAll).not.toHaveBeenCalled();
+  });
+
+  it('does not use the old createHarness / promptForStructured path', async () => {
+    // Weakness #3/#5 fix: verification + file edits are delegated entirely to the
+    // tooled fix-up primitive; no manual writeFileSync or silent catches remain.
+    await writeFile(join(getDir(), 'conflict.ts'), 'conflict content\n');
+    mockRunTooledFixup.mockResolvedValue({ success: true, attempts: 1 });
+
+    await resolveConflictsWithAgent(['/profiles'], getDir(), ['conflict.ts'], 'Fix conflicts');
+
+    expect(mockCreateHarness).not.toHaveBeenCalled();
+    expect(mockPromptForStructured).not.toHaveBeenCalled();
+  });
+
+  it('passes repoRoot as worktreePath to runTooledFixup', async () => {
+    await writeFile(join(getDir(), 'conflict.ts'), 'conflict content\n');
+    mockRunTooledFixup.mockResolvedValue({ success: true, attempts: 1 });
+
+    await resolveConflictsWithAgent(['/profiles'], getDir(), ['conflict.ts'], 'Fix conflicts');
+
+    expect(mockRunTooledFixup).toHaveBeenCalledWith(
+      expect.objectContaining({
+        profilesDirs: ['/profiles'],
+        worktreePath: getDir(),
+        taskPrompt: 'Fix conflicts',
+      }),
+    );
+  });
+
+  it('passes apiKeys through to runTooledFixup', async () => {
+    await writeFile(join(getDir(), 'conflict.ts'), 'conflict content\n');
+    mockRunTooledFixup.mockResolvedValue({ success: true, attempts: 1 });
+
+    await resolveConflictsWithAgent(['/profiles'], getDir(), ['conflict.ts'], 'Fix conflicts', {
+      openai: 'sk-test',
     });
 
-    await resolveConflictsWithAgent(['/profiles'], '/fake/repo', ['file.ts'], 'task', { openai: 'sk-test' });
-
-    expect(mockCreateHarness).toHaveBeenCalledWith(
+    expect(mockRunTooledFixup).toHaveBeenCalledWith(
       expect.objectContaining({
         apiKeys: { openai: 'sk-test' },
       }),
     );
   });
 
-  it('disposes the harness after processing all files', async () => {
-    const mockDispose = mock();
-    mockCreateHarness.mockResolvedValue({
-      session: {
-        prompt: mock(async () => {}),
-        subscribe: mock(() => mock()),
-        getLastAssistantText: mock(() => ''),
-        messages: [],
-        sessionId: 'test-session-id',
-        dispose: mock(),
-      },
-      sessionId: 'test-session-id',
-      dispose: mockDispose,
-    });
-    mockPromptForStructured.mockResolvedValue({
-      result: { resolvedContent: 'ok' },
-      attempts: 1,
-    });
+  it('feeds the conflicted file content and task into the error context', async () => {
+    // Weakness #1 fix: give the agent real conflict context, not just the file name
+    const content = '<<<<<<< HEAD\nmy change\n=======\ntheir change\n>>>>>>> branch\n';
+    await writeFile(join(getDir(), 'conflict.ts'), content);
+    mockRunTooledFixup.mockResolvedValue({ success: true, attempts: 1 });
 
-    await resolveConflictsWithAgent(['/profiles'], '/fake/repo', ['file.ts'], 'task');
+    await resolveConflictsWithAgent(['/profiles'], getDir(), ['conflict.ts'], 'Fix conflicts');
 
-    expect(mockDispose).toHaveBeenCalled();
+    const opts = mockRunTooledFixup.mock.calls[0][0];
+    expect(opts.errorContext).toContain('conflict.ts');
+    expect(opts.errorContext).toContain('my change');
+    expect(opts.errorContext).toContain('their change');
+    expect(opts.errorContext).toContain('Fix conflicts');
   });
 
-  it('disposes the harness even when resolution fails', async () => {
-    const mockDispose = mock();
-    mockCreateHarness.mockResolvedValue({
-      session: {
-        prompt: mock(async () => {}),
-        subscribe: mock(() => mock()),
-        getLastAssistantText: mock(() => ''),
-        messages: [],
-        sessionId: 'test-session-id',
-        dispose: mock(),
-      },
-      sessionId: 'test-session-id',
-      dispose: mockDispose,
-    });
-    mockPromptForStructured.mockRejectedValue(new Error('Failed'));
+  it('includes every conflicted file in the single error context', async () => {
+    await writeFile(join(getDir(), 'a.ts'), 'aaa\n');
+    await writeFile(join(getDir(), 'b.ts'), 'bbb\n');
+    mockRunTooledFixup.mockResolvedValue({ success: true, attempts: 1 });
 
-    await resolveConflictsWithAgent(['/profiles'], '/fake/repo', ['file.ts'], 'task');
+    await resolveConflictsWithAgent(['/profiles'], getDir(), ['a.ts', 'b.ts'], 'Fix conflicts');
 
-    expect(mockDispose).toHaveBeenCalled();
+    const opts = mockRunTooledFixup.mock.calls[0][0];
+    expect(opts.errorContext).toContain('a.ts');
+    expect(opts.errorContext).toContain('b.ts');
+    expect(opts.errorContext).toContain('aaa');
+    expect(opts.errorContext).toContain('bbb');
   });
 
-  it('returns true for empty conflicted files list', async () => {
-    const result = await resolveConflictsWithAgent(['/profiles'], '/fake/repo', [], 'task');
+  it('caps the conflict context at 8000 characters', async () => {
+    // Weakness #6 fix: cap total error context like generateCommitMessage
+    await writeFile(join(getDir(), 'big.ts'), 'x'.repeat(20000));
+    mockRunTooledFixup.mockResolvedValue({ success: true, attempts: 1 });
 
-    // No files to resolve = vacuously true
-    expect(result).toBe(true);
+    await resolveConflictsWithAgent(['/profiles'], getDir(), ['big.ts'], 'Fix conflicts');
+
+    const opts = mockRunTooledFixup.mock.calls[0][0];
+    // The content run must be capped at 8000 — not the full 20000
+    const xRun = opts.errorContext.match(/x+/)?.[0] ?? '';
+    expect(xRun.length).toBeLessThanOrEqual(8000);
+    expect(opts.errorContext).toContain('... (truncated)');
+  });
+
+  it('does not truncate conflict content under the 8000 cap', async () => {
+    await writeFile(join(getDir(), 'small.ts'), 'short content\n');
+    mockRunTooledFixup.mockResolvedValue({ success: true, attempts: 1 });
+
+    await resolveConflictsWithAgent(['/profiles'], getDir(), ['small.ts'], 'Fix conflicts');
+
+    const opts = mockRunTooledFixup.mock.calls[0][0];
+    expect(opts.errorContext).not.toContain('... (truncated)');
+    expect(opts.errorContext).toContain('short content');
   });
 });
 
@@ -736,13 +1014,8 @@ describe('pushAndCreatePR', () => {
 // ─── WorktreeSetupResult interface shape ────────────────────────────────────
 
 describe('WorktreeSetupResult interface', () => {
-  it('result has the expected shape', async () => {
-    mockPromptForStructured.mockResolvedValue({
-      result: { branchName: 'interface-test' },
-      attempts: 1,
-    });
-
-    const result: WorktreeSetupResult = await setupWorktree('/my/project', ['/profiles'], 'test');
+  it('result has the expected shape including the manager field', async () => {
+    const result: WorktreeSetupResult = await setupWorktree('/my/project', '/run/work', ['/profiles'], 'test');
 
     // Verify interface contract
     expect(typeof result.worktreePath).toBe('string');
@@ -750,6 +1023,15 @@ describe('WorktreeSetupResult interface', () => {
     expect(typeof result.worktreeInfo).toBe('object');
     expect(typeof result.worktreeInfo.branchName).toBe('string');
     expect(typeof result.worktreeInfo.worktreePath).toBe('string');
+    expect(result.manager).toBeDefined();
     expect(typeof result.cleanup).toBe('function');
+  });
+
+  it('result.manager exposes the WorktreeManager surface', async () => {
+    const result: WorktreeSetupResult = await setupWorktree('/my/project', '/run/work', ['/profiles'], 'test');
+
+    expect(typeof result.manager.setupMainWorktree).toBe('function');
+    expect(typeof result.manager.cleanup).toBe('function');
+    expect(typeof result.manager.getWorktreeInfo).toBe('function');
   });
 });

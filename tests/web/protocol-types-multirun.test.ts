@@ -17,17 +17,22 @@
 //   }
 //
 //   ServerMessage  = runs | run_started | snapshot | events | run_complete |
-//                    run_failed | log | auth_required | error
+//                    run_failed | log | auth_required | error | worktree_merge_result
 //   ClientMessage  = auth | list_runs | start_run | subscribe | unsubscribe |
 //                    resync | cancel_run | worktree_action
+//
+//   NOTE (worktree UX): `start_run` no longer carries a `worktree?: boolean`
+//   gate — the worktree is now unconditional for git repos. `worktree_action`
+//   actions are `merge | resolve | decline` (the legacy pr/discard/keep are
+//   gone). A new `worktree_merge_result` ServerMessage reports the merge outcome.
 //
 // Key invariants:
 //   - Every projection/event/lifecycle message is tagged with `runId`.
 //   - The old global `terminate_server` message and unscoped `resync` are GONE.
 //   - The old terminal `workflow_complete` / `workflow_failed` become run-scoped
 //     `run_complete` / `run_failed`.
-//   - `isServerMessage` recognises all nine new ServerMessage variants and
-//     rejects the removed ones.
+//   - `isServerMessage` recognises all ten ServerMessage variants (including
+//     `worktree_merge_result`) and rejects the removed legacy ones.
 
 import { describe, expect, it } from 'bun:test';
 
@@ -264,6 +269,46 @@ describe('ServerMessage – multi-run variants', () => {
     expect(msg.runId).toBe('run-1');
     expect(msg.code).toBe('BAD_MESSAGE');
   });
+
+  it('worktree_merge_result variant carries runId and an outcome', () => {
+    const msg: ServerMessage = {
+      type: 'worktree_merge_result',
+      runId: 'run-1',
+      outcome: 'clean',
+    };
+    expect(msg.type).toBe('worktree_merge_result');
+    expect(msg.runId).toBe('run-1');
+    expect(msg.outcome).toBe('clean');
+  });
+
+  it('worktree_merge_result outcome is restricted to clean | conflicts | resolved | failed | declined', () => {
+    const clean: ServerMessage = { type: 'worktree_merge_result', runId: 'r', outcome: 'clean' };
+    const conflicts: ServerMessage = { type: 'worktree_merge_result', runId: 'r', outcome: 'conflicts' };
+    const resolved: ServerMessage = { type: 'worktree_merge_result', runId: 'r', outcome: 'resolved' };
+    const failed: ServerMessage = { type: 'worktree_merge_result', runId: 'r', outcome: 'failed' };
+    const declined: ServerMessage = { type: 'worktree_merge_result', runId: 'r', outcome: 'declined' };
+    expect([clean.outcome, conflicts.outcome, resolved.outcome, failed.outcome, declined.outcome]).toEqual([
+      'clean',
+      'conflicts',
+      'resolved',
+      'failed',
+      'declined',
+    ]);
+  });
+
+  it('worktree_merge_result carries optional cleanupError / worktreePath / branchName', () => {
+    const msg: ServerMessage = {
+      type: 'worktree_merge_result',
+      runId: 'run-1',
+      outcome: 'failed',
+      cleanupError: 'worktree busy',
+      worktreePath: '/repo/.engin/wt/run-1',
+      branchName: 'engin/run-1',
+    };
+    expect(msg.cleanupError).toBe('worktree busy');
+    expect(msg.worktreePath).toBe('/repo/.engin/wt/run-1');
+    expect(msg.branchName).toBe('engin/run-1');
+  });
 });
 
 // ─── runId tagging invariant ────────────────────────────────────────────────
@@ -327,7 +372,9 @@ describe('ClientMessage – multi-run variants', () => {
     expect(msg.cwd).toBe('/home/user/project');
   });
 
-  it('start_run variant accepts all optional fields', () => {
+  it('start_run variant accepts all optional fields (workDir, maxConcurrent, apiKeys)', () => {
+    // NOTE: `worktree?: boolean` was removed — the worktree is now
+    // unconditional for git repos, so start_run no longer carries a gate.
     const msg: ClientMessage = {
       type: 'start_run',
       workflowName: 'develop',
@@ -336,12 +383,10 @@ describe('ClientMessage – multi-run variants', () => {
       workDir: '/tmp/workdir',
       maxConcurrent: 4,
       apiKeys: { anthropic: 'sk-xxx', openai: 'sk-yyy' },
-      worktree: true,
     };
     expect(msg.workDir).toBe('/tmp/workdir');
     expect(msg.maxConcurrent).toBe(4);
     expect(msg.apiKeys).toEqual({ anthropic: 'sk-xxx', openai: 'sk-yyy' });
-    expect(msg.worktree).toBe(true);
   });
 
   it('apiKeys on start_run is a string→string record', () => {
@@ -389,12 +434,11 @@ describe('ClientMessage – multi-run variants', () => {
     expect(msg.action).toBe('merge');
   });
 
-  it('worktree_action action is restricted to merge | pr | discard | keep', () => {
+  it('worktree_action action is restricted to merge | resolve | decline', () => {
     const merge: ClientMessage = { type: 'worktree_action', runId: 'r', action: 'merge' };
-    const pr: ClientMessage = { type: 'worktree_action', runId: 'r', action: 'pr' };
-    const discard: ClientMessage = { type: 'worktree_action', runId: 'r', action: 'discard' };
-    const keep: ClientMessage = { type: 'worktree_action', runId: 'r', action: 'keep' };
-    expect([merge.action, pr.action, discard.action, keep.action]).toEqual(['merge', 'pr', 'discard', 'keep']);
+    const resolve: ClientMessage = { type: 'worktree_action', runId: 'r', action: 'resolve' };
+    const decline: ClientMessage = { type: 'worktree_action', runId: 'r', action: 'decline' };
+    expect([merge.action, resolve.action, decline.action]).toEqual(['merge', 'resolve', 'decline']);
   });
 });
 
@@ -414,6 +458,7 @@ describe('isServerMessage – recognises every new variant', () => {
     ['log', { type: 'log', runId: 'r', level: 'info', message: 'm', timestamp: ISO_NOW }],
     ['auth_required', { type: 'auth_required' }],
     ['error', { type: 'error', code: 'C', message: 'm' }],
+    ['worktree_merge_result', { type: 'worktree_merge_result', runId: 'r', outcome: 'clean' }],
   ];
   it.each(validVariants)('returns true for %s', (_label: string, payload: unknown) => {
     expect(isServerMessage(payload)).toBe(true);
@@ -505,6 +550,8 @@ function assertExhaustiveServer(msg: ServerMessage): string {
       return 'auth_required';
     case 'error':
       return `error:${msg.code}`;
+    case 'worktree_merge_result':
+      return `worktree_merge_result:${msg.runId}:${msg.outcome}`;
     default: {
       // Exhaustiveness: `msg` is `never` here iff every variant is handled.
       const _exhaustive: never = msg;
@@ -548,8 +595,8 @@ describe('compile-time exhaustiveness guards (smoke run)', () => {
 
   it('client switch covers every variant', () => {
     expect(assertExhaustiveClient({ type: 'list_runs' })).toBe('list_runs');
-    expect(assertExhaustiveClient({ type: 'worktree_action', runId: 'r', action: 'keep' })).toBe(
-      'worktree_action:r:keep',
+    expect(assertExhaustiveClient({ type: 'worktree_action', runId: 'r', action: 'decline' })).toBe(
+      'worktree_action:r:decline',
     );
   });
 });
@@ -589,5 +636,27 @@ describe('ServerMessage – JSON round-trip', () => {
     const withoutRun: ServerMessage = { type: 'error', code: 'C', message: 'm' };
     expect(JSON.parse(JSON.stringify(withRun))).toEqual(withRun);
     expect(JSON.parse(JSON.stringify(withoutRun))).toEqual(withoutRun);
+  });
+
+  it('worktree_merge_result round-trips through JSON (with preserved fields)', () => {
+    const msg: ServerMessage = {
+      type: 'worktree_merge_result',
+      runId: 'r1',
+      outcome: 'failed',
+      cleanupError: 'worktree busy',
+      worktreePath: '/repo/.engin/wt/r1',
+      branchName: 'engin/r1',
+    };
+    const roundTripped = JSON.parse(JSON.stringify(msg));
+    expect(roundTripped).toEqual(msg);
+    expect(roundTripped.outcome).toBe('failed');
+    expect(roundTripped.worktreePath).toBe('/repo/.engin/wt/r1');
+  });
+
+  it('worktree_merge_result round-trips with only required fields', () => {
+    const msg: ServerMessage = { type: 'worktree_merge_result', runId: 'r1', outcome: 'clean' };
+    const roundTripped = JSON.parse(JSON.stringify(msg));
+    expect(roundTripped).toEqual(msg);
+    expect('cleanupError' in roundTripped).toBe(false);
   });
 });

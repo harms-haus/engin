@@ -53,7 +53,7 @@
 // workflow-loader.test.ts. A file-marker handshake lets the test control when
 // the controllable workflow resolves, and the AbortSignal drives cancellation.
 
-import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -161,6 +161,157 @@ function makeMockWs(): { ws: any; sent: any[] } {
     },
   };
   return { ws, sent };
+}
+
+// ─── handleWorktreeAction test helpers ──────────────────────────────────────
+//
+// handleWorktreeAction operates on a registered RunHandle that carries a
+// WorktreeManager (set asynchronously by RunExecutor). To exercise it in
+// isolation we register a hand-built handle whose `bridge` is a forwarding
+// stand-in: any broadcast the RunManager triggers (via whatever bridge method)
+// is fanned out to the handle's subscribers through the manager's real
+// SubscriptionManager — so a subscribed mock WebSocket observes the emitted
+// `worktree_merge_result` messages exactly as a real client would.
+
+/** Minimal EventStore stand-in (handleWorktreeAction does not touch the store). */
+function makeMockStore(): any {
+  return {
+    flush: () => Promise.resolve(),
+    getProjection: () => ({ currentPhaseId: undefined }),
+    getSnapshot: () => ({ seq: 0, state: {} }),
+    getEventsSince: () => [],
+    subscribe: () => () => {},
+    dispose: () => {},
+  };
+}
+
+/**
+ * A method-agnostic StatusBridge stand-in. Any method invoked with a
+ * ServerMessage-like first argument is forwarded to the run's subscribers via
+ * the manager's SubscriptionManager — mirroring how a real StatusBridge routes
+ * every broadcast through its constructor-provided callback. This lets the
+ * tests assert a `worktree_merge_result` reaches subscribers regardless of
+ * which bridge method `handleWorktreeAction` ultimately calls.
+ */
+function makeForwardingBridge(runId: string, manager: RunManager, handle: any): any {
+  return new Proxy(
+    {
+      dispose() {},
+      getSnapshot() {
+        return { type: 'snapshot', runId, seq: 0, state: {} };
+      },
+      handleResync() {
+        return { type: 'snapshot', runId, seq: 0, state: {} };
+      },
+    },
+    {
+      get(target, prop, receiver) {
+        if (typeof prop !== 'string' || prop in target) {
+          return Reflect.get(target, prop, receiver);
+        }
+        return (msg?: unknown) => {
+          if (msg && typeof msg === 'object' && typeof (msg as any).type === 'string') {
+            (manager as any).subscriptions.broadcast(runId, msg, handle);
+          }
+        };
+      },
+    },
+  );
+}
+
+/** Build a controllable WorktreeManager mock for the two-prompt merge UX. */
+function makeMockWorktreeManager(
+  opts: {
+    mainWorktreePath?: string;
+    mainBranch?: string;
+    finalMerge?: { success: boolean; conflicts: string[]; conflictsResolved: boolean; error?: string };
+    resolveResult?: boolean;
+    cleanupError?: string;
+  } = {},
+): any {
+  const mainWorktreePath = opts.mainWorktreePath ?? '/wt/main';
+  const mainBranch = opts.mainBranch ?? 'engin/my-branch';
+  return {
+    mainWorktreePath,
+    mainBranch,
+    repoRoot: '/tmp/project',
+    sourceCwd: '/tmp/project',
+    finalMergeToMain: mock(
+      async (): Promise<{ success: boolean; conflicts: string[]; conflictsResolved: boolean; error?: string }> =>
+        opts.finalMerge ?? { success: true, conflicts: [], conflictsResolved: false },
+    ),
+    resolveFinalMergeConflicts: mock(
+      async (): Promise<{ resolved: boolean; error?: string }> => ({ resolved: opts.resolveResult ?? true }),
+    ),
+    abortFinalMerge: mock(async (): Promise<void> => {}),
+    cleanup: mock(
+      async (): Promise<{ cleanupError?: string }> => (opts.cleanupError ? { cleanupError: opts.cleanupError } : {}),
+    ),
+    getWorktreeInfo: mock(() => ({
+      worktreePath: mainWorktreePath,
+      branchName: mainBranch,
+      originalCwd: '/tmp/project',
+    })),
+  };
+}
+
+/**
+ * Register a hand-built handle (with a WorktreeManager and a subscribed mock
+ * WebSocket) so `handleWorktreeAction` can be exercised without launching a
+ * real workflow. Returns the handle, the mock ws, and the recorded `sent`
+ * payloads broadcast to the subscriber.
+ */
+function registerWorktreeRun(
+  manager: RunManager,
+  opts: { runId: string; worktreeManager?: any; worktreePath?: string; branchName?: string },
+): { handle: any; ws: any; sent: any[] } {
+  const worktreePath = opts.worktreePath ?? '/wt/main';
+  const branchName = opts.branchName ?? 'engin/my-branch';
+
+  const sent: any[] = [];
+  const ws = {
+    // 1 === OPEN
+    readyState: 1,
+    send: (data: string) => {
+      try {
+        sent.push(JSON.parse(data));
+      } catch {
+        sent.push(data);
+      }
+    },
+    close() {},
+  };
+  const subscribers = new Set<any>();
+  subscribers.add(ws);
+
+  const handle: any = {
+    runId: opts.runId,
+    cwd: '/tmp/project',
+    workflowName: 'develop',
+    taskPrompt: 'do the thing',
+    workDir: '/tmp/work',
+    store: makeMockStore(),
+    controller: new AbortController(),
+    status: 'running',
+    summary: {
+      runId: opts.runId,
+      cwd: '/tmp/project',
+      workflowName: 'develop',
+      taskPrompt: 'do the thing',
+      status: 'running',
+      startedAt: new Date().toISOString(),
+    },
+    startedAt: new Date().toISOString(),
+    subscribers,
+    worktree: { worktreePath, branchName, originalCwd: '/tmp/project' },
+  };
+  if (opts.worktreeManager !== undefined) {
+    handle.worktreeManager = opts.worktreeManager;
+  }
+  handle.bridge = makeForwardingBridge(opts.runId, manager, handle);
+
+  (manager as any).registry.register(handle);
+  return { handle, ws, sent };
 }
 
 // ─── Test suite ─────────────────────────────────────────────────────────────
@@ -730,6 +881,302 @@ describe('RunManager', () => {
       await waitFor(() => manager.getRun(r2.runId)?.status === 'complete');
       await settle();
       expect(sent2.some((m) => m.type === 'run_complete' && m.runId === r2.runId)).toBe(true);
+    });
+  });
+
+  // ─── startRun: worktree gating removed ───────────────────────────────────
+
+  describe('startRun — worktree gating removed', () => {
+    it('does not set up a worktree synchronously; worktree/worktreeManager start undefined', async () => {
+      const { manager } = createManager();
+      const workDir = makeWorkDir('1234567890-nowt');
+      await mkdir(workDir, { recursive: true });
+
+      const result = await manager.startRun({
+        workflowName: 'develop',
+        taskPrompt: 't',
+        cwd,
+        workDir,
+      } as any);
+
+      // White-box: inspect the registered handle. The `msg.worktree` gate has
+      // been removed — startRun no longer calls setupWorktree. The worktree
+      // fields start undefined and are populated asynchronously by the
+      // RunExecutor during workflow execution.
+      const handle = (manager as any).registry.get(result.runId);
+      expect(handle).toBeDefined();
+      expect(handle.worktree).toBeUndefined();
+      expect(handle.worktreeManager).toBeUndefined();
+      expect(result.summary.worktree).toBeUndefined();
+
+      await writeFile(join(workDir, 'release.marker'), '1');
+      await waitFor(() => manager.listRuns()[0]?.status === 'complete');
+    });
+
+    it('forwards apiKeys onto the handle without creating a worktree', async () => {
+      const { manager } = createManager();
+      const workDir = makeWorkDir('1234567890-apikeys');
+      await mkdir(workDir, { recursive: true });
+
+      const result = await manager.startRun({
+        workflowName: 'develop',
+        taskPrompt: 't',
+        cwd,
+        workDir,
+        apiKeys: { OPENAI_API_KEY: 'sk-test' },
+      } as any);
+
+      const handle = (manager as any).registry.get(result.runId);
+      expect(handle.apiKeys).toEqual({ OPENAI_API_KEY: 'sk-test' });
+      // apiKeys alone must not trigger synchronous worktree creation.
+      expect(handle.worktree).toBeUndefined();
+      expect(handle.worktreeManager).toBeUndefined();
+
+      await writeFile(join(workDir, 'release.marker'), '1');
+      await waitFor(() => manager.listRuns()[0]?.status === 'complete');
+    });
+  });
+
+  // ─── handleWorktreeAction: two-prompt merge UX ───────────────────────────
+
+  describe('handleWorktreeAction (two-prompt merge UX)', () => {
+    it('is a no-op when the runId is unknown', async () => {
+      const { manager } = createManager();
+      const wtm = makeMockWorktreeManager();
+      const { sent } = registerWorktreeRun(manager, { runId: 'wt-known', worktreeManager: wtm });
+
+      await manager.handleWorktreeAction('does-not-exist', 'merge');
+
+      expect(wtm.finalMergeToMain).not.toHaveBeenCalled();
+      expect(sent.some((m) => m.type === 'worktree_merge_result')).toBe(false);
+    });
+
+    it('is a no-op when the handle has no worktreeManager', async () => {
+      const { manager } = createManager();
+      const { sent } = registerWorktreeRun(manager, {
+        runId: 'wt-nowtm',
+        worktreeManager: undefined,
+      });
+
+      await manager.handleWorktreeAction('wt-nowtm', 'merge');
+
+      expect(sent.some((m) => m.type === 'worktree_merge_result')).toBe(false);
+    });
+
+    describe('merge', () => {
+      it('on a clean merge: calls finalMergeToMain + cleanup and broadcasts outcome "clean"', async () => {
+        const { manager } = createManager();
+        const wtm = makeMockWorktreeManager({
+          finalMerge: { success: true, conflicts: [], conflictsResolved: false },
+        });
+        const { sent } = registerWorktreeRun(manager, { runId: 'wt-clean', worktreeManager: wtm });
+
+        await manager.handleWorktreeAction('wt-clean', 'merge');
+
+        expect(wtm.finalMergeToMain).toHaveBeenCalledTimes(1);
+        expect(wtm.cleanup).toHaveBeenCalledTimes(1);
+
+        const results = sent.filter((m) => m.type === 'worktree_merge_result');
+        expect(results).toHaveLength(1);
+        expect(results[0].runId).toBe('wt-clean');
+        expect(results[0].outcome).toBe('clean');
+      });
+
+      it('surfaces a cleanupError on a clean merge when cleanup reports one', async () => {
+        const { manager } = createManager();
+        const wtm = makeMockWorktreeManager({
+          finalMerge: { success: true, conflicts: [], conflictsResolved: false },
+          cleanupError: 'failed to remove worktree',
+        });
+        const { sent } = registerWorktreeRun(manager, { runId: 'wt-cleanerr', worktreeManager: wtm });
+
+        await manager.handleWorktreeAction('wt-cleanerr', 'merge');
+
+        expect(wtm.cleanup).toHaveBeenCalledTimes(1);
+        const results = sent.filter((m) => m.type === 'worktree_merge_result');
+        expect(results[0].outcome).toBe('clean');
+        expect(results[0].cleanupError).toBe('failed to remove worktree');
+      });
+
+      it('on conflicts: broadcasts "conflicts" with worktreePath + branchName and does NOT clean up', async () => {
+        const { manager } = createManager();
+        const wtm = makeMockWorktreeManager({
+          finalMerge: { success: false, conflicts: ['src/a.ts', 'src/b.ts'], conflictsResolved: false },
+        });
+        const { sent } = registerWorktreeRun(manager, {
+          runId: 'wt-conflict',
+          worktreeManager: wtm,
+          worktreePath: '/wt/main',
+          branchName: 'engin/feat',
+        });
+
+        await manager.handleWorktreeAction('wt-conflict', 'merge');
+
+        expect(wtm.finalMergeToMain).toHaveBeenCalledTimes(1);
+        expect(wtm.cleanup).not.toHaveBeenCalled();
+
+        const results = sent.filter((m) => m.type === 'worktree_merge_result');
+        expect(results).toHaveLength(1);
+        expect(results[0].outcome).toBe('conflicts');
+        expect(results[0].worktreePath).toBe('/wt/main');
+        expect(results[0].branchName).toBe('engin/feat');
+      });
+
+      it('on a merge failure with no conflicts: broadcasts "failed" and does NOT clean up', async () => {
+        const { manager } = createManager();
+        const wtm = makeMockWorktreeManager({
+          finalMerge: { success: false, conflicts: [], conflictsResolved: false },
+        });
+        const { sent } = registerWorktreeRun(manager, { runId: 'wt-fail', worktreeManager: wtm });
+
+        await manager.handleWorktreeAction('wt-fail', 'merge');
+
+        expect(wtm.finalMergeToMain).toHaveBeenCalledTimes(1);
+        expect(wtm.cleanup).not.toHaveBeenCalled();
+
+        const results = sent.filter((m) => m.type === 'worktree_merge_result');
+        expect(results).toHaveLength(1);
+        expect(results[0].outcome).toBe('failed');
+      });
+
+      it('forwards the failure reason in the error field on a merge failure', async () => {
+        const { manager } = createManager();
+        const wtm = makeMockWorktreeManager({
+          finalMerge: {
+            success: false,
+            conflicts: [],
+            conflictsResolved: false,
+            error: 'git merge --squash failed: already up to date',
+          },
+        });
+        const { sent } = registerWorktreeRun(manager, { runId: 'wt-fail-err', worktreeManager: wtm });
+
+        await manager.handleWorktreeAction('wt-fail-err', 'merge');
+
+        const results = sent.filter((m) => m.type === 'worktree_merge_result');
+        expect(results[0].outcome).toBe('failed');
+        expect(results[0].error).toBe('git merge --squash failed: already up to date');
+      });
+    });
+
+    describe('resolve', () => {
+      it('after a conflict merge, resolve succeeds: calls resolveFinalMergeConflicts + cleanup, broadcasts "resolved"', async () => {
+        const { manager } = createManager();
+        const conflicts = ['src/a.ts'];
+        const wtm = makeMockWorktreeManager({
+          finalMerge: { success: false, conflicts, conflictsResolved: false },
+          resolveResult: true,
+        });
+        const { sent } = registerWorktreeRun(manager, { runId: 'wt-resolve', worktreeManager: wtm });
+
+        // Two-prompt flow: (1) merge yields conflicts, (2) resolve succeeds.
+        await manager.handleWorktreeAction('wt-resolve', 'merge');
+        await manager.handleWorktreeAction('wt-resolve', 'resolve');
+
+        expect(wtm.resolveFinalMergeConflicts).toHaveBeenCalledTimes(1);
+        // The conflicts from the merge flow into the resolve call, and the
+        // taskPrompt is forwarded as the second argument.
+        expect(wtm.resolveFinalMergeConflicts.mock.calls[0][0]).toEqual(conflicts);
+        expect(wtm.resolveFinalMergeConflicts.mock.calls[0][1]).toBe('do the thing');
+        // cleanup runs exactly once (on the successful resolve), not on the
+        // conflict merge.
+        expect(wtm.cleanup).toHaveBeenCalledTimes(1);
+
+        const outcomes = sent.filter((m) => m.type === 'worktree_merge_result').map((m) => m.outcome);
+        expect(outcomes).toEqual(['conflicts', 'resolved']);
+      });
+
+      it('on a resolve failure: broadcasts "failed" and does NOT clean up', async () => {
+        const { manager } = createManager();
+        const wtm = makeMockWorktreeManager({
+          finalMerge: { success: false, conflicts: ['src/a.ts'], conflictsResolved: false },
+          resolveResult: false,
+        });
+        const { sent } = registerWorktreeRun(manager, { runId: 'wt-resolvefail', worktreeManager: wtm });
+
+        await manager.handleWorktreeAction('wt-resolvefail', 'merge');
+        await manager.handleWorktreeAction('wt-resolvefail', 'resolve');
+
+        expect(wtm.resolveFinalMergeConflicts).toHaveBeenCalledTimes(1);
+        expect(wtm.cleanup).not.toHaveBeenCalled();
+
+        const outcomes = sent.filter((m) => m.type === 'worktree_merge_result').map((m) => m.outcome);
+        expect(outcomes).toEqual(['conflicts', 'failed']);
+      });
+
+      it('forwards the resolution failure reason in the error field on a resolve failure', async () => {
+        const { manager } = createManager();
+        const wtm = makeMockWorktreeManager();
+        // Override resolveFinalMergeConflicts to return a failure with a reason.
+        wtm.resolveFinalMergeConflicts = mock(
+          async (): Promise<{ resolved: boolean; error?: string }> => ({
+            resolved: false,
+            error: 'agent could not resolve conflicts after 3 attempts',
+          }),
+        );
+        const { sent } = registerWorktreeRun(manager, { runId: 'wt-resolveerr', worktreeManager: wtm });
+
+        await manager.handleWorktreeAction('wt-resolveerr', 'merge');
+        await manager.handleWorktreeAction('wt-resolveerr', 'resolve');
+
+        const results = sent.filter((m) => m.type === 'worktree_merge_result');
+        const failed = results.find((m) => m.outcome === 'failed');
+        expect(failed).toBeDefined();
+        expect(failed!.error).toBe('agent could not resolve conflicts after 3 attempts');
+      });
+    });
+
+    describe('decline', () => {
+      it('calls abortFinalMerge, broadcasts "declined" with worktreePath + branchName, and does NOT clean up', async () => {
+        const { manager } = createManager();
+        const wtm = makeMockWorktreeManager();
+        const { sent } = registerWorktreeRun(manager, {
+          runId: 'wt-decline',
+          worktreeManager: wtm,
+          worktreePath: '/wt/main',
+          branchName: 'engin/feat',
+        });
+
+        await manager.handleWorktreeAction('wt-decline', 'decline');
+
+        expect(wtm.abortFinalMerge).toHaveBeenCalledTimes(1);
+        expect(wtm.cleanup).not.toHaveBeenCalled();
+
+        const results = sent.filter((m) => m.type === 'worktree_merge_result');
+        expect(results).toHaveLength(1);
+        expect(results[0].outcome).toBe('declined');
+        expect(results[0].worktreePath).toBe('/wt/main');
+        expect(results[0].branchName).toBe('engin/feat');
+      });
+
+      it('still broadcasts "declined" when abortFinalMerge rejects (no merge in progress)', async () => {
+        // Mirrors the common flow where the user answers 'No' to Prompt 1
+        // before any merge was ever attempted: `git merge --abort` exits with
+        // code 128 ('fatal: There is no merge to abort'). The abort is
+        // best-effort, so the 'declined' broadcast must still fire.
+        const { manager } = createManager();
+        const wtm = makeMockWorktreeManager();
+        wtm.abortFinalMerge = mock(async (): Promise<void> => {
+          throw new Error('fatal: There is no merge to abort');
+        });
+        const { sent } = registerWorktreeRun(manager, {
+          runId: 'wt-decline-nomerge',
+          worktreeManager: wtm,
+          worktreePath: '/wt/main',
+          branchName: 'engin/feat',
+        });
+
+        await manager.handleWorktreeAction('wt-decline-nomerge', 'decline');
+
+        expect(wtm.abortFinalMerge).toHaveBeenCalledTimes(1);
+        expect(wtm.cleanup).not.toHaveBeenCalled();
+
+        const results = sent.filter((m) => m.type === 'worktree_merge_result');
+        expect(results).toHaveLength(1);
+        expect(results[0].outcome).toBe('declined');
+        expect(results[0].worktreePath).toBe('/wt/main');
+        expect(results[0].branchName).toBe('engin/feat');
+      });
     });
   });
 });

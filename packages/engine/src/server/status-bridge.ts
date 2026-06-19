@@ -9,7 +9,10 @@ import type { EventStore } from '../tracking/event-store.js';
  * broadcast callback.  Every variant is tagged with the run's `runId` so a
  * single WebSocket connection can fan out to many concurrent runs.
  */
-export type BridgeMessage = Extract<ServerMessage, { type: 'snapshot' | 'events' | 'run_complete' | 'run_failed' }>;
+export type BridgeMessage = Extract<
+  ServerMessage,
+  { type: 'snapshot' | 'events' | 'run_complete' | 'run_failed' | 'worktree_merge_result' }
+>;
 
 /**
  * Thin view over the {@link EventStore} that broadcasts run-scoped
@@ -116,6 +119,20 @@ export class StatusBridge {
    * No-op after {@link dispose} has been called.
    */
   broadcastTerminal(msg: Extract<BridgeMessage, { type: 'run_complete' | 'run_failed' }>): void {
+    if (this.disposed) return;
+    this.broadcast(msg);
+  }
+
+  /**
+   * Broadcast a run-scoped `worktree_merge_result` message directly. This is
+   * the hook {@link RunManager.handleWorktreeAction} calls to surface the
+   * two-prompt final-merge UX outcome (clean / conflicts / resolved / failed /
+   * declined) to subscribers; it broadcasts IMMEDIATELY (synchronously, not
+   * coalesced).
+   *
+   * No-op after {@link dispose} has been called.
+   */
+  broadcastWorktreeResult(msg: Extract<BridgeMessage, { type: 'worktree_merge_result' }>): void {
     if (this.disposed) return;
     this.broadcast(msg);
   }

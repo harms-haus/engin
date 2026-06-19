@@ -5,6 +5,7 @@ export type { ThinkingLevel };
 // ─── Peer dependency re-exports (not re-exported by pi-coding-agent) ───────
 import type { ThinkingLevel } from '@earendil-works/pi-agent-core';
 import type { RendererRegistry } from './renderer-registry.js';
+import type { WorktreeManager } from './worktree-manager.js';
 
 export { getModel, parseJsonWithRepair } from '@earendil-works/pi-ai';
 export type { Model } from '@earendil-works/pi-ai';
@@ -231,6 +232,8 @@ export interface WorkflowRunOptions {
   worktree?: WorktreeInfo;
   /** When provided, enables output renderers that transform agent JSON output into human-readable markdown. */
   rendererRegistry?: RendererRegistry;
+  /** WorktreeManager for isolated git worktree execution */
+  worktreeManager?: WorktreeManager;
 }
 
 // ─── Workflow Entry ───────────────────────────────────────────────────────

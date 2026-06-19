@@ -12,6 +12,10 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, mock, spyOn } fr
 // submits to the daemon via executeViaDaemon). The daemon-client run path is
 // covered by run-command-tui.test.ts (T27), t33-worktree-lifecycle.test.ts, and
 // t35-auth-token.test.ts.
+//
+// NOTE: The `--worktree` CLI flag was removed (worktrees are now automatic for
+// git repos). The `CliOptions` type no longer carries a `worktree` field, so
+// the option objects below omit it.
 
 // Capture the real modules before mocking so they can be restored in afterAll
 // (prevents the mocks from leaking into later test files in the same process).
@@ -75,7 +79,6 @@ describe('runCommand — input validation guards', () => {
         cwd: '/tmp',
         maxConcurrent: 3,
         verbose: false,
-        worktree: false,
         apiKeys: {},
         warnings: [],
       };
@@ -91,7 +94,6 @@ describe('runCommand — input validation guards', () => {
         cwd: '/tmp',
         maxConcurrent: 3,
         verbose: false,
-        worktree: false,
         apiKeys: {},
         warnings: [],
       };
@@ -111,7 +113,6 @@ describe('runCommand — input validation guards', () => {
         cwd: '/tmp',
         maxConcurrent: 3,
         verbose: false,
-        worktree: false,
         apiKeys: {},
         warnings: [],
       };
@@ -127,7 +128,6 @@ describe('runCommand — input validation guards', () => {
         cwd: '/tmp',
         maxConcurrent: 3,
         verbose: false,
-        worktree: false,
         apiKeys: {},
         warnings: [],
       };
@@ -143,7 +143,6 @@ describe('runCommand — input validation guards', () => {
         cwd: '/tmp',
         maxConcurrent: 3,
         verbose: false,
-        worktree: false,
         apiKeys: {},
         warnings: [],
       };

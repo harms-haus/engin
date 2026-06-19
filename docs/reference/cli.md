@@ -41,8 +41,11 @@ engin <workflow-name> <task-prompt> [options]
    `/health` with a timeout). If it fails to come up, error clearly.
 2. **Submit.** Connect an `EngineClient` over WebSocket to `ws://127.0.0.1:<port>/ws`
    and send `start_run { workflowName, taskPrompt, cwd, workDir?, maxConcurrent?,
-apiKeys?, worktree? }`. Receive `run_started { runId }` (the client is
-   auto-subscribed to the run).
+apiKeys? }`. Receive `run_started { runId, summary }` (the client is
+   auto-subscribed to the run). Note: `summary.worktree` is populated
+   asynchronously by the run executor (after an LLM-generated branch slug +
+   worktree setup), so it is NOT present on the initial `run_started` message;
+   it appears on later `runs` list broadcasts once setup completes.
 3. **Attach the view.**
    - **TTY** (and not `--verbose`): render the TUI dashboard (`WorkflowTUI`) driven
      by a `ClientStore` fed from the `EngineClient`. The QR overlay points at the
@@ -52,15 +55,22 @@ apiKeys?, worktree? }`. Receive `run_started { runId }` (the client is
 4. **Block** until `run_complete` / `run_failed` for `runId`. Transient WS drops are
    handled by reconnect/backoff + `resync` + a "reconnecting…" banner (TUI). If the
    server is truly gone, the CLI errors out.
-5. **Post-run.** On terminal state, if `--worktree`, run the interactive
-   merge/PR/discard prompt client-side and send the chosen `worktree_action` to the
-   server.
+5. **Post-run.** On terminal state, when the run captured a worktree (every git-repo
+   run does), run the interactive **two yes/No prompt** final merge client-side and
+   send the chosen `worktree_action` (`merge` / `resolve` / `decline`) to the server.
+   Non-git runs have no worktree and skip the prompt entirely.
 6. **Exit.** The server keeps running. The client flushes nothing — durability is
    the server's job.
 
 There is **exactly one execution path: the server**. Non-TTY `engin run` does not
 fall back to in-process execution; it submits to the server and renders the
 resulting stream to stdout.
+
+> **Worktrees are automatic.** Every git-repo run uses worktrees by default — there
+> is no `--worktree` flag. The server creates a main worktree on `engin/{mainSlug}`
+> and a per-task worktree on `engin/{mainSlug}--{taskId}` for each task. Non-git
+> runs warn and prompt to continue in-place. See
+> [Worktrees reference](worktrees.md).
 
 ### Flags
 
@@ -70,7 +80,6 @@ resulting stream to stdout.
 | `--work-dir <path>`        | `.engin/work/<timestamp>-<workflow>` | Directory for workflow state persistence (forwarded to the server).                                 |
 | `--max-concurrent <n>`     | `5`                                  | Maximum parallel agents. Must be a positive integer.                                                |
 | `--verbose`                | off                                  | Verbose stdout output (turn/tool detail). Disables the TUI when stdout is a TTY.                    |
-| `--worktree`               | off                                  | Run the workflow in a git worktree (created server-side).                                           |
 | `--api-key <provider=key>` | —                                    | Provider → API key override (repeatable). Forwarded to the server. **Visible in process listings.** |
 | `--port <port>`            | `3619`                               | Server port to connect to / auto-start. Integer in 1–65535.                                         |
 
@@ -214,28 +223,58 @@ engin server status
 
 Probes `/health` and prints whether the server is running and on which port.
 
-## Worktree runs
+## Worktrees (automatic for git repos)
 
-Pass `--worktree` to run inside a freshly created git worktree on a generated
-branch (sibling of the repo root). **Worktree creation runs server-side** (the
-server has repo context for the run). After the run completes, the CLI prompts
-client-side for a post-run action; the chosen action is sent to the server via
-`worktree_action`:
+There is no `--worktree` flag — worktrees are the default execution model for git
+repositories. The server creates a main worktree on `engin/{mainSlug}` and a
+per-task worktree on `engin/{mainSlug}--{taskId}` for each task, isolating
+concurrent tasks. Full details — the layout, the branch-naming scheme, the
+`.worktreecopy` spec, the merge/cull model, and the final-merge UX — live in the
+[Worktrees reference](worktrees.md).
 
-1. **Do nothing (keep)** — keep the worktree (`keep`).
-2. **Merge to main** — commit, merge into the detected main branch, resolve
-   conflicts with an agent if any, then remove the worktree (`merge`).
-3. **Push and create PR** — commit, push, and run `gh pr create` (`pr`).
+### Non-git fallback
 
-If the client detaches mid-run (force-quit), the worktree is **left in place** for
-a later client to act on.
+When `--cwd` is not inside a git repository, `run` warns and prompts before
+submitting:
 
-The branch name is generated by an agent and sanitised to `[a-z0-9-]`. Files listed
-in a `.worktreecopy` file at the repo root are copied into the worktree before the
-run (useful for ignored config you still need).
+```
+Warning: '/path/to/cwd' is not a git repository. Continue without git and worktrees? [y/N]
+```
+
+- **Yes** → the run is submitted. The server detects non-git and runs in-place
+  (no worktrees, no branches, no final merge prompt).
+- **No** → the CLI aborts with a pointer to `git init`.
+
+engin never auto-runs `git init`.
+
+### Final merge UX (git-repo runs)
+
+When a run reaches a terminal state and the client captured a worktree (every
+git-repo run does), the CLI runs the two yes/No prompt final merge client-side.
+Every action is sent to the server as a `worktree_action` (`merge` / `resolve` /
+`decline`); the server performs the git operations and replies with a
+`worktree_merge_result`.
+
+1. **Prompt 1 — "Merge into main? yes/No"**
+   - **yes** → squash-merge the main-wt branch into real `main`. Clean merge →
+     cleanup (remove worktrees + branches). Conflicts → **Prompt 2**.
+   - **No** → preserve everything for manual merge (paths surfaced).
+2. **Prompt 2 — "Conflicts exist on the merge. Should engin handle it? yes/No"**
+   - **yes** → the hardened conflict resolver runs (tool-using agent + self-verify).
+     Resolved → cleanup. Failed → preserve everything.
+   - **No** → `git merge --abort` and preserve everything.
+
+Cleanup runs **only** after a successful merge. A "No" at either prompt means
+"the user will handle it manually," **not** "discard the changes" — worktrees and
+branches are preserved.
+
+If the client detaches mid-run, the worktree is **left in place** for a later
+client to act on.
 
 ## Where to go next
 
 - [Server reference](server.md) — the daemon, `RunManager`, the multi-run protocol.
+- [Worktrees reference](worktrees.md) — the per-task worktree system, `.worktreecopy`,
+  and the final merge UX.
 - [TUI reference](tui.md) — the terminal view and the detach/kill prompt.
 - [Web reference](web.md) — the React client and runs frame.

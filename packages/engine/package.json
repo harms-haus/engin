@@ -16,6 +16,7 @@
     "@harms-haus/engin-shared": "workspace:*",
     "dotenv": "^16.5.0",
     "gray-matter": "^4.0.3",
+    "ignore": "^6.0.0",
     "qrcode": "^1.5.4",
     "zod": "^3.25.0"
   }

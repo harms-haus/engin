@@ -2,6 +2,9 @@ import { afterAll, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { z } from 'zod';
 import { RendererRegistry } from '../../packages/engine/src/core/renderer-registry.js';
 import type { AgentProfile } from '../../packages/engine/src/core/types.js';
+import type { WorktreeManager } from '../../packages/engine/src/core/worktree-manager.js';
+import { buildExecCtx } from '../../packages/engine/src/pool/runner-utils.js';
+import type { TaskRunnerContext } from '../../packages/engine/src/pool/types.js';
 import { makeMockSession } from '../helpers/make-session.js';
 import { makeTask } from '../helpers/make-task.js';
 
@@ -1386,6 +1389,43 @@ describe('runStep (step-execution module)', () => {
         }),
       );
     });
+  });
+});
+
+describe('buildExecCtx forwards worktreeManager', () => {
+  /**
+   * Minimal `TaskRunnerContext` with spyable completeTask/failTask callbacks.
+   * Only the fields `buildExecCtx` reads are populated; optional fields default
+   * to `undefined` unless overridden.
+   */
+  function makeRunnerContext(overrides?: Partial<TaskRunnerContext>): TaskRunnerContext {
+    return {
+      task: makeTask(),
+      agentId: 'lane-0',
+      profiles: new Map<string, AgentProfile>(),
+      onStatus: undefined,
+      activeSessions: new Set<{ abort(): Promise<void> }>(),
+      phaseId: 'implementing',
+      sessionBaseDir: '/tmp/sessions',
+      cwd: '/tmp/project',
+      maxStepRetries: 5,
+      completeTask: mock(() => true),
+      failTask: mock(() => {}),
+      ...overrides,
+    };
+  }
+
+  it('forwards worktreeManager from the runner context to the step execution context', () => {
+    const wm = {} as WorktreeManager;
+    const execCtx = buildExecCtx(makeRunnerContext({ worktreeManager: wm }));
+
+    expect(execCtx.worktreeManager).toBe(wm);
+  });
+
+  it('leaves worktreeManager undefined when the runner context omits it', () => {
+    const execCtx = buildExecCtx(makeRunnerContext());
+
+    expect(execCtx.worktreeManager).toBeUndefined();
   });
 });
 

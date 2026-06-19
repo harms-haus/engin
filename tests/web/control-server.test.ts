@@ -387,7 +387,7 @@ describe('control-server', () => {
       }
     });
 
-    it('start_run forwards optional fields (workDir, maxConcurrent, apiKeys, worktree) to runManager', async () => {
+    it('start_run forwards optional fields (workDir, maxConcurrent, apiKeys) to runManager', async () => {
       const runManager = createMockRunManager();
       const startRunMock = mock(async (_msg: StartRunMessage) => ({
         runId: 'run-opt',
@@ -410,7 +410,6 @@ describe('control-server', () => {
           workDir: '/tmp/work',
           maxConcurrent: 3,
           apiKeys: { OPENAI_API_KEY: 'sk-x' },
-          worktree: true,
         });
 
         const msg = await collector.waitForType('run_started');
@@ -425,7 +424,6 @@ describe('control-server', () => {
         expect(passed.workDir).toBe('/tmp/work');
         expect(passed.maxConcurrent).toBe(3);
         expect(passed.apiKeys).toEqual({ OPENAI_API_KEY: 'sk-x' });
-        expect(passed.worktree).toBe(true);
       } finally {
         ws.close();
       }

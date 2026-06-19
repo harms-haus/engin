@@ -1,5 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  readlinkSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -8,7 +17,9 @@ import {
   checkoutBranch,
   commitChanges,
   copyFilesToWorktree,
+  createSymlinkWithRetry,
   createWorktree,
+  deleteBranchForce,
   getCurrentBranch,
   getDiff,
   getMainBranch,
@@ -16,10 +27,17 @@ import {
   isGitRepo,
   listConflictedFiles,
   mergeBranch,
+  populateWorktree,
   pushBranch,
+  readWorktreeCopyEntries,
   readWorktreeCopyList,
   removeWorktree,
+  sanitizeBranchSlug,
+  squashMergeBranch,
   stageAll,
+  stageFiles,
+  worktreePrune,
+  type WorktreeCopyEntry,
 } from '../../packages/engine/src/core/git.js';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -565,5 +583,582 @@ describe('copyFilesToWorktree', () => {
 
     copyFilesToWorktree(dir, target, ['data.txt']);
     expect(readFileSync(join(target, 'data.txt'), 'utf-8')).toBe('source-content');
+  });
+});
+
+// ─── worktreePrune ──────────────────────────────────────────────────────────
+
+describe('worktreePrune', () => {
+  const { getDir } = useTempDir();
+
+  it('runs without error in a real git repo', () => {
+    const dir = getDir();
+    initRepo(dir);
+    expect(() => worktreePrune(dir)).not.toThrow();
+  });
+
+  it('removes orphaned worktree metadata after its directory is deleted', () => {
+    const dir = getDir();
+    initRepo(dir);
+
+    // Create a real worktree in a sibling directory
+    const wtPath = join(dir, '..', `wt-prune-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    createWorktree(dir, 'prune-branch', wtPath);
+    expect(existsSync(wtPath)).toBe(true);
+
+    // Simulate a crashed run: delete the worktree directory without telling git
+    rmSync(wtPath, { recursive: true, force: true });
+
+    // Before pruning, git still tracks the orphaned worktree
+    const before = rawGit(['worktree', 'list'], dir);
+    expect(before).toContain('prune-branch');
+
+    // Prune sweeps the orphaned metadata
+    worktreePrune(dir);
+
+    const after = rawGit(['worktree', 'list'], dir);
+    expect(after).not.toContain('prune-branch');
+  });
+});
+
+// ─── sanitizeBranchSlug ─────────────────────────────────────────────────────
+
+describe('sanitizeBranchSlug', () => {
+  it('lowercases and replaces spaces/punctuation with dashes', () => {
+    expect(sanitizeBranchSlug('Feature: Add Login')).toBe('feature-add-login');
+  });
+
+  it('replaces slashes and special characters with dashes', () => {
+    expect(sanitizeBranchSlug('fix/bug #123')).toBe('fix-bug-123');
+  });
+
+  it('collapses consecutive dashes', () => {
+    expect(sanitizeBranchSlug('a---b')).toBe('a-b');
+  });
+
+  it('replaces underscores with dashes', () => {
+    expect(sanitizeBranchSlug('a___b')).toBe('a-b');
+  });
+
+  it('trims leading and trailing dashes', () => {
+    expect(sanitizeBranchSlug('---leading')).toBe('leading');
+    expect(sanitizeBranchSlug('trailing---')).toBe('trailing');
+    expect(sanitizeBranchSlug('-foo-')).toBe('foo');
+  });
+
+  it('returns already-clean slugs unchanged', () => {
+    expect(sanitizeBranchSlug('my-branch')).toBe('my-branch');
+    expect(sanitizeBranchSlug('feature-123')).toBe('feature-123');
+  });
+
+  it('lowercases uppercase characters', () => {
+    expect(sanitizeBranchSlug('CamelCase')).toBe('camelcase');
+    expect(sanitizeBranchSlug('UPPER')).toBe('upper');
+  });
+
+  it('strips non-ASCII characters down to dashes', () => {
+    expect(sanitizeBranchSlug('caf\u00e9')).toBe('caf');
+  });
+
+  it('falls back to engin-worktree-{timestamp} when the result is empty', () => {
+    const result = sanitizeBranchSlug('!!!');
+    expect(result).toMatch(/^engin-worktree-\d+$/);
+  });
+
+  it('falls back to engin-worktree-{timestamp} for an empty string', () => {
+    const result = sanitizeBranchSlug('');
+    expect(result).toMatch(/^engin-worktree-\d+$/);
+  });
+
+  it('falls back to engin-worktree-{timestamp} for a dashes-only string', () => {
+    const result = sanitizeBranchSlug('---');
+    expect(result).toMatch(/^engin-worktree-\d+$/);
+  });
+
+  it('produces a unique-ish timestamp suffix on each fallback call', () => {
+    const a = sanitizeBranchSlug('!!!');
+    const b = sanitizeBranchSlug('!!!');
+    // The timestamps may collide if called within the same millisecond, but
+    // both must still be valid fallback slugs.
+    expect(a).toMatch(/^engin-worktree-\d+$/);
+    expect(b).toMatch(/^engin-worktree-\d+$/);
+  });
+});
+
+// ─── createSymlinkWithRetry ─────────────────────────────────────────────────
+
+describe('createSymlinkWithRetry', () => {
+  const { getDir } = useTempDir();
+
+  it('creates a symlink pointing to the target', () => {
+    const dir = getDir();
+    mkdirSync(dir, { recursive: true });
+
+    const target = join(dir, 'target.txt');
+    writeFileSync(target, 'hello');
+    const link = join(dir, 'link');
+
+    createSymlinkWithRetry(target, link);
+
+    expect(lstatSync(link).isSymbolicLink()).toBe(true);
+    expect(readlinkSync(link)).toBe(target);
+    // Reading through the symlink resolves to the target contents
+    expect(readFileSync(link, 'utf-8')).toBe('hello');
+  });
+
+  it('is a no-op when the symlink already exists and points to the correct target', () => {
+    const dir = getDir();
+    mkdirSync(dir, { recursive: true });
+
+    const target = join(dir, 'target.txt');
+    writeFileSync(target, 'data');
+    const link = join(dir, 'link');
+
+    // Pre-create the correct symlink
+    symlinkSync(target, link);
+    const originalIno = lstatSync(link).ino;
+
+    // Should not throw and should leave the existing symlink untouched
+    expect(() => createSymlinkWithRetry(target, link)).not.toThrow();
+
+    expect(lstatSync(link).isSymbolicLink()).toBe(true);
+    expect(readlinkSync(link)).toBe(target);
+    // The symlink node itself was not replaced
+    expect(lstatSync(link).ino).toBe(originalIno);
+  });
+
+  it('throws after exhausting retries when a symlink exists pointing elsewhere', () => {
+    const dir = getDir();
+    mkdirSync(dir, { recursive: true });
+
+    const correctTarget = join(dir, 'correct.txt');
+    const wrongTarget = join(dir, 'wrong.txt');
+    const link = join(dir, 'link');
+
+    // Pre-create a symlink pointing to the wrong target
+    symlinkSync(wrongTarget, link);
+
+    // Because the existing symlink does NOT point to the requested target, the
+    // function cannot treat it as a no-op; symlinkSync will fail with EEXIST on
+    // every attempt and the function should throw after exhausting retries.
+    expect(() => createSymlinkWithRetry(correctTarget, link, 2, 5)).toThrow();
+  });
+
+  it('honours a small backoff/retry budget without hanging', () => {
+    const dir = getDir();
+    mkdirSync(dir, { recursive: true });
+
+    const correctTarget = join(dir, 'correct.txt');
+    const wrongTarget = join(dir, 'wrong.txt');
+    const link = join(dir, 'link');
+    symlinkSync(wrongTarget, link);
+
+    const start = Date.now();
+    expect(() => createSymlinkWithRetry(correctTarget, link, 1, 10)).toThrow();
+    const elapsed = Date.now() - start;
+
+    // With 1 retry and a 10ms backoff, it should complete well under a second.
+    expect(elapsed).toBeLessThan(1000);
+  });
+});
+
+// ─── readWorktreeCopyEntries ────────────────────────────────────────────────
+
+describe('readWorktreeCopyEntries', () => {
+  const { getDir } = useTempDir();
+
+  it('returns an empty array when .worktreecopy does not exist', () => {
+    const dir = getDir();
+    mkdirSync(dir, { recursive: true });
+    expect(readWorktreeCopyEntries(dir)).toEqual([]);
+  });
+
+  it('parses plain patterns as copy-mode, non-negated entries', () => {
+    const dir = getDir();
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, '.worktreecopy'), 'file1.txt\n*.md\n');
+    expect(readWorktreeCopyEntries(dir)).toEqual([
+      { pattern: 'file1.txt', mode: 'copy', negated: false },
+      { pattern: '*.md', mode: 'copy', negated: false },
+    ]);
+  });
+
+  it('parses @symlink prefix into symlink-mode entries', () => {
+    const dir = getDir();
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, '.worktreecopy'), '@symlink node_modules\n');
+    expect(readWorktreeCopyEntries(dir)).toEqual([{ pattern: 'node_modules', mode: 'symlink', negated: false }]);
+  });
+
+  it('parses ! prefix into negated copy-mode entries', () => {
+    const dir = getDir();
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, '.worktreecopy'), '!.env.example\n');
+    expect(readWorktreeCopyEntries(dir)).toEqual([{ pattern: '.env.example', mode: 'copy', negated: true }]);
+  });
+
+  it('skips comment lines and blank lines', () => {
+    const dir = getDir();
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, '.worktreecopy'), '# a comment\n\n   \nkeep.txt\n# trailing\n');
+    expect(readWorktreeCopyEntries(dir)).toEqual([{ pattern: 'keep.txt', mode: 'copy', negated: false }]);
+  });
+
+  it('parses a mixed .worktreecopy file correctly', () => {
+    const dir = getDir();
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, '.worktreecopy'),
+      ['# copy everything by default', '*', '# except secrets', '!.env', '', '@symlink node_modules', ''].join('\n'),
+    );
+    expect(readWorktreeCopyEntries(dir)).toEqual([
+      { pattern: '*', mode: 'copy', negated: false },
+      { pattern: '.env', mode: 'copy', negated: true },
+      { pattern: 'node_modules', mode: 'symlink', negated: false },
+    ]);
+  });
+
+  it('trims whitespace around each entry', () => {
+    const dir = getDir();
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, '.worktreecopy'), '   spaced.txt   \n');
+    expect(readWorktreeCopyEntries(dir)).toEqual([{ pattern: 'spaced.txt', mode: 'copy', negated: false }]);
+  });
+});
+
+// ─── populateWorktree ───────────────────────────────────────────────────────
+
+describe('populateWorktree', () => {
+  const { getDir } = useTempDir();
+
+  it('copies top-level files matched by copy-mode entries', () => {
+    const dir = getDir();
+    mkdirSync(dir, { recursive: true });
+
+    // Source layout
+    writeFileSync(join(dir, 'a.txt'), 'aaa');
+    writeFileSync(join(dir, 'b.txt'), 'bbb');
+    writeFileSync(join(dir, 'c.md'), 'ccc');
+
+    const source = join(dir, 'source');
+    const target = join(dir, 'target');
+    // Move created files into a dedicated source dir
+    mkdirSync(source, { recursive: true });
+    writeFileSync(join(source, 'a.txt'), 'aaa');
+    writeFileSync(join(source, 'b.txt'), 'bbb');
+    writeFileSync(join(source, 'c.md'), 'ccc');
+    mkdirSync(target, { recursive: true });
+
+    const entries: WorktreeCopyEntry[] = [{ pattern: '*.txt', mode: 'copy', negated: false }];
+    populateWorktree(source, target, entries);
+
+    expect(readFileSync(join(target, 'a.txt'), 'utf-8')).toBe('aaa');
+    expect(readFileSync(join(target, 'b.txt'), 'utf-8')).toBe('bbb');
+    // c.md does not match *.txt and must not be copied
+    expect(existsSync(join(target, 'c.md'))).toBe(false);
+  });
+
+  it('recursively copies a directory matched by a copy-mode entry', () => {
+    const dir = getDir();
+    mkdirSync(dir, { recursive: true });
+
+    const source = join(dir, 'source');
+    const target = join(dir, 'target');
+    mkdirSync(join(source, 'mydir', 'deep'), { recursive: true });
+    writeFileSync(join(source, 'mydir', 'inner.txt'), 'inner');
+    writeFileSync(join(source, 'mydir', 'deep', 'nested.txt'), 'nested');
+    mkdirSync(target, { recursive: true });
+
+    const entries: WorktreeCopyEntry[] = [{ pattern: 'mydir', mode: 'copy', negated: false }];
+    populateWorktree(source, target, entries);
+
+    expect(readFileSync(join(target, 'mydir', 'inner.txt'), 'utf-8')).toBe('inner');
+    expect(readFileSync(join(target, 'mydir', 'deep', 'nested.txt'), 'utf-8')).toBe('nested');
+  });
+
+  it('creates symlinks for symlink-mode entries', () => {
+    const dir = getDir();
+    mkdirSync(dir, { recursive: true });
+
+    const source = join(dir, 'source');
+    const target = join(dir, 'target');
+    mkdirSync(join(source, 'node_modules', 'pkg'), { recursive: true });
+    writeFileSync(join(source, 'node_modules', 'pkg', 'index.js'), 'module.exports = 1');
+    mkdirSync(target, { recursive: true });
+
+    const entries: WorktreeCopyEntry[] = [{ pattern: 'node_modules', mode: 'symlink', negated: false }];
+    populateWorktree(source, target, entries);
+
+    const linkPath = join(target, 'node_modules');
+    expect(lstatSync(linkPath).isSymbolicLink()).toBe(true);
+    // Reading through the symlink resolves into the source directory
+    expect(readFileSync(join(linkPath, 'pkg', 'index.js'), 'utf-8')).toBe('module.exports = 1');
+  });
+
+  it('honours negated copy entries to exclude otherwise-matched files', () => {
+    const dir = getDir();
+    mkdirSync(dir, { recursive: true });
+
+    const source = join(dir, 'source');
+    const target = join(dir, 'target');
+    mkdirSync(source, { recursive: true });
+    writeFileSync(join(source, 'keep.txt'), 'keep');
+    writeFileSync(join(source, '.env.example'), 'secret');
+    mkdirSync(target, { recursive: true });
+
+    // Copy everything (*), but exclude .env.example
+    const entries: WorktreeCopyEntry[] = [
+      { pattern: '*', mode: 'copy', negated: false },
+      { pattern: '.env.example', mode: 'copy', negated: true },
+    ];
+    populateWorktree(source, target, entries);
+
+    expect(readFileSync(join(target, 'keep.txt'), 'utf-8')).toBe('keep');
+    // .env.example is excluded by the negation and must not be copied
+    expect(existsSync(join(target, '.env.example'))).toBe(false);
+  });
+
+  it('does not walk into or copy .git and .engin directories', () => {
+    const dir = getDir();
+    mkdirSync(dir, { recursive: true });
+
+    const source = join(dir, 'source');
+    const target = join(dir, 'target');
+    mkdirSync(join(source, '.git'), { recursive: true });
+    writeFileSync(join(source, '.git', 'HEAD'), 'ref: refs/heads/main');
+    mkdirSync(join(source, '.engin'), { recursive: true });
+    writeFileSync(join(source, '.engin', 'state.json'), '{}');
+    writeFileSync(join(source, 'keep.txt'), 'keep');
+    mkdirSync(target, { recursive: true });
+
+    // * would match .git and .engin, but they must be skipped entirely
+    const entries: WorktreeCopyEntry[] = [{ pattern: '*', mode: 'copy', negated: false }];
+    populateWorktree(source, target, entries);
+
+    expect(readFileSync(join(target, 'keep.txt'), 'utf-8')).toBe('keep');
+    expect(existsSync(join(target, '.git'))).toBe(false);
+    expect(existsSync(join(target, '.engin'))).toBe(false);
+  });
+
+  it('supports mixed copy and symlink entries in a single call', () => {
+    const dir = getDir();
+    mkdirSync(dir, { recursive: true });
+
+    const source = join(dir, 'source');
+    const target = join(dir, 'target');
+    mkdirSync(source, { recursive: true });
+    writeFileSync(join(source, 'config.json'), '{}');
+    mkdirSync(join(source, 'node_modules'), { recursive: true });
+    writeFileSync(join(source, 'node_modules', 'pkg.js'), '1');
+    mkdirSync(target, { recursive: true });
+
+    const entries: WorktreeCopyEntry[] = [
+      { pattern: 'config.json', mode: 'copy', negated: false },
+      { pattern: 'node_modules', mode: 'symlink', negated: false },
+    ];
+    populateWorktree(source, target, entries);
+
+    // config.json was copied as a real file
+    expect(lstatSync(join(target, 'config.json')).isFile()).toBe(true);
+    expect(readFileSync(join(target, 'config.json'), 'utf-8')).toBe('{}');
+    // node_modules is a symlink
+    expect(lstatSync(join(target, 'node_modules')).isSymbolicLink()).toBe(true);
+  });
+
+  it('is a no-op when entries is an empty array', () => {
+    const dir = getDir();
+    mkdirSync(dir, { recursive: true });
+
+    const source = join(dir, 'source');
+    const target = join(dir, 'target');
+    mkdirSync(source, { recursive: true });
+    writeFileSync(join(source, 'a.txt'), 'a');
+    mkdirSync(target, { recursive: true });
+
+    populateWorktree(source, target, []);
+
+    expect(existsSync(join(target, 'a.txt'))).toBe(false);
+  });
+
+  it('reads entries from .worktreecopy when entries is omitted', () => {
+    const dir = getDir();
+    mkdirSync(dir, { recursive: true });
+
+    const source = join(dir, 'source');
+    const target = join(dir, 'target');
+    mkdirSync(source, { recursive: true });
+    writeFileSync(join(source, '.worktreecopy'), '*.txt\n');
+    writeFileSync(join(source, 'a.txt'), 'a');
+    writeFileSync(join(source, 'b.md'), 'b');
+    mkdirSync(target, { recursive: true });
+
+    populateWorktree(source, target);
+
+    expect(readFileSync(join(target, 'a.txt'), 'utf-8')).toBe('a');
+    expect(existsSync(join(target, 'b.md'))).toBe(false);
+    // The .worktreecopy file itself is not matched by *.txt
+    expect(existsSync(join(target, '.worktreecopy'))).toBe(false);
+  });
+});
+
+// ─── squashMergeBranch ──────────────────────────────────────────────────────
+
+describe('squashMergeBranch', () => {
+  const { getDir } = useTempDir();
+
+  it('returns { success: true } on a clean squash merge', () => {
+    const dir = getDir();
+    initRepo(dir);
+
+    // Create a branch that adds a new file (no conflict with main)
+    rawGit(['checkout', '-b', 'feature'], dir);
+    writeFileSync(join(dir, 'feature.txt'), 'feature content');
+    rawGit(['add', '-A'], dir);
+    rawGit(['commit', '-m', 'feature commit'], dir);
+
+    rawGit(['checkout', 'main'], dir);
+    const result = squashMergeBranch(dir, 'feature');
+    expect(result).toEqual({ success: true });
+  });
+
+  it('stages but does not auto-commit changes after a successful squash merge', () => {
+    const dir = getDir();
+    initRepo(dir);
+
+    rawGit(['checkout', '-b', 'feature'], dir);
+    writeFileSync(join(dir, 'feature.txt'), 'feature content');
+    rawGit(['add', '-A'], dir);
+    rawGit(['commit', '-m', 'feature commit'], dir);
+
+    rawGit(['checkout', 'main'], dir);
+    squashMergeBranch(dir, 'feature');
+
+    // The merged change is staged...
+    const staged = rawGit(['diff', '--cached', '--name-only'], dir);
+    expect(staged).toContain('feature.txt');
+    // ...but no new commit was created (only the initial commit remains)
+    const log = rawGit(['log', '--oneline'], dir);
+    expect(log).not.toContain('feature commit');
+    expect(log.split('\n').length).toBe(1);
+  });
+
+  it('returns { success: false, conflicts } on a conflicting squash merge', () => {
+    const dir = getDir();
+    initRepo(dir);
+
+    rawGit(['checkout', '-b', 'feature'], dir);
+    writeFileSync(join(dir, 'conflict.txt'), 'from-feature\n');
+    rawGit(['add', '-A'], dir);
+    rawGit(['commit', '-m', 'feature commit'], dir);
+
+    rawGit(['checkout', 'main'], dir);
+    writeFileSync(join(dir, 'conflict.txt'), 'from-main\n');
+    rawGit(['add', '-A'], dir);
+    rawGit(['commit', '-m', 'main commit'], dir);
+
+    const result = squashMergeBranch(dir, 'feature');
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.conflicts).toContain('conflict.txt');
+    }
+  });
+});
+
+// ─── stageFiles ─────────────────────────────────────────────────────────────
+
+describe('stageFiles', () => {
+  const { getDir } = useTempDir();
+
+  it('stages only the specified files, leaving untracked files untouched', () => {
+    const dir = getDir();
+    initRepo(dir);
+
+    // Create several untracked files
+    writeFileSync(join(dir, 'stage-me.txt'), 'stage me');
+    writeFileSync(join(dir, 'skip-me.txt'), 'skip me');
+    writeFileSync(join(dir, 'also-skip.txt'), 'also skip');
+
+    stageFiles(dir, ['stage-me.txt']);
+
+    const staged = rawGit(['diff', '--cached', '--name-only'], dir);
+    expect(staged).toContain('stage-me.txt');
+    expect(staged).not.toContain('skip-me.txt');
+    expect(staged).not.toContain('also-skip.txt');
+  });
+
+  it('does not stage modifications to files that were not listed', () => {
+    const dir = getDir();
+    initRepo(dir);
+
+    // README.md is tracked (committed in initRepo); modify it
+    writeFileSync(join(dir, 'README.md'), 'changed');
+    // Also add a new file to stage explicitly
+    writeFileSync(join(dir, 'new.txt'), 'new');
+
+    stageFiles(dir, ['new.txt']);
+
+    const staged = rawGit(['diff', '--cached', '--name-only'], dir);
+    expect(staged).toContain('new.txt');
+    // README.md modification must NOT be staged because it was not listed
+    expect(staged).not.toContain('README.md');
+  });
+
+  it('stages multiple specified files at once', () => {
+    const dir = getDir();
+    initRepo(dir);
+
+    writeFileSync(join(dir, 'one.txt'), '1');
+    writeFileSync(join(dir, 'two.txt'), '2');
+    writeFileSync(join(dir, 'three.txt'), '3');
+
+    stageFiles(dir, ['one.txt', 'two.txt']);
+
+    const staged = rawGit(['diff', '--cached', '--name-only'], dir);
+    expect(staged).toContain('one.txt');
+    expect(staged).toContain('two.txt');
+    expect(staged).not.toContain('three.txt');
+  });
+});
+
+// ─── deleteBranchForce ──────────────────────────────────────────────────────
+
+describe('deleteBranchForce', () => {
+  const { getDir } = useTempDir();
+
+  it('force-deletes a branch even when it has unmerged commits', () => {
+    const dir = getDir();
+    initRepo(dir);
+
+    // Create a branch with a commit that is NOT merged into main
+    rawGit(['checkout', '-b', 'feature'], dir);
+    writeFileSync(join(dir, 'feature.txt'), 'feature');
+    rawGit(['add', '-A'], dir);
+    rawGit(['commit', '-m', 'unmerged feature commit'], dir);
+
+    rawGit(['checkout', 'main'], dir);
+
+    // A plain `git branch -d` would refuse to delete an unmerged branch;
+    // `git branch -D` (force) must succeed.
+    deleteBranchForce(dir, 'feature');
+
+    const branches = rawGit(['branch', '--list'], dir);
+    expect(branches).not.toContain('feature');
+  });
+
+  it('deletes a fully-merged branch', () => {
+    const dir = getDir();
+    initRepo(dir);
+
+    rawGit(['branch', 'merged-branch'], dir);
+    deleteBranchForce(dir, 'merged-branch');
+
+    const branches = rawGit(['branch', '--list'], dir);
+    expect(branches).not.toContain('merged-branch');
+  });
+
+  it('throws when the branch does not exist', () => {
+    const dir = getDir();
+    initRepo(dir);
+    expect(() => deleteBranchForce(dir, 'no-such-branch')).toThrow();
   });
 });

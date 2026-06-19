@@ -140,6 +140,11 @@ type ServerError = Extract<ServerSideMessage, { type: 'error' }>;
 type ClientError = Extract<ClientSideMessage, { type: 'error' }>;
 assertEqual<Equal<ServerError, ClientError>>('error');
 
+// ── worktree_merge_result ──
+type ServerWorktreeMergeResult = Extract<ServerSideMessage, { type: 'worktree_merge_result' }>;
+type ClientWorktreeMergeResult = Extract<ClientSideMessage, { type: 'worktree_merge_result' }>;
+assertEqual<Equal<ServerWorktreeMergeResult, ClientWorktreeMergeResult>>('worktree_merge_result');
+
 // ─── 2b. RunSummary exact equality ─────────────────────────────────────────
 
 assertEqual<Equal<RunSummary, ClientRunSummary>>('RunSummary');
@@ -439,6 +444,34 @@ describe('ServerMessage – variant parity (sample objects)', () => {
     expect(sample.runId).toBe('run-1');
     expect(sample.code).toBe('BAD_MESSAGE');
   });
+
+  it('worktree_merge_result variant (clean merge, no preserved fields)', () => {
+    const sample: ServerSideMessage = {
+      type: 'worktree_merge_result',
+      runId: 'run-1',
+      outcome: 'clean',
+    };
+    checkVariant(sample);
+    expect(sample.type).toBe('worktree_merge_result');
+    expect(sample.runId).toBe('run-1');
+    expect(sample.outcome).toBe('clean');
+  });
+
+  it('worktree_merge_result variant (failed, everything preserved)', () => {
+    const sample: ServerSideMessage = {
+      type: 'worktree_merge_result',
+      runId: 'run-1',
+      outcome: 'failed',
+      cleanupError: 'worktree busy',
+      worktreePath: '/repo/.engin/wt/run-1',
+      branchName: 'engin/run-1',
+    };
+    checkVariant(sample);
+    expect(sample.outcome).toBe('failed');
+    expect(sample.cleanupError).toBe('worktree busy');
+    expect(sample.worktreePath).toBe('/repo/.engin/wt/run-1');
+    expect(sample.branchName).toBe('engin/run-1');
+  });
 });
 
 // ─── 4. ClientMessage sample objects ───────────────────────────────────────
@@ -490,12 +523,10 @@ describe('ClientMessage – variant parity (sample objects)', () => {
       workDir: '/tmp/workdir',
       maxConcurrent: 4,
       apiKeys: { anthropic: 'sk-xxx' },
-      worktree: true,
     };
     checkClientMessage(sample);
     expect(sample.workDir).toBe('/tmp/workdir');
     expect(sample.maxConcurrent).toBe(4);
-    expect(sample.worktree).toBe(true);
   });
 
   it('subscribe variant', () => {

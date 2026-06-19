@@ -30,7 +30,6 @@ describe('parseArgs', () => {
       workDir: undefined,
       maxConcurrent: 5,
       verbose: false,
-      worktree: false,
       apiKeys: {},
       warnings: [],
     });
@@ -77,7 +76,6 @@ describe('parseArgs', () => {
       cwd: process.cwd(),
       maxConcurrent: 5,
       verbose: false,
-      worktree: false,
       apiKeys: {},
       warnings: [],
     });
@@ -85,19 +83,8 @@ describe('parseArgs', () => {
     expect(result.taskPrompt).toBeUndefined();
   });
 
-  it('returns interactive mode with flags parsed when only flags are given', () => {
-    const result = parseArgs(['--verbose', '--worktree', '--cwd', '/custom']);
-    expect(result).toEqual({
-      command: 'run',
-      cwd: '/custom',
-      maxConcurrent: 5,
-      verbose: true,
-      worktree: true,
-      apiKeys: {},
-      warnings: [],
-    });
-    expect(result.workflowName).toBeUndefined();
-    expect(result.taskPrompt).toBeUndefined();
+  it('rejects --worktree as an unknown flag (the flag was removed)', () => {
+    expect(() => parseArgs(['--verbose', '--worktree', '--cwd', '/custom'])).toThrow(/Unknown flag: "--worktree"/);
   });
 
   it('returns interactive mode with --max-concurrent flag', () => {
@@ -107,7 +94,6 @@ describe('parseArgs', () => {
       cwd: process.cwd(),
       maxConcurrent: 3,
       verbose: false,
-      worktree: false,
       apiKeys: {},
       warnings: [],
     });
@@ -198,7 +184,6 @@ describe('parseArgs', () => {
         cwd: process.cwd(),
         maxConcurrent: 5,
         verbose: false,
-        worktree: false,
         apiKeys: {},
         warnings: [],
       });
@@ -216,7 +201,6 @@ describe('parseArgs', () => {
         cwd: process.cwd(),
         maxConcurrent: 5,
         verbose: false,
-        worktree: false,
         apiKeys: {},
         warnings: [],
       });
@@ -485,43 +469,27 @@ describe('parseArgs', () => {
     });
   });
 
-  describe('--worktree flag', () => {
-    it('defaults to false for run command', () => {
-      const result = parseArgs(['develop', 'task']);
-      expect(result.command).toBe('run');
-      expect(result.worktree).toBe(false);
+  describe('--worktree flag (removed)', () => {
+    it('is rejected as an unknown flag for run command', () => {
+      expect(() => parseArgs(['develop', 'task', '--worktree'])).toThrow(/Unknown flag: "--worktree"/);
     });
 
-    it('sets worktree to true when --worktree is passed for run', () => {
-      const result = parseArgs(['develop', 'task', '--worktree']);
-      expect(result.command).toBe('run');
-      expect(result.worktree).toBe(true);
+    it('is rejected even when mixed with other valid flags', () => {
+      expect(() => parseArgs(['develop', 'task', '--worktree', '--verbose', '--cwd', '/tmp'])).toThrow(
+        /Unknown flag: "--worktree"/,
+      );
     });
 
-    it('sets worktree to true when --worktree is passed with other flags for run', () => {
-      const result = parseArgs(['develop', 'task', '--worktree', '--verbose', '--cwd', '/tmp']);
-      expect(result.command).toBe('run');
-      expect(result.worktree).toBe(true);
-      expect(result.verbose).toBe(true);
-      expect(result.cwd).toBe('/tmp');
+    it('is rejected for resume command', () => {
+      expect(() => parseArgs(['resume', 'my-session', '--worktree'])).toThrow(/Unknown flag: "--worktree"/);
     });
 
-    it('defaults to false for help command', () => {
-      const result = parseArgs(['--help']);
-      expect(result.command).toBe('help');
-      expect(result.worktree).toBe(false);
+    it('is rejected for init command', () => {
+      expect(() => parseArgs(['init', '--worktree'])).toThrow(/Unknown flag: "--worktree"/);
     });
 
-    it('defaults to false for version command', () => {
-      const result = parseArgs(['--version']);
-      expect(result.command).toBe('version');
-      expect(result.worktree).toBe(false);
-    });
-
-    it('defaults to false for init command', () => {
-      const result = parseArgs(['init']);
-      expect(result.command).toBe('init');
-      expect(result.worktree).toBe(false);
+    it('is rejected for server up command', () => {
+      expect(() => parseArgs(['server', 'up', '--worktree'])).toThrow(/Unknown flag: "--worktree"/);
     });
 
     it('throws for web command (no longer a valid command)', () => {
@@ -531,27 +499,10 @@ describe('parseArgs', () => {
     it('throws for web command even with other flags', () => {
       expect(() => parseArgs(['web', '--verbose'])).toThrow();
     });
-
-    it('sets worktree to true for resume command', () => {
-      const result = parseArgs(['resume', 'my-session', '--worktree']);
-      expect(result.command).toBe('resume');
-      expect(result.sessionName).toBe('my-session');
-      expect(result.worktree).toBe(true);
-    });
-
-    it('defaults to false for resume command without flag', () => {
-      const result = parseArgs(['resume', 'my-session']);
-      expect(result.command).toBe('resume');
-      expect(result.worktree).toBe(false);
-    });
-
-    it('is recognized as a valid flag (not rejected as unknown)', () => {
-      expect(() => parseArgs(['develop', 'task', '--worktree'])).not.toThrow();
-    });
   });
 
   describe('USAGE string', () => {
-    it('includes --worktree, --host, --port and does NOT include web in the help text', async () => {
+    it('includes --host, --port and does NOT include --worktree or web in the help text', async () => {
       const originalArgv = process.argv;
       const exitSpy = spyOn(process, 'exit').mockImplementation(((code: number) => {
         throw new Error(`process.exit(${code})`);
@@ -566,8 +517,7 @@ describe('parseArgs', () => {
       }
 
       const output = stdoutSpy.mock.calls[0][0] as string;
-      expect(output).toContain('--worktree');
-      expect(output).toMatch(/--worktree\s+Run workflow in a git worktree/);
+      expect(output).not.toContain('--worktree');
       expect(output).toContain('--host');
       expect(output).toMatch(/--host\s+<host>\s+Web server bind host/);
       expect(output).toContain('--port');
@@ -578,9 +528,10 @@ describe('parseArgs', () => {
     });
   });
 
-  it('CliOptions type includes worktree: boolean', () => {
-    // Compile-time check: if CliOptions doesn't have worktree, this won't compile.
-    // Runtime check: create a value and verify the property exists.
+  it('CliOptions type no longer includes a worktree field', () => {
+    // Regression guard: the --worktree flag was removed; CliOptions must not
+    // carry a worktree property. Constructing a value WITHOUT it must compile,
+    // and the property must not exist at runtime.
     const opts: CliOptions = {
       command: 'run',
       workflowName: 'develop',
@@ -588,12 +539,10 @@ describe('parseArgs', () => {
       cwd: process.cwd(),
       maxConcurrent: 5,
       verbose: false,
-      worktree: true,
       apiKeys: {},
       warnings: [],
     };
-    expect(opts.worktree).toBe(true);
-    expect(typeof opts.worktree).toBe('boolean');
+    expect(opts).not.toHaveProperty('worktree');
   });
 
   it('CliOptions type includes host and port as optional fields', () => {
@@ -604,7 +553,6 @@ describe('parseArgs', () => {
       cwd: process.cwd(),
       maxConcurrent: 5,
       verbose: false,
-      worktree: true,
       apiKeys: {},
       warnings: [],
       host: '0.0.0.0',
@@ -620,7 +568,6 @@ describe('parseArgs', () => {
       cwd: process.cwd(),
       maxConcurrent: 5,
       verbose: false,
-      worktree: false,
       apiKeys: {},
       warnings: [],
     };
@@ -725,12 +672,11 @@ describe('main() interactive mode', () => {
   });
 
   it('parseArgs with only flags returns run command with undefined workflowName', () => {
-    const result = parseArgs(['--verbose', '--worktree', '--cwd', '/tmp']);
+    const result = parseArgs(['--verbose', '--cwd', '/tmp']);
     expect(result.command).toBe('run');
     expect(result.workflowName).toBeUndefined();
     expect(result.taskPrompt).toBeUndefined();
     expect(result.verbose).toBe(true);
-    expect(result.worktree).toBe(true);
     expect(result.cwd).toBe('/tmp');
   });
 
@@ -766,7 +712,6 @@ describe('main() interactive mode', () => {
       cwd: process.cwd(),
       maxConcurrent: 5,
       verbose: false,
-      worktree: false,
       apiKeys: {},
       warnings: [],
     });

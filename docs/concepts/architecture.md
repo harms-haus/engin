@@ -17,8 +17,8 @@ The CLI's TUI and the web UI are both **network clients** of that server:
 - **CLI** (`@harms-haus/engin`, the published package) — a client that ensures the
   server is up, submits a run via `start_run`, then **attaches** a TUI (TTY) or
   stdout renderer (non-TTY) that consumes the run's event stream over WebSocket. It
-  blocks until the run reaches a terminal state, runs the optional post-run
-  worktree prompt, and exits — leaving the server running.
+  blocks until the run reaches a terminal state, runs the optional two-prompt
+  final-merge UX (git-repo runs), and exits — leaving the server running.
 - **Web UI** (`@harms-haus/engin-web`) — a React SPA served by the engine that lists
   active runs, selects/views a run's live projection, and can cancel one. Starting
   runs is CLI-only in this iteration.
@@ -102,7 +102,7 @@ packages/
 │       ├─ stdout-renderer.ts   non-TTY WS-consuming event renderer (replaces callback path)
 │       ├─ sigint.ts         non-TTY cooperative SIGINT (cancel_run / force-exit)
 │       ├─ session-selector.ts  interactive resume picker (active runs first, then disk)
-│       └─ post-worktree.ts  interactive merge/PR/discard prompt → worktree_action to server
+│       └─ post-worktree.ts  interactive two-prompt final merge → worktree_action to server
 │
 └── web/       @harms-haus/engin-web  (PRIVATE — REACT CLIENT)
     Depends on shared only. Vite-built; output served by the engine.

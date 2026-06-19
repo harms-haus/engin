@@ -41,6 +41,7 @@ Read in this order:
 | ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------- |
 | [CLI reference](reference/cli.md)                | `run`, `resume`, `server up/down/status`, every flag, default, exit code, and the detach/kill semantics.          |
 | [Server reference](reference/server.md)          | The daemon, `RunManager`, the multi-run WebSocket protocol, auth attach-points, and the `--lan` guard.            |
+| [Worktrees reference](reference/worktrees.md)    | The per-task worktree system, `.worktreecopy`, branch naming, merge serialization, and the final-merge UX.        |
 | [Configuration](reference/configuration.md)      | Config directory resolution, `.env` loading, API-key resolution precedence, and resuming runs.                    |
 | [Programmatic API](reference/api.md)             | Every exported function and class with signatures and semantics.                                                  |
 | [Types reference](reference/types.md)            | Every exported type and interface.                                                                                |

@@ -6,6 +6,7 @@ import type { RendererRegistry } from '../core/renderer-registry.js';
 import { promptForStructured } from '../core/structured-output.js';
 import type { AgentProfile, Task } from '../core/types.js';
 import { safeErrorMessage } from '../core/utils.js';
+import type { WorktreeManager } from '../core/worktree-manager.js';
 import { buildPrompt } from './prompt-builder.js';
 import type { LanePoolOptions, StepDefinition, StepResult, TrackedSession } from './types.js';
 import { assertSafeName } from './validation.js';
@@ -33,6 +34,8 @@ export interface StepExecutionContext {
    *  so an abort that fires during the [session-created, prompt-started] TOCTOU
    *  window still cancels the session instead of launching an LLM turn. */
   signal?: AbortSignal;
+  /** WorktreeManager for isolated git worktree execution */
+  worktreeManager?: WorktreeManager;
 }
 
 /**

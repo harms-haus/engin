@@ -12,6 +12,7 @@ import { promptForStructured } from './structured-output.js';
 import type { AgentProfile, StatusCallbacks } from './types.js';
 import { safeErrorMessage } from './utils.js';
 import { runWithValidationRetry } from './validation-retry.js';
+import type { WorktreeManager } from './worktree-manager.js';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -70,6 +71,8 @@ export interface RunStepTaskOptions {
   prompt: string;
   /** Abort signal for cooperative cancellation */
   signal?: AbortSignal;
+  /** WorktreeManager for isolated git worktree execution */
+  worktreeManager?: WorktreeManager;
 }
 
 // ─── runStepTask ────────────────────────────────────────────────────────────
@@ -108,6 +111,7 @@ export async function runStepTask<T = unknown>(opts: RunStepTaskOptions): Promis
     rendererRegistry,
     prompt,
     signal,
+    worktreeManager,
   } = opts;
 
   // 1. Early abort check — fired before any callbacks
@@ -126,6 +130,19 @@ export async function runStepTask<T = unknown>(opts: RunStepTaskOptions): Promis
 
   // 3. Signal start
   onStatus?.onTaskStart?.({ taskId, title, agentId: taskId, phaseId, startedAt: Date.now() });
+
+  // 3b. Create a per-task worktree BEFORE the main try block (so a creation
+  //     failure propagates without engaging the merge/cull/reject path).
+  //     The worktree path replaces the agent cwd and write sandbox; the
+  //     persisted sessionDir stays derived from sessionBaseDir (NOT the
+  //     worktree path) so session traces remain in the run dir.
+  let effectiveCwd = cwd;
+  let effectiveAllowedWriteDirs = allowedWriteDirs;
+  if (worktreeManager) {
+    const taskWorktreePath = await worktreeManager.createTaskWorktree(taskId, prompt);
+    effectiveCwd = taskWorktreePath;
+    effectiveAllowedWriteDirs = [taskWorktreePath];
+  }
 
   let result: T;
   let handle: AgentLifecycleHandle | undefined;
@@ -155,14 +172,14 @@ export async function runStepTask<T = unknown>(opts: RunStepTaskOptions): Promis
       {
         profileId,
         agentId: taskId,
-        cwd,
+        cwd: effectiveCwd,
         phaseId,
         taskId,
         stepIndex: 0,
         stepName,
         isReadOnly,
         apiKeys,
-        allowedWriteDirs,
+        allowedWriteDirs: effectiveAllowedWriteDirs,
         sessionDir,
         onStatus,
       },
@@ -196,8 +213,36 @@ export async function runStepTask<T = unknown>(opts: RunStepTaskOptions): Promis
         onStatus?.onAgentRender,
       );
     }
+
+    // 8c. Worktree merge — runs AFTER the agent produces its result but BEFORE
+    //     onTaskComplete. A failed merge (success=false or thrown error) falls
+    //     through to the catch block, which OWNS the onTaskRejected callback
+    //     (firing it exactly once via safeErrorMessage) and culls the worktree.
+    //     onTaskRejected must NOT be called here — the surrounding catch block
+    //     already handles it, so a redundant call here would emit a second
+    //     rejection event for the same logical failure. The sessionDir is
+    //     intentionally left pointing at sessionBaseDir (not the worktree path)
+    //     so session traces persist in the run dir regardless of the merge
+    //     outcome.
+    if (worktreeManager) {
+      const mergeResult = await worktreeManager.mergeTaskBranch(taskId);
+      if (!mergeResult.success) {
+        const errorMessage = 'Task merge failed: conflicts could not be resolved automatically';
+        throw new Error(errorMessage);
+      }
+    }
   } catch (err) {
-    // 10. Error handling — fire onTaskRejected before re-throwing
+    // 10. Error handling — best-effort cull the worktree (force-removes the
+    //     failed task's worktree + branch), then fire onTaskRejected before
+    //     re-throwing. Cull failures are swallowed so a cleanup error never
+    //     masks the original failure.
+    if (worktreeManager) {
+      try {
+        await worktreeManager.cullTaskWorktree(taskId);
+      } catch {
+        /* best-effort — never let cull mask the original error */
+      }
+    }
     const errorMessage = safeErrorMessage(err);
     onStatus?.onTaskRejected?.({ taskId, title, reason: errorMessage });
     throw err;
@@ -311,6 +356,8 @@ export interface RunMultiStepTaskOptions {
   sessionBaseDir?: string;
   /** Abort signal for cooperative cancellation */
   signal?: AbortSignal;
+  /** WorktreeManager for isolated git worktree execution */
+  worktreeManager?: WorktreeManager;
   /**
    * Max total attempts per step before a rejection exhausts and fails the task
    * (default 3). Each back-up-and-retry of a step counts as one attempt.
@@ -383,6 +430,7 @@ export async function runMultiStepTask(opts: RunMultiStepTaskOptions): Promise<M
     sessionBaseDir,
     signal,
     maxStepRetries = 3,
+    worktreeManager,
   } = opts;
 
   // 1. Early abort — fired before any callbacks
@@ -405,6 +453,19 @@ export async function runMultiStepTask(opts: RunMultiStepTaskOptions): Promise<M
   });
 
   onStatus?.onTaskStart?.({ taskId, title, agentId: taskId, phaseId, startedAt: Date.now() });
+
+  // 3b. Create ONE per-task worktree for the whole task BEFORE the first
+  //     step (so a creation failure propagates without engaging the
+  //     merge/cull/reject path). Every step's agent then runs with cwd =
+  //     the worktree path. The task title is passed as the taskPrompt so
+  //     the WorkTreeManager's commit/conflict-resolution agent has a
+  //     meaningful description (there is no single canonical prompt for a
+  //     multi-step task).
+  let effectiveCwd = cwd;
+  if (worktreeManager) {
+    const taskWorktreePath = await worktreeManager.createTaskWorktree(taskId, title);
+    effectiveCwd = taskWorktreePath;
+  }
 
   const results: unknown[] = [];
   const feedbackHistory: string[] = [];
@@ -488,7 +549,7 @@ export async function runMultiStepTask(opts: RunMultiStepTaskOptions): Promise<M
         {
           profileId: step.profileId,
           agentId: taskId,
-          cwd,
+          cwd: effectiveCwd,
           phaseId,
           taskId,
           stepIndex,
@@ -581,10 +642,34 @@ export async function runMultiStepTask(opts: RunMultiStepTaskOptions): Promise<M
       stepIndex = Math.max(0, stepIndex - 1);
     }
 
-    // 5. All steps approved
+    // 5. All steps approved — merge the worktree (if any) BEFORE firing
+    //    onTaskComplete. A failed merge (success=false or thrown error)
+    //    falls through to the catch block, which OWNS the onTaskRejected
+    //    callback (firing it exactly once via safeErrorMessage) and culls the
+    //    worktree. onTaskRejected must NOT be called here — the surrounding
+    //    catch block already handles it, so a redundant call here would emit
+    //    a second rejection event for the same logical failure.
+    if (worktreeManager) {
+      const mergeResult = await worktreeManager.mergeTaskBranch(taskId);
+      if (!mergeResult.success) {
+        const errorMessage = 'Task merge failed: conflicts could not be resolved automatically';
+        throw new Error(errorMessage);
+      }
+    }
+
     onStatus?.onTaskComplete?.({ taskId, title });
     return { results, approved: true };
   } catch (err) {
+    // Best-effort cull the worktree (force-removes the failed task's worktree
+    // + branch) before firing onTaskRejected. Cull failures are swallowed so
+    // a cleanup error never masks the original failure.
+    if (worktreeManager) {
+      try {
+        await worktreeManager.cullTaskWorktree(taskId);
+      } catch {
+        /* best-effort — never let cull mask the original error */
+      }
+    }
     const errorMessage = safeErrorMessage(err);
     onStatus?.onTaskRejected?.({ taskId, title, reason: errorMessage });
     throw err;

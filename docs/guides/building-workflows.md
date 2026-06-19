@@ -27,17 +27,19 @@ The default export (or the module itself) must have a `run` function. The option
 
 `WorkflowRunOptions` is what the engine passes in:
 
-| Field                 | Type                     | Meaning                                               |
-| --------------------- | ------------------------ | ----------------------------------------------------- |
-| `cwd`                 | `string`                 | Project directory to operate on.                      |
-| `workDir`             | `string`                 | Directory for workflow state persistence.             |
-| `maxConcurrentTasks?` | `number`                 | Max parallel agents (default `5`).                    |
-| `apiKeys?`            | `Record<string, string>` | Provider → API key overrides.                         |
-| `onStatus?`           | `StatusCallbacks`        | The engine's wired-up status callbacks. **Use this.** |
-| `verbose?`            | `boolean`                | True when running with verbose console output.        |
-| `signal?`             | `AbortSignal`            | Cooperative cancellation signal.                      |
-| `tracker?`            | `unknown`                | A pre-created `WorkflowStatusTracker`, if any.        |
-| `worktree?`           | `WorktreeInfo`           | Worktree info when running inside a git worktree.     |
+| Field                 | Type                     | Meaning                                                                                                      |
+| --------------------- | ------------------------ | ------------------------------------------------------------------------------------------------------------ |
+| `cwd`                 | `string`                 | Working directory. For git-repo runs this is the **main worktree path**, not the original cwd.               |
+| `workDir`             | `string`                 | Directory for workflow state persistence.                                                                    |
+| `maxConcurrentTasks?` | `number`                 | Max parallel agents (default `5`).                                                                           |
+| `apiKeys?`            | `Record<string, string>` | Provider → API key overrides.                                                                                |
+| `onStatus?`           | `StatusCallbacks`        | The engine's wired-up status callbacks. **Use this.**                                                        |
+| `verbose?`            | `boolean`                | True when running with verbose console output.                                                               |
+| `signal?`             | `AbortSignal`            | Cooperative cancellation signal.                                                                             |
+| `tracker?`            | `unknown`                | A pre-created `WorkflowStatusTracker`, if any.                                                               |
+| `worktree?`           | `WorktreeInfo`           | Main worktree info (git-repo runs only).                                                                     |
+| `worktreeManager?`    | `WorktreeManager`        | Per-run worktree manager. Forward to `runStepTask` / `runMultiStepTask` / `LanePool` for per-task worktrees. |
+| `rendererRegistry?`   | `RendererRegistry`       | Optional registry of per-profile output renderers.                                                           |
 
 That's the whole contract. Everything else — phases, tasks, steps, agents — is your workflow's
 internal structure, communicated to the engine purely through `options.onStatus`.
@@ -635,7 +637,125 @@ phone to watch the same view in a browser.
 
 ---
 
-## 9. Patterns and tips
+## 9. Worktrees
+
+When the run's `cwd` is a git repository, engin runs the workflow inside a tree of git
+worktrees — there is no opt-in flag. This is transparent to most workflows, but a few
+things are worth knowing. See the [Worktrees reference](../reference/worktrees.md) for the
+full system.
+
+### `options.cwd` is the worktree path
+
+For git-repo runs, the engine sets `options.cwd` to the **main worktree path**
+(`.engin/work/{run-id}/worktree`), not the original cwd. Everything your workflow does
+relative to `cwd` — reading source, writing output, the agents' `write`/`edit` tools —
+lands inside the worktree, so concurrent runs and concurrent tasks never collide on the
+real working tree. You do not need to change anything: code that resolves paths relative
+to `options.cwd` keeps working unchanged.
+
+For non-git runs, `options.cwd` is the original cwd and no worktrees are created.
+
+### Forward `options.worktreeManager` for per-task isolation
+
+The main worktree hosts the accumulated result; each task gets its **own** worktree on
+`engin/{mainSlug}--{taskId}` so concurrent tasks never trip over each other. To opt a task
+into per-task isolation, forward `options.worktreeManager` to `runStepTask`,
+`runMultiStepTask`, or `LanePool`:
+
+```typescript
+await runStepTask({
+  // …
+  cwd: options.cwd,
+  worktreeManager: options.worktreeManager, // ← enables per-task worktree
+});
+```
+
+When `worktreeManager` is present, the primitive:
+
+1. Creates a per-task worktree off the main-wt branch (so the task inherits
+   already-merged sibling work).
+2. Runs the agent with `cwd` pointed at the task worktree.
+3. On success, commits and **squash-merges** the task branch into the main-wt branch
+   (serialized across all concurrent tasks), then culls the task worktree + branch.
+4. On failure / retry, force-culls the task worktree and recreates a fresh one on the
+   next attempt.
+
+When `worktreeManager` is absent (the non-git fallback, or a workflow that does not
+forward it), tasks run against `cwd` directly with no per-task isolation.
+
+### `.worktreecopy` — populating worktrees with ignored files
+
+A worktree is a fresh checkout — it does **not** inherit `.gitignore`d files like `.env`,
+`.npmrc`, or `node_modules`. Put a `.worktreecopy` file at the repo root to tell engin
+which ignored files each worktree needs. It uses `.gitignore`-like syntax with two modes:
+
+```
+# .worktreecopy
+.env
+.env.local
+!.env.example            # negation: re-include a path
+.npmrc
+.vscode/settings.json
+@symlink node_modules    # symlink large shared dirs instead of copying them
+```
+
+| Prefix     | Mode      | Meaning                                                |
+| ---------- | --------- | ------------------------------------------------------ |
+| (none)     | `copy`    | Copy the matched file/dir into the worktree.           |
+| `@symlink` | `symlink` | Replace the matched path with a symlink to the source. |
+| `!`        | negation  | Re-include a path an earlier pattern excluded.         |
+| `#`        | comment   | Ignored.                                               |
+
+**Symlink `node_modules`** — copying it is hundreds of MB per task. Symlinking shares
+the main checkout's install; transient lock races are absorbed by a bounded retry.
+
+**Do not** copy build outputs (`dist/`, `*.tsbuildinfo`, `coverage/`, `.turbo/`) — let
+them be empty and let the task's validation step regenerate them.
+
+### `createLintValidationGate` — the primary lint defence
+
+When a task writes code that will be committed inside a worktree, wire
+`createLintValidationGate(worktreePath)` into the step's `validateOutput` option so the
+implementing agent fixes its own lint errors _before_ commit time:
+
+```typescript
+import {
+  createLintValidationGate,
+  resolveProfilesDirs,
+  runStepTask,
+  type WorkflowModule,
+  type WorkflowRunOptions,
+} from '@harms-haus/engin-engine';
+
+export async function run(taskPrompt: string, options: WorkflowRunOptions) {
+  const { cwd, onStatus } = options;
+  const profilesDirs = resolveProfilesDirs(cwd, 'my-workflow');
+
+  await runStepTask({
+    profilesDirs,
+    phaseId: 'implementing',
+    taskId: 'implement',
+    title: 'Implement the feature',
+    stepName: 'implement',
+    profileId: 'implementer',
+    cwd,
+    onStatus,
+    prompt: taskPrompt,
+    validateOutput: createLintValidationGate(cwd),
+  });
+}
+```
+
+Note: when you forward `options.worktreeManager` to `runStepTask` / `runMultiStepTask`, the primitive creates a per-task worktree dynamically and runs the agent inside it; `createLintValidationGate` cannot be pre-bound to that path (its callback takes no arguments), so in per-task-worktree mode the commit-time fix-up safety net is the primary lint check. Use `createLintValidationGate(cwd)` only when the task runs directly against `cwd` (no forwarded `worktreeManager`).
+
+The gate runs `eslint --fix` + `prettier --write` (fire-and-forget), then a final
+`eslint` check; if errors remain it returns `{ error }`, which triggers the validation
+retry loop so the agent corrects them in its existing tool loop. A commit-failure safety
+net (a tooled, self-verifying fix-up agent) catches anything the gate misses.
+
+---
+
+## 10. Patterns and tips
 
 ### Use the `files` field to pre-load context
 
@@ -682,7 +802,7 @@ the event store is the source of truth for the UI.
 
 ---
 
-## 10. Testing your workflow
+## 11. Testing your workflow
 
 You have a few options:
 
@@ -699,7 +819,7 @@ You have a few options:
 
 ---
 
-## 11. Other example shapes
+## 12. Other example shapes
 
 The `apidoc` workflow uses every primitive. Other natural shapes, all built from the same
 pieces:
@@ -725,6 +845,8 @@ model almost any multi-agent pipeline.
 
 - [Programmatic API](../reference/api.md) — every function and class.
 - [Task pool & execution](../reference/task-pool.md) — the `LanePool` and `TaskTracker` in full.
+- [Worktrees reference](../reference/worktrees.md) — the per-task worktree system, `.worktreecopy`,
+  branch naming, merge serialization, and the final-merge UX.
 - [Event store & status](../reference/event-store.md) — what every callback becomes.
 - [Authoring profiles](profiles.md) — the Markdown profile format.
-- [Types reference](../reference/types.md) — `StatusCallbacks`, `StepDefinition`, etc.
+- [Types reference](../reference/types.md) — `StatusCallbacks`, `StepDefinition`, `WorktreeManager`, etc.

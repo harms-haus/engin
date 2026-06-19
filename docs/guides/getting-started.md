@@ -65,11 +65,18 @@ engin apidoc "Generate API docs" \
 | `--work-dir <path>`        | Directory for workflow state. Default: `.engin/work/<timestamp>-<workflow>`. |
 | `--max-concurrent <n>`     | Maximum parallel agents (default: `5`). Must be a positive integer.          |
 | `--verbose`                | Verbose console output. Disables the TUI dashboard when stdout is a TTY.     |
-| `--worktree`               | Run the workflow inside a git worktree.                                      |
 | `--api-key <provider=key>` | Provider → API key override (repeatable). Visible in process listings.       |
 | `--host <host>`            | _Deprecated for `run`._ Bind host — use `engin server up --host` instead.    |
 | `--lan`                    | _Deprecated for `run`._ Bind all interfaces — use `engin server up --lan`.   |
 | `--port <port>`            | Web server port (default: `3619`).                                           |
+
+> **Worktrees are automatic.** Every git-repo run uses git worktrees by default — there is
+> no `--worktree` flag. Each task gets its own worktree on `engin/{mainSlug}--{taskId}` so
+> concurrent tasks are isolated. At the end of the run you are asked whether to squash-merge
+> the run's branch back into `main`. Non-git runs warn and prompt to continue in-place.
+> Put a `.worktreecopy` file at the repo root to tell engin which `.gitignore`d files
+> (`.env`, `node_modules`, …) each worktree needs. See
+> [Worktrees reference](../reference/worktrees.md).
 
 ### Starting runs
 
@@ -113,4 +120,5 @@ See the [programmatic API reference](../reference/api.md) for every available fu
 
 - [Building a new workflow](building-workflows.md) — author your first end-to-end workflow.
 - [Authoring profiles](profiles.md) — the Markdown format for agent profiles.
+- [Worktrees reference](../reference/worktrees.md) — the per-task worktree system and `.worktreecopy`.
 - [Configuration](../reference/configuration.md) — config directories, `.env`, and API keys.

@@ -30,6 +30,7 @@ import {
   removeWorktree,
   stageAll,
 } from './git.js';
+import { runTooledFixup } from './worktree-fixup.js';
 import { generateCommitMessage, pushAndCreatePR, resolveConflictsWithAgent } from './worktree-lifecycle.js';
 
 // ─── Option Types ────────────────────────────────────────────────────────────
@@ -111,6 +112,17 @@ export interface PushWorktreeResult {
 /**
  * Stage and commit any uncommitted changes inside the worktree using an
  * agent-generated commit message. No-op when the working tree is clean.
+ *
+ * SAFETY NET: when the pre-commit hook (lint-staged/eslint gate) rejects the
+ * commit on the first pass, the tooled fix-up agent is spawned to repair the
+ * lint errors, the changes are re-staged, and the commit is retried exactly
+ * once. The fix-up primitive retries internally (up to 3 times); this
+ * function only retries the COMMIT once. If the fix-up fails OR the retry
+ * commit also throws, the ORIGINAL commit error is re-thrown so callers can
+ * surface it as a genuine failure. `--no-verify` is NEVER used — the commit
+ * always goes through the real hook (bypassing it would hide real problems).
+ * For the PRIMARY lint defence (run before the commit), see
+ * {@link createLintValidationGate}.
  */
 export async function commitWorktreeChanges(opts: CommitWorktreeOptions): Promise<void> {
   const diff = getDiff(opts.worktreePath);
@@ -124,7 +136,42 @@ export async function commitWorktreeChanges(opts: CommitWorktreeOptions): Promis
     diff,
     opts.apiKeys,
   );
-  commitChanges(opts.worktreePath, message);
+
+  try {
+    commitChanges(opts.worktreePath, message);
+  } catch (commitError) {
+    // The pre-commit hook (lint-staged/eslint gate) rejected the commit.
+    // Spawn the tooled fix-up agent to repair the lint errors, then re-stage
+    // and retry the commit exactly once. The fix-up primitive retries
+    // internally (up to 3 times); this function only retries the COMMIT once.
+    const errorContext = commitError instanceof Error ? commitError.message : String(commitError);
+
+    const fixupResult = await runTooledFixup({
+      profilesDirs: opts.profilesDirs,
+      worktreePath: opts.worktreePath,
+      taskPrompt: opts.taskPrompt,
+      errorContext,
+      apiKeys: opts.apiKeys,
+    });
+
+    if (!fixupResult.success) {
+      // The fix-up agent could not repair the errors. Re-throw the ORIGINAL
+      // commit error so callers see the real gate failure (not the fix-up's
+      // lastError, which is a verification diagnostic, not the user-facing
+      // failure).
+      throw commitError;
+    }
+
+    // Re-stage the fix-up's edits and retry the commit through the REAL hook
+    // (never --no-verify). If the retry also throws, re-throw the ORIGINAL
+    // commit error per the safety-net contract.
+    stageAll(opts.worktreePath);
+    try {
+      commitChanges(opts.worktreePath, message);
+    } catch {
+      throw commitError;
+    }
+  }
 }
 
 // ─── mergeWorktreeToMain ─────────────────────────────────────────────────────
@@ -167,7 +214,7 @@ export async function mergeWorktreeToMain(opts: MergeWorktreeOptions): Promise<M
       opts.apiKeys,
     );
 
-    if (!resolved) {
+    if (!resolved.resolved) {
       abortMerge(opts.repoRoot);
       restoreSavedBranch(opts.repoRoot, savedBranch);
       return { success: false, conflictsResolved: false };
@@ -252,6 +299,73 @@ export async function cleanupWorktree(repoRoot: string, worktreePath: string): P
   } catch {
     // Best-effort: ignore removal failures.
   }
+}
+
+// ─── createLintValidationGate ────────────────────────────────────────────────
+
+/**
+ * Create a `validateOutput` callback suitable for `runStepTask`'s
+ * `validateOutput` option. This is the PRIMARY lint defence: it runs
+ * `prettier --write` + a single `eslint --fix` pass in the worktree
+ * (format, then auto-fix + report). Returns `{ error: 'Lint errors
+ * remain: ...' }` when unfixable errors remain after the auto-fix pass, or
+ * `undefined` when clean.
+ *
+ * The `eslint --fix` exit code is authoritative: `eslint --fix` exits
+ * non-zero and emits the remaining (unfixable) errors in its report when
+ * any errors survive the auto-fix pass, so a separate check-only invocation
+ * is unnecessary. The commit-failure fix-up safety net in
+ * {@link commitWorktreeChanges} is the fallback for anything this gate (or
+ * the commit hook) misses.
+ *
+ * The returned callback is stateless: each invocation re-runs the full
+ * format + auto-fix sequence.
+ */
+export function createLintValidationGate(worktreePath: string): () => Promise<{ error?: string } | undefined> {
+  return async () => {
+    // Format the code first (awaited so the subsequent lint pass sees
+    // prettier-formatted output), then run a single eslint --fix pass whose
+    // exit code is authoritative: a non-zero exit means unfixable lint errors
+    // remain. Both spawns use async `Bun.spawn` with awaited `.exited`
+    // (NOT `Bun.spawnSync`) so they do not block the server event loop — this
+    // gate runs on every task validation iteration, so a blocking spawn would
+    // stall all concurrent run traffic. Mirrors the conversion already
+    // applied to `verifyWorktree` in worktree-fixup.ts. The two spawns handle
+    // stdio differently: prettier's stdout/stderr are set to 'ignore' (its
+    // output is discarded, and piping without draining would fill the OS pipe
+    // buffer and deadlock the spawn), while eslint's are piped AND drained in
+    // parallel below (its report is the authoritative error surface).
+    const prettierProc = Bun.spawn({
+      cmd: ['bunx', 'prettier', '--write', '.'],
+      cwd: worktreePath,
+      stdout: 'ignore',
+      stderr: 'ignore',
+    });
+    // prettier --write is fire-and-forget (its exit code is ignored and its
+    // output discarded), but we still await its completion so eslint sees the
+    // formatted output.
+    await prettierProc.exited;
+
+    const eslintProc = Bun.spawn({
+      cmd: ['bunx', 'eslint', '--fix', '.'],
+      cwd: worktreePath,
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    // Drain stdout/stderr in parallel with awaiting exit so the proc's pipe
+    // buffers cannot fill and deadlock the spawn.
+    const [exitCode, stdout, stderr] = await Promise.all([
+      eslintProc.exited,
+      new Response(eslintProc.stdout).text(),
+      new Response(eslintProc.stderr).text(),
+    ]);
+    if (exitCode !== 0) {
+      const output = [stdout.trim(), stderr.trim()].filter(Boolean).join('\n');
+      return { error: `Lint errors remain: ${output}` };
+    }
+
+    return undefined;
+  };
 }
 
 // ─── Internal Helpers ────────────────────────────────────────────────────────

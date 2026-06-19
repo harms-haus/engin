@@ -3,8 +3,21 @@
 // Workflow execution body extracted from RunManager (decomposition step). It
 // contains the former private `executeWorkflow` async IIFE: the workflow.run()
 // lifecycle, store flush, status transitions (running → complete / failed),
-// terminal broadcasts, renderer-registry wiring, and the post-terminal reaper
-// scheduling.
+// terminal broadcasts, renderer-registry wiring, the post-terminal reaper
+// scheduling, AND the worktree lifecycle:
+//
+//   - When git is available, RunExecutor creates a {@link WorktreeManager},
+//     calls `setupMainWorktree()`, wires it onto the handle + WorkflowRunOptions
+//     (options.cwd becomes the MAIN WORKTREE PATH — the transparency
+//     mechanism by which the workflow sees the worktree as its cwd), and
+//     derives the main-wt branch via `generateTitleAndBranch` +
+//     `sanitizeBranchSlug`.
+//   - When the cwd is NOT a git repo, it warns and runs in-place (no
+//     worktree), leaving options.cwd = handle.cwd.
+//   - On failure, the worktree is PRESERVED (no cleanup) so the user can
+//     inspect or retry. The run-end final merge is NOT automatic — it is
+//     driven by the user via `RunManager.handleWorktreeAction` once the run
+//     reaches a terminal state.
 //
 // CRITICAL INVARIANT (called out by the decomposition task):
 //   `execute` MUST call `bridge.broadcastTerminal(...)` to emit the terminal
@@ -18,8 +31,14 @@
 // registered in the {@link RunRegistry} (the facade registers before calling
 // execute).
 
+import { join } from 'node:path';
+
+import { resolveProfilesDirs } from '../core/config.js';
+import { getRepoRoot, isGitRepo, sanitizeBranchSlug } from '../core/git.js';
 import { RendererRegistry } from '../core/renderer-registry.js';
+import { generateTitleAndBranch } from '../core/title-generator.js';
 import type { StatusCallbacks, WorkflowModule, WorkflowRunOptions } from '../core/types.js';
+import { WorktreeManager } from '../core/worktree-manager.js';
 import { runWithConsoleCapture } from './console-capture.js';
 import type { RunHandle, StartRunMessage } from './run-manager.js';
 import type { RunRegistry } from './run-registry.js';
@@ -59,21 +78,38 @@ export class RunExecutor {
   /**
    * Run the workflow to completion.
    *
+   * Before launching the workflow, the executor probes `isGitRepo(handle.cwd)`:
+   *
+   *   - **git available** — it derives a main-wt branch via
+   *     `generateTitleAndBranch` + `sanitizeBranchSlug` (prefixed `engin/`),
+   *     constructs a {@link WorktreeManager}, calls `setupMainWorktree()`, and
+   *     wires it onto the handle (`handle.worktreeManager`, `handle.worktree`,
+   *     `handle.summary.worktree`) and the `WorkflowRunOptions`. The workflow's
+   *     `options.cwd` becomes the MAIN WORKTREE PATH (not the original cwd) —
+   *     the transparency mechanism by which the workflow sees the worktree as
+   *     its cwd.
+   *   - **non-git cwd** — it warns via `console.warn` and runs in-place
+   *     (`options.cwd = handle.cwd`, no worktree, no manager).
+   *
    * On success it flushes the store (durability BEFORE the status flip), marks
    * the run complete, and broadcasts `run_complete` via
    * {@link StatusBridge.broadcastTerminal}. On failure it flushes first
    * (partial events stay durable), distinguishes `AbortError` (from
    * `controller.abort()`) from genuine errors, marks the run failed, and
-   * broadcasts `run_failed`. The finally block notifies the control server
-   * that the active-run set changed and schedules a reaper that disposes the
-   * bridge and removes the handle after the reap delay.
+   * broadcasts `run_failed`. The worktree is PRESERVED on failure (no cleanup)
+   * so the user can inspect or retry — the run-end final merge is driven by
+   * the user via `RunManager.handleWorktreeAction` once the run is terminal,
+   * using the `handle.summary.worktree` info carried in the `run_complete`
+   * broadcast. The finally block notifies the control server that the
+   * active-run set changed and schedules a reaper that disposes the bridge
+   * and removes the handle after the reap delay.
    *
-   * The entire body runs inside a {@link runWithConsoleCapture} scope so any
-   * `console.warn`/`error`/`info` output made during execution (including the
-   * flush/terminal/finally teardown) is routed to THIS run's store as a `log`
-   * event. This is concurrency-safe: concurrent runs each capture their own
-   * output via AsyncLocalStorage with no per-run mutation of the global
-   * `console` object.
+   * The workflow execution body runs inside a {@link runWithConsoleCapture}
+   * scope so any `console.warn`/`error`/`info` output made during execution
+   * (including the flush/terminal/finally teardown) is routed to THIS run's
+   * store as a `log` event. This is concurrency-safe: concurrent runs each
+   * capture their own output via AsyncLocalStorage with no per-run mutation
+   * of the global `console` object.
    */
   async execute(
     handle: RunHandle,
@@ -93,13 +129,70 @@ export class RunExecutor {
       workflow.registerRenderers(rendererRegistry);
     }
 
-    // Build the workflow run options.
+    // ─── Worktree setup ──────────────────────────────────────────────────
+    //
+    // When the cwd is a git repo, isolate the run inside a main worktree on a
+    // dedicated `engin/<slug>` branch. The branch slug is derived from the
+    // task prompt via `generateTitleAndBranch` (LLM) + `sanitizeBranchSlug`.
+    // The workflow sees the worktree as its cwd via `options.cwd` (the
+    // transparency mechanism). When git is NOT available, warn and run
+    // in-place against the original cwd.
+    const isGit = isGitRepo(handle.cwd);
+    let worktreeManager: WorktreeManager | undefined;
+
+    if (isGit) {
+      const repoRoot = getRepoRoot(handle.cwd);
+      const profilesDirs = resolveProfilesDirs(handle.cwd, handle.workflowName);
+      const { branchName: rawBranch } = await generateTitleAndBranch({
+        profilesDirs,
+        taskPrompt: handle.taskPrompt,
+        cwd: handle.cwd,
+        apiKeys: msg.apiKeys,
+      });
+      const slug = sanitizeBranchSlug(rawBranch);
+      const mainBranch = `engin/${slug}`;
+      const mainWorktreePath = join(handle.workDir, 'worktree');
+
+      worktreeManager = new WorktreeManager({
+        repoRoot,
+        sourceCwd: handle.cwd,
+        workDir: handle.workDir,
+        mainBranch,
+        mainWorktreePath,
+        profilesDirs,
+        apiKeys: msg.apiKeys,
+      });
+      await worktreeManager.setupMainWorktree();
+
+      // Wire the manager + worktree info onto the handle so
+      // `RunManager.handleWorktreeAction` can drive the final merge UX once
+      // the run reaches a terminal state. `summary.worktree` carries the
+      // same info to clients via the `run_complete` broadcast so they can
+      // prompt for the merge.
+      handle.worktreeManager = worktreeManager;
+      handle.worktree = worktreeManager.getWorktreeInfo();
+      handle.summary.worktree = {
+        worktreePath: mainWorktreePath,
+        branchName: mainBranch,
+        originalCwd: handle.cwd,
+      };
+    } else {
+      // Non-git: warn but continue in-place (no worktrees).
+      console.warn(`[run-executor] cwd is not a git repository. Running without worktrees.`);
+    }
+
+    // Build the workflow run options. When git is available, `cwd` becomes
+    // the MAIN WORKTREE PATH (the transparency mechanism). The worktree
+    // manager + info are forwarded so the workflow can spawn per-task
+    // worktrees off the main one.
     const options: WorkflowRunOptions = {
-      cwd: handle.cwd,
+      cwd: isGit && worktreeManager ? worktreeManager.mainWorktreePath : handle.cwd,
       workDir: handle.workDir,
       onStatus: storeCallbacks,
       signal: controller.signal,
       rendererRegistry,
+      ...(worktreeManager ? { worktreeManager } : {}),
+      ...(worktreeManager ? { worktree: worktreeManager.getWorktreeInfo() } : {}),
     };
     if (msg.maxConcurrent !== undefined) {
       options.maxConcurrentTasks = msg.maxConcurrent;

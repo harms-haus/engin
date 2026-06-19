@@ -19,7 +19,7 @@
 //       start_run       → runManager.startRun(payload WITHOUT `type`); on
 //                         success ws.send({ type:'run_started', ... }) and the
 //                         requesting ws is auto-subscribed. Optional fields
-//                         (workDir, maxConcurrent, apiKeys, worktree) are
+//                         (workDir, maxConcurrent, apiKeys) are
 //                         forwarded verbatim. On rejection no run_started is
 //                         sent and the ws is NOT auto-subscribed (no crash).
 //       subscribe       → runManager.subscribe(ws, runId); if the run exists
@@ -95,9 +95,7 @@ function createMockRunManager(): RunManager {
   rm.unsubscribeAll = mock((_ws: ServerWebSocket): void => {});
   rm.handleResync = mock((_ws: ServerWebSocket, _runId: string, _lastSeq?: number): void => {});
   rm.cancelRun = mock((_runId: string): void => {});
-  rm.handleWorktreeAction = mock(
-    async (_runId: string, _action: 'keep' | 'discard' | 'merge' | 'pr'): Promise<void> => {},
-  );
+  rm.handleWorktreeAction = mock(async (_runId: string, _action: 'merge' | 'resolve' | 'decline'): Promise<void> => {});
   return rm;
 }
 
@@ -252,7 +250,7 @@ describe('createMessageRouter', () => {
       expect(passed.cwd).toBe('/tmp/project');
     });
 
-    it('start_run forwards optional fields verbatim (workDir, maxConcurrent, apiKeys, worktree)', async () => {
+    it('start_run forwards optional fields verbatim (workDir, maxConcurrent, apiKeys)', async () => {
       const runManager = createMockRunManager();
       const startRunMock = mock(async (_msg: StartRunMessage) => ({
         runId: 'run-opt',
@@ -270,7 +268,6 @@ describe('createMessageRouter', () => {
         workDir: '/tmp/work',
         maxConcurrent: 3,
         apiKeys: { OPENAI_API_KEY: 'sk-x' },
-        worktree: true,
       });
       await flushAsync();
 
@@ -283,7 +280,6 @@ describe('createMessageRouter', () => {
         workDir: '/tmp/work',
         maxConcurrent: 3,
         apiKeys: { OPENAI_API_KEY: 'sk-x' },
-        worktree: true,
       });
     });
 
@@ -420,7 +416,7 @@ describe('createMessageRouter', () => {
 
     it('worktree_action forwards runId and action to runManager.handleWorktreeAction', async () => {
       const runManager = createMockRunManager();
-      const wtMock = mock(async (_runId: string, _action: 'keep' | 'discard' | 'merge' | 'pr'): Promise<void> => {});
+      const wtMock = mock(async (_runId: string, _action: 'merge' | 'resolve' | 'decline'): Promise<void> => {});
       runManager.handleWorktreeAction = wtMock;
       const router = createMessageRouter(runManager);
       const { ws } = makeFakeWs();
@@ -434,6 +430,25 @@ describe('createMessageRouter', () => {
       expect(actionArg).toBe('merge');
     });
 
+    it('worktree_action forwards each new two-prompt action type verbatim (resolve, decline)', async () => {
+      const runManager = createMockRunManager();
+      const wtMock = mock(async (_runId: string, _action: 'merge' | 'resolve' | 'decline'): Promise<void> => {});
+      runManager.handleWorktreeAction = wtMock;
+      const router = createMessageRouter(runManager);
+      const { ws } = makeFakeWs();
+
+      router.routeMessage(ws, { type: 'worktree_action', runId: 'r', action: 'resolve' });
+      await flushAsync();
+      router.routeMessage(ws, { type: 'worktree_action', runId: 'r', action: 'decline' });
+      await flushAsync();
+
+      expect(wtMock).toHaveBeenCalledTimes(2);
+      expect(wtMock.mock.calls[0][0]).toBe('r');
+      expect(wtMock.mock.calls[0][1]).toBe('resolve');
+      expect(wtMock.mock.calls[1][0]).toBe('r');
+      expect(wtMock.mock.calls[1][1]).toBe('decline');
+    });
+
     it('worktree_action tolerates a rejecting handler without throwing', async () => {
       const runManager = createMockRunManager();
       runManager.handleWorktreeAction = mock(async () => {
@@ -443,7 +458,7 @@ describe('createMessageRouter', () => {
       const { ws, state } = makeFakeWs();
 
       // Must not throw synchronously.
-      router.routeMessage(ws, { type: 'worktree_action', runId: 'run-1', action: 'discard' });
+      router.routeMessage(ws, { type: 'worktree_action', runId: 'run-1', action: 'decline' });
       await flushAsync();
 
       // No reply is expected for worktree_action.

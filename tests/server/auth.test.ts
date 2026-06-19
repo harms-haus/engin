@@ -206,9 +206,8 @@ describe('auth', () => {
       { type: 'resync', runId: 'run-1', lastSeq: 42 },
       { type: 'cancel_run', runId: 'run-1' },
       { type: 'worktree_action', runId: 'run-1', action: 'merge' },
-      { type: 'worktree_action', runId: 'run-1', action: 'pr' },
-      { type: 'worktree_action', runId: 'run-1', action: 'discard' },
-      { type: 'worktree_action', runId: 'run-1', action: 'keep' },
+      { type: 'worktree_action', runId: 'run-1', action: 'resolve' },
+      { type: 'worktree_action', runId: 'run-1', action: 'decline' },
     ];
 
     for (const msg of clientMessages) {

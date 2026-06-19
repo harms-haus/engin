@@ -123,6 +123,7 @@ export function buildExecCtx(ctx: TaskRunnerContext): StepExecutionContext {
     phaseId: ctx.phaseId,
     rendererRegistry: ctx.rendererRegistry,
     signal: ctx.signal,
+    worktreeManager: ctx.worktreeManager,
   };
 }
 

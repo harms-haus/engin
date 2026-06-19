@@ -7,6 +7,7 @@ import { z } from 'zod';
 import type { RenderFunction } from '../../packages/engine/src/core/renderer-registry.js';
 import { RendererRegistry } from '../../packages/engine/src/core/renderer-registry.js';
 import type { AgentProfile, AgentStatusCallbacks, StatusCallbacks } from '../../packages/engine/src/core/types.js';
+import type { WorktreeManager } from '../../packages/engine/src/core/worktree-manager.js';
 import { makeMockSession } from '../helpers/make-session.js';
 
 // Capture real modules before mocking so we can restore them in afterAll.
@@ -92,6 +93,34 @@ function setupHarnessMock(session?: ReturnType<typeof makeMockSession>['session'
     dispose: mock(() => {}),
   });
   return sess;
+}
+
+/**
+ * Minimal mock WorktreeManager exposing only the three per-task lifecycle
+ * methods that phase-tasks.ts consumes (`createTaskWorktree`,
+ * `mergeTaskBranch`, `cullTaskWorktree`). Each is a `bun:test` mock so tests
+ * can assert call counts/args and the create→spawn→merge/cull ordering.
+ *
+ * Cast to `WorktreeManager` at the call site (it only implements the subset
+ * of methods phase-tasks touches).
+ */
+function makeMockWorktreeManager(opts?: {
+  worktreePath?: string;
+  mergeResult?: { success: boolean; conflictsResolved: boolean };
+  mergeError?: Error;
+  createError?: Error;
+}) {
+  const worktreePath = opts?.worktreePath ?? '/tmp/worktree/task-1';
+  const createTaskWorktree = mock(async (_taskId: string, _prompt?: string) => {
+    if (opts?.createError) throw opts.createError;
+    return worktreePath;
+  });
+  const mergeTaskBranch = mock(async (_taskId: string) => {
+    if (opts?.mergeError) throw opts.mergeError;
+    return opts?.mergeResult ?? { success: true, conflictsResolved: false };
+  });
+  const cullTaskWorktree = mock(async (_taskId: string) => undefined);
+  return { createTaskWorktree, mergeTaskBranch, cullTaskWorktree };
 }
 
 function createStatusCallbacksSpy(): StatusCallbacks & {
@@ -1094,6 +1123,377 @@ describe('runStepTask', () => {
       expect(taskCompleteIdx).toBeGreaterThan(renderIdx);
     });
   });
+
+  // ─── Worktree Lifecycle ─────────────────────────────────────────────
+  //
+  // When `worktreeManager` is provided, runStepTask must: create a per-task
+  // worktree BEFORE spawning the agent, run the agent with cwd = the worktree
+  // path (and allowedWriteDirs = [worktreePath]), merge the task branch on
+  // success (rejecting the task if the merge fails), and cull the worktree on
+  // any error. The persisted sessionDir is derived from sessionBaseDir and
+  // must NOT be rewired to the worktree path.
+
+  describe('worktree lifecycle', () => {
+    // ── creation & cwd/write-dir wiring ──────────────────────────────
+
+    it('calls createTaskWorktree(taskId, prompt) before spawnAgent when worktreeManager is provided', async () => {
+      setupProfilesMock(defaultProfile);
+      setupHarnessMock();
+      const wtm = makeMockWorktreeManager({ worktreePath: '/wt/task-1' });
+
+      await runStepTask(
+        makeDefaultOptions({
+          worktreeManager: wtm as unknown as WorktreeManager,
+          taskId: 'task-1',
+          prompt: 'Do the thing',
+        }),
+      );
+
+      // createTaskWorktree receives BOTH the taskId and the prompt.
+      expect(wtm.createTaskWorktree).toHaveBeenCalledTimes(1);
+      expect(wtm.createTaskWorktree).toHaveBeenCalledWith('task-1', 'Do the thing');
+      // ...and the harness was spawned exactly once afterwards.
+      expect(mockCreateHarness).toHaveBeenCalledTimes(1);
+    });
+
+    it('uses the returned worktree path as the agent cwd when worktreeManager is provided', async () => {
+      setupProfilesMock(defaultProfile);
+      setupHarnessMock();
+      const wtm = makeMockWorktreeManager({ worktreePath: '/wt/task-1' });
+
+      await runStepTask(makeDefaultOptions({ worktreeManager: wtm as unknown as WorktreeManager }));
+
+      const harnessCall = mockCreateHarness.mock.calls[0]![0] as Record<string, unknown>;
+      expect(harnessCall.cwd).toBe('/wt/task-1');
+      // The caller's original cwd is NOT passed through.
+      expect(harnessCall.cwd).not.toBe('/tmp/project');
+    });
+
+    it('sets allowedWriteDirs to [worktreePath] when worktreeManager is provided and caller omits allowedWriteDirs', async () => {
+      setupProfilesMock(defaultProfile);
+      setupHarnessMock();
+      const wtm = makeMockWorktreeManager({ worktreePath: '/wt/task-1' });
+
+      await runStepTask(
+        makeDefaultOptions({
+          worktreeManager: wtm as unknown as WorktreeManager,
+          allowedWriteDirs: undefined,
+        }),
+      );
+
+      const harnessCall = mockCreateHarness.mock.calls[0]![0] as Record<string, unknown>;
+      expect(harnessCall.allowedWriteDirs).toEqual(['/wt/task-1']);
+    });
+
+    it('overrides caller-provided allowedWriteDirs with [worktreePath] when worktreeManager is provided', async () => {
+      setupProfilesMock(defaultProfile);
+      setupHarnessMock();
+      const wtm = makeMockWorktreeManager({ worktreePath: '/wt/task-1' });
+
+      await runStepTask(
+        makeDefaultOptions({
+          worktreeManager: wtm as unknown as WorktreeManager,
+          allowedWriteDirs: ['/caller/dir'],
+        }),
+      );
+
+      const harnessCall = mockCreateHarness.mock.calls[0]![0] as Record<string, unknown>;
+      // The worktree path replaces any caller-supplied write dirs.
+      expect(harnessCall.allowedWriteDirs).toEqual(['/wt/task-1']);
+      expect(harnessCall.allowedWriteDirs).not.toContain('/caller/dir');
+    });
+
+    // ── success path: merge ──────────────────────────────────────────
+
+    it('calls mergeTaskBranch(taskId) on success and fires onTaskComplete when worktreeManager is provided', async () => {
+      setupProfilesMock(defaultProfile);
+      setupHarnessMock();
+      const wtm = makeMockWorktreeManager({ worktreePath: '/wt/task-1' });
+
+      const onStatus = createStatusCallbacksSpy();
+      await runStepTask(
+        makeDefaultOptions({
+          worktreeManager: wtm as unknown as WorktreeManager,
+          onStatus: onStatus as unknown as StatusCallbacks,
+        }),
+      );
+
+      expect(wtm.mergeTaskBranch).toHaveBeenCalledTimes(1);
+      expect(wtm.mergeTaskBranch).toHaveBeenCalledWith('task-1');
+      // phase-tasks does NOT cull on the success path (the real mergeTaskBranch
+      // culls internally on success; that is out of scope here).
+      expect(wtm.cullTaskWorktree).not.toHaveBeenCalled();
+      expect(onStatus.onTaskComplete).toHaveBeenCalledTimes(1);
+    });
+
+    it('returns the agent result unchanged when worktreeManager is provided and the merge succeeds', async () => {
+      setupProfilesMock(defaultProfile);
+      const session = makeMockSession(() => 'agent output').session;
+      setupHarnessMock(session);
+      const wtm = makeMockWorktreeManager({ worktreePath: '/wt/task-1' });
+
+      const result = await runStepTask<string>(
+        makeDefaultOptions({ worktreeManager: wtm as unknown as WorktreeManager }),
+      );
+
+      expect(result).toBe('agent output');
+    });
+
+    // ── absence: behavior unchanged ──────────────────────────────────
+
+    it('does not invoke any worktree methods when worktreeManager is absent', async () => {
+      setupProfilesMock(defaultProfile);
+      setupHarnessMock();
+      const wtm = makeMockWorktreeManager();
+
+      await runStepTask(makeDefaultOptions({ worktreeManager: undefined }));
+
+      expect(wtm.createTaskWorktree).not.toHaveBeenCalled();
+      expect(wtm.mergeTaskBranch).not.toHaveBeenCalled();
+      expect(wtm.cullTaskWorktree).not.toHaveBeenCalled();
+    });
+
+    it('uses the caller-provided cwd (no worktree substitution) when worktreeManager is absent', async () => {
+      setupProfilesMock(defaultProfile);
+      setupHarnessMock();
+
+      await runStepTask(makeDefaultOptions({ worktreeManager: undefined, allowedWriteDirs: ['/keep'] }));
+
+      const harnessCall = mockCreateHarness.mock.calls[0]![0] as Record<string, unknown>;
+      expect(harnessCall.cwd).toBe('/tmp/project');
+      expect(harnessCall.allowedWriteDirs).toEqual(['/keep']);
+    });
+
+    // ── interactions with other features ─────────────────────────────
+
+    it('keeps sessionDir derived from sessionBaseDir (not the worktree path) when worktreeManager is provided', async () => {
+      setupProfilesMock(defaultProfile);
+      setupHarnessMock();
+      const wtm = makeMockWorktreeManager({ worktreePath: '/wt/task-1' });
+
+      await runStepTask(
+        makeDefaultOptions({
+          worktreeManager: wtm as unknown as WorktreeManager,
+          sessionBaseDir: '/work/sessions',
+        }),
+      );
+
+      const harnessCall = mockCreateHarness.mock.calls[0]![0] as Record<string, unknown>;
+      // cwd is the worktree path...
+      expect(harnessCall.cwd).toBe('/wt/task-1');
+      // ...but the persisted session dir still points at the run dir (NOT the worktree).
+      expect(harnessCall.sessionDir).toBe(join('/work/sessions', 'task-1', 'implement'));
+      expect(harnessCall.sessionDir).not.toContain('/wt/task-1');
+    });
+
+    it('merges after structured (schema) output succeeds when worktreeManager is provided', async () => {
+      setupProfilesMock(defaultProfile);
+      setupHarnessMock();
+      mockPromptForStructured.mockResolvedValue({ result: { approved: true }, attempts: 1 });
+      const wtm = makeMockWorktreeManager({ worktreePath: '/wt/task-1' });
+
+      await runStepTask(
+        makeDefaultOptions({
+          worktreeManager: wtm as unknown as WorktreeManager,
+          schema: z.object({ approved: z.boolean() }) as unknown as ZodType<unknown>,
+        }),
+      );
+
+      // Structured path ran in the worktree cwd, then merged on success.
+      expect(mockPromptForStructured).toHaveBeenCalledTimes(1);
+      const harnessCall = mockCreateHarness.mock.calls[0]![0] as Record<string, unknown>;
+      expect(harnessCall.cwd).toBe('/wt/task-1');
+      expect(wtm.mergeTaskBranch).toHaveBeenCalledTimes(1);
+    });
+
+    it('merges after validateOutput retries succeed when worktreeManager is provided', async () => {
+      setupProfilesMock(defaultProfile);
+      const session = makeMockSession(() => 'plan written').session;
+      setupHarnessMock(session);
+      const wtm = makeMockWorktreeManager({ worktreePath: '/wt/task-1' });
+
+      const validateOutput = mock(() => undefined);
+      await runStepTask(
+        makeDefaultOptions({
+          worktreeManager: wtm as unknown as WorktreeManager,
+          validateOutput: validateOutput as never,
+        }),
+      );
+
+      // File-output path ran in the worktree cwd, then merged on success.
+      expect(validateOutput).toHaveBeenCalledTimes(1);
+      const harnessCall = mockCreateHarness.mock.calls[0]![0] as Record<string, unknown>;
+      expect(harnessCall.cwd).toBe('/wt/task-1');
+      expect(wtm.mergeTaskBranch).toHaveBeenCalledTimes(1);
+    });
+
+    it('runs assertSafeName on the taskId when sessionBaseDir and worktreeManager are both provided (valid name passes)', async () => {
+      setupProfilesMock(defaultProfile);
+      setupHarnessMock();
+      const wtm = makeMockWorktreeManager({ worktreePath: '/wt/task-1' });
+
+      // A safe taskId with sessionBaseDir must NOT throw from assertSafeName.
+      await expect(
+        runStepTask(
+          makeDefaultOptions({
+            worktreeManager: wtm as unknown as WorktreeManager,
+            taskId: 'task-1',
+            stepName: 'implement',
+            sessionBaseDir: '/work/sessions',
+          }),
+        ),
+      ).resolves.toBe('ok');
+    });
+
+    it('throws via assertSafeName for a path-traversal taskId when sessionBaseDir and worktreeManager are both provided', async () => {
+      setupProfilesMock(defaultProfile);
+      setupHarnessMock();
+      const wtm = makeMockWorktreeManager({ worktreePath: '/wt/task-1' });
+
+      // An unsafe taskId must be rejected by assertSafeName (it interpolates
+      // into the sessionBaseDir path). This guards path-traversal even when
+      // a worktreeManager is in play.
+      await expect(
+        runStepTask(
+          makeDefaultOptions({
+            worktreeManager: wtm as unknown as WorktreeManager,
+            taskId: 'task/../evil',
+            sessionBaseDir: '/work/sessions',
+          }),
+        ),
+      ).rejects.toThrow(/unsafe characters/i);
+
+      // The session dir is never built, so no merge should be attempted.
+      expect(wtm.mergeTaskBranch).not.toHaveBeenCalled();
+    });
+
+    // ── failure paths: cull + reject ─────────────────────────────────
+
+    it('throws the createTaskWorktree error when worktree creation fails (worktreeManager provided)', async () => {
+      setupProfilesMock(defaultProfile);
+      setupHarnessMock();
+      const wtm = makeMockWorktreeManager({ worktreePath: '/wt/task-1', createError: new Error('wt create failed') });
+
+      await expect(
+        runStepTask(makeDefaultOptions({ worktreeManager: wtm as unknown as WorktreeManager })),
+      ).rejects.toThrow('wt create failed');
+
+      // Creation was attempted...
+      expect(wtm.createTaskWorktree).toHaveBeenCalledTimes(1);
+      // ...but since no worktree was created, nothing is merged.
+      expect(wtm.mergeTaskBranch).not.toHaveBeenCalled();
+      // (Whether the cull/reject path engages on a creation failure depends on
+      // whether createTaskWorktree sits inside or before the try block — the
+      // spec places it before the try block, so those are intentionally not
+      // asserted here to avoid over-constraining the implementation.)
+    });
+
+    it('culls the worktree and fires onTaskRejected (not onTaskComplete) when worktreeManager is provided and the agent prompt fails', async () => {
+      setupProfilesMock(defaultProfile);
+      const session = makeMockSession().session;
+      setupHarnessMock(session);
+      (session.prompt as ReturnType<typeof mock>).mockRejectedValue(new Error('API error'));
+      const wtm = makeMockWorktreeManager({ worktreePath: '/wt/task-1' });
+
+      const onStatus = createStatusCallbacksSpy();
+      await expect(
+        runStepTask(
+          makeDefaultOptions({
+            worktreeManager: wtm as unknown as WorktreeManager,
+            onStatus: onStatus as unknown as StatusCallbacks,
+          }),
+        ),
+      ).rejects.toThrow('API error');
+
+      // Worktree was created (before the failure)...
+      expect(wtm.createTaskWorktree).toHaveBeenCalledTimes(1);
+      // ...the agent failed, so no merge is attempted...
+      expect(wtm.mergeTaskBranch).not.toHaveBeenCalled();
+      // ...and the failure path force-culls the worktree (best-effort).
+      expect(wtm.cullTaskWorktree).toHaveBeenCalledTimes(1);
+      expect(wtm.cullTaskWorktree).toHaveBeenCalledWith('task-1');
+
+      expect(onStatus.onTaskRejected).toHaveBeenCalledTimes(1);
+      const rejectCall = onStatus.onTaskRejected.mock.calls[0]![0] as Record<string, unknown>;
+      expect(rejectCall.reason).toBe('API error');
+      expect(onStatus.onTaskComplete).not.toHaveBeenCalled();
+    });
+
+    it('culls the worktree when worktreeManager is provided and createHarness fails', async () => {
+      setupProfilesMock(defaultProfile);
+      mockCreateHarness.mockRejectedValue(new Error('harness boom'));
+      const wtm = makeMockWorktreeManager({ worktreePath: '/wt/task-1' });
+
+      await expect(
+        runStepTask(makeDefaultOptions({ worktreeManager: wtm as unknown as WorktreeManager })),
+      ).rejects.toThrow('harness boom');
+
+      expect(wtm.createTaskWorktree).toHaveBeenCalledTimes(1);
+      expect(wtm.mergeTaskBranch).not.toHaveBeenCalled();
+      expect(wtm.cullTaskWorktree).toHaveBeenCalledTimes(1);
+      expect(wtm.cullTaskWorktree).toHaveBeenCalledWith('task-1');
+    });
+
+    it('rejects the task (not completes) when mergeTaskBranch returns failure (conflicts unresolved) and worktreeManager is provided', async () => {
+      setupProfilesMock(defaultProfile);
+      setupHarnessMock();
+      const wtm = makeMockWorktreeManager({
+        worktreePath: '/wt/task-1',
+        mergeResult: { success: false, conflictsResolved: false },
+      });
+
+      const onStatus = createStatusCallbacksSpy();
+      await expect(
+        runStepTask(
+          makeDefaultOptions({
+            worktreeManager: wtm as unknown as WorktreeManager,
+            onStatus: onStatus as unknown as StatusCallbacks,
+          }),
+        ),
+      ).rejects.toThrow(/merge failed/i);
+
+      // The agent produced its result, so a merge was attempted...
+      expect(wtm.mergeTaskBranch).toHaveBeenCalledTimes(1);
+      expect(wtm.mergeTaskBranch).toHaveBeenCalledWith('task-1');
+      // ...but it failed, so the task is rejected rather than completed.
+      expect(onStatus.onTaskComplete).not.toHaveBeenCalled();
+      // Exactly one rejection: the catch block owns onTaskRejected. A second
+      // call would indicate the merge-failure path is redundantly firing it.
+      expect(onStatus.onTaskRejected).toHaveBeenCalledTimes(1);
+      const rejectReasons = onStatus.onTaskRejected.mock.calls.map((c) => (c[0] as { reason?: string }).reason ?? '');
+      expect(rejectReasons.some((r) => r.toLowerCase().includes('merge failed'))).toBe(true);
+    });
+
+    it('culls the worktree and fires onTaskRejected when mergeTaskBranch throws on the success path (worktreeManager provided)', async () => {
+      setupProfilesMock(defaultProfile);
+      setupHarnessMock();
+      const wtm = makeMockWorktreeManager({
+        worktreePath: '/wt/task-1',
+        mergeError: new Error('merge threw'),
+      });
+
+      const onStatus = createStatusCallbacksSpy();
+      await expect(
+        runStepTask(
+          makeDefaultOptions({
+            worktreeManager: wtm as unknown as WorktreeManager,
+            onStatus: onStatus as unknown as StatusCallbacks,
+          }),
+        ),
+      ).rejects.toThrow('merge threw');
+
+      // Merge was attempted (the agent had succeeded)...
+      expect(wtm.mergeTaskBranch).toHaveBeenCalledTimes(1);
+      expect(wtm.mergeTaskBranch).toHaveBeenCalledWith('task-1');
+      // ...but it threw, so the task is rejected and the worktree culled.
+      expect(onStatus.onTaskComplete).not.toHaveBeenCalled();
+      expect(onStatus.onTaskRejected).toHaveBeenCalled();
+      const rejectReasons = onStatus.onTaskRejected.mock.calls.map((c) => (c[0] as { reason?: string }).reason ?? '');
+      expect(rejectReasons.some((r) => r.toLowerCase().includes('merge threw'))).toBe(true);
+      expect(wtm.cullTaskWorktree).toHaveBeenCalledTimes(1);
+      expect(wtm.cullTaskWorktree).toHaveBeenCalledWith('task-1');
+    });
+  });
 });
 
 // ─── runMultiStepTask Tests ────────────────────────────────────────────────
@@ -1408,6 +1808,140 @@ describe('runMultiStepTask', () => {
         }),
       ).rejects.toThrow('no steps');
       expect(onStatus.onTaskRegister).not.toHaveBeenCalled();
+    });
+  });
+
+  // ── Worktree lifecycle ─────────────────────────────────────────────
+
+  describe('worktree lifecycle', () => {
+    it('creates one task worktree before the first step when worktreeManager is provided, and runs every step in it', async () => {
+      setupSessionPerProfile({});
+      mockPromptForStructured.mockResolvedValue({ result: { ready: true }, attempts: 1 });
+      const wtm = makeMockWorktreeManager({ worktreePath: '/wt/planning' });
+
+      await runMultiStepTask({
+        ...makeTwoStepOptions(),
+        worktreeManager: wtm as unknown as WorktreeManager,
+      });
+
+      // Exactly ONE worktree for the whole task (not one per step).
+      expect(wtm.createTaskWorktree).toHaveBeenCalledTimes(1);
+      expect(wtm.createTaskWorktree.mock.calls[0]![0]).toBe('planning');
+
+      // Every step's agent runs with cwd = the worktree path.
+      const cwds = mockCreateHarness.mock.calls.map((c) => (c[0] as { cwd: string }).cwd);
+      expect(cwds).toEqual(['/wt/planning', '/wt/planning']);
+    });
+
+    it('calls mergeTaskBranch once and fires onTaskComplete after all steps approve when worktreeManager is provided', async () => {
+      setupSessionPerProfile({});
+      mockPromptForStructured.mockResolvedValue({ result: { ready: true }, attempts: 1 });
+      const wtm = makeMockWorktreeManager({ worktreePath: '/wt/planning' });
+
+      const onStatus = createStatusCallbacksSpy();
+      const res = await runMultiStepTask({
+        ...makeTwoStepOptions({ onStatus: onStatus as unknown as StatusCallbacks }),
+        worktreeManager: wtm as unknown as WorktreeManager,
+      });
+
+      // Merged once after success; phase-tasks does not cull on success.
+      expect(wtm.mergeTaskBranch).toHaveBeenCalledTimes(1);
+      expect(wtm.mergeTaskBranch).toHaveBeenCalledWith('planning');
+      expect(wtm.cullTaskWorktree).not.toHaveBeenCalled();
+      expect(res.approved).toBe(true);
+      expect(onStatus.onTaskComplete).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not invoke any worktree methods and keeps caller cwd when worktreeManager is absent', async () => {
+      setupSessionPerProfile({});
+      mockPromptForStructured.mockResolvedValue({ result: { ready: true }, attempts: 1 });
+      const wtm = makeMockWorktreeManager();
+
+      await runMultiStepTask(makeTwoStepOptions());
+
+      expect(wtm.createTaskWorktree).not.toHaveBeenCalled();
+      expect(wtm.mergeTaskBranch).not.toHaveBeenCalled();
+      expect(wtm.cullTaskWorktree).not.toHaveBeenCalled();
+
+      // cwd stays as the caller provided for every step.
+      const cwds = mockCreateHarness.mock.calls.map((c) => (c[0] as { cwd: string }).cwd);
+      expect(cwds).toEqual(['/tmp/project', '/tmp/project']);
+    });
+
+    it('culls the worktree and fires onTaskRejected (not complete) when worktreeManager is provided and a step throws', async () => {
+      setupSessionPerProfile({});
+      // The reviewer step (structured output) blows up.
+      mockPromptForStructured.mockRejectedValue(new Error('reviewer blew up'));
+      const wtm = makeMockWorktreeManager({ worktreePath: '/wt/planning' });
+
+      const onStatus = createStatusCallbacksSpy();
+      await expect(
+        runMultiStepTask({
+          ...makeTwoStepOptions({ onStatus: onStatus as unknown as StatusCallbacks }),
+          worktreeManager: wtm as unknown as WorktreeManager,
+        }),
+      ).rejects.toThrow('reviewer blew up');
+
+      expect(wtm.createTaskWorktree).toHaveBeenCalledTimes(1);
+      expect(wtm.mergeTaskBranch).not.toHaveBeenCalled();
+      expect(wtm.cullTaskWorktree).toHaveBeenCalledTimes(1);
+      expect(wtm.cullTaskWorktree).toHaveBeenCalledWith('planning');
+      expect(onStatus.onTaskRejected).toHaveBeenCalledTimes(1);
+      expect(onStatus.onTaskComplete).not.toHaveBeenCalled();
+    });
+
+    it('fails the task (not completes) when mergeTaskBranch returns failure after all steps approve (worktreeManager provided)', async () => {
+      setupSessionPerProfile({});
+      mockPromptForStructured.mockResolvedValue({ result: { ready: true }, attempts: 1 });
+      const wtm = makeMockWorktreeManager({
+        worktreePath: '/wt/planning',
+        mergeResult: { success: false, conflictsResolved: false },
+      });
+
+      const onStatus = createStatusCallbacksSpy();
+      await expect(
+        runMultiStepTask({
+          ...makeTwoStepOptions({ onStatus: onStatus as unknown as StatusCallbacks }),
+          worktreeManager: wtm as unknown as WorktreeManager,
+        }),
+      ).rejects.toThrow(/merge failed/i);
+
+      expect(wtm.mergeTaskBranch).toHaveBeenCalledTimes(1);
+      expect(wtm.mergeTaskBranch).toHaveBeenCalledWith('planning');
+      expect(onStatus.onTaskComplete).not.toHaveBeenCalled();
+      // Exactly one rejection: the catch block owns onTaskRejected. A second
+      // call would indicate the merge-failure path is redundantly firing it.
+      expect(onStatus.onTaskRejected).toHaveBeenCalledTimes(1);
+      const rejectReasons = onStatus.onTaskRejected.mock.calls.map((c) => (c[0] as { reason?: string }).reason ?? '');
+      expect(rejectReasons.some((r) => r.toLowerCase().includes('merge failed'))).toBe(true);
+    });
+
+    it('culls the worktree and fires onTaskRejected when mergeTaskBranch throws after all steps approve (worktreeManager provided)', async () => {
+      setupSessionPerProfile({});
+      mockPromptForStructured.mockResolvedValue({ result: { ready: true }, attempts: 1 });
+      const wtm = makeMockWorktreeManager({
+        worktreePath: '/wt/planning',
+        mergeError: new Error('merge threw'),
+      });
+
+      const onStatus = createStatusCallbacksSpy();
+      await expect(
+        runMultiStepTask({
+          ...makeTwoStepOptions({ onStatus: onStatus as unknown as StatusCallbacks }),
+          worktreeManager: wtm as unknown as WorktreeManager,
+        }),
+      ).rejects.toThrow('merge threw');
+
+      // Merge was attempted (all steps had approved)...
+      expect(wtm.mergeTaskBranch).toHaveBeenCalledTimes(1);
+      expect(wtm.mergeTaskBranch).toHaveBeenCalledWith('planning');
+      // ...but it threw, so the task is rejected and the worktree culled.
+      expect(onStatus.onTaskComplete).not.toHaveBeenCalled();
+      expect(onStatus.onTaskRejected).toHaveBeenCalled();
+      const rejectReasons = onStatus.onTaskRejected.mock.calls.map((c) => (c[0] as { reason?: string }).reason ?? '');
+      expect(rejectReasons.some((r) => r.toLowerCase().includes('merge threw'))).toBe(true);
+      expect(wtm.cullTaskWorktree).toHaveBeenCalledTimes(1);
+      expect(wtm.cullTaskWorktree).toHaveBeenCalledWith('planning');
     });
   });
 });
