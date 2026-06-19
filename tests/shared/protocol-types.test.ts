@@ -173,14 +173,14 @@ describe('start_run — worktree gate removed', () => {
   });
 
   it('rejects the removed worktree?: boolean field', () => {
-    // Single-line so the @ts-expect-error covers the excess-property error
-    // (TS reports it on the offending property, not the declaration line).
-    // @ts-expect-error — `worktree` was removed from start_run
+    // TS reports excess-property errors on the offending property, so the
+    // suppression directive must sit directly above it (not the declaration).
     const gated: ClientMessage = {
       type: 'start_run',
       workflowName: 'develop',
       taskPrompt: 'do the thing',
       cwd: '/repo',
+      // @ts-expect-error — `worktree` was removed from start_run
       worktree: true,
     };
     void gated;

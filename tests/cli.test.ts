@@ -83,8 +83,10 @@ describe('parseArgs', () => {
     expect(result.taskPrompt).toBeUndefined();
   });
 
-  it('rejects --worktree as an unknown flag (the flag was removed)', () => {
-    expect(() => parseArgs(['--verbose', '--worktree', '--cwd', '/custom'])).toThrow(/Unknown flag: "--worktree"/);
+  it('treats --worktree as a no-op and emits a migration warning (the flag was removed)', () => {
+    const result = parseArgs(['--verbose', '--worktree', '--cwd', '/custom']);
+    expect(result.command).toBe('run');
+    expect(result.warnings).toEqual(expect.arrayContaining([expect.stringMatching(/--worktree is no longer needed/i)]));
   });
 
   it('returns interactive mode with --max-concurrent flag', () => {
@@ -470,26 +472,41 @@ describe('parseArgs', () => {
   });
 
   describe('--worktree flag (removed)', () => {
-    it('is rejected as an unknown flag for run command', () => {
-      expect(() => parseArgs(['develop', 'task', '--worktree'])).toThrow(/Unknown flag: "--worktree"/);
-    });
-
-    it('is rejected even when mixed with other valid flags', () => {
-      expect(() => parseArgs(['develop', 'task', '--worktree', '--verbose', '--cwd', '/tmp'])).toThrow(
-        /Unknown flag: "--worktree"/,
+    it('is accepted as a no-op for run command and emits the migration warning', () => {
+      const result = parseArgs(['develop', 'task', '--worktree']);
+      expect(result.command).toBe('run');
+      expect(result.warnings).toEqual(
+        expect.arrayContaining([expect.stringMatching(/--worktree is no longer needed/i)]),
       );
     });
 
-    it('is rejected for resume command', () => {
-      expect(() => parseArgs(['resume', 'my-session', '--worktree'])).toThrow(/Unknown flag: "--worktree"/);
+    it('is accepted as a no-op even when mixed with other valid flags', () => {
+      const result = parseArgs(['develop', 'task', '--worktree', '--verbose', '--cwd', '/tmp']);
+      expect(result.command).toBe('run');
+      expect(result.warnings).toEqual(
+        expect.arrayContaining([expect.stringMatching(/--worktree is no longer needed/i)]),
+      );
     });
 
-    it('is rejected for init command', () => {
-      expect(() => parseArgs(['init', '--worktree'])).toThrow(/Unknown flag: "--worktree"/);
+    it('is accepted as a no-op for resume command', () => {
+      const result = parseArgs(['resume', 'my-session', '--worktree']);
+      expect(result.warnings).toEqual(
+        expect.arrayContaining([expect.stringMatching(/--worktree is no longer needed/i)]),
+      );
     });
 
-    it('is rejected for server up command', () => {
-      expect(() => parseArgs(['server', 'up', '--worktree'])).toThrow(/Unknown flag: "--worktree"/);
+    it('is accepted as a no-op for init command', () => {
+      const result = parseArgs(['init', '--worktree']);
+      expect(result.warnings).toEqual(
+        expect.arrayContaining([expect.stringMatching(/--worktree is no longer needed/i)]),
+      );
+    });
+
+    it('is accepted as a no-op for server up command', () => {
+      const result = parseArgs(['server', 'up', '--worktree']);
+      expect(result.warnings).toEqual(
+        expect.arrayContaining([expect.stringMatching(/--worktree is no longer needed/i)]),
+      );
     });
 
     it('throws for web command (no longer a valid command)', () => {

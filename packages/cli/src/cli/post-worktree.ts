@@ -217,7 +217,7 @@ export async function promptFinalMerge(
     const handleTimeout = (): void => {
       const { path, branch } = preservationTarget();
       console.log(
-        `⚠️ No response from the server within ${resultTimeoutMs / 1000}s. Worktree preserved at ${path} (branch: ${branch}).`,
+        `⚠️ No response from the server within ${Math.round(resultTimeoutMs / 1000)}s. Worktree preserved at ${path} (branch: ${branch}).`,
       );
       finish();
     };

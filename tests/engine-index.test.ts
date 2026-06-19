@@ -125,7 +125,7 @@ const ORIGINAL_CORE_SPECIFIERS = [
 const PRESERVED_VALUE_EXPORTS: string[] = [
   'createHarness',
   'loadProfilesFromDirs',
-  'spawnAgent',
+  'generateWorkflowTitle',
   'runMultiStepTask',
   'ensureDir',
   'loadEnvFiles',
@@ -136,6 +136,9 @@ const PRESERVED_VALUE_EXPORTS: string[] = [
   'startDaemon',
   'LanePool',
 ];
+// NOTE: `spawnAgent` (core/agent-lifecycle.js) is deliberately NOT in this list
+// — it is an engine-internal helper consumed via direct source imports and has
+// never been re-exported through the barrel.
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // 1. New modules are re-exported as values from the public barrel

@@ -931,9 +931,9 @@ describe('FinalMergeOptions', () => {
       sendAction: async () => {},
       waitForResult: async () => ({ outcome: 'clean' }),
     };
-    expect((opts as Record<string, unknown>).profilesDirs).toBeUndefined();
-    expect((opts as Record<string, unknown>).repoRoot).toBeUndefined();
-    expect((opts as Record<string, unknown>).apiKeys).toBeUndefined();
+    expect((opts as unknown as Record<string, unknown>).profilesDirs).toBeUndefined();
+    expect((opts as unknown as Record<string, unknown>).repoRoot).toBeUndefined();
+    expect((opts as unknown as Record<string, unknown>).apiKeys).toBeUndefined();
   });
 });
 

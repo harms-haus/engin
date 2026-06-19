@@ -88,27 +88,17 @@ function buildFixupPrompt(opts: FixupOptions): string {
  * `bun test` is intentionally NOT run — the full suite is too slow and may fail
  * for reasons unrelated to the fix-up.
  */
-async function verifyWorktree(worktreePath: string): Promise<string | undefined> {
-  const tscProc = Bun.spawn({
-    cmd: ['bunx', 'tsc', '--noEmit'],
-    cwd: worktreePath,
-    stdout: 'pipe',
-    stderr: 'pipe',
-  });
-  const [tscExitCode, tscStderr] = await Promise.all([tscProc.exited, new Response(tscProc.stderr).text()]);
-  if (tscExitCode !== 0) {
-    return tscStderr.trim();
+function verifyWorktree(worktreePath: string): string | undefined {
+  const tsc = Bun.spawnSync(['bunx', 'tsc', '--noEmit'], { cwd: worktreePath });
+  if (tsc.exitCode !== 0) {
+    return tsc.stderr.toString().trim();
   }
 
-  const eslintProc = Bun.spawn({
-    cmd: ['bunx', 'eslint', '--no-error-on-unmatched-pattern', '.'],
+  const eslint = Bun.spawnSync(['bunx', 'eslint', '--no-error-on-unmatched-pattern', '.'], {
     cwd: worktreePath,
-    stdout: 'pipe',
-    stderr: 'pipe',
   });
-  const [eslintExitCode, eslintStderr] = await Promise.all([eslintProc.exited, new Response(eslintProc.stderr).text()]);
-  if (eslintExitCode !== 0) {
-    return eslintStderr.trim();
+  if (eslint.exitCode !== 0) {
+    return eslint.stderr.toString().trim();
   }
 
   return undefined;
@@ -161,7 +151,7 @@ export async function runTooledFixup(opts: FixupOptions): Promise<FixupResult> {
 
       await handle.session.prompt(promptText);
 
-      verificationError = await verifyWorktree(opts.worktreePath);
+      verificationError = verifyWorktree(opts.worktreePath);
       if (!verificationError) {
         return { success: true, attempts: attempt + 1 };
       }
