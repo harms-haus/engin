@@ -101,21 +101,23 @@ not a parallel path to preserve.
    declines conflict resolution — **preserve everything**. A "No" means "the user will handle it
    manually," **not** "we don't want the changes": never cull, never delete branches, and surface
    the worktree/branch paths so the user can find them.
-10. **Worktrees are mandatory; the `--worktree` flag is discontinued.** Every run uses worktrees —
-    the per-task system is the run path, not an opt-in feature. Remove the `--worktree` / `msg.worktree`
-    gate so `startRun` **always** creates the main worktree, and delete the now-dead no-worktree branch
-    rather than leaving it as an escape hatch.
+10. **Worktrees are mandatory when git is available; the `--worktree` flag is discontinued; the
+    no-worktree execution path is retained as a non-git fallback.** Remove the `--worktree` /
+    `msg.worktree` gate so `startRun` **always** attempts the worktree path (you can no longer
+    _request_ no-worktree via a flag). But when `cwd` is **not** inside a git repository, do not
+    hard-fail: warn the user and prompt **"Continue without git and worktrees? Yes/no"**.
+    - **Yes** → fall back to the current default behavior (today's no-`--worktree` path): run in-place
+      in `cwd`, no worktrees, no branches, no final merge prompt. This is why the no-worktree
+      execution path is **retained** — it is the non-git fallback, not a re-introduced flag.
+    - **No** → abort the run with a pointer to `git init`.
+    - **Do not** auto-`git init` (surprising and destructive to a user's untracked directory).
 
-    **Consequence that must be handled:** a run now requires `cwd` to be inside a git repository.
-    Today a non-git repo worked by simply skipping worktree creation; with worktrees mandatory that is
-    no longer possible (`setupWorktree` already throws when `!isGitRepo(cwd)`). Fail fast with a clear,
-    actionable message (e.g. "engin runs require a git repository for worktree isolation — run `git
-init` first") when `isGitRepo(cwd)` is false. **Do not** auto-`git init` (surprising and
-    destructive to a user's untracked directory). Surface this operator-facing change in the CLI help
-    and the run/start docs.
+    Net: the `--worktree` _flag_ is gone and worktrees are the default for git repos, but the
+    no-worktree _execution behavior_ stays alive as the automatic fallback when the user confirms
+    a non-git run. Surface this operator-facing change in the CLI help and the run/start docs.
 
 This deliberately removes the migration bridge (gate → measure → flip) as a final step: build the
-new single path directly, since there is no old path to preserve.
+new default path directly, keeping only the no-worktree path as the non-git fallback.
 
 ---
 
@@ -337,9 +339,11 @@ install, that is an acceptable known limitation for v1 — do not build copy-on-
 
 5. **Do not copy `node_modules`.** §6. Symlink + retry.
 
-6. **Do remove the `--worktree` flag and the no-worktree code path.** §2 constraint #10. Worktrees
-   are mandatory; the gate and the dead branch go away. The one thing to add (not preserve) is the
-   fast-fail when `cwd` is not a git repo.
+6. **Remove the `--worktree` flag, but RETAIN the no-worktree execution path as the non-git
+   fallback.** §2 constraint #10. The flag/gate goes away (you can't _request_ no-worktree); but the
+   in-place execution behavior stays, reached only via the non-git "Continue without git and
+   worktrees? Yes/no" prompt. Do not delete that path — refactor `startRun` so the worktree setup is
+   unconditional and the no-worktree path is a guarded fallback, not a gated feature.
 
 7. **Beware `cwd`-relative path resolution after the swap.** Once the harness `cwd` is the worktree,
    any code that resolves a run-artifact path relative to `cwd` will write into the worktree instead
@@ -373,10 +377,12 @@ RunHandle (server/run-manager.ts)
 
 Flow:
 
-1. **Run start** (`startRun`): **always** (the flag is gone) — fail fast if `!isGitRepo(cwd)` — call
-   `generateWorkflowTitle` extended to also return `branchName` → sanitize → create the **main**
+1. **Run start** (`startRun`): the flag is gone. If `isGitRepo(cwd)` → create the main worktree path
+   (`generateWorkflowTitle` extended to also return `branchName` → sanitize → create the **main**
    worktree at `{run-id}/worktree` on branch `engin/{mainSlug}` → populate from `.worktreecopy` →
-   `worktreeManager.prune()`.
+   `worktreeManager.prune()`). If **not** a git repo → warn + prompt **"Continue without git and
+   worktrees? Yes/no"** → on Yes, fall back to the in-place no-worktree path; on No, abort. Steps 2–5
+   below apply only to the worktree path.
 2. **Per task** (`phase-tasks.ts` hook, both `runStepTask` and `runMultiStepTask`): before
    `spawnAgent`, `worktreeManager.createTaskWorktree(taskId)` → populate from `.worktreecopy` →
    pass `{taskWorktreePath}` as the harness `cwd` instead of `options.cwd`.
@@ -415,8 +421,9 @@ Flow:
 2. **Fold branch-name generation into `generateWorkflowTitle`.** One LLM call returns
    `{ title, branchName }`. Delete the separate `worker`-harness call in `setupWorktree`.
 3. **Relocate the main worktree into `{run-id}/worktree`.** Change the path in `setupWorktree`;
-   update `run-manager.ts` to create it unconditionally (the `msg.worktree` gate is gone) and to
-   fast-fail on non-git `cwd`. Verify clean `git status` and that `.worktreecopy` populates.
+   update `run-manager.ts` to create it unconditionally when git is present (the `msg.worktree` gate is
+   gone), and to run the warn + "Continue without git and worktrees? Yes/no" fallback when it is not.
+   Verify clean `git status` and that `.worktreecopy` populates.
 4. **Add `WorktreeManager` + per-task worktrees in `phase-tasks.ts`.** Gated on the run having a
    main worktree. Wire the failed-task cull into `lane-pool.ts::maybeRetryFailedTask`. This is the
    core change.
@@ -435,10 +442,10 @@ Flow:
 9. **Wire the two-prompt run-end final merge** (§8 flow step 5): the yes/No merge prompt and the
    yes/No conflict prompt, with cleanup **only** on a successful merge and full preservation on any
    decline. Reuse `post-worktree.ts`'s readline primitive.
-10. **Remove the `--worktree` flag and the no-worktree code path entirely.** Delete the gate in
-    `run-manager.ts` and any CLI flag plumbing; the worktree path from step 3 is now the only path.
-    Add the non-git fast-fail message. Update CLI help + docs to reflect that every run uses
-    worktrees and requires a git repo.
+10. **Remove the `--worktree` flag and its CLI plumbing; keep the no-worktree path as the non-git
+    fallback.** Delete the gate and the flag in `run-manager.ts`; ensure the no-worktree execution path
+    remains reachable only through the non-git confirm prompt. Update CLI help + docs to reflect that
+    every git-repo run uses worktrees, and non-git runs prompt to continue in-place.
 
 ---
 
@@ -477,8 +484,9 @@ the direction contradicts something in the codebase, surface it rather than forc
   cull into `pool/lane-pool.ts`; thread the main worktree through `server/run-manager.ts` /
   `server/run-executor.ts`).
 - Default implementations behind every new seam so existing workflows are unchanged. (Workflows are
-  untouched — they still see `options.cwd`, now the worktree path. The change is _operator-facing_:
-  every run now requires a git repo and uses a worktree unconditionally.)
+  untouched — they still see `options.cwd`, now the worktree path when git is present. The change is
+  _operator-facing_: git-repo runs use worktrees by default with no flag; non-git runs warn and
+  prompt to continue in-place without worktrees.)
 - The `.worktreecopy` spec implemented (copy + symlink modes, `ignore`-based matching, bounded-retry
   file operations) and the `ignore` dependency added to `packages/engine`.
 - The shared tooled-and-self-verifying agent fix-up primitive, reused for both the hardened conflict
@@ -494,7 +502,8 @@ the direction contradicts something in the codebase, surface it rather than forc
   merges (no index race), failed-task force-cull + fresh-recreate, the commit-failure worker fix-up
   (lint error → corrected commit, exhaustion → task failure), the two-prompt run-end merge
   (yes-merge-cleans-up, no-merge-preserves, conflict-resolve-cleans-up, conflict-decline-preserves),
-  conflict-decline-preserves), and the non-git fast-fail (`isGitRepo(cwd)` → clear error, no auto-init).
+  and the non-git fallback (warn + "Continue without git and worktrees? Yes/no" → Yes runs in-place
+  no-worktree, No aborts; no auto-`git init`).
 - Docs updates: `docs/reference/task-pool.md` (per-task worktree lifecycle),
   `docs/guides/building-workflows.md` and a new `docs/reference/worktrees.md` describing the
   `.worktreecopy` spec, the branch-naming scheme, the merge/cull model, and the final-merge UX.

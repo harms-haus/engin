@@ -14,6 +14,19 @@ workflow layer.
 You are expected to **research** as needed and **validate/refine** the direction below against the
 codebase before writing code. Read every file listed in §4 before designing anything.
 
+> **Sequencing: worktrees ship first.** The worktree system in `worktrees.prompt.md` is implemented
+> **before** this hook system. Read it and the resulting code (`WorktreeManager`, the per-task
+> worktree `cwd` wiring in `phase-tasks.ts`, the serialized merge queue, and the shared tooled
+> fix-up primitive for conflict/lint resolution) before designing the hooks below — several seams
+> interact with the two-cwd world (§5 item #4, §7 tool level) and the worktree merge lifecycle
+> (§7 task + workflow level).
+>
+> **Owner decision (do not contradict):** worktrees shipped **without** any new `StatusCallbacks`
+> observe methods. Worktree state stays internal to `WorktreeManager` (surfaced only on the run
+> handle and in the final-merge UX). The observe surface for worktree lifecycle events is added
+> **here**, by this hook system — so treat the worktree lifecycle anchors in §7 as hooks to
+> formalize, and do **not** invent parallel `onTaskWorktree*` status callbacks on the existing bag.
+
 ---
 
 ## 1. Mission
@@ -123,6 +136,10 @@ Read these before designing anything:
   primitives. These fire the full lifecycle themselves.
 - `tracking/task-status.ts` — `TaskTracker`: the write model (DAG, `claimTasks`, `resetTaskForRetry`,
   EventEmitter for `TaskReady`/`TaskSettled`/`TaskClaimed`).
+- `core/worktree-manager.ts` (+ `worktree-lifecycle.ts`, `worktree-operations.ts`, `git.ts`) — the
+  per-run `WorktreeManager`: main + per-task worktrees under `.engin/work/{run-id}/`, serialized
+  squash-merges, force-cull on task fail, and the tooled conflict/lint fix-up primitive. **Shipped by
+  `worktrees.prompt.md` before this task.** This is where the worktree lifecycle hooks in §7 attach.
 
 ### Workflows (`~/.config/engin/workflows/`)
 
@@ -155,18 +172,24 @@ Read these before designing anything:
 These are **generic** behaviors re-implemented in SPIR `.lib/` today. Each is a candidate for an
 engine-level hook + default. Validate each against a non-SPIR workflow shape before promoting it.
 
-| #   | Behavior                                                    | Where today                                                                                                                                                       | Target seam                                                                 |
-| --- | ----------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
-| 1   | Phase transition: set phase → save → fire `onPhaseComplete` | `spir.ts::completePhase`                                                                                                                                          | `afterPhase` / `beforePhaseTransition` (default impl)                       |
-| 2   | Sidebar indicator on phase change                           | scattered `onSidebarUpdate({indicator})` in `runSpir`                                                                                                             | `afterPhase` (default)                                                      |
-| 3   | Resume detection + stale-session clearing                   | `implementation.ts` (clears non-`complete` task sessions)                                                                                                         | `onWorkflowResume` / `onResumeTask`                                         |
-| 4   | **File-context inlining into prompts**                      | `pool/prompt-builder.ts` **duplicated** by `.lib/planning.ts` (`readContextFile`, `LANG_BY_EXT`, `BINARY_EXTS`, with a comment admitting it "mirrors" the engine) | `collectContext(task, step)` / `beforeStepPrompt` — **single clearest win** |
-| 5   | Diff collection before review                               | `final-review.ts::collectDiff` closure                                                                                                                            | `collectContext` keyed to review steps                                      |
-| 6   | Audit-log + history appending after structured output       | every phase: `await tracker.auditLog.append(structuredOutputEvent(...))` / `decisionEvent(...)` by hand                                                           | `onStructuredOutput` / `onDecision` observe hook with a default auditor     |
-| 7   | review → fixer → review-fixes loop (~400 LOC)               | `final-review.ts`, per dimension, own `LanePool`                                                                                                                  | a `fixLoop` primitive + hooks                                               |
-| 8   | Phase retry loops ("scout ≤3 rounds", "plan ≤3 rounds")     | `executePhase` `if (rounds < 3) return "scouting"`                                                                                                                | `shouldRetryPhase`                                                          |
-| 9   | Failure isolation (per-lane try/catch + `Promise.all`)      | `final-review.ts` review lanes                                                                                                                                    | `onLaneError` / `shouldIsolate`                                             |
-| 10  | Collect completed task results into phase output            | `scouting.ts` collect-loop                                                                                                                                        | `onPhaseSettled` reduce hook                                                |
+| #   | Behavior                                                    | Where today                                                                                                                                                       | Target seam                                                                                                                                                                                                                                                               |
+| --- | ----------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | Phase transition: set phase → save → fire `onPhaseComplete` | `spir.ts::completePhase`                                                                                                                                          | `afterPhase` / `beforePhaseTransition` (default impl)                                                                                                                                                                                                                     |
+| 2   | Sidebar indicator on phase change                           | scattered `onSidebarUpdate({indicator})` in `runSpir`                                                                                                             | `afterPhase` (default)                                                                                                                                                                                                                                                    |
+| 3   | Resume detection + stale-session clearing                   | `implementation.ts` (clears non-`complete` task sessions)                                                                                                         | `onWorkflowResume` / `onResumeTask`                                                                                                                                                                                                                                       |
+| 4   | **File-context inlining into prompts**                      | `pool/prompt-builder.ts` **duplicated** by `.lib/planning.ts` (`readContextFile`, `LANG_BY_EXT`, `BINARY_EXTS`, with a comment admitting it "mirrors" the engine) | `collectContext(task, step)` / `beforeStepPrompt` — **single clearest win**. **Two-cwd world (post-worktrees):** `options.cwd` is the _run_ cwd, the step agent runs in the per-task _worktree_ cwd — resolve `task.files` against the **worktree** cwd, not the run cwd. |
+| 5   | Diff collection before review                               | `final-review.ts::collectDiff` closure                                                                                                                            | `collectContext` keyed to review steps                                                                                                                                                                                                                                    |
+| 6   | Audit-log + history appending after structured output       | every phase: `await tracker.auditLog.append(structuredOutputEvent(...))` / `decisionEvent(...)` by hand                                                           | `onStructuredOutput` / `onDecision` observe hook with a default auditor                                                                                                                                                                                                   |
+| 7   | review → fixer → review-fixes loop (~400 LOC)               | `final-review.ts`, per dimension, own `LanePool`                                                                                                                  | a `fixLoop` primitive + hooks                                                                                                                                                                                                                                             |
+| 8   | Phase retry loops ("scout ≤3 rounds", "plan ≤3 rounds")     | `executePhase` `if (rounds < 3) return "scouting"`                                                                                                                | `shouldRetryPhase`                                                                                                                                                                                                                                                        |
+| 9   | Failure isolation (per-lane try/catch + `Promise.all`)      | `final-review.ts` review lanes                                                                                                                                    | `onLaneError` / `shouldIsolate`                                                                                                                                                                                                                                           |
+| 10  | Collect completed task results into phase output            | `scouting.ts` collect-loop                                                                                                                                        | `onPhaseSettled` reduce hook                                                                                                                                                                                                                                              |
+
+> **Cross-ref (post-worktrees):** `worktrees.prompt.md` ships a shared **tooled, self-verifying agent
+> fix-up primitive** (worker profile + tools in the worktree, edit + re-stage + self-verify via
+> `tsc`/`bun test`/`eslint`, bounded retry) reused for both conflict resolution and commit/lint
+> failures. Item #7's `fixLoop` and #9's failure-isolation should **compose with / generalize that
+> primitive**, not re-invent it. Read it before designing the fix-loop hooks.
 
 ---
 
@@ -224,6 +247,10 @@ Organized by hierarchy level. Tagged **[obs]**erve (one-way) vs **[inf]**luence 
 - `onWorkflowAbort [obs]` — distinct from fail (Ctrl+C); today bespoke `'Workflow cancelled'`
   string-matching.
 - `onPersist(state)` / `onRestore(state) [inf]` — the `tracker.save()/load()` inline in `runSpir`.
+- `beforeRunMerge(state) [inf]` — gate/customize the final main-wt-branch → real `main` squash-merge
+  (the two-prompt UX in `worktrees.prompt.md`).
+- `onRunMergeConflict(conflicts) [inf]` — decide conflict resolution for the final merge; default =
+  the tooled fix-up primitive (§5 cross-ref).
 
 ### Phase level _(biggest gap — zero engine support today)_
 
@@ -249,6 +276,19 @@ Organized by hierarchy level. Tagged **[obs]**erve (one-way) vs **[inf]**luence 
 - `beforeTaskRetry(task, reason) [inf]` — generalize `maybeRetryFailedTask`.
 - `✱ onTaskComplete [obs]` / `✱ onTaskRejected [obs]`
 
+**Worktree lifecycle** (attach to `WorktreeManager`; `worktrees.prompt.md` shipped these _without_
+status callbacks — formalize them here as hooks, per the preamble decision):
+
+- `beforeTaskWorktreeCreate(task) [inf]` — inject files, choose base, **skip isolation** (read-only
+  scout tasks don't need a worktree). The "should this task be isolated?" seam.
+- `afterTaskWorktreeCreate(task, path) [obs]` — fan-out for TUI/web per-task branch display.
+- `populateWorktree(path, ctx) [inf]` — **high-value early win.** Default impl = read `.worktreecopy`
+  (copy + symlink). Override lets a workflow `bun install`, copy extra secrets, etc. The
+  influence-hook-with-default-implementation pattern this prompt champions.
+- `onTaskMerge(task, result) [inf]` — gate/customize the per-task squash-merge into the main-wt branch.
+- `onMergeConflict(task, conflicts) [inf]` / `onCommitFailure(task, errors) [inf]` — gate the
+  conflict/lint fix-up; default = the tooled primitive (§5 cross-ref).
+
 ### Step level
 
 - `✱ onStepStart [obs]`
@@ -263,7 +303,10 @@ Organized by hierarchy level. Tagged **[obs]**erve (one-way) vs **[inf]**luence 
 - `✱ onAgentSpawn` / `✱ onAgentComplete` / `✱ onTurnStart` / `✱ onTurnEnd` / `✱ onToolCallStart` /
   `✱ onToolCallEnd` / `✱ onAgentRender [obs]`
 - `onToolCall(call) [inf]` — allow/deny/rewrite (the `write-sandbox` and read-only stripping become
-  hooks instead of special-case options).
+  hooks instead of special-case options). **Two-cwd world (post-worktrees):** `allowedWriteDirs`
+  resolves against the harness `cwd`, which is now the per-task worktree — sandboxing is naturally
+  scoped to the worktree (better isolation for free). A hook that must allow writes _outside_ the
+  worktree needs the main-repo path explicitly.
 - `onToolResult(result) [inf]` — transform tool results.
 
 ### Scheduler / execution level _(the "break apart LanePool" payoff)_
@@ -274,6 +317,9 @@ Organized by hierarchy level. Tagged **[obs]**erve (one-way) vs **[inf]**luence 
   final-review lanes don't need N separate pools.
 - `wakeStrategy [inf]` — generalize the TaskReady/TaskSettled + timeout wake.
 - `onLaneIdle` / `onLaneStall [obs]` — the hardcoded stall warning.
+- _`mergeQueue` (not a hook — a constraint):_ task→main-wt squash-merges are **serialized**
+  (`worktrees.prompt.md` §2 #3). A `concurrencyKey` hook must **not** parallelize merges into the
+  shared main-wt branch; only task _execution_ is concurrent.
 
 ---
 
