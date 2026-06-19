@@ -685,7 +685,7 @@ describe('ClientStore – selectPhase', () => {
     expect(s.userPinnedStep).toBe(false); // reset
   });
 
-  it('snaps a non-completed, non-current phase selection back to currentPhaseId (phase follow)', () => {
+  it('respects an explicit non-current phase selection (tightened phase-follow does not snap back)', () => {
     const store = new ClientStore();
     store.applySnapshot(
       blankProjection({
@@ -700,9 +700,11 @@ describe('ClientStore – selectPhase', () => {
       1,
     );
 
-    // scouting is neither completed nor current — reconcile snaps to exec.
+    // The user explicitly navigates to scouting (a detour — neither completed
+    // nor the current phase). The tightened phase-follow leaves it selected
+    // instead of snapping it back to currentPhaseId (the old broad rule did).
     store.selectPhase('scouting');
-    expect(store.getState().selectedPhaseId).toBe('exec');
+    expect(store.getState().selectedPhaseId).toBe('scouting');
     expect(store.getState().userPinnedPhase).toBe(false);
   });
 
@@ -869,7 +871,7 @@ describe('ClientStore – follow rules', () => {
       expect(store.getState().selectedPhaseId).toBe('scouting');
     });
 
-    it('follows currentPhaseId forward when the selected phase is not completed and not pinned', () => {
+    it('follows currentPhaseId when synced to the previous current phase and it advanced (req 6)', () => {
       const store = new ClientStore();
       // First snapshot: current = scouting, nothing completed.
       store.applySnapshot(
@@ -883,12 +885,15 @@ describe('ClientStore – follow rules', () => {
         }),
         1,
       );
-      // selectPhase(scouting) where scouting is current + not completed → stays, not pinned.
+      // Re-affirm selection on the (current) scouting phase; not pinned.
       store.selectPhase('scouting');
       expect(store.getState().selectedPhaseId).toBe('scouting');
       expect(store.getState().userPinnedPhase).toBe(false);
 
       // Second snapshot: current advances to exec; scouting now completed.
+      // The user was SYNCED to scouting (selectedPhaseId === prevCurrentPhaseId)
+      // and the active phase advanced → the tightened rule follows to exec
+      // (completion no longer exempts a phase that the user was synced to).
       store.applySnapshot(
         blankProjection({
           currentPhaseId: 'exec',
@@ -903,8 +908,11 @@ describe('ClientStore – follow rules', () => {
         }),
         2,
       );
-      // scouting is completed → phase-follow exempts it → stays on scouting.
-      expect(store.getState().selectedPhaseId).toBe('scouting');
+      expect(store.getState().selectedPhaseId).toBe('exec'); // followed the advance
+      // Follow resets userPinnedPhase / task selection for the new phase.
+      expect(store.getState().userPinnedPhase).toBe(false);
+      // Task follow then picks the first active task in exec (t2).
+      expect(store.getState().selectedTaskId).toBe('t2');
     });
 
     it('keeps selection on a pinned (completed) phase even when currentPhaseId moves', () => {
@@ -1001,6 +1009,124 @@ describe('ClientStore – follow rules', () => {
       // Wait — selectTask sets selectedTaskId then reconcile immediately fixes it.
       // 't-ghost' is not in exec's tasks → reconcile re-selects first active (t2).
       expect(store.getState().selectedTaskId).toBe('t2');
+    });
+
+    // ── Task completion reselection (req 2) ─────────────────────────────────
+    // When the SELECTED task transitioned out of 'active' (→ complete /
+    // failed / cancelled) and other active tasks remain, re-select the
+    // most-recently-started (greatest startedAt) active task. If no active
+    // task remains, keep the completed task selected (intended). Mirrors the
+    // Dashboard's req-2 rule (task-4).
+
+    it('re-selects the most-recently-started active task when the selected active task completes (req 2)', () => {
+      const store = new ClientStore();
+      // Seed: exec has a single active task (t1) → it is selected.
+      store.applySnapshot(
+        blankProjection({
+          currentPhaseId: 'exec',
+          phases: [{ id: 'exec', label: 'Exec', icon: '⚡', taskIds: ['t1'] }],
+          tasks: {
+            t1: {
+              id: 't1',
+              title: 'T1',
+              status: 'active',
+              phaseId: 'exec',
+              steps: [],
+              dependencies: [],
+              startedAt: 50,
+            },
+          },
+        }),
+        1,
+      );
+      expect(store.getState().selectedTaskId).toBe('t1');
+
+      // t1 completes; t2 + t3 are now active. The rule must re-select the one
+      // with the greatest startedAt (t3), not just the first active.
+      store.applySnapshot(
+        blankProjection({
+          currentPhaseId: 'exec',
+          phases: [{ id: 'exec', label: 'Exec', icon: '⚡', taskIds: ['t1', 't2', 't3'] }],
+          tasks: {
+            t1: {
+              id: 't1',
+              title: 'T1',
+              status: 'complete',
+              phaseId: 'exec',
+              steps: [],
+              dependencies: [],
+              startedAt: 50,
+            },
+            t2: {
+              id: 't2',
+              title: 'T2',
+              status: 'active',
+              phaseId: 'exec',
+              steps: [],
+              dependencies: [],
+              startedAt: 100,
+            },
+            t3: {
+              id: 't3',
+              title: 'T3',
+              status: 'active',
+              phaseId: 'exec',
+              steps: [],
+              dependencies: [],
+              startedAt: 200,
+            },
+          },
+        }),
+        2,
+      );
+
+      expect(store.getState().selectedTaskId).toBe('t3');
+    });
+
+    it('keeps the completed task selected when no active task remains (req 2)', () => {
+      const store = new ClientStore();
+      store.applySnapshot(
+        blankProjection({
+          currentPhaseId: 'exec',
+          phases: [{ id: 'exec', label: 'Exec', icon: '⚡', taskIds: ['t1'] }],
+          tasks: {
+            t1: {
+              id: 't1',
+              title: 'T1',
+              status: 'active',
+              phaseId: 'exec',
+              steps: [],
+              dependencies: [],
+              startedAt: 10,
+            },
+          },
+        }),
+        1,
+      );
+      expect(store.getState().selectedTaskId).toBe('t1');
+
+      // t1 completes; t2 is only 'ready' (not active) → keep t1 selected.
+      store.applySnapshot(
+        blankProjection({
+          currentPhaseId: 'exec',
+          phases: [{ id: 'exec', label: 'Exec', icon: '⚡', taskIds: ['t1', 't2'] }],
+          tasks: {
+            t1: {
+              id: 't1',
+              title: 'T1',
+              status: 'complete',
+              phaseId: 'exec',
+              steps: [],
+              dependencies: [],
+              startedAt: 10,
+            },
+            t2: { id: 't2', title: 'T2', status: 'ready', phaseId: 'exec', steps: [], dependencies: [], startedAt: 20 },
+          },
+        }),
+        2,
+      );
+
+      expect(store.getState().selectedTaskId).toBe('t1');
     });
   });
 
@@ -1104,7 +1230,7 @@ describe('ClientStore – follow rules', () => {
     });
   });
 
-  it('reconcile runs after applyEvents and updates selection holistically', () => {
+  it('reconcile runs after applyEvents and updates selection (phase follow + task follow)', () => {
     const store = new ClientStore();
     store.applySnapshot(
       blankProjection({
@@ -1145,12 +1271,13 @@ describe('ClientStore – follow rules', () => {
     ]);
 
     const s = store.getState();
-    // scouting was selected & is now completed → stays (exempt from follow).
-    expect(s.selectedPhaseId).toBe('scouting');
-    // t1 still belongs to scouting and is active → stays selected.
-    expect(s.selectedTaskId).toBe('t1');
-    // t1.activeStepIndex still 0 → step follows.
-    expect(s.selectedStepIndex).toBe(0);
+    // The user was synced to scouting and currentPhaseId advanced to exec →
+    // tightened phase-follow moves selection to exec; task follow then picks
+    // the first active task in exec (t2). t2 has no activeStepIndex yet, so the
+    // step stays null.
+    expect(s.selectedPhaseId).toBe('exec');
+    expect(s.selectedTaskId).toBe('t2');
+    expect(s.selectedStepIndex).toBeNull();
   });
 });
 
@@ -1291,6 +1418,93 @@ describe('ClientStore – workflowEventLog building', () => {
     store.applyEvents([ev('phase_started', { phase: 'p', round: 1 }, {}, 3)]);
     const log = store.getState().workflowEventLog;
     expect(log.map((e) => e.seq)).toEqual([1, 3]);
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+// prev-tracking fields (transition detection for the tightened phase-follow
+// + task-completion-reselection rules)
+// ────────────────────────────────────────────────────────────────────────────
+//
+// `ClientStoreState` carries two OPTIONAL previous-state fields that the
+// shared `reconcileSelection` write-back populates on every call so the NEXT
+// call can detect a phase / task-status transition:
+//
+//   prevCurrentPhaseId      : string | null
+//   prevSelectedTaskStatus  : TaskStatus | null
+//
+// NOTE: there is intentionally NO prevActiveStepIndex — the shared step-follow
+// stays the broad userPinnedStep-gated rule (the TUI-only expanded-state
+// exception is not mirrored here).
+//
+// These tests pin (1) the initial values and (2) that the store, after running
+// its real applySnapshot → reconcileSelection chain, has the fields populated
+// to match the current (post-follow) values. The cast to
+// `ClientStoreState & PrevTrackingFields` keeps the access type-safe before the
+// fields land on the interface (and is a harmless redundant cast afterwards).
+
+type PrevTrackingFields = {
+  prevCurrentPhaseId: string | null;
+  prevSelectedTaskStatus: string | null;
+};
+
+describe('ClientStore – prev-tracking fields', () => {
+  it('initializes the prev-tracking fields to null', () => {
+    const s = new ClientStore().getState() as ClientStoreState & PrevTrackingFields;
+    expect(s.prevCurrentPhaseId).toBeNull();
+    expect(s.prevSelectedTaskStatus).toBeNull();
+  });
+
+  it('populates the prev-tracking fields after applySnapshot runs reconcileSelection', () => {
+    const store = new ClientStore();
+    store.applySnapshot(
+      blankProjection({
+        currentPhaseId: 'exec',
+        phases: [{ id: 'exec', label: 'Exec', icon: '⚡', taskIds: ['t1'] }],
+        tasks: {
+          t1: {
+            id: 't1',
+            title: 'T1',
+            status: 'active',
+            phaseId: 'exec',
+            steps: [
+              { name: 's0', index: 0 },
+              { name: 's1', index: 1 },
+            ],
+            dependencies: [],
+            activeStepIndex: 2,
+          },
+        },
+      }),
+      1,
+    );
+
+    const s = store.getState() as ClientStoreState & PrevTrackingFields;
+    // Reconcile settled on exec → t1 → step 2.
+    expect(s.selectedPhaseId).toBe('exec');
+    expect(s.selectedTaskId).toBe('t1');
+    expect(s.selectedStepIndex).toBe(2);
+    // The write-back mirrors the post-follow current values.
+    expect(s.prevCurrentPhaseId).toBe('exec');
+    expect(s.prevSelectedTaskStatus).toBe('active');
+  });
+
+  it('writes prevSelectedTaskStatus = null when no task is selected', () => {
+    const store = new ClientStore();
+    // A snapshot with a current phase but no tasks → task-follow selects null.
+    store.applySnapshot(
+      blankProjection({
+        currentPhaseId: 'exec',
+        phases: [{ id: 'exec', label: 'Exec', icon: '⚡', taskIds: [] }],
+        tasks: {},
+      }),
+      1,
+    );
+
+    const s = store.getState() as ClientStoreState & PrevTrackingFields;
+    expect(s.selectedTaskId).toBeNull();
+    expect(s.prevCurrentPhaseId).toBe('exec');
+    expect(s.prevSelectedTaskStatus).toBeNull();
   });
 });
 

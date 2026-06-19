@@ -12,7 +12,7 @@
  * lines are produced via `formatWorkflowEventLine`.
  */
 
-import type { EventRecord, WorkflowProjection } from './event-types.js';
+import type { EventRecord, TaskStatus, WorkflowProjection } from './event-types.js';
 import { createInitialProjection, MAX_RUN_LOG } from './event-types.js';
 import { evolve } from './evolve.js';
 import { formatWorkflowEventLine } from './format-workflow-event.js';
@@ -54,6 +54,16 @@ export type ClientStoreState = Omit<WorkflowProjection, 'runLog'> & {
   selectedStepIndex: number | null;
   userPinnedPhase: boolean;
   userPinnedStep: boolean;
+  /**
+   * Previous-state fields populated by the shared `reconcileSelection`
+   * write-back on every call so the NEXT call can detect a phase / task-status
+   * transition. Mirrors the web WorkflowStoreState's two prev-tracking
+   * fields. NOTE: there is intentionally NO prevActiveStepIndex — the shared
+   * step-follow stays the broad `userPinnedStep`-gated rule (the TUI's
+   * expanded-state exception lives in Dashboard, not the store).
+   */
+  prevCurrentPhaseId: string | null;
+  prevSelectedTaskStatus: TaskStatus | null;
 };
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -76,6 +86,8 @@ export class ClientStore {
       selectedStepIndex: null,
       userPinnedPhase: false,
       userPinnedStep: false,
+      prevCurrentPhaseId: null,
+      prevSelectedTaskStatus: null,
     };
   }
 

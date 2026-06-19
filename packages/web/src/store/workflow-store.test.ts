@@ -21,7 +21,16 @@
 
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { EventRecord, RunSummary, WorkflowProjection } from '../protocol-types';
+import type { WorkflowStoreState } from './workflow-store';
 import { getSeq, setStoreSubscribeRunFn, setStoreUnsubscribeRunFn, useWorkflowStore } from './workflow-store';
+
+// The two OPTIONAL prev-tracking fields the shared reconcileSelection write-back
+// populates (added to WorkflowStoreState by the prev-tracking task). Defined
+// locally so the assertions type-check before the interface is widened.
+type PrevTrackingFields = {
+  prevCurrentPhaseId: string | null;
+  prevSelectedTaskStatus: string | null;
+};
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -731,22 +740,28 @@ describe('store – selection actions', () => {
     expect(s.userPinnedStep).toBe(true);
   });
 
-  it('resetSelection clears all selection state', () => {
+  it('resetSelection clears all selection state (incl. the prev-tracking fields)', () => {
     useWorkflowStore.setState({
       selectedPhaseId: 'exec',
       selectedTaskId: 't1',
       selectedStepIndex: 2,
       userPinnedPhase: true,
       userPinnedStep: true,
-    });
+      prevCurrentPhaseId: 'exec',
+      prevSelectedTaskStatus: 'active',
+    } as Partial<WorkflowStoreState>);
 
     useWorkflowStore.getState().resetSelection();
-    const s = useWorkflowStore.getState();
+    const s = useWorkflowStore.getState() as WorkflowStoreState & PrevTrackingFields;
     expect(s.selectedPhaseId).toBeNull();
     expect(s.selectedTaskId).toBeNull();
     expect(s.selectedStepIndex).toBeNull();
     expect(s.userPinnedPhase).toBe(false);
     expect(s.userPinnedStep).toBe(false);
+    // The prev-tracking fields reset too so stale transition state does not
+    // leak into the next selection cycle.
+    expect(s.prevCurrentPhaseId).toBeNull();
+    expect(s.prevSelectedTaskStatus).toBeNull();
   });
 });
 
@@ -791,7 +806,7 @@ describe('store – follow rules', () => {
       expect(useWorkflowStore.getState().selectedPhaseId).toBe('plan');
     });
 
-    it('follows currentPhaseId when the selected phase is not pinned', () => {
+    it('follows currentPhaseId when synced to the previous current phase and it advanced (req 6)', () => {
       const snapshot = blankProjection({
         currentPhaseId: 'scouting',
         completedPhaseIds: [],
@@ -804,7 +819,7 @@ describe('store – follow rules', () => {
         },
       });
       useWorkflowStore.getState().applySnapshot(SELECTED_RUN, snapshot, 1);
-
+      // Re-affirm selection on the (current) scouting phase; not pinned.
       useWorkflowStore.getState().selectPhase('scouting');
       expect(useWorkflowStore.getState().userPinnedPhase).toBe(false);
 
@@ -821,8 +836,13 @@ describe('store – follow rules', () => {
       });
       useWorkflowStore.getState().applySnapshot(SELECTED_RUN, snapshot2, 2);
 
-      // scouting is now completed → pinned, stays on scouting
-      expect(useWorkflowStore.getState().selectedPhaseId).toBe('scouting');
+      // The user was SYNCED to scouting (selectedPhaseId === prevCurrentPhaseId)
+      // and the active phase advanced → the tightened rule follows to exec
+      // (completion no longer exempts a phase the user was synced to). Task
+      // follow then picks the first active task in exec (t2).
+      expect(useWorkflowStore.getState().selectedPhaseId).toBe('exec');
+      expect(useWorkflowStore.getState().userPinnedPhase).toBe(false);
+      expect(useWorkflowStore.getState().selectedTaskId).toBe('t2');
     });
   });
 
@@ -858,6 +878,127 @@ describe('store – follow rules', () => {
       useWorkflowStore.getState().applyEvents(SELECTED_RUN, [evt('workflow_started', { taskPrompt: 'build' }, {}, 2)]);
 
       expect(useWorkflowStore.getState().selectedTaskId).toBe('t2');
+    });
+
+    // ── Task completion reselection (req 2) ─────────────────────────────────
+    // When the SELECTED task transitioned out of 'active' (→ complete /
+    // failed / cancelled) and other active tasks remain, re-select the
+    // most-recently-started (greatest startedAt) active task. If no active
+    // task remains, keep the completed task selected (intended). Mirrors the
+    // Dashboard's req-2 rule (task-4).
+
+    it('re-selects the most-recently-started active task when the selected active task completes (req 2)', () => {
+      // Seed: exec has a single active task (t1) → it is selected.
+      useWorkflowStore.getState().applySnapshot(
+        SELECTED_RUN,
+        blankProjection({
+          currentPhaseId: 'exec',
+          phases: [{ id: 'exec', label: 'Exec', icon: '⚡', taskIds: ['t1'] }],
+          tasks: {
+            t1: {
+              id: 't1',
+              title: 'T1',
+              status: 'active',
+              phaseId: 'exec',
+              steps: [],
+              dependencies: [],
+              startedAt: 50,
+            },
+          },
+        }),
+        1,
+      );
+      expect(useWorkflowStore.getState().selectedTaskId).toBe('t1');
+
+      // t1 completes; t2 + t3 are now active. The rule must re-select the one
+      // with the greatest startedAt (t3), not just the first active.
+      useWorkflowStore.getState().applySnapshot(
+        SELECTED_RUN,
+        blankProjection({
+          currentPhaseId: 'exec',
+          phases: [{ id: 'exec', label: 'Exec', icon: '⚡', taskIds: ['t1', 't2', 't3'] }],
+          tasks: {
+            t1: {
+              id: 't1',
+              title: 'T1',
+              status: 'complete',
+              phaseId: 'exec',
+              steps: [],
+              dependencies: [],
+              startedAt: 50,
+            },
+            t2: {
+              id: 't2',
+              title: 'T2',
+              status: 'active',
+              phaseId: 'exec',
+              steps: [],
+              dependencies: [],
+              startedAt: 100,
+            },
+            t3: {
+              id: 't3',
+              title: 'T3',
+              status: 'active',
+              phaseId: 'exec',
+              steps: [],
+              dependencies: [],
+              startedAt: 200,
+            },
+          },
+        }),
+        2,
+      );
+
+      expect(useWorkflowStore.getState().selectedTaskId).toBe('t3');
+      expect(useWorkflowStore.getState().userPinnedStep).toBe(false);
+    });
+
+    it('keeps the completed task selected when no active task remains (req 2)', () => {
+      useWorkflowStore.getState().applySnapshot(
+        SELECTED_RUN,
+        blankProjection({
+          currentPhaseId: 'exec',
+          phases: [{ id: 'exec', label: 'Exec', icon: '⚡', taskIds: ['t1'] }],
+          tasks: {
+            t1: {
+              id: 't1',
+              title: 'T1',
+              status: 'active',
+              phaseId: 'exec',
+              steps: [],
+              dependencies: [],
+              startedAt: 10,
+            },
+          },
+        }),
+        1,
+      );
+      expect(useWorkflowStore.getState().selectedTaskId).toBe('t1');
+
+      // t1 completes; t2 is only 'ready' (not active) → keep t1 selected.
+      useWorkflowStore.getState().applySnapshot(
+        SELECTED_RUN,
+        blankProjection({
+          currentPhaseId: 'exec',
+          phases: [{ id: 'exec', label: 'Exec', icon: '⚡', taskIds: ['t1', 't2'] }],
+          tasks: {
+            t1: {
+              id: 't1',
+              title: 'T1',
+              status: 'complete',
+              phaseId: 'exec',
+              steps: [],
+              dependencies: [],
+              startedAt: 10,
+            },
+            t2: { id: 't2', title: 'T2', status: 'ready', phaseId: 'exec', steps: [], dependencies: [], startedAt: 20 },
+          },
+        }),
+        2,
+      );
+
+      expect(useWorkflowStore.getState().selectedTaskId).toBe('t1');
     });
   });
 
@@ -957,7 +1098,7 @@ describe('store – follow rules', () => {
     });
   });
 
-  it('reconcile runs after applyEvents and updates selection', () => {
+  it('reconcile runs after applyEvents and updates selection (phase follow + task follow)', () => {
     const snapshot = blankProjection({
       currentPhaseId: 'scouting',
       phases: [
@@ -996,10 +1137,13 @@ describe('store – follow rules', () => {
       ]);
 
     const s = useWorkflowStore.getState();
-    // scouting was selected and is now completed → pinned, stays
-    expect(s.selectedPhaseId).toBe('scouting');
-    expect(s.selectedTaskId).toBe('t1');
-    expect(s.selectedStepIndex).toBe(0);
+    // The user was synced to scouting and currentPhaseId advanced to exec →
+    // tightened phase-follow moves selection to exec; task follow then picks
+    // the first active task in exec (t2). t2 has no activeStepIndex yet, so the
+    // step stays null.
+    expect(s.selectedPhaseId).toBe('exec');
+    expect(s.selectedTaskId).toBe('t2');
+    expect(s.selectedStepIndex).toBeNull();
   });
 });
 

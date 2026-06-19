@@ -25,7 +25,14 @@ export { formatTokenCount } from './format-token-count.js';
 export { formatToolCall } from './format-tool-call.js';
 export { formatWorkflowEventLine } from './format-workflow-event.js';
 export { formatWorkflowSummary } from './format-workflow-summary.js';
-export { capAgentLogs, reconcileSelection, toProjection, writeProjectionToState } from './projection-helpers.js';
+export {
+  capAgentLogs,
+  isTerminalTaskStatus,
+  pickMostRecentlyStartedActive,
+  reconcileSelection,
+  toProjection,
+  writeProjectionToState,
+} from './projection-helpers.js';
 export { isServerMessage } from './protocol-types.js';
 
 // ─── Type exports from canonical homes ──────────────────────────────────────

@@ -70,6 +70,75 @@ export class TaskListWidget implements Component {
   }
 
   /**
+   * When a task newly transitions to `active`, slide the viewport so that as
+   * many running (active) tasks as possible are visible. Uses a fixed window of
+   * `_maxVisibleLines` (the approximation noted in the spec: the real visible
+   * slot count can be ~2 smaller when the top/bottom `… more` indicator rows
+   * are present, but the resulting position is at most ~2 rows suboptimal).
+   *
+   * Computes, for each candidate start offset `s` in `[0, ordered.length - 1]`,
+   * how many currently-`active` tasks have index in `[s, s + W)` in a single
+   * O(n) pass via a difference array (rather than re-counting per offset).
+   * Picks the offset that MAXIMIZES this count. Tie-break: if the current
+   * `_scrollOffset` achieves the maximum, keep it (avoids jitter); otherwise
+   * choose the smallest offset achieving the maximum.
+   */
+  private _autoScrollToActive(): void {
+    const ordered = this.ensureOrdered();
+    if (ordered.length === 0) return;
+
+    const W = this._maxVisibleLines;
+    const activeIndices: number[] = [];
+    ordered.forEach((task, i) => {
+      if (task.status === 'active') activeIndices.push(i);
+    });
+    if (activeIndices.length === 0) return;
+
+    const maxOffset = ordered.length - 1;
+
+    // Difference array of length `maxOffset + 2` (the extra slot holds the
+    // exclusive range-end decrement). For each active index `i`, the offsets
+    // `s` whose window `[s, s + W)` contains `i` form the contiguous range
+    // `[max(0, i - W + 1), i]`; mark it with `+1` at the start and `-1` just
+    // past the end, then prefix-sum in place so `count[s]` becomes the number
+    // of active indices in `[s, s + W)`. This is O(n + a) total.
+    const count = new Array<number>(maxOffset + 2).fill(0);
+    for (const i of activeIndices) {
+      count[Math.max(0, i - W + 1)] += 1;
+      count[Math.min(maxOffset + 1, i + 1)] -= 1;
+    }
+    for (let s = 1; s <= maxOffset; s++) {
+      count[s] += count[s - 1];
+    }
+
+    // Single forward scan: track the SMALLEST offset achieving the max count.
+    let bestCount = -1;
+    let bestOffset = 0;
+    for (let s = 0; s <= maxOffset; s++) {
+      if (count[s] > bestCount) {
+        bestCount = count[s];
+        bestOffset = s;
+      }
+    }
+
+    // Tie-break: prefer the current offset if it achieves the maximum
+    // (avoids jitter); otherwise choose the smallest offset achieving it.
+    const current = Math.max(0, Math.min(this._scrollOffset, maxOffset));
+    let chosen: number;
+    if (count[current] === bestCount) {
+      chosen = current;
+    } else {
+      chosen = bestOffset;
+    }
+    chosen = Math.max(0, Math.min(chosen, maxOffset));
+
+    if (chosen !== this._scrollOffset) {
+      this._scrollOffset = chosen;
+      this.dirty = true;
+    }
+  }
+
+  /**
    * Adjusts `_scrollOffset` so the task at `index` is within the viewport.
    * Scrolls up to show an above-viewport task at the top, or scrolls down
    * incrementally until a below-viewport task becomes visible.
@@ -89,6 +158,9 @@ export class TaskListWidget implements Component {
   }
 
   updateTasks(tasks: TaskEntity[]): void {
+    // Capture the previous status of each task (by id) BEFORE reassignment so
+    // we can detect which tasks newly transitioned to `active`.
+    const oldStatusById = new Map(this.tasks.map((t) => [t.id, t.status]));
     const oldIds = new Set(this.tasks.map((t) => t.id));
     const oldLength = this.tasks.length;
     this.tasks = tasks;
@@ -100,6 +172,19 @@ export class TaskListWidget implements Component {
       this.selectedTaskId = null;
     }
     this.invalidateCache();
+
+    // If any task newly transitioned to `active` (it existed before with a
+    // non-active status and is now `active`), re-fit the viewport to show as
+    // many running tasks as possible. Runs AFTER the ID-set-change reset and
+    // cache invalidation so the viewport math sees the new list and ordering.
+    // A freshly-loaded phase (no old counterpart for these ids) does NOT count
+    // as a transition, so auto-scroll does not override the phase-switch reset.
+    const newlyActive = tasks.some(
+      (t) => t.status === 'active' && oldStatusById.has(t.id) && oldStatusById.get(t.id) !== 'active',
+    );
+    if (newlyActive) {
+      this._autoScrollToActive();
+    }
   }
 
   setSelectedTaskId(id: string | null): void {
@@ -192,7 +277,7 @@ export class TaskListWidget implements Component {
         task.activeStepIndex !== undefined &&
         task.steps[task.activeStepIndex] !== undefined
       ) {
-        step = dim(`step ${task.activeStepIndex + 1}/${task.steps.length}: ${task.steps[task.activeStepIndex].name}`);
+        step = dim(`${task.activeStepIndex + 1}/${task.steps.length} ${task.steps[task.activeStepIndex].name}`);
       }
       stepCells.push(maybeBold(step));
 
@@ -250,8 +335,8 @@ export class TaskListWidget implements Component {
       // Pad/truncate each cell to its column width. Skip empty columns entirely
       // (column width 0) so no trailing gap/cell is emitted.
       const segments: string[] = [
-        truncateToWidth(idCells[i], idWidth, '…', true),
         truncateToWidth(iconCells[i], iconWidth, '…', true),
+        truncateToWidth(idCells[i], idWidth, '…', true),
         truncateToWidth(titleCells[i], titleWidth, '…', true),
       ];
       if (stepWidth > 0) {

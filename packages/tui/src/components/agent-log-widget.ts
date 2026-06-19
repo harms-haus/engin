@@ -118,7 +118,9 @@ export class AgentLogWidget implements Component {
   setSelectedStepIndex(index: number): void {
     if (index >= -1 && index < this._steps.length) {
       this._selectedStepIndex = index;
-      this._scrollOffset = 0;
+      if (!this._expanded) {
+        this._scrollOffset = 0;
+      }
       this.dirty = true;
     }
   }

@@ -1444,4 +1444,120 @@ describe('AgentLogWidget', () => {
       expect(lines[38]).toContain('entry-99');
     });
   });
+
+  // ─── setSelectedStepIndex scroll guard when expanded (req 5) ─────────
+  //
+  // Requirement: when the agent log is EXPANDED, follow-driven calls to
+  // setSelectedStepIndex (the Dashboard sync entry point) must NOT destroy
+  // the user's scroll position — but _selectedStepIndex must still update so
+  // the tab-bar highlight stays in sync.  When COLLAPSED the reset still
+  // occurs (it is effectively a no-op there because scrollOffset is always 0
+  // while collapsed — toggleExpand resets it and the scroll keys are inert —
+  // but the step update remains unconditional in both states).
+  describe('setSelectedStepIndex scroll guard when expanded (req 5)', () => {
+    // Read the (private) scroll offset for precise assertions.
+    function scrollOffsetOf(w: AgentLogWidget): number {
+      return (w as unknown as { _scrollOffset: number })._scrollOffset;
+    }
+
+    /**
+     * Build a widget with two steps (each backed by its own agent) where both
+     * agents have plenty of log entries so scrolling is meaningful for EITHER
+     * step (entrySlots = 38 when expanded; 80 entries → maxScrollOffset = 42).
+     */
+    function buildTwoStepWidget(expanded: boolean): AgentLogWidget {
+      const widget = new AgentLogWidget(10);
+      const agent0 = makeAgent({ agentId: 'a0', profile: 'p0', phaseId: 'test', uid: 'key-0' });
+      const agent1 = makeAgent({ agentId: 'a1', profile: 'p1', phaseId: 'test', uid: 'key-1' });
+      for (let i = 0; i < 80; i++) {
+        agent0.log.push({ id: `a0-${i}`, timestamp: '', type: 'text', content: `agent0-entry-${i}` });
+        agent1.log.push({ id: `a1-${i}`, timestamp: '', type: 'text', content: `agent1-entry-${i}` });
+      }
+      const steps: StepEntity[] = [
+        makeStep({ name: 'step0', index: 0, agentKey: 'key-0' }),
+        makeStep({ name: 'step1', index: 1, agentKey: 'key-1' }),
+      ];
+      widget.setAgents([agent0, agent1]);
+      widget.setSteps(steps);
+      widget.setSelectedStepIndex(0);
+      if (expanded) widget.toggleExpand();
+      return widget;
+    }
+
+    it('preserves scrollOffset when expanded while still updating the selected step', () => {
+      const widget = buildTwoStepWidget(true);
+      expect(widget.isExpanded()).toBe(true);
+
+      // Scroll up by 10 (shift+up) so scrollOffset becomes non-zero.
+      widget.render(80); // populate _lastTotalEntryLines for step 0
+      widget.handleInput(SHIFT_UP);
+      const beforeLines = widget.render(80);
+
+      // Sanity: we really are scrolled.
+      expect(scrollOffsetOf(widget)).toBe(10);
+      expect(beforeLines[1]).toContain('up arrow');
+      expect(beforeLines[1]).toMatch(/up arrow 10 more lines/);
+
+      // ── Dashboard sync entry point: change step while EXPANDED ──
+      widget.setSelectedStepIndex(1);
+
+      // The selected step MUST still update (unconditional assignment).
+      expect(widget.getSelectedAgentUid()).toBe('key-1');
+
+      // The scroll position MUST be preserved (NOT reset to 0).
+      expect(scrollOffsetOf(widget)).toBe(10);
+      const afterLines = widget.render(80);
+      expect(afterLines[1]).toContain('up arrow');
+      expect(afterLines[1]).toMatch(/up arrow 10 more lines/);
+
+      // The rendered content now reflects the newly-selected agent's log.
+      expect(afterLines.some((l) => l.includes('agent1-entry-'))).toBe(true);
+
+      // Tab bar now highlights the newly-selected step (step1: bold + underline).
+      const tabBar = afterLines[afterLines.length - 1];
+      expect(tabBar).toContain('step1');
+      expect(tabBar).toContain('\x1b[1m'); // bold
+      expect(tabBar).toContain('\x1b[4m'); // underline
+    });
+
+    it('keeps scrollOffset intact across repeated setSelectedStepIndex calls while expanded', () => {
+      const widget = buildTwoStepWidget(true);
+      widget.render(80);
+      widget.handleInput(SHIFT_UP);
+      widget.render(80);
+      expect(scrollOffsetOf(widget)).toBe(10);
+
+      // step 0 → 1 (expanded): scroll preserved
+      widget.setSelectedStepIndex(1);
+      expect(widget.getSelectedAgentUid()).toBe('key-1');
+      expect(scrollOffsetOf(widget)).toBe(10);
+
+      // step 1 → 0 (expanded): scroll still preserved
+      widget.setSelectedStepIndex(0);
+      expect(widget.getSelectedAgentUid()).toBe('key-0');
+      expect(scrollOffsetOf(widget)).toBe(10);
+
+      const lines = widget.render(80);
+      expect(lines[1]).toMatch(/up arrow 10 more lines/);
+    });
+
+    it('collapsed: setSelectedStepIndex still updates the step and leaves scrollOffset at 0', () => {
+      // While collapsed there is never a non-zero scrollOffset (toggleExpand
+      // resets it and the scroll keys are inert while collapsed), so the reset
+      // is a no-op — but the step update must remain unconditional.
+      const widget = buildTwoStepWidget(false);
+      expect(widget.isExpanded()).toBe(false);
+      expect(scrollOffsetOf(widget)).toBe(0);
+
+      widget.setSelectedStepIndex(1);
+
+      expect(widget.getSelectedAgentUid()).toBe('key-1');
+      expect(scrollOffsetOf(widget)).toBe(0);
+
+      const lines = widget.render(80);
+      expect(lines[1]).not.toContain('up arrow');
+      // Tab bar highlights the newly-selected step.
+      expect(lines[lines.length - 1]).toContain('step1');
+    });
+  });
 });

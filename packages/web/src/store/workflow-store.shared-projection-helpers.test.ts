@@ -41,6 +41,7 @@ import { reconcileSelection, toProjection, writeProjectionToState } from '@engin
 
 // ── Store + types under test ────────────────────────────────────────────────
 import type { AgentEntity, EventRecord, TaskEntity, WorkflowProjection } from '../protocol-types';
+import type { WorkflowStoreState } from './workflow-store';
 import { useWorkflowStore } from './workflow-store';
 
 const here = dirname(fileURLToPath(import.meta.url)); // packages/web/src/store
@@ -118,7 +119,10 @@ function logEntry(content: string) {
   };
 }
 
-/** Reset the store to a clean initial state. */
+/** Reset the store to a clean initial state. Cast as Partial<WorkflowStoreState>
+ * so the two prev-tracking fields (added to WorkflowStoreState by the
+ * prev-tracking task) are accepted by setState's type even before the
+ * interface is widened — a harmless redundant cast once they land. */
 function resetStore(): void {
   useWorkflowStore.setState({
     agentsById: {},
@@ -139,10 +143,14 @@ function resetStore(): void {
     selectedStepIndex: null,
     userPinnedPhase: false,
     userPinnedStep: false,
+    // prev-tracking fields (mirrors INITIAL_STATE / the selectRun reset) so
+    // tests start from a known baseline regardless of what a prior test wrote.
+    prevCurrentPhaseId: null,
+    prevSelectedTaskStatus: null,
     runs: [],
     selectedRunId: null,
     runLogs: {},
-  });
+  } as Partial<WorkflowStoreState>);
 }
 
 /** Select `run-1` so the (runId-gated) projection actions take effect. */
@@ -461,5 +469,116 @@ describe('refactor — store delegates correctly to the shared helpers', () => {
     expect(Object.keys(s.tasksById).sort()).toEqual(['t1', 't2']);
     expect(Object.keys(s.agentsById).sort()).toEqual(['a1::t1', 'a2::t2']);
     expect(s.agentsById['a2::t2'].profile).toBe('reviewer');
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Part C — prev-tracking write-back (transition detection for the tightened
+// phase-follow + task-completion-reselection rules)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// `WorkflowStoreState` carries two OPTIONAL previous-state fields that the
+// shared `reconcileSelection` write-back populates on every call (through the
+// `canonicalView` proxy → Immer draft) so the NEXT call can detect a phase /
+// task-status transition:
+//
+//   prevCurrentPhaseId      : string | null
+//   prevSelectedTaskStatus  : TaskStatus | null
+//
+// NOTE: there is intentionally NO prevActiveStepIndex — the shared step-follow
+// stays the broad userPinnedStep-gated rule (the TUI-only expanded-state
+// exception is not mirrored here), so it has no previous-state dependency.
+//
+// These tests pin (1) the store's initial/reset values and (2) that the full
+// chain (applySnapshot → canonicalView → reconcileSelection → Immer draft)
+// populates the fields to match the current (post-follow) values. The cast to
+// `WorkflowStoreState & PrevTrackingFields` keeps the access type-safe before
+// the fields land on the interface (and is a harmless redundant cast after).
+
+type PrevTrackingFields = {
+  prevCurrentPhaseId: string | null;
+  prevSelectedTaskStatus: string | null;
+};
+
+describe('refactor — store carries & writes back the prev-tracking fields', () => {
+  beforeEach(() => {
+    resetStore();
+    selectRunOne();
+  });
+
+  it('resets the prev-tracking fields to null on a fresh store', () => {
+    const s = getState() as WorkflowStoreState & PrevTrackingFields;
+    expect(s.prevCurrentPhaseId).toBeNull();
+    expect(s.prevSelectedTaskStatus).toBeNull();
+  });
+
+  it('applySnapshot populates the prev-tracking fields via the shared write-back', () => {
+    const snapshot = blankProjection({
+      currentPhaseId: 'exec',
+      completedPhaseIds: ['plan'],
+      phases: [{ id: 'exec', label: 'Exec', icon: '⚡', taskIds: ['t1', 't2'] }],
+      tasks: {
+        t1: task({ id: 't1', status: 'ready', phaseId: 'exec' }),
+        t2: task({
+          id: 't2',
+          title: 'T2',
+          status: 'active',
+          phaseId: 'exec',
+          activeStepIndex: 1,
+          steps: [
+            { name: 's0', index: 0 },
+            { name: 's1', index: 1 },
+          ],
+        }),
+      },
+    });
+
+    useWorkflowStore.getState().applySnapshot(SELECTED_RUN, snapshot, 1);
+    const s = getState() as WorkflowStoreState & PrevTrackingFields;
+
+    // Reconcile settled on exec → t2 (first active) → step 1.
+    expect(s.selectedPhaseId).toBe('exec');
+    expect(s.selectedTaskId).toBe('t2');
+    expect(s.selectedStepIndex).toBe(1);
+    // The write-back mirrors the post-follow current values.
+    expect(s.prevCurrentPhaseId).toBe('exec');
+    expect(s.prevSelectedTaskStatus).toBe('active');
+  });
+
+  it('applySnapshot writes prevSelectedTaskStatus = null when no task is selected', () => {
+    // A snapshot with a current phase but no tasks → task-follow selects null.
+    const snapshot = blankProjection({
+      currentPhaseId: 'exec',
+      phases: [{ id: 'exec', label: 'Exec', icon: '⚡', taskIds: [] }],
+      tasks: {},
+    });
+
+    useWorkflowStore.getState().applySnapshot(SELECTED_RUN, snapshot, 1);
+    const s = getState() as WorkflowStoreState & PrevTrackingFields;
+
+    expect(s.selectedTaskId).toBeNull();
+    expect(s.prevCurrentPhaseId).toBe('exec');
+    expect(s.prevSelectedTaskStatus).toBeNull();
+  });
+
+  it('selectRun resets the prev-tracking fields so they do not bleed across runs', () => {
+    // Seed a run with a populated task so the prev fields are written.
+    const snapshot = blankProjection({
+      currentPhaseId: 'exec',
+      phases: [{ id: 'exec', label: 'Exec', icon: '⚡', taskIds: ['t1'] }],
+      tasks: { t1: task({ id: 't1', status: 'active', phaseId: 'exec', activeStepIndex: 2 }) },
+    });
+    useWorkflowStore.getState().applySnapshot(SELECTED_RUN, snapshot, 1);
+
+    const afterSnap = getState() as WorkflowStoreState & PrevTrackingFields;
+    expect(afterSnap.prevCurrentPhaseId).toBe('exec');
+    expect(afterSnap.prevSelectedTaskStatus).toBe('active');
+
+    // Switching runs must reset the prev fields alongside the rest of the
+    // selection state (no bleed of run-1's prev-state into run-2).
+    useWorkflowStore.getState().selectRun('run-2');
+    const afterSwitch = getState() as WorkflowStoreState & PrevTrackingFields;
+    expect(afterSwitch.prevCurrentPhaseId).toBeNull();
+    expect(afterSwitch.prevSelectedTaskStatus).toBeNull();
   });
 });

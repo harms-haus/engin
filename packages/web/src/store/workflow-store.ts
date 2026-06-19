@@ -3,7 +3,7 @@
  * Uses Immer middleware for safe structural updates.
  */
 
-import { MAX_RUN_LOG } from '@engin/shared/event-types';
+import { MAX_RUN_LOG, type TaskStatus } from '@engin/shared/event-types';
 import { evolve as evolveClient } from '@engin/shared/evolve';
 import { formatWorkflowEventLine } from '@engin/shared/format-workflow-event';
 import {
@@ -140,6 +140,22 @@ export interface WorkflowStoreState {
   selectedStepIndex: number | null;
   userPinnedPhase: boolean;
   userPinnedStep: boolean;
+  /**
+   * Previous-state fields the shared `reconcileSelection` write-back populates
+   * on every call (through the `canonicalView` proxy → Immer draft) so the
+   * NEXT call can detect a phase / task-status transition:
+   *
+   *   prevCurrentPhaseId      — drives the tightened phase-follow
+   *                             (synced + advanced → follow).
+   *   prevSelectedTaskStatus  — drives task-completion-reselection
+   *                             (active → complete|failed|cancelled).
+   *
+   * NOTE: there is intentionally NO prevActiveStepIndex — the shared
+   * step-follow stays the broad userPinnedStep-gated rule (the TUI's
+   * expanded-state exception is not mirrored here).
+   */
+  prevCurrentPhaseId: string | null;
+  prevSelectedTaskStatus: TaskStatus | null;
 
   // Multi-run state
   runs: RunSummary[];
@@ -203,6 +219,11 @@ const INITIAL_STATE = {
   selectedStepIndex: null as number | null,
   userPinnedPhase: false,
   userPinnedStep: false,
+  // Prev-tracking fields (mirrors the selectRun reset). Declared optional on
+  // the interface; always initialized here so the store starts from a known
+  // baseline regardless of what a prior session wrote.
+  prevCurrentPhaseId: null as string | null,
+  prevSelectedTaskStatus: null as TaskStatus | null,
   // Multi-run fields
   runs: [] as RunSummary[],
   selectedRunId: null as string | null,
@@ -306,6 +327,10 @@ export const useWorkflowStore = create<WorkflowStoreState>()(
         state.selectedStepIndex = null;
         state.userPinnedPhase = false;
         state.userPinnedStep = false;
+        // Reset the prev-tracking fields too so the previous run's transition
+        // state does not leak into the new run's first reconcile pass.
+        state.prevCurrentPhaseId = null;
+        state.prevSelectedTaskStatus = null;
         // Subscribe to the run on the server. The server's `subscribe` handler
         // replies with a full snapshot, which applySnapshot() then projects.
         // Drop the previously selected run from the multiplex set so we don't
@@ -364,6 +389,8 @@ export const useWorkflowStore = create<WorkflowStoreState>()(
         state.selectedStepIndex = null;
         state.userPinnedPhase = false;
         state.userPinnedStep = false;
+        state.prevCurrentPhaseId = null;
+        state.prevSelectedTaskStatus = null;
       }),
   })),
 );

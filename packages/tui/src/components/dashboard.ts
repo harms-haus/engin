@@ -1,5 +1,5 @@
 import { type Component, Key, matchesKey, truncateToWidth } from '@earendil-works/pi-tui';
-import type { WorkflowProjection } from '@engin/shared';
+import { isTerminalTaskStatus, pickMostRecentlyStartedActive, type WorkflowProjection } from '@engin/shared';
 import { borderLine } from '../theme.js';
 import { AgentLogWidget, computeNextAgentStepIndex } from './agent-log-widget.js';
 import { PhaseBar } from './phase-bar.js';
@@ -90,12 +90,23 @@ export class Dashboard implements Component {
    * notification so the TUI reflects the latest workflow state.
    *
    * Implements the "follow" rules from PART 4e:
-   *   - PHASE FOLLOW: auto-advance to currentPhaseId unless user pinned to a
-   *     completed phase.
+   *   - PHASE FOLLOW (req 6): auto-advance to currentPhaseId ONLY when the
+   *     user was synced to the previous current phase AND it advanced;
+   *     otherwise leave the selected phase as-is (navigating to a different
+   *     non-completed phase is treated as an intentional detour and is not
+   *     pulled back).
    *   - TASK FOLLOW: auto-select the first active task in the current phase.
+   *     When the selected task completes (or fails/cancels) and other active
+   *     tasks remain, re-select the most-recently-started remaining active
+   *     task; if no active task remains, keep the completed task selected.
    *   - STEP FOLLOW: auto-advance to activeStepIndex unless user pinned.
    */
   syncFromProjection(projection: WorkflowProjection): void {
+    // Capture the previous projection BEFORE ingesting the new one so the
+    // follow rules below can detect transitions (currentPhaseId advance,
+    // task status change, activeStepIndex advance).
+    const oldProjection = this._lastProjection;
+
     // ── Phase bar ──
     this._phaseBar.setPhases(projection.phases);
     this._phaseBar.setCurrentPhaseId(projection.currentPhaseId);
@@ -107,26 +118,29 @@ export class Dashboard implements Component {
     // Cache phase IDs for keyboard navigation
     this._phaseIds = projection.phases.map((p) => p.id);
 
-    // ── PHASE FOLLOW ──
-    const completedSet = new Set(projection.completedPhaseIds);
-    if (
-      this._selection.selectedPhaseId !== null &&
-      !completedSet.has(this._selection.selectedPhaseId) &&
-      this._selection.selectedPhaseId !== projection.currentPhaseId
-    ) {
-      // User was on a non-completed phase that is no longer current → follow current
+    // ── PHASE FOLLOW (req 6) ──
+    // Tightened rule: only auto-advance the selected phase when the user WAS
+    // synced with the active phase AND the active phase advanced. Navigating
+    // to a different phase that is neither completed nor the (previous)
+    // current phase is treated as an intentional detour and is NOT pulled back.
+    if (this._selection.selectedPhaseId === null) {
       this._selection.selectedPhaseId = projection.currentPhaseId;
-      this._selection.selectedTaskId = null;
-      this._selection.selectedStepIndex = null;
-      this._selection.userPinnedStep = false;
-    } else if (this._selection.selectedPhaseId === null) {
-      this._selection.selectedPhaseId = projection.currentPhaseId;
+    } else {
+      const prevCurrent = oldProjection?.currentPhaseId ?? projection.currentPhaseId;
+      if (this._selection.selectedPhaseId === prevCurrent && projection.currentPhaseId !== prevCurrent) {
+        // User was synced with the active phase AND the active phase advanced → follow.
+        this._selection.selectedPhaseId = projection.currentPhaseId;
+        this._selection.selectedTaskId = null;
+        this._selection.selectedStepIndex = null;
+        this._selection.userPinnedStep = false;
+      }
+      // Else: user is reviewing a completed phase or has navigated to a
+      // different phase — leave selectedPhaseId as-is (do not pull them back).
     }
-    // If selectedPhaseId is in completedPhaseIds → leave it (reviewing history)
 
     // Apply the (possibly phase-followed) selection to child widgets + invalidate.
     this._lastProjection = projection;
-    this._applySelectionToWidgets();
+    this._applySelectionToWidgets(oldProjection);
   }
 
   /**
@@ -140,7 +154,7 @@ export class Dashboard implements Component {
    * navigation re-renders immediately instead of waiting for the next store
    * event to bust the widget render caches.
    */
-  private _applySelectionToWidgets(): void {
+  private _applySelectionToWidgets(oldProjection: WorkflowProjection | null = this._lastProjection): void {
     const projection = this._lastProjection;
     if (!projection) return;
 
@@ -149,13 +163,31 @@ export class Dashboard implements Component {
     const phaseTasks = Object.values(projection.tasks).filter((t) => t.phaseId === effectivePhaseId);
     this._taskList.updateTasks(phaseTasks);
 
-    // ── TASK FOLLOW ──
+    // ── TASK FOLLOW / completion reselection (req 2) ──
     const currentSelectedTaskId = this._selection.selectedTaskId;
-    if (currentSelectedTaskId === null || !phaseTasks.some((t) => t.id === currentSelectedTaskId)) {
+    if (currentSelectedTaskId !== null && phaseTasks.some((t) => t.id === currentSelectedTaskId)) {
+      // Completion-transition reselection: if the selected task transitioned out
+      // of 'active' (→ complete/failed/cancelled) and other active tasks remain,
+      // re-select the most-recently-started (least active time) remaining active
+      // task. If no active task remains, keep the completed task selected
+      // (intended: it is still in phaseTasks).
+      const oldStatus = oldProjection?.tasks[currentSelectedTaskId]?.status;
+      const selectedTaskInPhase = phaseTasks.find((t) => t.id === currentSelectedTaskId);
+      const newStatus = selectedTaskInPhase?.status;
+      if (oldStatus === 'active' && newStatus !== undefined && isTerminalTaskStatus(newStatus)) {
+        const next = pickMostRecentlyStartedActive(phaseTasks);
+        if (next) {
+          this._selection.selectedTaskId = next.id;
+          this._selection.selectedStepIndex = null;
+          this._selection.userPinnedStep = false;
+        }
+      }
+    }
+    if (this._selection.selectedTaskId === null || !phaseTasks.some((t) => t.id === this._selection.selectedTaskId)) {
       // Auto-select first active task; if none, first task; if none, null
       const activeTask = phaseTasks.find((t) => t.status === 'active');
       const newTaskId = activeTask?.id ?? phaseTasks[0]?.id ?? null;
-      if (newTaskId !== currentSelectedTaskId) {
+      if (newTaskId !== this._selection.selectedTaskId) {
         this._selection.selectedStepIndex = null;
         this._selection.userPinnedStep = false;
       }
@@ -163,7 +195,7 @@ export class Dashboard implements Component {
     }
     // else keep selected task
 
-    // ── STEP FOLLOW ──
+    // ── STEP FOLLOW (req 5) ──
     const selectedTask = phaseTasks.find((t) => t.id === this._selection.selectedTaskId);
     if (selectedTask) {
       const activeStepIndex = selectedTask.activeStepIndex ?? 0;
@@ -174,13 +206,19 @@ export class Dashboard implements Component {
 
       if (this._selection.selectedStepIndex === null) {
         this._selection.selectedStepIndex = activeStepIndex;
-      } else if (!this._selection.userPinnedStep) {
-        // Not pinned → follow the (possibly changed) activeStepIndex
+      } else if (!this._selection.userPinnedStep && !this._agentLog.isExpanded()) {
+        // Not explicitly pinned (Tab) and not reviewing (expanded) → follow
+        // to the active step. userPinnedStep distinguishes explicit Tab
+        // navigation from being left behind while expanded.
         this._selection.selectedStepIndex = activeStepIndex;
       }
-      // If userPinnedStep → leave as-is
+      // Otherwise keep selectedStepIndex unchanged: the user pinned the step
+      // via Tab (userPinnedStep = true) OR the agent log is expanded (reviewing).
 
-      // Push steps to agentLog
+      // IMPORTANT: ALWAYS push the selection to the agent log, regardless of
+      // expanded state, so the tab-bar highlight stays in sync for explicit
+      // navigation (e.g. Tab while expanded). AgentLogWidget.setSelectedStepIndex
+      // guards _scrollOffset so it will NOT reset while expanded.
       this._agentLog.setSteps(steps);
       this._agentLog.setActiveStepIndex(activeStepIndex);
       if (this._selection.selectedStepIndex !== null) {

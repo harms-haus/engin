@@ -21,7 +21,7 @@
  * state objects satisfy them.
  */
 
-import type { AgentEntity, TaskEntity, WorkflowProjection } from './event-types.js';
+import type { AgentEntity, TaskEntity, TaskStatus, WorkflowProjection } from './event-types.js';
 import { MAX_AGENT_LOG } from './evolve.js';
 
 // ─── Structural state shapes ─────────────────────────────────────────────────
@@ -48,6 +48,20 @@ export interface SelectionState {
   selectedStepIndex: number | null;
   userPinnedPhase: boolean;
   userPinnedStep: boolean;
+  /**
+   * Previous-state fields the transition-aware rules consult on the NEXT call
+   * (populated by the {@link reconcileSelection} write-back at the end of each
+   * invocation). Declared OPTIONAL so ad-hoc state objects — and stores built
+   * before the fields existed — still satisfy the interface; the rules
+   * gracefully no-op when they're absent.
+   *
+   * NOTE: there is intentionally NO `prevActiveStepIndex` — the shared
+   * step-follow stays the broad `userPinnedStep`-gated rule (the TUI-only
+   * expanded-state exception is not mirrored here), so it has no
+   * previous-state dependency.
+   */
+  prevCurrentPhaseId?: string | null;
+  prevSelectedTaskStatus?: TaskStatus | null;
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -124,31 +138,86 @@ export function writeProjectionToState(
 }
 
 /**
+ * Whether a {@link TaskStatus} is terminal (no further progress): `complete`,
+ * `failed`, or `cancelled`. Shared by the store-facing
+ * {@link reconcileSelection} and the TUI `Dashboard._applySelectionToWidgets`
+ * task-completion-reselection rule so the terminal-status set cannot diverge
+ * between the two call sites.
+ */
+export function isTerminalTaskStatus(status: TaskStatus): boolean {
+  return status === 'complete' || status === 'failed' || status === 'cancelled';
+}
+
+/**
+ * Pick the most-recently-started (greatest `startedAt`) `active` task from the
+ * supplied list. Tasks missing `startedAt` are treated as `-Infinity` (oldest).
+ * Returns `undefined` when the list contains no active task. Shared by the
+ * store-facing {@link reconcileSelection} and the TUI
+ * `Dashboard._applySelectionToWidgets` task-completion-reselection rule so the
+ * tie-break and `-Infinity` default cannot diverge between them.
+ */
+export function pickMostRecentlyStartedActive(tasks: TaskEntity[]): TaskEntity | undefined {
+  const active = tasks.filter((t) => t.status === 'active');
+  if (active.length === 0) return undefined;
+  return active.reduce((best, t) => ((t.startedAt ?? -Infinity) > (best.startedAt ?? -Infinity) ? t : best));
+}
+
+/**
  * Reconcile selection state after projection updates (snapshot or events).
- * Implements follow rules:
- * - Phase follow: if selectedPhaseId is not null, not completed, and differs
- *   from currentPhaseId → snap to currentPhaseId.
- * - Task follow: if selectedTaskId is null or no longer belongs to the selected
- *   phase → auto-select the first active task (or first task).
- * - Step follow: if !userPinnedStep → sync with activeStepIndex of the selected task.
+ * Implements the Dashboard's tightened follow rules (req 6, req 2):
+ *
+ * - PHASE FOLLOW (req 6): only advances the selected phase when the user WAS
+ *   synced with the active phase (selectedPhaseId === prevCurrentPhaseId) AND
+ *   the active phase advanced (currentPhaseId moved on). Navigating to a
+ *   different phase that is neither completed nor carried forward from the
+ *   (previous) current phase is treated as an intentional detour and is left
+ *   alone. When the selected phase advances, task / step selection is reset so
+ *   the new phase starts clean. The very first call (selectedPhaseId === null)
+ *   auto-selects currentPhaseId.
+ * - TASK FOLLOW: if selectedTaskId is null or no longer belongs to the selected
+ *   phase → auto-select the first active task (or first task). ADDITIONALLY,
+ *   when the selected task transitioned out of 'active' (→ complete / failed /
+ *   cancelled) and other active tasks remain, re-select the most-recently-
+ *   started (greatest startedAt; missing startedAt → -Infinity) active task. If
+ *   no active task remains, keep the completed task selected (intended).
+ * - STEP FOLLOW (UNCHANGED): if !userPinnedStep → sync with activeStepIndex of
+ *   the selected task. The shared path keeps the broad rule — the TUI-only
+ *   expanded-state exception is not mirrored here.
+ *
+ * At the END of the function, the prev-tracking fields are written back from
+ * the post-follow current values so the NEXT call can detect a transition.
  *
  * Mutates selection fields on `state`.
  */
 export function reconcileSelection(state: SelectionState): void {
-  // Phase follow
-  if (state.selectedPhaseId !== null && state.currentPhaseId) {
-    const isCompleted = state.completedPhaseIds.includes(state.selectedPhaseId);
-    if (!isCompleted && state.selectedPhaseId !== state.currentPhaseId) {
-      state.selectedPhaseId = state.currentPhaseId;
-      state.userPinnedPhase = false;
-    }
-  } else if (state.selectedPhaseId === null && state.currentPhaseId) {
+  // Phase follow (req 6, tightened)
+  if (state.selectedPhaseId === null && state.currentPhaseId) {
+    // Fresh connect / first call: latch onto the active phase.
     state.selectedPhaseId = state.currentPhaseId;
+  } else if (
+    state.selectedPhaseId !== null &&
+    state.selectedPhaseId === state.prevCurrentPhaseId &&
+    state.currentPhaseId &&
+    state.currentPhaseId !== state.prevCurrentPhaseId
+  ) {
+    // User was synced with the active phase AND the active phase advanced →
+    // pull them along, resetting task/step selection for the new phase so it
+    // starts clean. (Completion no longer exempts a phase the user was synced
+    // to — that was the old broad rule.)
+    state.selectedPhaseId = state.currentPhaseId;
+    state.userPinnedPhase = false;
+    state.selectedTaskId = null;
+    state.selectedStepIndex = null;
+    state.userPinnedStep = false;
   }
+  // Else: the user is reviewing a completed phase or has navigated to a
+  // different phase (an intentional detour). Leave selectedPhaseId as-is.
 
   // Task follow
   if (state.selectedPhaseId) {
     const tasksInPhase = Object.values(state.tasks).filter((t) => t.phaseId === state.selectedPhaseId);
+
+    // Existing: auto-select when the current selection is null or stale.
     if (state.selectedTaskId === null || !tasksInPhase.some((t) => t.id === state.selectedTaskId)) {
       const firstActive = tasksInPhase.find((t) => t.status === 'active');
       const nextTaskId = firstActive?.id ?? tasksInPhase[0]?.id ?? null;
@@ -163,13 +232,42 @@ export function reconcileSelection(state: SelectionState): void {
         state.userPinnedStep = false;
       }
     }
+
+    // Task completion reselection (req 2): if the SELECTED task transitioned
+    // OUT of 'active' (→ complete / failed / cancelled) since the last call
+    // (prevSelectedTaskStatus === 'active') and other active tasks remain,
+    // re-select the most-recently-started (greatest startedAt; missing
+    // startedAt treated as -Infinity) active task. If no active task remains,
+    // keep the completed task selected (intended).
+    if (state.selectedTaskId !== null && state.prevSelectedTaskStatus === 'active') {
+      const selectedTask = state.tasks[state.selectedTaskId];
+      if (selectedTask && isTerminalTaskStatus(selectedTask.status)) {
+        const next = pickMostRecentlyStartedActive(tasksInPhase);
+        if (next) {
+          state.selectedTaskId = next.id;
+          state.selectedStepIndex = null;
+          state.userPinnedStep = false;
+        }
+      }
+    }
   }
 
-  // Step follow
+  // Step follow (UNCHANGED — broad userPinnedStep-gated rule; the TUI-only
+  // expanded-state exception is not mirrored here).
   if (state.selectedTaskId !== null && !state.userPinnedStep) {
     const task = state.tasks[state.selectedTaskId];
     if (task?.activeStepIndex !== undefined) {
       state.selectedStepIndex = task.activeStepIndex;
     }
   }
+
+  // Prev-tracking write-back (transition detection for the NEXT call).
+  // prevCurrentPhaseId captures the current (post-update) currentPhaseId so the
+  // next call can detect a phase advancement. prevSelectedTaskStatus captures
+  // the POST-follow selected task's status so the next call can detect a
+  // completion transition. Coerce empty currentPhaseId → null so a fresh store
+  // never holds a '' previous phase.
+  state.prevCurrentPhaseId = state.currentPhaseId || null;
+  const selTask = state.selectedTaskId ? state.tasks[state.selectedTaskId] : undefined;
+  state.prevSelectedTaskStatus = selTask ? selTask.status : null;
 }

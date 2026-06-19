@@ -85,30 +85,82 @@ describe('Dashboard', () => {
       expect(d.getSelection().selectedPhaseId).toBe('beta');
     });
 
-    it('follows currentPhaseId when selectedPhaseId is not completed and differs', () => {
+    // NOTE: under the tightened phase-follow rule (req 6), the dashboard only
+    // auto-advances the selected phase when the user WAS on the previous current
+    // phase AND the current phase advanced. Navigating to a different phase that
+    // is neither completed nor the (previous) current phase is treated as an
+    // intentional detour and is NOT pulled back.
+
+    it('keeps selectedPhaseId on a user-navigated phase when currentPhaseId is unchanged', () => {
       const d = new Dashboard(4);
       const p1 = buildProjection({
         phases: [{ id: 'alpha' }, { id: 'beta' }],
         currentPhaseId: 'alpha',
       });
       d.syncFromProjection(p1);
+      expect(d.getSelection().selectedPhaseId).toBe('alpha');
 
-      // user manually navigates to 'beta' (non-completed, not current)
-      // Since selectedPhaseId is non-null we simulate a prior selection
-      // by setting it directly via the selection (not normally exposed)
-      // We'll use the left/right input to navigate to beta
-      d.handleInput('\x1b[C'); // right → should go to beta
+      // user manually navigates to 'beta' (non-completed, not the current phase)
+      d.handleInput('\x1b[C'); // right → beta
+      expect(d.getSelection().selectedPhaseId).toBe('beta');
 
-      // Now sync with currentPhaseId still = alpha and beta not completed
+      // Re-sync with currentPhaseId still = alpha and beta NOT completed.
       const p2 = buildProjection({
         phases: [{ id: 'alpha' }, { id: 'beta' }],
         currentPhaseId: 'alpha',
       });
       d.syncFromProjection(p2);
 
-      // selectedPhaseId was 'beta' (non-completed, differs from current 'alpha')
-      // → follow rule overrides to 'alpha'
-      expect(d.getSelection().selectedPhaseId).toBe('alpha');
+      // The new rule leaves the selection where the user put it (not pulled back).
+      expect(d.getSelection().selectedPhaseId).toBe('beta');
+    });
+
+    it('follows currentPhaseId when selectedPhaseId === previous current AND current advanced', () => {
+      const d = new Dashboard(4);
+      // First sync: current = A, selectedPhase defaults to A.
+      const p1 = buildProjection({
+        phases: [{ id: 'A' }, { id: 'B' }],
+        currentPhaseId: 'A',
+      });
+      d.syncFromProjection(p1);
+      expect(d.getSelection().selectedPhaseId).toBe('A');
+
+      // Second sync: current advanced A → B. selectedPhase (A) === prevCurrent (A)
+      // and currentPhaseId (B) !== prevCurrent (A) → follow to B.
+      const p2 = buildProjection({
+        phases: [{ id: 'A' }, { id: 'B' }],
+        currentPhaseId: 'B',
+      });
+      d.syncFromProjection(p2);
+      expect(d.getSelection().selectedPhaseId).toBe('B');
+      // Following also resets task/step selection so the new phase gets fresh defaults.
+      expect(d.getSelection().selectedTaskId).toBeNull();
+      expect(d.getSelection().selectedStepIndex).toBeNull();
+      expect(d.getSelection().userPinnedStep).toBe(false);
+    });
+
+    it('keeps selectedPhaseId when it is a non-current phase even though currentPhaseId differs', () => {
+      const d = new Dashboard(4);
+      const p1 = buildProjection({
+        phases: [{ id: 'A' }, { id: 'B' }, { id: 'C' }],
+        currentPhaseId: 'A',
+      });
+      d.syncFromProjection(p1);
+      expect(d.getSelection().selectedPhaseId).toBe('A');
+
+      // Navigate to B (a non-current phase that is NOT the previous current).
+      d.handleInput('\x1b[C'); // A → B
+      expect(d.getSelection().selectedPhaseId).toBe('B');
+
+      // Sync with currentPhaseId now = C (differs from both A and B). Since the
+      // selected phase (B) is not the previous current (A), the follow rule does
+      // NOT fire — the selection stays on B.
+      const p2 = buildProjection({
+        phases: [{ id: 'A' }, { id: 'B' }, { id: 'C' }],
+        currentPhaseId: 'C',
+      });
+      d.syncFromProjection(p2);
+      expect(d.getSelection().selectedPhaseId).toBe('B');
     });
 
     it('keeps selectedPhaseId when it is a completed phase (reviewing history)', () => {
@@ -182,6 +234,101 @@ describe('Dashboard', () => {
       // Re-sync with same tasks — should keep t1 since it's still in phaseTasks
       d.syncFromProjection(p);
       expect(d.getSelection().selectedTaskId).toBe('t1');
+    });
+
+    // ── Task completion reselection (req 2) ───────────────────────────
+    // When the selected task transitions out of 'active' (→ complete/failed/
+    // cancelled) and other active tasks remain, the dashboard re-selects the
+    // most-recently-started (least active time) remaining active task.
+
+    it('reselects the most-recently-started active task when the selected task completes', () => {
+      const d = new Dashboard(4);
+      // Three active tasks; tA is selected initially (first active in order).
+      const p1 = buildProjection({
+        phases: [{ id: 'phase-a' }],
+        currentPhaseId: 'phase-a',
+        tasks: [
+          makeTask({ id: 'tA', phaseId: 'phase-a', status: 'active', startedAt: 1000, steps: [] }),
+          makeTask({ id: 'tB', phaseId: 'phase-a', status: 'active', startedAt: 5000, steps: [] }),
+          makeTask({ id: 'tC', phaseId: 'phase-a', status: 'active', startedAt: 3000, steps: [] }),
+        ],
+      });
+      d.syncFromProjection(p1);
+      expect(d.getSelection().selectedTaskId).toBe('tA');
+
+      // tA completes; tB (startedAt 5000) and tC (startedAt 3000) stay active.
+      const p2 = buildProjection({
+        phases: [{ id: 'phase-a' }],
+        currentPhaseId: 'phase-a',
+        tasks: [
+          makeTask({ id: 'tA', phaseId: 'phase-a', status: 'complete', startedAt: 1000, steps: [] }),
+          makeTask({ id: 'tB', phaseId: 'phase-a', status: 'active', startedAt: 5000, steps: [] }),
+          makeTask({ id: 'tC', phaseId: 'phase-a', status: 'active', startedAt: 3000, steps: [] }),
+        ],
+      });
+      d.syncFromProjection(p2);
+
+      // Most-recently-started remaining active task = tB (greatest startedAt).
+      const sel = d.getSelection();
+      expect(sel.selectedTaskId).toBe('tB');
+      // Step selection was reset for the newly-selected task and re-initialized
+      // to its active step (0); the user pin is cleared.
+      expect(sel.selectedStepIndex).toBe(0);
+      expect(sel.userPinnedStep).toBe(false);
+    });
+
+    it('reselects an active task when the selected task fails', () => {
+      const d = new Dashboard(4);
+      const p1 = buildProjection({
+        phases: [{ id: 'phase-a' }],
+        currentPhaseId: 'phase-a',
+        tasks: [
+          makeTask({ id: 'tA', phaseId: 'phase-a', status: 'active', startedAt: 1000, steps: [] }),
+          makeTask({ id: 'tB', phaseId: 'phase-a', status: 'active', startedAt: 5000, steps: [] }),
+        ],
+      });
+      d.syncFromProjection(p1);
+      expect(d.getSelection().selectedTaskId).toBe('tA');
+
+      const p2 = buildProjection({
+        phases: [{ id: 'phase-a' }],
+        currentPhaseId: 'phase-a',
+        tasks: [
+          makeTask({ id: 'tA', phaseId: 'phase-a', status: 'failed', startedAt: 1000, steps: [] }),
+          makeTask({ id: 'tB', phaseId: 'phase-a', status: 'active', startedAt: 5000, steps: [] }),
+        ],
+      });
+      d.syncFromProjection(p2);
+      expect(d.getSelection().selectedTaskId).toBe('tB');
+    });
+
+    it('keeps the completed task selected when no other active task remains', () => {
+      const d = new Dashboard(4);
+      // tA is the only active task; tB is ready (not active).
+      const p1 = buildProjection({
+        phases: [{ id: 'phase-a' }],
+        currentPhaseId: 'phase-a',
+        tasks: [
+          makeTask({ id: 'tA', phaseId: 'phase-a', status: 'active', startedAt: 1000, steps: [] }),
+          makeTask({ id: 'tB', phaseId: 'phase-a', status: 'ready', steps: [] }),
+        ],
+      });
+      d.syncFromProjection(p1);
+      expect(d.getSelection().selectedTaskId).toBe('tA');
+
+      // tA completes; no active task remains (tB is still ready).
+      const p2 = buildProjection({
+        phases: [{ id: 'phase-a' }],
+        currentPhaseId: 'phase-a',
+        tasks: [
+          makeTask({ id: 'tA', phaseId: 'phase-a', status: 'complete', startedAt: 1000, steps: [] }),
+          makeTask({ id: 'tB', phaseId: 'phase-a', status: 'ready', steps: [] }),
+        ],
+      });
+      d.syncFromProjection(p2);
+
+      // Intended: stay on the completed task (still present in phaseTasks).
+      expect(d.getSelection().selectedTaskId).toBe('tA');
     });
 
     it('follows activeStepIndex when selectedStepIndex matches and not pinned', () => {
@@ -299,6 +446,166 @@ describe('Dashboard', () => {
       // userPinnedStep = true → should keep 1 (which now equals activeStepIndex, but that's coincidence)
       expect(d.getSelection().selectedStepIndex).toBe(1);
       expect(d.getSelection().userPinnedStep).toBe(true);
+    });
+
+    // ── Step follow: expanded exception (req 5) ───────────────────────
+    // When the agent log is expanded, an activeStepIndex advance must NOT pull
+    // the selected step away from what the user is reviewing. The selection is
+    // still pushed to the agent log so the tab-bar highlight tracks explicit
+    // navigation (e.g. Tab) while expanded.
+
+    it('blocks step follow while the agent log is expanded and keeps the tab bar on the reviewed step', () => {
+      const d = new Dashboard(4);
+      const steps = [
+        { name: 'Step 1', index: 0, agentKey: 'a1' },
+        { name: 'Step 2', index: 1, agentKey: 'a2' },
+      ];
+      const p1 = buildProjection({
+        phases: [{ id: 'phase-a' }],
+        currentPhaseId: 'phase-a',
+        tasks: [
+          makeTask({
+            id: 't1',
+            phaseId: 'phase-a',
+            status: 'active',
+            activeStepIndex: 0,
+            steps,
+            startedAt: Date.now(),
+          }),
+        ],
+        agents: [makeAgent('a1', 't1', 'phase-a'), makeAgent('a2', 't1', 'phase-a')],
+      });
+      d.syncFromProjection(p1);
+      // selectedStepIndex follows the active step (0).
+      expect(d.getSelection().selectedStepIndex).toBe(0);
+      expect(d.agentLog.getSelectedAgentUid()).toBe('a1');
+
+      // Expand the agent log (user starts reviewing).
+      d.agentLog.toggleExpand();
+      expect(d.agentLog.isExpanded()).toBe(true);
+
+      // Advance the active step while expanded.
+      const p2 = buildProjection({
+        phases: [{ id: 'phase-a' }],
+        currentPhaseId: 'phase-a',
+        tasks: [
+          makeTask({
+            id: 't1',
+            phaseId: 'phase-a',
+            status: 'active',
+            activeStepIndex: 1,
+            steps,
+            startedAt: Date.now(),
+          }),
+        ],
+        agents: [makeAgent('a1', 't1', 'phase-a'), makeAgent('a2', 't1', 'phase-a')],
+      });
+      d.syncFromProjection(p2);
+
+      // Expanded → follow is blocked: the selection stays on step 0.
+      expect(d.getSelection().selectedStepIndex).toBe(0);
+      // The selection is still pushed to the agent log (step 0 selected).
+      expect(d.agentLog.getSelectedAgentUid()).toBe('a1');
+
+      // Rendered tab bar: step 0 is the selected (underlined) step; step 1 is
+      // now the active step (▶ marker), step 0 is done (✓ marker).
+      const logLines = d.agentLog.render(WIDTH - 2);
+      const tabBar = logLines[logLines.length - 1];
+      const tabBarPlain = stripAnsi(tabBar);
+      // Exactly one underlined (selected) segment, on step 0.
+      expect((tabBar.match(/\x1b\[4m/g) || []).length).toBe(1);
+      expect(tabBarPlain).toContain('Step 1');
+      expect(tabBarPlain).toContain('Step 2');
+      expect(tabBarPlain).toContain('Step 1 ✓');
+      expect(tabBarPlain).toContain('Step 2 ▶');
+    });
+
+    it('resumes step follow once the agent log is collapsed', () => {
+      const d = new Dashboard(4);
+      const steps = [
+        { name: 'Step 1', index: 0, agentKey: 'a1' },
+        { name: 'Step 2', index: 1, agentKey: 'a2' },
+      ];
+      const mk = (activeStepIndex: number) =>
+        buildProjection({
+          phases: [{ id: 'phase-a' }],
+          currentPhaseId: 'phase-a',
+          tasks: [
+            makeTask({
+              id: 't1',
+              phaseId: 'phase-a',
+              status: 'active',
+              activeStepIndex,
+              steps,
+              startedAt: Date.now(),
+            }),
+          ],
+          agents: [makeAgent('a1', 't1', 'phase-a'), makeAgent('a2', 't1', 'phase-a')],
+        });
+
+      d.syncFromProjection(mk(0));
+      expect(d.getSelection().selectedStepIndex).toBe(0);
+
+      // Expand then immediately collapse (no advance happened while expanded,
+      // so selectedStepIndex is still aligned with the active step).
+      d.agentLog.toggleExpand();
+      d.agentLog.toggleExpand();
+      expect(d.agentLog.isExpanded()).toBe(false);
+
+      // A fresh advance while collapsed is followed.
+      d.syncFromProjection(mk(1));
+      expect(d.getSelection().selectedStepIndex).toBe(1);
+    });
+
+    it('resumes step follow after collapsing even when an advance happened while expanded', () => {
+      // Regression: previously the follow condition compared selectedStepIndex
+      // to oldActiveStepIndex; once an advance was suppressed while expanded,
+      // selectedStepIndex fell behind oldActiveStepIndex and follow could never
+      // re-fire (stuck on a stale step indefinitely).
+      const d = new Dashboard(4);
+      const steps = [
+        { name: 'Step 1', index: 0, agentKey: 'a1' },
+        { name: 'Step 2', index: 1, agentKey: 'a2' },
+      ];
+      const mk = (activeStepIndex: number) =>
+        buildProjection({
+          phases: [{ id: 'phase-a' }],
+          currentPhaseId: 'phase-a',
+          tasks: [
+            makeTask({
+              id: 't1',
+              phaseId: 'phase-a',
+              status: 'active',
+              activeStepIndex,
+              steps,
+              startedAt: Date.now(),
+            }),
+          ],
+          agents: [makeAgent('a1', 't1', 'phase-a'), makeAgent('a2', 't1', 'phase-a')],
+        });
+
+      // Start aligned with the active step (0).
+      d.syncFromProjection(mk(0));
+      expect(d.getSelection().selectedStepIndex).toBe(0);
+
+      // Expand the agent log (user starts reviewing).
+      d.agentLog.toggleExpand();
+      expect(d.agentLog.isExpanded()).toBe(true);
+
+      // Advance the active step WHILE expanded → follow must be suppressed.
+      d.syncFromProjection(mk(1));
+      expect(d.getSelection().selectedStepIndex).toBe(0);
+      expect(d.getSelection().userPinnedStep).toBe(false);
+
+      // Collapse the agent log.
+      d.agentLog.toggleExpand();
+      expect(d.agentLog.isExpanded()).toBe(false);
+
+      // Sync again with the SAME activeStepIndex (1) → follow must now re-fire
+      // because the step is not pinned and the log is no longer expanded.
+      d.syncFromProjection(mk(1));
+      expect(d.getSelection().selectedStepIndex).toBe(1);
+      expect(d.getSelection().userPinnedStep).toBe(false);
     });
 
     it('follows new task activeStepIndex after task auto-follow changes task (not pinned)', () => {
