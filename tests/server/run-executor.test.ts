@@ -834,7 +834,21 @@ describe('RunExecutor', () => {
       );
 
       expect(s.handle.status).toBe('complete');
-      expect(spy).toHaveBeenCalledWith({ type: 'run_complete', runId: 'exec-wt-complete' });
+      // The worktree is set up asynchronously AFTER run_started is sent, so the
+      // terminal broadcast must CARRY it — this is the race-free source the
+      // client reads to drive the post-run final-merge prompt.
+      const payload = spy.mock.calls[0][0] as {
+        type: string;
+        runId: string;
+        worktree?: { worktreePath: string; branchName: string; originalCwd?: string };
+      };
+      expect(payload.type).toBe('run_complete');
+      expect(payload.runId).toBe('exec-wt-complete');
+      expect(payload.worktree).toEqual({
+        worktreePath: join(s.handle.workDir, 'worktree'),
+        branchName: 'engin/test-branch',
+        originalCwd: s.handle.cwd,
+      });
     });
   });
 
@@ -929,9 +943,21 @@ describe('RunExecutor', () => {
       );
 
       expect(spy).toHaveBeenCalledTimes(1);
-      const payload = spy.mock.calls[0][0] as { type: string; error: string };
+      const payload = spy.mock.calls[0][0] as {
+        type: string;
+        error: string;
+        worktree?: { worktreePath: string; branchName: string; originalCwd?: string };
+      };
       expect(payload.type).toBe('run_failed');
       expect(payload.error).toBe('explode');
+      // The worktree is PRESERVED on failure by design; surfacing its path/branch
+      // on the terminal broadcast lets the client (or `engin resume`) find it
+      // for a manual merge / inspection.
+      expect(payload.worktree).toEqual({
+        worktreePath: join(s.handle.workDir, 'worktree'),
+        branchName: 'engin/test-branch',
+        originalCwd: s.handle.cwd,
+      });
     });
   });
 });

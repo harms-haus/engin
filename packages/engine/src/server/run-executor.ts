@@ -410,7 +410,20 @@ export class RunExecutor {
         handle.summary.status = 'complete';
         // CRITICAL: broadcastTerminal is the ONLY path for terminal messages
         // once task-29 removes projection-change detection from StatusBridge.
-        bridge.broadcastTerminal({ type: 'run_complete', runId });
+        //
+        // Carry `handle.summary.worktree` on the terminal broadcast so clients
+        // can drive the post-run final-merge prompt. The main worktree is set
+        // up ASYNCHRONOUSLY inside this execute() (an LLM branch-slug call
+        // precedes it), which runs fire-and-forget AFTER RunManager.startRun()
+        // returned — so the `run_started` summary it sent had NO worktree yet.
+        // By terminal time the worktree is guaranteed present (it is wired
+        // before workflow.run() launches), making the terminal message the
+        // race-free source the client must read. Omitted on the non-git path.
+        bridge.broadcastTerminal({
+          type: 'run_complete',
+          runId,
+          ...(handle.summary.worktree ? { worktree: handle.summary.worktree } : {}),
+        });
       } catch (err: unknown) {
         // Flush even on error so partial events are durable.
         await store.flush();
@@ -439,7 +452,17 @@ export class RunExecutor {
 
         const phaseId = store.getProjection().currentPhaseId;
         // CRITICAL: broadcastTerminal is the ONLY path for terminal messages.
-        bridge.broadcastTerminal({ type: 'run_failed', runId, error: message, phase: phaseId });
+        // Mirror the success branch: carry `handle.summary.worktree` so a
+        // failed run can still surface its (preserved) worktree for manual
+        // merge. The worktree is preserved on failure by design — surfacing
+        // its path/branch here lets the client (or `engin resume`) find it.
+        bridge.broadcastTerminal({
+          type: 'run_failed',
+          runId,
+          error: message,
+          phase: phaseId,
+          ...(handle.summary.worktree ? { worktree: handle.summary.worktree } : {}),
+        });
       } finally {
         this.onRunsChanged();
 

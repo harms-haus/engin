@@ -145,8 +145,12 @@ Each lane (`agentId = lane-<index>`) runs a loop:
    `runnerCtx.cwd` to the returned worktree path so the agent runs inside an isolated
    branch. On a `completed` outcome, the lane calls `worktreeManager.mergeTaskBranch(task.id)`
    (serialized squash-merge into the main-wt branch); the task's `completeTask` settlement is
-   deferred until the merge succeeds, so a failed merge flips the outcome to `failed`. On
-   failure/retry and on permanent failure, `maybeRetryFailedTask` force-culls the task
+   deferred until the merge succeeds, so a failed merge flips the outcome to `failed`. On a
+   successful merge, the deferred result is first **relativized** against the task worktree
+   path and `mainWorktreePath` before being settled into the tracker, so any absolute
+   worktree paths the agent emitted (e.g. an `issues[].file`) become repo-relative for
+   downstream tasks (see [Worktrees reference → Task succeeds](worktrees.md#task-succeeds)).
+   On failure/retry and on permanent failure, `maybeRetryFailedTask` force-culls the task
    worktree + branch. When `worktreeManager` is absent, none of this runs and tasks execute
    against `cwd` directly.
 5. **If nothing claimed** — `await wakePromise` (resolves on a task event, the timeout, or
@@ -440,6 +444,11 @@ Responsibilities are split between the pool and runners to avoid duplication:
 Runners fire `onDecision` during execution. `runStep` fires `onAgentSpawn`,
 `onStepStart` (after the spawn), and `onAgentComplete`. The `LanePool` fires `onTaskStart`,
 `onTaskComplete`, and `onTaskRejected`.
+
+Separately from these events, in **worktree mode** a successful task's captured result is
+**relativized** to repo-relative paths between agent output and settlement — a data transform
+(not a lifecycle event) that strips absolute worktree paths before they cross a task boundary
+(see [Worktrees reference → Task succeeds](worktrees.md#task-succeeds)).
 
 ### Session management
 

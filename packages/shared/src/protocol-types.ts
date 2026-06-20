@@ -18,6 +18,28 @@ export type {
 // NOTE: PhaseDescriptor has been replaced by PhaseEntity (re-exported above).
 // Consumers should import PhaseEntity instead.
 
+// ─── Worktree summary ───────────────────────────────────────────────────────
+// Shared shape for the worktree identity broadcast to clients. It is carried
+// on `RunSummary.worktree` (seen in the `runs` list and `run_started`) AND on
+// the terminal `run_complete` / `run_failed` messages.
+//
+// IMPORTANT: the terminal messages are the AUTHORITATIVE source a client must
+// read. The main worktree is set up ASYNCHRONOUSLY by RunExecutor.execute()
+// (an LLM branch-slug round-trip happens first), which runs fire-and-forget
+// AFTER RunManager.startRun() has already returned — so `run_started` (and the
+// initial `runs` entry) is sent BEFORE `handle.summary.worktree` exists. By
+// terminal time the worktree is guaranteed to be created (it is wired before
+// `workflow.run()` launches), so the terminal broadcast is race-free.
+
+export interface WorktreeSummary {
+  /** Absolute path to the worktree directory on disk. */
+  worktreePath: string;
+  /** Name of the branch checked out in the worktree (e.g. "engin/<slug>"). */
+  branchName: string;
+  /** The original working directory before switching to the worktree. */
+  originalCwd?: string;
+}
+
 // ─── RunSummary ─────────────────────────────────────────────────────────────
 // A lightweight descriptor for a single run. Used in the active-run list
 // (`runs` message) and in `run_started`. Carries just enough to render a
@@ -39,7 +61,7 @@ export interface RunSummary {
   /** ISO 8601 timestamp marking when the run started. */
   startedAt: string;
   /** T33: Worktree info when the run uses a git worktree. */
-  worktree?: { worktreePath: string; branchName: string; originalCwd?: string };
+  worktree?: WorktreeSummary;
 }
 
 // ─── Server to Client Messages ──────────────────────────────────────────────
@@ -62,8 +84,8 @@ export type ServerMessage =
   | { type: 'run_started'; runId: string; summary: RunSummary }
   | { type: 'snapshot'; runId: string; seq: number; state: WorkflowProjection }
   | { type: 'events'; runId: string; seq: number; events: EventRecord[] }
-  | { type: 'run_complete'; runId: string }
-  | { type: 'run_failed'; runId: string; error: string; phase: string }
+  | { type: 'run_complete'; runId: string; worktree?: WorktreeSummary }
+  | { type: 'run_failed'; runId: string; error: string; phase: string; worktree?: WorktreeSummary }
   | {
       type: 'log';
       runId: string;

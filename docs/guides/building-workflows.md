@@ -684,6 +684,11 @@ When `worktreeManager` is present, the primitive:
 4. On failure / retry, force-culls the task worktree and recreates a fresh one on the
    next attempt.
 
+Results a task returns are also automatically **relativized** against the worktree roots
+(the task worktree path and the main worktree path), so any absolute worktree paths the
+agent emits in its output — for example a `file` field in a structured result — become
+repo-relative before the result reaches downstream phases. No action needed on your part.
+
 When `worktreeManager` is absent (the non-git fallback, or a workflow that does not
 forward it), tasks run against `cwd` directly with no per-task isolation.
 

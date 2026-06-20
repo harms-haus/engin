@@ -106,6 +106,7 @@ function setupHarnessMock(session?: ReturnType<typeof makeMockSession>['session'
  */
 function makeMockWorktreeManager(opts?: {
   worktreePath?: string;
+  mainWorktreePath?: string;
   mergeResult?: { success: boolean; conflictsResolved: boolean };
   mergeError?: Error;
   createError?: Error;
@@ -120,7 +121,12 @@ function makeMockWorktreeManager(opts?: {
     return opts?.mergeResult ?? { success: true, conflictsResolved: false };
   });
   const cullTaskWorktree = mock(async (_taskId: string) => undefined);
-  return { createTaskWorktree, mergeTaskBranch, cullTaskWorktree };
+  return {
+    createTaskWorktree,
+    mergeTaskBranch,
+    cullTaskWorktree,
+    mainWorktreePath: opts?.mainWorktreePath ?? '/tmp/worktree',
+  };
 }
 
 function createStatusCallbacksSpy(): StatusCallbacks & {
@@ -1493,6 +1499,35 @@ describe('runStepTask', () => {
       expect(wtm.cullTaskWorktree).toHaveBeenCalledTimes(1);
       expect(wtm.cullTaskWorktree).toHaveBeenCalledWith('task-1');
     });
+
+    // ── path relativization ─────────────────────────────────────────
+
+    it('relativizes absolute worktree paths in the structured result (runStepTask)', async () => {
+      setupProfilesMock(defaultProfile);
+      setupHarnessMock();
+      mockPromptForStructured.mockResolvedValue({
+        result: { files: ['/wt/task-1/src/changed.ts'], summary: '/wt/main/README.md' },
+        attempts: 1,
+      });
+      const wtm = makeMockWorktreeManager({
+        worktreePath: '/wt/task-1',
+        mainWorktreePath: '/wt/main',
+      });
+
+      const result = await runStepTask(
+        makeDefaultOptions({
+          worktreeManager: wtm as unknown as WorktreeManager,
+          schema: z.object({ files: z.array(z.string()), summary: z.string() }) as unknown as ZodType<unknown>,
+        }),
+      );
+
+      // Pins the contract: the structured result's absolute worktree paths
+      // are relativized to repo-relative tails before the step returns.
+      expect(result).toEqual({
+        files: ['src/changed.ts'],
+        summary: 'README.md',
+      });
+    });
   });
 });
 
@@ -1942,6 +1977,71 @@ describe('runMultiStepTask', () => {
       expect(rejectReasons.some((r) => r.toLowerCase().includes('merge threw'))).toBe(true);
       expect(wtm.cullTaskWorktree).toHaveBeenCalledTimes(1);
       expect(wtm.cullTaskWorktree).toHaveBeenCalledWith('planning');
+    });
+
+    // ── path relativization ─────────────────────────────────────────
+
+    it('relativizes absolute worktree paths in step results and flows relativized results to lazy prompts', async () => {
+      // Planner session returns text containing an absolute worktree path.
+      const planner = makeMockSession(() => '/wt/task-1/plan.md').session;
+
+      // Reviewer uses a lazy prompt that reads the prior step's result.
+      const reviewerLazyPrompt = mock((priorResults: unknown[]) => `Review file: ${String(priorResults[0])}`);
+
+      const reviewerSession = {
+        prompt: mock(async () => {}),
+        getLastAssistantText: mock(() => ''),
+        sessionId: 'reviewer-session',
+        subscribe: mock(() => () => {}),
+        dispose: mock(() => {}),
+      };
+
+      mockCreateHarness.mockImplementation(async (opts: { profile: AgentProfile }) => ({
+        session: opts.profile.id === 'planner' ? planner : reviewerSession,
+        sessionId: opts.profile.id,
+        dispose: mock(() => {}),
+      }));
+
+      // Reviewer structured output contains absolute worktree paths.
+      mockPromptForStructured.mockResolvedValue({
+        result: { ready: true, files: ['/wt/task-1/src/app.ts'] },
+        attempts: 1,
+      });
+
+      const wtm = makeMockWorktreeManager({
+        worktreePath: '/wt/task-1',
+        mainWorktreePath: '/wt/main',
+      });
+
+      const res = await runMultiStepTask({
+        profilesDirs: ['/tmp/profiles'],
+        phaseId: 'p',
+        taskId: 't',
+        title: 'T',
+        cwd: '/tmp/project',
+        steps: [
+          { stepName: 'plan', profileId: 'planner', prompt: 'Write the plan' },
+          {
+            stepName: 'review',
+            profileId: 'reviewer',
+            prompt: reviewerLazyPrompt as unknown as string,
+            isReadOnly: true,
+            schema: z.object({ ready: z.boolean(), files: z.array(z.string()) }) as unknown as ZodType<unknown>,
+            isApproved: (r) => (r as { ready?: boolean }).ready === true,
+          },
+        ],
+        worktreeManager: wtm as unknown as WorktreeManager,
+      });
+
+      // The planner step's string result is relativized.
+      expect(res.results[0]).toBe('plan.md');
+
+      // The reviewer structured result is relativized.
+      expect(res.results[1]).toEqual({ ready: true, files: ['src/app.ts'] });
+
+      // The lazy prompt received the ALREADY-RELATIVE planner result.
+      expect(reviewerLazyPrompt).toHaveBeenCalledTimes(1);
+      expect(reviewerLazyPrompt.mock.calls[0]![0]).toEqual(['plan.md']);
     });
   });
 });

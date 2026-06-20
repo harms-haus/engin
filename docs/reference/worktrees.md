@@ -217,6 +217,21 @@ Before `spawnAgent`, when a `WorktreeManager` is present:
 
 Returns `{ success, conflictsResolved }`.
 
+Before a successful task's result crosses a task boundary, the engine **relativizes**
+absolute worktree paths inside it to repo-relative tails. A task that ran in its own
+per-task worktree may emit absolute worktree paths in its structured output (e.g. an
+`issues[].file` from a code review); once that worktree is culled after the merge, those
+paths would be dead for any downstream task. The engine strips them at its result-capture
+seams — `runStepTask` and `runMultiStepTask` (`core/phase-tasks.ts`) and the deferred-result
+path of `LanePool.processTask` (`pool/lane-pool.ts`) — via
+`relativizePathsIn(result, [taskWorktreePath, mainWorktreePath])` (source:
+`core/path-relativizer.ts`). The transform recurses over strings/objects/arrays
+(longest-root-first, start-of-string boundary match, exact-root → `.`), is idempotent and
+non-mutating, and leaves non-string leaves untouched. The consume side
+(`pool/file-context.ts::resolveFilePath`) already resolves relative paths against the
+downstream task's worktree cwd, so a relativized path resolves correctly there. This is
+purely internal — not part of the public engine API.
+
 ### Task fails / retries (`LanePool.maybeRetryFailedTask`)
 
 `cullTaskWorktree(taskId)` (force) runs before `resetTaskForRetry`, so the next attempt

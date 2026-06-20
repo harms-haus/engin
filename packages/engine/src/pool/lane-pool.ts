@@ -1,4 +1,5 @@
 // ─── Lane Pool ──────────────────────────────────────────────────────────────
+import { relativizePathsIn } from '../core/path-relativizer.js';
 import { clearProfileCache, loadProfilesFromDirs } from '../core/profile.js';
 import type { AgentProfile, Task } from '../core/types.js';
 import { safeErrorMessage } from '../core/utils.js';
@@ -408,6 +409,10 @@ export class LanePool {
             deferredCompletion = true;
             return true;
           }
+          // Non-deferred path: worktreeCreated === false ⇒ the agent ran in the
+          // configured pool cwd (no isolated per-task worktree), so there is no
+          // worktree-rooted absolute path to strip. Relativization is intentionally
+          // deferred-path-only.
           return safeCompleteTask(task.id, result, processorCtx);
         },
         failTask: (result?: unknown) => safeFailTask(task.id, result ?? { completed: false }, processorCtx),
@@ -461,6 +466,13 @@ export class LanePool {
           // state, matching the non-worktree behavior for a runner that
           // returns `completed` without settling.
           if (deferredCompletion) {
+            // Relativize the deferred result so absolute worktree paths (e.g. an
+            // implementation review's issues[].file) become repo-relative before settling
+            // into the tracker. Implementation tasks run via LanePool→linearStepsRunner
+            // (not runStepTask/runMultiStepTask), so THIS deferred seam is what
+            // relativizes their results; the phase-tasks seams cover the standalone
+            // primitives used by other phases. Complementary across code paths; idempotent.
+            deferredResult = relativizePathsIn(deferredResult, [runnerCtx.cwd, worktreeManager.mainWorktreePath]);
             safeCompleteTask(task.id, deferredResult, processorCtx);
           }
         } else {

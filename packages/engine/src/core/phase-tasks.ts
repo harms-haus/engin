@@ -6,6 +6,7 @@ import type { HookRegistry } from '../hooks/types.js';
 import { assertSafeName } from '../pool/validation.js';
 import type { AgentLifecycleHandle } from './agent-lifecycle.js';
 import { spawnAgent } from './agent-lifecycle.js';
+import { relativizePathsIn } from './path-relativizer.js';
 import { loadProfilesFromDirs } from './profile.js';
 import { invokeRenderer } from './renderer-invocation.js';
 import type { RendererRegistry } from './renderer-registry.js';
@@ -261,6 +262,16 @@ export async function runStepTask<T = unknown>(opts: RunStepTaskOptions): Promis
       await handle.session.prompt(effectivePrompt);
       result = handle.session.getLastAssistantText() as T;
     }
+
+    // Relativize absolute worktree paths emitted into the result so downstream
+    // tasks (possibly in a fresh worktree) resolve them correctly. Idempotent;
+    // a no-op when no worktreeManager is in play (roots then resolve to just
+    // [effectiveCwd], which only matches result strings that literally
+    // contain the agent's own cwd). The renderer below reads
+    // handle.session.getLastAssistantText() directly (NOT `result`), so
+    // reassigning `result` here is safe.
+    const roots = [effectiveCwd, worktreeManager?.mainWorktreePath].filter(Boolean) as string[];
+    result = relativizePathsIn(result, roots) as T;
 
     // 8b. Renderer invocation — transform agent output into human-readable form.
     // getLastAssistantText() is fetched lazily (only when a renderer is
@@ -741,6 +752,15 @@ export async function runMultiStepTask(opts: RunMultiStepTaskOptions): Promise<M
         handle.dispose();
       }
 
+      // Relativize absolute worktree paths emitted into the step result so
+      // subsequent steps (possibly in a fresh worktree) and downstream tasks
+      // resolve them correctly. Idempotent; a no-op when no worktreeManager
+      // is in play. Applied BEFORE storing into `results` so relativized
+      // paths flow into `priorResults` for later steps' lazy prompts (the
+      // final `results` array returned by runMultiStepTask is therefore
+      // already fully relativized — no separate final-return pass needed).
+      const roots = [effectiveCwd, worktreeManager?.mainWorktreePath].filter(Boolean) as string[];
+      result = relativizePathsIn(result, roots);
       results[stepIndex] = result;
 
       // 4h. Approval gate

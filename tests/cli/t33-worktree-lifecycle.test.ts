@@ -13,7 +13,9 @@
 // AFTER (what these tests assert):
 //   - No `--worktree` flag. Worktrees are AUTOMATIC for git repos: the server
 //     decides, and the client learns the worktree identity from the
-//     `run_started` summary (`capturedWorktree`).
+//     `run_complete` / `run_failed` TERMINAL broadcast (`capturedWorktree`).
+//     (run_started carries no worktree — it is sent before the async
+//     worktree setup completes.)
 //   - `worktree_action` actions are merge | resolve | decline.
 //   - `start_run` carries NO `worktree` field.
 //   - The post-run prompt is `promptFinalMerge` (two-prompt, yes/No,

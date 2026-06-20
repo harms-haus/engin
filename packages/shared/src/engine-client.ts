@@ -159,8 +159,17 @@ export class EngineClient {
    * Sends `{ type: 'list_runs' }` and returns a one-shot Promise that resolves
    * with the server's active-run list (`{ type: 'runs', runs }` response).
    *
-   * Resolves with `[]` when the client is not connected, the socket is not
-   * open, or no response arrives within `timeoutMs` (default 3 000 ms).
+   * Resolves with `[]` when no response arrives within `timeoutMs` (default
+   * 3 000 ms) — including the case where the socket never opens.
+   *
+   * RACE-SAFE: when called before the socket has opened (e.g. `engin resume`
+   * calling `queryActiveRuns` synchronously after `connect()`), this does NOT
+   * resolve `[]` early. Instead the resolver is queued and the `list_runs`
+   * request is deferred until the socket's `onopen` handshake fires (see
+   * {@link flushPendingRequestRuns}). Resolving `[]` synchronously in that
+   * window made `engin resume` blind to an already-active run, causing it to
+   * fall through to `start_run` and collide with "Run '<id>' is already
+   * running."
    *
    * Implementation detail: rather than mutating the caller's `onMessage`
    * callback (which under concurrent calls would overwrite the previous
@@ -173,11 +182,6 @@ export class EngineClient {
    */
   requestRuns(timeoutMs = 3000): Promise<RunSummary[]> {
     return new Promise((resolve) => {
-      if (!this.connected || this.ws === null || this.ws.readyState !== WebSocket.OPEN) {
-        resolve([]);
-        return;
-      }
-
       let resolved = false;
       let timer: ReturnType<typeof setTimeout> | null = null;
 
@@ -196,9 +200,36 @@ export class EngineClient {
       }, timeoutMs);
 
       this.requestRunsResolvers.push(resolver);
-      this.send({ type: 'list_runs' });
+
+      if (this.ws !== null && this.ws.readyState === WebSocket.OPEN) {
+        // Socket is already open — send list_runs immediately.
+        this.send({ type: 'list_runs' });
+      } else {
+        // Socket not open yet (CONNECTING, or reconnecting). Defer the
+        // list_runs request to the onopen handshake (flushPendingRequestRuns)
+        // so the resolver actually receives a response instead of timing out
+        // against a request that was never sent. The per-call timeout above
+        // still bounds the wait if the socket never opens.
+        this.pendingRequestRuns = true;
+      }
     });
   }
+
+  /**
+   * Flushes any deferred `list_runs` request queued by {@link requestRuns}
+   * while the socket was not yet open. Called from the `onopen` handshake.
+   * No-op when nothing is pending.
+   */
+  private flushPendingRequestRuns(): void {
+    if (!this.pendingRequestRuns) return;
+    this.pendingRequestRuns = false;
+    this.send({ type: 'list_runs' });
+  }
+
+  /** True when at least one {@link requestRuns} caller queued a `list_runs`
+   *  request while the socket was not yet open. Flushed by the `onopen`
+   *  handshake (see {@link flushPendingRequestRuns}). */
+  private pendingRequestRuns = false;
 
   /** Drains every pending {@link requestRuns} resolver, resolving each with
    *  the supplied runs list, then clears the set so a later `runs` message
@@ -284,8 +315,11 @@ export class EngineClient {
       if (this.authToken !== undefined) {
         this.send({ type: 'auth', token: this.authToken });
       }
-      // 2. request the active-run list
+      // 2. request the active-run list. Always send a handshake list_runs so
+      //    late UI subscribers get a fresh view, AND flush any list_runs that
+      //    a pre-open requestRuns() caller queued (resume race fix).
       this.send({ type: 'list_runs' });
+      this.flushPendingRequestRuns();
       // 3. re-subscribe + resync every tracked run (reconnect scenario)
       for (const runId of this.subscribedRunIds) {
         this.send({ type: 'subscribe', runId });

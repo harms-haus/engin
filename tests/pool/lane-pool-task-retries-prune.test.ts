@@ -311,6 +311,7 @@ interface MockWorktreeManagerOptions {
   createPath?: string;
   createThrows?: boolean;
   mergeResult?: { success: boolean; conflictsResolved: boolean };
+  mainWorktreePath?: string;
 }
 
 /**
@@ -322,8 +323,10 @@ interface MockWorktreeManagerOptions {
 function createMockWorktreeManager(options?: MockWorktreeManagerOptions) {
   const log: string[] = [];
   const mergeResult = options?.mergeResult ?? { success: true, conflictsResolved: false };
+  const mainWorktreePath = options?.mainWorktreePath ?? '/tmp/wt/main';
   return {
     log,
+    mainWorktreePath,
     createTaskWorktree: mock(async (taskId: string, _prompt?: string): Promise<string> => {
       if (options?.createThrows) throw new Error('worktree-create-failed');
       log.push(`create:${taskId}`);
@@ -564,5 +567,57 @@ describe('LanePool per-task worktree lifecycle', () => {
     // the task object, so toBe would fail on a different-but-equal reference.)
     expect(callArgs[2]).toEqual(expect.objectContaining({ id: task.id, profile: task.profile }));
     expect((callArgs[2] as Task).profile).toBe('scout');
+  });
+
+  // ── Deferred-result relativization ───────────────────────────────────────
+  //
+  // When worktreeCreated is true, the runner's `completeTask(result)` call
+  // captures the result in `deferredResult` and only settles the task via
+  // `safeCompleteTask` AFTER `mergeTaskBranch` succeeds. The deferred result
+  // must be run through `relativizePathsIn(value, [cwd, mainWorktreePath])`
+  // before settlement so that absolute worktree paths crossing task boundaries
+  // are rewritten to repo-relative tails.
+
+  it('relativizes deferred result paths through relativizePathsIn before settling', async () => {
+    setupProfileMocks();
+    const wm = createMockWorktreeManager({
+      createPath: '/tmp/wt/task-1',
+      mainWorktreePath: '/tmp/wt/main',
+    });
+    const { pool, tracker } = createPoolWithWorktree({
+      tasks: [makeTask({ id: 'task-1', prompt: 'implement feature' })],
+      worktreeManager: wm as unknown as WorktreeManager,
+      getRunnerForTask: () => async (ctx) => {
+        // The runner produces a result containing absolute worktree paths.
+        // Because worktreeCreated is true, completeTask captures this as
+        // deferredResult; after merge succeeds, relativizePathsIn should
+        // rewrite the paths before safeCompleteTask stores them on the task.
+        ctx.completeTask({
+          files: ['/tmp/wt/task-1/src/foo.ts'],
+          note: '/tmp/wt/main/other.ts',
+        });
+        return { status: 'completed' };
+      },
+    });
+
+    await pool.run();
+
+    const task = tracker.getTask('task-1');
+    expect(task).toBeDefined();
+    expect(task!.status).toBe('complete');
+
+    // ── Expected relativized output ──────────────────────────────────────
+    // Both absolute worktree paths must be rewritten to repo-relative tails:
+    //   • '/tmp/wt/task-1/src/foo.ts'  → 'src/foo.ts'  (createTaskWorktree cwd)
+    //   • '/tmp/wt/main/other.ts'      → 'other.ts'    (mainWorktreePath)
+    //
+    // Pins the contract: lane-pool.ts relativizes the deferred result
+    // (via `relativizePathsIn(deferredResult, [cwd,
+    // worktreeManager.mainWorktreePath])`) before `safeCompleteTask`.
+    const result = task!.result as Record<string, unknown>;
+    expect(result).toEqual({
+      files: ['src/foo.ts'],
+      note: 'other.ts',
+    });
   });
 });

@@ -242,7 +242,12 @@ export class RunSessionClient {
         switch (msg.type) {
           case 'run_started':
             if (runId !== undefined) break; // idempotent — ignore duplicate run_started (e.g. on WS reconnect)
-            // T33: Capture worktree info so postTerminalAction can use it later.
+            // Best-effort worktree capture. The main worktree is set up
+            // ASYNCHRONOUSLY after this message is sent (an LLM branch-slug
+            // call precedes setup), so run_started.summary.worktree is almost
+            // always ABSENT here. The authoritative capture happens on the
+            // terminal run_complete/run_failed message below; this only wins
+            // if setup ever completes before run_started is dispatched.
             if (msg.summary?.worktree) capturedWorktree = msg.summary.worktree;
             // Start mode: the server pushes an initial snapshot on run_started,
             // so no explicit resync is needed here.
@@ -258,7 +263,18 @@ export class RunSessionClient {
             if (msg.runId === runId) clientStore.appendRunLog(msg.level, msg.message, msg.timestamp);
             break;
           case 'run_complete':
-            if (msg.runId === runId) resolveTerminal();
+            if (msg.runId === runId) {
+              // T33: Capture worktree from the terminal broadcast. This is the
+              // AUTHORITATIVE source: the main worktree is set up
+              // asynchronously by RunExecutor.execute() (an LLM branch-slug
+              // call precedes it) AFTER RunManager.startRun() returned, so the
+              // `run_started` summary it sent carried NO worktree yet. By
+              // terminal time the worktree is guaranteed present, so reading it
+              // here is race-free. Falls back to whatever run_started captured
+              // (kept for forward-compat if setup is ever made synchronous).
+              if (msg.worktree) capturedWorktree = msg.worktree;
+              resolveTerminal();
+            }
             break;
           case 'run_failed':
             // A start-time failure is signaled by the server sending run_failed
@@ -268,6 +284,10 @@ export class RunSessionClient {
             // failure. Accepting it here resolves terminalPromise so the run
             // path no longer hangs forever when the workflow fails to load/start.
             if (msg.runId === runId || (runId === undefined && msg.runId === '')) {
+              // Mirror run_complete: a failed-but-worktree'd run still
+              // surfaces its preserved worktree so the post-terminal action
+              // can offer a manual-merge path.
+              if (msg.worktree) capturedWorktree = msg.worktree;
               runFailedReason = msg.error;
               resolveTerminal();
             }

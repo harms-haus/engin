@@ -341,3 +341,117 @@ describe('RunSessionClient — StdoutRenderer wiring', () => {
     process.exitCode = savedExitCode;
   });
 });
+
+// ─── Worktree identity captured from the TERMINAL broadcast ────────────────
+//
+// Reproduces the regression where the post-run final-merge prompt was never
+// shown: the main worktree is set up ASYNCHRONOUSLY by RunExecutor.execute()
+// AFTER RunManager.startRun() returned, so the `run_started` summary it sent
+// carried NO worktree. The client must therefore read the worktree identity
+// from the terminal run_complete/run_failed broadcast (the race-free source)
+// and forward it to postTerminalAction so the merge prompt fires.
+
+describe('RunSessionClient — worktree captured from terminal broadcast', () => {
+  it('forwards the worktree to postTerminalAction even when run_started carried none', async () => {
+    let capturedWorktree: unknown = 'SENTINEL_UNSET';
+
+    await runSession({
+      useTui: false,
+      verbose: false,
+      setup: (ec) => {
+        setTimeout(() => {
+          // run_started carries NO worktree (async setup hasn't completed).
+          ec.deliver({ type: 'run_started', runId: 'run-1', summary: makeSummary() });
+          // run_complete carries it — the authoritative, race-free source.
+          ec.deliver({
+            type: 'run_complete',
+            runId: 'run-1',
+            worktree: {
+              worktreePath: '/proj/.engin/work/run-1/worktree',
+              branchName: 'engin/run-1',
+              originalCwd: '/proj',
+            },
+          });
+        }, 0);
+        return Promise.resolve({
+          mode: 'start' as const,
+          startRunMessage: makeStartRun(),
+          postTerminalAction: async (ctx: { capturedWorktree?: unknown }) => {
+            capturedWorktree = ctx.capturedWorktree;
+          },
+        });
+      },
+    });
+
+    expect(capturedWorktree).toEqual({
+      worktreePath: '/proj/.engin/work/run-1/worktree',
+      branchName: 'engin/run-1',
+      originalCwd: '/proj',
+    });
+  });
+
+  it('also captures the worktree from a run_failed terminal broadcast', async () => {
+    let capturedWorktree: unknown = 'SENTINEL_UNSET';
+    const savedExitCode = process.exitCode;
+
+    await runSession({
+      useTui: false,
+      verbose: false,
+      setup: (ec) => {
+        setTimeout(() => {
+          ec.deliver({ type: 'run_started', runId: 'run-1', summary: makeSummary() });
+          ec.deliver({
+            type: 'run_failed',
+            runId: 'run-1',
+            error: 'boom',
+            phase: 'p1',
+            worktree: {
+              worktreePath: '/proj/.engin/work/run-1/worktree',
+              branchName: 'engin/run-1',
+              originalCwd: '/proj',
+            },
+          });
+        }, 0);
+        return Promise.resolve({
+          mode: 'start' as const,
+          startRunMessage: makeStartRun(),
+          postTerminalAction: async (ctx: { capturedWorktree?: unknown }) => {
+            capturedWorktree = ctx.capturedWorktree;
+          },
+        });
+      },
+    });
+
+    expect(capturedWorktree).toEqual({
+      worktreePath: '/proj/.engin/work/run-1/worktree',
+      branchName: 'engin/run-1',
+      originalCwd: '/proj',
+    });
+    process.exitCode = savedExitCode;
+  });
+
+  it('leaves capturedWorktree undefined (no merge prompt) on a non-git run with no worktree', async () => {
+    let capturedWorktree: unknown = 'SENTINEL_SET';
+
+    await runSession({
+      useTui: false,
+      verbose: false,
+      setup: (ec) => {
+        setTimeout(() => {
+          ec.deliver({ type: 'run_started', runId: 'run-1', summary: makeSummary() });
+          // No worktree field — non-git run.
+          ec.deliver({ type: 'run_complete', runId: 'run-1' });
+        }, 0);
+        return Promise.resolve({
+          mode: 'start' as const,
+          startRunMessage: makeStartRun(),
+          postTerminalAction: async (ctx: { capturedWorktree?: unknown }) => {
+            capturedWorktree = ctx.capturedWorktree;
+          },
+        });
+      },
+    });
+
+    expect(capturedWorktree).toBeUndefined();
+  });
+});
