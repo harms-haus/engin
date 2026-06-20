@@ -361,8 +361,8 @@ describe('PhaseRunnerOptions', () => {
   });
 
   it('phases is typed PhaseDefinition[] (negative compile check)', () => {
-    // @ts-expect-error — phases must be PhaseDefinition[], not a string array
     const bad: PhaseRunnerOptions = {
+      // @ts-expect-error — phases must be PhaseDefinition[], not a string array
       phases: ['not-a-phase'],
       tracker: fakeTracker(),
       cwd: '/repo',
@@ -390,22 +390,22 @@ describe('PhaseRunnerOptions', () => {
   });
 
   it('maxRounds is typed number (negative compile check)', () => {
-    // @ts-expect-error — maxRounds must be number, not a string
     const bad: PhaseRunnerOptions = {
       phases: [],
       tracker: fakeTracker(),
       cwd: '/repo',
       workDir: '/repo/w',
+      // @ts-expect-error — maxRounds must be number, not a string
       maxRounds: 'three',
     };
     void bad;
   });
 
   it('hookRegistry, when present, must satisfy HookRegistry (negative compile check)', () => {
-    // @ts-expect-error — hookRegistry must be a HookRegistry, not a plain object
     const bad: PhaseRunnerOptions = {
       phases: [],
       tracker: fakeTracker(),
+      // @ts-expect-error — hookRegistry must be a HookRegistry, not a plain object
       hookRegistry: {},
       cwd: '/repo',
       workDir: '/repo/w',
