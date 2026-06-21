@@ -175,6 +175,32 @@ export function abortMerge(repoRoot: string): void {
 }
 
 /**
+ * Hard-resets the index AND working tree to `HEAD` (`git reset --hard HEAD`).
+ *
+ * Used by `WorktreeManager` to roll back a SHARED worktree after a merge-commit
+ * failure (e.g. a pre-commit/lint hook rejected the squash-merge commit). After
+ * a successful `git merge --squash`, the changes are staged; a failed commit
+ * would otherwise leave the shared main worktree dirty and corrupt the NEXT
+ * task's merge. `resetHard` discards the staged squash so the worktree is clean.
+ *
+ * Reverts tracked-file modifications and conflict markers back to `HEAD`. Does
+ * NOT remove untracked files (the squash of tracked changes does not create
+ * any) — pair with `cleanUntracked` if a resolution agent left scratch files.
+ */
+export function resetHard(dir: string): void {
+  execGit(['reset', '--hard', 'HEAD'], dir);
+}
+
+/**
+ * Removes untracked files and directories (`git clean -fd`). Best-effort scratch
+ * cleanup after a failed merge/commit in a SHARED worktree. Swallow callers
+ * (see `WorktreeManager.safeResetMainWorktree`) treat a throw as non-fatal.
+ */
+export function cleanUntracked(dir: string): void {
+  execGit(['clean', '-fd'], dir);
+}
+
+/**
  * Pushes `branch` to `remote` (default `'origin'`) and sets upstream tracking.
  */
 export function pushBranch(dir: string, branch: string, remote = 'origin'): void {

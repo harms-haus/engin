@@ -40,6 +40,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import type { AuditEvent, Task } from '../core/types.js';
+import type { WorktreeManager } from '../core/worktree-manager.js';
 import { createHookRegistry } from '../hooks/registry.js';
 import type { HookContext, HookRegistry } from '../hooks/types.js';
 import { AuditLog } from '../tracking/audit-log.js';
@@ -286,6 +287,94 @@ describe('LanePool.run() — default auditor registration', () => {
     } finally {
       rmSync(logDir, { recursive: true, force: true });
     }
+  });
+});
+
+// ── Merge failure is non-retriable and preserves the worktree ───────────
+//
+// When a task's approved work cannot be merged (the merge-commit fix-up
+// exhausted), re-running the task is futile — the WORK is fine, the
+// integration is the problem. So a merge failure must NOT reset+re-run the
+// task (which would burn the retry budget re-doing write-tests → … → review
+// only to hit the same merge failure), and must NOT cull the task worktree
+// (the approved work is preserved on its branch for manual merge).
+
+describe('LanePool — merge failure is non-retriable + preserves the worktree', () => {
+  /** A completing runner that counts how many times it was invoked. */
+  function countingCompletingRunner(counter: { n: number }): TaskRunner {
+    return async (ctx) => {
+      counter.n++;
+      ctx.completeTask('done');
+      return { status: 'completed', output: 'done' };
+    };
+  }
+
+  it('does not re-run the task and does not cull when mergeTaskBranch throws', async () => {
+    const runCount = { n: 0 };
+    const decisions: string[] = [];
+    const cull = mock(() => Promise.resolve());
+    const worktreeManager = {
+      mainWorktreePath: '/run/work/worktree',
+      createTaskWorktree: mock(async () => '/run/work/task-wt'),
+      mergeTaskBranch: mock(async () => {
+        throw new Error('pre-commit hook rejected');
+      }),
+      cullTaskWorktree: cull,
+    } as unknown as WorktreeManager;
+
+    const tracker = new TaskTracker();
+    tracker.addTask(makeTask('task-merge'));
+    const pool = new LanePool(
+      makeOptions({
+        taskTracker: tracker,
+        worktreeManager,
+        // Two retries ALLOWED — the test asserts NONE are consumed.
+        maxTaskRetries: 2,
+        getRunnerForTask: () => countingCompletingRunner(runCount),
+        onStatus: { onDecision: (e) => decisions.push(e.decision) },
+      }),
+    );
+
+    const result = await pool.run();
+
+    // The runner ran exactly ONCE (no task retry despite maxTaskRetries: 2).
+    expect(runCount.n).toBe(1);
+    // The task is counted as failed (the merge could not complete).
+    expect(result.failedTasks).toBe(1);
+    expect(result.completedTasks).toBe(0);
+    // The task worktree was NOT culled — preserved for manual merge.
+    expect(cull).not.toHaveBeenCalled();
+    // A decision event surfaces the integration failure + preservation.
+    expect(decisions.some((d) => d.includes('failed on integration') && d.includes('worktree preserved'))).toBe(true);
+    expect(decisions.some((d) => d.includes('Retrying failed task'))).toBe(false);
+  });
+
+  it('still retries a NORMAL step failure (regression guard)', async () => {
+    // A runner that fails (never completes) — a work-quality failure, which
+    // MUST remain retriable. maxTaskRetries: 1 ⇒ up to 2 total runs.
+    const runCount = { n: 0 };
+    const failingRunner: TaskRunner = async (ctx) => {
+      runCount.n++;
+      ctx.failTask({ completed: false, error: 'step rejected' });
+      return { status: 'failed', feedback: 'step rejected' };
+    };
+
+    const tracker = new TaskTracker();
+    tracker.addTask(makeTask('task-step'));
+    const pool = new LanePool(
+      makeOptions({
+        taskTracker: tracker,
+        // No worktreeManager ⇒ no merge step ⇒ a normal retriable failure.
+        maxTaskRetries: 1,
+        getRunnerForTask: () => failingRunner,
+      }),
+    );
+
+    const result = await pool.run();
+
+    // Two total runs (initial + 1 retry) — normal failures are still retried.
+    expect(runCount.n).toBe(2);
+    expect(result.failedTasks).toBe(1);
   });
 });
 

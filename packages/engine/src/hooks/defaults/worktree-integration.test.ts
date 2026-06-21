@@ -28,6 +28,7 @@ import type { Task } from '../../core/types.js';
 const realGit = Object.assign({}, await import('../../core/git.js'));
 const realWorktreeOps = Object.assign({}, await import('../../core/worktree-operations.js'));
 const realWorktreeLifecycle = Object.assign({}, await import('../../core/worktree-lifecycle.js'));
+const realWorktreeFixup = Object.assign({}, await import('../../core/worktree-fixup.js'));
 
 // ─── Mock functions for git.ts ──────────────────────────────────────────────
 
@@ -47,6 +48,9 @@ const mockGetMainBranch = mock((_dir: string): string => 'main');
 const mockGetCurrentBranch = mock((_dir: string): string => 'previous-branch');
 const mockCheckoutBranch = mock((_repoRoot: string, _branch: string): void => {});
 const mockAbortMerge = mock((_repoRoot: string): void => {});
+const mockResetHard = mock((_dir: string): void => {});
+const mockCleanUntracked = mock((_dir: string): void => {});
+const mockStageAll = mock((_dir: string): void => {});
 
 // ─── Mock functions for worktree-operations.ts ──────────────────────────────
 
@@ -62,6 +66,15 @@ const mockResolveConflictsWithAgent = mock(
     _taskPrompt: string,
     _apiKeys?: Record<string, string>,
   ): Promise<{ resolved: boolean; error?: string }> => ({ resolved: true }),
+);
+
+// ─── Mock functions for worktree-fixup.ts ───────────────────────────────────
+
+const mockRunTooledFixup = mock(
+  async (_opts: unknown): Promise<{ success: boolean; attempts: number; lastError?: string }> => ({
+    success: true,
+    attempts: 1,
+  }),
 );
 
 // ─── Mock modules ────────────────────────────────────────────────────────────
@@ -84,6 +97,9 @@ mock.module('../../core/git.js', () => ({
   getCurrentBranch: mockGetCurrentBranch,
   checkoutBranch: mockCheckoutBranch,
   abortMerge: mockAbortMerge,
+  resetHard: mockResetHard,
+  cleanUntracked: mockCleanUntracked,
+  stageAll: mockStageAll,
 }));
 
 mock.module('../../core/worktree-operations.js', () => ({
@@ -94,6 +110,11 @@ mock.module('../../core/worktree-operations.js', () => ({
 mock.module('../../core/worktree-lifecycle.js', () => ({
   ...realWorktreeLifecycle,
   resolveConflictsWithAgent: mockResolveConflictsWithAgent,
+}));
+
+mock.module('../../core/worktree-fixup.js', () => ({
+  ...realWorktreeFixup,
+  runTooledFixup: mockRunTooledFixup,
 }));
 
 // ─── Import SUT after mocks ──────────────────────────────────────────────────
@@ -114,6 +135,7 @@ afterAll(() => {
   mock.module('../../core/git.js', () => realGit);
   mock.module('../../core/worktree-operations.js', () => realWorktreeOps);
   mock.module('../../core/worktree-lifecycle.js', () => realWorktreeLifecycle);
+  mock.module('../../core/worktree-fixup.js', () => realWorktreeFixup);
 });
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -213,11 +235,15 @@ function resetMocks() {
   mockCommitChanges.mockImplementation(() => {});
   mockCheckoutBranch.mockImplementation(() => {});
   mockAbortMerge.mockImplementation(() => {});
+  mockResetHard.mockImplementation(() => {});
+  mockCleanUntracked.mockImplementation(() => {});
+  mockStageAll.mockImplementation(() => {});
   mockGetMainBranch.mockReturnValue('main');
   mockGetCurrentBranch.mockReturnValue('previous-branch');
   mockSquashMergeBranch.mockReturnValue({ success: true });
   mockCommitWorktreeChanges.mockResolvedValue(undefined);
   mockResolveConflictsWithAgent.mockResolvedValue({ resolved: true });
+  mockRunTooledFixup.mockResolvedValue({ success: true, attempts: 1 });
 }
 
 beforeEach(() => {
@@ -693,5 +719,205 @@ describe('Case 6 — No hookRegistry (backward compat, direct primitives)', () =
     // Task worktree culled after successful merge.
     expect(mockRemoveWorktree).toHaveBeenCalledWith('/fake/repo', taskWorktreePath('/run/work', 'task-1'));
     expect(mockDeleteBranchForce).toHaveBeenCalledWith('/fake/repo', 'engin/feat-x--task-1');
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// git lock — serialization + merge-commit rollback
+//
+// Covers the unified git lock (`withGitLock`) that serializes shared-state
+// git ops, and the rollback that fires when a squash-merge COMMIT fails so the
+// shared main worktree is never left dirty for the next task.
+//
+// The serialization tests exercise the CONFLICT path: `resolveConflictsWithAgent`
+// is `await`ed INSIDE the locked critical section, so giving it a delay creates
+// a real async yield within the lock — the only way to observe that a second
+// task's locked section waits (the clean path is fully synchronous, so it can't
+// distinguish locked from unlocked execution).
+// ═══════════════════════════════════════════════════════════════════════════════
+
+describe('git lock — serialization + merge-commit rollback', () => {
+  const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+  async function waitFor(fn: () => boolean, timeoutMs = 1000): Promise<void> {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      if (fn()) return;
+      await delay(2);
+    }
+    throw new Error('waitFor timed out');
+  }
+
+  it('rolls back the SHARED main worktree and rethrows when the merge commit fails', async () => {
+    const wm = makeManager();
+    await wm.createTaskWorktree('task-1', 'prompt');
+
+    // The squash stages successfully, but the commit (pre-commit/lint hook) rejects.
+    mockSquashMergeBranch.mockReturnValue({ success: true });
+    mockCommitChanges.mockImplementation(() => {
+      throw new Error('pre-commit hook rejected');
+    });
+
+    await expect(wm.mergeTaskBranch('task-1')).rejects.toThrow('pre-commit hook rejected');
+
+    // Rollback targeted at the SHARED main worktree (not repoRoot / task path).
+    expect(mockAbortMerge).toHaveBeenCalledWith('/run/work/worktree');
+    expect(mockResetHard).toHaveBeenCalledWith('/run/work/worktree');
+    expect(mockCleanUntracked).toHaveBeenCalledWith('/run/work/worktree');
+    // The failed task's worktree is NOT culled (the merge did not succeed).
+    expect(mockRemoveWorktree).not.toHaveBeenCalled();
+    expect(mockDeleteBranchForce).not.toHaveBeenCalled();
+  });
+
+  it('rolls back after a conflict-resolved commit fails too', async () => {
+    const wm = makeManager();
+    await wm.createTaskWorktree('task-1', 'prompt');
+
+    mockSquashMergeBranch.mockReturnValue({ success: false, conflicts: ['src/app.ts'] });
+    // The agent resolves the conflicts, but the post-resolution commit fails.
+    mockResolveConflictsWithAgent.mockResolvedValue({ resolved: true });
+    mockCommitChanges.mockImplementation(() => {
+      throw new Error('pre-commit hook rejected');
+    });
+
+    await expect(wm.mergeTaskBranch('task-1')).rejects.toThrow('pre-commit hook rejected');
+
+    expect(mockStageFiles).toHaveBeenCalledWith('/run/work/worktree', ['src/app.ts']);
+    expect(mockResetHard).toHaveBeenCalledWith('/run/work/worktree');
+    expect(mockRemoveWorktree).not.toHaveBeenCalled();
+  });
+
+  it('serializes concurrent merges so their locked sections never interleave', async () => {
+    const wm = makeManager();
+    await wm.createTaskWorktree('t-a', 't-a');
+    await wm.createTaskWorktree('t-b', 't-b');
+
+    const log: string[] = [];
+    // Force the conflict path so `resolveConflictsWithAgent` (awaited inside the
+    // lock) yields, making interleaving observable.
+    mockSquashMergeBranch.mockImplementation((_repo: string, _branch: string) => ({
+      success: false,
+      conflicts: ['f.ts'],
+    }));
+    mockResolveConflictsWithAgent.mockImplementation(
+      async (_p: string[], _r: string, _c: string[], taskPrompt: string) => {
+        log.push(`${taskPrompt}-resolve-start`);
+        await delay(8);
+        log.push(`${taskPrompt}-resolve-end`);
+        return { resolved: true };
+      },
+    );
+    mockCommitChanges.mockImplementation((_dir: string, message: string) => {
+      log.push(`${message.replace('Merge task: ', '')}-commit`);
+    });
+
+    await Promise.all([wm.mergeTaskBranch('t-a'), wm.mergeTaskBranch('t-b')]);
+
+    const aRS = log.indexOf('t-a-resolve-start');
+    const aC = log.indexOf('t-a-commit');
+    const bRS = log.indexOf('t-b-resolve-start');
+    const bC = log.indexOf('t-b-commit');
+    expect(aRS).toBeGreaterThanOrEqual(0);
+    expect(bRS).toBeGreaterThanOrEqual(0);
+    // Non-interleaving: one task's commit precedes the OTHER task's resolve-start.
+    expect(aC < bRS || bC < aRS).toBe(true);
+  });
+
+  it('createTaskWorktree branch creation waits for an in-flight merge', async () => {
+    const wm = makeManager();
+    // First create is a no-op createWorktree (default mock); install the logging
+    // implementation AFTER it so only t-b's createWorktree is logged.
+    await wm.createTaskWorktree('t-a', 't-a');
+
+    const log: string[] = [];
+    mockSquashMergeBranch.mockReturnValue({ success: false, conflicts: ['f.ts'] });
+    mockResolveConflictsWithAgent.mockImplementation(async () => {
+      log.push('resolve-start');
+      await delay(8);
+      log.push('resolve-end');
+      return { resolved: true };
+    });
+    mockCommitChanges.mockImplementation(() => {
+      log.push('commit');
+    });
+    mockCreateWorktree.mockImplementation(() => {
+      log.push('create');
+    });
+
+    // Start the merge — it acquires the lock and holds it during the slow resolve.
+    const mergeP = wm.mergeTaskBranch('t-a');
+    await waitFor(() => log.includes('resolve-start'));
+
+    // Create a second task worktree — its branch creation must wait for the lock.
+    await wm.createTaskWorktree('t-b', 't-b');
+    await mergeP;
+
+    // createWorktree ran AFTER the merge's commit (the lock serialized them).
+    expect(log.indexOf('commit')).toBeLessThan(log.indexOf('create'));
+  });
+
+  // ── merge-commit fix-up retry ────────────────────────────────────────────
+  //
+  // A squash-merge succeeds but the subsequent `git commit` is rejected by the
+  // repo pre-commit / lint hook. Instead of failing the task, the merge retries
+  // IN ISOLATION: the tooled fix-up agent repairs the lint error on the shared
+  // main worktree, the squash is re-staged, and the commit is retried through
+  // the real hook. Only when the fix-up cannot repair it does the merge fail.
+
+  it('retries the merge commit via a fix-up agent when the pre-commit hook rejects it', async () => {
+    const wm = makeManager();
+    await wm.createTaskWorktree('task-1', 'prompt');
+
+    mockSquashMergeBranch.mockReturnValue({ success: true });
+    // First commit attempt rejected by the lint hook; the retry (after fix-up) succeeds.
+    let commitCalls = 0;
+    mockCommitChanges.mockImplementation(() => {
+      commitCalls++;
+      if (commitCalls === 1) throw new Error('oxlint --fix [FAILED]');
+    });
+
+    const result = await wm.mergeTaskBranch('task-1');
+
+    // The merge ultimately succeeds.
+    expect(result).toEqual({ success: true, conflictsResolved: false });
+    // The fix-up agent was spawned against the SHARED main worktree.
+    expect(mockRunTooledFixup).toHaveBeenCalledWith(
+      expect.objectContaining({
+        worktreePath: '/run/work/worktree',
+        errorContext: expect.stringContaining('oxlint --fix [FAILED]'),
+      }),
+    );
+    // The squash was re-staged before the retry commit.
+    expect(mockStageAll).toHaveBeenCalledWith('/run/work/worktree');
+    // The commit ran twice (initial failure + retry).
+    expect(commitCalls).toBe(2);
+    // Merge succeeded ⇒ the task worktree was culled (clean lifecycle).
+    expect(mockRemoveWorktree).toHaveBeenCalled();
+    // No rollback on the success path.
+    expect(mockResetHard).not.toHaveBeenCalled();
+  });
+
+  it('abandons the merge (rollback + rethrow) when the fix-up agent cannot repair the lint error', async () => {
+    const wm = makeManager();
+    await wm.createTaskWorktree('task-1', 'prompt');
+
+    mockSquashMergeBranch.mockReturnValue({ success: true });
+    mockCommitChanges.mockImplementation(() => {
+      throw new Error('oxlint --fix [FAILED]');
+    });
+    // Fix-up could NOT repair the error.
+    mockRunTooledFixup.mockResolvedValue({ success: false, attempts: 3, lastError: 'no-unused-vars' });
+
+    await expect(wm.mergeTaskBranch('task-1')).rejects.toThrow('oxlint --fix [FAILED]');
+
+    // Shared worktree rolled back to a clean HEAD (so the next task isn't corrupted).
+    expect(mockAbortMerge).toHaveBeenCalledWith('/run/work/worktree');
+    expect(mockResetHard).toHaveBeenCalledWith('/run/work/worktree');
+    expect(mockCleanUntracked).toHaveBeenCalledWith('/run/work/worktree');
+    // The ORIGINAL commit error is surfaced (not the fix-up's lastError).
+    // The failed task's worktree is NOT culled — lane-pool preserves it.
+    expect(mockRemoveWorktree).not.toHaveBeenCalled();
+    // No second commit attempt (fix-up failed → no retry).
+    expect(mockCommitChanges).toHaveBeenCalledTimes(1);
   });
 });

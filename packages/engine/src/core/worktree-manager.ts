@@ -8,9 +8,12 @@
 //   • the per-task worktree lifecycle (one worktree per concurrent task,
 //     branched off the main-wt branch so each task inherits already-merged
 //     sibling work), AND
-//   • merge serialization — concurrent task merges are chained onto a single
-//     `mergeChain` promise so the squash-merges into the main-wt branch never
-//     interleave (which would corrupt the merge state).
+//   • git-lock serialization — every shared-state git operation (main-worktree
+//     index/HEAD, repo refs, the worktree list) is routed through a single
+//     `gitLock` mutex (`withGitLock`) so concurrent tasks never interleave git
+//     commands that touch the same refs / worktree. Per-task-worktree-local
+//     commits are NOT routed through here: they operate on isolated git
+//     worktrees (separate index/HEAD files) and don't contend.
 //
 // No other code should call `createWorktree` for the main worktree — they
 // must go through `worktreeManager.setupMainWorktree()`.
@@ -33,6 +36,7 @@ import { assertSafeName } from '../pool/validation.js';
 import {
   abortMerge,
   checkoutBranch,
+  cleanUntracked,
   commitChanges,
   createWorktree,
   deleteBranchForce,
@@ -40,11 +44,14 @@ import {
   getMainBranch,
   populateWorktree,
   removeWorktree,
+  resetHard,
   squashMergeBranch,
+  stageAll,
   stageFiles,
   worktreePrune,
 } from './git.js';
 import type { Task, WorktreeInfo } from './types.js';
+import { runTooledFixup } from './worktree-fixup.js';
 import { resolveConflictsWithAgent } from './worktree-lifecycle.js';
 import { commitWorktreeChanges } from './worktree-operations.js';
 
@@ -134,12 +141,18 @@ export class WorktreeManager {
   private readonly skippedTasks = new Set<string>();
 
   /**
-   * Serialisation chain for task-branch merges. Each `mergeTaskBranch` call
-   * chains its squash-merge onto this promise so concurrent merges into the
-   * main-wt branch never interleave. Reassigned BEFORE the await so the next
-   * caller observes the in-flight merge.
+   * Single shared-state git mutex. Every operation that touches the main
+   * worktree's index/HEAD, the repo's refs, or the worktree list is chained
+   * onto this promise via {@link withGitLock} so concurrent task lanes never
+   * interleave those git commands. The chain ALWAYS resolves (a failed op is
+   * swallowed when advancing the chain) so one failure never poisons the next;
+   * the ORIGINAL promise is returned to the caller so it can observe the error.
+   *
+   * Per-task-worktree-local commits (`commitWorktreeChanges` on the task's own
+   * `info.path`) are intentionally NOT routed through this lock — they run on
+   * isolated git worktrees and stay parallel.
    */
-  private mergeChain: Promise<unknown> = Promise.resolve();
+  private gitLock: Promise<unknown> = Promise.resolve();
 
   /**
    * The branch that was checked out in `repoRoot` when {@link finalMergeToMain}
@@ -161,6 +174,128 @@ export class WorktreeManager {
     this.hookRegistry = opts.hookRegistry;
   }
 
+  // ─── Git Lock ─────────────────────────────────────────────────────────────
+
+  /**
+   * Serialize a shared-state git operation so concurrent task lanes never
+   * interleave git commands that touch the same refs / main-worktree index /
+   * worktree list.
+   *
+   * `fn` is chained onto {@link gitLock}: it runs only after every previously
+   * chained op has settled. The chain is advanced with a swallowing `.then` so
+   * a failed op NEVER poisons the next (the chain always resolves); the
+   * ORIGINAL `fn` promise is returned so the caller can observe the failure.
+   *
+   * Callers MUST NOT invoke another `withGitLock`-protected method from inside
+   * `fn` — the lock is NOT re-entrant and doing so deadlocks. The shared-state
+   * methods below are written so their critical sections are self-contained
+   * (they call git primitives directly, not other locked methods).
+   */
+  private withGitLock<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.gitLock.then(fn);
+    this.gitLock = run.then(
+      () => undefined,
+      (err) => {
+        console.warn(
+          '[WorktreeManager] git op failed (lock chain continues):',
+          err instanceof Error ? err.message : err,
+        );
+        return undefined;
+      },
+    );
+    return run;
+  }
+
+  /**
+   * Roll the SHARED main worktree back to a clean `HEAD` after a failed merge
+   * commit. A successful `git merge --squash` stages the merged changes; a
+   * subsequent commit failure (e.g. a pre-commit/lint hook rejection) would
+   * otherwise leave those changes staged in the shared worktree, corrupting
+   * the NEXT task's merge. This aborts any in-progress merge (a no-op when the
+   * squash left none) and hard-resets the index + working tree to `HEAD`.
+   *
+   * Best-effort: every step is independently swallowed + warned so a rollback
+   * failure never masks the original commit error. Call from inside a
+   * `withGitLock` critical section so the reset cannot race another op.
+   */
+  private safeResetMainWorktree(): void {
+    try {
+      abortMerge(this.mainWorktreePath);
+    } catch (err) {
+      // No merge in progress (the squash succeeded without leaving MERGE_HEAD)
+      // — `git merge --abort` then errors. Expected; not warned.
+      void err;
+    }
+    try {
+      resetHard(this.mainWorktreePath);
+    } catch (err) {
+      console.warn(
+        '[WorktreeManager] resetHard failed after merge-commit failure (main worktree may be dirty):',
+        err instanceof Error ? err.message : err,
+      );
+    }
+    try {
+      cleanUntracked(this.mainWorktreePath);
+    } catch (err) {
+      console.warn(
+        '[WorktreeManager] clean -fd failed after merge-commit failure:',
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+
+  /**
+   * Commit a squash-merge in the SHARED main worktree, retrying ONCE through a
+   * tooled fix-up agent when the pre-commit / lint hook rejects the commit.
+   *
+   * `git merge --squash` stages the merged changes but does NOT commit; the
+   * subsequent `git commit` runs the repo's real pre-commit hook
+   * (lint-staged → oxlint/eslint), which can reject a just-merged file for a
+   * lint error. Rather than fail the whole task — whose own work is already
+   * approved — repair the error IN PLACE at the merge: spawn the tooled fix-up
+   * agent against the main worktree, re-stage, and retry the commit through
+   * the REAL hook (never `--no-verify`). Mirrors the safety net in
+   * {@link commitWorktreeChanges}.
+   *
+   * Runs INSIDE the caller's `withGitLock` critical section — the lock is held
+   * across the fix-up so no other task can merge into the main worktree while
+   * the agent edits it. The fix-up agent does not call back into WorktreeManager
+   * (it operates via its own tools), so there is no re-entrant lock.
+   *
+   * On exhaustion (fix-up fails OR the retry commit also throws): roll the
+   * shared worktree back to a clean HEAD ({@link safeResetMainWorktree}) and
+   * re-throw the ORIGINAL commit error. The caller (lane-pool) treats a merge
+   * failure as non-retriable and PRESERVES the task worktree, so the approved
+   * work is never thrown away or re-run from step 1.
+   */
+  private async commitMergeWithRetry(message: string, taskPrompt: string): Promise<void> {
+    try {
+      commitChanges(this.mainWorktreePath, message);
+      return;
+    } catch (commitError) {
+      const errorContext = commitError instanceof Error ? commitError.message : String(commitError);
+      const fixupResult = await runTooledFixup({
+        profilesDirs: this.profilesDirs,
+        worktreePath: this.mainWorktreePath,
+        taskPrompt,
+        errorContext,
+        apiKeys: this.apiKeys,
+      });
+      if (!fixupResult.success) {
+        this.safeResetMainWorktree();
+        throw commitError;
+      }
+      // Re-stage the squash + the fix-up's edits, then retry through the real hook.
+      stageAll(this.mainWorktreePath);
+      try {
+        commitChanges(this.mainWorktreePath, message);
+      } catch {
+        this.safeResetMainWorktree();
+        throw commitError;
+      }
+    }
+  }
+
   // ─── Main Worktree (SOLE CREATOR) ─────────────────────────────────────────
 
   /**
@@ -177,14 +312,20 @@ export class WorktreeManager {
    * in the constructor (from `generateTitleAndBranch`).
    */
   async setupMainWorktree(): Promise<void> {
-    // 1. Sweep orphans from crashed runs before adding new worktree metadata.
-    worktreePrune(this.repoRoot);
+    // 1. Sweep orphans from crashed runs before adding new worktree metadata,
+    //    and create the main worktree — both touch the repo's worktree list /
+    //    refs, so they run inside the git lock. Populate (fs/copy, possibly a
+    //    `bun install` hook) stays OUTSIDE the lock so a slow install never
+    //    blocks concurrent task lanes (at startup there are none yet, but the
+    //    lock invariant is honored regardless).
+    await this.withGitLock(async () => {
+      worktreePrune(this.repoRoot);
+      // Create the main worktree on the engin/{mainSlug} branch, checked out
+      // from the real repo's current HEAD/main.
+      createWorktree(this.repoRoot, this.mainBranch, this.mainWorktreePath);
+    });
 
-    // 2. Create the main worktree on the engin/{mainSlug} branch, checked out
-    //    from the real repo's current HEAD/main.
-    createWorktree(this.repoRoot, this.mainBranch, this.mainWorktreePath);
-
-    // 3. Populate via the hook pipeline (default delegates to the
+    // 2. Populate via the hook pipeline (default delegates to the
     //    `.worktreecopy` primitive) or the direct primitive (backward compat).
     //    No task context for the MAIN worktree — `task` is undefined.
     await this.invokePopulate(this.mainWorktreePath);
@@ -304,8 +445,11 @@ export class WorktreeManager {
 
     // Created from mainWorktreePath (NOT repoRoot) so the task branch is
     // created off the main-wt branch HEAD, inheriting already-merged sibling
-    // work.
-    createWorktree(this.mainWorktreePath, taskBranch, taskWorktreePath);
+    // work. Branch creation reads main-wt HEAD, so it is routed through the
+    // git lock to avoid racing a concurrent task's squash-merge into the main
+    // worktree (which would otherwise let the new task branch capture a
+    // half-merged state). Populate (fs) stays outside the lock.
+    await this.withGitLock(() => Promise.resolve(createWorktree(this.mainWorktreePath, taskBranch, taskWorktreePath)));
 
     await this.invokePopulate(taskWorktreePath, effectiveTask);
 
@@ -351,7 +495,8 @@ export class WorktreeManager {
 
   /**
    * Commits and squash-merges a task branch into the main-wt branch, SERIALIZED
-   * via {@link mergeChain} so concurrent merges never interleave.
+   * via the git lock ({@link withGitLock}) so the merge never interleaves with
+   * another task's merge, a concurrent createTaskWorktree, or a cull.
    *
    * HOOKS (when a `hookRegistry` is configured):
    *  - `onTaskMerge` (first-wins): a workflow can veto the merge. The default
@@ -447,14 +592,19 @@ export class WorktreeManager {
       }
     }
 
-    // Chain the merge onto mergeChain. Reassign mergeChain BEFORE awaiting so
-    // a concurrent caller observes this in-flight merge and waits for it
-    // rather than racing ahead.
-    const serialized = this.mergeChain.then(async () => {
-      const result = squashMergeBranch(this.mainWorktreePath, info.branch);
+    // Run the squash-merge (+ conflict resolution) inside the git lock so it
+    // never interleaves with another task's merge, a concurrent
+    // createTaskWorktree branch creation, or a cull. The lock chain always
+    // resolves (withGitLock swallows + warns on rejection) so a failed merge
+    // never blocks subsequent ops; the ORIGINAL result/error is awaited here.
+    const result = await this.withGitLock(async () => {
+      const mergeResult = squashMergeBranch(this.mainWorktreePath, info.branch);
 
-      if (result.success) {
-        commitChanges(this.mainWorktreePath, `Merge task: ${taskId}`);
+      if (mergeResult.success) {
+        // Commit the staged squash, retrying through a fix-up agent if the
+        // pre-commit/lint hook rejects it (see commitMergeWithRetry). On
+        // exhaustion the shared worktree is rolled back and the error thrown.
+        await this.commitMergeWithRetry(`Merge task: ${taskId}`, taskPrompt);
         return { success: true, conflictsResolved: false };
       }
 
@@ -468,7 +618,7 @@ export class WorktreeManager {
           'onMergeConflict',
           {
             task,
-            conflicts: result.conflicts,
+            conflicts: mergeResult.conflicts,
             worktreePath: this.mainWorktreePath,
             mainBranch: this.mainBranch,
           },
@@ -487,7 +637,7 @@ export class WorktreeManager {
       const resolvedResult = await resolveConflictsWithAgent(
         this.profilesDirs,
         this.mainWorktreePath,
-        result.conflicts,
+        mergeResult.conflicts,
         taskPrompt,
         this.apiKeys,
       );
@@ -497,18 +647,11 @@ export class WorktreeManager {
         return { success: false, conflictsResolved: false };
       }
 
-      stageFiles(this.mainWorktreePath, result.conflicts);
-      commitChanges(this.mainWorktreePath, `Merge task: ${taskId}`);
+      stageFiles(this.mainWorktreePath, mergeResult.conflicts);
+      // Same fix-up-retry guarantee as the clean-merge path.
+      await this.commitMergeWithRetry(`Merge task: ${taskId}`, taskPrompt);
       return { success: true, conflictsResolved: true };
     });
-    this.mergeChain = serialized.catch((err) => {
-      // Swallow rejections so a failed merge does not break the chain for
-      // subsequent queued merges — but log so the swallowed failure remains
-      // debuggable (the {success:false} result is still surfaced to callers).
-      console.warn('[WorktreeManager] mergeChain rejection swallowed:', err instanceof Error ? err.message : err);
-    });
-
-    const result = await serialized;
 
     if (result.success) {
       await this.cullTaskWorktree(taskId);
@@ -540,26 +683,32 @@ export class WorktreeManager {
       return;
     }
 
-    try {
-      // Force removal — agents leave worktrees dirty (uncommitted changes,
-      // untracked files) that would block a non-forced removal.
-      removeWorktree(this.repoRoot, info.path);
-    } catch (err) {
-      console.warn(
-        `cullTaskWorktree: failed to remove worktree at ${info.path}:`,
-        err instanceof Error ? err.message : err,
-      );
-    }
+    const branch = info.branch;
+    const path = info.path;
 
-    try {
-      // Force-delete the branch even when it contains unmerged commits.
-      deleteBranchForce(this.repoRoot, info.branch);
-    } catch (err) {
-      console.warn(
-        `cullTaskWorktree: failed to delete branch ${info.branch}:`,
-        err instanceof Error ? err.message : err,
-      );
-    }
+    // removeWorktree + deleteBranchForce both mutate the repo's worktree list
+    // / refs (shared state). Run them as ONE locked unit so they cannot race
+    // a concurrent merge or createTaskWorktree. Bookkeeping is updated AFTER
+    // the locked section completes.
+    await this.withGitLock(async () => {
+      try {
+        // Force removal — agents leave worktrees dirty (uncommitted changes,
+        // untracked files) that would block a non-forced removal.
+        removeWorktree(this.repoRoot, path);
+      } catch (err) {
+        console.warn(
+          `cullTaskWorktree: failed to remove worktree at ${path}:`,
+          err instanceof Error ? err.message : err,
+        );
+      }
+
+      try {
+        // Force-delete the branch even when it contains unmerged commits.
+        deleteBranchForce(this.repoRoot, branch);
+      } catch (err) {
+        console.warn(`cullTaskWorktree: failed to delete branch ${branch}:`, err instanceof Error ? err.message : err);
+      }
+    });
 
     info.status = 'culled';
     this.taskPrompts.delete(taskId);
@@ -593,42 +742,61 @@ export class WorktreeManager {
     conflictsResolved: boolean;
     error?: string;
   }> {
-    // 1. Commit any pending changes in the main worktree.
-    await commitWorktreeChanges({
-      profilesDirs: this.profilesDirs,
-      worktreePath: this.mainWorktreePath,
-      taskPrompt: 'Final merge',
-      apiKeys: this.apiKeys,
+    return this.withGitLock(async () => {
+      // 1. Commit any pending changes in the main worktree.
+      await commitWorktreeChanges({
+        profilesDirs: this.profilesDirs,
+        worktreePath: this.mainWorktreePath,
+        taskPrompt: 'Final merge',
+        apiKeys: this.apiKeys,
+      });
+
+      // 2. Save the currently-checked-out branch so it can be restored after.
+      //    Stored on the instance (not a local) so it survives across the
+      //    conflict → resolve flow, where `resolveFinalMergeConflicts` runs in a
+      //    separate call and `cleanup()` performs the actual restore.
+      this.savedBranch = getCurrentBranch(this.repoRoot);
+
+      // 3. Check out the real main branch.
+      const realMain = getMainBranch(this.repoRoot);
+      checkoutBranch(this.repoRoot, realMain);
+
+      // 4. Squash-merge the main-wt branch into real main.
+      const result = squashMergeBranch(this.repoRoot, this.mainBranch);
+
+      if (result.success) {
+        try {
+          commitChanges(this.repoRoot, `Merge engin run: ${this.mainBranch}`);
+        } catch (commitErr) {
+          // Roll back the staged squash so real main is left clean for a
+          // caller retry / manual intervention (mirrors the per-task merge).
+          try {
+            abortMerge(this.repoRoot);
+          } catch {
+            /* no merge in progress */
+          }
+          try {
+            resetHard(this.repoRoot);
+          } catch {
+            /* best-effort */
+          }
+          restoreSavedBranch(this.repoRoot, this.savedBranch);
+          throw commitErr;
+        }
+        restoreSavedBranch(this.repoRoot, this.savedBranch);
+        return { success: true, conflicts: [], conflictsResolved: false };
+      }
+
+      // On conflict, leave the repo on real main with the merge in progress so
+      // the caller can resolve or abort. Do NOT restore the saved branch — the
+      // caller's next action operates on the conflicted merge state.
+      return {
+        success: false,
+        conflicts: result.conflicts,
+        conflictsResolved: false,
+        ...(result.error ? { error: result.error } : {}),
+      };
     });
-
-    // 2. Save the currently-checked-out branch so it can be restored after.
-    //    Stored on the instance (not a local) so it survives across the
-    //    conflict → resolve flow, where `resolveFinalMergeConflicts` runs in a
-    //    separate call and `cleanup()` performs the actual restore.
-    this.savedBranch = getCurrentBranch(this.repoRoot);
-
-    // 3. Check out the real main branch.
-    const realMain = getMainBranch(this.repoRoot);
-    checkoutBranch(this.repoRoot, realMain);
-
-    // 4. Squash-merge the main-wt branch into real main.
-    const result = squashMergeBranch(this.repoRoot, this.mainBranch);
-
-    if (result.success) {
-      commitChanges(this.repoRoot, `Merge engin run: ${this.mainBranch}`);
-      restoreSavedBranch(this.repoRoot, this.savedBranch);
-      return { success: true, conflicts: [], conflictsResolved: false };
-    }
-
-    // On conflict, leave the repo on real main with the merge in progress so
-    // the caller can resolve or abort. Do NOT restore the saved branch — the
-    // caller's next action operates on the conflicted merge state.
-    return {
-      success: false,
-      conflicts: result.conflicts,
-      conflictsResolved: false,
-      ...(result.error ? { error: result.error } : {}),
-    };
   }
 
   /**
@@ -642,21 +810,37 @@ export class WorktreeManager {
     conflicts: string[],
     taskPrompt: string,
   ): Promise<{ resolved: boolean; error?: string }> {
-    const resolveResult = await resolveConflictsWithAgent(
-      this.profilesDirs,
-      this.repoRoot,
-      conflicts,
-      taskPrompt,
-      this.apiKeys,
-    );
+    return this.withGitLock(async () => {
+      const resolveResult = await resolveConflictsWithAgent(
+        this.profilesDirs,
+        this.repoRoot,
+        conflicts,
+        taskPrompt,
+        this.apiKeys,
+      );
 
-    if (!resolveResult.resolved) {
-      return { resolved: false, ...(resolveResult.error ? { error: resolveResult.error } : {}) };
-    }
+      if (!resolveResult.resolved) {
+        return { resolved: false, ...(resolveResult.error ? { error: resolveResult.error } : {}) };
+      }
 
-    stageFiles(this.repoRoot, conflicts);
-    commitChanges(this.repoRoot, `Merge resolution: ${this.mainBranch}`);
-    return { resolved: true };
+      stageFiles(this.repoRoot, conflicts);
+      try {
+        commitChanges(this.repoRoot, `Merge resolution: ${this.mainBranch}`);
+      } catch (commitErr) {
+        try {
+          abortMerge(this.repoRoot);
+        } catch {
+          /* no merge in progress */
+        }
+        try {
+          resetHard(this.repoRoot);
+        } catch {
+          /* best-effort */
+        }
+        throw commitErr;
+      }
+      return { resolved: true };
+    });
   }
 
   /**
@@ -664,7 +848,7 @@ export class WorktreeManager {
    * decides not to resolve conflicts from {@link finalMergeToMain}.
    */
   async abortFinalMerge(): Promise<void> {
-    abortMerge(this.repoRoot);
+    await this.withGitLock(() => Promise.resolve(abortMerge(this.repoRoot)));
   }
 
   // ─── Cleanup ──────────────────────────────────────────────────────────────
@@ -701,19 +885,23 @@ export class WorktreeManager {
       }
     }
 
-    // 3. Remove the main worktree (best-effort).
-    try {
-      removeWorktree(this.repoRoot, this.mainWorktreePath);
-    } catch (err) {
-      errors.push(err instanceof Error ? err.message : String(err));
-    }
+    // 3. Remove the main worktree + force-delete the main-wt branch as ONE
+    //    locked unit (both touch shared repo refs / the worktree list).
+    //    The cull loop above is intentionally OUTSIDE this lock to avoid
+    //    re-entrant locking (cullTaskWorktree acquires the lock itself).
+    await this.withGitLock(async () => {
+      try {
+        removeWorktree(this.repoRoot, this.mainWorktreePath);
+      } catch (err) {
+        errors.push(err instanceof Error ? err.message : String(err));
+      }
 
-    // 4. Force-delete the main-wt branch (best-effort).
-    try {
-      deleteBranchForce(this.repoRoot, this.mainBranch);
-    } catch (err) {
-      errors.push(err instanceof Error ? err.message : String(err));
-    }
+      try {
+        deleteBranchForce(this.repoRoot, this.mainBranch);
+      } catch (err) {
+        errors.push(err instanceof Error ? err.message : String(err));
+      }
+    });
 
     return errors.length > 0 ? { cleanupError: errors.join('; ') } : {};
   }

@@ -443,7 +443,8 @@ export interface WorkflowHooks {
    *
    * IMPORTANT: This hook controls only task EXECUTION concurrency. It must
    * NOT parallelize task-branch merges into the shared main worktree branch.
-   * Merges remain serialized via `mergeChain` to maintain a linear history.
+   * Merges remain serialized via the WorktreeManager git lock to maintain a
+   * linear history.
    */
   concurrencyKey?:
     | FirstWinsHook<string | undefined, ConcurrencyKeyArgs>

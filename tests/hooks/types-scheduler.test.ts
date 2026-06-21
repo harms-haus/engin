@@ -419,13 +419,14 @@ describe('types.ts source structure (Task import + new exports)', () => {
   });
 });
 
-// ─── concurrencyKey JSDoc — §7 merge serialization constraint ──────────────
+// ─── concurrencyKey JSDoc — §7 merge serialization constraint ─────────
 //
 // IMPORTANT constraint (§7): a `concurrencyKey` hook must NOT parallelize
 // task-branch merges into the shared main-wt branch. Only task EXECUTION is
-// concurrent; merges stay serialized via `mergeChain`. The `concurrencyKey`
-// JSDoc must document this so a workflow author cannot be misled into thinking
-// the key affects merge parallelism.
+// concurrent; merges stay serialized via the WorktreeManager git lock
+// (`withGitLock` in worktree-manager.ts). The `concurrencyKey` JSDoc must
+// document this so a workflow author cannot be misled into thinking the key
+// affects merge parallelism.
 
 describe('concurrencyKey JSDoc — merge serialization constraint (§7)', () => {
   const src = tryReadSource(TYPES_PATH);
@@ -448,16 +449,16 @@ describe('concurrencyKey JSDoc — merge serialization constraint (§7)', () => 
   });
 
   it('documents that merges are serialized / not parallelized', () => {
-    // Matches "serialize", "serialized", "serial", "mergeChain", or
+    // Matches "serialize", "serialized", "serial", "git lock", or
     // "parallel" — any phrasing of the §7 constraint.
-    expect(concurrencyKeyDocWindow()).toMatch(/(serial|mergeChain|parallel)/i);
+    expect(concurrencyKeyDocWindow()).toMatch(/(serial|git lock|parallel)/i);
   });
 
-  it('references the mergeChain serialization mechanism', () => {
-    // The spec is explicit: "merges stay serialized via mergeChain". The
-    // codebase identifier is `mergeChain` (see worktree-manager.ts), so the
-    // JSDoc is expected to reference it by name.
-    expect(concurrencyKeyDocWindow()).toMatch(/mergeChain/);
+  it('references the git-lock serialization mechanism', () => {
+    // The spec: merges stay serialized via the WorktreeManager git lock
+    // (`withGitLock` in worktree-manager.ts), so the JSDoc is expected to
+    // reference it by name.
+    expect(concurrencyKeyDocWindow()).toMatch(/git lock/i);
   });
 
   it('documents that only task EXECUTION is concurrent', () => {

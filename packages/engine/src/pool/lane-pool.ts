@@ -248,13 +248,35 @@ export class LanePool {
    * not end up `failed`, or when `maxTaskRetries` is unset/`0` AND no
    * worktreeManager is configured.
    */
-  private async maybeRetryFailedTask(task: Task, agentId: string, reason?: string): Promise<void> {
+  private async maybeRetryFailedTask(
+    task: Task,
+    agentId: string,
+    reason?: string,
+    opts?: { retriable?: boolean },
+  ): Promise<void> {
     const current = this.options.taskTracker.getTask(task.id);
     if (!current || current.status !== 'failed') {
       // Task didn't fail (e.g. completed, cancelled, or already settled by a
       // sibling lane). Prune any stale retry counter and bail out — there is
       // nothing to cull or retry.
       this.taskRetries.delete(task.id);
+      return;
+    }
+
+    // Integration failure (e.g. the task's approved work could not be merged
+    // even after the merge-commit fix-up retry). Re-running the task is futile
+    // — the WORK is done and approved; the integration is the problem — so do
+    // NOT retry it. PRESERVE the task worktree (do NOT cull) so the approved
+    // work remains on its branch for a manual merge / inspection instead of
+    // being force-removed.
+    if (opts?.retriable === false) {
+      this.taskRetries.delete(task.id);
+      this.options.onStatus?.onDecision?.({
+        agentId,
+        decision: `Task "${task.id}" failed on integration (merge unresolvable) — worktree preserved`,
+        reasoning: reason ?? 'merge failed',
+        taskId: task.id,
+      });
       return;
     }
 
@@ -332,6 +354,11 @@ export class LanePool {
     };
 
     let failureReason: string | undefined;
+    // True when the task's approved work could not be MERGED (the steps
+    // themselves succeeded). Such a failure is an integration problem, not a
+    // work-quality problem — re-running the task is futile, so it is routed as
+    // non-retriable and the task worktree is PRESERVED (see maybeRetryFailedTask).
+    let mergeFailure = false;
     try {
       const resolved = await this.resolveRunner(task);
 
@@ -483,6 +510,7 @@ export class LanePool {
           safeFailTask(task.id, { completed: false, error: reason }, processorCtx);
           outcome = { status: 'failed', error: reason };
           failureReason = reason;
+          mergeFailure = true;
         }
       }
 
@@ -514,6 +542,6 @@ export class LanePool {
     // step 1. Capped at `maxTaskRetries` extra attempts to avoid
     // infinite loops. The worktree is also culled on permanent failure
     // (budget exhausted) so the failed branch is force-removed.
-    await this.maybeRetryFailedTask(task, agentId, failureReason);
+    await this.maybeRetryFailedTask(task, agentId, failureReason, { retriable: !mergeFailure });
   }
 }

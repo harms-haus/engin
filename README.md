@@ -4,6 +4,8 @@
 
 [![CI](https://github.com/harms-haus/engin/actions/workflows/ci.yml/badge.svg)](https://github.com/harms-haus/engin/actions/workflows/ci.yml)
 
+![engin TUI](docs/img/Screenshot_20260614_202051.png)
+
 A script-based workflow engine for AI-driven development, built on top of
 [pi-coding-agent](https://www.npmjs.com/package/@earendil-works/pi-coding-agent).
 
