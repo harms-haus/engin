@@ -281,90 +281,114 @@ export class RunManager {
     const worktreePath = worktreeInfo.worktreePath;
     const branchName = worktreeInfo.branchName;
 
-    switch (action) {
-      case 'merge': {
-        const result = await wtm.finalMergeToMain();
-        if (result.success) {
-          const cleanupResult = await wtm.cleanup();
+    try {
+      switch (action) {
+        // ── merge ──────────────────────────────────────────────────────────
+        case 'merge': {
+          const result = await wtm.finalMergeToMain();
+          if (result.success) {
+            const cleanupResult = await wtm.cleanup();
+            handle.bridge.broadcastWorktreeResult({
+              type: 'worktree_merge_result',
+              runId,
+              outcome: 'clean',
+              ...(cleanupResult.cleanupError ? { cleanupError: cleanupResult.cleanupError } : {}),
+            });
+            return;
+          }
+          if (result.conflicts.length > 0) {
+            // Stash the conflicts so a follow-up `resolve` can forward them to
+            // the agent resolver without re-deriving them from the repo state.
+            handle.pendingMergeConflicts = result.conflicts;
+            handle.bridge.broadcastWorktreeResult({
+              type: 'worktree_merge_result',
+              runId,
+              outcome: 'conflicts',
+              worktreePath,
+              branchName,
+            });
+            return;
+          }
+          // Non-conflict failure (e.g. checkout/commit blew up) — preserve the
+          // worktree for manual intervention; do NOT clean up.
           handle.bridge.broadcastWorktreeResult({
             type: 'worktree_merge_result',
             runId,
-            outcome: 'clean',
-            ...(cleanupResult.cleanupError ? { cleanupError: cleanupResult.cleanupError } : {}),
+            outcome: 'failed',
+            worktreePath,
+            branchName,
+            ...(result.error ? { error: result.error } : {}),
           });
           return;
         }
-        if (result.conflicts.length > 0) {
-          // Stash the conflicts so a follow-up `resolve` can forward them to
-          // the agent resolver without re-deriving them from the repo state.
-          handle.pendingMergeConflicts = result.conflicts;
+
+        // ── resolve ────────────────────────────────────────────────────────
+        case 'resolve': {
+          // Reuse the conflicts captured by the preceding `merge`. Default to an
+          // empty list if none are stashed — the resolver will then no-op and
+          // report failure, which is the correct surfacing for an out-of-order
+          // `resolve`.
+          const conflicts = handle.pendingMergeConflicts ?? [];
+          const resolveResult = await wtm.resolveFinalMergeConflicts(conflicts, handle.taskPrompt);
+          if (resolveResult.resolved) {
+            const cleanupResult = await wtm.cleanup();
+            handle.bridge.broadcastWorktreeResult({
+              type: 'worktree_merge_result',
+              runId,
+              outcome: 'resolved',
+              ...(cleanupResult.cleanupError ? { cleanupError: cleanupResult.cleanupError } : {}),
+            });
+            return;
+          }
           handle.bridge.broadcastWorktreeResult({
             type: 'worktree_merge_result',
             runId,
-            outcome: 'conflicts',
+            outcome: 'failed',
+            worktreePath,
+            branchName,
+            ...(resolveResult.error ? { error: resolveResult.error } : {}),
+          });
+          return;
+        }
+
+        // ── decline ────────────────────────────────────────────────────────
+        case 'decline': {
+          // Best-effort abort; the merge may or may not be in progress.
+          try {
+            await wtm.abortFinalMerge();
+          } catch {
+            // No merge in progress — nothing to abort (e.g. the user declined
+            // before any merge was ever attempted).
+          }
+          handle.bridge.broadcastWorktreeResult({
+            type: 'worktree_merge_result',
+            runId,
+            outcome: 'declined',
             worktreePath,
             branchName,
           });
           return;
         }
-        // Non-conflict failure (e.g. checkout/commit blew up) — preserve the
-        // worktree for manual intervention; do NOT clean up.
-        handle.bridge.broadcastWorktreeResult({
-          type: 'worktree_merge_result',
-          runId,
-          outcome: 'failed',
-          worktreePath,
-          branchName,
-          ...(result.error ? { error: result.error } : {}),
-        });
-        return;
       }
-
-      case 'resolve': {
-        // Reuse the conflicts captured by the preceding `merge`. Default to an
-        // empty list if none are stashed — the resolver will then no-op and
-        // report failure, which is the correct surfacing for an out-of-order
-        // `resolve`.
-        const conflicts = handle.pendingMergeConflicts ?? [];
-        const resolveResult = await wtm.resolveFinalMergeConflicts(conflicts, handle.taskPrompt);
-        if (resolveResult.resolved) {
-          const cleanupResult = await wtm.cleanup();
-          handle.bridge.broadcastWorktreeResult({
-            type: 'worktree_merge_result',
-            runId,
-            outcome: 'resolved',
-            ...(cleanupResult.cleanupError ? { cleanupError: cleanupResult.cleanupError } : {}),
-          });
-          return;
-        }
-        handle.bridge.broadcastWorktreeResult({
-          type: 'worktree_merge_result',
-          runId,
-          outcome: 'failed',
-          worktreePath,
-          branchName,
-          ...(resolveResult.error ? { error: resolveResult.error } : {}),
-        });
-        return;
-      }
-
-      case 'decline': {
-        // Best-effort abort; the merge may or may not be in progress.
-        try {
-          await wtm.abortFinalMerge();
-        } catch {
-          // No merge in progress — nothing to abort (e.g. the user declined
-          // before any merge was ever attempted).
-        }
-        handle.bridge.broadcastWorktreeResult({
-          type: 'worktree_merge_result',
-          runId,
-          outcome: 'declined',
-          worktreePath,
-          branchName,
-        });
-        return;
-      }
+    } catch (err) {
+      // SURFACE failures instead of letting them propagate to the message
+      // router's catch (which only logs). Without this, a thrown git error
+      // (e.g. `commitChanges` blowing up on an empty squash, a checkout
+      // failure, or an aborted merge) leaves the run-end merge result
+      // UNBROADCAST — the client's `waitForResult()` then hangs for its full
+      // 60s timeout and the worktree is left unmerged with no diagnostic.
+      // Broadcasting `failed` here guarantees the client always receives a
+      // terminal outcome (clean | conflicts | resolved | declined | failed)
+      // and surfaces a manual-merge hint with the underlying error.
+      const error = err instanceof Error ? err.message : String(err);
+      handle.bridge.broadcastWorktreeResult({
+        type: 'worktree_merge_result',
+        runId,
+        outcome: 'failed',
+        worktreePath,
+        branchName,
+        error,
+      });
     }
   }
 

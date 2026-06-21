@@ -125,10 +125,18 @@ export interface PushWorktreeResult {
  * {@link createLintValidationGate}.
  */
 export async function commitWorktreeChanges(opts: CommitWorktreeOptions): Promise<void> {
+  // Stage FIRST (before the diff guard) so UNTRACKED files are included.
+  // `getDiff` reads only tracked modifications + the staged set; an untracked-
+  // only change (e.g. a workflow that creates new files) would otherwise make
+  // `getDiff` return empty and trigger an early no-op return — leaving the
+  // worktree branch with no new commit. That in turn makes the run-end squash
+  // merge a fast-forward no-op, so `git commit` fails with "nothing to commit"
+  // and the worktree is left unmerged. Staging up front (a no-op when clean)
+  // ensures the diff reflects every change before the guard runs.
+  stageAll(opts.worktreePath);
   const diff = getDiff(opts.worktreePath);
   if (!diff) return;
 
-  stageAll(opts.worktreePath);
   const message = await generateCommitMessage(
     opts.profilesDirs,
     opts.worktreePath,

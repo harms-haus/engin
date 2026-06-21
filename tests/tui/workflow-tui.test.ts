@@ -1486,7 +1486,18 @@ describe('WorkflowTUI', () => {
     });
   });
 
-  describe('prepareQrCode', () => {
+  // ─── QR overlay (Ctrl+Q toggle) ────────────────────────────────────────
+  //
+  // The QR code is NOT rendered by default. prepareQrCode() pre-generates the
+  // component; the user reveals/hides it on demand with Ctrl+Q (toggleQrCode).
+  describe('prepareQrCode + Ctrl+Q toggle', () => {
+    const CTRL_Q = '\x11';
+
+    /**
+     * Setup helper: spies on TUI.addInputListener/start/stop and captures the
+     * global input callback so we can deliver keypresses, and mocks
+     * showOverlay so we can assert the QR overlay lifecycle.
+     */
     function setupStartWithShowOverlaySpy() {
       const overlayHandle = {
         hide: mock(() => {}),
@@ -1499,7 +1510,12 @@ describe('WorkflowTUI', () => {
       const mockShowOverlay = mock(
         (_c: { render: (w: number) => string[] }, _o: Record<string, unknown>) => overlayHandle,
       );
-      const addListenerSpy = spyOn(TUI.prototype, 'addInputListener').mockImplementation(function (this: any) {
+      let capturedCallback: ((data: string) => any) | null = null;
+      const addListenerSpy = spyOn(TUI.prototype, 'addInputListener').mockImplementation(function (
+        this: any,
+        cb: (data: string) => any,
+      ) {
+        capturedCallback = cb;
         this.requestRender = () => {};
         this.showOverlay = mockShowOverlay;
         return () => {};
@@ -1509,6 +1525,7 @@ describe('WorkflowTUI', () => {
       return {
         overlayHandle,
         mockShowOverlay,
+        callback: () => capturedCallback!,
         cleanup: () => {
           addListenerSpy.mockRestore();
           tuiStartSpy.mockRestore();
@@ -1517,12 +1534,27 @@ describe('WorkflowTUI', () => {
       };
     }
 
-    it('attaches the prepared QR overlay during start()', async () => {
+    it('does NOT render the QR on start() even after prepareQrCode() (hidden by default)', async () => {
       const { mockShowOverlay, cleanup } = setupStartWithShowOverlaySpy();
       try {
         const wtui = new WorkflowTUI();
         await wtui.prepareQrCode('https://example.com');
         wtui.start();
+        // QR is prepared but kept hidden until the user presses Ctrl+Q.
+        expect(mockShowOverlay).not.toHaveBeenCalled();
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('Ctrl+Q shows the prepared QR overlay on demand', async () => {
+      const { mockShowOverlay, callback, cleanup } = setupStartWithShowOverlaySpy();
+      try {
+        const wtui = new WorkflowTUI();
+        await wtui.prepareQrCode('https://example.com');
+        wtui.start();
+
+        callback()(CTRL_Q);
 
         expect(mockShowOverlay).toHaveBeenCalledTimes(1);
         const [component, options] = mockShowOverlay.mock.calls[0];
@@ -1538,12 +1570,51 @@ describe('WorkflowTUI', () => {
       }
     });
 
-    it('does not attach anything during start() when no QR was prepared', () => {
-      const { mockShowOverlay, cleanup } = setupStartWithShowOverlaySpy();
+    it('Ctrl+Q hides the QR overlay when it is already visible (toggle off)', async () => {
+      const { overlayHandle, mockShowOverlay, callback, cleanup } = setupStartWithShowOverlaySpy();
+      try {
+        const wtui = new WorkflowTUI();
+        await wtui.prepareQrCode('https://example.com');
+        wtui.start();
+
+        callback()(CTRL_Q); // show
+        expect(mockShowOverlay).toHaveBeenCalledTimes(1);
+
+        callback()(CTRL_Q); // hide
+        expect(overlayHandle.hide).toHaveBeenCalledTimes(1);
+        // No new overlay created on hide.
+        expect(mockShowOverlay).toHaveBeenCalledTimes(1);
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('Ctrl+Q is a no-op when no QR was prepared', () => {
+      const { mockShowOverlay, callback, cleanup } = setupStartWithShowOverlaySpy();
       try {
         const wtui = new WorkflowTUI();
         wtui.start();
+
+        callback()(CTRL_Q);
+
         expect(mockShowOverlay).not.toHaveBeenCalled();
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('Ctrl+Q re-shows the QR after being hidden (idempotent toggle)', async () => {
+      const { mockShowOverlay, callback, cleanup } = setupStartWithShowOverlaySpy();
+      try {
+        const wtui = new WorkflowTUI();
+        await wtui.prepareQrCode('https://example.com');
+        wtui.start();
+
+        callback()(CTRL_Q); // show
+        callback()(CTRL_Q); // hide
+        callback()(CTRL_Q); // show again
+
+        expect(mockShowOverlay).toHaveBeenCalledTimes(2);
       } finally {
         cleanup();
       }

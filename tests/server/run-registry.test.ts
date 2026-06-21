@@ -327,5 +327,63 @@ describe('RunRegistry', () => {
         cap.restore();
       }
     });
+
+    // ── Subscriber-aware deferral ────────────────────────────────────────
+    //
+    // A terminal run with active subscribers must NOT be reaped: the
+    // post-run worktree final-merge prompt runs on the client (after the TUI
+    // inspection pause) and round-trips worktree_action / worktree_merge_result
+    // through the handle's bridge. Reaping here would dispose the bridge before
+    // the merge result is broadcast, leaving the worktree unmerged.
+    it('DEFERS reaping (reschedules) while the run has active subscribers', () => {
+      const cap = captureTimersForDelay(60_000);
+      try {
+        const registry = new RunRegistry();
+        const handle = makeHandle('reap-subbed', { status: 'complete' });
+        // Simulate a subscribed client (e.g. the TUI during the inspection pause).
+        handle.subscribers.add({ readyState: 1 } as any);
+        registry.register(handle);
+
+        let reaped = 0;
+        registry.scheduleReap('reap-subbed', 60_000, () => reaped++);
+
+        expect(cap.timers).toHaveLength(1);
+        // Invoke ONLY the first captured tick (NOT cap.fire(), which iterates
+        // the whole array — the reschedule appends to it and would loop
+        // forever). A subscriber is present, so this tick must NOT reap.
+        cap.timers[0]();
+        expect(reaped).toBe(0);
+        expect(registry.get('reap-subbed')).toBeDefined();
+        // A reschedule must have occurred (a second timer for the same delay).
+        expect(cap.timers).toHaveLength(2);
+      } finally {
+        cap.restore();
+      }
+    });
+
+    it('reaps on the next tick after the last subscriber disconnects', () => {
+      const cap = captureTimersForDelay(60_000);
+      try {
+        const registry = new RunRegistry();
+        const handle = makeHandle('reap-unsub', { status: 'complete' });
+        const ws = { readyState: 1 } as any;
+        handle.subscribers.add(ws);
+        registry.register(handle);
+
+        let reaped = 0;
+        registry.scheduleReap('reap-unsub', 60_000, () => reaped++);
+
+        cap.timers[0](); // subscriber present → defer (reschedule captured)
+        expect(reaped).toBe(0);
+
+        // Client disconnects (WS close → unsubscribeAll removes it).
+        handle.subscribers.delete(ws);
+
+        cap.timers[1](); // rescheduled tick — no subscribers, reap now
+        expect(reaped).toBe(1);
+      } finally {
+        cap.restore();
+      }
+    });
   });
 });

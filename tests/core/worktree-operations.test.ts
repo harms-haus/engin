@@ -313,13 +313,15 @@ describe('commitWorktreeChanges', () => {
     expect(mockCommitChanges).toHaveBeenCalledWith('/fake/repo/.engin-worktree-feature-branch', 'fix: resolve bug');
   });
 
-  it('does nothing when diff is empty', async () => {
+  it('does not commit when the diff is empty AFTER staging', async () => {
     mockGetDiff.mockReturnValue('');
 
     await commitWorktreeChanges(makeCommitOpts());
 
+    // stageAll runs FIRST now (before the diff guard) so untracked files are
+    // captured — it is a no-op when the tree is clean, but it IS invoked.
+    expect(mockStageAll).toHaveBeenCalled();
     expect(mockGetDiff).toHaveBeenCalled();
-    expect(mockStageAll).not.toHaveBeenCalled();
     expect(mockGenerateCommitMessage).not.toHaveBeenCalled();
     expect(mockCommitChanges).not.toHaveBeenCalled();
   });
@@ -532,7 +534,9 @@ describe('mergeWorktreeToMain', () => {
 
     await mergeWorktreeToMain(makeMergeOpts());
 
-    expect(mockStageAll).not.toHaveBeenCalled();
+    // stageAll runs FIRST (before the diff guard) — invoked even when the
+    // diff is empty (a clean-tree no-op).
+    expect(mockStageAll).toHaveBeenCalled();
     // But the merge itself still happens:
     expect(mockGetMainBranch).toHaveBeenCalledWith('/fake/repo');
     expect(mockCheckoutBranch).toHaveBeenCalledWith('/fake/repo', 'main');
@@ -801,7 +805,9 @@ describe('pushWorktreeAndCreatePR', () => {
 
     await pushWorktreeAndCreatePR(makePushOpts());
 
-    expect(mockStageAll).not.toHaveBeenCalled();
+    // stageAll runs FIRST (before the diff guard) — invoked even when the
+    // diff is empty (a clean-tree no-op).
+    expect(mockStageAll).toHaveBeenCalled();
     expect(mockCommitChanges).not.toHaveBeenCalled();
     // Push must still happen:
     expect(mockPushAndCreatePR).toHaveBeenCalledTimes(1);
