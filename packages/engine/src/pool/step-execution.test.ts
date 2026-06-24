@@ -441,6 +441,171 @@ describe('runStep — non-structured steps do not fire onStructuredOutput', () =
   });
 });
 
+// ─── Fail-fast on empty/error non-structured replies ────────────────────────
+//
+// Pin the gate added by kb-3: after a NON-STRUCTURED step calls
+// session.prompt(), runStep extracts the last assistant message via
+// extractLastAssistantMessage(session) and classifies it. If stopReason is
+// 'error' OR classify kind is 'empty' (no usable text), it THROWS — the
+// task fails instead of being silently approved.
+
+describe('runStep — fail-fast on empty/error non-structured replies', () => {
+  /** A non-structured step (no schema → takes the free-form prompt path). */
+  const nonStructuredStep = {
+    name: 'implement',
+    profileId: 'reviewer',
+    isReadOnly: false,
+  };
+
+  /**
+   * Build a mock handle whose session has a `messages` array so
+   * extractLastAssistantMessage() can inspect the last assistant message.
+   */
+  function makeHandleWithMessages(opts: {
+    stopReason?: string;
+    errorMessage?: string;
+    content?: unknown[];
+    text?: string;
+  }) {
+    const session = {
+      prompt: mock(async (_text: string) => {}),
+      getLastAssistantText: mock(() => opts.text),
+      messages: [
+        {
+          role: 'assistant',
+          stopReason: opts.stopReason ?? 'end_turn',
+          errorMessage: opts.errorMessage,
+          content: opts.content ?? [],
+        },
+      ],
+      sessionId: 'test-session',
+      sessionFile: join(tmpdir(), 'test-session.jsonl'),
+      subscribe: mock(() => () => {}),
+      dispose: mock(() => {}),
+      abort: mock(async () => {}),
+    };
+    return {
+      session,
+      dispose: mock(() => {}),
+      sessionId: 'test-session',
+      sessionPath: join(tmpdir(), 'test-session.jsonl'),
+      complete: mock(() => {}),
+    };
+  }
+
+  // ── (a) stopReason error + provider error message → throws ────────────
+
+  it('(a) throws when stopReason is error and message reports overloaded', async () => {
+    mockSpawnAgent.mockResolvedValue(
+      makeHandleWithMessages({
+        stopReason: 'error',
+        errorMessage: 'overloaded',
+        content: [],
+        text: undefined,
+      }),
+    );
+
+    await expect(
+      runStep(
+        makeTask(),
+        nonStructuredStep,
+        'agent-1',
+        { stepIndex: 0, attempt: 0, execCount: 1 },
+        new Map([['reviewer', reviewerProfile]]),
+        makeExecCtx(),
+      ),
+    ).rejects.toThrow(/overloaded/i);
+  });
+
+  // ── (b) empty output (no text blocks) → throws ────────────────────────
+
+  it('(b) throws when output has no text blocks (e.g. only thinking)', async () => {
+    mockSpawnAgent.mockResolvedValue(
+      makeHandleWithMessages({
+        stopReason: 'end_turn',
+        content: [{ type: 'thinking', text: 'hmm' }],
+        text: '',
+      }),
+    );
+
+    await expect(
+      runStep(
+        makeTask(),
+        nonStructuredStep,
+        'agent-1',
+        { stepIndex: 0, attempt: 0, execCount: 1 },
+        new Map([['reviewer', reviewerProfile]]),
+        makeExecCtx(),
+      ),
+    ).rejects.toThrow(/no usable output/i);
+  });
+
+  // ── (b2) completely empty content array → throws ──────────────────────
+
+  it('(b2) throws when content is an empty array', async () => {
+    mockSpawnAgent.mockResolvedValue(
+      makeHandleWithMessages({
+        stopReason: 'end_turn',
+        content: [],
+        text: '',
+      }),
+    );
+
+    await expect(
+      runStep(
+        makeTask(),
+        nonStructuredStep,
+        'agent-1',
+        { stepIndex: 0, attempt: 0, execCount: 1 },
+        new Map([['reviewer', reviewerProfile]]),
+        makeExecCtx(),
+      ),
+    ).rejects.toThrow(/no usable output/i);
+  });
+
+  // ── (c) normal non-empty text output → approved (unchanged) ───────────
+
+  it('(c) returns approved when output has real text', async () => {
+    mockSpawnAgent.mockResolvedValue(
+      makeHandleWithMessages({
+        stopReason: 'end_turn',
+        content: [{ type: 'text', text: 'Here is the implementation' }],
+        text: 'Here is the implementation',
+      }),
+    );
+
+    const { result } = await runStep(
+      makeTask(),
+      nonStructuredStep,
+      'agent-1',
+      { stepIndex: 0, attempt: 0, execCount: 1 },
+      new Map([['reviewer', reviewerProfile]]),
+      makeExecCtx(),
+    );
+
+    expect(result.type).toBe('approved');
+  });
+
+  // ── (d) existing free-form test still passes ───────────────────────────
+  //    (makeMockHandle has no messages array → extractLastAssistantMessage
+  //     returns undefined → classify returns 'unknown' → not empty → approved)
+
+  it('(d) session without messages array still approves (no regression)', async () => {
+    mockSpawnAgent.mockResolvedValue(makeMockHandle());
+
+    const { result } = await runStep(
+      makeTask(),
+      nonStructuredStep,
+      'agent-1',
+      { stepIndex: 0, attempt: 0, execCount: 1 },
+      new Map([['reviewer', reviewerProfile]]),
+      makeExecCtx(),
+    );
+
+    expect(result.type).toBe('approved');
+  });
+});
+
 // ─── Restore real modules ─────────────────────────────────────────────────
 
 afterAll(() => {

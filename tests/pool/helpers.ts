@@ -240,11 +240,19 @@ export function createMockTaskTracker(overrides: Record<string, unknown> = {}) {
   return {
     claimTasks: mock(() => []),
     completeTask: mock(() => {}),
+    failTask: mock(() => {}),
     isPoolDone: mock(() => true),
     getAllTasks: mock(() => []),
     getReadyTasks: mock(() => []),
     addTask: mock(() => {}),
     getTask: mock(() => undefined),
+    // kb-7: LanePool.run() registers a TaskSettled observer for deadlock
+    // surfacing; the Scheduler registers persistent wake listeners per lane.
+    // The mock must be callable (no-op) so these registrations/cleanups
+    // don't throw TypeError.
+    on: mock(() => {}),
+    removeListener: mock(() => {}),
+    listenerCount: mock(() => 0),
     ...overrides,
   } as unknown as TaskTracker;
 }

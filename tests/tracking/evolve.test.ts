@@ -1499,6 +1499,469 @@ describe('evolve', () => {
     });
   });
 
+  describe('auto_retry_started', () => {
+    it('appends a text log entry with retry details to the resolved agent', () => {
+      resetSeq();
+      let state = evolve(createInitialProjection(), makeEvent('workflow_started', { taskPrompt: 'x' }));
+      state = evolve(
+        state,
+        makeEvent(
+          'agent_spawned',
+          { agentId: 'a1', profile: 'coder' },
+          { timestamp: new Date().toISOString(), agentId: 'a1', taskId: 't1' },
+        ),
+      );
+
+      state = evolve(
+        state,
+        makeEvent(
+          'auto_retry_started',
+          { attempt: 1, maxAttempts: 3, delayMs: 2000, errorMessage: 'overloaded' },
+          { timestamp: new Date().toISOString(), agentId: 'a1', taskId: 't1' },
+        ),
+      );
+
+      const key = 'a1::t1';
+      expect(state.agents[key].log).toHaveLength(1);
+      expect(state.agents[key].log[0].type).toBe('text');
+      expect(state.agents[key].log[0].content).toBe('Retrying (attempt 1/3) in 2000ms: overloaded');
+      expect(state.agents[key].log[0].id).toBe(`log-${eventSeq}`);
+      expect(state.agents[key].log[0].metadata).toEqual({
+        attempt: 1,
+        maxAttempts: 3,
+        delayMs: 2000,
+        errorMessage: 'overloaded',
+      });
+    });
+
+    it('omits errorMessage when not provided', () => {
+      resetSeq();
+      let state = evolve(createInitialProjection(), makeEvent('workflow_started', { taskPrompt: 'x' }));
+      state = evolve(
+        state,
+        makeEvent(
+          'agent_spawned',
+          { agentId: 'a1', profile: 'coder' },
+          { timestamp: new Date().toISOString(), agentId: 'a1' },
+        ),
+      );
+
+      state = evolve(
+        state,
+        makeEvent(
+          'auto_retry_started',
+          { attempt: 2, maxAttempts: 5, delayMs: 1000 },
+          { timestamp: new Date().toISOString(), agentId: 'a1' },
+        ),
+      );
+
+      const agent = state.agents['a1'];
+      expect(agent.log).toHaveLength(1);
+      expect(agent.log[0].content).toBe('Retrying (attempt 2/5) in 1000ms');
+      expect(agent.log[0].metadata).toEqual({ attempt: 2, maxAttempts: 5, delayMs: 1000, errorMessage: '' });
+    });
+
+    it('bumps seq', () => {
+      resetSeq();
+      let state = evolve(createInitialProjection(), makeEvent('workflow_started', { taskPrompt: 'x' }));
+      state = evolve(
+        state,
+        makeEvent(
+          'agent_spawned',
+          { agentId: 'a1', profile: 'coder' },
+          { timestamp: new Date().toISOString(), agentId: 'a1' },
+        ),
+      );
+      const seqBefore = state.seq;
+      state = evolve(
+        state,
+        makeEvent(
+          'auto_retry_started',
+          { attempt: 1, maxAttempts: 3, delayMs: 500 },
+          { timestamp: new Date().toISOString(), agentId: 'a1' },
+        ),
+      );
+      expect(state.seq).toBe(seqBefore + 1);
+    });
+
+    it('is a no-op when agentId is missing (no throw)', () => {
+      resetSeq();
+      let state = evolve(createInitialProjection(), makeEvent('workflow_started', { taskPrompt: 'x' }));
+      const before = state;
+      state = evolve(
+        state,
+        makeEvent(
+          'auto_retry_started',
+          { attempt: 1, maxAttempts: 3, delayMs: 500 },
+          { timestamp: new Date().toISOString() }, // no agentId
+        ),
+      );
+      expect(state.agents).toEqual(before.agents);
+      expect(state.seq).toBe(before.seq + 1);
+    });
+
+    it('is a no-op when agent does not exist (no throw)', () => {
+      resetSeq();
+      let state = evolve(createInitialProjection(), makeEvent('workflow_started', { taskPrompt: 'x' }));
+      state = evolve(
+        state,
+        makeEvent(
+          'auto_retry_started',
+          { attempt: 1, maxAttempts: 3, delayMs: 500, errorMessage: 'err' },
+          { timestamp: new Date().toISOString(), agentId: 'ghost' },
+        ),
+      );
+      expect(Object.keys(state.agents)).toHaveLength(0);
+    });
+
+    it('resolves the agent by agentId when taskId is omitted from metadata', () => {
+      resetSeq();
+      let state = evolve(createInitialProjection(), makeEvent('workflow_started', { taskPrompt: 'x' }));
+      state = evolve(
+        state,
+        makeEvent(
+          'agent_spawned',
+          { agentId: 'a1', profile: 'coder' },
+          { timestamp: new Date().toISOString(), agentId: 'a1', taskId: 't1' },
+        ),
+      );
+
+      // Fire with only agentId (no taskId) — resolveAgent fallback must find it
+      state = evolve(
+        state,
+        makeEvent(
+          'auto_retry_started',
+          { attempt: 1, maxAttempts: 2, delayMs: 100, errorMessage: 'err' },
+          { timestamp: new Date().toISOString(), agentId: 'a1' },
+        ),
+      );
+
+      const key = 'a1::t1';
+      expect(state.agents[key].log).toHaveLength(1);
+      expect(state.agents[key].log[0].content).toContain('Retrying');
+    });
+  });
+
+  describe('auto_retry_completed', () => {
+    it('appends a text log entry on success', () => {
+      resetSeq();
+      let state = evolve(createInitialProjection(), makeEvent('workflow_started', { taskPrompt: 'x' }));
+      state = evolve(
+        state,
+        makeEvent(
+          'agent_spawned',
+          { agentId: 'a1', profile: 'coder' },
+          { timestamp: new Date().toISOString(), agentId: 'a1', taskId: 't1' },
+        ),
+      );
+
+      state = evolve(
+        state,
+        makeEvent(
+          'auto_retry_completed',
+          { success: true, attempt: 1 },
+          { timestamp: new Date().toISOString(), agentId: 'a1', taskId: 't1' },
+        ),
+      );
+
+      const key = 'a1::t1';
+      expect(state.agents[key].log).toHaveLength(1);
+      expect(state.agents[key].log[0].type).toBe('text');
+      expect(state.agents[key].log[0].content).toBe('Retry succeeded');
+      expect(state.agents[key].log[0].id).toBe(`log-${eventSeq}`);
+      expect(state.agents[key].log[0].metadata).toEqual({ success: true, attempt: 1, finalError: '' });
+    });
+
+    it('appends a single error log entry on failure', () => {
+      resetSeq();
+      let state = evolve(createInitialProjection(), makeEvent('workflow_started', { taskPrompt: 'x' }));
+      state = evolve(
+        state,
+        makeEvent(
+          'agent_spawned',
+          { agentId: 'a1', profile: 'coder' },
+          { timestamp: new Date().toISOString(), agentId: 'a1', taskId: 't1' },
+        ),
+      );
+
+      state = evolve(
+        state,
+        makeEvent(
+          'auto_retry_completed',
+          { success: false, attempt: 3, finalError: 'giving up' },
+          { timestamp: new Date().toISOString(), agentId: 'a1', taskId: 't1' },
+        ),
+      );
+
+      const key = 'a1::t1';
+      expect(state.agents[key].log).toHaveLength(1);
+      // Single error entry — the error type IS the signal clients flag on
+      expect(state.agents[key].log[0].type).toBe('error');
+      expect(state.agents[key].log[0].content).toBe('Retry failed: giving up');
+      expect(state.agents[key].log[0].metadata).toEqual({ success: false, attempt: 3, finalError: 'giving up' });
+    });
+
+    it('failure with no finalError still appends a single error entry with empty message', () => {
+      resetSeq();
+      let state = evolve(createInitialProjection(), makeEvent('workflow_started', { taskPrompt: 'x' }));
+      state = evolve(
+        state,
+        makeEvent(
+          'agent_spawned',
+          { agentId: 'a1', profile: 'coder' },
+          { timestamp: new Date().toISOString(), agentId: 'a1' },
+        ),
+      );
+
+      state = evolve(
+        state,
+        makeEvent(
+          'auto_retry_completed',
+          { success: false, attempt: 1 },
+          { timestamp: new Date().toISOString(), agentId: 'a1' },
+        ),
+      );
+
+      const agent = state.agents['a1'];
+      expect(agent.log).toHaveLength(1);
+      expect(agent.log[0].type).toBe('error');
+      expect(agent.log[0].content).toBe('Retry failed: ');
+    });
+
+    it('bumps seq', () => {
+      resetSeq();
+      let state = evolve(createInitialProjection(), makeEvent('workflow_started', { taskPrompt: 'x' }));
+      state = evolve(
+        state,
+        makeEvent(
+          'agent_spawned',
+          { agentId: 'a1', profile: 'coder' },
+          { timestamp: new Date().toISOString(), agentId: 'a1' },
+        ),
+      );
+      const seqBefore = state.seq;
+      state = evolve(
+        state,
+        makeEvent(
+          'auto_retry_completed',
+          { success: true, attempt: 1 },
+          { timestamp: new Date().toISOString(), agentId: 'a1' },
+        ),
+      );
+      expect(state.seq).toBe(seqBefore + 1);
+    });
+
+    it('is a no-op when agentId is missing (no throw)', () => {
+      resetSeq();
+      let state = evolve(createInitialProjection(), makeEvent('workflow_started', { taskPrompt: 'x' }));
+      const before = state;
+      state = evolve(
+        state,
+        makeEvent(
+          'auto_retry_completed',
+          { success: true, attempt: 1 },
+          { timestamp: new Date().toISOString() }, // no agentId
+        ),
+      );
+      expect(state.agents).toEqual(before.agents);
+      expect(state.seq).toBe(before.seq + 1);
+    });
+
+    it('is a no-op when agent does not exist (no throw)', () => {
+      resetSeq();
+      let state = evolve(createInitialProjection(), makeEvent('workflow_started', { taskPrompt: 'x' }));
+      state = evolve(
+        state,
+        makeEvent(
+          'auto_retry_completed',
+          { success: false, attempt: 3, finalError: 'err' },
+          { timestamp: new Date().toISOString(), agentId: 'ghost' },
+        ),
+      );
+      expect(Object.keys(state.agents)).toHaveLength(0);
+    });
+  });
+
+  describe('auto_retry end-to-end', () => {
+    it('workflow_started -> agent_spawned -> auto_retry_started -> auto_retry_completed: seq increments, two log entries on agent', () => {
+      resetSeq();
+      let state = evolve(createInitialProjection(), makeEvent('workflow_started', { taskPrompt: 'x' }));
+
+      state = evolve(
+        state,
+        makeEvent(
+          'agent_spawned',
+          { agentId: 'a1', profile: 'coder' },
+          { timestamp: new Date().toISOString(), agentId: 'a1' },
+        ),
+      );
+      expect(state.stats.agentCount).toBe(1);
+
+      state = evolve(
+        state,
+        makeEvent(
+          'auto_retry_started',
+          { attempt: 1, maxAttempts: 3, delayMs: 2000, errorMessage: 'overloaded' },
+          { timestamp: new Date().toISOString(), agentId: 'a1' },
+        ),
+      );
+
+      state = evolve(
+        state,
+        makeEvent(
+          'auto_retry_completed',
+          { success: true, attempt: 1 },
+          { timestamp: new Date().toISOString(), agentId: 'a1' },
+        ),
+      );
+
+      const agent = state.agents['a1'];
+      expect(state.seq).toBe(4); // workflow_started=1, agent_spawned=2, retry_started=3, retry_completed=4
+      expect(agent.log).toHaveLength(2);
+      expect(agent.log[0].type).toBe('text');
+      expect(agent.log[0].content).toBe('Retrying (attempt 1/3) in 2000ms: overloaded');
+      expect(agent.log[0].metadata).toEqual({ attempt: 1, maxAttempts: 3, delayMs: 2000, errorMessage: 'overloaded' });
+      expect(agent.log[1].type).toBe('text');
+      expect(agent.log[1].content).toBe('Retry succeeded');
+      expect(agent.log[1].metadata).toEqual({ success: true, attempt: 1, finalError: '' });
+    });
+
+    it('auto_retry_completed with success=false pushes a single error entry', () => {
+      resetSeq();
+      let state = evolve(createInitialProjection(), makeEvent('workflow_started', { taskPrompt: 'x' }));
+
+      state = evolve(
+        state,
+        makeEvent(
+          'agent_spawned',
+          { agentId: 'a1', profile: 'coder' },
+          { timestamp: new Date().toISOString(), agentId: 'a1' },
+        ),
+      );
+
+      state = evolve(
+        state,
+        makeEvent(
+          'auto_retry_completed',
+          { success: false, attempt: 3, finalError: 'giving up' },
+          { timestamp: new Date().toISOString(), agentId: 'a1' },
+        ),
+      );
+
+      const agent = state.agents['a1'];
+      expect(agent.log).toHaveLength(1);
+      expect(agent.log[0].type).toBe('error');
+      expect(agent.log[0].content).toBe('Retry failed: giving up');
+    });
+
+    it('log entries are capped at MAX_AGENT_LOG', () => {
+      resetSeq();
+      let state = evolve(createInitialProjection(), makeEvent('workflow_started', { taskPrompt: 'x' }));
+
+      state = evolve(
+        state,
+        makeEvent(
+          'agent_spawned',
+          { agentId: 'a1', profile: 'coder' },
+          { timestamp: new Date().toISOString(), agentId: 'a1' },
+        ),
+      );
+
+      // Fill agent log to near capacity with decision events
+      for (let i = 0; i < 499; i++) {
+        state = evolve(
+          state,
+          makeEvent(
+            'decision',
+            { decision: `d-${i}`, reasoning: '' },
+            { timestamp: new Date().toISOString(), agentId: 'a1' },
+          ),
+        );
+      }
+      expect(state.agents['a1'].log).toHaveLength(499);
+
+      // auto_retry_started pushes to 500 (at cap)
+      state = evolve(
+        state,
+        makeEvent(
+          'auto_retry_started',
+          { attempt: 1, maxAttempts: 3, delayMs: 100, errorMessage: 'err' },
+          { timestamp: new Date().toISOString(), agentId: 'a1' },
+        ),
+      );
+      expect(state.agents['a1'].log).toHaveLength(500);
+
+      // auto_retry_completed (success=false) pushes 1 entry → cap drops 1 oldest
+      state = evolve(
+        state,
+        makeEvent(
+          'auto_retry_completed',
+          { success: false, attempt: 1, finalError: 'fatal' },
+          { timestamp: new Date().toISOString(), agentId: 'a1' },
+        ),
+      );
+      expect(state.agents['a1'].log).toHaveLength(500);
+      // The oldest entry from the decision series (d-0) was dropped;
+      // the remaining should start at d-1
+      expect(state.agents['a1'].log[0].content).toBe('d-1');
+    });
+  });
+
+  describe('decision regression', () => {
+    it('decision event still appends as before after auto_retry events exist', () => {
+      resetSeq();
+      let state = evolve(createInitialProjection(), makeEvent('workflow_started', { taskPrompt: 'x' }));
+
+      state = evolve(
+        state,
+        makeEvent(
+          'agent_spawned',
+          { agentId: 'a1', profile: 'coder' },
+          { timestamp: new Date().toISOString(), agentId: 'a1' },
+        ),
+      );
+
+      // Fire auto_retry_started
+      state = evolve(
+        state,
+        makeEvent(
+          'auto_retry_started',
+          { attempt: 1, maxAttempts: 3, delayMs: 500, errorMessage: 'timeout' },
+          { timestamp: new Date().toISOString(), agentId: 'a1' },
+        ),
+      );
+
+      // Fire auto_retry_completed
+      state = evolve(
+        state,
+        makeEvent(
+          'auto_retry_completed',
+          { success: true, attempt: 1 },
+          { timestamp: new Date().toISOString(), agentId: 'a1' },
+        ),
+      );
+
+      // Now fire a decision — must still work as before
+      state = evolve(
+        state,
+        makeEvent(
+          'decision',
+          { decision: 'use module pattern', reasoning: 'cleaner architecture' },
+          { timestamp: new Date().toISOString(), agentId: 'a1' },
+        ),
+      );
+
+      const agent = state.agents['a1'];
+      expect(agent.log).toHaveLength(3); // retry_started text + retry_completed text + decision
+      expect(agent.log[0].type).toBe('text');
+      expect(agent.log[0].content).toContain('Retrying');
+      expect(agent.log[1].type).toBe('text');
+      expect(agent.log[1].content).toBe('Retry succeeded');
+      expect(agent.log[2].type).toBe('decision');
+      expect(agent.log[2].content).toBe('use module pattern');
+    });
+  });
+
   describe('multi-event sequence', () => {
     it('phase_registered → task_registered → task_started → step_started → agent_spawned → decision → tool_call → turn_end → task_completed → agent_completed → verify final state', () => {
       resetSeq();

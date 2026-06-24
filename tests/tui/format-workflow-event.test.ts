@@ -307,6 +307,106 @@ describe('formatWorkflowEventLine', () => {
     });
   });
 
+  // ── Auto-retry lifecycle ────────────────────────────────────────────────
+
+  describe('auto_retry_started', () => {
+    it('returns full line with all populated fields', () => {
+      const line = formatWorkflowEventLine(
+        ev('auto_retry_started', { attempt: 2, maxAttempts: 5, delayMs: 3000, errorMessage: 'timeout' }),
+      );
+      expect(line).toBe('🔄 Retrying (attempt 2/5) in 3000ms: timeout');
+    });
+
+    it('omits the suffix when errorMessage is missing', () => {
+      const line = formatWorkflowEventLine(ev('auto_retry_started', { attempt: 1, maxAttempts: 3, delayMs: 1000 }));
+      expect(line).toBe('🔄 Retrying (attempt 1/3) in 1000ms');
+    });
+
+    it('omits the suffix when errorMessage is empty string', () => {
+      const line = formatWorkflowEventLine(
+        ev('auto_retry_started', { attempt: 1, maxAttempts: 2, delayMs: 500, errorMessage: '' }),
+      );
+      expect(line).toBe('🔄 Retrying (attempt 1/2) in 500ms');
+    });
+
+    it('defaults missing attempt/maxAttempts/delayMs defensively', () => {
+      const line = formatWorkflowEventLine(ev('auto_retry_started', {}));
+      expect(line).toBe('🔄 Retrying (attempt 1/1) in 0ms');
+    });
+
+    it('strips ANSI escape codes from errorMessage in retry line', () => {
+      const ansiMsg = '\x1b[31moverloaded\x1b[0m (429)';
+      const line = formatWorkflowEventLine(
+        ev('auto_retry_started', { attempt: 1, maxAttempts: 3, delayMs: 1000, errorMessage: ansiMsg }),
+      );
+      expect(line).toBe('🔄 Retrying (attempt 1/3) in 1000ms: overloaded (429)');
+      expect(line).not.toContain('\x1b');
+    });
+
+    it('collapses newlines in errorMessage to a single line', () => {
+      const multiLine = 'line1\nline2\r\nline3';
+      const line = formatWorkflowEventLine(
+        ev('auto_retry_started', { attempt: 1, maxAttempts: 3, delayMs: 500, errorMessage: multiLine }),
+      );
+      expect(line).toBe('🔄 Retrying (attempt 1/3) in 500ms: line1 line2 line3');
+    });
+
+    it('strips ANSI + collapses newlines together in errorMessage', () => {
+      const messy = '\x1b[33mfirst\x1b[0m\n\x1b[34msecond\x1b[0m';
+      const line = formatWorkflowEventLine(
+        ev('auto_retry_started', { attempt: 2, maxAttempts: 4, delayMs: 2000, errorMessage: messy }),
+      );
+      expect(line).toBe('🔄 Retrying (attempt 2/4) in 2000ms: first second');
+      expect(line).not.toContain('\x1b');
+      expect(line).not.toContain('\n');
+    });
+  });
+
+  describe('auto_retry_completed', () => {
+    it('returns success line when success is true', () => {
+      const line = formatWorkflowEventLine(ev('auto_retry_completed', { success: true }));
+      expect(line).toBe('✅ Retry succeeded');
+    });
+
+    it('returns failure line with finalError when success is false', () => {
+      const line = formatWorkflowEventLine(
+        ev('auto_retry_completed', { success: false, finalError: 'connection refused' }),
+      );
+      expect(line).toBe('❌ Retry failed: connection refused');
+    });
+
+    it('handles missing finalError defensively when success is false', () => {
+      const line = formatWorkflowEventLine(ev('auto_retry_completed', { success: false }));
+      expect(line).toBe('❌ Retry failed: ');
+    });
+
+    it('treats non-true success as failure', () => {
+      const line = formatWorkflowEventLine(ev('auto_retry_completed', { success: 'yes', finalError: 'err' }));
+      expect(line).toBe('❌ Retry failed: err');
+    });
+
+    it('strips ANSI escape codes from finalError in failure line', () => {
+      const ansiError = '\x1b[31mConnection\x1b[0m refused';
+      const line = formatWorkflowEventLine(ev('auto_retry_completed', { success: false, finalError: ansiError }));
+      expect(line).toBe('❌ Retry failed: Connection refused');
+      expect(line).not.toContain('\x1b');
+    });
+
+    it('collapses newlines in finalError to a single line', () => {
+      const multiLine = 'line1\nline2\nline3';
+      const line = formatWorkflowEventLine(ev('auto_retry_completed', { success: false, finalError: multiLine }));
+      expect(line).toBe('❌ Retry failed: line1 line2 line3');
+    });
+
+    it('strips ANSI + collapses newlines together in finalError', () => {
+      const messy = '\x1b[31mfirst line\x1b[0m\n\x1b[32msecond line\x1b[0m';
+      const line = formatWorkflowEventLine(ev('auto_retry_completed', { success: false, finalError: messy }));
+      expect(line).toBe('❌ Retry failed: first line second line');
+      expect(line).not.toContain('\x1b');
+      expect(line).not.toContain('\n');
+    });
+  });
+
   // ── Step lifecycle ──────────────────────────────────────────────────────
 
   describe('step_started', () => {

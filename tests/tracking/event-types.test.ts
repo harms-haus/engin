@@ -29,6 +29,8 @@ const EXPECTED_EVENT_TYPES: EventType[] = [
   'phase_completed',
   'agent_spawned',
   'agent_completed',
+  'auto_retry_started',
+  'auto_retry_completed',
   'task_registered',
   'task_started',
   'step_started',
@@ -46,6 +48,36 @@ const EXPECTED_EVENT_TYPES: EventType[] = [
   'log',
   'agent_rendered',
 ];
+
+// Compile-time exhaustiveness guard: if EventType gains or loses a member,
+// this assignment will fail to compile — extra keys and missing keys are both
+// rejected by the Record<EventType, true> type annotation.
+const _EventTypeExhaustive: Record<EventType, true> = {
+  workflow_started: true,
+  phase_registered: true,
+  phase_started: true,
+  phase_completed: true,
+  agent_spawned: true,
+  agent_completed: true,
+  auto_retry_started: true,
+  auto_retry_completed: true,
+  task_registered: true,
+  task_started: true,
+  step_started: true,
+  task_completed: true,
+  task_rejected: true,
+  decision: true,
+  error: true,
+  workflow_completed: true,
+  workflow_failed: true,
+  sidebar_updated: true,
+  turn_started: true,
+  turn_ended: true,
+  tool_call_started: true,
+  tool_call_ended: true,
+  log: true,
+  agent_rendered: true,
+};
 
 // ── Tests ────────────────────────────────────────────────────────────────────
 
@@ -193,13 +225,21 @@ describe('EventType', () => {
     }
   });
 
-  it('has exactly 22 members (including log and agent_rendered)', () => {
+  it('has exactly 24 members (including log and agent_rendered)', () => {
     // EXPECTED_EVENT_TYPES is typed as EventType[], so the array itself is a
     // compile-time guard: any literal here that is not a valid union member is
     // a type error. The length assertion catches a missing/extra member, and
     // the duplicate check guards against accidental repetition.
-    expect(EXPECTED_EVENT_TYPES).toHaveLength(22);
+    expect(EXPECTED_EVENT_TYPES).toHaveLength(24);
     expect(new Set(EXPECTED_EVENT_TYPES).size).toBe(EXPECTED_EVENT_TYPES.length);
+  });
+
+  it('EXPECTED_EVENT_TYPES contains every member of the EventType union', () => {
+    // Runtime Set comparison guards against drift in either direction: a
+    // missing member or an extra member will fail this assertion.
+    // _EventTypeExhaustive keys ARE the union members (typed via Record<EventType, true>).
+    const guardKeys = Object.keys(_EventTypeExhaustive) as EventType[];
+    expect(new Set(EXPECTED_EVENT_TYPES)).toEqual(new Set(guardKeys));
   });
 });
 

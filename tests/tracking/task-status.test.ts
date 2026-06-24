@@ -1500,36 +1500,36 @@ describe('TaskTracker warnedDeadlocked pruning', () => {
     expect(warnedSet(tracker).has('a')).toBe(true);
   });
 
-  it('cancelTask removes a deadlocked task from warnedDeadlocked', () => {
+  it('cancelTask clears warnedDeadlocked for a blocked (non-deadlocked) task', () => {
+    // After kb-7, deadlocked tasks (missing deps) are settled to 'failed' by
+    // isPoolDone, so cancelTask throws on them.  Verify that cancelTask still
+    // clears warnedDeadlocked for a *blocked* task whose deps exist but aren't
+    // settled — the only remaining valid scenario for cancel-on-blocked.
     const tracker = new TaskTracker();
-    tracker.addTask({ ...makeTask({ id: 'a', dependencies: ['ghost'] }), status: undefined });
-    primeDeadlocked(tracker);
-    expect(warnedSet(tracker).has('a')).toBe(true);
+    tracker.addTask(makeTask({ id: 'dep' }));
+    tracker.addTask(makeTask({ id: 'b', dependencies: ['dep'] }));
+    // Manually inject a stale warnedDeadlocked entry (simulating a stale state
+    // from an earlier lifecycle).
+    warnedSet(tracker).add('b');
+    expect(warnedSet(tracker).has('b')).toBe(true);
 
-    tracker.cancelTask('a');
+    tracker.cancelTask('b');
 
-    expect(tracker.getTask('a')!.status).toBe('cancelled');
-    expect(warnedSet(tracker).has('a')).toBe(false);
+    expect(tracker.getTask('b')!.status).toBe('cancelled');
+    expect(warnedSet(tracker).has('b')).toBe(false);
   });
 
-  it('claimTasks prunes a formerly-deadlocked task once it becomes ready', () => {
-    // Realistic stale-entry flow: 'a' is deadlocked (missing 'ghost'), gets
-    // warned, then 'ghost' is added and completed so 'a' unblocks. The stale
-    // warnedDeadlocked entry must be cleared when 'a' is claimed.
+  it('claimTasks prunes a warnedDeadlocked entry when the task is claimed', () => {
+    // Test that claimTasks clears warnedDeadlocked for a task that has a stale
+    // entry.  The task must be 'ready' so claimTasks can pick it up.
     const tracker = new TaskTracker();
-    tracker.addTask({ ...makeTask({ id: 'a', dependencies: ['ghost'] }), status: undefined });
-    primeDeadlocked(tracker);
+    tracker.addTask(makeTask({ id: 'a' }));
+    // Manually inject a stale warnedDeadlocked entry (simulating a stale state
+    // from an earlier lifecycle).
+    warnedSet(tracker).add('a');
     expect(warnedSet(tracker).has('a')).toBe(true);
 
-    // Add the previously-missing dependency and complete it → 'a' unblocks.
-    tracker.addTask(makeTask({ id: 'ghost' }));
-    tracker.claimTasks(1, 'agent-1'); // claims 'ghost'
-    tracker.completeTask('ghost');
-    expect(tracker.getTask('a')!.status).toBe('ready');
-    // Stale entry lingers while 'a' is still ready.
-    expect(warnedSet(tracker).has('a')).toBe(true);
-
-    tracker.claimTasks(1, 'agent-2'); // claims 'a' → transitions out of ready
+    tracker.claimTasks(1, 'agent-1');
 
     expect(tracker.getTask('a')!.status).toBe('active');
     expect(warnedSet(tracker).has('a')).toBe(false);
@@ -1560,7 +1560,11 @@ describe('TaskTracker warnedDeadlocked pruning', () => {
     expect(warnedSet(tracker).has('a')).toBe(false);
   });
 
-  it('warnedDeadlocked stays bounded as deadlocked tasks are cancelled', () => {
+  it('warnedDeadlocked stays bounded via dedup across repeated isPoolDone calls', () => {
+    // After kb-7, deadlocked tasks are settled to 'failed' by isPoolDone.
+    // cancelTask throws on settled tasks, so the old 'cancel shrinks set'
+    // premise is invalid. Instead, verify that repeated isPoolDone calls
+    // do NOT grow the set (dedup via warnedDeadlocked.has).
     const tracker = new TaskTracker();
     for (const id of ['d1', 'd2', 'd3']) {
       tracker.addTask({ ...makeTask({ id, dependencies: ['ghost'] }), status: undefined });
@@ -1568,15 +1572,20 @@ describe('TaskTracker warnedDeadlocked pruning', () => {
     primeDeadlocked(tracker);
     expect(warnedSet(tracker).size).toBe(3);
 
-    tracker.cancelTask('d1');
-    expect(warnedSet(tracker).size).toBe(2);
-    tracker.cancelTask('d2');
-    expect(warnedSet(tracker).size).toBe(1);
-    tracker.cancelTask('d3');
-    expect(warnedSet(tracker).size).toBe(0);
+    // Second call: dedup prevents re-adding.
+    primeDeadlocked(tracker);
+    expect(warnedSet(tracker).size).toBe(3);
+
+    // Third call: still bounded.
+    primeDeadlocked(tracker);
+    expect(warnedSet(tracker).size).toBe(3);
   });
 
-  it('warnedDeadlocked retains only currently-deadlocked tasks across a mixed lifecycle', () => {
+  it('warnedDeadlocked retains deadlocked entries and prunes settled non-deadlocked entries', () => {
+    // After kb-7, deadlocked tasks are settled to 'failed' by isPoolDone and
+    // their warnedDeadlocked entries persist (no reachable cleanup path).
+    // Non-deadlocked tasks that carry a stale warnedDeadlocked entry ARE
+    // cleaned up when they transition through settle methods.
     const tracker = new TaskTracker();
     tracker.addTask({ ...makeTask({ id: 'dead1', dependencies: ['ghost1'] }), status: undefined });
     tracker.addTask({ ...makeTask({ id: 'dead2', dependencies: ['ghost2'] }), status: undefined });
@@ -1586,14 +1595,17 @@ describe('TaskTracker warnedDeadlocked pruning', () => {
     expect(warnedSet(tracker).has('dead1')).toBe(true);
     expect(warnedSet(tracker).has('dead2')).toBe(true);
 
-    // Cancel one deadlocked task; the other stays deadlocked.
-    tracker.cancelTask('dead1');
-    expect(warnedSet(tracker).has('dead1')).toBe(false);
-    expect(warnedSet(tracker).has('dead2')).toBe(true);
+    // Manually inject a stale warnedDeadlocked entry for the live task.
+    warnedSet(tracker).add('live');
 
-    // Settling an unrelated live task must not disturb the remaining entry.
+    // Claim and complete the live task → its warnedDeadlocked entry is pruned
+    // by claimTasks and/or completeTask.
     tracker.claimTasks(1, 'agent-1');
     tracker.completeTask('live');
+    expect(warnedSet(tracker).has('live')).toBe(false);
+
+    // Deadlocked tasks' entries persist (they're settled, no cleanup path).
+    expect(warnedSet(tracker).has('dead1')).toBe(true);
     expect(warnedSet(tracker).has('dead2')).toBe(true);
   });
 

@@ -1,15 +1,5 @@
 import type { EventRecord } from './event-types.js';
-
-// ─── Private: stripAnsi ──────────────────────────────────────────────────────
-// Inlined copy of the stripAnsi helper from src/tui/theme.ts. The shared
-// package must not import from the TUI layer, so we duplicate the two regex
-// replacements for ANSI escape sequences here.
-
-function stripAnsi(str: string): string {
-  if (!str.includes('\x1b')) return str;
-  // eslint-disable-next-line no-control-regex
-  return str.replace(/\x1b\[[^a-zA-Z]*[a-zA-Z]/g, '').replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, '');
-}
+import { sanitizeDisplayText, stripAnsi } from './text-utils.js';
 
 // ─── Pure Formatter ──────────────────────────────────────────────────────────
 // Maps an EventRecord to a human-readable emoji line for the event-log widget.
@@ -107,6 +97,25 @@ export function formatWorkflowEventLine(ev: EventRecord): string | null {
         String(d.agentId ?? m.agentId ?? '') +
         ')'
       );
+
+    // ── Auto-retry lifecycle ────────────────────────────────
+    case 'auto_retry_started': {
+      const attempt = Number(d.attempt ?? 1);
+      const maxAttempts = Number(d.maxAttempts ?? 1);
+      const delayMs = Number(d.delayMs ?? 0);
+      const errorMessage = sanitizeDisplayText(String(d.errorMessage ?? ''));
+      const suffix = errorMessage ? `: ${errorMessage}` : '';
+      return `🔄 Retrying (attempt ${attempt}/${maxAttempts}) in ${delayMs}ms${suffix}`;
+    }
+
+    case 'auto_retry_completed': {
+      const success = d.success === true;
+      const finalError = sanitizeDisplayText(String(d.finalError ?? ''));
+      if (success) {
+        return '✅ Retry succeeded';
+      }
+      return `❌ Retry failed: ${finalError}`;
+    }
 
     // ── Verbose events — no event log line ────────────────
     // decision, turn_started, turn_ended, tool_call_started,

@@ -1390,6 +1390,364 @@ describe('runStep (step-execution module)', () => {
       );
     });
   });
+
+  // ─── Per-prompt timeout (stepTimeoutMs) ───────────────────────────────────
+
+  describe('per-prompt timeout (stepTimeoutMs)', () => {
+    /**
+     * A session whose prompt() never resolves — simulates a hung LLM call.
+     * The returned promise hangs forever, so the timeout should fire and abort it.
+     */
+    function makeNeverResolvingSession() {
+      const session = {
+        prompt: mock(() => new Promise<void>(() => {})), // never resolves
+        getLastAssistantText: mock(() => undefined as string | undefined),
+        sessionId: 'hung-session',
+        subscribe: mock(() => () => {}),
+        abort: mock(async () => {}),
+        dispose: mock(() => {}),
+      };
+      return session;
+    }
+
+    it(
+      'rejects with a timeout error when stepTimeoutMs is set and prompt hangs',
+      async () => {
+        const session = makeNeverResolvingSession();
+        mockCreateHarness.mockResolvedValue({
+          session,
+          sessionId: 'hung-session',
+          dispose: mock(() => {}),
+        });
+
+        const execCtx = createStepExecutionContext({ stepTimeoutMs: 10 });
+        const profiles = createProfilesMap(defaultProfile);
+
+        let caught: unknown;
+        try {
+          await runStep(makeTask(), baseStep, 'lane-0', defaultCtx, profiles, execCtx);
+        } catch (err) {
+          caught = err;
+        }
+
+        expect(caught).toBeDefined();
+        expect((caught as Error).message).toMatch(/timed out|timeout/i);
+      },
+      { timeout: 5000 },
+    );
+
+    it(
+      'aborts the session when the step timeout fires',
+      async () => {
+        const session = makeNeverResolvingSession();
+        mockCreateHarness.mockResolvedValue({
+          session,
+          sessionId: 'hung-session',
+          dispose: mock(() => {}),
+        });
+
+        const execCtx = createStepExecutionContext({ stepTimeoutMs: 10 });
+        const profiles = createProfilesMap(defaultProfile);
+
+        try {
+          await runStep(makeTask(), baseStep, 'lane-0', defaultCtx, profiles, execCtx);
+        } catch {
+          // Expected — timeout error
+        }
+
+        // The timeout should have aborted the session
+        expect(session.abort).toHaveBeenCalledTimes(1);
+      },
+      { timeout: 5000 },
+    );
+
+    it(
+      'does not schedule a timeout when stepTimeoutMs is unset',
+      async () => {
+        let resolvePrompt!: () => void;
+        const session = {
+          prompt: mock(
+            () =>
+              new Promise<void>((resolve) => {
+                resolvePrompt = resolve;
+              }),
+          ),
+          getLastAssistantText: mock(() => 'done'),
+          sessionId: 'slow-session',
+          subscribe: mock(() => () => {}),
+          abort: mock(async () => {}),
+          dispose: mock(() => {}),
+        };
+        mockCreateHarness.mockResolvedValue({
+          session,
+          sessionId: 'slow-session',
+          dispose: mock(() => {}),
+        });
+
+        const execCtx = createStepExecutionContext(); // no stepTimeoutMs
+        const profiles = createProfilesMap(defaultProfile);
+
+        const runPromise = runStep(makeTask(), baseStep, 'lane-0', defaultCtx, profiles, execCtx);
+
+        // Wait 50ms — should NOT reject (no timeout timer)
+        const result = await Promise.race([
+          runPromise.then(() => 'resolved'),
+          new Promise<'pending'>((r) => setTimeout(() => r('pending'), 50)),
+        ]);
+
+        expect(result).toBe('pending');
+
+        // Clean up: resolve the prompt so the runStep completes
+        resolvePrompt();
+        await runPromise;
+      },
+      { timeout: 5000 },
+    );
+
+    it(
+      'does not schedule a timeout when stepTimeoutMs is 0',
+      async () => {
+        let resolvePrompt!: () => void;
+        const session = {
+          prompt: mock(
+            () =>
+              new Promise<void>((resolve) => {
+                resolvePrompt = resolve;
+              }),
+          ),
+          getLastAssistantText: mock(() => 'done'),
+          sessionId: 'slow-session-0',
+          subscribe: mock(() => () => {}),
+          abort: mock(async () => {}),
+          dispose: mock(() => {}),
+        };
+        mockCreateHarness.mockResolvedValue({
+          session,
+          sessionId: 'slow-session-0',
+          dispose: mock(() => {}),
+        });
+
+        const execCtx = createStepExecutionContext({ stepTimeoutMs: 0 });
+        const profiles = createProfilesMap(defaultProfile);
+
+        const runPromise = runStep(makeTask(), baseStep, 'lane-0', defaultCtx, profiles, execCtx);
+
+        const result = await Promise.race([
+          runPromise.then(() => 'resolved'),
+          new Promise<'pending'>((r) => setTimeout(() => r('pending'), 50)),
+        ]);
+
+        expect(result).toBe('pending');
+
+        resolvePrompt();
+        await runPromise;
+      },
+      { timeout: 5000 },
+    );
+
+    it(
+      'does not schedule a timeout when stepTimeoutMs is NaN',
+      async () => {
+        let resolvePrompt!: () => void;
+        const session = {
+          prompt: mock(
+            () =>
+              new Promise<void>((resolve) => {
+                resolvePrompt = resolve;
+              }),
+          ),
+          getLastAssistantText: mock(() => 'done'),
+          sessionId: 'slow-session-nan',
+          subscribe: mock(() => () => {}),
+          abort: mock(async () => {}),
+          dispose: mock(() => {}),
+        };
+        mockCreateHarness.mockResolvedValue({
+          session,
+          sessionId: 'slow-session-nan',
+          dispose: mock(() => {}),
+        });
+
+        const execCtx = createStepExecutionContext({ stepTimeoutMs: NaN });
+        const profiles = createProfilesMap(defaultProfile);
+
+        const runPromise = runStep(makeTask(), baseStep, 'lane-0', defaultCtx, profiles, execCtx);
+
+        const result = await Promise.race([
+          runPromise.then(() => 'resolved'),
+          new Promise<'pending'>((r) => setTimeout(() => r('pending'), 50)),
+        ]);
+
+        expect(result).toBe('pending');
+
+        resolvePrompt();
+        await runPromise;
+      },
+      { timeout: 5000 },
+    );
+
+    it(
+      'does not schedule a timeout when stepTimeoutMs is negative',
+      async () => {
+        let resolvePrompt!: () => void;
+        const session = {
+          prompt: mock(
+            () =>
+              new Promise<void>((resolve) => {
+                resolvePrompt = resolve;
+              }),
+          ),
+          getLastAssistantText: mock(() => 'done'),
+          sessionId: 'slow-session-neg',
+          subscribe: mock(() => () => {}),
+          abort: mock(async () => {}),
+          dispose: mock(() => {}),
+        };
+        mockCreateHarness.mockResolvedValue({
+          session,
+          sessionId: 'slow-session-neg',
+          dispose: mock(() => {}),
+        });
+
+        const execCtx = createStepExecutionContext({ stepTimeoutMs: -100 });
+        const profiles = createProfilesMap(defaultProfile);
+
+        const runPromise = runStep(makeTask(), baseStep, 'lane-0', defaultCtx, profiles, execCtx);
+
+        const result = await Promise.race([
+          runPromise.then(() => 'resolved'),
+          new Promise<'pending'>((r) => setTimeout(() => r('pending'), 50)),
+        ]);
+
+        expect(result).toBe('pending');
+
+        resolvePrompt();
+        await runPromise;
+      },
+      { timeout: 5000 },
+    );
+
+    it('clears the timeout timer when prompt completes normally', async () => {
+      const session = makeSession(() => 'done');
+      const abortSpy = mock(async () => {});
+      // Add abort spy to verify it is NOT called when the timer is properly cleared.
+      (session as unknown as { abort: () => Promise<void> }).abort = abortSpy;
+      setupHarnessMocks(session);
+
+      const execCtx = createStepExecutionContext({ stepTimeoutMs: 50 });
+      const profiles = createProfilesMap(defaultProfile);
+
+      const { result } = await runStep(makeTask(), baseStep, 'lane-0', defaultCtx, profiles, execCtx);
+
+      // The step completed normally — timeout did not fire
+      expect(result.type).toBe('approved');
+
+      // Wait past the step timeout to prove the timer was cleared — abort must
+      // NOT have been called.
+      await new Promise((r) => setTimeout(r, 100));
+      expect(abortSpy).not.toHaveBeenCalled();
+    });
+
+    it('re-throws the prompt error (not the timeout error) when prompt fails before timeout', async () => {
+      const session = makeSession(() => {
+        throw new Error('LLM connection reset');
+      });
+      setupHarnessMocks(session);
+
+      const execCtx = createStepExecutionContext({ stepTimeoutMs: 5000 });
+      const profiles = createProfilesMap(defaultProfile);
+
+      await expect(runStep(makeTask(), baseStep, 'lane-0', defaultCtx, profiles, execCtx)).rejects.toThrow(
+        'LLM connection reset',
+      );
+    });
+
+    it(
+      'still fires onAgentComplete in finally when timeout fires',
+      async () => {
+        const session = makeNeverResolvingSession();
+        mockCreateHarness.mockResolvedValue({
+          session,
+          sessionId: 'hung-session',
+          dispose: mock(() => {}),
+        });
+
+        const onAgentComplete = mock(() => {});
+        const execCtx = createStepExecutionContext({
+          stepTimeoutMs: 10,
+          onStatus: { onAgentComplete } as unknown as StepExecutionContext['onStatus'],
+        });
+        const profiles = createProfilesMap(defaultProfile);
+
+        try {
+          await runStep(makeTask(), baseStep, 'lane-0', defaultCtx, profiles, execCtx);
+        } catch {
+          // Expected
+        }
+
+        expect(onAgentComplete).toHaveBeenCalledTimes(1);
+      },
+      { timeout: 5000 },
+    );
+
+    it(
+      'removes session from activeSessions when timeout fires',
+      async () => {
+        const session = makeNeverResolvingSession();
+        mockCreateHarness.mockResolvedValue({
+          session,
+          sessionId: 'hung-session',
+          dispose: mock(() => {}),
+        });
+
+        const activeSessions = new Set<{ abort(): Promise<void> }>();
+        const execCtx = createStepExecutionContext({ stepTimeoutMs: 10, activeSessions });
+        const profiles = createProfilesMap(defaultProfile);
+
+        try {
+          await runStep(makeTask(), baseStep, 'lane-0', defaultCtx, profiles, execCtx);
+        } catch {
+          // Expected
+        }
+
+        expect(activeSessions.size).toBe(0);
+      },
+      { timeout: 5000 },
+    );
+  });
+
+  // ─── Per-prompt timeout (stepTimeoutMs) — promptForStructured path ────────
+
+  describe('per-prompt timeout (stepTimeoutMs) — structured output path', () => {
+    it('uses promptForStructured which respects stepTimeoutMs option', async () => {
+      // This verifies that when step.schema is set, the timeout is passed to promptForStructured
+      // We verify this via the mock: promptForStructured receives options including stepTimeoutMs
+      setupHarnessMocks();
+      mockPromptForStructured.mockResolvedValue({
+        result: { approved: true },
+        attempts: 1,
+      });
+
+      const reviewSchema = z.object({ approved: z.boolean() });
+      const reviewStep: StepDefinition = {
+        name: 'review',
+        profileId: 'reviewer',
+        isReadOnly: true,
+        schema: reviewSchema,
+      };
+
+      const execCtx = createStepExecutionContext({ stepTimeoutMs: 3000 });
+      const profiles = createProfilesMap(defaultProfile, reviewerProfile);
+
+      await runStep(makeTask(), reviewStep, 'lane-0', defaultCtx, profiles, execCtx);
+
+      // promptForStructured should have been called with stepTimeoutMs in its options
+      expect(mockPromptForStructured).toHaveBeenCalledTimes(1);
+      const callArgs = mockPromptForStructured.mock.calls[0];
+      const options = callArgs[3] as Record<string, unknown>;
+      expect(options).toHaveProperty('stepTimeoutMs', 3000);
+    });
+  });
 });
 
 describe('buildExecCtx forwards worktreeManager', () => {

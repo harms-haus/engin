@@ -70,9 +70,11 @@ describe('LanePool listener-leak hardening', () => {
       await entered; // lane is now mid-prompt
       // Old design: cleanup() already removed the per-iteration once() listeners
       // before the runner ran → count 0. New design: the persistent listener is
-      // still attached → exactly maxConcurrentLanes (1 here).
+      // still attached → exactly maxConcurrentLanes (1 here). TaskSettled also
+      // carries the deadlock observer (onTaskSettled) registered once in
+      // LanePool.run(), so its count is maxConcurrentLanes + 1.
       expect(readyDuringPrompt).toBe(1);
-      expect(settledDuringPrompt).toBe(1);
+      expect(settledDuringPrompt).toBe(2); // 1 persistent lane listener + 1 deadlock observer
 
       resolvePrompt();
       await runPromise;
@@ -115,7 +117,9 @@ describe('LanePool listener-leak hardening', () => {
       // Both persistent listeners are present while both lanes are busy. The old
       // design would show 0 here (listeners torn down before processing).
       expect(Math.max(...readySamples)).toBe(maxConcurrentLanes);
-      expect(tracker.listenerCount(TaskTracker.Events.TaskSettled)).toBe(maxConcurrentLanes);
+      // TaskSettled carries the deadlock observer (onTaskSettled) registered once
+      // in LanePool.run(), so its count is maxConcurrentLanes + 1.
+      expect(tracker.listenerCount(TaskTracker.Events.TaskSettled)).toBe(maxConcurrentLanes + 1);
 
       resolvers.forEach((r) => r());
       await runPromise;

@@ -22,10 +22,19 @@
 // tracker (completeTask / failTask), exactly as the existing TaskRunner does
 // via TaskRunnerContext.completeTask / failTask. The Scheduler observes the
 // settled state through isPoolDone() / claimTasks() and never settles a task
-// itself (except for the ready → active transition when a `claimPolicy` hook
-// supplies the claimed task, mirroring claimTasks's internal mutation).
+// itself except in two narrow situations:
+//
+//   1. The ready → active transition when a `claimPolicy` hook supplies the
+//      claimed task (mirroring claimTasks's internal mutation).
+//   2. Settling a task to 'failed' in the orphan-prevention catch when
+//      getConcurrencyKey, acquireKey, or runTask throws AFTER the task was
+//      claimed (marked 'active'). Without this, the orphaned 'active' task
+//      would prevent isPoolDone() from ever returning true, hanging the
+//      pool forever — strictly worse than the contract deviation. See the
+//      'CONTRACT DEVIATION' comment in runLane.
 
 import type { Task } from '../core/types.js';
+import { safeErrorMessage } from '../core/utils.js';
 import type { HookContext, HookRegistry, OnLaneStallArgs } from '../hooks/types.js';
 import { TaskTracker } from '../tracking/task-status.js';
 
@@ -38,7 +47,12 @@ import { TaskTracker } from '../tracking/task-status.js';
  * `runTask(task, laneId)` after a lane claims a task and (optionally) acquires
  * its concurrency key. The callback OWNS settling the task in the tracker
  * (`completeTask` / `failTask`); the Scheduler only observes the resulting
- * status via `isPoolDone()` / `claimTasks()`.
+ * status via `isPoolDone()` / `claimTasks()`, except in two narrow situations:
+ * (1) the ready → active status change the Scheduler applies when a
+ * `claimPolicy` hook returns a task (mirroring `claimTasks`'s internal
+ * mutation), and (2) the orphan-prevention path where the Scheduler settles a
+ * claimed task to `'failed'` when getConcurrencyKey / acquireKey / runTask
+ * throws (see the 'CONTRACT DEVIATION' comment in runLane).
  *
  * `onLaneError` is an optional lane-crash observability callback. The
  * Scheduler spawns lanes via `Promise.allSettled` so one crashed lane does
@@ -253,16 +267,37 @@ export class Scheduler {
           // Tasks sharing a concurrency key serialize (max one in-flight per
           // key). When no key is configured (default), this is a no-op and
           // the task runs immediately.
-          const key = await this.getConcurrencyKey(task);
-          const release = await this.acquireKey(key);
-          if (signal?.aborted) {
-            release();
-            return;
-          }
+          //
+          // CONTRACT DEVIATION: The Scheduler normally never settles tasks —
+          // the caller's runTask owns that. But if getConcurrencyKey or
+          // acquireKey throws AFTER the task was claimed (marked 'active'),
+          // the task would be orphaned: 'active' with no lane owning it,
+          // isPoolDone() never true, and the pool hangs forever. An orphaned
+          // active task is strictly worse than a contract deviation, so we
+          // settle the task to 'failed' in the catch before re-throwing.
+          let release: (() => void) | undefined;
           try {
+            const key = await this.getConcurrencyKey(task);
+            release = await this.acquireKey(key);
+            if (signal?.aborted) {
+              return;
+            } // finally handles release
             await this.options.runTask(task, laneId);
+          } catch (err) {
+            // Settle the orphaned active task to 'failed' so isPoolDone()
+            // returns true and the pool does not hang forever. Guard with
+            // try/catch because the task may already be settled (e.g. the
+            // caller's runTask caught and failed it before re-throwing).
+            try {
+              taskTracker.failTask(task.id, { completed: false, error: safeErrorMessage(err) });
+            } catch {
+              /* already settled by a sibling lane — swallow */
+            }
+            throw err; // re-throw so the lane rejects (swallowed by allSettled)
           } finally {
-            release();
+            // Exactly-once release: release() iff acquireKey succeeded;
+            // no-op when getConcurrencyKey/acquireKey threw first.
+            release?.();
           }
           continue;
         }

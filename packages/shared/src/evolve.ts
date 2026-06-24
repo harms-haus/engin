@@ -8,6 +8,7 @@ import type {
   WorkflowProjection,
 } from './event-types.js';
 import { MAX_RUN_LOG } from './event-types.js';
+import { sanitizeDisplayText } from './text-utils.js';
 
 export const MAX_AGENT_LOG = 500;
 
@@ -226,6 +227,59 @@ export function evolve(state: WorkflowProjection, event: EventRecord): WorkflowP
         agents: {
           ...state.agents,
           [key]: clone(existing, { active: false, completedAt: event.metadata.timestamp }),
+        },
+        seq: event.seq,
+      });
+    }
+
+    // ── Auto-retry lifecycle ──────────────────────────────────────
+    case 'auto_retry_started': {
+      const agentId = String(event.metadata.agentId ?? '');
+      const taskId = event.metadata.taskId;
+      const resolved = resolveAgent(state.agents, agentId, taskId);
+      if (!resolved) return clone(state, { seq: event.seq });
+      const { key, entity: existing } = resolved;
+      const attempt = Number(event.data.attempt ?? 1);
+      const maxAttempts = Number(event.data.maxAttempts ?? 1);
+      const delayMs = Number(event.data.delayMs ?? 0);
+      const errorMessage = sanitizeDisplayText(String(event.data.errorMessage ?? ''));
+      const suffix = errorMessage ? `: ${errorMessage}` : '';
+      const entry = {
+        id: `log-${event.seq}`,
+        timestamp: event.metadata.timestamp,
+        type: 'text' as const,
+        content: `Retrying (attempt ${attempt}/${maxAttempts}) in ${delayMs}ms${suffix}`,
+        metadata: { attempt, maxAttempts, delayMs, errorMessage },
+      };
+      return clone(state, {
+        agents: {
+          ...state.agents,
+          [key]: clone(existing, { log: capLog(existing.log, entry) }),
+        },
+        seq: event.seq,
+      });
+    }
+
+    case 'auto_retry_completed': {
+      const agentId = String(event.metadata.agentId ?? '');
+      const taskId = event.metadata.taskId;
+      const resolved = resolveAgent(state.agents, agentId, taskId);
+      if (!resolved) return clone(state, { seq: event.seq });
+      const { key, entity: existing } = resolved;
+      const success = event.data.success === true;
+      const finalError = sanitizeDisplayText(String(event.data.finalError ?? ''));
+      const attempt = Number(event.data.attempt ?? 1);
+      const entry = {
+        id: `log-${event.seq}`,
+        timestamp: event.metadata.timestamp,
+        type: (success ? 'text' : 'error') as LogEntry['type'],
+        content: success ? 'Retry succeeded' : `Retry failed: ${finalError}`,
+        metadata: { success, attempt, finalError },
+      };
+      return clone(state, {
+        agents: {
+          ...state.agents,
+          [key]: clone(existing, { log: capLog(existing.log, entry) }),
         },
         seq: event.seq,
       });

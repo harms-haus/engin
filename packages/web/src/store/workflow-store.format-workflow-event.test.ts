@@ -132,3 +132,67 @@ describe('workflow-store — event log lines match @engin/shared/format-workflow
     expect(log[0].line).toBe(formatWorkflowEventLine(ev('workflow_started', { taskPrompt: 'seq-check' }, {}, 77)));
   });
 });
+
+// ── Auto-retry event formatting ─────────────────────────────────────────────
+
+describe('formatWorkflowEventLine — auto_retry events', () => {
+  beforeEach(resetStore);
+
+  it('formats auto_retry_started with attempt, maxAttempts, delay, and errorMessage', () => {
+    const event = ev(
+      'auto_retry_started',
+      { attempt: 2, maxAttempts: 5, delayMs: 1000, errorMessage: 'rate limited' },
+      { agentId: 'a1', taskId: 't1' },
+      10,
+    );
+    const line = formatWorkflowEventLine(event);
+    expect(line).not.toBeNull();
+    expect(line).toContain('2/5');
+    expect(line).toContain('1000ms');
+    expect(line).toContain('rate limited');
+  });
+
+  it('formats auto_retry_started without errorMessage when none provided', () => {
+    const event = ev('auto_retry_started', { attempt: 1, maxAttempts: 3, delayMs: 500 }, { agentId: 'a1' }, 11);
+    const line = formatWorkflowEventLine(event);
+    expect(line).not.toBeNull();
+    expect(line).toContain('1/3');
+    expect(line).toContain('500ms');
+  });
+
+  it('formats auto_retry_completed success', () => {
+    const event = ev('auto_retry_completed', { success: true, attempt: 2 }, { agentId: 'a1' }, 12);
+    const line = formatWorkflowEventLine(event);
+    expect(line).not.toBeNull();
+    expect(line).toContain('succeeded');
+  });
+
+  it('formats auto_retry_completed failure with finalError', () => {
+    const event = ev(
+      'auto_retry_completed',
+      { success: false, attempt: 3, finalError: 'timeout' },
+      { agentId: 'a1' },
+      13,
+    );
+    const line = formatWorkflowEventLine(event);
+    expect(line).not.toBeNull();
+    expect(line).toContain('failed');
+    expect(line).toContain('timeout');
+  });
+
+  it('auto_retry events appear in the workflow store event log via applyEvents', () => {
+    const events: EventRecord[] = [
+      ev('workflow_started', { taskPrompt: 'retry-test' }, {}, 1),
+      ev('auto_retry_started', { attempt: 1, maxAttempts: 3, delayMs: 200, errorMessage: 'err' }, { agentId: 'a1' }, 2),
+      ev('auto_retry_completed', { success: false, attempt: 1, finalError: 'final' }, { agentId: 'a1' }, 3),
+    ];
+
+    useWorkflowStore.getState().applyEvents('run-1', events);
+    const log = useWorkflowStore.getState().workflowEventLog;
+
+    // All 3 events produce lines (auto_retry events are now loud).
+    expect(log).toHaveLength(3);
+    expect(log.find((e) => e.seq === 2)?.line).toContain('1/3');
+    expect(log.find((e) => e.seq === 3)?.line).toContain('failed');
+  });
+});

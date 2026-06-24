@@ -807,12 +807,115 @@ describe('Scheduler — backward compat: LanePool-style runTask', () => {
     const result = await scheduler.run();
 
     // The lane rejected, but the Scheduler swallows via allSettled.
+    // The catch block settled the orphaned active task to 'failed' — this
+    // is the intentional contract deviation for orphan prevention.
     expect(result.completedTasks).toBe(0);
-    expect(result.failedTasks).toBe(0);
+    expect(result.failedTasks).toBe(1);
     // The onLaneError callback surfaced the crash.
     expect(laneErrors).toHaveLength(1);
     expect(laneErrors[0].laneId).toMatch(/^lane-/);
     expect((laneErrors[0].error as Error).message).toBe('unexpected lane crash');
+  });
+});
+
+// ── Orphaned active task prevention (SITE B) ─────────────────────────────
+//
+// When getConcurrencyKey or acquireKey throws AFTER a task is claimed (marked
+// 'active') but BEFORE runTask is invoked, the task was left 'active' forever
+// — the lane rejects, Promise.allSettled swallows it, and isPoolDone()
+// never returns true. The fix moves getConcurrencyKey/acquireKey inside the
+// try block and settles the orphaned active task to 'failed' in the catch.
+
+describe('Scheduler — orphaned active task prevention (SITE B)', () => {
+  it('getConcurrencyKey throws via hook → orphaned task ends failed, pool drains', async () => {
+    // Single-lane: task claims → enters concurrency section → getConcurrencyKey
+    // throws → catch block must fail the orphaned active task so
+    // isPoolDone() returns true and the pool completes (no hang).
+    const tracker = makeTracker(makeTask('boom'));
+    const runTask = mock(async (task: Task) => {
+      tracker.completeTask(task.id);
+    });
+
+    const registry = createHookRegistry();
+    registry.register({
+      concurrencyKey: (): string | undefined => {
+        throw new Error('concurrencyKey boom');
+      },
+    });
+
+    const scheduler = new Scheduler(
+      makeOptions({
+        maxConcurrentLanes: 1,
+        taskTracker: tracker,
+        hookRegistry: registry,
+        runTask,
+        laneWaitTimeoutMs: 100,
+      }),
+    );
+
+    const result = await scheduler.run();
+
+    // Task was settled to 'failed' by the catch block (orphan prevention).
+    expect(tracker.getTask('boom')?.status).toBe('failed');
+    // Pool drained (isPoolDone() returned true).
+    expect(result.completedTasks).toBe(0);
+    expect(result.failedTasks).toBe(1);
+    // runTask was NEVER invoked (throw happened before runTask).
+    expect(runTask).not.toHaveBeenCalled();
+  });
+
+  it('concurrency key holder completes → waiter for same key is not permanently blocked', async () => {
+    // Regression guard: with a concurrency key configured, tasks sharing a
+    // key serialize correctly — the waiter eventually acquires the slot
+    // and completes. This asserts the slot accounting stays correct.
+    const tracker = makeTracker(makeTask('t1'), makeTask('t2'));
+    let inflight = 0;
+    let maxInflight = 0;
+    const runTask = mock(async (task: Task) => {
+      inflight++;
+      maxInflight = Math.max(maxInflight, inflight);
+      await new Promise((r) => setTimeout(r, 25));
+      tracker.completeTask(task.id);
+      inflight--;
+    });
+
+    const registry = createHookRegistry();
+    registry.register({
+      concurrencyKey: (): string | undefined => 'same-key',
+    });
+
+    const scheduler = new Scheduler(
+      makeOptions({
+        maxConcurrentLanes: 2,
+        taskTracker: tracker,
+        hookRegistry: registry,
+        runTask,
+        laneWaitTimeoutMs: 500,
+      }),
+    );
+
+    const result = await scheduler.run();
+
+    // Both tasks completed — the waiter was NOT permanently blocked.
+    expect(result.completedTasks).toBe(2);
+    expect(result.failedTasks).toBe(0);
+    // Concurrency key serialization: never more than 1 in-flight per key.
+    expect(maxInflight).toBe(1);
+  });
+
+  it('happy path: normal task completion still works (regression guard)', async () => {
+    const tracker = makeTracker(makeTask('ok'));
+    const runTask = mock(async (task: Task) => {
+      tracker.completeTask(task.id);
+    });
+
+    const scheduler = new Scheduler(
+      makeOptions({ maxConcurrentLanes: 1, taskTracker: tracker, runTask, laneWaitTimeoutMs: 100 }),
+    );
+    const result = await scheduler.run();
+
+    expect(result.completedTasks).toBe(1);
+    expect(result.failedTasks).toBe(0);
   });
 });
 

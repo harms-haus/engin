@@ -93,6 +93,20 @@ export function extractJsonFromText(text: string): string | null {
 export interface PromptableHarness {
   prompt: (text: string) => Promise<void>;
   getLastAssistantText: () => string | undefined;
+  /** Abort an in-flight prompt (e.g. to cancel an LLM call on timeout). */
+  abort?: () => Promise<void>;
+}
+
+/**
+ * Internal sentinel error thrown by the per-prompt timeout. Distinguishes
+ * timeout-driven retries from genuine prompt failures (connection resets,
+ * auth errors, provider 5xx) in the catch block.
+ */
+class StepTimeoutError extends Error {
+  constructor(timeoutMs: number) {
+    super(`Step timed out after ${timeoutMs}ms`);
+    this.name = 'StepTimeoutError';
+  }
 }
 
 /**
@@ -111,13 +125,63 @@ export async function promptForStructured<T>(
   options?: StructuredOutputOptions,
 ): Promise<{ result: T; attempts: number }> {
   const maxRetries = options?.maxRetries ?? 3;
+  const stepTimeoutMs = options?.stepTimeoutMs;
+  const hasTimeout = stepTimeoutMs != null && Number.isFinite(stepTimeoutMs) && stepTimeoutMs > 0;
   const originalPrompt = prompt;
   const schemaDesc = schemaToString(schema);
   let currentPrompt = `${prompt}\n\n${buildSchemaInstruction(schemaDesc)}`;
   let lastError: string | undefined;
 
   for (let attempt = 0; attempt < maxRetries; attempt++) {
-    await harness.prompt(currentPrompt);
+    // Per-prompt timeout: only when stepTimeoutMs is a positive finite number.
+    // Raced via Promise.race so a hung prompt is rejected. Timeout errors are
+    // caught and treated as retryable (like "no JSON found") so the loop can
+    // retry with a fresh prompt. On normal completion the timer is cleared in
+    // the finally block. When unset/0/NaN/negative: identical to today.
+    if (hasTimeout) {
+      const timeoutMs = stepTimeoutMs;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      // When the timeout wins the race, abort() may cause the in-flight
+      // prompt to reject later. Attach a no-op handler so that orphaned
+      // rejection does not crash the process as an unhandled rejection.
+      // Applied ONLY in the timeout-wins path so genuine prompt errors
+      // (connection reset, auth failure) still propagate when the prompt
+      // rejects BEFORE the timeout.
+      const promptPromise = harness.prompt(currentPrompt);
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        timer = setTimeout(async () => {
+          // Best-effort: abort the in-flight prompt on timeout. Ignore failures
+          // since the harness may not support abort or the call may race with
+          // the prompt settling on its own.
+          await harness.abort?.().catch(() => {
+            /* best-effort */
+          });
+          reject(new StepTimeoutError(timeoutMs));
+        }, timeoutMs);
+      });
+      try {
+        await Promise.race([promptPromise, timeoutPromise]);
+      } catch (err) {
+        if (err instanceof StepTimeoutError) {
+          // Timeout: abort was already dispatched; suppress the prompt's
+          // eventual rejection (abort-triggered) and retry with a fresh prompt.
+          promptPromise.catch(() => {
+            /* swallow abort-triggered rejection */
+          });
+          lastError = err.message;
+          currentPrompt = buildRetryPrompt(originalPrompt, schemaDesc, lastError, 'timeout');
+          continue;
+        }
+        // Genuine prompt error (connection reset, auth failure, provider 5xx):
+        // propagate immediately — matches the non-timeout path where errors
+        // flow straight to the caller.
+        throw err;
+      } finally {
+        if (timer !== undefined) clearTimeout(timer);
+      }
+    } else {
+      await harness.prompt(currentPrompt);
+    }
     const text = harness.getLastAssistantText() ?? '';
 
     const jsonStr = extractJsonFromText(text);
@@ -204,16 +268,18 @@ function buildRetryPrompt(
   originalPrompt: string,
   schemaDesc: string,
   error: string,
-  reason: 'empty' | 'no-json' | 'parse' | 'validation',
+  reason: 'timeout' | 'empty' | 'no-json' | 'parse' | 'validation',
 ): string {
   const hint =
-    reason === 'empty'
-      ? 'Your previous reply contained NO text at all — it ended on a thinking block or a tool call, or was truncated. You MUST reply with the JSON object as text now: do not call any tools, and do not finish without emitting the JSON.'
-      : reason === 'no-json'
-        ? 'Your previous reply contained no parseable JSON. Reply with ONLY the raw JSON object — no surrounding prose and no code fences.'
-        : reason === 'parse'
-          ? 'Your previous reply looked like JSON but failed to parse. Reply with ONLY a corrected, valid JSON object.'
-          : 'Your previous reply was valid JSON but did not match the schema. Reply with ONLY a JSON object that conforms to the schema.';
+    reason === 'timeout'
+      ? 'The previous prompt call timed out before any response was received. Please respond promptly with ONLY the JSON object.'
+      : reason === 'empty'
+        ? 'Your previous reply contained NO text at all — it ended on a thinking block or a tool call, or was truncated. You MUST reply with the JSON object as text now: do not call any tools, and do not finish without emitting the JSON.'
+        : reason === 'no-json'
+          ? 'Your previous reply contained no parseable JSON. Reply with ONLY the raw JSON object — no surrounding prose and no code fences.'
+          : reason === 'parse'
+            ? 'Your previous reply looked like JSON but failed to parse. Reply with ONLY a corrected, valid JSON object.'
+            : 'Your previous reply was valid JSON but did not match the schema. Reply with ONLY a JSON object that conforms to the schema.';
 
   return [
     originalPrompt,

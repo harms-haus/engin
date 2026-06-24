@@ -102,3 +102,83 @@ describe('createStoreCallbacks — onAgentSpawn contextWindow', () => {
     expect(spawn!.data.contextWindow).toBeUndefined();
   });
 });
+
+// ─── onAutoRetryStart / onAutoRetryCompleted ────────────────────────────────
+
+describe('createStoreCallbacks — onAutoRetryStart', () => {
+  it('appends auto_retry_started with correct data and metadata', () => {
+    const { store, calls } = makeRecordingStore();
+    const cbs = createStoreCallbacks(store);
+
+    cbs.onAutoRetryStart?.({
+      agentId: 'agent-r1',
+      attempt: 2,
+      maxAttempts: 5,
+      delayMs: 4000,
+      errorMessage: 'overloaded',
+    });
+
+    const event = calls.find((c) => c.type === 'auto_retry_started');
+    expect(event, 'auto_retry_started event should be appended').toBeDefined();
+    expect(event!.data.attempt).toBe(2);
+    expect(event!.data.maxAttempts).toBe(5);
+    expect(event!.data.delayMs).toBe(4000);
+    expect(event!.data.errorMessage).toBe('overloaded');
+    expect(event!.metadata?.agentId).toBe('agent-r1');
+  });
+
+  it('omits errorMessage when not provided', () => {
+    const { store, calls } = makeRecordingStore();
+    const cbs = createStoreCallbacks(store);
+
+    cbs.onAutoRetryStart?.({
+      agentId: 'agent-r2',
+      attempt: 1,
+      maxAttempts: 3,
+      delayMs: 2000,
+    });
+
+    const event = calls.find((c) => c.type === 'auto_retry_started');
+    expect(event).toBeDefined();
+    expect(event!.data.errorMessage).toBeUndefined();
+  });
+});
+
+describe('createStoreCallbacks — onAutoRetryCompleted', () => {
+  it('appends auto_retry_completed with success=true', () => {
+    const { store, calls } = makeRecordingStore();
+    const cbs = createStoreCallbacks(store);
+
+    cbs.onAutoRetryCompleted?.({
+      agentId: 'agent-r3',
+      success: true,
+      attempt: 1,
+    });
+
+    const event = calls.find((c) => c.type === 'auto_retry_completed');
+    expect(event, 'auto_retry_completed event should be appended').toBeDefined();
+    expect(event!.data.success).toBe(true);
+    expect(event!.data.attempt).toBe(1);
+    expect(event!.data.finalError).toBeUndefined();
+    expect(event!.metadata?.agentId).toBe('agent-r3');
+  });
+
+  it('appends auto_retry_completed with success=false and finalError', () => {
+    const { store, calls } = makeRecordingStore();
+    const cbs = createStoreCallbacks(store);
+
+    cbs.onAutoRetryCompleted?.({
+      agentId: 'agent-r4',
+      success: false,
+      attempt: 5,
+      finalError: 'max retries exceeded',
+    });
+
+    const event = calls.find((c) => c.type === 'auto_retry_completed');
+    expect(event).toBeDefined();
+    expect(event!.data.success).toBe(false);
+    expect(event!.data.attempt).toBe(5);
+    expect(event!.data.finalError).toBe('max retries exceeded');
+    expect(event!.metadata?.agentId).toBe('agent-r4');
+  });
+});

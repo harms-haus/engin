@@ -497,3 +497,252 @@ describe('promptForStructured – JSON-only format instruction', () => {
     );
   });
 });
+
+// ─── promptForStructured – per-prompt timeout (stepTimeoutMs) ───────────────
+
+describe('promptForStructured – per-prompt timeout (stepTimeoutMs)', () => {
+  const schema = z.object({ ok: z.boolean() });
+
+  /** A harness whose prompt() never resolves — simulates a hung LLM call. */
+  function makeNeverResolvingHarness(): PromptableHarness {
+    return {
+      prompt: mock(() => new Promise<void>(() => {})), // never resolves
+      getLastAssistantText: mock(() => undefined as string | undefined),
+    };
+  }
+
+  it(
+    'rejects with a timeout error when stepTimeoutMs is set and prompt hangs',
+    async () => {
+      const harness = makeNeverResolvingHarness();
+
+      let caught: unknown;
+      try {
+        await promptForStructured(harness, 'give me a person', schema, {
+          maxRetries: 3,
+          stepTimeoutMs: 10,
+        });
+      } catch (err) {
+        caught = err;
+      }
+
+      expect(caught).toBeDefined();
+      expect((caught as Error).message).toMatch(/timed out|timeout/i);
+    },
+    { timeout: 5000 },
+  );
+
+  it(
+    'does not reject with timeout when stepTimeoutMs is unset',
+    async () => {
+      const harness: PromptableHarness = {
+        prompt: mock(() => new Promise<void>(() => {})), // never resolves
+        getLastAssistantText: mock(() => undefined as string | undefined),
+      };
+
+      const promise = promptForStructured(harness, 'give me a person', schema, {
+        maxRetries: 3,
+        // no stepTimeoutMs — should not timeout
+      });
+
+      // Race against a short timer — should show 'pending' (no timeout rejection)
+      const result = await Promise.race([
+        promise.then(() => 'resolved' as const),
+        new Promise<'pending'>((r) => setTimeout(() => r('pending'), 50)),
+      ]);
+
+      expect(result).toBe('pending');
+    },
+    { timeout: 5000 },
+  );
+
+  it(
+    'does not reject with timeout when stepTimeoutMs is 0',
+    async () => {
+      const harness: PromptableHarness = {
+        prompt: mock(() => new Promise<void>(() => {})), // never resolves
+        getLastAssistantText: mock(() => undefined as string | undefined),
+      };
+
+      const promise = promptForStructured(harness, 'give me a person', schema, {
+        maxRetries: 3,
+        stepTimeoutMs: 0,
+      });
+
+      const result = await Promise.race([
+        promise.then(() => 'resolved' as const),
+        new Promise<'pending'>((r) => setTimeout(() => r('pending'), 50)),
+      ]);
+
+      expect(result).toBe('pending');
+    },
+    { timeout: 5000 },
+  );
+
+  it(
+    'does not reject with timeout when stepTimeoutMs is NaN',
+    async () => {
+      const harness: PromptableHarness = {
+        prompt: mock(() => new Promise<void>(() => {})), // never resolves
+        getLastAssistantText: mock(() => undefined as string | undefined),
+      };
+
+      const promise = promptForStructured(harness, 'give me a person', schema, {
+        maxRetries: 3,
+        stepTimeoutMs: NaN,
+      });
+
+      const result = await Promise.race([
+        promise.then(() => 'resolved' as const),
+        new Promise<'pending'>((r) => setTimeout(() => r('pending'), 50)),
+      ]);
+
+      expect(result).toBe('pending');
+    },
+    { timeout: 5000 },
+  );
+
+  it('clears the timeout timer when prompt completes normally before timeout', async () => {
+    const abortSpy = mock(() => Promise.resolve());
+    const harness: PromptableHarness = {
+      prompt: mock(async () => {}),
+      getLastAssistantText: mock(() => '{"ok":true}'),
+      abort: abortSpy,
+    };
+
+    const result = await promptForStructured(harness, 'give me ok', schema, {
+      maxRetries: 1,
+      stepTimeoutMs: 50,
+    });
+
+    expect(result.result).toEqual({ ok: true });
+
+    // Wait past the step timeout to prove the timer was cleared — abort must
+    // NOT have been called.
+    await new Promise((r) => setTimeout(r, 100));
+    expect(abortSpy).not.toHaveBeenCalled();
+  });
+
+  it(
+    'calls harness.abort() when the timeout fires',
+    async () => {
+      const abortSpy = mock(async () => {});
+      const harness: PromptableHarness = {
+        prompt: mock(() => new Promise<void>(() => {})), // never resolves
+        getLastAssistantText: mock(() => undefined as string | undefined),
+        abort: abortSpy,
+      };
+
+      let caught: unknown;
+      try {
+        await promptForStructured(harness, 'give me a person', schema, {
+          maxRetries: 1,
+          stepTimeoutMs: 10,
+        });
+      } catch (err) {
+        caught = err;
+      }
+
+      expect(caught).toBeDefined();
+      expect((caught as Error).message).toMatch(/timed out|timeout/i);
+      expect(abortSpy).toHaveBeenCalledTimes(1);
+    },
+    { timeout: 5000 },
+  );
+
+  it('re-throws a genuine prompt error (not retryable) when stepTimeoutMs is set', async () => {
+    const harness: PromptableHarness = {
+      prompt: mock(async () => {
+        throw new Error('LLM connection reset');
+      }),
+      getLastAssistantText: mock(() => undefined as string | undefined),
+    };
+
+    await expect(
+      promptForStructured(harness, 'give me a person', schema, {
+        maxRetries: 3,
+        stepTimeoutMs: 5000,
+      }),
+    ).rejects.toThrow('LLM connection reset');
+  });
+
+  it(
+    'only times out on the current prompt call, not the entire retry loop',
+    async () => {
+      let callCount = 0;
+      const harness: PromptableHarness = {
+        prompt: mock(async () => {
+          callCount++;
+          if (callCount === 1) {
+            // First call hangs — timeout should fire
+            return new Promise<void>(() => {});
+          }
+          // Second call (after retry) returns immediately
+        }),
+        getLastAssistantText: mock(() => undefined as string | undefined),
+      };
+
+      // With stepTimeoutMs, the first hung call should time out and trigger a retry.
+      // The retry prompt call will also get 'no JSON found' and eventually exhaust retries.
+      let caught: unknown;
+      try {
+        await promptForStructured(harness, 'give me a person', schema, {
+          maxRetries: 2,
+          stepTimeoutMs: 10,
+        });
+      } catch (err) {
+        caught = err;
+      }
+
+      // The first call timed out; the retry was attempted (so at least 2 prompt calls)
+      expect(callCount).toBeGreaterThanOrEqual(2);
+      // The final error should be the retries-exhausted error, not a timeout
+      expect((caught as Error).message).toMatch(/Failed to produce structured output/);
+    },
+    { timeout: 5000 },
+  );
+
+  it(
+    'does not crash when the prompt rejects after abort (no unhandled rejection)',
+    async () => {
+      // Simulate: timeout fires → abort is dispatched → abort returns →
+      // StepTimeoutError settles the race → THEN the prompt rejects later
+      // (abort-triggered). The .catch() attached in the timeout-wins path
+      // must swallow that orphaned rejection so no unhandled rejection occurs.
+      const schema = z.object({ ok: z.boolean() });
+      let rejectPrompt: (err: Error) => void;
+      const abortSpy = mock(async () => {
+        // Schedule the prompt rejection AFTER abort returns, so the
+        // StepTimeoutError has already settled the race first.
+        setTimeout(() => rejectPrompt?.(new Error('Session aborted')), 5);
+      });
+      const harness: PromptableHarness = {
+        prompt: mock(() => {
+          return new Promise<void>((_resolve, reject) => {
+            rejectPrompt = reject;
+          });
+        }),
+        getLastAssistantText: mock(() => undefined as string | undefined),
+        abort: abortSpy,
+      };
+
+      let caught: unknown;
+      try {
+        await promptForStructured(harness, 'give me ok', schema, {
+          maxRetries: 1,
+          stepTimeoutMs: 10,
+        });
+      } catch (err) {
+        caught = err;
+      }
+
+      // The timeout error must surface — not the abort-triggered rejection.
+      expect(caught).toBeDefined();
+      expect((caught as Error).message).toMatch(/timed out|timeout/i);
+      // Give time for the async rejection to settle — should be swallowed by
+      // the .catch() attached in the timeout-wins path.
+      await new Promise((r) => setTimeout(r, 50));
+    },
+    { timeout: 5000 },
+  );
+});

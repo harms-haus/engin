@@ -1052,3 +1052,243 @@ describe('RunExecutor.execute — worktree-lifecycle hooks threaded to WorktreeM
     expect(run.reapCalls).toHaveLength(1);
   });
 });
+
+// ── (9) Nothing-succeeded detection ────────────────────────────────────────
+//
+// When `workflow.run()` resolves but NO tasks completed (all failed, all
+// cancelled, or all deadlocked-now-failed via kb-7), the executor must NOT
+// broadcast `run_complete`. Instead it throws an Error with counts so control
+// falls into the existing catch block → `run_failed`.
+//
+// Rules:
+//  - 0 tasks registered → `run_complete` (legitimate workflow with no tasks).
+//  - ≥1 task registered, ≥1 completed → `run_complete` (partial tolerated).
+//  - ≥1 task registered, 0 completed → throw → `run_failed` with counts.
+//  - AbortError → still `run_failed` with 'Run cancelled' (unchanged).
+//  - The thrown error is a normal Error (NOT AbortError), so the catch block
+//    takes the generic error branch → message in the terminal broadcast.
+
+/**
+ * Helper: fire status callbacks through the composed `onStatus` surface so
+ * the store evolves task entities. Returns the IDs of the created tasks so
+ * the caller can inspect the projection afterward.
+ *
+ * `outcomes` is an array of { id, status } — each entry gets registered,
+ * started, and then the given final status applied (complete or failed).
+ */
+async function emitTaskOutcomes(
+  options: WorkflowRunOptions,
+  outcomes: Array<{ id: string; status: 'complete' | 'failed' }>,
+  store: EventStore,
+): Promise<void> {
+  const cb = status(options);
+  for (const { id, status: taskStatus } of outcomes) {
+    cb.onTaskRegister({
+      taskId: id,
+      phaseId: 'p1',
+      title: `Task ${id}`,
+      dependencies: [],
+      steps: [{ name: 'step-0', profileId: 'coder', isReadOnly: false }],
+    });
+    cb.onTaskStart({ taskId: id, title: `Task ${id}`, agentId: `agent-${id}`, phaseId: 'p1' });
+    if (taskStatus === 'complete') {
+      cb.onTaskComplete({ taskId: id, title: `Task ${id}` });
+    } else {
+      cb.onTaskRejected({ taskId: id, title: `Task ${id}`, reason: 'failed' });
+    }
+  }
+  // Flush so the projection is durable (the executor checks getProjection()).
+  await store.flush();
+}
+
+describe('RunExecutor.execute — nothing-succeeded detection', () => {
+  it('broadcasts run_failed when workflow resolves but 0 tasks completed and >0 failed', async () => {
+    const run = await makeRun();
+    const { workflow } = makeWorkflow({
+      runImpl: async (options) => {
+        await emitTaskOutcomes(
+          options,
+          [
+            { id: 't1', status: 'failed' },
+            { id: 't2', status: 'failed' },
+          ],
+          run.store,
+        );
+      },
+    });
+
+    await run.executor.execute(run.handle, workflow, run.storeCallbacks, run.msg);
+
+    // Must be FAILED, not complete.
+    expect(run.handle.status).toBe('failed');
+    expect(run.handle.summary.status).toBe('failed');
+
+    const terminal = run.broadcasts.find((m) => m.type === 'run_failed');
+    expect(terminal).toBeDefined();
+    expect(String((terminal as { error?: string }).error)).toContain('0 successful tasks');
+    expect(String((terminal as { error?: string }).error)).toContain('2 failed');
+
+    // Must NOT have broadcast run_complete.
+    expect(run.broadcasts.find((m) => m.type === 'run_complete')).toBeUndefined();
+  });
+
+  it('broadcasts run_complete when at least 1 task completed (partial success tolerated)', async () => {
+    const run = await makeRun();
+    const { workflow } = makeWorkflow({
+      runImpl: async (options) => {
+        await emitTaskOutcomes(
+          options,
+          [
+            { id: 't1', status: 'complete' },
+            { id: 't2', status: 'failed' },
+          ],
+          run.store,
+        );
+      },
+    });
+
+    await run.executor.execute(run.handle, workflow, run.storeCallbacks, run.msg);
+
+    expect(run.handle.status).toBe('complete');
+    expect(run.handle.summary.status).toBe('complete');
+    expect(run.broadcasts.some((m) => m.type === 'run_complete')).toBe(true);
+  });
+
+  it('broadcasts run_complete when 0 tasks were registered (legitimate no-task workflow)', async () => {
+    const run = await makeRun();
+    const { workflow } = makeWorkflow({ runImpl: () => undefined });
+
+    await run.executor.execute(run.handle, workflow, run.storeCallbacks, run.msg);
+
+    expect(run.handle.status).toBe('complete');
+    expect(run.handle.summary.status).toBe('complete');
+    expect(run.broadcasts.some((m) => m.type === 'run_complete')).toBe(true);
+  });
+
+  it('aborted run still broadcasts run_failed with "Run cancelled" (no regression)', async () => {
+    const run = await makeRun();
+    const { workflow } = makeWorkflow({
+      runImpl: async (options) => {
+        // Emit a task first, then abort — abort path must still win.
+        await emitTaskOutcomes(options, [{ id: 't1', status: 'failed' }], run.store);
+        const err = new Error('aborted');
+        err.name = 'AbortError';
+        throw err;
+      },
+    });
+
+    await run.executor.execute(run.handle, workflow, run.storeCallbacks, run.msg);
+
+    expect(run.handle.status).toBe('failed');
+    const terminal = run.broadcasts.find((m) => m.type === 'run_failed');
+    expect(terminal).toBeDefined();
+    expect(String((terminal as { error?: string }).error)).toBe('Run cancelled');
+  });
+
+  it('regression: a normal all-complete run still broadcasts run_complete', async () => {
+    const run = await makeRun();
+    const { workflow } = makeWorkflow({
+      runImpl: async (options) => {
+        await emitTaskOutcomes(
+          options,
+          [
+            { id: 't1', status: 'complete' },
+            { id: 't2', status: 'complete' },
+          ],
+          run.store,
+        );
+      },
+    });
+
+    await run.executor.execute(run.handle, workflow, run.storeCallbacks, run.msg);
+
+    expect(run.handle.status).toBe('complete');
+    expect(run.handle.summary.status).toBe('complete');
+    expect(run.broadcasts.some((m) => m.type === 'run_complete')).toBe(true);
+    expect(run.reapCalls).toHaveLength(1);
+  });
+
+  it('broadcasts run_failed when 0 complete and some tasks are in non-terminal states', async () => {
+    // Non-terminal statuses (ready/blocked/active/cancelled) in the projection
+    // produce an accurate per-status breakdown in the error message instead of
+    // the former misleading 'cancelled' catch-all label.
+    const run = await makeRun();
+    const { workflow } = makeWorkflow({
+      runImpl: async (options) => {
+        const cb = status(options);
+        // Task t1: registered only → stays 'ready' in projection.
+        cb.onTaskRegister({
+          taskId: 't1',
+          phaseId: 'p1',
+          title: 'Task t1',
+          dependencies: [],
+          steps: [{ name: 'step-0', profileId: 'coder', isReadOnly: false }],
+        });
+        // Task t2: registered + started → 'active' in projection.
+        cb.onTaskRegister({
+          taskId: 't2',
+          phaseId: 'p1',
+          title: 'Task t2',
+          dependencies: [],
+          steps: [{ name: 'step-0', profileId: 'coder', isReadOnly: false }],
+        });
+        cb.onTaskStart({ taskId: 't2', title: 'Task t2', agentId: 'agent-t2', phaseId: 'p1' });
+        // Task t3: rejected → 'failed' in projection.
+        cb.onTaskRegister({
+          taskId: 't3',
+          phaseId: 'p1',
+          title: 'Task t3',
+          dependencies: [],
+          steps: [{ name: 'step-0', profileId: 'coder', isReadOnly: false }],
+        });
+        cb.onTaskStart({ taskId: 't3', title: 'Task t3', agentId: 'agent-t3', phaseId: 'p1' });
+        cb.onTaskRejected({ taskId: 't3', title: 'Task t3', reason: 'failed' });
+        await run.store.flush();
+      },
+    });
+
+    await run.executor.execute(run.handle, workflow, run.storeCallbacks, run.msg);
+
+    expect(run.handle.status).toBe('failed');
+    expect(run.handle.summary.status).toBe('failed');
+
+    const terminal = run.broadcasts.find((m) => m.type === 'run_failed');
+    expect(terminal).toBeDefined();
+    const msg = String((terminal as { error?: string }).error);
+    expect(msg).toContain('0 successful tasks');
+    expect(msg).toContain('1 failed');
+    // Non-terminal breakdown: 1 ready (t1) + 1 active (t2) — stable order matches TaskStatus.
+    expect(msg).toContain('non-terminal: 1 ready, 1 active');
+  });
+
+  it('broadcasts run_failed when all tasks are rejected (0 complete, all mapped to failed)', async () => {
+    const run = await makeRun();
+    const { workflow } = makeWorkflow({
+      runImpl: async (options) => {
+        const cb = status(options);
+        cb.onTaskRegister({
+          taskId: 't1',
+          phaseId: 'p1',
+          title: 'Task t1',
+          dependencies: [],
+          steps: [{ name: 'step-0', profileId: 'coder', isReadOnly: false }],
+        });
+        cb.onTaskStart({ taskId: 't1', title: 'Task t1', agentId: 'a1', phaseId: 'p1' });
+        // onTaskRejected maps to 'failed' in the projection regardless of reason.
+        cb.onTaskRejected({ taskId: 't1', title: 'Task t1', reason: 'cancelled' });
+        await run.store.flush();
+      },
+    });
+
+    await run.executor.execute(run.handle, workflow, run.storeCallbacks, run.msg);
+
+    expect(run.handle.status).toBe('failed');
+    const terminal = run.broadcasts.find((m) => m.type === 'run_failed');
+    expect(terminal).toBeDefined();
+    expect(String((terminal as { error?: string }).error)).toContain('0 successful tasks');
+    expect(String((terminal as { error?: string }).error)).toContain('1 failed');
+    // No non-terminal tasks — the breakdown suffix should be absent.
+    expect(String((terminal as { error?: string }).error)).not.toContain('non-terminal');
+    expect(run.broadcasts.find((m) => m.type === 'run_complete')).toBeUndefined();
+  });
+});

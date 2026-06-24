@@ -960,4 +960,186 @@ describe('RunExecutor', () => {
       });
     });
   });
+
+  // ─── Per-run timeout (runTimeoutMs) ──────────────────────────────────────
+
+  describe('per-run timeout (runTimeoutMs)', () => {
+    /**
+     * A workflow that blocks until the AbortSignal fires.
+     * Sets `started` once running so the test knows the workflow is blocking.
+     */
+    function makeBlockingWorkflow(startedRef: { value: boolean }): WorkflowModule {
+      return {
+        async run(_taskPrompt, options) {
+          options.onStatus?.onWorkflowStart?.({
+            taskPrompt: _taskPrompt,
+            resumed: false,
+            workDir: options.workDir,
+          });
+          startedRef.value = true;
+          const signal = options.signal;
+          return new Promise<void>((_resolve, reject) => {
+            if (signal?.aborted) {
+              reject(new DOMException('Aborted', 'AbortError'));
+              return;
+            }
+            signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true });
+          });
+        },
+      };
+    }
+
+    function makeMsgWithTimeout(runId: string, workDir: string, runTimeoutMs: number): StartRunMessage {
+      return {
+        workflowName: 'develop',
+        taskPrompt: 'do the thing',
+        cwd: '/tmp/project',
+        workDir,
+        runTimeoutMs,
+      } as StartRunMessage;
+    }
+
+    it(
+      'aborts the controller and fails with "Run timed out" when runTimeoutMs is set',
+      async () => {
+        const s = setup('exec-timeout');
+        const spy = spyOn(StatusBridge.prototype, 'broadcastTerminal');
+        spies.push(spy);
+        const started = { value: false };
+
+        await s.executor.execute(
+          s.handle,
+          makeBlockingWorkflow(started),
+          s.storeCallbacks,
+          makeMsgWithTimeout('exec-timeout', s.handle.workDir, 10),
+        );
+
+        expect(started.value).toBe(true);
+        expect(s.handle.status).toBe('failed');
+        expect(s.handle.summary.status).toBe('failed');
+
+        // The terminal broadcast must say "Run timed out" (NOT "Run cancelled").
+        const payload = spy.mock.calls[0][0] as { type: string; runId: string; error: string };
+        expect(payload.type).toBe('run_failed');
+        expect(payload.runId).toBe('exec-timeout');
+        expect(payload.error).toBe('Run timed out');
+
+        const failed = s.messages.filter((m) => m.type === 'run_failed');
+        expect(failed).toHaveLength(1);
+        expect(failed[0]).toMatchObject({ type: 'run_failed', error: 'Run timed out' });
+      },
+      { timeout: 10000 },
+    );
+
+    it(
+      'does NOT abort the controller automatically when runTimeoutMs is not set',
+      async () => {
+        const s = setup('exec-no-timeout');
+        const started = { value: false };
+
+        const execPromise = s.executor.execute(
+          s.handle,
+          makeBlockingWorkflow(started),
+          s.storeCallbacks,
+          makeMsg('exec-no-timeout', s.handle.workDir),
+        );
+
+        // Wait until the workflow is blocking
+        await waitFor(() => started.value);
+
+        // Wait 50ms — no automatic abort should have occurred
+        const result = await Promise.race([
+          execPromise.then(() => 'resolved' as const),
+          new Promise<'pending'>((r) => setTimeout(() => r('pending'), 50)),
+        ]);
+
+        expect(result).toBe('pending');
+        expect(s.handle.status).toBe('running');
+
+        // Clean up: abort manually
+        s.handle.controller.abort();
+        await execPromise;
+      },
+      { timeout: 10000 },
+    );
+
+    it('clears the timeout timer on normal completion', async () => {
+      const s = setup('exec-timeout-ok');
+
+      await s.executor.execute(
+        s.handle,
+        makeOkWorkflow(),
+        s.storeCallbacks,
+        makeMsgWithTimeout('exec-timeout-ok', s.handle.workDir, 60_000),
+      );
+
+      expect(s.handle.status).toBe('complete');
+      // The 60s timeout was set but the run completed before it could fire.
+      // After completion, the reaper (also 60s) was scheduled but no timeout
+      // abort should have occurred. If we fire the reaper, the handle is removed.
+      s.fireReapers();
+      // The run is complete and reaped — if a timeout had fired, status would be 'failed'.
+      expect(s.handle.status).toBe('complete');
+    });
+
+    it(
+      'does NOT schedule a timeout when runTimeoutMs is undefined',
+      async () => {
+        const s = setup('exec-no-timeout-undef');
+        const started = { value: false };
+
+        const execPromise = s.executor.execute(s.handle, makeBlockingWorkflow(started), s.storeCallbacks, {
+          workflowName: 'develop',
+          taskPrompt: 'do the thing',
+          cwd: '/tmp/project',
+          workDir: s.handle.workDir,
+          // runTimeoutMs intentionally omitted
+        } as StartRunMessage);
+
+        await waitFor(() => started.value);
+
+        // No automatic abort after 50ms
+        const result = await Promise.race([
+          execPromise.then(() => 'resolved' as const),
+          new Promise<'pending'>((r) => setTimeout(() => r('pending'), 50)),
+        ]);
+
+        expect(result).toBe('pending');
+        expect(s.handle.status).toBe('running');
+
+        s.handle.controller.abort();
+        await execPromise;
+      },
+      { timeout: 10000 },
+    );
+
+    it(
+      'does NOT schedule a timeout when runTimeoutMs is 0',
+      async () => {
+        const s = setup('exec-timeout-zero');
+        const started = { value: false };
+
+        const execPromise = s.executor.execute(
+          s.handle,
+          makeBlockingWorkflow(started),
+          s.storeCallbacks,
+          makeMsgWithTimeout('exec-timeout-zero', s.handle.workDir, 0),
+        );
+
+        await waitFor(() => started.value);
+
+        const result = await Promise.race([
+          execPromise.then(() => 'resolved' as const),
+          new Promise<'pending'>((r) => setTimeout(() => r('pending'), 50)),
+        ]);
+
+        expect(result).toBe('pending');
+        expect(s.handle.status).toBe('running');
+
+        s.handle.controller.abort();
+        await execPromise;
+      },
+      { timeout: 10000 },
+    );
+  });
 });

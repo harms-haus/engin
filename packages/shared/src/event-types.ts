@@ -1,5 +1,8 @@
 // ─── Event Types ─────────────────────────────────────────────────────────────
-// Maps 1:1 to the 19 StatusCallbacks methods in core/types.ts.
+// Superset of the StatusCallbacks defined in core/types.ts (callbacks +
+// derived / server-only events such as 'log'). auto_retry_started and
+// auto_retry_completed are added ahead of their engine emitter, which will
+// be wired in a later task.
 
 // ─── Re-exports from core/types.ts ──────────────────────────────────────────
 import type { StepDefinition, StepEntity, TaskEntity, TaskStatus } from './types.js';
@@ -24,6 +27,8 @@ export type EventType =
   | 'phase_completed'
   | 'agent_spawned'
   | 'agent_completed'
+  | 'auto_retry_started'
+  | 'auto_retry_completed'
   | 'task_registered'
   | 'task_started'
   | 'step_started'

@@ -77,7 +77,7 @@ describe('LanePool taskRetries map pruning', () => {
         if (calls <= 1) {
           return {
             session: makeSession(() => {
-              throw new Error('fail');
+              throw new Error('overloaded');
             }),
             sessionId: `s-${calls}`,
             dispose: mock(() => {}),
@@ -99,7 +99,7 @@ describe('LanePool taskRetries map pruning', () => {
       setupProfileMocks();
       mockCreateHarness.mockImplementation(() => ({
         session: makeSession(() => {
-          throw new Error('always fails');
+          throw new Error('overloaded');
         }),
         sessionId: 's',
         dispose: mock(() => {}),
@@ -114,13 +114,13 @@ describe('LanePool taskRetries map pruning', () => {
       expect(tracker.getTask('task-1')!.status).toBe('failed');
       // Budget exhausted → permanently failed → entry pruned.
       expect(taskRetriesOf(pool).has('task-1')).toBe(false);
-    });
+    }, 30_000);
 
     it('deletes a task from taskRetries when maxTaskRetries is 1 and the single retry fails', async () => {
       setupProfileMocks();
       mockCreateHarness.mockImplementation(() => ({
         session: makeSession(() => {
-          throw new Error('fail');
+          throw new Error('overloaded');
         }),
         sessionId: 's',
         dispose: mock(() => {}),
@@ -150,8 +150,8 @@ describe('LanePool taskRetries map pruning', () => {
           attempts[task.id] = (attempts[task.id] ?? 0) + 1;
           // task-a: always fails (exhausts budget, pruned).
           if (task.id === 'task-a') {
-            ctx.failTask({ completed: false, error: 'always fails' });
-            return { status: 'failed', error: 'always fails' };
+            ctx.failTask({ completed: false, error: 'overloaded' });
+            return { status: 'failed', error: 'overloaded' };
           }
           // task-b: succeeds on first try (never enters the map).
           if (task.id === 'task-b') {
@@ -160,8 +160,8 @@ describe('LanePool taskRetries map pruning', () => {
           }
           // task-c: fail once then succeed.
           if (attempts[task.id] <= 1) {
-            ctx.failTask({ completed: false, error: 'fail' });
-            return { status: 'failed', error: 'fail' };
+            ctx.failTask({ completed: false, error: 'overloaded' });
+            return { status: 'failed', error: 'overloaded' };
           }
           ctx.completeTask();
           return { status: 'completed' };
@@ -177,7 +177,7 @@ describe('LanePool taskRetries map pruning', () => {
       expect(result.completedTasks).toBe(2);
       // Every settled task's entry has been pruned → bounded map.
       expect(taskRetriesOf(pool).size).toBe(0);
-    });
+    }, 30_000);
 
     it('taskRetries map is empty after all tasks permanently fail', async () => {
       setupProfileMocks();
@@ -188,8 +188,8 @@ describe('LanePool taskRetries map pruning', () => {
         maxConcurrentLanes: 2,
         maxTaskRetries: 1,
         getRunnerForTask: () => async (ctx) => {
-          ctx.failTask({ completed: false, error: 'boom' });
-          return { status: 'failed', error: 'boom' };
+          ctx.failTask({ completed: false, error: 'overloaded' });
+          return { status: 'failed', error: 'overloaded' };
         },
       });
 
@@ -197,7 +197,7 @@ describe('LanePool taskRetries map pruning', () => {
 
       expect(result.failedTasks).toBe(5);
       expect(taskRetriesOf(pool).size).toBe(0);
-    });
+    }, 30_000);
   });
 
   describe('pruning does not break retry correctness', () => {
@@ -209,7 +209,7 @@ describe('LanePool taskRetries map pruning', () => {
         if (calls <= 2) {
           return {
             session: makeSession(() => {
-              throw new Error('fail');
+              throw new Error('overloaded');
             }),
             sessionId: `s-${calls}`,
             dispose: mock(() => {}),
@@ -227,7 +227,7 @@ describe('LanePool taskRetries map pruning', () => {
       expect(tracker.getTask('task-1')!.status).toBe('complete');
       // And the entry is pruned after completion.
       expect(taskRetriesOf(pool).has('task-1')).toBe(false);
-    });
+    }, 30_000);
 
     it('pruning across multiple tasks keeps each task independently retried', async () => {
       setupProfileMocks();
@@ -242,8 +242,8 @@ describe('LanePool taskRetries map pruning', () => {
           attemptsPerTask[task.id] = (attemptsPerTask[task.id] ?? 0) + 1;
           // Each task fails once, then succeeds.
           if (attemptsPerTask[task.id] <= 1) {
-            ctx.failTask({ completed: false, error: 'fail' });
-            return { status: 'failed', error: 'fail' };
+            ctx.failTask({ completed: false, error: 'overloaded' });
+            return { status: 'failed', error: 'overloaded' };
           }
           ctx.completeTask();
           return { status: 'completed' };
@@ -274,8 +274,8 @@ describe('LanePool taskRetries map pruning', () => {
         maxTaskRetries: 1,
         getRunnerForTask: (task) => async (ctx) => {
           attemptsPerTask[task.id] = (attemptsPerTask[task.id] ?? 0) + 1;
-          ctx.failTask({ completed: false, error: 'always' });
-          return { status: 'failed', error: 'always' };
+          ctx.failTask({ completed: false, error: 'overloaded' });
+          return { status: 'failed', error: 'overloaded' };
         },
       });
 
@@ -444,8 +444,8 @@ describe('LanePool per-task worktree lifecycle', () => {
       getRunnerForTask: (task) => async (ctx) => {
         attempts[task.id] = (attempts[task.id] ?? 0) + 1;
         if (attempts[task.id] === 1) {
-          ctx.failTask({ completed: false, error: 'fail' });
-          return { status: 'failed', error: 'fail' };
+          ctx.failTask({ completed: false, error: 'overloaded' });
+          return { status: 'failed', error: 'overloaded' };
         }
         ctx.completeTask();
         return { status: 'completed' };
@@ -472,8 +472,8 @@ describe('LanePool per-task worktree lifecycle', () => {
       maxConcurrentLanes: 1,
       maxTaskRetries: 1,
       getRunnerForTask: () => async (ctx) => {
-        ctx.failTask({ completed: false, error: 'always fails' });
-        return { status: 'failed', error: 'always fails' };
+        ctx.failTask({ completed: false, error: 'overloaded' });
+        return { status: 'failed', error: 'overloaded' };
       },
     });
 

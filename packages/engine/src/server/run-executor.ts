@@ -60,6 +60,7 @@ import { join } from 'node:path';
 
 import { resolveProfilesDirs } from '../core/config.js';
 import { getRepoRoot, isGitRepo, sanitizeBranchSlug } from '../core/git.js';
+import { redactSecrets } from '../core/redact.js';
 import { RendererRegistry } from '../core/renderer-registry.js';
 import { generateTitleAndBranch } from '../core/title-generator.js';
 import type { StatusCallbacks, WorkflowModule, WorkflowRunOptions } from '../core/types.js';
@@ -399,12 +400,52 @@ export class RunExecutor {
     // them). The context exits automatically when this scope settles, so no
     // save/restore is needed.
     await runWithConsoleCapture(store, async () => {
+      // Per-run timeout: only when runTimeoutMs is a positive finite number.
+      // Sets a flag AND aborts the controller so the catch block can distinguish
+      // "Run timed out" from "Run cancelled". Cleared on normal completion.
+      // When unset/0/NaN/negative: identical to today (no timer).
+      let runTimeoutTimer: ReturnType<typeof setTimeout> | undefined;
+      let runTimedOut = false;
+      if (msg.runTimeoutMs != null && Number.isFinite(msg.runTimeoutMs) && msg.runTimeoutMs > 0) {
+        runTimeoutTimer = setTimeout(() => {
+          runTimedOut = true;
+          controller.abort();
+        }, msg.runTimeoutMs);
+      }
+
       try {
         await workflow.run(handle.taskPrompt, options);
 
         // Durability: flush BEFORE flipping status so the terminal event
         // records are on disk by the time clients see "complete".
         await store.flush();
+
+        // Nothing-succeeded detection: when the workflow resolved but NO
+        // tasks completed (all failed / deadlocked-now-failed / non-terminal),
+        // treat the run as a failure. A workflow that legitimately produces
+        // zero tasks is NOT a failure (0 registered → run_complete).
+        const projection = store.getProjection();
+        const taskEntries = Object.values(projection.tasks);
+        const registeredTasks = taskEntries.length;
+        if (registeredTasks > 0) {
+          const completedTasks = taskEntries.filter((t) => t.status === 'complete').length;
+          if (completedTasks === 0) {
+            const failedTasks = taskEntries.filter((t) => t.status === 'failed').length;
+            // Break out non-terminal statuses for accurate diagnostics. Tasks
+            // in 'ready', 'blocked', 'active', or 'cancelled' (any status
+            // that is neither 'complete' nor 'failed') are counted per-status
+            // so the user can see what was stuck vs what genuinely failed.
+            const nonTerminalStatuses = ['ready', 'blocked', 'active', 'cancelled'] as const;
+            const nonTerminalParts: string[] = [];
+            for (const s of nonTerminalStatuses) {
+              const count = taskEntries.filter((t) => t.status === s).length;
+              if (count > 0) nonTerminalParts.push(`${count} ${s}`);
+            }
+            const nonTerminalSummary =
+              nonTerminalParts.length > 0 ? '; non-terminal: ' + nonTerminalParts.join(', ') : '';
+            throw new Error(`Run completed with 0 successful tasks (${failedTasks} failed${nonTerminalSummary})`);
+          }
+        }
 
         handle.status = 'complete';
         handle.summary.status = 'complete';
@@ -428,7 +469,10 @@ export class RunExecutor {
         // Flush even on error so partial events are durable.
         await store.flush();
 
-        // Distinguish AbortError (from controller.abort()) from genuine errors.
+        // Distinguish timeout → cancel → genuine errors.
+        // runTimedOut is set by the per-run timeout handler (above); isAbort
+        // catches both user-initiated cancels AND the timeout abort. Check
+        // runTimedOut FIRST so "Run timed out" is distinct from "Run cancelled".
         const isAbort = err instanceof Error && err.name === 'AbortError';
 
         // Abort hook: fire `onWorkflowAbort` BEFORE flipping the handle
@@ -445,7 +489,11 @@ export class RunExecutor {
           await hookRegistry.invokeObserve('onWorkflowAbort', { reason: 'Aborted', workDir: handle.workDir }, hookCtx);
         }
 
-        const message = isAbort ? 'Run cancelled' : err instanceof Error ? err.message : String(err);
+        const message = runTimedOut
+          ? 'Run timed out'
+          : isAbort
+            ? 'Run cancelled'
+            : redactSecrets(err instanceof Error ? err.message : String(err));
 
         handle.status = 'failed';
         handle.summary.status = 'failed';
@@ -464,6 +512,11 @@ export class RunExecutor {
           ...(handle.summary.worktree ? { worktree: handle.summary.worktree } : {}),
         });
       } finally {
+        // Clear the run-timeout timer so it can't fire post-settle. Placed
+        // here instead of duplicating in both try and catch so it is always
+        // reached — even if store.flush() or invokeObserve throws inside catch.
+        if (runTimeoutTimer !== undefined) clearTimeout(runTimeoutTimer);
+
         this.onRunsChanged();
 
         // Schedule a reaper: once the run is no longer 'running', dispose the

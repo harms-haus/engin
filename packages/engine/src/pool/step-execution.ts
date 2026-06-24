@@ -1,6 +1,7 @@
 import { rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawnAgent } from '../core/agent-lifecycle.js';
+import { classify, extractLastAssistantMessage } from '../core/error-classifier.js';
 import { invokeRenderer } from '../core/renderer-invocation.js';
 import type { RendererRegistry } from '../core/renderer-registry.js';
 import { promptForStructured } from '../core/structured-output.js';
@@ -57,6 +58,11 @@ export interface StepExecutionContext {
   signal?: AbortSignal;
   /** WorktreeManager for isolated git worktree execution */
   worktreeManager?: WorktreeManager;
+  /** Optional per-prompt timeout in milliseconds. When a positive finite number,
+   *  each `session.prompt()` call is raced against a timeout. On expiry the
+   *  session is aborted and an error is thrown. Unset/0/NaN/negative → no
+   *  timeout (zero behavior change). */
+  stepTimeoutMs?: number;
 }
 
 /**
@@ -175,6 +181,7 @@ export async function runStep(
       try {
         const { result } = await promptForStructured(session, promptText, step.schema, {
           maxRetries: ctx.attempt === 0 ? 3 : 1,
+          ...(execCtx.stepTimeoutMs != null ? { stepTimeoutMs: execCtx.stepTimeoutMs } : {}),
         });
         structuredResult = result;
       } catch (err) {
@@ -233,8 +240,57 @@ export async function runStep(
     if (execCtx.signal?.aborted) {
       throw new DOMException('Aborted', 'AbortError');
     }
-    await session.prompt(promptText);
+
+    // Per-prompt timeout: only when stepTimeoutMs is a positive finite number.
+    // Raced via Promise.race so a hung prompt is rejected and the session is
+    // aborted. On normal completion the timer is cleared in the finally block.
+    // When stepTimeoutMs is unset / 0 / NaN / negative: identical to today.
+    const promptPromise = session.prompt(promptText);
+    if (execCtx.stepTimeoutMs != null && Number.isFinite(execCtx.stepTimeoutMs) && execCtx.stepTimeoutMs > 0) {
+      const timeoutMs = execCtx.stepTimeoutMs;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        timer = setTimeout(async () => {
+          await session.abort().catch(() => {
+            /* swallow abort-triggered rejection */
+          });
+          reject(new Error(`Step timed out after ${timeoutMs}ms`));
+        }, timeoutMs);
+      });
+      try {
+        await Promise.race([promptPromise, timeoutPromise]);
+      } catch (err) {
+        // Timeout: suppress the prompt's eventual rejection (abort-triggered)
+        // so it does not become an unhandled rejection.
+        if (err instanceof Error && /timed out/.test(err.message)) {
+          promptPromise.catch(() => {
+            /* swallow abort-triggered rejection */
+          });
+        }
+        throw err;
+      } finally {
+        if (timer !== undefined) clearTimeout(timer);
+      }
+    } else {
+      await promptPromise;
+    }
     const output = session.getLastAssistantText();
+
+    // Fail-fast: if the agent produced no usable text or the provider reported
+    // an error, throw so the runner fails the task instead of silently approving.
+    // classify() inspects the last assistant message metadata; when stopReason
+    // is 'error' OR classify kind is 'empty' (no text content blocks), the step
+    // is rejected immediately. The throw flows through the existing catch block
+    // (which disposes the session) and up to the runner → handleRunnerError.
+    const lastAssistant = extractLastAssistantMessage(session);
+    const classification = classify(undefined, { lastAssistantMessage: lastAssistant });
+    if (lastAssistant?.stopReason === 'error' || classification.kind === 'empty') {
+      const detail = lastAssistant?.errorMessage ? `: ${lastAssistant.errorMessage}` : '';
+      throw new Error(
+        `Step produced no usable output (stopReason: ${lastAssistant?.stopReason ?? 'unknown'})${detail}`,
+      );
+    }
+
     return { result: { type: 'approved', output }, trackedSession };
   } catch (err) {
     // Exception path: dispose the session since processTask won't track it

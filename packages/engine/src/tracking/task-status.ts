@@ -312,6 +312,7 @@ export class TaskTracker extends EventEmitter {
         task.assignedAgent = undefined;
         task.result = undefined;
         task.reviewFeedback = undefined;
+        this.warnedDeadlocked.delete(task.id);
       }
     }
   }
@@ -323,6 +324,7 @@ export class TaskTracker extends EventEmitter {
         task.assignedAgent = undefined;
         task.result = undefined;
         task.reviewFeedback = undefined;
+        this.warnedDeadlocked.delete(task.id);
       }
     }
   }
@@ -442,8 +444,17 @@ export class TaskTracker extends EventEmitter {
    * Returns `true` when every task is settled (`complete` / `failed` / `cancelled`) or
    * blocked with at least one missing dependency (deadlocked). An empty
    * tracker is considered done.
+   *
+   * **SIDE EFFECT:** This is NOT a pure read — when it encounters a `blocked`
+   * task whose dependencies reference non-existent tasks (a deadlock), it
+   * mutates that task to `failed` with a descriptive `result.error` string
+   * starting with `'deadlocked:'`, and emits `TaskSettled`. The mutation is
+   * idempotent (guarded by `warnedDeadlocked`), so repeat calls do not
+   * re-fail or re-emit. Callers that expect a read-only predicate should be
+   * aware of this side effect.
    */
   isPoolDone(): boolean {
+    let settledDeadlock = false;
     if (this.tasks.size === 0) return true;
     for (const task of this.tasks.values()) {
       const s = task.status;
@@ -456,11 +467,19 @@ export class TaskTracker extends EventEmitter {
             console.warn(
               `[TaskTracker] Task "${task.id}" is blocked with missing dependencies: ${missing.join(', ')} — treating as deadlocked`,
             );
+            // Mark deadlocked task as failed so it counts in run results
+            // instead of silently staying blocked forever.
+            task.status = 'failed';
+            task.result = { completed: false, error: `deadlocked: missing dependency ${missing.join(', ')}` };
+            settledDeadlock = true;
           }
           continue;
         }
       }
       return false;
+    }
+    if (settledDeadlock) {
+      queueMicrotask(() => this.emit(TaskTracker.Events.TaskSettled));
     }
     return true;
   }

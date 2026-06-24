@@ -127,6 +127,30 @@ describe('forwardAgentStatus', () => {
     expect(calls).toHaveLength(1);
     expect(calls[0]).toEqual(['onToolCallEnd', info]);
   });
+
+  it('forwards onAutoRetryStart calls', () => {
+    const calls: unknown[] = [];
+    const onStatus: StatusCallbacks = {
+      onAutoRetryStart: (info) => calls.push(['onAutoRetryStart', info]),
+    };
+    const result = forwardAgentStatus(onStatus);
+    const info = { agentId: 'a1', attempt: 2, maxAttempts: 5, delayMs: 4000, errorMessage: 'overloaded' };
+    result!.onAutoRetryStart!(info);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toEqual(['onAutoRetryStart', info]);
+  });
+
+  it('forwards onAutoRetryCompleted calls', () => {
+    const calls: unknown[] = [];
+    const onStatus: StatusCallbacks = {
+      onAutoRetryCompleted: (info) => calls.push(['onAutoRetryCompleted', info]),
+    };
+    const result = forwardAgentStatus(onStatus);
+    const info = { agentId: 'a1', success: false, attempt: 3, finalError: 'rate limit' };
+    result!.onAutoRetryCompleted!(info);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toEqual(['onAutoRetryCompleted', info]);
+  });
 });
 
 // ─── STATUS_CALLBACK_METHODS ───────────────────────────────────────────────
@@ -160,6 +184,8 @@ describe('STATUS_CALLBACK_METHODS', () => {
       'onTurnEnd',
       'onToolCallStart',
       'onToolCallEnd',
+      'onAutoRetryStart',
+      'onAutoRetryCompleted',
       'onSidebarUpdate',
     ];
     expect([...STATUS_CALLBACK_METHODS].sort()).toEqual([...expectedMethods].sort());
@@ -292,6 +318,8 @@ describe('composeStatusCallbacks', () => {
       onTurnEnd: { agentId: '', turn: 0 },
       onToolCallStart: { agentId: '', toolName: '', toolCallId: '', arguments: {} },
       onToolCallEnd: { agentId: '', toolName: '', toolCallId: '', isError: false },
+      onAutoRetryStart: { agentId: '', attempt: 0, maxAttempts: 0, delayMs: 0 },
+      onAutoRetryCompleted: { agentId: '', success: true, attempt: 0 },
     };
     expect(() => {
       for (const name of STATUS_CALLBACK_METHODS) {

@@ -104,6 +104,10 @@ export interface WorktreeInfo {
 export interface StructuredOutputOptions {
   maxRetries: number;
   retryPrompt?: string;
+  /** Optional per-prompt timeout in milliseconds. When a positive finite number,
+   *  each `harness.prompt()` call is raced against a timeout. On expiry an
+   *  error is thrown. Unset/0/NaN/negative → no timeout. */
+  stepTimeoutMs?: number;
 }
 
 // ─── Status Callbacks ──────────────────────────────────────────────────────
@@ -154,6 +158,14 @@ export interface WorkflowStatusCallbacks {
   onWorkflowComplete?: (info: { totalDurationMs: number; agentCount: number }) => void;
   onWorkflowFailed?: (info: { error: Error; phaseId: string }) => void;
   onSidebarUpdate?: (info: { title?: string; indicator?: string }) => void;
+  onAutoRetryStart?: (info: {
+    agentId: string;
+    attempt: number;
+    maxAttempts: number;
+    delayMs: number;
+    errorMessage?: string;
+  }) => void;
+  onAutoRetryCompleted?: (info: { agentId: string; success: boolean; attempt: number; finalError?: string }) => void;
 }
 
 export type TurnContentBlock =
@@ -176,6 +188,14 @@ export interface AgentStatusCallbacks {
     arguments: Record<string, unknown>;
   }) => void;
   onToolCallEnd?: (info: { agentId: string; toolName: string; toolCallId: string; isError: boolean }) => void;
+  onAutoRetryStart?: (info: {
+    agentId: string;
+    attempt: number;
+    maxAttempts: number;
+    delayMs: number;
+    errorMessage?: string;
+  }) => void;
+  onAutoRetryCompleted?: (info: { agentId: string; success: boolean; attempt: number; finalError?: string }) => void;
 }
 
 export type StatusCallbacks = WorkflowStatusCallbacks & AgentStatusCallbacks;
@@ -205,6 +225,8 @@ export const STATUS_CALLBACK_METHODS: readonly string[] = Object.freeze([
   'onTurnEnd',
   'onToolCallStart',
   'onToolCallEnd',
+  'onAutoRetryStart',
+  'onAutoRetryCompleted',
   'onSidebarUpdate',
 ]);
 
@@ -237,6 +259,10 @@ export interface WorkflowRunOptions {
   worktreeManager?: WorktreeManager;
   /** The engine-assembled hook registry. Forwarded to LanePool / runStepTask / runMultiStepTask so engine primitives can invoke hooks. */
   hookRegistry?: HookRegistry;
+  /** Optional per-prompt timeout in milliseconds. Forwarded to LanePool so
+   *  each `session.prompt()` call is raced against a timeout. Unset/0/NaN → no
+   *  timeout (zero behavior change). */
+  stepTimeoutMs?: number;
 }
 
 // ─── Workflow Entry ───────────────────────────────────────────────────────

@@ -823,7 +823,7 @@ describe('LanePool', () => {
         failCount++;
         return {
           session: makeSession(() => {
-            throw new Error('always fails');
+            throw new Error('overloaded');
           }),
           sessionId: `s-${failCount}`,
           dispose: mock(() => {}),
@@ -836,7 +836,7 @@ describe('LanePool', () => {
       expect(result.failedTasks).toBe(1);
       expect(result.completedTasks).toBe(0);
       expect(tracker.getTask('task-1')!.status).toBe('failed');
-    });
+    }, 30_000);
 
     it('re-run task starts from step 1 (re-executes the first step)', async () => {
       setupProfileMocks();
@@ -849,7 +849,7 @@ describe('LanePool', () => {
         if (calls <= 2) {
           return {
             session: makeSession(() => {
-              throw new Error('fail');
+              throw new Error('overloaded');
             }),
             sessionId: `s-${calls}`,
             dispose: mock(() => {}),
@@ -867,7 +867,7 @@ describe('LanePool', () => {
       // dir suffix `-0-implement` appears across all 3 attempts because each
       // retry restarts the step index from 0.
       expect(seenStepNames.every((d) => d.endsWith('0-implement'))).toBe(true);
-    });
+    }, 30_000);
 
     it('clears the task session directory on each retry', async () => {
       setupProfileMocks();
@@ -886,7 +886,7 @@ describe('LanePool', () => {
         if (calls <= 1) {
           return {
             session: makeSession(() => {
-              throw new Error('fail');
+              throw new Error('overloaded');
             }),
             sessionId: `s-${calls}`,
             dispose: mock(() => {}),
@@ -903,7 +903,7 @@ describe('LanePool', () => {
       // and only attempt 2's marker remains in the recreated dir.
       expect(existsSync(join(createdDirs[0], 'attempt-1.jsonl'))).toBe(false);
       expect(existsSync(join(createdDirs[0], 'attempt-2.jsonl'))).toBe(true);
-    });
+    }, 30_000);
 
     it('does NOT retry when maxTaskRetries is unset (preserves historical behavior)', async () => {
       setupProfileMocks();
@@ -951,7 +951,7 @@ describe('LanePool', () => {
         return n <= 2
           ? {
               session: makeSession(() => {
-                throw new Error('fail');
+                throw new Error('overloaded');
               }),
               sessionId: `s-${n}`,
               dispose: mock(() => {}),
@@ -969,7 +969,7 @@ describe('LanePool', () => {
       // attempt numbering: 2/3 then 3/3
       expect(retryCalls[0][0].decision).toContain('attempt 2/3');
       expect(retryCalls[1][0].decision).toContain('attempt 3/3');
-    });
+    }, 30_000);
   });
 
   describe('empty pool', () => {

@@ -1,10 +1,12 @@
 // ─── Lane Pool ──────────────────────────────────────────────────────────────
+import { classify } from '../core/error-classifier.js';
 import { relativizePathsIn } from '../core/path-relativizer.js';
 import { clearProfileCache, loadProfilesFromDirs } from '../core/profile.js';
 import type { AgentProfile, Task } from '../core/types.js';
 import { safeErrorMessage } from '../core/utils.js';
 import { createDefaultAuditor } from '../hooks/defaults/auditor.js';
 import type { BeforeTaskResult, HookContext } from '../hooks/types.js';
+import { TaskTracker } from '../tracking/task-status.js';
 // buildPrompt is used via prompt-builder module directly
 import { linearStepsRunner } from './linear-steps-runner.js';
 import { Scheduler } from './scheduler.js';
@@ -185,6 +187,34 @@ export class LanePool {
       });
     }
 
+    // ── Deadlock onTaskRejected observer ──────────────────────────────
+    // isPoolDone() fails deadlocked tasks (blocked with missing deps) by
+    // mutating them to 'failed' and emitting TaskSettled — but it does NOT
+    // fire onStatus lifecycle callbacks (the tracker is a pure write model
+    // with no dependency on onStatus). Without this observer, the TUI/web
+    // never learns which task deadlocked or why. We listen to TaskSettled,
+    // detect freshly-deadlocked tasks (result.error starts with 'deadlocked:'),
+    // and fire onTaskRejected once per deadlocked task. The Set guards
+    // against duplicate emission (isPoolDone itself is idempotent, but the
+    // event may fire for other settled tasks between deadlock checks).
+    const deadlockedSurfaced = new Set<string>();
+    const onTaskSettled = () => {
+      for (const t of taskTracker.getAllTasks()) {
+        if (t.status === 'failed' && !deadlockedSurfaced.has(t.id)) {
+          const resultErr = (t.result as Record<string, unknown> | undefined)?.error;
+          if (typeof resultErr === 'string' && resultErr.startsWith('deadlocked:')) {
+            deadlockedSurfaced.add(t.id);
+            this.options.onStatus?.onTaskRejected?.({
+              taskId: t.id,
+              title: t.title,
+              reason: resultErr,
+            });
+          }
+        }
+      }
+    };
+    taskTracker.on(TaskTracker.Events.TaskSettled, onTaskSettled);
+
     try {
       const scheduler = new Scheduler({
         maxConcurrentLanes,
@@ -227,6 +257,7 @@ export class LanePool {
       });
       return await scheduler.run();
     } finally {
+      taskTracker.removeListener(TaskTracker.Events.TaskSettled, onTaskSettled);
       this.options.signal?.removeEventListener('abort', abortActiveSessions);
     }
   }
@@ -291,16 +322,91 @@ export class LanePool {
       }
     }
 
+    // ── Classify the failure to decide retryability ─────────────────────
+    // Use the error classifier so permanent errors (model-not-found, auth
+    // failures, billing limits) fail fast instead of burning retry budget
+    // on futile re-runs. Transient errors (rate limits, overloads) get an
+    // abortable backoff delay before reset.
+    //
+    // Enrich the reason with the task's stored result error so classify's
+    // regex-based checks (CONFIG_ERROR_RE, TRANSIENT_RE) can match the
+    // provider error text even when `failureReason` was undefined (e.g. a
+    // runner that settled the task via failTask without returning an
+    // error/feedback string). PROVIDER_LIMIT_RE (billing/quota) only fires
+    // when `lastAssistant.errorMessage` is available (step-execution layer);
+    // billing errors that surface here as plain reason strings fall through
+    // to 'unknown' (still retryable=false). We do NOT have access to the
+    // session's last assistant message here (it lives in step-execution and
+    // is not threaded into the outcome), so assistant-message-based
+    // classification (stopReason === 'error', empty content, overflow) is
+    // not possible at this layer — the enriched reason string is the
+    // primary classification input.
     const max = this.options.maxTaskRetries ?? 0;
+    const used = this.taskRetries.get(task.id) ?? 0;
+
+    // Fall back to the task's stored result error when reason is absent.
+    let enrichedReason = reason;
+    if (!enrichedReason && task.result) {
+      const resultErr = (task.result as Record<string, unknown> | undefined)?.error;
+      if (typeof resultErr === 'string') {
+        enrichedReason = resultErr;
+      }
+    }
+
+    // Pass { attempt: used + 1 } so computeTransientDelay scales across
+    // successive retries (2s → 4s → 8s → 16s → 30s cap). Without this, every
+    // transient retry gets a flat ~2s delay (attempt defaults to 1).
+    const classification = classify(enrichedReason, { attempt: used + 1 });
+
+    if (!classification.retryable) {
+      // Permanent / abort / unknown — do not retry. Prune the counter and
+      // surface the verdict so the TUI / workflow can display it.
+      this.taskRetries.delete(task.id);
+      this.options.onStatus?.onDecision?.({
+        agentId,
+        decision: `Task "${task.id}" failed permanently (${classification.kind}${enrichedReason ? ': ' + enrichedReason : ''}) — not retried`,
+        reasoning: enrichedReason ?? 'non-retryable error',
+        taskId: task.id,
+      });
+      return;
+    }
+
     if (max <= 0) {
       // No retries configured — permanent failure. Prune the counter and stop.
       this.taskRetries.delete(task.id);
       return;
     }
 
-    const used = this.taskRetries.get(task.id) ?? 0;
     if (used >= max) {
       // Retry budget exhausted — permanent failure. Prune the counter and stop.
+      this.taskRetries.delete(task.id);
+      return;
+    }
+
+    // ── Backoff delay (abortable) ────────────────────────────────────────
+    // For transient/empty retries, wait before resetting so the provider
+    // has time to recover. The delay is raced against the abort signal so
+    // SIGINT cancels promptly instead of blocking for the full backoff.
+    // The abort listener is removed in BOTH the timer callback (normal
+    // completion) and the abort handler (cancellation) to prevent listener
+    // leaks across retries.
+    const delayMs = classification.delayMs ?? Math.min(2000 * Math.pow(2, used), 30000);
+    if (delayMs > 0) {
+      await new Promise<void>((resolve) => {
+        const onAbort = () => {
+          clearTimeout(timer);
+          resolve();
+        };
+        const timer: ReturnType<typeof setTimeout> = setTimeout(() => {
+          this.options.signal?.removeEventListener('abort', onAbort);
+          resolve();
+        }, delayMs);
+        this.options.signal?.addEventListener('abort', onAbort, { once: true });
+      });
+    }
+
+    // If aborted during the delay, bail out — do not retry.
+    if (this.options.signal?.aborted) {
       this.taskRetries.delete(task.id);
       return;
     }
@@ -338,20 +444,43 @@ export class LanePool {
    * reproducing the prior `Promise.allSettled` rejected-lane logging path.
    */
   private async processTask(task: Task, agentId: string, profiles: Map<string, AgentProfile>): Promise<void> {
-    // Fire onTaskStart BEFORE calling the runner
-    this.options.onStatus?.onTaskStart?.({
-      taskId: task.id,
-      title: task.title,
-      agentId,
-      phaseId: this.options.phaseId,
-      startedAt: Date.now(),
-    });
-
     const processorCtx: TaskProcessorContext = {
       options: this.options,
       activeSessions: this.activeSessions,
       phaseId: this.options.phaseId,
     };
+
+    // ── Pre-try orphan prevention ──────────────────────────────────────
+    // If onTaskStart (or any pre-try code) throws, the task was claimed
+    // ('active') by the Scheduler but processTask would exit without
+    // settling it — leaving an orphaned active task that hangs the pool
+    // forever. Catch the pre-try failure and settle the task to 'failed'
+    // before re-throwing so isPoolDone() returns true and the pool
+    // completes. processorCtx is constructed BEFORE this block so the
+    // catch can use safeFailTask.
+    try {
+      this.options.onStatus?.onTaskStart?.({
+        taskId: task.id,
+        title: task.title,
+        agentId,
+        phaseId: this.options.phaseId,
+        startedAt: Date.now(),
+      });
+    } catch (err) {
+      // Intentional permanent failure: an onTaskStart crash is deterministic
+      // (the callback will crash again on the same task on retry), so
+      // retrying would just re-fire the same crashing callback. The re-throw
+      // below bypasses maybeRetryFailedTask entirely, making this a permanent
+      // failure — which is correct for a deterministic callback error.
+      //
+      // NOTE: no reportError here — the outer runTask wrapper in
+      // LanePool.run() already reports on re-throw (single report).
+      //
+      // safeFailTask guards against double-settlement internally (swallows
+      // errors from invalid state transitions via try/catch).
+      safeFailTask(task.id, { completed: false, error: safeErrorMessage(err) }, processorCtx);
+      throw err;
+    }
 
     let failureReason: string | undefined;
     // True when the task's approved work could not be MERGED (the steps
@@ -425,6 +554,7 @@ export class LanePool {
         auditLog: this.options.auditLog,
         signal: this.options.signal,
         worktreeManager: this.options.worktreeManager,
+        stepTimeoutMs: this.options.stepTimeoutMs,
         // In worktree mode, defer settlement until after merge so a
         // failed merge can flip the outcome to `failed`. The closure
         // reads `worktreeCreated` at call time — which is set BEFORE
@@ -533,7 +663,7 @@ export class LanePool {
       const error = safeErrorMessage(err);
       failureReason = error;
       reportError(agentId, error, undefined, task.id, processorCtx);
-      safeFailTask(task.id, { completed: false, error: true }, processorCtx);
+      safeFailTask(task.id, { completed: false, error }, processorCtx);
     }
 
     // ── Same-run retry: if the task just failed and its budget isn't ────────

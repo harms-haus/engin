@@ -36,6 +36,11 @@ export interface LanePoolOptions {
   getRunnerForTask?: (task: Task) => TaskRunner;
   /** Maximum retries per step on agent crash. Default: 5 */
   maxStepRetries?: number;
+  /** Optional per-prompt timeout in milliseconds. When a positive finite number,
+   *  each `session.prompt()` call is raced against a timeout. On expiry the
+   *  session is aborted and an error is thrown. Unset/0/NaN/negative → no
+   *  timeout (zero behavior change). */
+  stepTimeoutMs?: number;
   /**
    * Maximum number of times a failed task is reset and re-run within a single
    * pool run, after its initial attempt. Total attempts = `1 + maxTaskRetries`.
@@ -95,6 +100,10 @@ export interface TaskRunnerContext {
   cwd: string;
   apiKeys?: Record<string, string>;
   maxStepRetries: number;
+  /** Optional per-prompt timeout in milliseconds. Forwarded into the
+   *  {@link StepExecutionContext} so `runStep` can race `session.prompt()`
+   *  against it. Unset/0/NaN/negative → no timeout. */
+  stepTimeoutMs?: number;
   /** Optional registry of custom output renderers keyed by profile name */
   rendererRegistry?: RendererRegistry;
   /** Optional registry of workflow hooks. Forwarded into the

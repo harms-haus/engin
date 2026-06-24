@@ -128,6 +128,7 @@ export function buildExecCtx(ctx: TaskRunnerContext): StepExecutionContext {
     worktreeCwd: ctx.worktreeCwd,
     signal: ctx.signal,
     worktreeManager: ctx.worktreeManager,
+    stepTimeoutMs: ctx.stepTimeoutMs,
   };
 }
 

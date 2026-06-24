@@ -358,6 +358,8 @@ describe('createStoreCallbacks', () => {
         'onTurnEnd',
         'onToolCallStart',
         'onToolCallEnd',
+        'onAutoRetryStart',
+        'onAutoRetryCompleted',
       ] as const;
       for (const m of methods) {
         expect(typeof (cb as Record<string, unknown>)[m]).toBe('function');

@@ -181,5 +181,26 @@ export function createStoreCallbacks(store: StoreLike): StatusCallbacks {
         { agentId: info.agentId },
       );
     },
+
+    onAutoRetryStart(info) {
+      store.append(
+        'auto_retry_started',
+        {
+          attempt: info.attempt,
+          maxAttempts: info.maxAttempts,
+          delayMs: info.delayMs,
+          errorMessage: info.errorMessage,
+        },
+        { agentId: info.agentId },
+      );
+    },
+
+    onAutoRetryCompleted(info) {
+      store.append(
+        'auto_retry_completed',
+        { success: info.success, attempt: info.attempt, finalError: info.finalError },
+        { agentId: info.agentId },
+      );
+    },
   };
 }

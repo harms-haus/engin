@@ -70,6 +70,8 @@ export function forwardAgentStatus(onStatus?: StatusCallbacks): AgentStatusCallb
     onTurnEnd: (info) => onStatus.onTurnEnd?.(info),
     onToolCallStart: (info) => onStatus.onToolCallStart?.(info),
     onToolCallEnd: (info) => onStatus.onToolCallEnd?.(info),
+    onAutoRetryStart: (info) => onStatus.onAutoRetryStart?.(info),
+    onAutoRetryCompleted: (info) => onStatus.onAutoRetryCompleted?.(info),
   };
 }
 

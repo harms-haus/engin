@@ -120,6 +120,10 @@ export type ClientMessage =
       workDir?: string;
       maxConcurrent?: number;
       apiKeys?: Record<string, string>;
+      /** Optional per-run timeout in milliseconds. When set, the run's
+       *  AbortController is aborted after this duration, ending the run as
+       *  run_failed with a 'Run timed out' message. Unset → no timeout. */
+      runTimeoutMs?: number;
     }
   | { type: 'subscribe'; runId: string }
   | { type: 'unsubscribe'; runId: string }

@@ -9,7 +9,8 @@ import {
   SessionManager,
 } from '@earendil-works/pi-coding-agent';
 
-import type { HarnessCreationOptions, TurnContentBlock } from './types.js';
+import { redactSecrets } from './redact.js';
+import type { AgentStatusCallbacks, HarnessCreationOptions, TurnContentBlock } from './types.js';
 import { DEFAULT_TOOLS } from './utils.js';
 import { createWriteSandboxExtension } from './write-sandbox.js';
 
@@ -20,8 +21,88 @@ type AgentLevelEvent =
   | { type: 'turn_start' }
   | { type: 'turn_end'; message: { role: string; content?: any[]; usage?: { input: number; output: number } } }
   | { type: 'tool_execution_start'; toolName: string; toolCallId: string; args?: Record<string, unknown> }
-  | { type: 'tool_execution_end'; toolName: string; toolCallId: string; isError: boolean };
+  | { type: 'tool_execution_end'; toolName: string; toolCallId: string; isError: boolean }
+  | { type: 'auto_retry_start'; attempt: number; maxAttempts: number; delayMs: number; errorMessage: string }
+  | { type: 'auto_retry_end'; success: boolean; attempt: number; finalError?: string };
 /* eslint-enable @typescript-eslint/no-explicit-any */
+
+// ─── createAgentEventForwarder ─────────────────────────────────────────────
+
+/**
+ * Map a pi-coding-agent {@link AgentSessionEvent} to the corresponding
+ * {@link AgentStatusCallbacks} call. Exported so it can be unit-tested
+ * without mocking npm-package dependencies (createHarness, AuthStorage, etc.).
+ *
+ * @returns a subscriber function suitable for `session.subscribe()`.
+ */
+export function createAgentEventForwarder(
+  onAgentStatus: AgentStatusCallbacks,
+  effectiveAgentId: string,
+): (event: AgentSessionEvent) => void {
+  let turnCount = 0;
+  return (event: AgentSessionEvent) => {
+    const e = event as AgentLevelEvent;
+    if (e.type === 'turn_start') {
+      onAgentStatus.onTurnStart?.({
+        agentId: effectiveAgentId,
+        turn: ++turnCount,
+      });
+    } else if (e.type === 'turn_end') {
+      const isAssistant = e.message?.role === 'assistant';
+      const usage = isAssistant ? e.message?.usage : undefined;
+      let contentBlocks: TurnContentBlock[] | undefined;
+      if (isAssistant && e.message.content) {
+        contentBlocks = [];
+        // Map only the block types supported by TurnContentBlock.
+        // Unrecognized types (e.g., future upstream additions) are intentionally skipped.
+        for (const block of e.message.content) {
+          if (block.type === 'text') {
+            contentBlocks.push({ type: 'text', text: block.text });
+          } else if (block.type === 'thinking') {
+            contentBlocks.push({ type: 'thinking', thinking: block.thinking, redacted: block.redacted });
+          } else if (block.type === 'toolCall') {
+            contentBlocks.push({ type: 'toolCall', id: block.id, name: block.name, arguments: block.arguments });
+          }
+        }
+      }
+      onAgentStatus.onTurnEnd?.({
+        agentId: effectiveAgentId,
+        turn: turnCount,
+        tokens: usage ? { input: usage.input, output: usage.output } : undefined,
+        contentBlocks,
+      });
+    } else if (e.type === 'tool_execution_start') {
+      onAgentStatus.onToolCallStart?.({
+        agentId: effectiveAgentId,
+        toolName: e.toolName,
+        toolCallId: e.toolCallId,
+        arguments: e.args ?? {},
+      });
+    } else if (e.type === 'tool_execution_end') {
+      onAgentStatus.onToolCallEnd?.({
+        agentId: effectiveAgentId,
+        toolName: e.toolName,
+        toolCallId: e.toolCallId,
+        isError: e.isError ?? false,
+      });
+    } else if (e.type === 'auto_retry_start') {
+      onAgentStatus.onAutoRetryStart?.({
+        agentId: effectiveAgentId,
+        attempt: Number(e.attempt) || 1,
+        maxAttempts: Number(e.maxAttempts) || 1,
+        delayMs: Number(e.delayMs) || 0,
+        errorMessage: redactSecrets(e.errorMessage),
+      });
+    } else if (e.type === 'auto_retry_end') {
+      onAgentStatus.onAutoRetryCompleted?.({
+        agentId: effectiveAgentId,
+        success: e.success === true,
+        attempt: Number(e.attempt) || 1,
+        finalError: e.finalError != null ? redactSecrets(e.finalError) : undefined,
+      });
+    }
+  };
+}
 
 // ─── createHarness ──────────────────────────────────────────────────────────
 
@@ -125,57 +206,12 @@ export async function createHarness(
     (onAgentStatus.onTurnStart ||
       onAgentStatus.onTurnEnd ||
       onAgentStatus.onToolCallStart ||
-      onAgentStatus.onToolCallEnd)
+      onAgentStatus.onToolCallEnd ||
+      onAgentStatus.onAutoRetryStart ||
+      onAgentStatus.onAutoRetryCompleted)
   ) {
-    let turnCount = 0;
     const effectiveAgentId = options.agentId ?? sessionId;
-    unsubscribe = session.subscribe((event: AgentSessionEvent) => {
-      const e = event as AgentLevelEvent;
-      if (e.type === 'turn_start') {
-        onAgentStatus.onTurnStart?.({
-          agentId: effectiveAgentId,
-          turn: ++turnCount,
-        });
-      } else if (e.type === 'turn_end') {
-        const isAssistant = e.message?.role === 'assistant';
-        const usage = isAssistant ? e.message?.usage : undefined;
-        let contentBlocks: TurnContentBlock[] | undefined;
-        if (isAssistant && e.message.content) {
-          contentBlocks = [];
-          // Map only the block types supported by TurnContentBlock.
-          // Unrecognized types (e.g., future upstream additions) are intentionally skipped.
-          for (const block of e.message.content) {
-            if (block.type === 'text') {
-              contentBlocks.push({ type: 'text', text: block.text });
-            } else if (block.type === 'thinking') {
-              contentBlocks.push({ type: 'thinking', thinking: block.thinking, redacted: block.redacted });
-            } else if (block.type === 'toolCall') {
-              contentBlocks.push({ type: 'toolCall', id: block.id, name: block.name, arguments: block.arguments });
-            }
-          }
-        }
-        onAgentStatus.onTurnEnd?.({
-          agentId: effectiveAgentId,
-          turn: turnCount,
-          tokens: usage ? { input: usage.input, output: usage.output } : undefined,
-          contentBlocks,
-        });
-      } else if (e.type === 'tool_execution_start') {
-        onAgentStatus.onToolCallStart?.({
-          agentId: effectiveAgentId,
-          toolName: e.toolName,
-          toolCallId: e.toolCallId,
-          arguments: e.args ?? {},
-        });
-      } else if (e.type === 'tool_execution_end') {
-        onAgentStatus.onToolCallEnd?.({
-          agentId: effectiveAgentId,
-          toolName: e.toolName,
-          toolCallId: e.toolCallId,
-          isError: e.isError ?? false,
-        });
-      }
-    });
+    unsubscribe = session.subscribe(createAgentEventForwarder(onAgentStatus, effectiveAgentId));
   }
 
   const dispose = () => {
