@@ -120,6 +120,7 @@ interface ExpectedHookRegistry {
   ): Promise<unknown | undefined>;
   invokeAllRun<K extends keyof WorkflowHooks>(name: K, args: unknown, ctx: HookContext): Promise<unknown>;
   hasSubscribers(name: string): boolean;
+  clone(): ExpectedHookRegistry;
 }
 
 // ─── Compile-time structural equality assertions ───────────────────────────
@@ -210,6 +211,10 @@ class FakeRegistry implements HookRegistry {
 
   hasSubscribers(_name: string): boolean {
     return false;
+  }
+
+  clone(): HookRegistry {
+    return new FakeRegistry();
   }
 }
 

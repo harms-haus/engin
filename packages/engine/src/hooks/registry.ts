@@ -235,6 +235,33 @@ export class HookRegistry {
       this.hooks.set(name, { rule: 'observe', subscribers: [] });
     }
   }
+
+  /**
+   * Return a NEW {@link HookRegistry} that shares NO mutable state with this
+   * instance. The clone inherits a shallow COPY of the internal hooks map:
+   * each {@link HookEntry} gets its OWN `subscribers` array (the subscriber
+   * function references are shared — correct, since callbacks are immutable).
+   * `rule` / `reducer` are copied by reference.
+   *
+   * Registering subscribers on the clone does NOT affect the original, and
+   * vice versa. The clone's inherited subscribers still fire (they are
+   * pre-populated from the original's state at clone time).
+   *
+   * This is what enables per-phase / per-run registry isolation: a phase's
+   * `run(ctx)` receives a clone so workflow code registering phase-specific
+   * hooks on `ctx.hookRegistry` cannot leak to other phases.
+   */
+  clone(): HookRegistry {
+    const cloned = new HookRegistry();
+    for (const [name, entry] of this.hooks) {
+      cloned.hooks.set(name, {
+        rule: entry.rule,
+        reducer: entry.reducer,
+        subscribers: [...entry.subscribers],
+      });
+    }
+    return cloned;
+  }
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────

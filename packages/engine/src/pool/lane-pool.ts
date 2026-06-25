@@ -5,7 +5,7 @@ import { clearProfileCache, loadProfilesFromDirs } from '../core/profile.js';
 import type { AgentProfile, Task } from '../core/types.js';
 import { safeErrorMessage } from '../core/utils.js';
 import { createDefaultAuditor } from '../hooks/defaults/auditor.js';
-import type { BeforeTaskResult, HookContext } from '../hooks/types.js';
+import type { BeforeTaskResult, HookContext, HookRegistry } from '../hooks/types.js';
 import { TaskTracker } from '../tracking/task-status.js';
 // buildPrompt is used via prompt-builder module directly
 import { linearStepsRunner } from './linear-steps-runner.js';
@@ -48,6 +48,8 @@ export class LanePool {
   private readonly taskRetries = new Map<string, number>();
   /** Pending skip reason set by the `beforeTask` hook; consumed in the SKIP path of processTask. */
   private pendingSkipReason?: string;
+  /** Scoped clone of `options.hookRegistry` created at the start of `run()` so pool-internal subscriber registrations (e.g. the default auditor) never mutate the original. */
+  private scopedHookRegistry?: HookRegistry;
 
   constructor(options: LanePoolOptions) {
     this.options = options;
@@ -82,7 +84,7 @@ export class LanePool {
    * 5. Otherwise throw.
    */
   private async resolveRunner(task: Task): Promise<TaskRunner | typeof LanePool.SKIP> {
-    const hookRegistry = this.options.hookRegistry;
+    const hookRegistry = this.scopedHookRegistry;
     const seed = this.options.getStepsForTask?.(task) ?? [];
 
     // `beforeTask` first-wins hook seam: mirrors the `beforeStepPrompt` /
@@ -140,6 +142,12 @@ export class LanePool {
       return { completedTasks: 0, failedTasks: 0 };
     }
 
+    // Create a scoped clone of the hook registry so pool-internal subscriber
+    // registrations (e.g. the default auditor) never mutate the original
+    // `options.hookRegistry`. All downstream code (resolveRunner, auditor
+    // registration, TaskRunnerContext, Scheduler config) uses this clone.
+    this.scopedHookRegistry = this.options.hookRegistry?.clone();
+
     // Fire onTaskRegister once per task so the TUI gets the initial task layout
     // with phaseId and step definitions before any profile loading or agent spawning.
     for (const task of taskTracker.getAllTasks()) {
@@ -182,9 +190,9 @@ export class LanePool {
     // BOTH `auditLog` and `hookRegistry` are present — when either is absent,
     // no auditor is registered (backward compat: manual `auditLog.append`
     // calls in workflow code still work).
-    if (this.options.auditLog && this.options.hookRegistry) {
+    if (this.options.auditLog && this.scopedHookRegistry) {
       const auditor = createDefaultAuditor(this.options.auditLog);
-      this.options.hookRegistry.register({
+      this.scopedHookRegistry.register({
         onStructuredOutput: auditor.onStructuredOutput,
         onDecision: auditor.onDecision,
       });
@@ -220,7 +228,7 @@ export class LanePool {
       const scheduler = new Scheduler({
         maxConcurrentLanes,
         taskTracker,
-        hookRegistry: this.options.hookRegistry,
+        hookRegistry: this.scopedHookRegistry,
         signal: this.options.signal,
         laneWaitTimeoutMs: this.options.laneWaitTimeoutMs,
         // The Scheduler drives the lane loop; LanePool.processTask owns
@@ -260,6 +268,7 @@ export class LanePool {
     } finally {
       taskTracker.removeListener(TaskTracker.Events.TaskSettled, onTaskSettled);
       this.options.signal?.removeEventListener('abort', abortActiveSessions);
+      this.scopedHookRegistry = undefined;
     }
   }
 
@@ -543,7 +552,7 @@ export class LanePool {
         apiKeys: this.options.apiKeys,
         maxStepRetries: this.options.maxStepRetries ?? DEFAULT_MAX_STEP_RETRIES,
         rendererRegistry: this.options.rendererRegistry,
-        hookRegistry: this.options.hookRegistry,
+        hookRegistry: this.scopedHookRegistry,
         auditLog: this.options.auditLog,
         signal: this.options.signal,
         worktreeManager: this.options.worktreeManager,

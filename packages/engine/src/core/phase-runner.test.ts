@@ -51,6 +51,7 @@ import type {
   BeforePhaseArgs,
   BeforePhaseTransitionArgs,
   HookContext,
+  HookRegistry,
   OnPhaseSettledArgs,
   ShouldRetryPhaseArgs,
 } from '../hooks/types.js';
@@ -925,5 +926,374 @@ describe('PhaseRunner — hook invocation', () => {
     expect(captured?.result).toEqual({ value: 7 });
     expect(typeof captured?.durationMs).toBe('number');
     expect(captured?.durationMs).toBeGreaterThanOrEqual(0);
+  });
+});
+
+// ── Per-phase hook registry isolation ───────────────────────────────────────
+//
+// Each phase's `run(ctx)` receives an isolated `hookRegistry` via
+// `PhaseRunContext.hookRegistry` — a clone of the shared registry created by
+// `makePhaseContext` (which calls `this.registry.clone()`). A subscriber
+// registered in phase A's `run()` on `ctx.hookRegistry` is NOT visible to
+// phase B's `ctx.hookRegistry`, and the shared `options.hookRegistry` is NOT
+// mutated. Pre-existing subscribers from the shared registry are inherited by
+// each clone.
+
+describe('PhaseRunner — per-phase registry isolation', () => {
+  it('each phase receives a distinct hookRegistry instance (not the shared one)', async () => {
+    const registries: Array<{ phaseId: string; registry: HookRegistry | undefined }> = [];
+
+    const sharedRegistry = createHookRegistry();
+    // Pre-existing subscriber on the shared registry — must be inherited.
+    sharedRegistry.register({ afterPhase: () => {} });
+
+    const phases: PhaseDefinition[] = [
+      makePhase({
+        id: 'A',
+        run: async (ctx) => {
+          registries.push({ phaseId: 'A', registry: ctx.hookRegistry });
+        },
+      }),
+      makePhase({
+        id: 'B',
+        run: async (ctx) => {
+          registries.push({ phaseId: 'B', registry: ctx.hookRegistry });
+        },
+      }),
+    ];
+
+    await new PhaseRunner(makeOptions({ phases, hookRegistry: sharedRegistry })).run();
+
+    const regA = registries.find((r) => r.phaseId === 'A')?.registry;
+    const regB = registries.find((r) => r.phaseId === 'B')?.registry;
+
+    // Each phase must receive a registry.
+    expect(regA).toBeDefined();
+    expect(regB).toBeDefined();
+
+    // They must be DIFFERENT instances (clones, not the shared one).
+    expect(regA).not.toBe(regB);
+    expect(regA).not.toBe(sharedRegistry);
+    expect(regB).not.toBe(sharedRegistry);
+  });
+
+  it('a beforeTask subscriber registered in phase A is NOT visible to phase B', async () => {
+    let phaseASeenBeforeTask: boolean | undefined;
+    let phaseBSeenBeforeTask: boolean | undefined;
+
+    const sharedRegistry = createHookRegistry();
+
+    const phases: PhaseDefinition[] = [
+      makePhase({
+        id: 'A',
+        run: async (ctx) => {
+          // Register a beforeTask subscriber ONLY on phase A's registry.
+          ctx.hookRegistry?.register({ beforeTask: () => ({ skip: true }) });
+          phaseASeenBeforeTask = ctx.hookRegistry?.hasSubscribers('beforeTask');
+        },
+      }),
+      makePhase({
+        id: 'B',
+        run: async (ctx) => {
+          phaseBSeenBeforeTask = ctx.hookRegistry?.hasSubscribers('beforeTask');
+        },
+      }),
+    ];
+
+    await new PhaseRunner(makeOptions({ phases, hookRegistry: sharedRegistry })).run();
+
+    // Phase A's registry DOES have the subscriber (it was registered there).
+    expect(phaseASeenBeforeTask).toBe(true);
+    // Phase B's registry does NOT — isolation held.
+    expect(phaseBSeenBeforeTask).toBe(false);
+  });
+
+  it('the shared options.hookRegistry is NOT mutated by phase registrations', async () => {
+    const sharedRegistry = createHookRegistry();
+
+    const phases: PhaseDefinition[] = [
+      makePhase({
+        id: 'A',
+        run: async (ctx) => {
+          // Register on the phase-local registry — must not leak.
+          ctx.hookRegistry?.register({ beforeTask: () => ({ skip: true }) });
+        },
+      }),
+      makePhase({ id: 'B' }),
+    ];
+
+    await new PhaseRunner(makeOptions({ phases, hookRegistry: sharedRegistry })).run();
+
+    // The shared registry must NOT have gained a beforeTask subscriber.
+    expect(sharedRegistry.hasSubscribers('beforeTask')).toBe(false);
+  });
+
+  it('each phase registry inherits pre-existing subscribers from the shared registry', async () => {
+    const sharedRegistry = createHookRegistry();
+    const seen: string[] = [];
+    sharedRegistry.register({
+      afterPhase: () => {
+        seen.push('shared-subscriber');
+      },
+    });
+
+    let phaseARegistry: HookRegistry | undefined;
+    const phases: PhaseDefinition[] = [
+      makePhase({
+        id: 'A',
+        run: async (ctx) => {
+          phaseARegistry = ctx.hookRegistry;
+        },
+      }),
+    ];
+
+    await new PhaseRunner(makeOptions({ phases, hookRegistry: sharedRegistry })).run();
+
+    // The phase's cloned registry inherited the shared subscriber.
+    expect(phaseARegistry?.hasSubscribers('afterPhase')).toBe(true);
+    // And it fires when invoked on the clone. The runner already fired it
+    // once during its own afterPhase invocation on the shared registry, so
+    // the manual invocation on the clone adds a second entry.
+    await phaseARegistry?.invokeObserve('afterPhase' as never, undefined, {
+      registry: phaseARegistry!,
+      cwd: dir,
+      workDir: dir,
+    });
+    expect(seen).toEqual(['shared-subscriber', 'shared-subscriber']);
+  });
+});
+
+// ── Phase-completion hard-stop guard (minPhaseCompletions) ──────────────────
+//
+// The `minPhaseCompletions` option on `PhaseRunnerOptions` sets a minimum
+// number of tasks that must reach `status: 'complete'` for a phase to
+// succeed. Default `1`. When `0`, the guard is disabled (backward compat).
+//
+// The guard triggers ONLY when the phase has ≥1 task registered with
+// `phaseId === phase.id` (no tasks → no trigger). After a phase's retry loop
+// completes and BEFORE onPhaseSettled, the runner counts the phase's tasks
+// with `status === 'complete'`. If `phaseTasks.length > 0` AND
+// `completedCount < threshold`, the runner THROWS an Error whose message
+// includes the phase id, the count `completedCount/phaseTasks.length`, and
+// the minimum threshold, e.g.
+// `Phase "<phaseId>" failed: 0/13 tasks completed (minimum: 1).
+// Aborting workflow.`
+//
+// PLACEMENT: the guard check belongs AFTER the shouldRetryPhase loop and
+// BEFORE the onPhaseSettled hook — that is, after the phase has been run and
+// (if applicable) retried all rounds, but before results are handed off to
+// subscribers.
+
+describe('PhaseRunner — phase-completion hard-stop guard (minPhaseCompletions)', () => {
+  /**
+   * Helper to build a phase whose `run()` registers N tasks with the tracker,
+   * each marked with the given status.
+   */
+  function makePhaseWithTasks(
+    phaseId: string,
+    taskStatuses: Array<{ id: string; status: 'complete' | 'failed' | 'active' | 'cancelled' }>,
+  ): PhaseDefinition {
+    return makePhase({
+      id: phaseId,
+      label: phaseId,
+      icon: '📋',
+      run: async (ctx) => {
+        for (const t of taskStatuses) {
+          ctx.tracker.taskTracker.addTask({
+            id: t.id,
+            title: t.id,
+            prompt: 'p',
+            profile: 'arch',
+            files: [],
+            dependencies: [],
+            phaseId,
+            status: t.status,
+          });
+        }
+      },
+    });
+  }
+
+  // ── (1) Guard triggers: all tasks failed → throw, phase B never runs ──────
+
+  it('throws when all tasks in a phase fail and halts the workflow (phase B never runs)', async () => {
+    let bRan = false;
+    const phases: PhaseDefinition[] = [
+      makePhaseWithTasks(
+        'A',
+        Array.from({ length: 13 }, (_, i) => ({ id: `a-${i + 1}`, status: 'failed' as const })),
+      ),
+      makePhase({
+        id: 'B',
+        label: 'B',
+        icon: '📋',
+        run: async () => {
+          bRan = true;
+        },
+      }),
+    ];
+
+    // minPhaseCompletions defaults to 1; 0 completed < 1 → must throw.
+    const runner = new PhaseRunner(makeOptions({ phases }));
+
+    await expect(runner.run()).rejects.toThrow(/Phase "A" failed: 0\/13 tasks completed \(minimum: 1\)/);
+
+    // Phase B's run() was NEVER called — the throw halted the workflow.
+    expect(bRan).toBe(false);
+  });
+
+  // ── (2) Guard passes: at least 1 task complete → advance normally ─────────
+
+  it('passes when at least 1 task in a phase is complete, advancing to phase B', async () => {
+    let bRan = false;
+    const statuses: Array<{ id: string; status: 'complete' | 'failed' }> = [
+      { id: 'a-1', status: 'failed' },
+      { id: 'a-2', status: 'failed' },
+      { id: 'a-3', status: 'complete' },
+      { id: 'a-4', status: 'failed' },
+    ];
+    const phases: PhaseDefinition[] = [
+      makePhaseWithTasks('A', statuses),
+      makePhase({
+        id: 'B',
+        label: 'B',
+        icon: '📋',
+        run: async () => {
+          bRan = true;
+        },
+      }),
+    ];
+
+    // Default minPhaseCompletions = 1; 1 complete >= 1 → no throw.
+    const runner = new PhaseRunner(makeOptions({ phases }));
+
+    await expect(runner.run()).resolves.toBeUndefined();
+    expect(bRan).toBe(true);
+  });
+
+  // ── (3) Disabled (backward compat): minPhaseCompletions = 0 ───────────────
+
+  it('does not throw when minPhaseCompletions is 0 (guard disabled), even with all-failed tasks', async () => {
+    let bRan = false;
+    const phases: PhaseDefinition[] = [
+      makePhaseWithTasks(
+        'A',
+        Array.from({ length: 5 }, (_, i) => ({ id: `a-${i + 1}`, status: 'failed' as const })),
+      ),
+      makePhase({
+        id: 'B',
+        label: 'B',
+        icon: '📋',
+        run: async () => {
+          bRan = true;
+        },
+      }),
+    ];
+
+    const runner = new PhaseRunner(makeOptions({ phases, minPhaseCompletions: 0 }));
+
+    await expect(runner.run()).resolves.toBeUndefined();
+    expect(bRan).toBe(true);
+  });
+
+  // ── (4) No tasks for phase: guard does not trigger ────────────────────────
+
+  it('does not trigger when the phase has 0 tasks registered', async () => {
+    let bRan = false;
+    const phases: PhaseDefinition[] = [
+      makePhase({
+        id: 'A',
+        label: 'A',
+        icon: '📋',
+        run: async () => {
+          // No tasks added to the tracker for phase A.
+        },
+      }),
+      makePhase({
+        id: 'B',
+        label: 'B',
+        icon: '📋',
+        run: async () => {
+          bRan = true;
+        },
+      }),
+    ];
+
+    // Default minPhaseCompletions = 1, but zero tasks → guard skips.
+    const runner = new PhaseRunner(makeOptions({ phases }));
+
+    await expect(runner.run()).resolves.toBeUndefined();
+    expect(bRan).toBe(true);
+  });
+
+  // ── (5) Threshold > 1: 1/3 complete throws; 2/3 passes ──────────────────
+
+  it('throws when completedCount < minPhaseCompletions (1/3 with threshold=2)', async () => {
+    let bRan = false;
+    const phases: PhaseDefinition[] = [
+      makePhaseWithTasks('A', [
+        { id: 'a-1', status: 'complete' },
+        { id: 'a-2', status: 'failed' },
+        { id: 'a-3', status: 'failed' },
+      ]),
+      makePhase({
+        id: 'B',
+        label: 'B',
+        icon: '📋',
+        run: async () => {
+          bRan = true;
+        },
+      }),
+    ];
+
+    const runner = new PhaseRunner(makeOptions({ phases, minPhaseCompletions: 2 }));
+
+    await expect(runner.run()).rejects.toThrow(/Phase "A" failed: 1\/3 tasks completed \(minimum: 2\)/);
+    expect(bRan).toBe(false);
+  });
+
+  it('passes when completedCount >= minPhaseCompletions (2/3 with threshold=2)', async () => {
+    let bRan = false;
+    const phases: PhaseDefinition[] = [
+      makePhaseWithTasks('A', [
+        { id: 'a-1', status: 'complete' },
+        { id: 'a-2', status: 'complete' },
+        { id: 'a-3', status: 'failed' },
+      ]),
+      makePhase({
+        id: 'B',
+        label: 'B',
+        icon: '📋',
+        run: async () => {
+          bRan = true;
+        },
+      }),
+    ];
+
+    const runner = new PhaseRunner(makeOptions({ phases, minPhaseCompletions: 2 }));
+
+    await expect(runner.run()).resolves.toBeUndefined();
+    expect(bRan).toBe(true);
+  });
+
+  // ── (6) Error message shape: exact format assertion ───────────────────────
+
+  it('throws an Error (not a generic rejection) with the expected message shape', async () => {
+    const phases: PhaseDefinition[] = [
+      makePhaseWithTasks(
+        'scout',
+        Array.from({ length: 3 }, (_, i) => ({ id: `s-${i + 1}`, status: 'failed' as const })),
+      ),
+    ];
+
+    const runner = new PhaseRunner(makeOptions({ phases }));
+
+    try {
+      await runner.run();
+      expect('should have thrown').toBe('but did not');
+    } catch (err) {
+      expect(err).toBeInstanceOf(Error);
+      expect((err as Error).message).toBe('Phase "scout" failed: 0/3 tasks completed (minimum: 1). Aborting workflow.');
+    }
   });
 });

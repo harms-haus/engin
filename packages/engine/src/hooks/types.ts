@@ -112,6 +112,8 @@ export interface HookRegistry {
   ): Promise<unknown | undefined>;
   invokeAllRun<K extends keyof WorkflowHooks>(name: K, args: unknown, ctx: HookContext): Promise<unknown>;
   hasSubscribers(name: string): boolean;
+  /** Return a NEW registry that shares NO mutable state with this instance. The clone inherits a shallow copy of the internal hooks map (each hook entry gets its own subscriber array; subscriber function refs are shared). */
+  clone(): HookRegistry;
 }
 
 /** Registry of workflow-provided hooks. Grows incrementally — each hook-adding task extends this via declaration merging. */

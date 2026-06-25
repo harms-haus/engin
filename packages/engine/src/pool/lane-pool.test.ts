@@ -86,6 +86,21 @@ function completingRunner(): TaskRunner {
   };
 }
 
+/** A TaskRunner that fires `onStructuredOutput` via the scoped hookRegistry
+ *  (the clone passed in ctx.hookRegistry), then settles. Mirrors what runStep
+ *  does in production. */
+function auditingRunner(structuredArgs: unknown): TaskRunner {
+  return async (ctx) => {
+    await ctx.hookRegistry?.invokeObserve(
+      'onStructuredOutput',
+      structuredArgs,
+      makeHookCtx({ registry: ctx.hookRegistry }),
+    );
+    ctx.completeTask('done');
+    return { status: 'completed', output: 'done' };
+  };
+}
+
 function makeTask(id = 'task-1'): Task {
   return {
     id,
@@ -154,13 +169,27 @@ describe('LanePool.run() — default auditor registration', () => {
     try {
       const tracker = new TaskTracker();
       tracker.addTask(makeTask());
-      const pool = new LanePool(makeOptions({ taskTracker: tracker, auditLog, hookRegistry }));
+      const pool = new LanePool(
+        makeOptions({
+          taskTracker: tracker,
+          auditLog,
+          hookRegistry,
+          getRunnerForTask: () => auditingRunner({ agentId: 'a', output: { ok: true }, taskId: 'task-1' }),
+        }),
+      );
 
       await pool.run();
 
-      // After run(), the default auditor is registered for both observe hooks.
-      expect(hookRegistry.hasSubscribers('onStructuredOutput')).toBe(true);
-      expect(hookRegistry.hasSubscribers('onDecision')).toBe(true);
+      // The auditor was registered on the scoped clone during run() — the
+      // runner fired onStructuredOutput through ctx.hookRegistry (the clone),
+      // so the audit log received the event. The ORIGINAL registry is
+      // untouched (per-run isolation).
+      const events = await auditLog.getEvents();
+      expect(events).toHaveLength(1);
+      expect(events[0].type).toBe('structured_output');
+      // Original registry must NOT have auditor subscribers.
+      expect(hookRegistry.hasSubscribers('onStructuredOutput')).toBe(false);
+      expect(hookRegistry.hasSubscribers('onDecision')).toBe(false);
     } finally {
       rmSync(logDir, { recursive: true, force: true });
     }
@@ -181,18 +210,27 @@ describe('LanePool.run() — default auditor registration', () => {
     try {
       const tracker = new TaskTracker();
       tracker.addTask(makeTask('task-b'));
-      const pool = new LanePool(makeOptions({ taskTracker: tracker, auditLog, hookRegistry }));
+      const pool = new LanePool(
+        makeOptions({
+          taskTracker: tracker,
+          auditLog,
+          hookRegistry,
+          getRunnerForTask: () =>
+            auditingRunner({
+              agentId: 'reviewer-agent',
+              output: { approved: true },
+              taskId: 'task-b',
+              phaseId: 'review',
+              stepIndex: 0,
+            }),
+        }),
+      );
 
       await pool.run();
 
-      // run() itself produces no audit events (the no-op runner doesn't fire
-      // the hook). Invoke the hook directly, exactly as runStep would.
-      await hookRegistry.invokeObserve(
-        'onStructuredOutput',
-        { agentId: 'reviewer-agent', output: { approved: true }, taskId: 'task-b', phaseId: 'review', stepIndex: 0 },
-        makeHookCtx({ registry: hookRegistry }),
-      );
-
+      // The runner fired onStructuredOutput via ctx.hookRegistry (the scoped
+      // clone), and the default auditor — registered on that clone — appended
+      // a structured_output event to the AuditLog.
       const events = await auditLog.getEvents();
       expect(events).toHaveLength(1);
       expect(events[0].type).toBe('structured_output');
@@ -263,19 +301,22 @@ describe('LanePool.run() — default auditor registration', () => {
     try {
       const tracker = new TaskTracker();
       tracker.addTask(makeTask('task-e'));
-      const pool = new LanePool(makeOptions({ taskTracker: tracker, auditLog, hookRegistry }));
+      const pool = new LanePool(
+        makeOptions({
+          taskTracker: tracker,
+          auditLog,
+          hookRegistry,
+          getRunnerForTask: () => auditingRunner({ agentId: 'a', output: { ok: true }, taskId: 'task-e' }),
+        }),
+      );
 
       await pool.run();
 
-      // Invoke the hook — BOTH the workflow subscriber and the default
-      // auditor must fire (observe fan-out).
-      await hookRegistry.invokeObserve(
-        'onStructuredOutput',
-        { agentId: 'a', output: { ok: true }, taskId: 'task-e' },
-        makeHookCtx({ registry: hookRegistry }),
-      );
+      // The runner fired onStructuredOutput via ctx.hookRegistry (the scoped
+      // clone). The clone inherited the workflow subscriber AND gained the
+      // default auditor — observe = fan-out, so BOTH fire.
 
-      // Workflow subscriber fired.
+      // Workflow subscriber fired (inherited by the clone).
       expect(workflowSeen).toHaveLength(1);
       // Default auditor fired (audit log received the event).
       const events = await auditLog.getEvents();
@@ -1002,6 +1043,71 @@ describe('LanePool — deadlocked task fires onTaskRejected', () => {
     // or TaskSettled fires multiple times.
     const count = rejected.filter((id) => id === 'idem-dead').length;
     expect(count).toBe(1);
+  });
+});
+
+// ── Per-run hook registry isolation ─────────────────────────────────────────
+//
+// `pool.run()` uses a scoped clone of `options.hookRegistry` (scopedHookRegistry)
+// so the original is not mutated: the default auditor and any runtime
+// registrations land on the per-run clone, not the original. Pre-existing
+// workflow subscribers on the original are unaffected.
+//
+// After `pool.run()` completes, the ORIGINAL `options.hookRegistry` must NOT
+// have gained subscribers that the pool registered internally.
+
+describe('LanePool.run() — per-run registry isolation', () => {
+  it('pool.run() does NOT mutate the original hookRegistry (auditor registered on scoped clone)', async () => {
+    const logDir = mkdtempSync(join(tmpdir(), 'lane-pool-iso-'));
+    const auditLog = new AuditLog(logDir);
+    const hookRegistry = makeRegistry();
+
+    try {
+      const tracker = new TaskTracker();
+      tracker.addTask(makeTask());
+      const pool = new LanePool(makeOptions({ taskTracker: tracker, auditLog, hookRegistry }));
+
+      await pool.run();
+
+      // After run(), the ORIGINAL hookRegistry must NOT have auditor subscribers.
+      // They were registered on a scoped clone, not the original.
+      expect(hookRegistry.hasSubscribers('onStructuredOutput')).toBe(false);
+      expect(hookRegistry.hasSubscribers('onDecision')).toBe(false);
+    } finally {
+      rmSync(logDir, { recursive: true, force: true });
+    }
+  });
+
+  it('pre-existing workflow subscribers on the original are NOT affected by pool.run()', async () => {
+    const logDir = mkdtempSync(join(tmpdir(), 'lane-pool-iso-b-'));
+    const auditLog = new AuditLog(logDir);
+    const hookRegistry = makeRegistry();
+
+    // Register a workflow-level subscriber BEFORE the pool runs.
+    const workflowSeen: unknown[] = [];
+    hookRegistry.register({ onStructuredOutput: async (args) => void workflowSeen.push(args) });
+
+    try {
+      const tracker = new TaskTracker();
+      tracker.addTask(makeTask());
+      const pool = new LanePool(makeOptions({ taskTracker: tracker, auditLog, hookRegistry }));
+
+      await pool.run();
+
+      // The workflow subscriber is still on the original (unchanged).
+      expect(hookRegistry.hasSubscribers('onStructuredOutput')).toBe(true);
+      // But the auditor subscriber must NOT be on the original.
+      // (The original has exactly 1 subscriber — the workflow one — not 2.)
+      // We verify by invoking: only the workflow subscriber should fire.
+      await hookRegistry.invokeObserve(
+        'onStructuredOutput',
+        { agentId: 'test', output: { ok: true } },
+        makeHookCtx({ registry: hookRegistry }),
+      );
+      expect(workflowSeen).toHaveLength(1);
+    } finally {
+      rmSync(logDir, { recursive: true, force: true });
+    }
   });
 });
 

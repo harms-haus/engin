@@ -722,3 +722,110 @@ describe('HOOK_DECLARATIONS: production registration auto-attaches the reducer',
     expect(result).toBe('only');
   });
 });
+
+// ── clone() — per-phase registry isolation ──────────────────────────────────
+//
+// HookRegistry.clone() returns a NEW registry with a copy of the internal
+// hooks map. Registering a subscriber on the clone does NOT affect the
+// original and vice versa. The clone INHERITS the original's pre-existing
+// subscribers so existing default hooks still fire in each isolated scope.
+
+describe('clone() — per-phase registry isolation', () => {
+  it('returns a new HookRegistry instance (not the same object)', () => {
+    const original = makeRegistry();
+    original.register(asHooks({ beforeTask: () => undefined }));
+
+    const cloned = original.clone();
+
+    expect(cloned).toBeInstanceOf(HookRegistry);
+    expect(cloned).not.toBe(original);
+  });
+
+  it('clone inherits the original pre-existing subscribers', () => {
+    const original = makeRegistry();
+    original.register(asHooks({ beforeTask: () => 'original-subscriber' }));
+
+    const cloned = original.clone();
+
+    expect(cloned.hasSubscribers('beforeTask')).toBe(true);
+  });
+
+  it('registering on the clone does NOT affect the original', () => {
+    const original = makeRegistry();
+    // Original has no subscribers for beforeStepPrompt.
+    expect(original.hasSubscribers('beforeStepPrompt')).toBe(false);
+
+    const cloned = original.clone();
+    cloned.register(asHooks({ beforeStepPrompt: () => 'clone-only' }));
+
+    // Original still has no subscribers — the clone registration leaked nothing.
+    expect(original.hasSubscribers('beforeStepPrompt')).toBe(false);
+    // Clone does have the subscriber.
+    expect(cloned.hasSubscribers('beforeStepPrompt')).toBe(true);
+  });
+
+  it('registering on the original after cloning does NOT affect the clone', () => {
+    const original = makeRegistry();
+    const cloned = original.clone();
+
+    original.register(asHooks({ afterPhase: () => 'post-clone' }));
+
+    // Clone must NOT see the post-clone registration.
+    expect(cloned.hasSubscribers('afterPhase')).toBe(false);
+    // Original does.
+    expect(original.hasSubscribers('afterPhase')).toBe(true);
+  });
+
+  it('clone invocation is independent — same hook fires different subscriber sets', async () => {
+    const original = makeRegistry();
+    const origFired: string[] = [];
+    original.register(asHooks({ afterPhase: () => origFired.push('orig') }));
+
+    const cloned = original.clone();
+    const cloneFired: string[] = [];
+    cloned.register(asHooks({ afterPhase: () => cloneFired.push('clone') }));
+
+    // Invoke on original: only the original subscriber fires.
+    await original.invokeObserve(hookName('afterPhase'), undefined, makeCtx());
+    expect(origFired).toEqual(['orig']);
+    expect(cloneFired).toEqual([]);
+
+    // Invoke on clone: both the inherited subscriber AND the clone-only fire.
+    await cloned.invokeObserve(hookName('afterPhase'), undefined, makeCtx());
+    expect(origFired).toEqual(['orig', 'orig']); // inherited fires too
+    expect(cloneFired).toEqual(['clone']);
+  });
+
+  it('clone preserves hook composition rules (first-wins works on clone)', async () => {
+    const original = makeRegistry();
+    original.register(asHooks({ beforeTask: () => 'original-wins' }));
+
+    const cloned = original.clone();
+    // The clone-only subscriber returns undefined (abstains).
+    cloned.register(asHooks({ beforeTask: () => undefined }));
+
+    // The inherited subscriber wins (first non-undefined).
+    const result = await cloned.invokeFirstWins(hookName('beforeTask'), undefined, makeCtx());
+    expect(result).toBe('original-wins');
+  });
+
+  it('deep isolation: multiple clones from the same original are mutually independent', () => {
+    const original = makeRegistry();
+    original.register(asHooks({ beforeTask: () => 'shared' }));
+
+    const cloneA = original.clone();
+    const cloneB = original.clone();
+
+    cloneA.register(asHooks({ beforeStepPrompt: () => 'A-only' }));
+
+    // A's registration is not visible to B or original.
+    expect(cloneA.hasSubscribers('beforeStepPrompt')).toBe(true);
+    expect(cloneB.hasSubscribers('beforeStepPrompt')).toBe(false);
+    expect(original.hasSubscribers('beforeStepPrompt')).toBe(false);
+
+    // B's registration is not visible to A or original.
+    cloneB.register(asHooks({ beforeStepPrompt: () => 'B-only' }));
+    expect(cloneA.hasSubscribers('beforeStepPrompt')).toBe(true); // still just A's
+    expect(original.hasSubscribers('beforeStepPrompt')).toBe(false);
+  });
+});

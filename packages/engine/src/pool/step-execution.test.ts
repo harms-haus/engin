@@ -603,6 +603,166 @@ describe('runStep — fail-fast on empty/error non-structured replies', () => {
   });
 });
 
+// ─── Defensive guard for undefined/malformed step ────────────────────────
+//
+// When `params.step` is undefined, null, or missing required fields, `runStep`
+// throws a DESCRIPTIVE Error (not an opaque TypeError from property access)
+// whose message includes the task id and names the offending field.
+//
+// Validation rules enforced BEFORE any agent lifecycle call:
+//   1. step must be a non-null object
+//   2. step.name must be a non-empty string
+//   3. step.profileId must be a non-empty string
+//
+// Before this guard, accessing `step.name` on an undefined step crashed with
+// an opaque `TypeError: undefined is not an object (evaluating 'step.name')`.
+// The guard short-circuits before spawnAgent is ever called.
+
+describe('runStep — defensive guard for undefined/malformed step', () => {
+  /** Minimal valid RunStepParams (mutable so tests can overwrite `step`). */
+  function validParams() {
+    return {
+      task: makeTask({ id: 'guard-task' }),
+      step: { name: 'review', profileId: 'reviewer', isReadOnly: true },
+      agentId: 'agent-1',
+      ctx: { stepIndex: 0, attempt: 0, execCount: 1 },
+      profiles: new Map([['reviewer', reviewerProfile]]),
+      execCtx: makeExecCtx(),
+    };
+  }
+
+  // ── step is undefined ───────────────────────────────────────────────
+
+  it('throws a descriptive Error (not TypeError) when params.step is undefined', async () => {
+    const params = validParams();
+    (params as any).step = undefined;
+
+    const err = await runStep(params as any).then(
+      () => null,
+      (e: unknown) => e,
+    );
+
+    expect(err).toBeInstanceOf(Error);
+    // The message must NOT be an opaque TypeError from property access.
+    expect((err as Error).message).not.toMatch(/undefined is not an object/);
+    // The message must include the task id for debuggability.
+    expect((err as Error).message).toContain('guard-task');
+    // The message must name the missing/invalid field.
+    expect((err as Error).message).toMatch(/step/);
+  });
+
+  // ── step is null ────────────────────────────────────────────────────
+
+  it('throws a descriptive Error when params.step is null', async () => {
+    const params = validParams();
+    (params as any).step = null;
+
+    const err = await runStep(params as any).then(
+      () => null,
+      (e: unknown) => e,
+    );
+
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).not.toMatch(/null is not an object/);
+    expect((err as Error).message).toContain('guard-task');
+    expect((err as Error).message).toMatch(/step/);
+  });
+
+  // ── step is a wrong type (e.g. string) ──────────────────────────────
+
+  it('throws a descriptive Error when params.step is a string', async () => {
+    const params = validParams();
+    (params as any).step = 'not-a-step';
+
+    const err = await runStep(params as any).then(
+      () => null,
+      (e: unknown) => e,
+    );
+
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toContain('guard-task');
+    expect((err as Error).message).toMatch(/step/);
+  });
+
+  // ── step.name is missing (property absent) ───────────────────────────
+
+  it('throws a descriptive Error when step.name is missing', async () => {
+    const params = validParams();
+    (params as any).step = { profileId: 'reviewer', isReadOnly: true };
+
+    const err = await runStep(params as any).then(
+      () => null,
+      (e: unknown) => e,
+    );
+
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toContain('guard-task');
+    expect((err as Error).message).toMatch(/name/);
+  });
+
+  // ── step.name is empty string ────────────────────────────────────────
+
+  it('throws a descriptive Error when step.name is an empty string', async () => {
+    const params = validParams();
+    params.step = { name: '', profileId: 'reviewer', isReadOnly: true } as any;
+
+    const err = await runStep(params as any).then(
+      () => null,
+      (e: unknown) => e,
+    );
+
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toContain('guard-task');
+    expect((err as Error).message).toMatch(/name/);
+  });
+
+  // ── step.profileId is missing ────────────────────────────────────────
+
+  it('throws a descriptive Error when step.profileId is missing', async () => {
+    const params = validParams();
+    (params as any).step = { name: 'review', isReadOnly: true };
+
+    const err = await runStep(params as any).then(
+      () => null,
+      (e: unknown) => e,
+    );
+
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toContain('guard-task');
+    expect((err as Error).message).toMatch(/profileId/);
+  });
+
+  // ── step.profileId is empty string ───────────────────────────────────
+
+  it('throws a descriptive Error when step.profileId is an empty string', async () => {
+    const params = validParams();
+    params.step = { name: 'review', profileId: '', isReadOnly: true } as any;
+
+    const err = await runStep(params as any).then(
+      () => null,
+      (e: unknown) => e,
+    );
+
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toContain('guard-task');
+    expect((err as Error).message).toMatch(/profileId/);
+  });
+
+  // ── guard fires BEFORE spawnAgent (never reaches the agent pipeline) ─
+
+  it('does NOT call spawnAgent when step is invalid (guard fires first)', async () => {
+    const params = validParams();
+    (params as any).step = undefined;
+
+    mockSpawnAgent.mockReset();
+
+    await runStep(params as any).catch(() => {}); // swallow the guard error
+
+    // spawnAgent was never called — the guard short-circuits before it.
+    expect(mockSpawnAgent).not.toHaveBeenCalled();
+  });
+});
+
 // ─── Restore real modules ─────────────────────────────────────────────────
 
 afterAll(() => {

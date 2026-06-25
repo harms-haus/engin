@@ -127,6 +127,10 @@ class FakeRegistry implements HookRegistry {
   hasSubscribers(_name: string): boolean {
     return false;
   }
+
+  clone(): HookRegistry {
+    return new FakeRegistry();
+  }
 }
 
 /** A no-op `run` matching WorkflowModule.run's signature. */

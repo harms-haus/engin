@@ -93,9 +93,15 @@ export interface PhaseRunnerOptions {
   workDir: string;
   signal?: AbortSignal;
   maxRounds?: number; // default 3 — reproduces the ≤3-rounds logic
+  /**
+   * Minimum number of tasks that must reach `status: 'complete'` for a phase
+   * to succeed. Defaults to `1`. When `0`, the guard is disabled (backward
+   * compat). The guard triggers ONLY when the phase has ≥1 task registered with
+   * `phaseId === phase.id`; a taskless phase never triggers it.
+   */
+  minPhaseCompletions?: number; // default 1 — phase-completion hard-stop guard
 }
 
-/**
 /**
  * The phase orchestration layer.
  *
@@ -114,6 +120,7 @@ export class PhaseRunner {
   private readonly options: PhaseRunnerOptions;
   private readonly registry: HookRegistry;
   private readonly maxRounds: number;
+  private readonly minPhaseCompletions: number;
 
   constructor(options: PhaseRunnerOptions) {
     this.options = options;
@@ -123,6 +130,7 @@ export class PhaseRunner {
     // which the runner interprets as "use the built-in default behavior".
     this.registry = options.hookRegistry ?? createHookRegistry();
     this.maxRounds = options.maxRounds ?? DEFAULT_MAX_ROUNDS;
+    this.minPhaseCompletions = options.minPhaseCompletions ?? 1;
   }
 
   /**
@@ -221,6 +229,26 @@ export class PhaseRunner {
       }
       const durationMs = Date.now() - startTime;
 
+      // 5b. Phase-completion hard-stop guard: after the phase has run (and
+      //     exhausted its retries) but BEFORE onPhaseSettled / afterPhase /
+      //     beforePhaseTransition, verify the phase produced enough completed
+      //     tasks. When disabled (minPhaseCompletions === 0) or the phase
+      //     registered no tasks, the guard is skipped. Otherwise, if the count
+      //     of `complete` tasks falls below the threshold, THROW — propagating
+      //     out of run() to halt the entire workflow (no further phases run, no
+      //     later hooks fire for this phase).
+      if (this.minPhaseCompletions > 0) {
+        const phaseTasks = tracker.taskTracker.getTasksByPhase(phase.id);
+        if (phaseTasks.length > 0) {
+          const completedCount = phaseTasks.filter((t) => t.status === 'complete').length;
+          if (completedCount < this.minPhaseCompletions) {
+            throw new Error(
+              `Phase "${phase.id}" failed: ${completedCount}/${phaseTasks.length} tasks completed (minimum: ${this.minPhaseCompletions}). Aborting workflow.`,
+            );
+          }
+        }
+      }
+
       // 6. onPhaseSettled (all-run): hand subscribers the tracker's settled
       //    tasks so they may collect results into the shared state. The same
       //    `state` reference is forwarded, so mutations are visible to later
@@ -283,7 +311,13 @@ export class PhaseRunner {
   private makePhaseContext(state: Record<string, unknown>): PhaseRunContext {
     return {
       tracker: this.options.tracker,
-      hookRegistry: this.registry,
+      // Clone the registry so each phase's `run(ctx)` receives an isolated
+      // snapshot via `ctx.hookRegistry`. Workflow code registering phase-
+      // specific hooks on `ctx.hookRegistry` cannot leak to other phases, and
+      // the shared `options.hookRegistry` is never mutated. The clone inherits
+      // the shared registry's pre-existing subscribers (default hooks still
+      // fire in each isolated scope).
+      hookRegistry: this.registry.clone(),
       state,
       cwd: this.options.cwd,
       workDir: this.options.workDir,

@@ -97,8 +97,41 @@ export interface RunStepParams {
  */
 export async function runStep(params: RunStepParams): Promise<{ result: StepResult; trackedSession: TrackedSession }> {
   const { task, step, agentId, ctx, profiles, execCtx, existingSessionPath } = params;
-  // Validate task id and step name against path traversal
+
+  // Validate task id against path traversal BEFORE any property access on step
+  // (the guard below interpolates task.id into Error messages, so we must
+  // ensure its charset is safe first).
   assertSafeName(task.id, 'task id');
+
+  // ── Defensive guard: validate `step` BEFORE any property access so a
+  // malformed/missing step produces a descriptive Error (including the task
+  // id) instead of an opaque TypeError from `step.name` / `step.profileId`.
+  // Fires before spawnAgent (no agent lifecycle call is made for bad input).
+  const describeStep = (): string => {
+    try {
+      const s = JSON.stringify({ name: step?.name, profileId: step?.profileId, isReadOnly: step?.isReadOnly });
+      return s.length > 500 ? s.slice(0, 500) + '…' : s;
+    } catch {
+      return String(step);
+    }
+  };
+  if (typeof step !== 'object' || step === null) {
+    throw new Error(
+      `runStep received an invalid step for task "${task.id}": step is ${step === null ? 'null' : typeof step} (expected a non-null object). Full step value: ${describeStep()}`,
+    );
+  }
+  if (typeof step.name !== 'string' || step.name.length === 0) {
+    throw new Error(
+      `runStep received an invalid step for task "${task.id}": step.name is ${step.name === undefined ? 'undefined' : JSON.stringify(step.name)} (expected a non-empty string). Full step value: ${describeStep()}`,
+    );
+  }
+  if (typeof step.profileId !== 'string' || step.profileId.length === 0) {
+    throw new Error(
+      `runStep received an invalid step for task "${task.id}": step.profileId is ${step.profileId === undefined ? 'undefined' : JSON.stringify(step.profileId)} (expected a non-empty string). Full step value: ${describeStep()}`,
+    );
+  }
+
+  // Validate step name against path traversal (task id validated above)
   assertSafeName(step.name, 'step name');
 
   // Compute session directory

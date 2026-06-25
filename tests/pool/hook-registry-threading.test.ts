@@ -215,6 +215,7 @@ interface FakeRegistry {
   invokeFirstWins: ReturnType<typeof mock>;
   invokeAllRun: ReturnType<typeof mock>;
   hasSubscribers: ReturnType<typeof mock>;
+  clone: ReturnType<typeof mock>;
 }
 
 function makeFakeRegistry(opts: { hasSubscribers: boolean; returnValue?: string }): FakeRegistry {
@@ -225,6 +226,15 @@ function makeFakeRegistry(opts: { hasSubscribers: boolean; returnValue?: string 
     invokeFirstWins: mock(async () => undefined),
     invokeAllRun: mock(async () => undefined),
     hasSubscribers: mock(() => opts.hasSubscribers),
+    clone: mock(() => ({
+      register: mock(() => {}),
+      invokeObserve: mock(async () => {}),
+      invokePipeline: mock(async () => opts.returnValue ?? 'HOOK-BUILT-PROMPT'),
+      invokeFirstWins: mock(async () => undefined),
+      invokeAllRun: mock(async () => undefined),
+      hasSubscribers: mock(() => opts.hasSubscribers),
+      clone: mock(() => ({})),
+    })),
   };
 }
 

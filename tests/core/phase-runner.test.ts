@@ -156,6 +156,10 @@ class FakeRegistry implements HookRegistry {
   hasSubscribers(_name: string): boolean {
     return false;
   }
+
+  clone(): HookRegistry {
+    return new FakeRegistry();
+  }
 }
 
 /**
