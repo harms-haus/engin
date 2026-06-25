@@ -1,9 +1,6 @@
-// ─── Re-exports from @earendil-works/pi-coding-agent ───────────────────────
-export { AgentSession, AuthStorage, DefaultResourceLoader, SessionManager } from '@earendil-works/pi-coding-agent';
-export type { ThinkingLevel };
-
 // ─── Peer dependency re-exports (not re-exported by pi-coding-agent) ───────
-import type { ThinkingLevel } from '@earendil-works/pi-agent-core';
+export type ThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
+
 import type { HookProvider, HookRegistry } from '../hooks/types.js';
 import type { RendererRegistry } from './renderer-registry.js';
 import type { WorktreeManager } from './worktree-manager.js';
@@ -18,6 +15,8 @@ export interface AgentProfile {
   name: string;
   provider: string;
   model: string;
+  /** Agent runtime plugin id. Defaults to 'pi-coding-agent' when omitted. */
+  agent?: string;
   thinkingLevel: ThinkingLevel;
   systemPrompt: string;
   excludeTools: string[];

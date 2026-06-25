@@ -9,14 +9,37 @@ import { makeMockSession } from '../helpers/make-session.js';
 import { makeTask } from '../helpers/make-task.js';
 
 // Capture real modules before mocking
-const realHarnessFactory = Object.assign({}, await import('../../packages/engine/src/core/harness-factory.js'));
+const realAgentRegistry = Object.assign({}, await import('../../packages/engine/src/core/agent-registry.js'));
 const realStructuredOutput = Object.assign({}, await import('../../packages/engine/src/core/structured-output.js'));
 
 // ─── Mocks ──────────────────────────────────────────────────────────────────
 
 const mockCreateHarness = mock() as ReturnType<typeof mock> & ((...args: unknown[]) => unknown);
-mock.module('../../packages/engine/src/core/harness-factory.ts', () => ({
-  createHarness: (...args: unknown[]) => mockCreateHarness(...args),
+
+// Compatibility shim: runStep calls spawnAgent which resolves sessions via
+// requireAgentPlugin(profile.agent).createSession(opts). We mock the
+// registry so createSession delegates to mockCreateHarness, whose return
+// value { session, sessionId, dispose } is unwrapped to the inner session.
+const mockRequireAgentPlugin = mock((..._args: unknown[]) => ({
+  id: 'pi-coding-agent',
+  createSession: async (opts: unknown) => {
+    const w = (await mockCreateHarness(opts)) as {
+      session: Record<string, unknown>;
+      sessionId?: string;
+      dispose?: () => void;
+      contextWindow?: number;
+    };
+    // Propagate wrapper-level fields onto the inner session IN-PLACE so the
+    // same object reference is tracked in activeSessions AND spawnAgent's
+    // session.dispose() / session.sessionId observe the wrapper's mock.
+    if (w.dispose) (w.session as { dispose: () => void }).dispose = w.dispose;
+    if (w.sessionId) (w.session as { sessionId: string }).sessionId = w.sessionId;
+    if (w.contextWindow !== undefined) (w.session as { contextWindow: number }).contextWindow = w.contextWindow;
+    return w.session;
+  },
+}));
+mock.module('../../packages/engine/src/core/agent-registry.ts', () => ({
+  requireAgentPlugin: (...args: unknown[]) => mockRequireAgentPlugin(...args),
 }));
 
 const mockPromptForStructured = mock() as ReturnType<typeof mock> & ((...args: unknown[]) => unknown);
@@ -1062,7 +1085,12 @@ describe('runStep (step-execution module)', () => {
       const { trackedSession } = await runStep(makeTask(), baseStep, 'lane-0', defaultCtx, profiles, execCtx);
 
       expect(trackedSession.session).toBe(session);
-      expect(trackedSession.dispose).toBe(dispose);
+      // spawnAgent wraps the session's dispose in its own arrow function
+      // (`() => session.dispose()`), so trackedSession.dispose is NOT the
+      // raw `dispose` mock identity. Verify it delegates to the session's
+      // dispose instead.
+      trackedSession.dispose();
+      expect(dispose).toHaveBeenCalledTimes(1);
     });
 
     it('returns sessionPath as sessionDir for new sessions', async () => {
@@ -1402,6 +1430,7 @@ describe('runStep (step-execution module)', () => {
       const session = {
         prompt: mock(() => new Promise<void>(() => {})), // never resolves
         getLastAssistantText: mock(() => undefined as string | undefined),
+        getLastAssistantMessage: mock(() => undefined),
         sessionId: 'hung-session',
         subscribe: mock(() => () => {}),
         abort: mock(async () => {}),
@@ -1473,6 +1502,7 @@ describe('runStep (step-execution module)', () => {
               }),
           ),
           getLastAssistantText: mock(() => 'done'),
+          getLastAssistantMessage: mock(() => undefined),
           sessionId: 'slow-session',
           subscribe: mock(() => () => {}),
           abort: mock(async () => {}),
@@ -1516,6 +1546,7 @@ describe('runStep (step-execution module)', () => {
               }),
           ),
           getLastAssistantText: mock(() => 'done'),
+          getLastAssistantMessage: mock(() => undefined),
           sessionId: 'slow-session-0',
           subscribe: mock(() => () => {}),
           abort: mock(async () => {}),
@@ -1557,6 +1588,7 @@ describe('runStep (step-execution module)', () => {
               }),
           ),
           getLastAssistantText: mock(() => 'done'),
+          getLastAssistantMessage: mock(() => undefined),
           sessionId: 'slow-session-nan',
           subscribe: mock(() => () => {}),
           abort: mock(async () => {}),
@@ -1598,6 +1630,7 @@ describe('runStep (step-execution module)', () => {
               }),
           ),
           getLastAssistantText: mock(() => 'done'),
+          getLastAssistantMessage: mock(() => undefined),
           sessionId: 'slow-session-neg',
           subscribe: mock(() => () => {}),
           abort: mock(async () => {}),
@@ -1789,6 +1822,6 @@ describe('buildExecCtx forwards worktreeManager', () => {
 
 // Restore the real modules so mocks don't leak into other test files.
 afterAll(() => {
-  mock.module('../../packages/engine/src/core/harness-factory.ts', () => realHarnessFactory);
+  mock.module('../../packages/engine/src/core/agent-registry.ts', () => realAgentRegistry);
   mock.module('../../packages/engine/src/core/structured-output.ts', () => realStructuredOutput);
 });

@@ -57,10 +57,13 @@ export async function defaultCollectContext(
   if (!args.task.files?.length) return undefined;
   const cwd = resolveFileCwd(args);
 
+  const results = await Promise.all(
+    args.task.files.map((fp) => collectFileSection(fp, cwd).then((section) => ({ fp, section }))),
+  );
+
   const sections: string[] = [];
   const labels: string[] = [];
-  for (const fp of args.task.files) {
-    const section = await collectFileSection(fp, cwd);
+  for (const { fp, section } of results) {
     if (section !== null) {
       sections.push(section);
       labels.push(fp);

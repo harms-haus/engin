@@ -14,6 +14,7 @@ export function makeMockSession(textFn: (promptText: string) => string | undefin
       lastText = textFn(text);
     }),
     getLastAssistantText: mock(() => lastText),
+    getLastAssistantMessage: mock(() => undefined),
     sessionId: 'test-session',
     subscribe: mock(() => () => {}),
     dispose: mock(() => {}),

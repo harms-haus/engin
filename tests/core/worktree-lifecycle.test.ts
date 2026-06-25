@@ -8,7 +8,7 @@ import { useTempDir } from '../helpers/use-temp-dir.js';
 
 // ─── Capture real modules before mocking ────────────────────────────────────
 const realProfile = Object.assign({}, await import('../../packages/engine/src/core/profile.js'));
-const realHarnessFactory = Object.assign({}, await import('../../packages/engine/src/core/harness-factory.js'));
+const realAgentRegistry = Object.assign({}, await import('../../packages/engine/src/core/agent-registry.js'));
 const realGit = Object.assign({}, await import('../../packages/engine/src/core/git.js'));
 const realStructuredOutput = Object.assign({}, await import('../../packages/engine/src/core/structured-output.js'));
 const realWorktreeFixup = Object.assign({}, await import('../../packages/engine/src/core/worktree-fixup.js'));
@@ -31,6 +31,9 @@ const mockLoadProfilesFromDirs = mock(async (_dirs: string[]) => {
   return map;
 });
 
+// `createHarness` is mocked but should NOT be called after the registry-direct
+// migration — tests assert it is never invoked for generateCommitMessage /
+// pushAndCreatePR.
 const mockCreateHarness = mock(async () => ({
   session: {
     prompt: mock(async () => {}),
@@ -43,6 +46,21 @@ const mockCreateHarness = mock(async () => ({
   sessionId: 'test-session-id',
   dispose: mock(),
 }));
+
+// `requireAgentPlugin` is the new direct entry point. It returns a fake plugin
+// whose `createSession` produces a controllable AgentRuntime-shaped session.
+const mockSessionDispose = mock();
+const mockCreateSession = mock(async () => ({
+  prompt: mock(async () => {}),
+  subscribe: mock(() => mock()),
+  getLastAssistantText: mock(() => ''),
+  getLastAssistantMessage: mock(() => undefined),
+  abort: mock(async () => {}),
+  sessionId: 'test-session-id',
+  dispose: mockSessionDispose,
+}));
+const mockPlugin = { id: 'pi-coding-agent', createSession: mockCreateSession };
+const mockRequireAgentPlugin = mock(() => mockPlugin);
 
 const mockPromptForStructured = mock(async (_harness: unknown, _prompt: string, _schema: unknown) => ({
   result: {} as Record<string, string>,
@@ -150,8 +168,8 @@ mock.module('../../packages/engine/src/core/profile.ts', () => ({
   loadProfilesFromDirs: mockLoadProfilesFromDirs,
 }));
 
-mock.module('../../packages/engine/src/core/harness-factory.ts', () => ({
-  createHarness: mockCreateHarness,
+mock.module('../../packages/engine/src/core/agent-registry.ts', () => ({
+  requireAgentPlugin: mockRequireAgentPlugin,
 }));
 
 mock.module('../../packages/engine/src/core/structured-output.ts', () => ({
@@ -251,6 +269,19 @@ beforeEach(() => {
     dispose: mock(),
   });
 
+  // Default: requireAgentPlugin returns a plugin whose createSession produces
+  // a session with a fresh dispose spy.
+  mockCreateSession.mockImplementation(async () => ({
+    prompt: mock(async () => {}),
+    subscribe: mock(() => mock()),
+    getLastAssistantText: mock(() => ''),
+    getLastAssistantMessage: mock(() => undefined),
+    abort: mock(async () => {}),
+    sessionId: 'test-session-id',
+    dispose: mockSessionDispose,
+  }));
+  mockRequireAgentPlugin.mockReturnValue(mockPlugin);
+
   // Default: promptForStructured succeeds with various defaults
   mockPromptForStructured.mockImplementation(async (_harness: unknown, prompt: string, schema: unknown) => {
     // Inspect the schema to provide a reasonable default response
@@ -315,7 +346,7 @@ beforeEach(() => {
 // Restore the real modules so mocks don't leak into other test files.
 afterAll(() => {
   mock.module('../../packages/engine/src/core/profile.ts', () => realProfile);
-  mock.module('../../packages/engine/src/core/harness-factory.ts', () => realHarnessFactory);
+  mock.module('../../packages/engine/src/core/agent-registry.ts', () => realAgentRegistry);
   mock.module('../../packages/engine/src/core/git.ts', () => realGit);
   mock.module('../../packages/engine/src/core/structured-output.ts', () => realStructuredOutput);
   mock.module('../../packages/engine/src/core/worktree-fixup.ts', () => realWorktreeFixup);
@@ -640,13 +671,19 @@ describe('setupWorktree', () => {
 // ─── generateCommitMessage ──────────────────────────────────────────────────
 
 describe('generateCommitMessage', () => {
-  it('creates a harness with the worker profile', async () => {
+  it('resolves the session via requireAgentPlugin().createSession() instead of createHarness', async () => {
     await generateCommitMessage(['/profiles'], '/my/project', 'fix bug', 'diff content', {
       openai: 'sk-key',
     });
 
-    expect(mockCreateHarness).toHaveBeenCalledWith(
+    // After migration, createHarness MUST NOT be called.
+    expect(mockCreateHarness).not.toHaveBeenCalled();
+    // requireAgentPlugin resolves the plugin for profile.agent.
+    expect(mockRequireAgentPlugin).toHaveBeenCalledTimes(1);
+    // createSession received { profile, cwd, apiKeys }.
+    expect(mockCreateSession).toHaveBeenCalledWith(
       expect.objectContaining({
+        cwd: '/my/project',
         apiKeys: { openai: 'sk-key' },
       }),
     );
@@ -715,17 +752,14 @@ describe('generateCommitMessage', () => {
     expect(msg).toContain('Worktree changes for:');
   });
 
-  it('disposes the harness after successful prompt', async () => {
+  it('disposes the session after successful prompt', async () => {
     const mockDispose = mock();
-    mockCreateHarness.mockResolvedValue({
-      session: {
-        prompt: mock(async () => {}),
-        subscribe: mock(() => mock()),
-        getLastAssistantText: mock(() => ''),
-        messages: [],
-        sessionId: 'test-session-id',
-        dispose: mock(),
-      },
+    mockCreateSession.mockResolvedValue({
+      prompt: mock(async () => {}),
+      subscribe: mock(() => mock()),
+      getLastAssistantText: mock(() => ''),
+      getLastAssistantMessage: mock(() => undefined),
+      abort: mock(async () => {}),
       sessionId: 'test-session-id',
       dispose: mockDispose,
     });
@@ -733,19 +767,17 @@ describe('generateCommitMessage', () => {
     await generateCommitMessage(['/profiles'], '/my/project', 'task', 'diff');
 
     expect(mockDispose).toHaveBeenCalled();
+    expect(mockCreateHarness).not.toHaveBeenCalled();
   });
 
-  it('disposes the harness even when prompt fails', async () => {
+  it('disposes the session even when prompt fails', async () => {
     const mockDispose = mock();
-    mockCreateHarness.mockResolvedValue({
-      session: {
-        prompt: mock(async () => {}),
-        subscribe: mock(() => mock()),
-        getLastAssistantText: mock(() => ''),
-        messages: [],
-        sessionId: 'test-session-id',
-        dispose: mock(),
-      },
+    mockCreateSession.mockResolvedValue({
+      prompt: mock(async () => {}),
+      subscribe: mock(() => mock()),
+      getLastAssistantText: mock(() => ''),
+      getLastAssistantMessage: mock(() => undefined),
+      abort: mock(async () => {}),
       sessionId: 'test-session-id',
       dispose: mockDispose,
     });
@@ -754,6 +786,7 @@ describe('generateCommitMessage', () => {
     await generateCommitMessage(['/profiles'], '/my/project', 'task', 'diff');
 
     expect(mockDispose).toHaveBeenCalled();
+    expect(mockCreateHarness).not.toHaveBeenCalled();
   });
 });
 
@@ -935,13 +968,18 @@ describe('pushAndCreatePR', () => {
     expect(mockPushBranch).toHaveBeenCalledWith('/my/project', 'feature-branch');
   });
 
-  it('creates a harness with the worker profile and apiKeys', async () => {
+  it('resolves the session via requireAgentPlugin().createSession() with apiKeys', async () => {
     await pushAndCreatePR(['/profiles'], '/my/project', 'feature-branch', 'task prompt', 'PR title', {
       openai: 'sk-key',
     });
 
-    expect(mockCreateHarness).toHaveBeenCalledWith(
+    // After migration, createHarness MUST NOT be called.
+    expect(mockCreateHarness).not.toHaveBeenCalled();
+    expect(mockRequireAgentPlugin).toHaveBeenCalledTimes(1);
+    // createSession received { profile, cwd: repoRoot, apiKeys }.
+    expect(mockCreateSession).toHaveBeenCalledWith(
       expect.objectContaining({
+        cwd: '/my/project',
         apiKeys: { openai: 'sk-key' },
       }),
     );
@@ -957,17 +995,14 @@ describe('pushAndCreatePR', () => {
     expect(schemaArg.safeParse({ prTitle: 'test', prBody: 'body' }).success).toBe(true);
   });
 
-  it('disposes the harness after PR creation', async () => {
+  it('disposes the session after PR creation', async () => {
     const mockDispose = mock();
-    mockCreateHarness.mockResolvedValue({
-      session: {
-        prompt: mock(async () => {}),
-        subscribe: mock(() => mock()),
-        getLastAssistantText: mock(() => ''),
-        messages: [],
-        sessionId: 'test-session-id',
-        dispose: mock(),
-      },
+    mockCreateSession.mockResolvedValue({
+      prompt: mock(async () => {}),
+      subscribe: mock(() => mock()),
+      getLastAssistantText: mock(() => ''),
+      getLastAssistantMessage: mock(() => undefined),
+      abort: mock(async () => {}),
       sessionId: 'test-session-id',
       dispose: mockDispose,
     });
@@ -975,19 +1010,17 @@ describe('pushAndCreatePR', () => {
     await pushAndCreatePR(['/profiles'], '/my/project', 'feature-branch', 'task', 'title');
 
     expect(mockDispose).toHaveBeenCalled();
+    expect(mockCreateHarness).not.toHaveBeenCalled();
   });
 
-  it('disposes harness even if gh pr create fails', async () => {
+  it('disposes session even if gh pr create fails', async () => {
     const mockDispose = mock();
-    mockCreateHarness.mockResolvedValue({
-      session: {
-        prompt: mock(async () => {}),
-        subscribe: mock(() => mock()),
-        getLastAssistantText: mock(() => ''),
-        messages: [],
-        sessionId: 'test-session-id',
-        dispose: mock(),
-      },
+    mockCreateSession.mockResolvedValue({
+      prompt: mock(async () => {}),
+      subscribe: mock(() => mock()),
+      getLastAssistantText: mock(() => ''),
+      getLastAssistantMessage: mock(() => undefined),
+      abort: mock(async () => {}),
       sessionId: 'test-session-id',
       dispose: mockDispose,
     });
@@ -998,7 +1031,6 @@ describe('pushAndCreatePR', () => {
 
     // Bun.spawnSync is used by the source for gh pr create - can't easily mock that
     // The test verifies dispose is called which is in the try/finally pattern
-    // We test the dispose behavior indirectly
     expect(mockDispose).not.toHaveBeenCalled();
 
     try {
@@ -1008,6 +1040,7 @@ describe('pushAndCreatePR', () => {
     }
 
     expect(mockDispose).toHaveBeenCalled();
+    expect(mockCreateHarness).not.toHaveBeenCalled();
   });
 });
 

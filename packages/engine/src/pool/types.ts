@@ -1,3 +1,4 @@
+import type { AgentRuntime } from '../core/agent-plugin.js';
 import type { RendererRegistry } from '../core/renderer-registry.js';
 import type { AgentProfile, StatusCallbacks, StepDefinition, Task } from '../core/types.js';
 import type { WorktreeManager } from '../core/worktree-manager.js';
@@ -71,14 +72,7 @@ export type WithoutTimestamp<T> = T extends infer U ? (U extends T ? Omit<U, 'ti
 
 /** A tracked session wrapper returned by runStep. */
 export interface TrackedSession {
-  session: {
-    abort(): Promise<void>;
-    dispose(): void;
-    subscribe(cb: (event: unknown) => void): () => void;
-    prompt(text: string): Promise<void>;
-    getLastAssistantText(): string | undefined;
-    sessionId: string;
-  };
+  session: AgentRuntime;
   dispose: () => void;
   sessionPath: string;
 }

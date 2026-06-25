@@ -21,13 +21,37 @@ import type { AgentProfile, StatusCallbacks } from '../../packages/engine/src/co
 // Without the restore, these relative-path mock.module() registrations leak
 // into sibling test files under CI's parallel scheduling (mirrors the pattern
 // in tests/core/phase-tasks.test.ts).
-const realHarnessFactory = Object.assign({}, await import('../../packages/engine/src/core/harness-factory.js'));
+const realAgentRegistry = Object.assign({}, await import('../../packages/engine/src/core/agent-registry.js'));
 
 // ─── Mock Dependencies ─────────────────────────────────────────────────────
 
 const mockCreateHarness = mock() as ReturnType<typeof mock> & ((...args: unknown[]) => unknown);
-mock.module('../../packages/engine/src/core/harness-factory.js', () => ({
-  createHarness: (...args: unknown[]) => mockCreateHarness(...args),
+
+// Compatibility shim: spawnAgent resolves sessions via
+// requireAgentPlugin(profile.agent).createSession(opts). We mock the
+// registry so createSession delegates to mockCreateHarness, whose return
+// value { session, sessionId, dispose } is unwrapped to the inner session
+// (the AgentRuntime), matching the real createSession contract.
+const mockRequireAgentPlugin = mock((..._args: unknown[]) => ({
+  id: 'pi-coding-agent',
+  createSession: async (opts: unknown) => {
+    const w = (await mockCreateHarness(opts)) as {
+      session: Record<string, unknown>;
+      sessionId?: string;
+      dispose?: () => void;
+      contextWindow?: number;
+    };
+    // Propagate wrapper-level fields onto the inner session IN-PLACE so the
+    // same object reference is tracked in activeSessions AND spawnAgent's
+    // session.dispose() / session.sessionId observe the wrapper's mock.
+    if (w.dispose) (w.session as { dispose: () => void }).dispose = w.dispose;
+    if (w.sessionId) (w.session as { sessionId: string }).sessionId = w.sessionId;
+    if (w.contextWindow !== undefined) (w.session as { contextWindow: number }).contextWindow = w.contextWindow;
+    return w.session;
+  },
+}));
+mock.module('../../packages/engine/src/core/agent-registry.js', () => ({
+  requireAgentPlugin: (...args: unknown[]) => mockRequireAgentPlugin(...args),
 }));
 
 // ─── Import after mocks ────────────────────────────────────────────────────
@@ -745,5 +769,5 @@ describe('spawnAgent', () => {
 // phase-tasks.test.ts) when CI schedules them in the same process.
 // Mirrors the capture→restore pattern in tests/core/phase-tasks.test.ts.
 afterAll(() => {
-  mock.module('../../packages/engine/src/core/harness-factory.js', () => realHarnessFactory);
+  mock.module('../../packages/engine/src/core/agent-registry.js', () => realAgentRegistry);
 });

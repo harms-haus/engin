@@ -4,8 +4,8 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
+import { requireAgentPlugin } from './agent-registry.js';
 import { getRepoRoot, isGitRepo, pushBranch, sanitizeBranchSlug, stageFiles } from './git.js';
-import { createHarness } from './harness-factory.js';
 import { loadProfilesFromDirs } from './profile.js';
 import { promptForStructured } from './structured-output.js';
 import { generateTitleAndBranch } from './title-generator.js';
@@ -57,8 +57,7 @@ export async function setupWorktree(
   const slug = sanitizeBranchSlug(rawBranchName);
   const mainBranch = `engin/${slug}`;
 
-  // The main worktree lives INSIDE the run dir — not in {repoRoot}/../ as
-  // the old implementation did. WorktreeManager is the SOLE creator.
+  // The main worktree lives INSIDE the run dir. WorktreeManager is the SOLE creator.
   const mainWorktreePath = join(workDir, 'worktree');
 
   const manager = new WorktreeManager({
@@ -105,12 +104,12 @@ export async function generateCommitMessage(
   apiKeys?: Record<string, string>,
 ): Promise<string> {
   const profile = await loadWorkerProfile(profilesDirs);
-  const harness = await createHarness({ profile, cwd: worktreePath, apiKeys });
+  const session = await requireAgentPlugin(profile.agent).createSession({ profile, cwd: worktreePath, apiKeys });
 
   try {
     const truncatedDiff = diff.length > 8000 ? diff.slice(0, 8000) : diff;
     const { result } = await promptForStructured(
-      harness.session,
+      session,
       `Generate a concise commit message for the following changes.\n\nTask: ${taskPrompt}\n\nDiff:\n${truncatedDiff}`,
       z.object({ message: z.string() }),
     );
@@ -118,7 +117,7 @@ export async function generateCommitMessage(
   } catch {
     return `Worktree changes for: ${taskPrompt}`;
   } finally {
-    harness.dispose();
+    session.dispose();
   }
 }
 
@@ -207,11 +206,11 @@ export async function pushAndCreatePR(
   pushBranch(repoRoot, branchName);
 
   const profile = await loadWorkerProfile(profilesDirs);
-  const harness = await createHarness({ profile, cwd: repoRoot, apiKeys });
+  const session = await requireAgentPlugin(profile.agent).createSession({ profile, cwd: repoRoot, apiKeys });
 
   try {
     const { result } = await promptForStructured(
-      harness.session,
+      session,
       `Generate a PR title and body for the following changes.\n\nTask: ${taskPrompt}\n\nTitle hint: ${title}`,
       z.object({ prTitle: z.string(), prBody: z.string() }),
     );
@@ -233,7 +232,7 @@ export async function pushAndCreatePR(
       // gh pr create may fail in test environments or when gh CLI is unavailable
     }
   } finally {
-    harness.dispose();
+    session.dispose();
   }
 }
 

@@ -44,6 +44,7 @@ function makeTrackedSession(id: string, disposeImpl?: () => void): { ts: Tracked
       subscribe: mock(() => () => {}),
       prompt: mock(async () => {}),
       getLastAssistantText: mock(() => undefined),
+      getLastAssistantMessage: mock(() => undefined),
       sessionId: id,
     },
     dispose,

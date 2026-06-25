@@ -29,8 +29,8 @@ export async function buildPrompt(
   // (./file-context.ts), which is the single source of truth shared with the
   // default `collectContext` hook — guaranteeing byte-identical sections.
   if (!opts?.skipFiles && task.files?.length) {
-    for (const fp of task.files) {
-      const section = await collectFileSection(fp, cwd);
+    const sections = await Promise.all(task.files.map((fp) => collectFileSection(fp, cwd)));
+    for (const section of sections) {
       if (section !== null) parts.push(section);
     }
   }

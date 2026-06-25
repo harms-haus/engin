@@ -1,7 +1,7 @@
 import { rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawnAgent } from '../core/agent-lifecycle.js';
-import { classify, extractLastAssistantMessage } from '../core/error-classifier.js';
+import { classify } from '../core/error-classifier.js';
 import { invokeRenderer } from '../core/renderer-invocation.js';
 import type { RendererRegistry } from '../core/renderer-registry.js';
 import { promptForStructured } from '../core/structured-output.js';
@@ -232,7 +232,7 @@ export async function runStep(
     // Non-structured step — always approved
     // Guard the TOCTOU window: activeSessions.add() ran before this point, so
     // an abort that fired during [session-tracked, prompt-started] was already
-    // delivered to session.abort(). But AgentSession.prompt() does NOT re-check
+    // delivered to session.abort(). But AgentRuntime.prompt() does NOT re-check
     // the abort state, and abort() on an idle (not-yet-streaming) agent is a
     // no-op — without this explicit check the prompt would still launch its
     // LLM turn after an abort. Throw AbortError so the runner fails the task
@@ -282,7 +282,7 @@ export async function runStep(
     // is 'error' OR classify kind is 'empty' (no text content blocks), the step
     // is rejected immediately. The throw flows through the existing catch block
     // (which disposes the session) and up to the runner → handleRunnerError.
-    const lastAssistant = extractLastAssistantMessage(session);
+    const lastAssistant = session.getLastAssistantMessage();
     const classification = classify(undefined, { lastAssistantMessage: lastAssistant });
     if (lastAssistant?.stopReason === 'error' || classification.kind === 'empty') {
       const detail = lastAssistant?.errorMessage ? `: ${lastAssistant.errorMessage}` : '';

@@ -1,27 +1,28 @@
 // ─── Tests for spawnAgent — contextWindow forwarding ─────────────────────────
 //
-// Verifies that `spawnAgent` destructures `contextWindow` from the
-// `createHarness` result and forwards it on the `onAgentSpawn` info object, and
-// — when wired through `createStoreCallbacks` — that the appended
-// `agent_spawned` event carries `data.contextWindow` equal to the resolved
-// model's value.
+// Verifies that `spawnAgent` reads `contextWindow` from the
+// `AgentRuntime` returned by `plugin.createSession` and forwards it on the
+// `onAgentSpawn` info object, and — when wired through `createStoreCallbacks` —
+// that the appended `agent_spawned` event carries `data.contextWindow` equal to
+// the resolved model's value.
 //
-// `createHarness` is mocked so we can inject a known `contextWindow` without
-// touching the network/credentials. The end-to-end test is the task's mandated
-// verification: "a test that spawns via store-callbacks and asserts the appended
-// agent_spawned event has data.contextWindow set to the model's value."
+// `requireAgentPlugin` (and thus the plugin's `createSession`) is mocked so we
+// can inject a known `contextWindow` without touching the network/credentials.
+// The end-to-end test is the task's mandated verification: "a test that spawns
+// via store-callbacks and asserts the appended agent_spawned event has
+// data.contextWindow set to the model's value."
 
 import type { EventType } from '@engin/shared/event-types';
 import { afterAll, beforeEach, describe, expect, it, mock } from 'bun:test';
 import type { AgentProfile } from './types.js';
 
-// ─── Capture the real harness-factory before mocking it ────────────────────
+// ─── Capture the real agent-registry before mocking it ─────────────────────
 
-const realHarnessFactory = Object.assign({}, await import('./harness-factory.js'));
+const realAgentRegistry = Object.assign({}, await import('./agent-registry.js'));
 
-const mockCreateHarness = mock() as ReturnType<typeof mock> & ((...args: unknown[]) => unknown);
-mock.module('./harness-factory.js', () => ({
-  createHarness: (...args: unknown[]) => mockCreateHarness(...args),
+const mockRequireAgentPlugin = mock() as ReturnType<typeof mock> & ((...args: unknown[]) => unknown);
+mock.module('./agent-registry.js', () => ({
+  requireAgentPlugin: (...args: unknown[]) => mockRequireAgentPlugin(...args),
 }));
 
 // ─── Import after mocks ────────────────────────────────────────────────────
@@ -42,31 +43,40 @@ const profile: AgentProfile = {
   includeTools: [],
 };
 
-function makeMockSession(id = 's1') {
+/**
+ * Build an `AgentRuntime` stub. `spawnAgent` unwraps `sessionId`,
+ * `sessionFile`, `dispose`, and `contextWindow` directly from the runtime
+ * returned by `plugin.createSession`, so the stub carries all of them.
+ */
+function makeMockSession(id = 's1', contextWindow?: number) {
   return {
     sessionId: id,
     sessionFile: undefined as string | undefined,
+    contextWindow,
     subscribe: mock(() => () => {}),
     dispose: mock(() => {}),
     abort: mock(async () => {}),
+    prompt: mock(async (_text: string) => {}),
+    getLastAssistantText: mock(() => undefined),
+    getLastAssistantMessage: mock(() => undefined),
   };
 }
 
+/** The mock plugin whose `createSession` is wired per-test. */
+let mockPlugin: { id: string; createSession: ReturnType<typeof mock> };
+
 beforeEach(() => {
-  mockCreateHarness.mockReset();
+  mockRequireAgentPlugin.mockReset();
+  mockPlugin = { id: 'pi-coding-agent', createSession: mock() };
+  mockRequireAgentPlugin.mockReturnValue(mockPlugin);
 });
 
 // ─── Tests ──────────────────────────────────────────────────────────────────
 
 describe('spawnAgent — forwards contextWindow to onAgentSpawn', () => {
-  it('forwards the model contextWindow from createHarness to the spawn callback', async () => {
-    const session = makeMockSession('s1');
-    mockCreateHarness.mockResolvedValue({
-      session,
-      sessionId: 's1',
-      dispose: mock(() => {}),
-      contextWindow: 131072,
-    });
+  it('forwards the model contextWindow from createSession to the spawn callback', async () => {
+    const session = makeMockSession('s1', 131072);
+    mockPlugin.createSession.mockResolvedValue(session);
 
     const captured: Array<{ contextWindow?: number; agentId?: string; sessionId?: string }> = [];
 
@@ -85,18 +95,14 @@ describe('spawnAgent — forwards contextWindow to onAgentSpawn', () => {
 
     expect(captured).toHaveLength(1);
     expect(captured[0].agentId).toBe('a1');
-    // The forwarded contextWindow must equal the model's value from createHarness.
+    // The forwarded contextWindow must equal the model's value from the runtime.
     expect(captured[0].contextWindow).toBe(131072);
   });
 
-  it('does not crash when createHarness omits contextWindow (backward compat)', async () => {
+  it('does not crash when the runtime omits contextWindow (backward compat)', async () => {
     const session = makeMockSession('s3');
-    // Harness result WITHOUT contextWindow (e.g. older harness).
-    mockCreateHarness.mockResolvedValue({
-      session,
-      sessionId: 's3',
-      dispose: mock(() => {}),
-    });
+    // Runtime WITHOUT contextWindow (e.g. older adapter).
+    mockPlugin.createSession.mockResolvedValue(session);
 
     // `agentId` is included so the element type shares a key with the
     // onAgentSpawn info type (avoids TS2559 'no properties in common' before
@@ -129,13 +135,8 @@ describe('spawnAgent — forwards contextWindow to onAgentSpawn', () => {
 
   it('end-to-end: spawn via store-callbacks records data.contextWindow == model value', async () => {
     const MODEL_CONTEXT_WINDOW = 128000;
-    const session = makeMockSession('s2');
-    mockCreateHarness.mockResolvedValue({
-      session,
-      sessionId: 's2',
-      dispose: mock(() => {}),
-      contextWindow: MODEL_CONTEXT_WINDOW,
-    });
+    const session = makeMockSession('s2', MODEL_CONTEXT_WINDOW);
+    mockPlugin.createSession.mockResolvedValue(session);
 
     interface RecordedCall {
       type: EventType;
@@ -166,10 +167,35 @@ describe('spawnAgent — forwards contextWindow to onAgentSpawn', () => {
     expect(spawn, 'agent_spawned event should be appended').toBeDefined();
     expect(spawn!.data.contextWindow).toBe(MODEL_CONTEXT_WINDOW);
   });
+
+  it('resolves the plugin via requireAgentPlugin(profile.agent) and delegates to createSession', async () => {
+    const session = makeMockSession('s4', 4096);
+    mockPlugin.createSession.mockResolvedValue(session);
+
+    await spawnAgent(
+      {
+        profileId: 'coder',
+        agentId: 'a4',
+        cwd: '/tmp/work',
+        phaseId: 'p1',
+        taskId: 't4',
+        stepIndex: 0,
+      },
+      new Map([['coder', profile]]),
+    );
+
+    // requireAgentPlugin called exactly once (direct registry call).
+    expect(mockRequireAgentPlugin).toHaveBeenCalledTimes(1);
+    // createSession called exactly once with the adjusted profile + cwd.
+    expect(mockPlugin.createSession).toHaveBeenCalledTimes(1);
+    const callOpts = mockPlugin.createSession.mock.calls[0][0] as Record<string, unknown>;
+    expect(callOpts.cwd).toBe('/tmp/work');
+    expect((callOpts.profile as AgentProfile).id).toBe('coder');
+  });
 });
 
 // ─── Restore real modules ───────────────────────────────────────────────────
 
 afterAll(() => {
-  mock.module('./harness-factory.js', () => realHarnessFactory);
+  mock.module('./agent-registry.js', () => realAgentRegistry);
 });

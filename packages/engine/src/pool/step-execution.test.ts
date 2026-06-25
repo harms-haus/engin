@@ -133,6 +133,7 @@ function makeMockHandle() {
   const session = {
     prompt: mock(async (_text: string) => {}),
     getLastAssistantText: mock(() => 'assistant-text'),
+    getLastAssistantMessage: mock(() => undefined),
     sessionId: 'reviewer-session',
     sessionFile: join(tmpdir(), 'reviewer-session.jsonl'),
     subscribe: mock(() => () => {}),
@@ -444,8 +445,8 @@ describe('runStep — non-structured steps do not fire onStructuredOutput', () =
 // ─── Fail-fast on empty/error non-structured replies ────────────────────────
 //
 // Pin the gate added by kb-3: after a NON-STRUCTURED step calls
-// session.prompt(), runStep extracts the last assistant message via
-// extractLastAssistantMessage(session) and classifies it. If stopReason is
+// session.prompt(), runStep reads the last assistant message via
+// session.getLastAssistantMessage() and classifies it. If stopReason is
 // 'error' OR classify kind is 'empty' (no usable text), it THROWS — the
 // task fails instead of being silently approved.
 
@@ -458,8 +459,9 @@ describe('runStep — fail-fast on empty/error non-structured replies', () => {
   };
 
   /**
-   * Build a mock handle whose session has a `messages` array so
-   * extractLastAssistantMessage() can inspect the last assistant message.
+   * Build a mock handle whose session has a `getLastAssistantMessage()`
+   * method returning the structured last-assistant-message metadata, so
+   * `runStep` can classify it (error / empty / normal).
    */
   function makeHandleWithMessages(opts: {
     stopReason?: string;
@@ -470,14 +472,11 @@ describe('runStep — fail-fast on empty/error non-structured replies', () => {
     const session = {
       prompt: mock(async (_text: string) => {}),
       getLastAssistantText: mock(() => opts.text),
-      messages: [
-        {
-          role: 'assistant',
-          stopReason: opts.stopReason ?? 'end_turn',
-          errorMessage: opts.errorMessage,
-          content: opts.content ?? [],
-        },
-      ],
+      getLastAssistantMessage: mock(() => ({
+        stopReason: opts.stopReason ?? 'end_turn',
+        errorMessage: opts.errorMessage,
+        content: opts.content ?? [],
+      })),
       sessionId: 'test-session',
       sessionFile: join(tmpdir(), 'test-session.jsonl'),
       subscribe: mock(() => () => {}),
@@ -587,8 +586,8 @@ describe('runStep — fail-fast on empty/error non-structured replies', () => {
   });
 
   // ── (d) existing free-form test still passes ───────────────────────────
-  //    (makeMockHandle has no messages array → extractLastAssistantMessage
-  //     returns undefined → classify returns 'unknown' → not empty → approved)
+  //    (makeMockHandle has getLastAssistantMessage returning undefined →
+  //     classify returns 'unknown' → not empty → approved)
 
   it('(d) session without messages array still approves (no regression)', async () => {
     mockSpawnAgent.mockResolvedValue(makeMockHandle());

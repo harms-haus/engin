@@ -123,7 +123,7 @@ Tests live in `tests/` and are organised by domain:
 ```
 tests/
 ├── cli/         # parse-args, commands, sigint, session-selector, run/resume guards
-├── core/        # agent-loop, config, harness-factory, phase-tasks, profile, structured-output, ...
+├── core/        # agent-loop, agent-lifecycle, agent-plugin, agent-registry, config, phase-tasks, profile, structured-output, worktree-lifecycle, ...
 ├── pool/        # lane-pool, step-execution, prompt-builder, severity, validation, types
 ├── tracking/    # audit-log, event-store, evolve, task-status, workflow-status, workflow-serializer
 ├── server/      # daemon, run-manager, control-server, status-bridge, auth, bind-guard

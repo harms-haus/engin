@@ -513,7 +513,7 @@ describe('LanePool — class-aware retries with backoff (PART B)', () => {
     // onDecision was called with a retry announcement.
     expect(decisions.some((d) => d.includes('Retrying failed task'))).toBe(true);
     // onDecision was NOT called with a permanent failure message.
-    expect(decisions.some((d) => d.includes('permanently'))).toBe(false);
+    expect(decisions.some((d) => d.includes('non-retryable error'))).toBe(false);
   });
 
   // ── (b) Permanent failure → no retry ────────────────────────────────
@@ -546,8 +546,11 @@ describe('LanePool — class-aware retries with backoff (PART B)', () => {
     expect(tracker.getTask('perm')?.status).toBe('failed');
     // No significant delay (permanent = no backoff).
     expect(elapsed).toBeLessThan(2000);
-    // onDecision surfaces the permanent failure.
-    expect(decisions.some((d) => d.includes('permanently') && d.includes('perm'))).toBe(true);
+    // onDecision surfaces the permanent failure — plain language, no raw
+    // classifier kind, and uses the task TITLE (not the opaque id).
+    expect(decisions.some((d) => d.includes('non-retryable error'))).toBe(true);
+    expect(decisions.some((d) => d.includes('Do the thing'))).toBe(true);
+    expect(decisions.some((d) => d.includes('(permanent') || d.includes('(unknown'))).toBe(false);
     // No retry announcement.
     expect(decisions.some((d) => d.includes('Retrying failed task'))).toBe(false);
   });
@@ -574,7 +577,7 @@ describe('LanePool — class-aware retries with backoff (PART B)', () => {
 
     expect(runCount.n).toBe(1);
     expect(result.failedTasks).toBe(1);
-    expect(decisions.some((d) => d.includes('permanently'))).toBe(true);
+    expect(decisions.some((d) => d.includes('non-retryable error'))).toBe(true);
     expect(decisions.some((d) => d.includes('Retrying'))).toBe(false);
   });
 
@@ -741,8 +744,139 @@ describe('LanePool — class-aware retries with backoff (PART B)', () => {
     // Unknown errors are not retryable.
     expect(runCount.n).toBe(1);
     expect(result.failedTasks).toBe(1);
-    expect(decisions.some((d) => d.includes('permanently'))).toBe(true);
+    expect(decisions.some((d) => d.includes('non-retryable error'))).toBe(true);
     expect(decisions.some((d) => d.includes('Retrying'))).toBe(false);
+  });
+});
+
+// ─── Permanent-failure decision message: no raw kind token, uses title ─
+//
+// The non-retryable branch in maybeRetryFailedTask fires `onDecision` with a
+// user-facing `decision` string. Two UX requirements:
+//   (1) The internal classifier `kind` enum (`unknown`, `transient`,
+//       `permanent`, `abort`, `empty`) must NEVER appear in the surfaced copy
+//       — tokens like `unknown` or `empty` produce confusing messages such
+//       as "failed permanently (unknown: ...)". The message should use plain
+//       language (e.g. "non-retryable error") and rely on the human-readable
+//       reason string.
+//   (2) The message must display `task.title` (readable) rather than the
+//       opaque `task.id` (a slugified hash). The structured `taskId` field on
+//       the event MUST still carry `task.id` for programmatic consumers.
+
+describe('LanePool — permanent-failure decision message UX', () => {
+  /** Build a task whose id and title are CLEARLY distinct, so the test can
+   * tell which one the message is using. */
+  function makeDistinctTask(): Task {
+    return {
+      id: 'task-9f2a-hash-id',
+      title: 'Implement the frobnicator widget',
+      prompt: 'please do it',
+      profile: 'coder',
+      files: [],
+      dependencies: [],
+      status: 'ready',
+      phaseId: 'implement',
+    };
+  }
+
+  /** The full set of internal classifier kind tokens that must never leak. */
+  const INTERNAL_KIND_TOKENS = ['unknown', 'transient', 'permanent', 'abort', 'empty'];
+
+  /** A failing runner that always fails with a NON-retryable reason. */
+  function permanentFailingRunner(reason: string): TaskRunner {
+    return async (ctx) => {
+      ctx.failTask({ completed: false, error: reason });
+      return { status: 'failed', feedback: reason };
+    };
+  }
+
+  it('uses the task TITLE in the decision message, not the opaque task id', async () => {
+    const events: { decision: string; taskId?: string }[] = [];
+    const task = makeDistinctTask();
+
+    const tracker = new TaskTracker();
+    tracker.addTask(task);
+    const pool = new LanePool(
+      makeOptions({
+        taskTracker: tracker,
+        maxTaskRetries: 3, // generous; permanent failure short-circuits regardless
+        getRunnerForTask: () => permanentFailingRunner('Unknown model "foo" for provider "bar"'),
+        onStatus: { onDecision: (e) => events.push({ decision: e.decision, taskId: e.taskId }) },
+      }),
+    );
+
+    await pool.run();
+
+    // At least one decision event surfaced.
+    expect(events.length).toBeGreaterThanOrEqual(1);
+
+    // Find the permanent-failure decision (the one that mentions not-retried).
+    const permanent = events.find((e) => e.decision.includes('not retried'));
+    expect(permanent).toBeDefined();
+
+    // (1) The decision message contains the human-readable TITLE.
+    expect(permanent!.decision).toContain(task.title);
+    // (2) The decision message does NOT contain the opaque task id.
+    expect(permanent!.decision).not.toContain(task.id);
+    // (3) The structured taskId field STILL carries the id for programmatic use.
+    expect(permanent!.taskId).toBe(task.id);
+  });
+
+  it('does not expose the raw classifier kind token in the decision message', async () => {
+    const events: { decision: string }[] = [];
+    const task = makeDistinctTask();
+
+    const tracker = new TaskTracker();
+    tracker.addTask(task);
+    const pool = new LanePool(
+      makeOptions({
+        taskTracker: tracker,
+        maxTaskRetries: 3,
+        // An unrecognized error → classifier kind 'unknown' (retryable=false).
+        getRunnerForTask: () => permanentFailingRunner('xyzzy plugh-maze'),
+        onStatus: { onDecision: (e) => events.push({ decision: e.decision }) },
+      }),
+    );
+
+    await pool.run();
+
+    const permanent = events.find((e) => e.decision.includes('not retried'));
+    expect(permanent).toBeDefined();
+
+    // NONE of the internal kind tokens may appear in the user-facing message
+    // as the bare parenthetical leak like "(unknown: ...)" or "(empty)".
+    for (const token of INTERNAL_KIND_TOKENS) {
+      expect(permanent!.decision).not.toContain(`(${token}`);
+    }
+    // Belt-and-suspenders: the literal '(unknown' / '(empty' leaks must never appear.
+    expect(permanent!.decision).not.toMatch(/\(unknown/);
+    expect(permanent!.decision).not.toMatch(/\(empty/);
+
+    // The human-readable reason is still surfaced.
+    expect(permanent!.decision).toContain('xyzzy plugh-maze');
+  });
+
+  it('uses plain language ("non-retryable error") in the decision message', async () => {
+    const events: { decision: string }[] = [];
+    const task = makeDistinctTask();
+
+    const tracker = new TaskTracker();
+    tracker.addTask(task);
+    const pool = new LanePool(
+      makeOptions({
+        taskTracker: tracker,
+        maxTaskRetries: 3,
+        getRunnerForTask: () => permanentFailingRunner('No API key for openai'),
+        onStatus: { onDecision: (e) => events.push({ decision: e.decision }) },
+      }),
+    );
+
+    await pool.run();
+
+    const permanent = events.find((e) => e.decision.includes('not retried'));
+    expect(permanent).toBeDefined();
+    // Plain-language wording is present.
+    expect(permanent!.decision).toMatch(/non-retryable error/i);
   });
 });
 

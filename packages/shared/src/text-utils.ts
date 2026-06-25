@@ -22,3 +22,17 @@ export function stripAnsi(str: string): string {
 export function sanitizeDisplayText(str: string): string {
   return stripAnsi(str).replace(/[\r\n]+/g, ' ');
 }
+
+/**
+ * Format a duration (in milliseconds) as a compact human-readable string.
+ *
+ * - For `ms <= 0` returns `''` (caller is expected to omit the suffix).
+ * - For sub-second durations (`< 1000`) returns `${ms}ms`.
+ * - Otherwise returns `${seconds}s` with trailing zeros trimmed
+ *   (e.g. `2000 -> '2s'`, `1500 -> '1.5s'`).
+ */
+export function formatDuration(ms: number): string {
+  if (ms <= 0) return '';
+  if (ms < 1000) return `${ms}ms`;
+  return `${String(ms / 1000).replace(/\.0+$/, '')}s`;
+}

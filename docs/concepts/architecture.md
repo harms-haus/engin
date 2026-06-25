@@ -79,7 +79,7 @@ packages/
 │   │   ├─ status-bridge.ts  per-run store→WS bridge (runId-tagged snapshot/events/run_complete/run_failed)
 │   │   ├─ auth.ts           authorize(msg) chokepoint — capability-token gen/validate (disabled now)
 │   │   └─ bind-guard.ts     isWildcardHost() — refuses 0.0.0.0/::/* binding until auth exists
-│   ├─ core/                 profiles, config, harness, runStepTask, worktree lifecycle, git, network
+│   ├─ core/                 profiles, config, agent lifecycle (spawnAgent), agent plugin contract + registry, runStepTask, worktree lifecycle, git, network
 │   ├─ pool/                 LanePool + step execution + retry runners
 │   └─ tracking/             EventStore, evolve, store-callbacks, task-status, audit-log, persistence
 │
@@ -265,18 +265,21 @@ server-side now — this happens:
 
 1. **Profile load.** The profile is loaded from the configured directories (local
    overrides global). Read-only steps strip `write`/`edit` from the toolset.
-2. **Harness creation.** `createHarness` resolves the model, loads credentials via
-   `AuthStorage`, builds the tool allowlist from the profile, constructs a
-   `DefaultResourceLoader` with the profile's system prompt, and creates an
-   `AgentSession`.
+2. **Agent session creation.** The profile's configured agent plugin is resolved
+   (via `requireAgentPlugin`) and its `createSession` is called (orchestrated by
+   `spawnAgent` in `core/agent-lifecycle.ts`). This resolves the model, loads
+   credentials via `AuthStorage`, builds the tool allowlist from the profile,
+   constructs a `DefaultResourceLoader` with the profile's system prompt, and
+   creates the agent session — returning a neutral `AgentRuntime`.
 3. **Lifecycle callbacks.** `onTaskRegister` → `onTaskStart` → `onAgentSpawn` →
    `onStepStart` fire (each becomes an event in the store, broadcast to clients).
 4. **Prompt.** The prompt is sent. If the step has a Zod `schema`, the response is
    parsed and validated with up to 3 attempts; otherwise the raw assistant text is
    returned. Turn-level and tool-level events (`onTurnStart`, `onToolCallStart`, …)
    stream back through the store and out to subscribers.
-5. **Teardown.** `onAgentComplete` fires, the harness is disposed, and (on success)
-   `onTaskComplete` fires. On error, `onTaskRejected` fires and the error re-throws.
+5. **Teardown.** `onAgentComplete` fires, the agent session (`AgentRuntime`) is
+   disposed, and (on success) `onTaskComplete` fires. On error, `onTaskRejected`
+   fires and the error re-throws.
 
 For multi-step tasks in a `LanePool`, step 4 is wrapped in a retry loop: a rejected
 step backs up exactly one step, appends the reviewer feedback to the task, and

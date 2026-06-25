@@ -13,7 +13,7 @@ import { mock } from 'bun:test';
 
 // ─── Capture real modules before mocking ───────────────────────────────────
 
-export const realHarnessFactory = Object.assign({}, await import('../../packages/engine/src/core/harness-factory.js'));
+export const realAgentRegistry = Object.assign({}, await import('../../packages/engine/src/core/agent-registry.js'));
 export const realProfile = Object.assign({}, await import('../../packages/engine/src/core/profile.js'));
 export const realStructuredOutput = Object.assign(
   {},
@@ -26,8 +26,31 @@ export const mockCreateHarness = mock() as ReturnType<typeof mock> & ((...args: 
 export const mockLoadProfilesFromDirs = mock() as ReturnType<typeof mock> & ((...args: unknown[]) => unknown);
 export const mockPromptForStructured = mock() as ReturnType<typeof mock> & ((...args: unknown[]) => unknown);
 
-mock.module('../../packages/engine/src/core/harness-factory.js', () => ({
-  createHarness: (...args: unknown[]) => mockCreateHarness(...args),
+// Compatibility shim: production code resolves sessions via
+// requireAgentPlugin(profile.agent).createSession(opts). We mock the
+// registry so createSession delegates to mockCreateHarness, whose return
+// value { session, sessionId, dispose } is unwrapped to the inner session
+// (the AgentRuntime), matching the real createSession contract.
+export const mockRequireAgentPlugin = mock((..._args: unknown[]) => ({
+  id: 'pi-coding-agent',
+  createSession: async (opts: unknown) => {
+    const w = (await mockCreateHarness(opts)) as {
+      session: Record<string, unknown>;
+      sessionId?: string;
+      dispose?: () => void;
+      contextWindow?: number;
+    };
+    // Propagate wrapper-level fields onto the inner session IN-PLACE so the
+    // same object reference is tracked in activeSessions AND spawnAgent's
+    // session.dispose() / session.sessionId observe the wrapper's mock.
+    if (w.dispose) (w.session as { dispose: () => void }).dispose = w.dispose;
+    if (w.sessionId) (w.session as { sessionId: string }).sessionId = w.sessionId;
+    if (w.contextWindow !== undefined) (w.session as { contextWindow: number }).contextWindow = w.contextWindow;
+    return w.session;
+  },
+}));
+mock.module('../../packages/engine/src/core/agent-registry.js', () => ({
+  requireAgentPlugin: (...args: unknown[]) => mockRequireAgentPlugin(...args),
 }));
 
 mock.module('../../packages/engine/src/core/profile.js', () => ({
@@ -129,6 +152,7 @@ export function makeTrackedSession(disposeFn?: ReturnType<typeof mock>): Tracked
       subscribe: mockSession.session.subscribe,
       prompt: mockSession.session.prompt,
       getLastAssistantText: mockSession.session.getLastAssistantText,
+      getLastAssistantMessage: mock(() => undefined),
       sessionId: mockSession.session.sessionId,
     },
     dispose,
@@ -268,7 +292,7 @@ export function clearPoolMocks() {
 }
 
 export function restorePoolMocks() {
-  mock.module('../../packages/engine/src/core/harness-factory.js', () => realHarnessFactory);
+  mock.module('../../packages/engine/src/core/agent-registry.js', () => realAgentRegistry);
   mock.module('../../packages/engine/src/core/profile.js', () => realProfile);
   mock.module('../../packages/engine/src/core/structured-output.js', () => realStructuredOutput);
 }

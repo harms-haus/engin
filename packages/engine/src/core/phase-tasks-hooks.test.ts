@@ -29,7 +29,7 @@ import type { WorktreeManager } from './worktree-manager.js';
 // ─── Capture real modules before mocking ──────────────────────────────────
 
 const realProfile = Object.assign({}, await import('./profile.js'));
-const realHarnessFactory = Object.assign({}, await import('./harness-factory.js'));
+const realAgentRegistry = Object.assign({}, await import('./agent-registry.js'));
 const realStructuredOutput = Object.assign({}, await import('./structured-output.js'));
 
 // ─── Mock dependencies ───────────────────────────────────────────────────
@@ -39,9 +39,9 @@ mock.module('./profile.js', () => ({
   loadProfilesFromDirs: (...args: unknown[]) => mockLoadProfilesFromDirs(...args),
 }));
 
-const mockCreateHarness = mock() as ReturnType<typeof mock> & ((...args: unknown[]) => unknown);
-mock.module('./harness-factory.js', () => ({
-  createHarness: (...args: unknown[]) => mockCreateHarness(...args),
+const mockRequireAgentPlugin = mock() as ReturnType<typeof mock> & ((...args: unknown[]) => unknown);
+mock.module('./agent-registry.js', () => ({
+  requireAgentPlugin: (...args: unknown[]) => mockRequireAgentPlugin(...args),
 }));
 
 const mockPromptForStructured = mock() as ReturnType<typeof mock> & ((...args: unknown[]) => unknown);
@@ -77,27 +77,24 @@ function setupProfiles(profiles: AgentProfile[]) {
 }
 
 /**
- * Build a mock harness whose `session.prompt(text)` pushes the received text
- * into `capture`. Mirrors the existing phase-tasks.test.ts harness shape but
- * also returns `contextWindow` (required by spawnAgent's destructure).
+ * Build a bare `AgentRuntime` stub whose `prompt(text)` pushes the received
+ * text into `capture`. `spawnAgent` unwraps `sessionId`, `sessionFile`,
+ * `dispose`, and `contextWindow` directly from the runtime returned by
+ * `plugin.createSession`, so the stub carries `contextWindow`.
  */
-function makeCapturingHarness(profileId: string, capture: string[], lastText = 'assistant-output') {
-  const session = {
+function makeCapturingSession(profileId: string, capture: string[], lastText = 'assistant-output') {
+  return {
     prompt: mock(async (text: string) => {
       capture.push(text);
     }),
     getLastAssistantText: mock(() => lastText),
+    getLastAssistantMessage: mock(() => undefined),
     sessionId: `${profileId}-session`,
     sessionFile: undefined as string | undefined,
+    contextWindow: 8000,
     subscribe: mock(() => () => {}),
     dispose: mock(() => {}),
     abort: mock(async () => {}),
-  };
-  return {
-    session,
-    sessionId: `${profileId}-session`,
-    dispose: mock(() => {}),
-    contextWindow: 8000,
   };
 }
 
@@ -134,10 +131,15 @@ function makeRealRegistry() {
   return reg;
 }
 
+/** The mock plugin whose `createSession` is wired per-test. */
+let mockPlugin: { id: string; createSession: ReturnType<typeof mock> };
+
 beforeEach(() => {
   mockLoadProfilesFromDirs.mockReset();
-  mockCreateHarness.mockReset();
+  mockRequireAgentPlugin.mockReset();
   mockPromptForStructured.mockReset();
+  mockPlugin = { id: 'pi-coding-agent', createSession: mock() };
+  mockRequireAgentPlugin.mockReturnValue(mockPlugin);
 });
 
 // ─── runStepTask ─────────────────────────────────────────────────────────
@@ -147,8 +149,8 @@ describe('runStepTask — beforeStepPrompt hook', () => {
     setupProfiles([coderProfile]);
 
     const prompts: string[] = [];
-    mockCreateHarness.mockImplementation(async (o: { profile: AgentProfile }) =>
-      makeCapturingHarness(o.profile.id, prompts),
+    mockPlugin.createSession.mockImplementation(async (o: { profile: AgentProfile }) =>
+      makeCapturingSession(o.profile.id, prompts),
     );
 
     const reg = makeRealRegistry();
@@ -181,8 +183,8 @@ describe('runStepTask — beforeStepPrompt hook', () => {
     setupProfiles([coderProfile]);
 
     const prompts: string[] = [];
-    mockCreateHarness.mockImplementation(async (o: { profile: AgentProfile }) =>
-      makeCapturingHarness(o.profile.id, prompts),
+    mockPlugin.createSession.mockImplementation(async (o: { profile: AgentProfile }) =>
+      makeCapturingSession(o.profile.id, prompts),
     );
 
     const opts = {
@@ -206,8 +208,8 @@ describe('runStepTask — beforeStepPrompt hook', () => {
     setupProfiles([coderProfile]);
 
     const prompts: string[] = [];
-    mockCreateHarness.mockImplementation(async (o: { profile: AgentProfile }) =>
-      makeCapturingHarness(o.profile.id, prompts),
+    mockPlugin.createSession.mockImplementation(async (o: { profile: AgentProfile }) =>
+      makeCapturingSession(o.profile.id, prompts),
     );
 
     const reg = makeRealRegistry();
@@ -236,8 +238,8 @@ describe('runStepTask — beforeStepPrompt hook', () => {
     setupProfiles([coderProfile]);
 
     const prompts: string[] = [];
-    mockCreateHarness.mockImplementation(async (o: { profile: AgentProfile }) =>
-      makeCapturingHarness(o.profile.id, prompts),
+    mockPlugin.createSession.mockImplementation(async (o: { profile: AgentProfile }) =>
+      makeCapturingSession(o.profile.id, prompts),
     );
 
     const { registry, invokePipeline, hasSubscribers } = makeMockRegistry({
@@ -315,8 +317,8 @@ describe('runStepTask — beforeStepPrompt hook', () => {
     setupProfiles([coderProfile]);
 
     const prompts: string[] = [];
-    mockCreateHarness.mockImplementation(async (o: { profile: AgentProfile }) =>
-      makeCapturingHarness(o.profile.id, prompts),
+    mockPlugin.createSession.mockImplementation(async (o: { profile: AgentProfile }) =>
+      makeCapturingSession(o.profile.id, prompts),
     );
 
     const worktreePath = '/tmp/run-1/task-worktrees/task-7';
@@ -356,8 +358,8 @@ describe('runStepTask — beforeStepPrompt hook', () => {
     setupProfiles([coderProfile]);
 
     const prompts: string[] = [];
-    mockCreateHarness.mockImplementation(async (o: { profile: AgentProfile }) =>
-      makeCapturingHarness(o.profile.id, prompts),
+    mockPlugin.createSession.mockImplementation(async (o: { profile: AgentProfile }) =>
+      makeCapturingSession(o.profile.id, prompts),
     );
 
     const { registry, invokePipeline } = makeMockRegistry({ hasSubs: false });
@@ -385,8 +387,8 @@ describe('runStepTask — beforeStepPrompt hook', () => {
     setupProfiles([reviewerProfile]);
 
     const structuredPrompts: string[] = [];
-    mockCreateHarness.mockImplementation(async (o: { profile: AgentProfile }) =>
-      makeCapturingHarness(o.profile.id, [], 'review-json'),
+    mockPlugin.createSession.mockImplementation(async (o: { profile: AgentProfile }) =>
+      makeCapturingSession(o.profile.id, [], 'review-json'),
     );
     mockPromptForStructured.mockImplementation(async (_session: unknown, prompt: string) => {
       structuredPrompts.push(prompt);
@@ -423,8 +425,8 @@ describe('runMultiStepTask — beforeStepPrompt hook', () => {
     setupProfiles([plannerProfile, reviewerProfile]);
 
     const prompts: string[] = [];
-    mockCreateHarness.mockImplementation(async (o: { profile: AgentProfile }) =>
-      makeCapturingHarness(o.profile.id, prompts),
+    mockPlugin.createSession.mockImplementation(async (o: { profile: AgentProfile }) =>
+      makeCapturingSession(o.profile.id, prompts),
     );
 
     const reg = makeRealRegistry();
@@ -454,8 +456,8 @@ describe('runMultiStepTask — beforeStepPrompt hook', () => {
     setupProfiles([plannerProfile, reviewerProfile]);
 
     const prompts: string[] = [];
-    mockCreateHarness.mockImplementation(async (o: { profile: AgentProfile }) =>
-      makeCapturingHarness(o.profile.id, prompts),
+    mockPlugin.createSession.mockImplementation(async (o: { profile: AgentProfile }) =>
+      makeCapturingSession(o.profile.id, prompts),
     );
 
     const opts = {
@@ -481,8 +483,8 @@ describe('runMultiStepTask — beforeStepPrompt hook', () => {
     setupProfiles([plannerProfile, reviewerProfile]);
 
     const prompts: string[] = [];
-    mockCreateHarness.mockImplementation(async (o: { profile: AgentProfile }) =>
-      makeCapturingHarness(o.profile.id, prompts),
+    mockPlugin.createSession.mockImplementation(async (o: { profile: AgentProfile }) =>
+      makeCapturingSession(o.profile.id, prompts),
     );
 
     const { registry, invokePipeline, hasSubscribers } = makeMockRegistry({
@@ -531,6 +533,6 @@ describe('runMultiStepTask — beforeStepPrompt hook', () => {
 
 afterAll(() => {
   mock.module('./profile.js', () => realProfile);
-  mock.module('./harness-factory.js', () => realHarnessFactory);
+  mock.module('./agent-registry.js', () => realAgentRegistry);
   mock.module('./structured-output.js', () => realStructuredOutput);
 });

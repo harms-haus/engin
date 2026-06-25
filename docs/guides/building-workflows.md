@@ -207,8 +207,9 @@ export default module;
 | `hookRegistry?` | `HookRegistry` | Optional registry of workflow hooks. When provided AND it has subscribers for `beforeStepPrompt`, the step prompt is passed through the pipeline hook and the pipeline's return value replaces the prompt sent to the agent. Absent or no subscribers → zero behavior change. |
 
 Lifecycle: abort check → `onTaskRegister` (single-step definition) → `onTaskStart` → load and
-adjust profile → `createHarness` → `onAgentSpawn` (`stepIndex: 0`) → `onStepStart` → run
-prompt → `onAgentComplete` (always, in `finally`) → on success `onTaskComplete`, on error
+adjust profile → resolve the profile agent plugin and call `createSession` (via
+`spawnAgent`) → `onAgentSpawn` (`stepIndex: 0`) → `onStepStart` → run prompt →
+`onAgentComplete` (always, in `finally`) → on success `onTaskComplete`, on error
 `onTaskRejected` then re-throw.
 
 > **Abort semantics.** `runStepTask` checks `signal.aborted` exactly once, before any callbacks
@@ -270,8 +271,9 @@ console.log(`Drafted ${result.completedTasks} pages; ${result.failedTasks} faile
 
 For each claimed task, the lane walks the steps returned by `getStepsForTask` in order:
 
-1. Load the profile (read-only steps strip `write`/`edit`). Create a persisted harness session
-   at `{sessionBaseDir}/{taskId}/{execCount}-{stepIndex}-{stepName}/`.
+1. Load the profile (read-only steps strip `write`/`edit`). Create a persisted agent session
+   (via the agent plugin) at
+   `{sessionBaseDir}/{taskId}/{execCount}-{stepIndex}-{stepName}/`.
 2. Inside `runStep`, fire `onAgentSpawn` and then `onStepStart` (in that order, so the step's
    `agentKey` is populated before `step_started` is recorded).
 3. Build the prompt — including any pre-loaded file contents from `task.files` and the task's
@@ -922,9 +924,9 @@ You have a few options:
 - **Unit-test the building blocks.** `runStepTask`, the `TaskTracker`, and the `evolve`
   reducer are all plain functions/classes you can import and exercise in isolation. See the
   existing tests under `tests/` for patterns (e.g. `tests/core/phase-tasks.test.ts`).
-- **Mock the harness.** `createHarness` accepts an `onAgentStatus` callback; for tests you can
-  construct a `PromptableHarness`-shaped mock (`{ prompt, getLastAssistantText }`) and feed it
-  to `promptForStructured` directly.
+- **Mock the agent seam.** The agent plugin's `createSession` (and the `AgentRuntime` it
+  returns) is the seam; for tests you can construct a `PromptableHarness`-shaped mock
+  (`{ prompt, getLastAssistantText }`) and feed it to `promptForStructured` directly.
 
 ---
 

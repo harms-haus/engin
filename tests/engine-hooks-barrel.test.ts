@@ -19,7 +19,8 @@
 //
 // Placement requirement (from the task): "in the Core section (after the
 // existing core exports, before Pool)". The line must appear after the last
-// `./core/*.js` export (write-sandbox.js) and before `./pool/index.js`.
+// `./core/*.js` export (now worktree-operations.js, after write-sandbox.js was
+// removed) and before `./pool/index.js`.
 //
 // Regression requirement: no pre-existing export may be removed or shadowed.
 //
@@ -70,7 +71,8 @@ function indexOfInSource(needle: string): number {
 // must remain present after the change (typed as string[] so it.each infers
 // the callback parameter as string — mirrors tests/engine-index.test.ts).
 const PRESERVED_VALUE_EXPORTS: string[] = [
-  'createHarness',
+  // NOTE: `createHarness` was removed from the barrel — harness-factory.js was
+  // deleted and is not re-exported from the engine public surface.
   'runMultiStepTask',
   'EventStore',
   'createStoreCallbacks',
@@ -129,11 +131,12 @@ describe('index.ts — hooks re-export line present and placed in the Core secti
     expect(indexSource).toContain(HOOKS_EXPORT_LINE);
   });
 
-  it('appears AFTER the last core export (write-sandbox.js)', () => {
+  it('appears AFTER the last core export (worktree-operations.js)', () => {
     // "after the existing core exports" — the hooks line must come after the
-    // final `./core/*.js` wildcard export.
+    // final `./core/*.js` wildcard export. write-sandbox.js was removed from
+    // the barrel, so the last core export is now worktree-operations.js.
     const hooksIdx = indexOfInSource(HOOKS_EXPORT_LINE);
-    const lastCoreIdx = indexOfInSource("export * from './core/write-sandbox.js';");
+    const lastCoreIdx = indexOfInSource("export * from './core/worktree-operations.js';");
     expect(hooksIdx).toBeGreaterThan(-1);
     expect(lastCoreIdx).toBeGreaterThan(-1);
     expect(hooksIdx).toBeGreaterThan(lastCoreIdx);

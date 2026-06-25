@@ -22,6 +22,7 @@ from.
 ```markdown
 ---
 name: My Agent
+agent: pi-coding-agent # optional, default: pi-coding-agent
 provider: your-provider
 model: your-model
 thinkingLevel: medium
@@ -44,6 +45,7 @@ This body text becomes the system prompt.
 | --------------- | -------- | ---------------------- | -------------------------------------------------------------------------------- |
 | `provider`      | **Yes**  | —                      | Provider identifier (e.g. `anthropic`, `openai`).                                |
 | `model`         | **Yes**  | —                      | Model identifier within the provider.                                            |
+| `agent`         | No       | `"pi-coding-agent"`    | Agent runtime plugin id. One of `pi-coding-agent`, `codex`, `cursor`.            |
 | `name`          | No       | Filename without `.md` | Human-readable display name.                                                     |
 | `thinkingLevel` | No       | `"medium"`             | Model thinking depth. One of `off`, `minimal`, `low`, `medium`, `high`, `xhigh`. |
 | `excludeTools`  | No       | `[]`                   | Tool names to remove from the default set.                                       |
@@ -51,6 +53,41 @@ This body text becomes the system prompt.
 
 `parseProfile` throws if `provider` or `model` is missing, or if `thinkingLevel` is not one of
 the allowed values.
+
+## Agent runtime selection
+
+The `agent` field selects which agent runtime backs this profile. The default is
+`pi-coding-agent` — existing profiles without this field work unchanged.
+
+| Agent             | Backend                                | Sandbox                              | Session resume               | Event fidelity                                                  |
+| ----------------- | -------------------------------------- | ------------------------------------ | ---------------------------- | --------------------------------------------------------------- |
+| `pi-coding-agent` | engin's native agent                   | Granular `allowedWriteDirs`          | Persists JSONL session files | Full turn/tool/token/retry events                               |
+| `codex`           | OpenAI Codex SDK (`@openai/codex-sdk`) | Workspace-write with additional dirs | Uses thread IDs              | Turn + usage + tool events (no retry)                           |
+| `cursor`          | Cursor SDK (`@cursor/sdk`)             | Binary on/off (no granular control)  | Uses run IDs                 | Assistant + tool events (no usage, no discrete turn boundaries) |
+
+**Provider is pi-centric:** for `codex` and `cursor`, the adapter ignores the `provider`
+field and uses `model` directly. The provider field is still required for validation but has
+no effect on routing.
+
+**Sandbox behavior** varies by adapter:
+
+- `pi-coding-agent` supports granular `allowedWriteDirs` to restrict write access.
+- `codex` supports workspace-write with additional directory declarations.
+- `cursor` has a binary on/off sandbox — no granular directory control.
+
+**Session resume** differs:
+
+- `pi-coding-agent` persists JSONL session files for full replay.
+- `codex` uses thread IDs; resume requires the thread ID to be available.
+- `cursor` uses run IDs; resume requires the run ID to be available.
+- Non-pi adapters may degrade resume capability compared to the native agent.
+
+**Event fidelity** varies:
+
+- `pi-coding-agent` emits full turn, tool, token, and retry events.
+- `codex` emits turn, usage, and tool events (no retry events).
+- `cursor` emits assistant and tool events (no usage events, no discrete turn boundaries).
+- The TUI tolerates missing fields gracefully.
 
 ## Tool filtering — read this carefully
 
@@ -114,6 +151,30 @@ Respond with JSON matching this shape:
 Pair this profile with a step that has `schema` and `isReadOnly: true`; the
 [LanePool](../reference/task-pool.md) will run it, parse the JSON, and use `approved` to decide
 whether to advance or send feedback back to the implementer.
+
+### Codex agent
+
+```markdown
+---
+name: Codex Implementer
+agent: codex
+model: codex-latest
+---
+
+You are a Codex agent using the OpenAI Codex SDK.
+```
+
+### Cursor agent
+
+```markdown
+---
+name: Cursor Implementer
+agent: cursor
+model: claude-sonnet-4
+---
+
+You are a Cursor agent using the Cursor SDK.
+```
 
 ### Structured-output scout
 

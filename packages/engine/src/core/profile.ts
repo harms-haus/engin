@@ -23,6 +23,7 @@ function isThinkingLevel(value: unknown): value is ThinkingLevel {
  *   - name?       (defaults to filename without .md)
  *   - provider    (required)
  *   - model       (required)
+ *   - agent?      (defaults to "pi-coding-agent")
  *   - thinkingLevel? (defaults to "medium")
  *   - excludeTools?  (defaults to [])
  *   - includeTools?  (defaults to [])
@@ -58,6 +59,7 @@ export function parseProfile(content: string, filename: string): AgentProfile {
     name,
     provider: data.provider as string,
     model: data.model as string,
+    agent: (data.agent as string | undefined) ?? 'pi-coding-agent',
     thinkingLevel,
     systemPrompt: body.trim(),
     excludeTools: (data.excludeTools as string[] | undefined) ?? [],

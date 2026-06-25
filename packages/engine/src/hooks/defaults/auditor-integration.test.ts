@@ -157,6 +157,7 @@ function makeMockHandle() {
   const session = {
     prompt: mock(async (_text: string) => {}),
     getLastAssistantText: mock(() => 'assistant-text'),
+    getLastAssistantMessage: mock(() => undefined),
     sessionId: 'reviewer-session',
     sessionFile: join(tmpdir(), 'reviewer-session.jsonl'),
     subscribe: mock(() => () => {}),

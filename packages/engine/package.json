@@ -12,8 +12,11 @@
     }
   },
   "dependencies": {
+    "@cursor/sdk": "1.0.21",
+    "@earendil-works/pi-ai": "^0.79.7",
     "@earendil-works/pi-coding-agent": "^0.79.7",
     "@harms-haus/engin-shared": "workspace:*",
+    "@openai/codex-sdk": "0.142.2",
     "dotenv": "^16.5.0",
     "gray-matter": "^4.0.3",
     "ignore": "^6.0.0",

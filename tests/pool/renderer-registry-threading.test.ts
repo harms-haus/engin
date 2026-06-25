@@ -112,6 +112,7 @@ function makeTrackedSession(): TrackedSession {
       subscribe: mock(() => () => {}),
       prompt: mock(async () => {}),
       getLastAssistantText: mock(() => 'step-output'),
+      getLastAssistantMessage: mock(() => undefined),
       sessionId: 'test-session',
     },
     dispose: mock(() => {}),

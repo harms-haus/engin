@@ -90,9 +90,9 @@ You can also drive engin from TypeScript without the CLI:
 
 ```typescript
 import {
-  createHarness,
   loadProfilesFromDirs,
   promptForStructured,
+  requireAgentPlugin,
   resolveProfilesDirs,
 } from '@harms-haus/engin-engine';
 import { z } from 'zod';
@@ -104,13 +104,13 @@ const profiles = await loadProfilesFromDirs(profilesDirs);
 const profile = profiles.get('scout');
 if (!profile) throw new Error('scout profile not found');
 
-const { session, dispose } = await createHarness({ profile, cwd });
+const session = await requireAgentPlugin(profile.agent).createSession({ profile, cwd });
 try {
   const Files = z.object({ files: z.array(z.string()) });
   const { result } = await promptForStructured(session, 'List the public entry points.', Files);
   console.log('Files:', result.files);
 } finally {
-  dispose();
+  session.dispose();
 }
 ```
 

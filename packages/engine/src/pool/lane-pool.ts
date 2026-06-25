@@ -199,8 +199,12 @@ export class LanePool {
     // event may fire for other settled tasks between deadlock checks).
     const deadlockedSurfaced = new Set<string>();
     const onTaskSettled = () => {
-      for (const t of taskTracker.getAllTasks()) {
-        if (t.status === 'failed' && !deadlockedSurfaced.has(t.id)) {
+      // Scan ONLY failed tasks (O(failed), typically O(1)) instead of the
+      // full task set. isPoolDone() marks deadlocked tasks as 'failed' with a
+      // result.error starting with 'deadlocked:', so filtering the failed set
+      // is sufficient to detect freshly-deadlocked tasks.
+      for (const t of taskTracker.getFailedTasks()) {
+        if (!deadlockedSurfaced.has(t.id)) {
           const resultErr = (t.result as Record<string, unknown> | undefined)?.error;
           if (typeof resultErr === 'string' && resultErr.startsWith('deadlocked:')) {
             deadlockedSurfaced.add(t.id);
@@ -362,9 +366,10 @@ export class LanePool {
       // Permanent / abort / unknown — do not retry. Prune the counter and
       // surface the verdict so the TUI / workflow can display it.
       this.taskRetries.delete(task.id);
+      const reasonSuffix = enrichedReason ? `: ${enrichedReason}` : '';
       this.options.onStatus?.onDecision?.({
         agentId,
-        decision: `Task "${task.id}" failed permanently (${classification.kind}${enrichedReason ? ': ' + enrichedReason : ''}) — not retried`,
+        decision: `Task "${task.title}" failed with a non-retryable error${reasonSuffix} — not retried`,
         reasoning: enrichedReason ?? 'non-retryable error',
         taskId: task.id,
       });

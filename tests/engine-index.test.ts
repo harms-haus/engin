@@ -97,11 +97,13 @@ interface ManagerInstance {
 }
 
 // The complete set of PRE-EXISTING core wildcard exports — none may be removed.
+// NOTE: `harness-factory.js` and `write-sandbox.js` were removed from the barrel
+// (harness-factory.js was deleted entirely; write-sandbox moved to the adapter
+// directory under agents/pi-coding-agent/), so they are excluded here.
 const ORIGINAL_CORE_SPECIFIERS = [
   'agent-loop.js',
   'config.js',
   'git.js',
-  'harness-factory.js',
   'phase-tasks.js',
   'profile.js',
   'renderer-registry.js',
@@ -115,7 +117,6 @@ const ORIGINAL_CORE_SPECIFIERS = [
   'workflow-loader.js',
   'worktree-lifecycle.js',
   'worktree-operations.js',
-  'write-sandbox.js',
 ] as const;
 
 // A representative, cross-section sample of pre-existing VALUE exports that must
@@ -123,7 +124,8 @@ const ORIGINAL_CORE_SPECIFIERS = [
 // plain `string[]` so `it.each` infers the callback parameter as `string`
 // (mirrors tests/cli/index-barrel.test.ts).
 const PRESERVED_VALUE_EXPORTS: string[] = [
-  'createHarness',
+  // NOTE: `createHarness` was removed from the barrel — harness-factory.js was
+  // deleted and is not re-exported from the engine public surface.
   'loadProfilesFromDirs',
   'generateWorkflowTitle',
   'runMultiStepTask',
@@ -312,9 +314,11 @@ describe('index.ts — Core section re-exports the new modules in order', () => 
     }
   });
 
-  it('adds exactly three Core wildcard exports (21 total after the change)', () => {
-    // 18 pre-existing core exports + 3 new (phase-runner, worktree-fixup,
-    // worktree-manager) = 21.
+  it('adds exactly three Core wildcard exports (19 total after the change)', () => {
+    // 16 pre-existing core exports + 3 new (phase-runner, worktree-fixup,
+    // worktree-manager) = 19. harness-factory.js and write-sandbox.js were
+    // removed from the barrel (harness-factory deleted, write-sandbox moved),
+    // so they are not counted.
     expect(coreSpecifiers).toHaveLength(ORIGINAL_CORE_SPECIFIERS.length + 3);
   });
 });

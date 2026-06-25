@@ -4,9 +4,9 @@
 //   (a) Per-step execution-count context `{ attempt }` passed to lazy prompt
 //       functions as their second argument (0-indexed, per-step).
 //   (b) Session resume: when a step is re-executed after a rejection, the
-//       harness is created with `resumeSessionPath` (from a persisted session)
-//       instead of `sessionDir`.  When `sessionBaseDir` is absent, the
-//       harness is created without persistence options (in-memory fallback).
+//       session is created with `resumeSessionPath` (from a persisted session)
+//       instead of `sessionDir`.  When `sessionBaseDir` is absent, the session
+//       is created without persistence options (in-memory fallback).
 
 import { afterAll, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { tmpdir } from 'node:os';
@@ -18,7 +18,7 @@ import type { AgentProfile } from './types.js';
 // ─── Capture real modules before mocking ──────────────────────────────────
 
 const realProfile = Object.assign({}, await import('./profile.js'));
-const realHarnessFactory = Object.assign({}, await import('./harness-factory.js'));
+const realAgentRegistry = Object.assign({}, await import('./agent-registry.js'));
 const realStructuredOutput = Object.assign({}, await import('./structured-output.js'));
 
 // ─── Mock dependencies ───────────────────────────────────────────────────
@@ -28,9 +28,9 @@ mock.module('./profile.js', () => ({
   loadProfilesFromDirs: (...args: unknown[]) => mockLoadProfilesFromDirs(...args),
 }));
 
-const mockCreateHarness = mock() as ReturnType<typeof mock> & ((...args: unknown[]) => unknown);
-mock.module('./harness-factory.js', () => ({
-  createHarness: (...args: unknown[]) => mockCreateHarness(...args),
+const mockRequireAgentPlugin = mock() as ReturnType<typeof mock> & ((...args: unknown[]) => unknown);
+mock.module('./agent-registry.js', () => ({
+  requireAgentPlugin: (...args: unknown[]) => mockRequireAgentPlugin(...args),
 }));
 
 const mockPromptForStructured = mock() as ReturnType<typeof mock> & ((...args: unknown[]) => unknown);
@@ -69,30 +69,36 @@ function setupProfiles(profiles: AgentProfile[]) {
   mockLoadProfilesFromDirs.mockResolvedValue(map);
 }
 
-function makeMockHarness(profileId: string, textFn?: (text: string) => string | undefined) {
+/**
+ * Build a bare `AgentRuntime` stub. `spawnAgent` unwraps `sessionId`,
+ * `sessionFile`, `dispose`, and `contextWindow` directly from the runtime
+ * returned by `plugin.createSession`.
+ */
+function makeMockSession(profileId: string, textFn?: (text: string) => string | undefined) {
   let lastText: string | undefined;
-  const session = {
+  return {
     prompt: mock(async (text: string) => {
       lastText = textFn?.(text);
     }),
     getLastAssistantText: mock(() => lastText),
+    getLastAssistantMessage: mock(() => undefined),
     sessionId: `${profileId}-session`,
     sessionFile: join(tmpdir(), `${profileId}-session.jsonl`),
     subscribe: mock(() => () => {}),
     dispose: mock(() => {}),
     abort: mock(async () => {}),
   };
-  return {
-    session,
-    sessionId: `${profileId}-session`,
-    dispose: mock(() => {}),
-  };
 }
+
+/** The mock plugin whose `createSession` is wired per-test. */
+let mockPlugin: { id: string; createSession: ReturnType<typeof mock> };
 
 beforeEach(() => {
   mockLoadProfilesFromDirs.mockReset();
-  mockCreateHarness.mockReset();
+  mockRequireAgentPlugin.mockReset();
   mockPromptForStructured.mockReset();
+  mockPlugin = { id: 'pi-coding-agent', createSession: mock() };
+  mockRequireAgentPlugin.mockReturnValue(mockPlugin);
 });
 
 // ─── Tests ───────────────────────────────────────────────────────────────
@@ -106,8 +112,8 @@ describe('runMultiStepTask — attempt context + session resume', () => {
     const recorded: number[] = [];
 
     // Planner step: lazy prompt records ctx.attempt (per-step execution count).
-    mockCreateHarness.mockImplementation(async (opts: { profile: AgentProfile }) => {
-      return makeMockHarness(opts.profile.id, () => 'plan-output');
+    mockPlugin.createSession.mockImplementation(async (opts: { profile: AgentProfile }) => {
+      return makeMockSession(opts.profile.id, () => 'plan-output');
     });
 
     // Reviewer: reject first, approve second.
@@ -147,26 +153,26 @@ describe('runMultiStepTask — attempt context + session resume', () => {
     expect(recorded).toEqual([0, 1]);
   });
 
-  // ── Case 2: passes resumeSessionPath to createHarness on 2nd exec ──
+  // ── Case 2: passes resumeSessionPath to createSession on 2nd exec ──
 
-  it('passes resumeSessionPath to createHarness on a step 2nd execution', async () => {
+  it('passes resumeSessionPath to createSession on a step 2nd execution', async () => {
     setupProfiles([plannerProfile, reviewerProfile]);
 
-    // Record every createHarness call's opts so we can inspect them.
-    const harnessCalls: Array<{
+    // Record every createSession call's opts so we can inspect them.
+    const sessionCalls: Array<{
       profileId: string;
       resumeSessionPath?: string;
       sessionDir?: string;
     }> = [];
 
-    mockCreateHarness.mockImplementation(
+    mockPlugin.createSession.mockImplementation(
       async (opts: { profile: AgentProfile; resumeSessionPath?: string; sessionDir?: string }) => {
-        harnessCalls.push({
+        sessionCalls.push({
           profileId: opts.profile.id,
           resumeSessionPath: opts.resumeSessionPath,
           sessionDir: opts.sessionDir,
         });
-        return makeMockHarness(opts.profile.id, () => 'output');
+        return makeMockSession(opts.profile.id, () => 'output');
       },
     );
 
@@ -196,11 +202,11 @@ describe('runMultiStepTask — attempt context + session resume', () => {
       ],
     });
 
-    // Expect 3 harness creations:
+    // Expect 3 session creations:
     //   call 0: planner step 0, 1st execution (new sessionDir)
     //   call 1: reviewer step 1, 1st execution
     //   call 2: planner step 0, 2nd execution (resumed session)
-    const plannerCalls = harnessCalls.filter((c) => c.profileId === 'planner');
+    const plannerCalls = sessionCalls.filter((c) => c.profileId === 'planner');
     expect(plannerCalls).toHaveLength(2);
 
     // 1st execution of planner: should have sessionDir, NOT resumeSessionPath
@@ -217,8 +223,8 @@ describe('runMultiStepTask — attempt context + session resume', () => {
   it('backward compat: string prompt and 1-arg function still work', async () => {
     setupProfiles([plannerProfile, reviewerProfile]);
 
-    mockCreateHarness.mockImplementation(async (opts: { profile: AgentProfile }) => {
-      return makeMockHarness(opts.profile.id, () => 'output');
+    mockPlugin.createSession.mockImplementation(async (opts: { profile: AgentProfile }) => {
+      return makeMockSession(opts.profile.id, () => 'output');
     });
 
     mockPromptForStructured.mockResolvedValue({ result: { approved: true }, attempts: 1 });
@@ -258,17 +264,17 @@ describe('runMultiStepTask — attempt context + session resume', () => {
     // Record (stepIndex, attempt) pairs from every lazy prompt invocation.
     const recorded: Array<{ stepIndex: number; attempt: number }> = [];
 
-    mockCreateHarness.mockImplementation(async (opts: { profile: AgentProfile }) => {
-      const session = {
+    mockPlugin.createSession.mockImplementation(async (opts: { profile: AgentProfile }) => {
+      return {
         prompt: mock(async () => {}),
         getLastAssistantText: mock(() => `${opts.profile.id}-output`),
+        getLastAssistantMessage: mock(() => undefined),
         sessionId: `${opts.profile.id}-session`,
         sessionFile: join(tmpdir(), `${opts.profile.id}-session.jsonl`),
         subscribe: mock(() => () => {}),
         dispose: mock(() => {}),
         abort: mock(async () => {}),
       };
-      return { session, sessionId: `${opts.profile.id}-session`, dispose: mock(() => {}) };
     });
 
     // Reviewer: reject first, approve second.
@@ -336,7 +342,7 @@ describe('runMultiStepTask — attempt context + session resume', () => {
   it('falls back to in-memory when sessionBaseDir is absent on a step 2nd execution', async () => {
     setupProfiles([plannerProfile, reviewerProfile]);
 
-    const harnessCalls: Array<{
+    const sessionCalls: Array<{
       profileId: string;
       resumeSessionPath?: string;
       sessionDir?: string;
@@ -344,17 +350,17 @@ describe('runMultiStepTask — attempt context + session resume', () => {
     // Capture onAgentSpawn calls so we can pin the sessionPath contract.
     const spawnCalls: Array<{ agentId: string; sessionPath: unknown }> = [];
 
-    mockCreateHarness.mockImplementation(
+    mockPlugin.createSession.mockImplementation(
       async (opts: { profile: AgentProfile; resumeSessionPath?: string; sessionDir?: string }) => {
-        harnessCalls.push({
+        sessionCalls.push({
           profileId: opts.profile.id,
           resumeSessionPath: opts.resumeSessionPath,
           sessionDir: opts.sessionDir,
         });
         // sessionFile is undefined → simulates in-memory session (no persisted file)
-        const harness = makeMockHarness(opts.profile.id, () => 'output');
-        harness.session.sessionFile = undefined as unknown as string;
-        return harness;
+        const session = makeMockSession(opts.profile.id, () => 'output');
+        (session as { sessionFile: string | undefined }).sessionFile = undefined;
+        return session;
       },
     );
 
@@ -387,10 +393,10 @@ describe('runMultiStepTask — attempt context + session resume', () => {
       ],
     });
 
-    // 3 harness creations: planner×2 + reviewer×1.
+    // 3 session creations: planner×2 + reviewer×1.
     // Because sessionBaseDir is absent and sessionFile is undefined,
     // no resumeSessionPath is captured and no sessionDir is constructed.
-    const plannerCalls = harnessCalls.filter((c) => c.profileId === 'planner');
+    const plannerCalls = sessionCalls.filter((c) => c.profileId === 'planner');
     expect(plannerCalls).toHaveLength(2);
 
     // 1st execution: no persistence options
@@ -403,8 +409,8 @@ describe('runMultiStepTask — attempt context + session resume', () => {
 
     // Restored contract: even on the in-memory path (sessionBaseDir absent,
     // sessionFile undefined), onAgentSpawn's sessionPath must NEVER be
-    // undefined — it falls back to the harness's sessionId so consumers that
-    // previously received a non-empty string still do. One spawn per harness
+    // undefined — it falls back to the runtime's sessionId so consumers that
+    // previously received a non-empty string still do. One spawn per session
     // creation (4 total: planner×2 + reviewer×2, since the reviewer rejects
     // once then approves); every sessionPath is the mocked sessionId
     // ('<profileId>-session').
@@ -413,7 +419,7 @@ describe('runMultiStepTask — attempt context + session resume', () => {
       expect(typeof spawn.sessionPath).toBe('string');
       expect((spawn.sessionPath as string).length).toBeGreaterThan(0);
     }
-    // The in-memory fallback specifically yields the harness sessionId.
+    // The in-memory fallback specifically yields the runtime sessionId.
     expect(spawnCalls[0].sessionPath).toBe('planner-session');
   });
 });
@@ -422,6 +428,6 @@ describe('runMultiStepTask — attempt context + session resume', () => {
 
 afterAll(() => {
   mock.module('./profile.js', () => realProfile);
-  mock.module('./harness-factory.js', () => realHarnessFactory);
+  mock.module('./agent-registry.js', () => realAgentRegistry);
   mock.module('./structured-output.js', () => realStructuredOutput);
 });

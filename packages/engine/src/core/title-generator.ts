@@ -2,7 +2,7 @@
 import type { ZodType } from 'zod';
 import { z } from 'zod';
 
-import { createHarness } from './harness-factory.js';
+import { requireAgentPlugin } from './agent-registry.js';
 import { loadProfilesFromDirs } from './profile.js';
 import { promptForStructured } from './structured-output.js';
 import type { StatusCallbacks } from './types.js';
@@ -67,8 +67,8 @@ export async function generateWorkflowTitle(options: TitleGeneratorOptions): Pro
       throw new Error(`Profile "${options.profileId ?? 'scout'}" not found.`);
     }
 
-    // 2. Create harness
-    const { session, dispose } = await createHarness({
+    // 2. Create session via agent plugin
+    const session = await requireAgentPlugin(profile.agent).createSession({
       profile,
       cwd: options.cwd,
       apiKeys: options.apiKeys,
@@ -96,7 +96,7 @@ export async function generateWorkflowTitle(options: TitleGeneratorOptions): Pro
 
       return (result as { title: string }).title;
     } finally {
-      dispose();
+      session.dispose();
     }
   } catch {
     return fallbackTitle(options.taskPrompt);
@@ -127,8 +127,8 @@ export async function generateTitleAndBranch(
       throw new Error(`Profile "${options.profileId ?? 'scout'}" not found.`);
     }
 
-    // 2. Create harness
-    const { session, dispose } = await createHarness({
+    // 2. Create session via agent plugin
+    const session = await requireAgentPlugin(profile.agent).createSession({
       profile,
       cwd: options.cwd,
       apiKeys: options.apiKeys,
@@ -154,7 +154,7 @@ export async function generateTitleAndBranch(
       const { title, branchName } = result as { title: string; branchName: string };
       return { title, branchName };
     } finally {
-      dispose();
+      session.dispose();
     }
   } catch {
     return {

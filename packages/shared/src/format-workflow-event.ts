@@ -1,5 +1,5 @@
 import type { EventRecord } from './event-types.js';
-import { sanitizeDisplayText, stripAnsi } from './text-utils.js';
+import { formatDuration, sanitizeDisplayText, stripAnsi } from './text-utils.js';
 
 // ─── Pure Formatter ──────────────────────────────────────────────────────────
 // Maps an EventRecord to a human-readable emoji line for the event-log widget.
@@ -103,9 +103,10 @@ export function formatWorkflowEventLine(ev: EventRecord): string | null {
       const attempt = Number(d.attempt ?? 1);
       const maxAttempts = Number(d.maxAttempts ?? 1);
       const delayMs = Number(d.delayMs ?? 0);
+      const delayStr = delayMs > 0 ? ` in ${formatDuration(delayMs)}` : '';
       const errorMessage = sanitizeDisplayText(String(d.errorMessage ?? ''));
       const suffix = errorMessage ? `: ${errorMessage}` : '';
-      return `🔄 Retrying (attempt ${attempt}/${maxAttempts}) in ${delayMs}ms${suffix}`;
+      return `🔄 Retrying (attempt ${attempt}/${maxAttempts})${delayStr}${suffix}`;
     }
 
     case 'auto_retry_completed': {

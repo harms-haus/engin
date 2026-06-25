@@ -4,20 +4,26 @@ import type { AgentProfile, StatusCallbacks } from '../../packages/engine/src/co
 
 // Capture real modules before mocking so we can restore them in afterAll.
 const realProfile = Object.assign({}, await import('../../packages/engine/src/core/profile.js'));
-const realHarnessFactory = Object.assign({}, await import('../../packages/engine/src/core/harness-factory.js'));
+const realAgentRegistry = Object.assign({}, await import('../../packages/engine/src/core/agent-registry.js'));
 const realStructuredOutput = Object.assign({}, await import('../../packages/engine/src/core/structured-output.js'));
 
 // ─── Mocks ──────────────────────────────────────────────────────────────────
 
 const mockLoadProfilesFromDirs = mock();
 
-const mockDispose = mock();
-const mockHarnessResult = {
-  session: {},
+/**
+ * Mock session object returned by `plugin.createSession`. After the migration
+ * the title generator calls `session.dispose()` directly on the AgentRuntime,
+ * so the dispose mock lives on the session itself.
+ */
+const mockSessionDispose = mock();
+const mockSession = {
   sessionId: 'test-session-id',
-  dispose: mockDispose,
+  dispose: mockSessionDispose,
 };
-const mockCreateHarness = mock();
+
+const mockCreateSession = mock();
+const mockRequireAgentPlugin = mock();
 
 const mockPromptForStructured = mock();
 
@@ -25,8 +31,8 @@ mock.module('../../packages/engine/src/core/profile.js', () => ({
   loadProfilesFromDirs: (...args: unknown[]) => mockLoadProfilesFromDirs(...args),
 }));
 
-mock.module('../../packages/engine/src/core/harness-factory.js', () => ({
-  createHarness: (...args: unknown[]) => mockCreateHarness(...args),
+mock.module('../../packages/engine/src/core/agent-registry.js', () => ({
+  requireAgentPlugin: (...args: unknown[]) => mockRequireAgentPlugin(...args),
 }));
 
 mock.module('../../packages/engine/src/core/structured-output.js', () => ({
@@ -78,9 +84,14 @@ beforeEach(() => {
   // Default: loadProfilesFromDirs returns a Map with the 'scout' profile
   mockLoadProfilesFromDirs.mockResolvedValue(new Map([['scout', defaultProfile]]));
 
-  // Default: createHarness returns a harness with dispose
-  mockDispose.mockResolvedValue(undefined);
-  mockCreateHarness.mockResolvedValue({ ...mockHarnessResult, dispose: mockDispose });
+  // Default: requireAgentPlugin returns a plugin whose createSession
+  // resolves to our mock session (an AgentRuntime with a dispose method).
+  mockSessionDispose.mockReturnValue(undefined);
+  mockCreateSession.mockResolvedValue(mockSession);
+  mockRequireAgentPlugin.mockReturnValue({
+    id: 'pi-coding-agent',
+    createSession: mockCreateSession,
+  });
 
   // Default: promptForStructured returns a title
   mockPromptForStructured.mockResolvedValue({
@@ -121,6 +132,40 @@ describe('TitleSchema', () => {
   });
 });
 
+// ─── generateWorkflowTitle – registry interaction ───────────────────────────
+
+describe('generateWorkflowTitle – registry interaction', () => {
+  it('resolves the session via the registry (uses requireAgentPlugin directly)', async () => {
+    // requireAgentPlugin is the entry point for session creation.
+    // requireAgentPlugin is the entry point for session creation.
+    await generateWorkflowTitle(defaultOptions());
+
+    expect(mockRequireAgentPlugin).toHaveBeenCalled();
+  });
+
+  it('calls requireAgentPlugin with the profile.agent field', async () => {
+    const profileWithAgent = makeProfile({ agent: 'my-custom-agent' });
+    mockLoadProfilesFromDirs.mockResolvedValue(new Map([['scout', profileWithAgent]]));
+
+    await generateWorkflowTitle(defaultOptions());
+
+    expect(mockRequireAgentPlugin).toHaveBeenCalledWith('my-custom-agent');
+  });
+
+  it('calls requireAgentPlugin with undefined when profile.agent is not set', async () => {
+    // defaultProfile has no `agent` field set
+    await generateWorkflowTitle(defaultOptions());
+
+    expect(mockRequireAgentPlugin).toHaveBeenCalledWith(undefined);
+  });
+
+  it('calls plugin.createSession to obtain the session', async () => {
+    await generateWorkflowTitle(defaultOptions());
+
+    expect(mockCreateSession).toHaveBeenCalledTimes(1);
+  });
+});
+
 // ─── generateWorkflowTitle – happy path ─────────────────────────────────────
 
 describe('generateWorkflowTitle – happy path', () => {
@@ -143,10 +188,7 @@ describe('generateWorkflowTitle – happy path', () => {
   it('uses "scout" as default profile ID', async () => {
     await generateWorkflowTitle(defaultOptions());
 
-    const _profileMap = mockLoadProfilesFromDirs.mock.calls[0][0];
-    // The function loads profiles, then looks up by profileId
-    // Verify that the scout profile was used in createHarness
-    expect(mockCreateHarness).toHaveBeenCalledWith(
+    expect(mockCreateSession).toHaveBeenCalledWith(
       expect.objectContaining({ profile: expect.objectContaining({ id: 'scout' }) }),
     );
   });
@@ -157,7 +199,7 @@ describe('generateWorkflowTitle – happy path', () => {
 
     await generateWorkflowTitle(defaultOptions({ profileId: 'custom-agent' }));
 
-    expect(mockCreateHarness).toHaveBeenCalledWith(
+    expect(mockCreateSession).toHaveBeenCalledWith(
       expect.objectContaining({ profile: expect.objectContaining({ id: 'custom-agent' }) }),
     );
   });
@@ -165,32 +207,32 @@ describe('generateWorkflowTitle – happy path', () => {
   it('uses "title-generator" as default agentId', async () => {
     await generateWorkflowTitle(defaultOptions());
 
-    expect(mockCreateHarness).toHaveBeenCalledWith(expect.objectContaining({ agentId: 'title-generator' }));
+    expect(mockCreateSession).toHaveBeenCalledWith(expect.objectContaining({ agentId: 'title-generator' }));
   });
 
   it('uses a custom agentId when provided', async () => {
     await generateWorkflowTitle(defaultOptions({ agentId: 'my-title-agent' }));
 
-    expect(mockCreateHarness).toHaveBeenCalledWith(expect.objectContaining({ agentId: 'my-title-agent' }));
+    expect(mockCreateSession).toHaveBeenCalledWith(expect.objectContaining({ agentId: 'my-title-agent' }));
   });
 
-  it('passes cwd to createHarness', async () => {
+  it('passes cwd to createSession', async () => {
     await generateWorkflowTitle(defaultOptions({ cwd: '/my/project' }));
 
-    expect(mockCreateHarness).toHaveBeenCalledWith(expect.objectContaining({ cwd: '/my/project' }));
+    expect(mockCreateSession).toHaveBeenCalledWith(expect.objectContaining({ cwd: '/my/project' }));
   });
 
-  it('passes apiKeys to createHarness', async () => {
+  it('passes apiKeys to createSession', async () => {
     const apiKeys = { openai: 'sk-test-key' };
     await generateWorkflowTitle(defaultOptions({ apiKeys }));
 
-    expect(mockCreateHarness).toHaveBeenCalledWith(expect.objectContaining({ apiKeys }));
+    expect(mockCreateSession).toHaveBeenCalledWith(expect.objectContaining({ apiKeys }));
   });
 
   it('passes undefined apiKeys when not provided', async () => {
     await generateWorkflowTitle(defaultOptions());
 
-    expect(mockCreateHarness).toHaveBeenCalledWith(expect.objectContaining({ apiKeys: undefined }));
+    expect(mockCreateSession).toHaveBeenCalledWith(expect.objectContaining({ apiKeys: undefined }));
   });
 
   it('forwards onAgentStatus from onStatus callbacks', async () => {
@@ -201,13 +243,13 @@ describe('generateWorkflowTitle – happy path', () => {
 
     await generateWorkflowTitle(defaultOptions({ onStatus }));
 
-    expect(mockCreateHarness).toHaveBeenCalledWith(expect.objectContaining({ onAgentStatus: onStatus }));
+    expect(mockCreateSession).toHaveBeenCalledWith(expect.objectContaining({ onAgentStatus: onStatus }));
   });
 
   it('passes undefined onAgentStatus when onStatus is not provided', async () => {
     await generateWorkflowTitle(defaultOptions());
 
-    expect(mockCreateHarness).toHaveBeenCalledWith(expect.objectContaining({ onAgentStatus: undefined }));
+    expect(mockCreateSession).toHaveBeenCalledWith(expect.objectContaining({ onAgentStatus: undefined }));
   });
 });
 
@@ -272,62 +314,68 @@ describe('generateWorkflowTitle – schema handling', () => {
   });
 });
 
-// ─── generateWorkflowTitle – harness passed to promptForStructured ──────────
+// ─── generateWorkflowTitle – session passed to promptForStructured ──────────
 
-describe('generateWorkflowTitle – harness usage', () => {
-  it('passes the harness session to promptForStructured', async () => {
+describe('generateWorkflowTitle – session usage', () => {
+  it('passes the AgentRuntime session to promptForStructured', async () => {
     await generateWorkflowTitle(defaultOptions());
 
-    const harnessArg = mockPromptForStructured.mock.calls[0][0];
-    expect(harnessArg).toBeDefined();
-    // The harness passed should be the session returned by createHarness
-    expect(harnessArg).toBe(mockHarnessResult.session);
+    const sessionArg = mockPromptForStructured.mock.calls[0][0];
+    expect(sessionArg).toBeDefined();
+    // The session passed should be the AgentRuntime returned by createSession
+    expect(sessionArg).toBe(mockSession);
   });
 });
 
-// ─── generateWorkflowTitle – dispose always called ──────────────────────────
+// ─── generateWorkflowTitle – session.dispose always called ──────────────────
 
-describe('generateWorkflowTitle – dispose always called', () => {
-  it('calls dispose on success', async () => {
+describe('generateWorkflowTitle – session.dispose always called', () => {
+  it('calls session.dispose on success', async () => {
     await generateWorkflowTitle(defaultOptions());
 
-    expect(mockDispose).toHaveBeenCalledTimes(1);
+    expect(mockSessionDispose).toHaveBeenCalledTimes(1);
   });
 
-  it('calls dispose even when promptForStructured throws', async () => {
+  it('calls session.dispose even when promptForStructured throws', async () => {
     mockPromptForStructured.mockRejectedValue(new Error('LLM failed'));
 
     await generateWorkflowTitle(defaultOptions());
 
-    expect(mockDispose).toHaveBeenCalledTimes(1);
+    expect(mockSessionDispose).toHaveBeenCalledTimes(1);
   });
 
-  it('calls dispose even when createHarness throws', async () => {
-    mockCreateHarness.mockRejectedValue(new Error('Harness creation failed'));
+  it('does not call session.dispose when createSession throws (session never created)', async () => {
+    mockCreateSession.mockRejectedValue(new Error('Session creation failed'));
 
     await generateWorkflowTitle(defaultOptions());
 
-    // Dispose should NOT be called because harness was never created
-    // But the function should not throw
-    expect(mockDispose).not.toHaveBeenCalled();
+    expect(mockSessionDispose).not.toHaveBeenCalled();
   });
 
-  it('calls dispose when loadProfilesFromDirs throws', async () => {
+  it('does not call session.dispose when requireAgentPlugin throws', async () => {
+    mockRequireAgentPlugin.mockImplementation(() => {
+      throw new Error('No agent plugin registered');
+    });
+
+    await generateWorkflowTitle(defaultOptions());
+
+    expect(mockSessionDispose).not.toHaveBeenCalled();
+  });
+
+  it('does not call session.dispose when loadProfilesFromDirs throws', async () => {
     mockLoadProfilesFromDirs.mockRejectedValue(new Error('Disk error'));
 
     await generateWorkflowTitle(defaultOptions());
 
-    // Harness was never created, so dispose should not be called
-    expect(mockDispose).not.toHaveBeenCalled();
+    expect(mockSessionDispose).not.toHaveBeenCalled();
   });
 
-  it('calls dispose when profile is not found', async () => {
+  it('does not call session.dispose when profile is not found', async () => {
     mockLoadProfilesFromDirs.mockResolvedValue(new Map()); // empty, no 'scout' profile
 
     await generateWorkflowTitle(defaultOptions());
 
-    // Harness was never created
-    expect(mockDispose).not.toHaveBeenCalled();
+    expect(mockSessionDispose).not.toHaveBeenCalled();
   });
 });
 
@@ -369,8 +417,17 @@ describe('generateWorkflowTitle – fallback on error', () => {
     expect(title).toBe('A'.repeat(57) + '...');
   });
 
-  it('falls back when createHarness throws', async () => {
-    mockCreateHarness.mockRejectedValue(new Error('No model'));
+  it('falls back when createSession throws', async () => {
+    mockCreateSession.mockRejectedValue(new Error('No model'));
+
+    const title = await generateWorkflowTitle(defaultOptions({ taskPrompt: 'Build API' }));
+    expect(title).toBe('Build API');
+  });
+
+  it('falls back when requireAgentPlugin throws', async () => {
+    mockRequireAgentPlugin.mockImplementation(() => {
+      throw new Error('No agent plugin registered');
+    });
 
     const title = await generateWorkflowTitle(defaultOptions({ taskPrompt: 'Build API' }));
     expect(title).toBe('Build API');
@@ -484,6 +541,37 @@ describe('TitleAndBranchSchema', () => {
   });
 });
 
+// ─── generateTitleAndBranch – registry interaction ──────────────────────────
+
+describe('generateTitleAndBranch – registry interaction', () => {
+  it('resolves the session via the registry (uses requireAgentPlugin directly)', async () => {
+    await generateTitleAndBranch(defaultOptions());
+
+    expect(mockRequireAgentPlugin).toHaveBeenCalled();
+  });
+
+  it('calls requireAgentPlugin with the profile.agent field', async () => {
+    const profileWithAgent = makeProfile({ agent: 'my-custom-agent' });
+    mockLoadProfilesFromDirs.mockResolvedValue(new Map([['scout', profileWithAgent]]));
+
+    await generateTitleAndBranch(defaultOptions());
+
+    expect(mockRequireAgentPlugin).toHaveBeenCalledWith('my-custom-agent');
+  });
+
+  it('calls requireAgentPlugin with undefined when profile.agent is not set', async () => {
+    await generateTitleAndBranch(defaultOptions());
+
+    expect(mockRequireAgentPlugin).toHaveBeenCalledWith(undefined);
+  });
+
+  it('calls plugin.createSession to obtain the session', async () => {
+    await generateTitleAndBranch(defaultOptions());
+
+    expect(mockCreateSession).toHaveBeenCalledTimes(1);
+  });
+});
+
 // ─── generateTitleAndBranch – happy path ────────────────────────────────────
 
 describe('generateTitleAndBranch – happy path', () => {
@@ -514,7 +602,7 @@ describe('generateTitleAndBranch – happy path', () => {
   it('uses "scout" as default profile ID', async () => {
     await generateTitleAndBranch(defaultOptions());
 
-    expect(mockCreateHarness).toHaveBeenCalledWith(
+    expect(mockCreateSession).toHaveBeenCalledWith(
       expect.objectContaining({ profile: expect.objectContaining({ id: 'scout' }) }),
     );
   });
@@ -525,7 +613,7 @@ describe('generateTitleAndBranch – happy path', () => {
 
     await generateTitleAndBranch(defaultOptions({ profileId: 'custom-agent' }));
 
-    expect(mockCreateHarness).toHaveBeenCalledWith(
+    expect(mockCreateSession).toHaveBeenCalledWith(
       expect.objectContaining({ profile: expect.objectContaining({ id: 'custom-agent' }) }),
     );
   });
@@ -533,32 +621,32 @@ describe('generateTitleAndBranch – happy path', () => {
   it('uses "title-generator" as default agentId', async () => {
     await generateTitleAndBranch(defaultOptions());
 
-    expect(mockCreateHarness).toHaveBeenCalledWith(expect.objectContaining({ agentId: 'title-generator' }));
+    expect(mockCreateSession).toHaveBeenCalledWith(expect.objectContaining({ agentId: 'title-generator' }));
   });
 
   it('uses a custom agentId when provided', async () => {
     await generateTitleAndBranch(defaultOptions({ agentId: 'my-branch-agent' }));
 
-    expect(mockCreateHarness).toHaveBeenCalledWith(expect.objectContaining({ agentId: 'my-branch-agent' }));
+    expect(mockCreateSession).toHaveBeenCalledWith(expect.objectContaining({ agentId: 'my-branch-agent' }));
   });
 
-  it('passes cwd to createHarness', async () => {
+  it('passes cwd to createSession', async () => {
     await generateTitleAndBranch(defaultOptions({ cwd: '/my/project' }));
 
-    expect(mockCreateHarness).toHaveBeenCalledWith(expect.objectContaining({ cwd: '/my/project' }));
+    expect(mockCreateSession).toHaveBeenCalledWith(expect.objectContaining({ cwd: '/my/project' }));
   });
 
-  it('passes apiKeys to createHarness', async () => {
+  it('passes apiKeys to createSession', async () => {
     const apiKeys = { openai: 'sk-test-key' };
     await generateTitleAndBranch(defaultOptions({ apiKeys }));
 
-    expect(mockCreateHarness).toHaveBeenCalledWith(expect.objectContaining({ apiKeys }));
+    expect(mockCreateSession).toHaveBeenCalledWith(expect.objectContaining({ apiKeys }));
   });
 
   it('passes undefined apiKeys when not provided', async () => {
     await generateTitleAndBranch(defaultOptions());
 
-    expect(mockCreateHarness).toHaveBeenCalledWith(expect.objectContaining({ apiKeys: undefined }));
+    expect(mockCreateSession).toHaveBeenCalledWith(expect.objectContaining({ apiKeys: undefined }));
   });
 
   it('forwards onAgentStatus from onStatus callbacks', async () => {
@@ -569,13 +657,13 @@ describe('generateTitleAndBranch – happy path', () => {
 
     await generateTitleAndBranch(defaultOptions({ onStatus }));
 
-    expect(mockCreateHarness).toHaveBeenCalledWith(expect.objectContaining({ onAgentStatus: onStatus }));
+    expect(mockCreateSession).toHaveBeenCalledWith(expect.objectContaining({ onAgentStatus: onStatus }));
   });
 
   it('passes undefined onAgentStatus when onStatus is not provided', async () => {
     await generateTitleAndBranch(defaultOptions());
 
-    expect(mockCreateHarness).toHaveBeenCalledWith(expect.objectContaining({ onAgentStatus: undefined }));
+    expect(mockCreateSession).toHaveBeenCalledWith(expect.objectContaining({ onAgentStatus: undefined }));
   });
 });
 
@@ -643,58 +731,68 @@ describe('generateTitleAndBranch – schema handling', () => {
   });
 });
 
-// ─── generateTitleAndBranch – harness usage ─────────────────────────────────
+// ─── generateTitleAndBranch – session usage ─────────────────────────────────
 
-describe('generateTitleAndBranch – harness usage', () => {
-  it('passes the harness session to promptForStructured', async () => {
+describe('generateTitleAndBranch – session usage', () => {
+  it('passes the AgentRuntime session to promptForStructured', async () => {
     await generateTitleAndBranch(defaultOptions());
 
-    const harnessArg = mockPromptForStructured.mock.calls[0][0];
-    expect(harnessArg).toBeDefined();
-    // The harness passed should be the session returned by createHarness
-    expect(harnessArg).toBe(mockHarnessResult.session);
+    const sessionArg = mockPromptForStructured.mock.calls[0][0];
+    expect(sessionArg).toBeDefined();
+    // The session passed should be the AgentRuntime returned by createSession
+    expect(sessionArg).toBe(mockSession);
   });
 });
 
-// ─── generateTitleAndBranch – dispose always called ─────────────────────────
+// ─── generateTitleAndBranch – session.dispose always called ─────────────────
 
-describe('generateTitleAndBranch – dispose always called', () => {
-  it('calls dispose on success', async () => {
+describe('generateTitleAndBranch – session.dispose always called', () => {
+  it('calls session.dispose on success', async () => {
     await generateTitleAndBranch(defaultOptions());
 
-    expect(mockDispose).toHaveBeenCalledTimes(1);
+    expect(mockSessionDispose).toHaveBeenCalledTimes(1);
   });
 
-  it('calls dispose even when promptForStructured throws', async () => {
+  it('calls session.dispose even when promptForStructured throws', async () => {
     mockPromptForStructured.mockRejectedValue(new Error('LLM failed'));
 
     await generateTitleAndBranch(defaultOptions());
 
-    expect(mockDispose).toHaveBeenCalledTimes(1);
+    expect(mockSessionDispose).toHaveBeenCalledTimes(1);
   });
 
-  it('does not call dispose when createHarness throws (harness never created)', async () => {
-    mockCreateHarness.mockRejectedValue(new Error('Harness creation failed'));
+  it('does not call session.dispose when createSession throws (session never created)', async () => {
+    mockCreateSession.mockRejectedValue(new Error('Session creation failed'));
 
     await generateTitleAndBranch(defaultOptions());
 
-    expect(mockDispose).not.toHaveBeenCalled();
+    expect(mockSessionDispose).not.toHaveBeenCalled();
   });
 
-  it('does not call dispose when loadProfilesFromDirs throws', async () => {
+  it('does not call session.dispose when requireAgentPlugin throws', async () => {
+    mockRequireAgentPlugin.mockImplementation(() => {
+      throw new Error('No agent plugin registered');
+    });
+
+    await generateTitleAndBranch(defaultOptions());
+
+    expect(mockSessionDispose).not.toHaveBeenCalled();
+  });
+
+  it('does not call session.dispose when loadProfilesFromDirs throws', async () => {
     mockLoadProfilesFromDirs.mockRejectedValue(new Error('Disk error'));
 
     await generateTitleAndBranch(defaultOptions());
 
-    expect(mockDispose).not.toHaveBeenCalled();
+    expect(mockSessionDispose).not.toHaveBeenCalled();
   });
 
-  it('does not call dispose when profile is not found', async () => {
+  it('does not call session.dispose when profile is not found', async () => {
     mockLoadProfilesFromDirs.mockResolvedValue(new Map()); // empty, no 'scout' profile
 
     await generateTitleAndBranch(defaultOptions());
 
-    expect(mockDispose).not.toHaveBeenCalled();
+    expect(mockSessionDispose).not.toHaveBeenCalled();
   });
 });
 
@@ -737,8 +835,18 @@ describe('generateTitleAndBranch – fallback on error', () => {
     expect(result.title).toBe('Short task');
   });
 
-  it('falls back when createHarness throws', async () => {
-    mockCreateHarness.mockRejectedValue(new Error('No model'));
+  it('falls back when createSession throws', async () => {
+    mockCreateSession.mockRejectedValue(new Error('No model'));
+
+    const result = await generateTitleAndBranch(defaultOptions({ taskPrompt: 'Build API' }));
+    expect(result.title).toBe('Build API');
+    expect(result.branchName).toBe('build-api');
+  });
+
+  it('falls back when requireAgentPlugin throws', async () => {
+    mockRequireAgentPlugin.mockImplementation(() => {
+      throw new Error('No agent plugin registered');
+    });
 
     const result = await generateTitleAndBranch(defaultOptions({ taskPrompt: 'Build API' }));
     expect(result.title).toBe('Build API');
@@ -801,6 +909,6 @@ describe('generateTitleAndBranch – promptForStructured interaction', () => {
 // Restore the real modules so mocks don't leak into other test files.
 afterAll(() => {
   mock.module('../../packages/engine/src/core/profile.js', () => realProfile);
-  mock.module('../../packages/engine/src/core/harness-factory.js', () => realHarnessFactory);
+  mock.module('../../packages/engine/src/core/agent-registry.js', () => realAgentRegistry);
   mock.module('../../packages/engine/src/core/structured-output.js', () => realStructuredOutput);
 });

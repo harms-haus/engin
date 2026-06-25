@@ -6,16 +6,19 @@
 // reason is returned to the model as an error tool result — so the agent can
 // correct course and retry inside the sandbox instead of silently failing.
 //
-// Path resolution mirrors pi's built-in write/edit tools exactly (expand `~`,
-// strip a single leading `@`, resolve relatives against the agent cwd) so the
-// sandbox decision matches the path the tool would actually mutate. Resolution
-// is purely lexical (no symlink `realpath`) — deliberately, to stay consistent
-// with the tools, which do not canonicalize write targets either.
+// Path resolution mirrors pi's built-in write/edit tools for the initial
+// lexical resolution (expand `~`, strip a single leading `@`, resolve relatives
+// against the agent cwd). The sandbox then additionally canonicalizes both the
+// target and the allowed-dir boundaries with `fs.realpathSync` so that symlinks
+// pointing outside an allowed dir cannot be used to escape confinement — the
+// containment decision reflects the real on-disk target rather than the lexical
+// path the tool was invoked with.
 
 import type { ExtensionFactory, ToolCallEvent } from '@earendil-works/pi-coding-agent';
 import { isToolCallEventType } from '@earendil-works/pi-coding-agent';
+import { realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { isAbsolute, relative, resolve as resolvePath, sep } from 'node:path';
+import { basename, dirname, isAbsolute, relative, resolve as resolvePath, sep } from 'node:path';
 
 /** Built-in tools that mutate a single file via a `path` argument. */
 const SANDBOXED_TOOLS = new Set<string>(['write', 'edit']);
@@ -43,10 +46,39 @@ export function resolveToolPath(inputPath: string, cwd: string): string {
 }
 
 /**
+ * Canonicalize a path by following symlinks via `fs.realpathSync`.
+ *
+ * If the path itself does not exist (e.g. a brand-new file being created),
+ * canonicalize the existing parent directory and re-append the basename, so
+ * that symlinks in any ancestor component are still resolved. Any other
+ * `realpathSync` failure (e.g. a missing parent, permission error) is
+ * re-thrown so callers can fail closed rather than silently fall back to
+ * lexical resolution.
+ */
+export function canonicalizePath(p: string): string {
+  try {
+    return realpathSync(p);
+  } catch (err) {
+    // ENOENT (or similar): the leaf doesn't exist yet. Canonicalize the
+    // parent and re-append the basename so ancestor symlinks are resolved.
+    const parent = dirname(p);
+    try {
+      const realParent = realpathSync(parent);
+      return resolvePath(realParent, basename(p));
+    } catch {
+      // Parent is also missing/inaccessible — propagate the original error so
+      // the caller fails closed.
+      throw err;
+    }
+  }
+}
+
+/**
  * True when `target` is `dir` itself or lives somewhere beneath it.
  *
- * Both inputs are resolved lexically (no symlink following) before comparison,
- * keeping the check consistent with pi's lexical tool-path resolution.
+ * Both inputs are resolved lexically before comparison. Callers should pass
+ * already-canonicalized (symlink-resolved) paths when the containment decision
+ * must reflect the real on-disk location (see `canonicalizePath`).
  */
 export function isPathWithin(target: string, dir: string): boolean {
   const rel = relative(resolvePath(dir), resolvePath(target));
@@ -57,18 +89,34 @@ export function isPathWithin(target: string, dir: string): boolean {
   return true;
 }
 
-/** Resolve every entry in a list of allowed dirs against `cwd`. */
+/**
+ * Resolve every entry in a list of allowed dirs against `cwd`, then
+ * canonicalize each boundary with `fs.realpathSync` so symlink-based escapes
+ * are caught by the subsequent containment check. Throws if an allowed dir
+ * cannot be canonicalized (fail closed).
+ */
 export function resolveAllowedDirs(allowedDirs: string[], cwd: string): string[] {
-  return allowedDirs.map((d) => resolveToolPath(d, cwd));
+  return allowedDirs.map((d) => canonicalizePath(resolveToolPath(d, cwd)));
 }
 
 /**
  * Decide whether a resolved target path is permitted by the sandbox.
  * Returns the first matching allowed dir, or `null` when denied.
+ *
+ * The target is canonicalized with `fs.realpathSync` (falling back to the
+ * canonicalized parent + basename when the leaf doesn't yet exist) before the
+ * containment check, so symlinks that escape an allowed dir are rejected. If
+ * canonicalization fails for any reason, the write is denied (fail closed).
  */
 export function findAllowedDir(target: string, resolvedAllowedDirs: string[]): string | null {
+  let canonicalTarget: string;
+  try {
+    canonicalTarget = canonicalizePath(target);
+  } catch {
+    return null; // fail closed — cannot verify the real target
+  }
   for (const dir of resolvedAllowedDirs) {
-    if (isPathWithin(target, dir)) return dir;
+    if (isPathWithin(canonicalTarget, dir)) return dir;
   }
   return null;
 }

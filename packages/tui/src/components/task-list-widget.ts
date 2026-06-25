@@ -234,7 +234,23 @@ export class TaskListWidget implements Component {
     const taskMap = new Map(this.tasks.map((t) => [t.id, t]));
     const idLabels = this.ensureIdLabels();
 
-    // ── Build the 5 column cells for each task ──
+    // ── Compute the visible index range (≤20 rows) BEFORE building cells ──
+    // The viewport window is computed up-front so cell building (coloring,
+    // formatting, elapsed-time, dep lookups) is limited to visible rows only.
+    let start: number;
+    let end: number;
+    if (ordered.length <= this._maxVisibleLines) {
+      // No viewport logic needed — render all rows.
+      start = 0;
+      end = ordered.length;
+    } else {
+      // Clamp the scroll offset into a valid range.
+      this._scrollOffset = Math.max(0, Math.min(this._scrollOffset, ordered.length - 1));
+      start = this._scrollOffset;
+      end = this._scrollOffset + this._getViewportTaskCount();
+    }
+
+    // ── Build the 5 column cells for each VISIBLE task only ──
     const idCells: string[] = [];
     const iconCells: string[] = [];
     const titleCells: string[] = [];
@@ -245,7 +261,8 @@ export class TaskListWidget implements Component {
     // assembled row: inner ANSI resets emitted by dim()/statusColor() would
     // otherwise clear the bold attribute mid-row, leaving only the first cell
     // (the dim ID) visually bold.
-    for (const task of ordered) {
+    for (let i = start; i < end; i++) {
+      const task = ordered[i];
       const selected = task.id === this.selectedTaskId;
       const maybeBold = (cell: string): string => (selected && cell !== '' ? bold(cell) : cell);
 
@@ -300,28 +317,12 @@ export class TaskListWidget implements Component {
     const GAP = '  ';
     const lines: string[] = [];
 
-    // ── Compute the visible index range (≤20 rows) BEFORE column widths ──
-    // Column widths are computed from only the visible viewport window so an
-    // off-screen task with a long title doesn't widen the title column (and
-    // truncate the deps/steps columns) for the rows that are actually emitted.
-    let start: number;
-    let end: number;
-    if (ordered.length <= this._maxVisibleLines) {
-      // No viewport logic needed — render all rows.
-      start = 0;
-      end = ordered.length;
-    } else {
-      // Clamp the scroll offset into a valid range.
-      this._scrollOffset = Math.max(0, Math.min(this._scrollOffset, ordered.length - 1));
-      start = this._scrollOffset;
-      end = this._scrollOffset + this._getViewportTaskCount();
-    }
-
     // ── Compute column widths from the visible viewport window only ──
+    // (Cells only contain visible entries, so iterate 0..cells.length.)
     const colWidth = (cells: string[]): number => {
       let max = 0;
-      for (let i = start; i < end; i++) {
-        max = Math.max(max, visibleWidth(cells[i]));
+      for (const cell of cells) {
+        max = Math.max(max, visibleWidth(cell));
       }
       return max;
     };
@@ -331,7 +332,7 @@ export class TaskListWidget implements Component {
     const stepWidth = colWidth(stepCells);
     const depsWidth = colWidth(depsCells);
 
-    for (let i = start; i < end; i++) {
+    for (let i = 0; i < idCells.length; i++) {
       // Pad/truncate each cell to its column width. Skip empty columns entirely
       // (column width 0) so no trailing gap/cell is emitted.
       const segments: string[] = [

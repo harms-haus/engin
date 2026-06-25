@@ -1,9 +1,9 @@
 // ─── Agent Loop Utilities ──────────────────────────────────────────────────
-import type { AgentSession } from '@earendil-works/pi-coding-agent';
 import type { ZodType } from 'zod';
-import { createHarness } from './harness-factory.js';
+import type { AgentRuntime, AgentSessionOptions } from './agent-plugin.js';
+import { requireAgentPlugin } from './agent-registry.js';
 import { promptForStructured, type PromptableHarness } from './structured-output.js';
-import type { AgentLoopResult, HarnessCreationOptions } from './types.js';
+import type { AgentLoopResult } from './types.js';
 
 // ─── Internal Helpers ─────────────────────────────────────────────────────
 
@@ -11,7 +11,7 @@ import type { AgentLoopResult, HarnessCreationOptions } from './types.js';
  * Inject an `agentId` of the form `{prefix}-{index}` into a config when a
  * prefix is provided; otherwise return the config unchanged.
  */
-function resolveConfig(cfg: HarnessCreationOptions, prefix: string | undefined, index: number): HarnessCreationOptions {
+function resolveConfig(cfg: AgentSessionOptions, prefix: string | undefined, index: number): AgentSessionOptions {
   return prefix ? { ...cfg, agentId: `${prefix}-${index}` } : cfg;
 }
 
@@ -19,13 +19,12 @@ function resolveConfig(cfg: HarnessCreationOptions, prefix: string | undefined, 
  * Create sessions for every config sequentially, rolling back any
  * already-created sessions if one fails.
  */
-async function createSessionsWithCleanup(
-  configs: HarnessCreationOptions[],
-): Promise<Awaited<ReturnType<typeof createHarness>>[]> {
-  const results: Awaited<ReturnType<typeof createHarness>>[] = [];
+async function createSessionsWithCleanup(configs: AgentSessionOptions[]): Promise<AgentRuntime[]> {
+  const results: AgentRuntime[] = [];
   try {
     for (const config of configs) {
-      results.push(await createHarness(config));
+      const plugin = requireAgentPlugin(config.profile.agent);
+      results.push(await plugin.createSession(config));
     }
   } catch (err) {
     for (const r of results) {
@@ -122,20 +121,20 @@ export interface MultiAgentOptions {
  * {@link promptForStructured}; otherwise the last assistant text is returned.
  */
 export async function parallelAgents<T = string | undefined>(
-  configs: HarnessCreationOptions[],
-  promptFn: (session: AgentSession, index: number) => string,
+  configs: AgentSessionOptions[],
+  promptFn: (session: AgentRuntime, index: number) => string,
   options?: MultiAgentOptions,
 ): Promise<PromiseSettledResult<T>[]> {
   // 0. Inject agentId prefix into configs if provided
   const resolvedConfigs = configs.map((cfg, i) => resolveConfig(cfg, options?.agentIdPrefix, i));
 
   // 1. Create sessions sequentially so partial failures dispose already-created sessions
-  const sessionResults = await createSessionsWithCleanup(resolvedConfigs);
+  const sessions = await createSessionsWithCleanup(resolvedConfigs);
 
   // 2. Run prompts
   try {
     const results = await Promise.allSettled(
-      sessionResults.map(async ({ session }, i) => {
+      sessions.map(async (session, i) => {
         const prompt = promptFn(session, i);
         if (options?.schema) {
           return promptForStructured(
@@ -152,8 +151,8 @@ export async function parallelAgents<T = string | undefined>(
 
     return results;
   } finally {
-    for (const result of sessionResults) {
-      result.dispose?.();
+    for (const session of sessions) {
+      session.dispose?.();
     }
   }
 }
@@ -165,14 +164,15 @@ export async function parallelAgents<T = string | undefined>(
  * each session after use. Throws on the first failure.
  */
 export async function sequentialAgents<T = string | undefined>(
-  configs: HarnessCreationOptions[],
-  promptFn: (session: AgentSession, index: number) => string,
+  configs: AgentSessionOptions[],
+  promptFn: (session: AgentRuntime, index: number) => string,
   options?: MultiAgentOptions,
 ): Promise<T[]> {
   const results: T[] = [];
   for (let i = 0; i < configs.length; i++) {
     const config = resolveConfig(configs[i], options?.agentIdPrefix, i);
-    const { session, dispose } = await createHarness(config);
+    const plugin = requireAgentPlugin(config.profile.agent);
+    const session = await plugin.createSession(config);
     try {
       const promptText = promptFn(session, i);
       if (options?.schema) {
@@ -189,7 +189,7 @@ export async function sequentialAgents<T = string | undefined>(
         results.push(session.getLastAssistantText() as unknown as T);
       }
     } finally {
-      dispose?.();
+      session.dispose?.();
     }
   }
   return results;

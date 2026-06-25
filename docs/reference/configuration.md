@@ -129,10 +129,12 @@ With `--verbose`, loaded paths are printed:
 
 ## API key resolution
 
-`createHarness` resolves credentials via `AuthStorage` in this priority order:
+Creating an agent session (via the agent plugin registry; the built-in pi-coding-agent
+adapter) resolves credentials via `AuthStorage` in this priority order:
 
-1. **Runtime overrides** — the `apiKeys` option passed to `createHarness` / a workflow's
-   `run()`, or the `--api-key` CLI flag. Both call `setRuntimeApiKey` under the hood.
+1. **Runtime overrides** — the `apiKeys` option passed to an agent plugin `createSession` /
+   a workflow's `run()`, or the `--api-key` CLI flag. Both call `setRuntimeApiKey` under the
+   hood.
 2. **Stored API keys** — explicit keys saved in `~/.pi/agent/auth.json`.
 3. **OAuth tokens** — OAuth access tokens from `~/.pi/agent/auth.json` (auto-refreshed when
    expired).
@@ -145,7 +147,7 @@ With `--verbose`, loaded paths are printed:
 
 The standalone helpers `resolveApiKey(provider, customKeys?)` and
 `resolveApiKeyOrThrow(provider, customKeys?)` resolve from custom overrides or env vars only.
-They do **not** consult `auth.json` or OAuth — `createHarness` does.
+They do **not** consult `auth.json` or OAuth — the agent plugin session creation does.
 
 ## Resuming a workflow
 

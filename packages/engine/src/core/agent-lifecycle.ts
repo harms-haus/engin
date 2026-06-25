@@ -4,7 +4,7 @@
 // `pool/step-execution.ts:runStep` and `core/phase-tasks.ts:runStepTask` /
 // `runMultiStepTask`:
 //   - profile lookup + read-only adjustment (strip write/edit)
-//   - harness creation via createHarness
+//   - session creation via the agent plugin registry
 //   - activeSessions tracking (before any status callback — TOCTOU safety)
 //   - onAgentSpawn firing (with sessionId + sessionPath)
 //   - onStepStart firing
@@ -14,13 +14,13 @@
 //
 // Renderer invocation is intentionally NOT part of spawnAgent — it stays in the
 // callers (runStep / runStepTask / runMultiStepTask), which have different
-// rendering needs. Likewise, disposal of the underlying harness is the caller's
+// rendering needs. Likewise, disposal of the underlying session is the caller's
 // responsibility (via `handle.dispose()`); `complete()` only fires the lifecycle
 // callback and untracks the session.
 
-import type { AgentSession } from '@earendil-works/pi-coding-agent';
+import type { AgentRuntime } from './agent-plugin.js';
 
-import { createHarness } from './harness-factory.js';
+import { requireAgentPlugin } from './agent-registry.js';
 import type { AgentProfile, StatusCallbacks } from './types.js';
 import { forwardAgentStatus } from './utils.js';
 
@@ -53,11 +53,11 @@ export interface AgentLifecycleOptions {
 }
 
 export interface AgentLifecycleHandle {
-  /** The created {@link AgentSession}. */
-  session: AgentSession;
-  /** Disposes the underlying harness (unsubscribe + session.dispose). Caller-invoked. */
+  /** The created {@link AgentRuntime}. */
+  session: AgentRuntime;
+  /** Disposes the underlying session (session.dispose). Caller-invoked. */
   dispose: () => void;
-  /** The session id from the created harness. */
+  /** The session id from the created session. */
   sessionId: string;
   /** Resolved session path: sessionFile ?? resumeSessionPath ?? sessionDir ?? sessionId. */
   sessionPath: string;
@@ -68,13 +68,14 @@ export interface AgentLifecycleHandle {
 // ─── spawnAgent ─────────────────────────────────────────────────────────────
 
 /**
- * Spawn an agent: look up + adjust the profile, create the harness, track the
- * session, and fire the spawn/step-start lifecycle callbacks.
+ * Spawn an agent: look up + adjust the profile, create the session via the
+ * agent plugin registry, track the session, and fire the spawn/step-start
+ * lifecycle callbacks.
  *
- * The session is added to `activeSessions` IMMEDIATELY after harness creation
+ * The session is added to `activeSessions` IMMEDIATELY after session creation
  * and BEFORE any status callback fires. This closes the Time-of-Check-Time-of-Use
  * (TOCTOU) gap: an abort listener iterating `activeSessions` will reach the
- * freshly-created session even if the abort fires between harness creation and
+ * freshly-created session even if the abort fires between session creation and
  * the first prompt.
  *
  * @returns a {@link AgentLifecycleHandle}. The caller drives the prompt,
@@ -100,10 +101,11 @@ export async function spawnAgent(
     };
   }
 
-  // 3. Create the harness. resumeSessionPath takes precedence over sessionDir
-  //    (mirrors the existing call sites); when neither is set, createHarness
-  //    falls back to an in-memory session.
-  const { session, dispose, sessionId, contextWindow } = await createHarness({
+  // 3. Create the session via the agent plugin registry. resumeSessionPath
+  //    takes precedence over sessionDir (mirrors the existing call sites);
+  //    when neither is set, createSession falls back to an in-memory session.
+  const plugin = requireAgentPlugin(adjustedProfile.agent);
+  const session = await plugin.createSession({
     profile: adjustedProfile,
     cwd: opts.cwd,
     apiKeys: opts.apiKeys,
@@ -116,14 +118,18 @@ export async function spawnAgent(
         ? { sessionDir: opts.sessionDir }
         : {}),
   });
+  const sessionId = session.sessionId;
+  const dispose = () => session.dispose();
+  const contextWindow = session.contextWindow;
 
   // 4. TOCTOU: track the session BEFORE firing any callback or awaiting again.
   //    An abort listener firing in the [tracked, prompt] window reaches this session.
   opts.activeSessions?.add(session);
 
-  // 5. Resolve the observable session path. session.sessionFile is set at harness
-  //    construction (before the first turn), so it is correct on first run and
-  //    resume. The sessionId fallback preserves the historical in-memory behavior.
+  // 5. Resolve the observable session path. session.sessionFile is set at
+  //    session creation (before the first turn), so it is correct on first run
+  //    and resume. The sessionId fallback preserves the historical in-memory
+  //    behavior.
   const sessionPath = session.sessionFile ?? opts.resumeSessionPath ?? opts.sessionDir ?? sessionId;
 
   // 6. Fire onAgentSpawn (after tracking) with sessionId + sessionPath + contextWindow.
@@ -147,7 +153,7 @@ export async function spawnAgent(
   });
 
   // 8. Return the handle. complete() fires onAgentComplete + untracks; dispose()
-  //    tears down the harness. The two are deliberately separate so callers can
+  //    tears down the session. The two are deliberately separate so callers can
   //    fire the completion callback (e.g. in a finally block) without disposing
   //    when they intend to keep the session alive, or dispose without the callback.
   return {

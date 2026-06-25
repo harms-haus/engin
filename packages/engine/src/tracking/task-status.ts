@@ -14,6 +14,12 @@ export class TaskTracker extends EventEmitter {
   private tasks: Map<string, Task>;
   private reverseDeps: Map<string, Set<string>>;
   private warnedDeadlocked = new Set<string>();
+  /** Index of task ids currently in 'failed' status, maintained on every
+   * status transition so {@link getFailedTasks} is O(failed) rather than
+   * O(N). Updated in {@link failTask}, {@link isPoolDone} (deadlock path),
+   * {@link resetTaskForRetry}, {@link resetFailedTasks}, and rebuilt in
+   * {@link fromJSON}. */
+  private failedTaskIds = new Set<string>();
   /**
    * Memoized transitive-dependents map (taskId → set of tasks that transitively
    * depend on it). A pure function of the dependency topology, so it is rebuilt
@@ -96,6 +102,31 @@ export class TaskTracker extends EventEmitter {
 
   getAllTasks(): Task[] {
     return Array.from(this.tasks.values());
+  }
+
+  /**
+   * Returns only the tasks currently in the `'failed'` status.
+   *
+   * Used by the {@link LanePool} deadlock-surface observer (the
+   * `TaskSettled` listener in `run()`) so that per-settlement deadlock
+   * detection scans only failed tasks — O(failed), typically O(1) — instead
+   * of allocating and iterating the entire task set on every settlement
+   * (O(N) per event, O(N²) over a run). Tasks failed via `failTask` AND via
+   * the `isPoolDone` deadlock mutation both reach this accessor.
+   *
+   * Backed by the {@link failedTaskIds} index, so the cost is proportional to
+   * the number of failed tasks, not the total task count.
+   *
+   * Returns live references to the internal `Task` objects (same aliasing
+   * contract as {@link getAllTasks} / {@link claimTasks}).
+   */
+  getFailedTasks(): Task[] {
+    const failed: Task[] = [];
+    for (const id of this.failedTaskIds) {
+      const task = this.tasks.get(id);
+      if (task) failed.push(task);
+    }
+    return failed;
   }
 
   getReadyTasks(): Task[] {
@@ -253,6 +284,7 @@ export class TaskTracker extends EventEmitter {
     task.result = result;
     task.assignedAgent = undefined;
     this.warnedDeadlocked.delete(id);
+    this.failedTaskIds.add(id);
     this.recalculateStatuses(id);
     queueMicrotask(() => this.emit(TaskTracker.Events.TaskSettled));
   }
@@ -279,6 +311,7 @@ export class TaskTracker extends EventEmitter {
     task.assignedAgent = undefined;
     task.result = undefined;
     task.reviewFeedback = undefined;
+    this.failedTaskIds.delete(id);
     queueMicrotask(() => this.emit(TaskTracker.Events.TaskReady));
   }
 
@@ -306,8 +339,9 @@ export class TaskTracker extends EventEmitter {
   }
 
   resetFailedTasks(): void {
-    for (const task of this.tasks.values()) {
-      if (task.status === 'failed') {
+    for (const id of this.failedTaskIds) {
+      const task = this.tasks.get(id);
+      if (task) {
         task.status = 'ready';
         task.assignedAgent = undefined;
         task.result = undefined;
@@ -315,6 +349,7 @@ export class TaskTracker extends EventEmitter {
         this.warnedDeadlocked.delete(task.id);
       }
     }
+    this.failedTaskIds.clear();
   }
 
   resetStuckTasks(): void {
@@ -364,6 +399,12 @@ export class TaskTracker extends EventEmitter {
     const tracker = new TaskTracker();
     for (const task of data.tasks) {
       tracker.tasks.set(task.id, structuredClone(task));
+    }
+    // Build failed-task index from deserialized state
+    for (const task of tracker.tasks.values()) {
+      if (task.status === 'failed') {
+        tracker.failedTaskIds.add(task.id);
+      }
     }
     // Build reverse dependency index
     for (const task of tracker.tasks.values()) {
@@ -471,6 +512,7 @@ export class TaskTracker extends EventEmitter {
             // instead of silently staying blocked forever.
             task.status = 'failed';
             task.result = { completed: false, error: `deadlocked: missing dependency ${missing.join(', ')}` };
+            this.failedTaskIds.add(task.id);
             settledDeadlock = true;
           }
           continue;

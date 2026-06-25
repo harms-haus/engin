@@ -62,44 +62,73 @@ Parse a Markdown string with YAML frontmatter into an `AgentProfile`. Throws if 
 
 Clear the in-memory profile cache.
 
-## Harness creation
+## Agent plugin system
 
-### `createHarness(options): Promise<{ session, sessionId, dispose }>`
+The engine uses a provider-neutral plugin registry to create agent sessions. Built-in
+adapters (`pi-coding-agent`, `codex`, `cursor`) self-register on import. Workflows resolve a
+plugin by id (or the default) and call `createSession` to obtain an `AgentRuntime`.
 
-Create a fully-wired `AgentSession` from an `AgentProfile`. Resolution steps:
+### `requireAgentPlugin(pluginId?: string): AgentPlugin`
 
-1. Resolve the model via `getModel(profile.provider, profile.model)` (throws if unknown).
-2. Load `AuthStorage` from `~/.pi/agent/auth.json`; apply caller-supplied `apiKeys` as runtime
-   overrides.
-3. Build the tool allowlist from the profile: `includeTools` (if non-empty) **intersects**
-   `DEFAULT_TOOLS`; then `excludeTools` is subtracted. See
-   [Authoring profiles → Tool filtering](../guides/profiles.md#tool-filtering--read-this-carefully).
-4. Build a `DefaultResourceLoader` with `systemPromptOverride: () => profile.systemPrompt`.
-5. Construct the session in one of three modes (checked in this order):
-   - **Resumed** — `SessionManager.open(resumeSessionPath, …)` when `resumeSessionPath` is set.
-   - **Persisted** — `SessionManager.create(cwd, sessionDir)` when `sessionDir` is set.
-   - **In-memory** — `SessionManager.inMemory(cwd)` otherwise.
-6. If `onAgentStatus` is provided with at least one handler, subscribe to agent events. The
-   effective agent ID is `options.agentId ?? sessionId`.
+Return the registered agent plugin with the given id, defaulting to
+`DEFAULT_AGENT_PLUGIN_ID` (`'pi-coding-agent'`) when `pluginId` is omitted. Throws a
+descriptive error — listing all currently registered ids — if no plugin is registered for
+the resolved id.
 
-`HarnessCreationOptions`:
+### `getAgentPlugin(pluginId: string): AgentPlugin | undefined`
+
+Return the plugin registered under `pluginId`, or `undefined` when none is registered.
+
+### `hasAgentPlugin(pluginId: string): boolean`
+
+Return `true` when a plugin is registered under `pluginId`, otherwise `false`.
+
+### `registerAgentPlugin(plugin: AgentPlugin): void`
+
+Register a custom agent plugin. If a plugin with the same `id` is already registered it is
+overwritten. Call this once during initialisation to make a provider available to workflows.
+
+### `DEFAULT_AGENT_PLUGIN_ID: string`
+
+The well-known default plugin id: the constant string `'pi-coding-agent'`. Used by
+`requireAgentPlugin` when no explicit id is supplied.
+
+### `AgentPlugin` interface
+
+The adapter contract each backend implements:
+
+- `readonly id: string` — unique plugin identifier.
+- `createSession(options: AgentSessionOptions): Promise<AgentRuntime>` — create and return
+  a new session. The implementation resolves the model via
+  `getModel(profile.provider, profile.model)`, loads credentials via `AuthStorage` (from
+  `~/.pi/agent/auth.json`, with caller-supplied `apiKeys` applied as runtime overrides),
+  builds the tool allowlist from the profile (`includeTools` intersects `DEFAULT_TOOLS`, then
+  `excludeTools` is subtracted), and constructs the session in resumed / persisted /
+  in-memory mode based on the options. See
+  [Authoring profiles → Tool filtering](../guides/profiles.md#tool-filtering--read-this-carefully).
+
+The returned `AgentRuntime` exposes:
+
+- `prompt(text, opts?): Promise<void>` — send a prompt; resolves when the turn completes.
+- `getLastAssistantText(): string | undefined` — plain-text of the last assistant response.
+- `subscribe(cb: (e: AgentRuntimeEvent) => void): () => void` — subscribe to runtime events
+  (`turn_start`, `turn_end`, `tool_execution_start`, `tool_execution_end`, `auto_retry_start`,
+  `auto_retry_end`); returns an unsubscribe function.
+- `dispose(): void` — release all session resources. Always call in a `finally`.
+
+### `AgentSessionOptions`
+
+Options passed to `AgentPlugin.createSession`:
 
 | Field                | Description                                                  |
 | -------------------- | ------------------------------------------------------------ |
-| `profile`            | The agent configuration.                                     |
+| `profile`            | The agent configuration (`AgentProfile`).                    |
 | `cwd`                | Working directory for file operations.                       |
 | `apiKeys?`           | Provider → API key overrides.                                |
 | `onAgentStatus?`     | Callbacks for turn-level and tool-level events.              |
 | `sessionDir?`        | Directory for persisted session storage.                     |
 | `resumeSessionPath?` | Path to an existing session for resumption.                  |
 | `agentId?`           | Agent ID used in status callbacks (defaults to `sessionId`). |
-
-Returns `{ session: AgentSession; sessionId: string; dispose: () => void }`. `dispose`
-unsubscribes from agent events and disposes the session — always call it in a `finally`.
-
-### `createHarnessFromProfile(dirPath, profileId, options): Promise<{ session, sessionId, dispose }>`
-
-Convenience wrapper: loads a profile from disk, then delegates to `createHarness`.
 
 ## Config resolution
 
@@ -236,7 +265,7 @@ on the first failure. Returns `T[]`.
 ### `resolveApiKey(provider, customKeys?): string | undefined`
 
 Resolve from `customKeys[provider]` or env vars via `getEnvApiKey(provider)`. Does **not**
-consult `auth.json` or OAuth — `createHarness` does.
+consult `auth.json` or OAuth — agent plugin session creation does.
 
 ### `resolveApiKeyOrThrow(provider, customKeys?): string`
 

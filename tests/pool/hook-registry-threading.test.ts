@@ -45,7 +45,7 @@ import { z } from 'zod';
 
 // ─── Capture real modules before mocking ───────────────────────────────────
 
-const realHarnessFactory = Object.assign({}, await import('../../packages/engine/src/core/harness-factory.js'));
+const realAgentRegistry = Object.assign({}, await import('../../packages/engine/src/core/agent-registry.js'));
 const realStructuredOutput = Object.assign({}, await import('../../packages/engine/src/core/structured-output.js'));
 const realPromptBuilder = Object.assign({}, await import('../../packages/engine/src/pool/prompt-builder.js'));
 const realProfile = Object.assign({}, await import('../../packages/engine/src/core/profile.js'));
@@ -53,13 +53,36 @@ const realProfile = Object.assign({}, await import('../../packages/engine/src/co
 // ─── Mocks ──────────────────────────────────────────────────────────────────
 //
 // runStep must run for real (we are exercising the seam inside it), so we mock
-// only its leaf dependencies: the harness factory (session creation), the
+// only its leaf dependencies: the agent registry (session creation), the
 // structured-output prompt, the prompt-builder (so we can observe whether the
 // seam bypassed it), and profile loading (so LanePool.run never touches the FS).
 
 const mockCreateHarness = mock() as ReturnType<typeof mock> & ((...args: unknown[]) => unknown);
-mock.module('../../packages/engine/src/core/harness-factory.js', () => ({
-  createHarness: (...args: unknown[]) => mockCreateHarness(...args),
+
+// Compatibility shim: runStep calls spawnAgent which resolves sessions via
+// requireAgentPlugin(profile.agent).createSession(opts). We mock the
+// registry so createSession delegates to mockCreateHarness, unwrapping the
+// return value to the inner session (AgentRuntime).
+const mockRequireAgentPlugin = mock((..._args: unknown[]) => ({
+  id: 'pi-coding-agent',
+  createSession: async (opts: unknown) => {
+    const w = (await mockCreateHarness(opts)) as {
+      session: Record<string, unknown>;
+      sessionId?: string;
+      dispose?: () => void;
+      contextWindow?: number;
+    };
+    // Propagate wrapper-level fields onto the inner session IN-PLACE so the
+    // same object reference is tracked in activeSessions AND spawnAgent's
+    // session.dispose() / session.sessionId observe the wrapper's mock.
+    if (w.dispose) (w.session as { dispose: () => void }).dispose = w.dispose;
+    if (w.sessionId) (w.session as { sessionId: string }).sessionId = w.sessionId;
+    if (w.contextWindow !== undefined) (w.session as { contextWindow: number }).contextWindow = w.contextWindow;
+    return w.session;
+  },
+}));
+mock.module('../../packages/engine/src/core/agent-registry.js', () => ({
+  requireAgentPlugin: (...args: unknown[]) => mockRequireAgentPlugin(...args),
 }));
 
 const mockPromptForStructured = mock() as ReturnType<typeof mock> & ((...args: unknown[]) => unknown);
@@ -259,7 +282,7 @@ beforeEach(() => {
 
 afterAll(() => {
   // Restore real modules so mocks don't leak into other test files.
-  mock.module('../../packages/engine/src/core/harness-factory.js', () => realHarnessFactory);
+  mock.module('../../packages/engine/src/core/agent-registry.js', () => realAgentRegistry);
   mock.module('../../packages/engine/src/core/structured-output.js', () => realStructuredOutput);
   mock.module('../../packages/engine/src/pool/prompt-builder.js', () => realPromptBuilder);
   mock.module('../../packages/engine/src/core/profile.js', () => realProfile);

@@ -8,7 +8,7 @@ import type {
   WorkflowProjection,
 } from './event-types.js';
 import { MAX_RUN_LOG } from './event-types.js';
-import { sanitizeDisplayText } from './text-utils.js';
+import { formatDuration, sanitizeDisplayText } from './text-utils.js';
 
 export const MAX_AGENT_LOG = 500;
 
@@ -242,13 +242,14 @@ export function evolve(state: WorkflowProjection, event: EventRecord): WorkflowP
       const attempt = Number(event.data.attempt ?? 1);
       const maxAttempts = Number(event.data.maxAttempts ?? 1);
       const delayMs = Number(event.data.delayMs ?? 0);
+      const delayStr = delayMs > 0 ? ` in ${formatDuration(delayMs)}` : '';
       const errorMessage = sanitizeDisplayText(String(event.data.errorMessage ?? ''));
       const suffix = errorMessage ? `: ${errorMessage}` : '';
       const entry = {
         id: `log-${event.seq}`,
         timestamp: event.metadata.timestamp,
         type: 'text' as const,
-        content: `Retrying (attempt ${attempt}/${maxAttempts}) in ${delayMs}ms${suffix}`,
+        content: `Retrying (attempt ${attempt}/${maxAttempts})${delayStr}${suffix}`,
         metadata: { attempt, maxAttempts, delayMs, errorMessage },
       };
       return clone(state, {
