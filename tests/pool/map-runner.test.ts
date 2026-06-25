@@ -1253,7 +1253,7 @@ describe('mapRunner', () => {
       });
       await runner(ctx);
 
-      const execCtx = (mockRunStep.mock.calls[0][0] as Record<string, unknown>).execCtx;
+      const execCtx = (mockRunStep.mock.calls[0][0] as { execCtx: Record<string, unknown> }).execCtx;
       expect(execCtx.sessionBaseDir).toBe('/tmp/sb');
       expect(execCtx.cwd).toBe('/tmp/cwd');
       expect(execCtx.apiKeys).toBe(apiKeys);

@@ -681,8 +681,8 @@ describe('createWsBackedTui', () => {
           stats: { totalTokens: 0, agentCount: 0 },
           // Non-empty runLog on the snapshot itself — must still be reset.
           runLog: [
-            { level: 'info', message: 'ignored', timestamp: ISO_NOW },
-            { level: 'warn', message: 'also ignored', timestamp: ISO_NOW },
+            { id: '1', timestamp: ISO_NOW, type: 'text', content: 'ignored' },
+            { id: '2', timestamp: ISO_NOW, type: 'error', content: 'also ignored' },
           ],
         },
         9,

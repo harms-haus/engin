@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'bun:test';
+import type { AgentRuntime } from '../../packages/engine/src/core/agent-plugin.js';
 import type { Task } from '../../packages/engine/src/core/types.js';
 import type {
   LanePoolOptions,
@@ -62,7 +63,7 @@ describe('pool/types.ts type surface', () => {
     // Build a value matching the TrackedSession shape; compiles only when the
     // interface has `session`, `dispose`, and `sessionPath`.
     const tracked: TrackedSession = {
-      session: { prompt: (() => {}) as never },
+      session: { prompt: (() => {}) as never } as unknown as AgentRuntime,
       dispose: () => {},
       sessionPath: '/tmp/session',
     };

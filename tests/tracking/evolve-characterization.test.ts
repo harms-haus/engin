@@ -88,7 +88,7 @@ describe('evolve characterization – workflow lifecycle coercion', () => {
     const state = evolve(baseline(), makeEvent('workflow_failed', { error: { boom: true } }));
     expect(state.status).toBe('failed');
     expect(typeof state.error).toBe('string');
-    expect(state.error.length).toBeGreaterThan(0);
+    expect(state.error!.length).toBeGreaterThan(0);
   });
 
   it('workflow_failed leaves failedPhase undefined when neither phaseId nor phase is present', () => {
@@ -513,8 +513,7 @@ describe('evolve characterization – log / sidebar / turn coercion', () => {
     resetSeq();
     const state = evolve(
       baseline(),
-      // @ts-expect-error intentionally invalid types to verify String() coercion
-      makeEvent('sidebar_updated', { title: 123, indicator: false }),
+      makeEvent('sidebar_updated', { title: 123, indicator: false } as Record<string, unknown>),
     );
     expect(state.sidebar.title).toBe('123');
     expect(state.sidebar.indicator).toBe('false');
@@ -882,7 +881,7 @@ describe('evolve characterization – retry delay formatting boundaries', () => 
     expect(entry.content).not.toContain('\n');
     expect(entry.content).toBe('Retrying (attempt 1/2): overloaded rate limit');
     // metadata stores the sanitized value
-    expect(entry.metadata.errorMessage).toBe('overloaded rate limit');
+    expect(entry.metadata?.errorMessage).toBe('overloaded rate limit');
   });
 });
 
@@ -895,8 +894,7 @@ describe('evolve characterization – agent_spawned session coercion', () => {
       baseline(),
       makeEvent(
         'agent_spawned',
-        // @ts-expect-error intentionally invalid types
-        { agentId: 'a1', profile: 'coder', sessionId: 123, sessionPath: null },
+        { agentId: 'a1', profile: 'coder', sessionId: 123, sessionPath: null } as Record<string, unknown>,
         { timestamp: '2026-06-25T00:00:00Z', agentId: 'a1', taskId: 't1' },
       ),
     );
@@ -918,12 +916,11 @@ describe('evolve characterization – agent_spawned session coercion', () => {
     // Re-spawn with invalid sessionId type → must preserve existing
     state = evolve(
       state,
-      makeEvent(
-        'agent_spawned',
-        // @ts-expect-error intentionally invalid type
-        { agentId: 'a1', profile: 'coder', sessionId: 999 },
-        { timestamp: '2026-06-25T01:00:00Z', agentId: 'a1', taskId: 't1' },
-      ),
+      makeEvent('agent_spawned', { agentId: 'a1', profile: 'coder', sessionId: 999 } as Record<string, unknown>, {
+        timestamp: '2026-06-25T01:00:00Z',
+        agentId: 'a1',
+        taskId: 't1',
+      }),
     );
     expect(state.agents['a1::t1'].sessionId).toBe('keep-me');
   });

@@ -80,7 +80,10 @@ interface RunStepContext {
 }
 
 function makeSession(textFn: (promptText: string) => string | undefined = () => 'done') {
-  return makeMockSession(textFn).session;
+  const { session } = makeMockSession(textFn);
+  // AgentRuntime requires abort(); add it so session satisfies the interface
+  // without affecting the mock prompt/textFn behavior.
+  return Object.assign(session, { abort: mock(async () => {}) });
 }
 
 function createStepExecutionContext(overrides?: Partial<StepExecutionContext>): StepExecutionContext {

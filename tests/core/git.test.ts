@@ -16,7 +16,6 @@ import {
   abortMerge,
   checkoutBranch,
   commitChanges,
-  createSymlinkWithRetry,
   createWorktree,
   deleteBranchForce,
   getCurrentBranch,
@@ -26,9 +25,7 @@ import {
   isGitRepo,
   listConflictedFiles,
   mergeBranch,
-  populateWorktree,
   pushBranch,
-  readWorktreeCopyEntries,
   removeWorktree,
   restoreSavedBranch,
   sanitizeBranchSlug,
@@ -36,8 +33,13 @@ import {
   stageAll,
   stageFiles,
   worktreePrune,
-  type WorktreeCopyEntry,
 } from '../../packages/engine/src/core/git.js';
+import {
+  createSymlinkWithRetry,
+  populateWorktree,
+  readWorktreeCopyEntries,
+  type WorktreeCopyEntry,
+} from '../../packages/engine/src/core/worktree-populate.js';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
