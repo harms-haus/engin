@@ -272,7 +272,7 @@ describe('TaskRunnerContext.rendererRegistry -> StepExecutionContext (via linear
     await runner(createCtx({ rendererRegistry: registry }));
 
     expect(mockRunStep).toHaveBeenCalledTimes(1);
-    const execCtx = mockRunStep.mock.calls[0][5] as StepExecutionContext;
+    const execCtx = (mockRunStep.mock.calls[0][0] as Record<string, unknown>).execCtx as StepExecutionContext;
     expect(execCtx.rendererRegistry).toBe(registry);
   });
 
@@ -281,7 +281,7 @@ describe('TaskRunnerContext.rendererRegistry -> StepExecutionContext (via linear
     await runner(createCtx()); // no rendererRegistry
 
     expect(mockRunStep).toHaveBeenCalledTimes(1);
-    const execCtx = mockRunStep.mock.calls[0][5] as StepExecutionContext;
+    const execCtx = (mockRunStep.mock.calls[0][0] as Record<string, unknown>).execCtx as StepExecutionContext;
     expect(execCtx.rendererRegistry).toBeUndefined();
   });
 
@@ -296,7 +296,7 @@ describe('TaskRunnerContext.rendererRegistry -> StepExecutionContext (via linear
 
     expect(mockRunStep).toHaveBeenCalledTimes(2);
     for (const call of mockRunStep.mock.calls) {
-      const execCtx = call[5] as StepExecutionContext;
+      const execCtx = (call[0] as Record<string, unknown>).execCtx as StepExecutionContext;
       expect(execCtx.rendererRegistry).toBe(registry);
     }
   });
@@ -327,7 +327,7 @@ describe('end-to-end: LanePoolOptions -> TaskRunnerContext -> StepExecutionConte
 
     expect(result.completedTasks).toBe(1);
     expect(mockRunStep).toHaveBeenCalledTimes(1);
-    const execCtx = mockRunStep.mock.calls[0][5] as StepExecutionContext;
+    const execCtx = (mockRunStep.mock.calls[0][0] as Record<string, unknown>).execCtx as StepExecutionContext;
     expect(execCtx.rendererRegistry).toBe(registry);
   });
 
@@ -346,7 +346,7 @@ describe('end-to-end: LanePoolOptions -> TaskRunnerContext -> StepExecutionConte
     await pool.run();
 
     expect(mockRunStep).toHaveBeenCalledTimes(1);
-    const execCtx = mockRunStep.mock.calls[0][5] as StepExecutionContext;
+    const execCtx = (mockRunStep.mock.calls[0][0] as Record<string, unknown>).execCtx as StepExecutionContext;
     expect(execCtx.rendererRegistry).toBeUndefined();
   });
 });

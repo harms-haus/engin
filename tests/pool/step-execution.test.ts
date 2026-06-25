@@ -145,7 +145,14 @@ describe('runStep (step-execution module)', () => {
       const execCtx = createStepExecutionContext();
       const profiles = createProfilesMap(defaultProfile);
 
-      const { result } = await runStep(makeTask(), baseStep, 'lane-0', defaultCtx, profiles, execCtx);
+      const { result } = await runStep({
+        task: makeTask(),
+        step: baseStep,
+        agentId: 'lane-0',
+        ctx: defaultCtx,
+        profiles,
+        execCtx,
+      });
 
       expect(result.type).toBe('approved');
       if (result.type === 'approved') {
@@ -161,7 +168,7 @@ describe('runStep (step-execution module)', () => {
       const execCtx = createStepExecutionContext();
       const profiles = createProfilesMap(defaultProfile);
 
-      await runStep(task, baseStep, 'lane-0', defaultCtx, profiles, execCtx);
+      await runStep({ task: task, step: baseStep, agentId: 'lane-0', ctx: defaultCtx, profiles, execCtx });
 
       expect(session.prompt).toHaveBeenCalledTimes(1);
       const promptedText = session.prompt.mock.calls[0][0] as string;
@@ -175,7 +182,7 @@ describe('runStep (step-execution module)', () => {
       const execCtx = createStepExecutionContext();
       const profiles = createProfilesMap(defaultProfile);
 
-      await runStep(makeTask(), baseStep, 'lane-0', defaultCtx, profiles, execCtx);
+      await runStep({ task: makeTask(), step: baseStep, agentId: 'lane-0', ctx: defaultCtx, profiles, execCtx });
 
       expect(mockPromptForStructured).not.toHaveBeenCalled();
     });
@@ -206,7 +213,7 @@ describe('runStep (step-execution module)', () => {
       const execCtx = createStepExecutionContext();
       const profiles = createProfilesMap(defaultProfile, reviewerProfile);
 
-      await runStep(makeTask(), reviewStep, 'lane-0', defaultCtx, profiles, execCtx);
+      await runStep({ task: makeTask(), step: reviewStep, agentId: 'lane-0', ctx: defaultCtx, profiles, execCtx });
 
       expect(mockPromptForStructured).toHaveBeenCalledTimes(1);
     });
@@ -221,7 +228,14 @@ describe('runStep (step-execution module)', () => {
       const execCtx = createStepExecutionContext();
       const profiles = createProfilesMap(defaultProfile, reviewerProfile);
 
-      const { result } = await runStep(makeTask(), reviewStep, 'lane-0', defaultCtx, profiles, execCtx);
+      const { result } = await runStep({
+        task: makeTask(),
+        step: reviewStep,
+        agentId: 'lane-0',
+        ctx: defaultCtx,
+        profiles,
+        execCtx,
+      });
 
       expect(result.type).toBe('approved');
       if (result.type === 'approved') {
@@ -239,7 +253,14 @@ describe('runStep (step-execution module)', () => {
       const execCtx = createStepExecutionContext();
       const profiles = createProfilesMap(defaultProfile, reviewerProfile);
 
-      const { result } = await runStep(makeTask(), reviewStep, 'lane-0', defaultCtx, profiles, execCtx);
+      const { result } = await runStep({
+        task: makeTask(),
+        step: reviewStep,
+        agentId: 'lane-0',
+        ctx: defaultCtx,
+        profiles,
+        execCtx,
+      });
 
       expect(result.type).toBe('rejected');
       if (result.type === 'rejected') {
@@ -262,7 +283,14 @@ describe('runStep (step-execution module)', () => {
       const execCtx = createStepExecutionContext();
       const profiles = createProfilesMap(defaultProfile, reviewerProfile);
 
-      const { result } = await runStep(makeTask(), customStep, 'lane-0', defaultCtx, profiles, execCtx);
+      const { result } = await runStep({
+        task: makeTask(),
+        step: customStep,
+        agentId: 'lane-0',
+        ctx: defaultCtx,
+        profiles,
+        execCtx,
+      });
 
       // score 8 < 9 → rejected
       expect(result.type).toBe('rejected');
@@ -284,7 +312,14 @@ describe('runStep (step-execution module)', () => {
       const execCtx = createStepExecutionContext();
       const profiles = createProfilesMap(defaultProfile, reviewerProfile);
 
-      const { result } = await runStep(makeTask(), customStep, 'lane-0', defaultCtx, profiles, execCtx);
+      const { result } = await runStep({
+        task: makeTask(),
+        step: customStep,
+        agentId: 'lane-0',
+        ctx: defaultCtx,
+        profiles,
+        execCtx,
+      });
 
       if (result.type === 'rejected') {
         expect(result.feedback).toBe('missing tests');
@@ -301,14 +336,14 @@ describe('runStep (step-execution module)', () => {
       const execCtx = createStepExecutionContext();
       const profiles = createProfilesMap(defaultProfile, reviewerProfile);
 
-      const { result } = await runStep(
-        makeTask(),
-        { name: 'review', profileId: 'reviewer', isReadOnly: true, schema: z.object({ approved: z.boolean() }) },
-        'lane-0',
-        defaultCtx,
+      const { result } = await runStep({
+        task: makeTask(),
+        step: { name: 'review', profileId: 'reviewer', isReadOnly: true, schema: z.object({ approved: z.boolean() }) },
+        agentId: 'lane-0',
+        ctx: defaultCtx,
         profiles,
         execCtx,
-      );
+      });
 
       expect(result.type).toBe('approved');
     });
@@ -323,19 +358,19 @@ describe('runStep (step-execution module)', () => {
       const execCtx = createStepExecutionContext();
       const profiles = createProfilesMap(defaultProfile, reviewerProfile);
 
-      const { result } = await runStep(
-        makeTask(),
-        {
+      const { result } = await runStep({
+        task: makeTask(),
+        step: {
           name: 'review',
           profileId: 'reviewer',
           isReadOnly: true,
           schema: z.object({ approved: z.boolean(), feedback: z.string().optional() }),
         },
-        'lane-0',
-        defaultCtx,
+        agentId: 'lane-0',
+        ctx: defaultCtx,
         profiles,
         execCtx,
-      );
+      });
 
       if (result.type === 'rejected') {
         expect(result.feedback).toBe('Custom feedback');
@@ -352,14 +387,14 @@ describe('runStep (step-execution module)', () => {
       const execCtx = createStepExecutionContext();
       const profiles = createProfilesMap(defaultProfile, reviewerProfile);
 
-      const { result } = await runStep(
-        makeTask(),
-        { name: 'review', profileId: 'reviewer', isReadOnly: true, schema: z.object({ approved: z.boolean() }) },
-        'lane-0',
-        defaultCtx,
+      const { result } = await runStep({
+        task: makeTask(),
+        step: { name: 'review', profileId: 'reviewer', isReadOnly: true, schema: z.object({ approved: z.boolean() }) },
+        agentId: 'lane-0',
+        ctx: defaultCtx,
         profiles,
         execCtx,
-      );
+      });
 
       if (result.type === 'rejected') {
         expect(result.feedback).toBe('No feedback provided');
@@ -373,7 +408,14 @@ describe('runStep (step-execution module)', () => {
       const execCtx = createStepExecutionContext();
       const profiles = createProfilesMap(defaultProfile, reviewerProfile);
 
-      const { result } = await runStep(makeTask(), reviewStep, 'lane-0', defaultCtx, profiles, execCtx);
+      const { result } = await runStep({
+        task: makeTask(),
+        step: reviewStep,
+        agentId: 'lane-0',
+        ctx: defaultCtx,
+        profiles,
+        execCtx,
+      });
 
       expect(result.type).toBe('rejected');
       if (result.type === 'rejected') {
@@ -389,7 +431,14 @@ describe('runStep (step-execution module)', () => {
       const execCtx = createStepExecutionContext();
       const profiles = createProfilesMap(defaultProfile, reviewerProfile);
 
-      const { result } = await runStep(makeTask(), reviewStep, 'lane-0', defaultCtx, profiles, execCtx);
+      const { result } = await runStep({
+        task: makeTask(),
+        step: reviewStep,
+        agentId: 'lane-0',
+        ctx: defaultCtx,
+        profiles,
+        execCtx,
+      });
 
       // Audit events now flow via onError → store callbacks, not appendAuditEvent.
       // Verify the rejection result carries the error feedback.
@@ -410,13 +459,27 @@ describe('runStep (step-execution module)', () => {
       const profiles = createProfilesMap(defaultProfile, reviewerProfile);
 
       // First attempt (attempt = 0)
-      await runStep(makeTask(), reviewStep, 'lane-0', { ...defaultCtx, attempt: 0 }, profiles, execCtx);
+      await runStep({
+        task: makeTask(),
+        step: reviewStep,
+        agentId: 'lane-0',
+        ctx: { ...defaultCtx, attempt: 0 },
+        profiles,
+        execCtx,
+      });
 
       const firstCallOptions = mockPromptForStructured.mock.calls[0][3] as { maxRetries: number };
       expect(firstCallOptions.maxRetries).toBe(3);
 
       // Retry attempt (attempt = 1)
-      await runStep(makeTask(), reviewStep, 'lane-0', { ...defaultCtx, attempt: 1 }, profiles, execCtx);
+      await runStep({
+        task: makeTask(),
+        step: reviewStep,
+        agentId: 'lane-0',
+        ctx: { ...defaultCtx, attempt: 1 },
+        profiles,
+        execCtx,
+      });
 
       const secondCallOptions = mockPromptForStructured.mock.calls[1][3] as { maxRetries: number };
       expect(secondCallOptions.maxRetries).toBe(1);
@@ -432,9 +495,9 @@ describe('runStep (step-execution module)', () => {
       const execCtx = createStepExecutionContext();
       const profiles = createProfilesMap(); // empty — no profiles
 
-      await expect(runStep(makeTask(), baseStep, 'lane-0', defaultCtx, profiles, execCtx)).rejects.toThrow(
-        /Profile "coder" not found/,
-      );
+      await expect(
+        runStep({ task: makeTask(), step: baseStep, agentId: 'lane-0', ctx: defaultCtx, profiles, execCtx }),
+      ).rejects.toThrow(/Profile "coder" not found/);
     });
 
     it('includes profileDirs in error message for missing profile', async () => {
@@ -445,9 +508,9 @@ describe('runStep (step-execution module)', () => {
       });
       const profiles = createProfilesMap(); // empty
 
-      await expect(runStep(makeTask(), baseStep, 'lane-0', defaultCtx, profiles, execCtx)).rejects.toThrow(
-        /not found in directories/,
-      );
+      await expect(
+        runStep({ task: makeTask(), step: baseStep, agentId: 'lane-0', ctx: defaultCtx, profiles, execCtx }),
+      ).rejects.toThrow(/not found in directories/);
     });
 
     it('adjusts profile for read-only steps by excluding write and edit tools', async () => {
@@ -457,7 +520,7 @@ describe('runStep (step-execution module)', () => {
       const execCtx = createStepExecutionContext();
       const profiles = createProfilesMap(defaultProfile);
 
-      await runStep(makeTask(), readOnlyStep, 'lane-0', defaultCtx, profiles, execCtx);
+      await runStep({ task: makeTask(), step: readOnlyStep, agentId: 'lane-0', ctx: defaultCtx, profiles, execCtx });
 
       const harnessOpts = mockCreateHarness.mock.calls[0][0] as Record<string, unknown>;
       const profile = harnessOpts.profile as AgentProfile;
@@ -471,7 +534,7 @@ describe('runStep (step-execution module)', () => {
       const execCtx = createStepExecutionContext();
       const profiles = createProfilesMap(defaultProfile);
 
-      await runStep(makeTask(), baseStep, 'lane-0', defaultCtx, profiles, execCtx);
+      await runStep({ task: makeTask(), step: baseStep, agentId: 'lane-0', ctx: defaultCtx, profiles, execCtx });
 
       const harnessOpts = mockCreateHarness.mock.calls[0][0] as Record<string, unknown>;
       const profile = harnessOpts.profile as AgentProfile;
@@ -490,7 +553,7 @@ describe('runStep (step-execution module)', () => {
       const execCtx = createStepExecutionContext();
       const profiles = createProfilesMap(profileWithExcludes);
 
-      await runStep(makeTask(), readOnlyStep, 'lane-0', defaultCtx, profiles, execCtx);
+      await runStep({ task: makeTask(), step: readOnlyStep, agentId: 'lane-0', ctx: defaultCtx, profiles, execCtx });
 
       const harnessOpts = mockCreateHarness.mock.calls[0][0] as Record<string, unknown>;
       const profile = harnessOpts.profile as AgentProfile;
@@ -509,14 +572,14 @@ describe('runStep (step-execution module)', () => {
       const execCtx = createStepExecutionContext({ sessionBaseDir: '/base' });
       const profiles = createProfilesMap(defaultProfile);
 
-      await runStep(
-        makeTask({ id: 'task-42' }),
-        { name: 'implement', profileId: 'coder', isReadOnly: false },
-        'lane-0',
-        { stepIndex: 0, attempt: 0, execCount: 0 },
+      await runStep({
+        task: makeTask({ id: 'task-42' }),
+        step: { name: 'implement', profileId: 'coder', isReadOnly: false },
+        agentId: 'lane-0',
+        ctx: { stepIndex: 0, attempt: 0, execCount: 0 },
         profiles,
         execCtx,
-      );
+      });
 
       const harnessOpts = mockCreateHarness.mock.calls[0][0] as Record<string, unknown>;
       expect(harnessOpts.sessionDir).toContain('task-42');
@@ -529,14 +592,14 @@ describe('runStep (step-execution module)', () => {
       const execCtx = createStepExecutionContext({ sessionBaseDir: '/base' });
       const profiles = createProfilesMap(defaultProfile);
 
-      await runStep(
-        makeTask({ id: 'task-1' }),
-        { name: 'implement', profileId: 'coder', isReadOnly: false },
-        'lane-0',
-        { stepIndex: 2, attempt: 1, execCount: 3 },
+      await runStep({
+        task: makeTask({ id: 'task-1' }),
+        step: { name: 'implement', profileId: 'coder', isReadOnly: false },
+        agentId: 'lane-0',
+        ctx: { stepIndex: 2, attempt: 1, execCount: 3 },
         profiles,
         execCtx,
-      );
+      });
 
       const harnessOpts = mockCreateHarness.mock.calls[0][0] as Record<string, unknown>;
       expect(harnessOpts.sessionDir).toContain('3-2-implement');
@@ -549,7 +612,15 @@ describe('runStep (step-execution module)', () => {
       const execCtx = createStepExecutionContext({ sessionBaseDir: '/base' });
       const profiles = createProfilesMap(defaultProfile);
 
-      await runStep(makeTask({ id: 'task-1' }), baseStep, 'lane-0', defaultCtx, profiles, execCtx, existingPath);
+      await runStep({
+        task: makeTask({ id: 'task-1' }),
+        step: baseStep,
+        agentId: 'lane-0',
+        ctx: defaultCtx,
+        profiles,
+        execCtx,
+        existingSessionPath: existingPath,
+      });
 
       const harnessOpts = mockCreateHarness.mock.calls[0][0] as Record<string, unknown>;
       expect(harnessOpts.sessionDir).toBeUndefined();
@@ -562,7 +633,14 @@ describe('runStep (step-execution module)', () => {
       const execCtx = createStepExecutionContext({ sessionBaseDir: '/base' });
       const profiles = createProfilesMap(defaultProfile);
 
-      await runStep(makeTask({ id: 'task-1' }), baseStep, 'lane-0', defaultCtx, profiles, execCtx);
+      await runStep({
+        task: makeTask({ id: 'task-1' }),
+        step: baseStep,
+        agentId: 'lane-0',
+        ctx: defaultCtx,
+        profiles,
+        execCtx,
+      });
 
       const harnessOpts = mockCreateHarness.mock.calls[0][0] as Record<string, unknown>;
       expect(harnessOpts.sessionDir).toBeDefined();
@@ -579,7 +657,7 @@ describe('runStep (step-execution module)', () => {
       const execCtx = createStepExecutionContext({ cwd: '/my/project' });
       const profiles = createProfilesMap(defaultProfile);
 
-      await runStep(makeTask(), baseStep, 'lane-0', defaultCtx, profiles, execCtx);
+      await runStep({ task: makeTask(), step: baseStep, agentId: 'lane-0', ctx: defaultCtx, profiles, execCtx });
 
       const harnessOpts = mockCreateHarness.mock.calls[0][0] as Record<string, unknown>;
       expect(harnessOpts.cwd).toBe('/my/project');
@@ -592,7 +670,7 @@ describe('runStep (step-execution module)', () => {
       const execCtx = createStepExecutionContext({ apiKeys });
       const profiles = createProfilesMap(defaultProfile);
 
-      await runStep(makeTask(), baseStep, 'lane-0', defaultCtx, profiles, execCtx);
+      await runStep({ task: makeTask(), step: baseStep, agentId: 'lane-0', ctx: defaultCtx, profiles, execCtx });
 
       const harnessOpts = mockCreateHarness.mock.calls[0][0] as Record<string, unknown>;
       expect(harnessOpts.apiKeys).toEqual(apiKeys);
@@ -604,7 +682,7 @@ describe('runStep (step-execution module)', () => {
       const execCtx = createStepExecutionContext();
       const profiles = createProfilesMap(defaultProfile);
 
-      await runStep(makeTask(), baseStep, 'lane-7', defaultCtx, profiles, execCtx);
+      await runStep({ task: makeTask(), step: baseStep, agentId: 'lane-7', ctx: defaultCtx, profiles, execCtx });
 
       const harnessOpts = mockCreateHarness.mock.calls[0][0] as Record<string, unknown>;
       expect(harnessOpts.agentId).toBe('lane-7');
@@ -623,7 +701,14 @@ describe('runStep (step-execution module)', () => {
       });
       const profiles = createProfilesMap(defaultProfile);
 
-      await runStep(makeTask({ id: 'task-1' }), baseStep, 'lane-0', defaultCtx, profiles, execCtx);
+      await runStep({
+        task: makeTask({ id: 'task-1' }),
+        step: baseStep,
+        agentId: 'lane-0',
+        ctx: defaultCtx,
+        profiles,
+        execCtx,
+      });
 
       expect(onAgentSpawn).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -648,7 +733,14 @@ describe('runStep (step-execution module)', () => {
       });
       const profiles = createProfilesMap(defaultProfile);
 
-      await runStep(makeTask({ id: 'task-1' }), baseStep, 'lane-0', defaultCtx, profiles, execCtx);
+      await runStep({
+        task: makeTask({ id: 'task-1' }),
+        step: baseStep,
+        agentId: 'lane-0',
+        ctx: defaultCtx,
+        profiles,
+        execCtx,
+      });
 
       expect(onAgentComplete).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -677,7 +769,7 @@ describe('runStep (step-execution module)', () => {
       const profiles = createProfilesMap(defaultProfile);
 
       try {
-        await runStep(makeTask(), baseStep, 'lane-0', defaultCtx, profiles, execCtx);
+        await runStep({ task: makeTask(), step: baseStep, agentId: 'lane-0', ctx: defaultCtx, profiles, execCtx });
       } catch {
         // Expected — the error propagates
       }
@@ -704,7 +796,7 @@ describe('runStep (step-execution module)', () => {
         expect(activeSessions.has(session as unknown as { abort(): Promise<void> })).toBe(true);
       }) as unknown as typeof session.prompt;
 
-      await runStep(makeTask(), baseStep, 'lane-0', defaultCtx, profiles, execCtx);
+      await runStep({ task: makeTask(), step: baseStep, agentId: 'lane-0', ctx: defaultCtx, profiles, execCtx });
 
       // After execution, session should be removed
       expect(activeSessions.has(session as unknown as { abort(): Promise<void> })).toBe(false);
@@ -717,7 +809,7 @@ describe('runStep (step-execution module)', () => {
       const execCtx = createStepExecutionContext({ activeSessions });
       const profiles = createProfilesMap(defaultProfile);
 
-      await runStep(makeTask(), baseStep, 'lane-0', defaultCtx, profiles, execCtx);
+      await runStep({ task: makeTask(), step: baseStep, agentId: 'lane-0', ctx: defaultCtx, profiles, execCtx });
 
       expect(activeSessions.size).toBe(0);
     });
@@ -733,7 +825,7 @@ describe('runStep (step-execution module)', () => {
       const profiles = createProfilesMap(defaultProfile);
 
       try {
-        await runStep(makeTask(), baseStep, 'lane-0', defaultCtx, profiles, execCtx);
+        await runStep({ task: makeTask(), step: baseStep, agentId: 'lane-0', ctx: defaultCtx, profiles, execCtx });
       } catch {
         // Expected
       }
@@ -776,7 +868,7 @@ describe('runStep (step-execution module)', () => {
       });
       const profiles = createProfilesMap(defaultProfile);
 
-      await runStep(makeTask(), baseStep, 'lane-0', defaultCtx, profiles, execCtx);
+      await runStep({ task: makeTask(), step: baseStep, agentId: 'lane-0', ctx: defaultCtx, profiles, execCtx });
 
       expect(trackedAtSpawn).toBe(true);
     });
@@ -797,7 +889,7 @@ describe('runStep (step-execution module)', () => {
       });
       const profiles = createProfilesMap(defaultProfile);
 
-      await runStep(makeTask(), baseStep, 'lane-0', defaultCtx, profiles, execCtx);
+      await runStep({ task: makeTask(), step: baseStep, agentId: 'lane-0', ctx: defaultCtx, profiles, execCtx });
 
       expect(trackedAtStepStart).toBe(true);
     });
@@ -818,7 +910,7 @@ describe('runStep (step-execution module)', () => {
         trackedAtPrompt = activeSessions.has(session);
       }) as unknown as typeof session.prompt;
 
-      await runStep(makeTask(), baseStep, 'lane-0', defaultCtx, profiles, execCtx);
+      await runStep({ task: makeTask(), step: baseStep, agentId: 'lane-0', ctx: defaultCtx, profiles, execCtx });
 
       expect(trackedAtPrompt).toBe(true);
     });
@@ -848,7 +940,7 @@ describe('runStep (step-execution module)', () => {
       });
       const profiles = createProfilesMap(defaultProfile);
 
-      await runStep(makeTask(), baseStep, 'lane-0', defaultCtx, profiles, execCtx);
+      await runStep({ task: makeTask(), step: baseStep, agentId: 'lane-0', ctx: defaultCtx, profiles, execCtx });
 
       expect(abortFn).toHaveBeenCalledTimes(1);
     });
@@ -876,7 +968,7 @@ describe('runStep (step-execution module)', () => {
       });
       const profiles = createProfilesMap(defaultProfile);
 
-      await runStep(makeTask(), baseStep, 'lane-0', defaultCtx, profiles, execCtx);
+      await runStep({ task: makeTask(), step: baseStep, agentId: 'lane-0', ctx: defaultCtx, profiles, execCtx });
 
       // The finally block must always remove the session so it can't be
       // re-aborted on a subsequent iteration of the abort listener.
@@ -905,7 +997,7 @@ describe('runStep (step-execution module)', () => {
 
       let caught: unknown;
       try {
-        await runStep(makeTask(), baseStep, 'lane-0', defaultCtx, profiles, execCtx);
+        await runStep({ task: makeTask(), step: baseStep, agentId: 'lane-0', ctx: defaultCtx, profiles, execCtx });
       } catch (err) {
         caught = err;
       }
@@ -920,7 +1012,9 @@ describe('runStep (step-execution module)', () => {
       const execCtx = createStepExecutionContext({ signal: AbortSignal.abort() });
       const profiles = createProfilesMap(defaultProfile);
 
-      await expect(runStep(makeTask(), baseStep, 'lane-0', defaultCtx, profiles, execCtx)).rejects.toThrow();
+      await expect(
+        runStep({ task: makeTask(), step: baseStep, agentId: 'lane-0', ctx: defaultCtx, profiles, execCtx }),
+      ).rejects.toThrow();
 
       expect(session.prompt).not.toHaveBeenCalled();
     });
@@ -933,7 +1027,14 @@ describe('runStep (step-execution module)', () => {
       const execCtx = createStepExecutionContext({ signal: controller.signal });
       const profiles = createProfilesMap(defaultProfile);
 
-      const { result } = await runStep(makeTask(), baseStep, 'lane-0', defaultCtx, profiles, execCtx);
+      const { result } = await runStep({
+        task: makeTask(),
+        step: baseStep,
+        agentId: 'lane-0',
+        ctx: defaultCtx,
+        profiles,
+        execCtx,
+      });
 
       expect(session.prompt).toHaveBeenCalledTimes(1);
       expect(result.type).toBe('approved');
@@ -946,7 +1047,14 @@ describe('runStep (step-execution module)', () => {
       const execCtx = createStepExecutionContext();
       const profiles = createProfilesMap(defaultProfile);
 
-      const { result } = await runStep(makeTask(), baseStep, 'lane-0', defaultCtx, profiles, execCtx);
+      const { result } = await runStep({
+        task: makeTask(),
+        step: baseStep,
+        agentId: 'lane-0',
+        ctx: defaultCtx,
+        profiles,
+        execCtx,
+      });
 
       expect(session.prompt).toHaveBeenCalledTimes(1);
       expect(result.type).toBe('approved');
@@ -967,7 +1075,9 @@ describe('runStep (step-execution module)', () => {
       });
       const profiles = createProfilesMap(defaultProfile);
 
-      await expect(runStep(makeTask(), baseStep, 'lane-0', defaultCtx, profiles, execCtx)).rejects.toThrow();
+      await expect(
+        runStep({ task: makeTask(), step: baseStep, agentId: 'lane-0', ctx: defaultCtx, profiles, execCtx }),
+      ).rejects.toThrow();
 
       // The signal check is inside the try block AFTER spawn + stepStart, so the
       // agent is observable (and tracked in activeSessions) before the guard runs.
@@ -987,7 +1097,9 @@ describe('runStep (step-execution module)', () => {
       });
       const profiles = createProfilesMap(defaultProfile);
 
-      await expect(runStep(makeTask(), baseStep, 'lane-0', defaultCtx, profiles, execCtx)).rejects.toThrow();
+      await expect(
+        runStep({ task: makeTask(), step: baseStep, agentId: 'lane-0', ctx: defaultCtx, profiles, execCtx }),
+      ).rejects.toThrow();
 
       expect(onAgentComplete).toHaveBeenCalledTimes(1);
     });
@@ -1003,7 +1115,9 @@ describe('runStep (step-execution module)', () => {
       });
       const profiles = createProfilesMap(defaultProfile);
 
-      await expect(runStep(makeTask(), baseStep, 'lane-0', defaultCtx, profiles, execCtx)).rejects.toThrow();
+      await expect(
+        runStep({ task: makeTask(), step: baseStep, agentId: 'lane-0', ctx: defaultCtx, profiles, execCtx }),
+      ).rejects.toThrow();
 
       expect(activeSessions.size).toBe(0);
     });
@@ -1020,7 +1134,9 @@ describe('runStep (step-execution module)', () => {
       const execCtx = createStepExecutionContext({ signal: AbortSignal.abort() });
       const profiles = createProfilesMap(defaultProfile);
 
-      await expect(runStep(makeTask(), baseStep, 'lane-0', defaultCtx, profiles, execCtx)).rejects.toThrow();
+      await expect(
+        runStep({ task: makeTask(), step: baseStep, agentId: 'lane-0', ctx: defaultCtx, profiles, execCtx }),
+      ).rejects.toThrow();
 
       expect(dispose).toHaveBeenCalledTimes(1);
     });
@@ -1043,9 +1159,9 @@ describe('runStep (step-execution module)', () => {
       const execCtx = createStepExecutionContext();
       const profiles = createProfilesMap(defaultProfile);
 
-      await expect(runStep(makeTask(), baseStep, 'lane-0', defaultCtx, profiles, execCtx)).rejects.toThrow(
-        'Prompt failed',
-      );
+      await expect(
+        runStep({ task: makeTask(), step: baseStep, agentId: 'lane-0', ctx: defaultCtx, profiles, execCtx }),
+      ).rejects.toThrow('Prompt failed');
 
       expect(dispose).toHaveBeenCalledTimes(1);
     });
@@ -1056,9 +1172,9 @@ describe('runStep (step-execution module)', () => {
       const execCtx = createStepExecutionContext();
       const profiles = createProfilesMap(defaultProfile);
 
-      await expect(runStep(makeTask(), baseStep, 'lane-0', defaultCtx, profiles, execCtx)).rejects.toThrow(
-        'Harness creation failed',
-      );
+      await expect(
+        runStep({ task: makeTask(), step: baseStep, agentId: 'lane-0', ctx: defaultCtx, profiles, execCtx }),
+      ).rejects.toThrow('Harness creation failed');
     });
   });
 
@@ -1082,7 +1198,14 @@ describe('runStep (step-execution module)', () => {
       const execCtx = createStepExecutionContext();
       const profiles = createProfilesMap(defaultProfile);
 
-      const { trackedSession } = await runStep(makeTask(), baseStep, 'lane-0', defaultCtx, profiles, execCtx);
+      const { trackedSession } = await runStep({
+        task: makeTask(),
+        step: baseStep,
+        agentId: 'lane-0',
+        ctx: defaultCtx,
+        profiles,
+        execCtx,
+      });
 
       expect(trackedSession.session).toBe(session);
       // spawnAgent wraps the session's dispose in its own arrow function
@@ -1099,14 +1222,14 @@ describe('runStep (step-execution module)', () => {
       const execCtx = createStepExecutionContext({ sessionBaseDir: '/base' });
       const profiles = createProfilesMap(defaultProfile);
 
-      const { trackedSession } = await runStep(
-        makeTask({ id: 'task-1' }),
-        baseStep,
-        'lane-0',
-        defaultCtx,
+      const { trackedSession } = await runStep({
+        task: makeTask({ id: 'task-1' }),
+        step: baseStep,
+        agentId: 'lane-0',
+        ctx: defaultCtx,
         profiles,
         execCtx,
-      );
+      });
 
       expect(trackedSession.sessionPath).toContain('task-1');
       expect(trackedSession.sessionPath).toContain('implement');
@@ -1119,15 +1242,15 @@ describe('runStep (step-execution module)', () => {
       const execCtx = createStepExecutionContext({ sessionBaseDir: '/base' });
       const profiles = createProfilesMap(defaultProfile);
 
-      const { trackedSession } = await runStep(
-        makeTask({ id: 'task-1' }),
-        baseStep,
-        'lane-0',
-        defaultCtx,
+      const { trackedSession } = await runStep({
+        task: makeTask({ id: 'task-1' }),
+        step: baseStep,
+        agentId: 'lane-0',
+        ctx: defaultCtx,
         profiles,
         execCtx,
-        existingPath,
-      );
+        existingSessionPath: existingPath,
+      });
 
       expect(trackedSession.sessionPath).toBe(existingPath);
     });
@@ -1149,7 +1272,7 @@ describe('runStep (step-execution module)', () => {
       const execCtx = createStepExecutionContext();
       const profiles = createProfilesMap(defaultProfile);
 
-      await runStep(task, baseStep, 'lane-0', defaultCtx, profiles, execCtx);
+      await runStep({ task: task, step: baseStep, agentId: 'lane-0', ctx: defaultCtx, profiles, execCtx });
 
       const promptedText = session.prompt.mock.calls[0][0] as string;
       expect(promptedText).toContain('## Task: Build feature');
@@ -1168,7 +1291,7 @@ describe('runStep (step-execution module)', () => {
       const execCtx = createStepExecutionContext();
       const profiles = createProfilesMap(defaultProfile);
 
-      await runStep(task, baseStep, 'lane-0', defaultCtx, profiles, execCtx);
+      await runStep({ task: task, step: baseStep, agentId: 'lane-0', ctx: defaultCtx, profiles, execCtx });
 
       const promptedText = session.prompt.mock.calls[0][0] as string;
       expect(promptedText).toContain('Review Feedback History');
@@ -1196,7 +1319,7 @@ describe('runStep (step-execution module)', () => {
       });
       const profiles = createProfilesMap(defaultProfile);
 
-      await runStep(makeTask(), baseStep, 'lane-0', defaultCtx, profiles, execCtx);
+      await runStep({ task: makeTask(), step: baseStep, agentId: 'lane-0', ctx: defaultCtx, profiles, execCtx });
 
       expect(onAgentRender).not.toHaveBeenCalled();
     });
@@ -1214,7 +1337,7 @@ describe('runStep (step-execution module)', () => {
       });
       const profiles = createProfilesMap(defaultProfile);
 
-      await runStep(makeTask(), baseStep, 'lane-0', defaultCtx, profiles, execCtx);
+      await runStep({ task: makeTask(), step: baseStep, agentId: 'lane-0', ctx: defaultCtx, profiles, execCtx });
 
       expect(onAgentRender).not.toHaveBeenCalled();
     });
@@ -1235,7 +1358,7 @@ describe('runStep (step-execution module)', () => {
       });
       const profiles = createProfilesMap(defaultProfile);
 
-      await runStep(makeTask(), baseStep, 'lane-0', defaultCtx, profiles, execCtx);
+      await runStep({ task: makeTask(), step: baseStep, agentId: 'lane-0', ctx: defaultCtx, profiles, execCtx });
 
       expect(renderFn).toHaveBeenCalledTimes(1);
       // extractJsonFromText finds the JSON, JSON.parse parses it → data is the object
@@ -1267,7 +1390,7 @@ describe('runStep (step-execution module)', () => {
       });
       const profiles = createProfilesMap(defaultProfile);
 
-      await runStep(makeTask(), baseStep, 'lane-0', defaultCtx, profiles, execCtx);
+      await runStep({ task: makeTask(), step: baseStep, agentId: 'lane-0', ctx: defaultCtx, profiles, execCtx });
 
       expect(renderFn).toHaveBeenCalledTimes(1);
       // No JSON found by extractJsonFromText → data is the raw text
@@ -1294,7 +1417,7 @@ describe('runStep (step-execution module)', () => {
       });
       const profiles = createProfilesMap(defaultProfile);
 
-      await runStep(makeTask(), baseStep, 'lane-0', defaultCtx, profiles, execCtx);
+      await runStep({ task: makeTask(), step: baseStep, agentId: 'lane-0', ctx: defaultCtx, profiles, execCtx });
 
       expect(onAgentRender).not.toHaveBeenCalled();
     });
@@ -1313,7 +1436,7 @@ describe('runStep (step-execution module)', () => {
       });
       const profiles = createProfilesMap(defaultProfile);
 
-      await runStep(makeTask(), baseStep, 'lane-0', defaultCtx, profiles, execCtx);
+      await runStep({ task: makeTask(), step: baseStep, agentId: 'lane-0', ctx: defaultCtx, profiles, execCtx });
 
       expect(onAgentRender).not.toHaveBeenCalled();
     });
@@ -1335,7 +1458,7 @@ describe('runStep (step-execution module)', () => {
       });
       const profiles = createProfilesMap(defaultProfile);
 
-      await runStep(makeTask(), baseStep, 'lane-0', defaultCtx, profiles, execCtx);
+      await runStep({ task: makeTask(), step: baseStep, agentId: 'lane-0', ctx: defaultCtx, profiles, execCtx });
 
       expect(callOrder).toEqual(['render', 'complete']);
     });
@@ -1354,7 +1477,14 @@ describe('runStep (step-execution module)', () => {
       });
       const profiles = createProfilesMap(defaultProfile);
 
-      const { result } = await runStep(makeTask(), baseStep, 'lane-0', defaultCtx, profiles, execCtx);
+      const { result } = await runStep({
+        task: makeTask(),
+        step: baseStep,
+        agentId: 'lane-0',
+        ctx: defaultCtx,
+        profiles,
+        execCtx,
+      });
 
       expect(result.type).toBe('approved');
       expect(onAgentRender).toHaveBeenCalledTimes(1);
@@ -1380,14 +1510,14 @@ describe('runStep (step-execution module)', () => {
       });
       const profiles = createProfilesMap(defaultProfile, reviewerProfile);
 
-      const { result } = await runStep(
-        makeTask(),
-        { name: 'review', profileId: 'reviewer', isReadOnly: true, schema: reviewSchema },
-        'lane-0',
-        defaultCtx,
+      const { result } = await runStep({
+        task: makeTask(),
+        step: { name: 'review', profileId: 'reviewer', isReadOnly: true, schema: reviewSchema },
+        agentId: 'lane-0',
+        ctx: defaultCtx,
         profiles,
         execCtx,
-      );
+      });
 
       expect(result.type).toBe('rejected');
       expect(onAgentRender).toHaveBeenCalledTimes(1);
@@ -1407,7 +1537,14 @@ describe('runStep (step-execution module)', () => {
       });
       const profiles = createProfilesMap(defaultProfile);
 
-      await runStep(makeTask({ id: 'my-task-99' }), baseStep, 'lane-3', defaultCtx, profiles, execCtx);
+      await runStep({
+        task: makeTask({ id: 'my-task-99' }),
+        step: baseStep,
+        agentId: 'lane-3',
+        ctx: defaultCtx,
+        profiles,
+        execCtx,
+      });
 
       expect(onAgentRender).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -1454,7 +1591,7 @@ describe('runStep (step-execution module)', () => {
 
         let caught: unknown;
         try {
-          await runStep(makeTask(), baseStep, 'lane-0', defaultCtx, profiles, execCtx);
+          await runStep({ task: makeTask(), step: baseStep, agentId: 'lane-0', ctx: defaultCtx, profiles, execCtx });
         } catch (err) {
           caught = err;
         }
@@ -1479,7 +1616,7 @@ describe('runStep (step-execution module)', () => {
         const profiles = createProfilesMap(defaultProfile);
 
         try {
-          await runStep(makeTask(), baseStep, 'lane-0', defaultCtx, profiles, execCtx);
+          await runStep({ task: makeTask(), step: baseStep, agentId: 'lane-0', ctx: defaultCtx, profiles, execCtx });
         } catch {
           // Expected — timeout error
         }
@@ -1517,7 +1654,14 @@ describe('runStep (step-execution module)', () => {
         const execCtx = createStepExecutionContext(); // no stepTimeoutMs
         const profiles = createProfilesMap(defaultProfile);
 
-        const runPromise = runStep(makeTask(), baseStep, 'lane-0', defaultCtx, profiles, execCtx);
+        const runPromise = runStep({
+          task: makeTask(),
+          step: baseStep,
+          agentId: 'lane-0',
+          ctx: defaultCtx,
+          profiles,
+          execCtx,
+        });
 
         // Wait 50ms — should NOT reject (no timeout timer)
         const result = await Promise.race([
@@ -1561,7 +1705,14 @@ describe('runStep (step-execution module)', () => {
         const execCtx = createStepExecutionContext({ stepTimeoutMs: 0 });
         const profiles = createProfilesMap(defaultProfile);
 
-        const runPromise = runStep(makeTask(), baseStep, 'lane-0', defaultCtx, profiles, execCtx);
+        const runPromise = runStep({
+          task: makeTask(),
+          step: baseStep,
+          agentId: 'lane-0',
+          ctx: defaultCtx,
+          profiles,
+          execCtx,
+        });
 
         const result = await Promise.race([
           runPromise.then(() => 'resolved'),
@@ -1603,7 +1754,14 @@ describe('runStep (step-execution module)', () => {
         const execCtx = createStepExecutionContext({ stepTimeoutMs: NaN });
         const profiles = createProfilesMap(defaultProfile);
 
-        const runPromise = runStep(makeTask(), baseStep, 'lane-0', defaultCtx, profiles, execCtx);
+        const runPromise = runStep({
+          task: makeTask(),
+          step: baseStep,
+          agentId: 'lane-0',
+          ctx: defaultCtx,
+          profiles,
+          execCtx,
+        });
 
         const result = await Promise.race([
           runPromise.then(() => 'resolved'),
@@ -1645,7 +1803,14 @@ describe('runStep (step-execution module)', () => {
         const execCtx = createStepExecutionContext({ stepTimeoutMs: -100 });
         const profiles = createProfilesMap(defaultProfile);
 
-        const runPromise = runStep(makeTask(), baseStep, 'lane-0', defaultCtx, profiles, execCtx);
+        const runPromise = runStep({
+          task: makeTask(),
+          step: baseStep,
+          agentId: 'lane-0',
+          ctx: defaultCtx,
+          profiles,
+          execCtx,
+        });
 
         const result = await Promise.race([
           runPromise.then(() => 'resolved'),
@@ -1670,7 +1835,14 @@ describe('runStep (step-execution module)', () => {
       const execCtx = createStepExecutionContext({ stepTimeoutMs: 50 });
       const profiles = createProfilesMap(defaultProfile);
 
-      const { result } = await runStep(makeTask(), baseStep, 'lane-0', defaultCtx, profiles, execCtx);
+      const { result } = await runStep({
+        task: makeTask(),
+        step: baseStep,
+        agentId: 'lane-0',
+        ctx: defaultCtx,
+        profiles,
+        execCtx,
+      });
 
       // The step completed normally — timeout did not fire
       expect(result.type).toBe('approved');
@@ -1690,9 +1862,9 @@ describe('runStep (step-execution module)', () => {
       const execCtx = createStepExecutionContext({ stepTimeoutMs: 5000 });
       const profiles = createProfilesMap(defaultProfile);
 
-      await expect(runStep(makeTask(), baseStep, 'lane-0', defaultCtx, profiles, execCtx)).rejects.toThrow(
-        'LLM connection reset',
-      );
+      await expect(
+        runStep({ task: makeTask(), step: baseStep, agentId: 'lane-0', ctx: defaultCtx, profiles, execCtx }),
+      ).rejects.toThrow('LLM connection reset');
     });
 
     it(
@@ -1713,7 +1885,7 @@ describe('runStep (step-execution module)', () => {
         const profiles = createProfilesMap(defaultProfile);
 
         try {
-          await runStep(makeTask(), baseStep, 'lane-0', defaultCtx, profiles, execCtx);
+          await runStep({ task: makeTask(), step: baseStep, agentId: 'lane-0', ctx: defaultCtx, profiles, execCtx });
         } catch {
           // Expected
         }
@@ -1738,7 +1910,7 @@ describe('runStep (step-execution module)', () => {
         const profiles = createProfilesMap(defaultProfile);
 
         try {
-          await runStep(makeTask(), baseStep, 'lane-0', defaultCtx, profiles, execCtx);
+          await runStep({ task: makeTask(), step: baseStep, agentId: 'lane-0', ctx: defaultCtx, profiles, execCtx });
         } catch {
           // Expected
         }
@@ -1772,13 +1944,353 @@ describe('runStep (step-execution module)', () => {
       const execCtx = createStepExecutionContext({ stepTimeoutMs: 3000 });
       const profiles = createProfilesMap(defaultProfile, reviewerProfile);
 
-      await runStep(makeTask(), reviewStep, 'lane-0', defaultCtx, profiles, execCtx);
+      await runStep({ task: makeTask(), step: reviewStep, agentId: 'lane-0', ctx: defaultCtx, profiles, execCtx });
 
       // promptForStructured should have been called with stepTimeoutMs in its options
       expect(mockPromptForStructured).toHaveBeenCalledTimes(1);
       const callArgs = mockPromptForStructured.mock.calls[0];
       const options = callArgs[3] as Record<string, unknown>;
       expect(options).toHaveProperty('stepTimeoutMs', 3000);
+    });
+  });
+
+  // ─── Characterization: Full Parameter Wiring ───────────────────────
+  //
+  // These tests pin down how EVERY positional parameter flows from the
+  // `runStep` call site to the observable side effects (spawnAgent options,
+  // status callbacks, session paths, structured-output options, return values).
+  // They are the safety net for the positional→options-object refactor: if
+  // any parameter is accidentally swapped or dropped during destructuring,
+  // at least one assertion here will fail.
+
+  describe('characterization: full parameter wiring', () => {
+    it('threads ALL seven parameters to their correct internal destinations', async () => {
+      // ── Arrange distinct values for every parameter so a swap is detectable ──
+      const session = makeSession(() => 'wired-output');
+      setupHarnessMocks(session);
+
+      const onAgentSpawn = mock(() => {});
+      const onAgentComplete = mock(() => {});
+      const activeSessions = new Set<{ abort(): Promise<void> }>();
+
+      const task = makeTask({ id: 'task-alpha', title: 'Alpha', prompt: 'Do alpha' });
+      const step: StepDefinition = { name: 'step-beta', profileId: 'coder', isReadOnly: false };
+      const agentId = 'lane-gamma';
+      const ctx: RunStepContext = { stepIndex: 5, attempt: 2, execCount: 7 };
+      const profiles = createProfilesMap(defaultProfile);
+      const execCtx = createStepExecutionContext({
+        sessionBaseDir: '/base-delta',
+        cwd: '/cwd-epsilon',
+        phaseId: 'phase-zeta',
+        apiKeys: { openai: 'key-eta' },
+        activeSessions,
+        onStatus: { onAgentSpawn, onAgentComplete } as unknown as StepExecutionContext['onStatus'],
+      });
+
+      const { result, trackedSession } = await runStep({
+        task: task,
+        step: step,
+        agentId: agentId,
+        ctx: ctx,
+        profiles,
+        execCtx,
+      });
+
+      // mockCreateHarness captures plugin.createSession() options.
+      const harnessOpts = mockCreateHarness.mock.calls[0][0] as Record<string, unknown>;
+
+      // ── task.id flows to sessionDir naming ──
+      expect(harnessOpts.sessionDir).toContain('task-alpha');
+
+      // ── step.name flows to sessionDir naming ──
+      expect(harnessOpts.sessionDir).toContain('step-beta');
+
+      // ── ctx.execCount + ctx.stepIndex flow to sessionDir as `${execCount}-${stepIndex}` ──
+      expect(harnessOpts.sessionDir).toContain('7-5-step-beta');
+
+      // ── execCtx.sessionBaseDir flows to sessionDir prefix ──
+      expect(harnessOpts.sessionDir).toContain('/base-delta');
+
+      // ── execCtx.cwd flows to createSession opts ──
+      expect(harnessOpts.cwd).toBe('/cwd-epsilon');
+
+      // ── execCtx.apiKeys flows to createSession opts ──
+      expect(harnessOpts.apiKeys).toEqual({ openai: 'key-eta' });
+
+      // ── agentId flows to createSession opts ──
+      expect(harnessOpts.agentId).toBe('lane-gamma');
+
+      // ── profiles map: the correct profile object is selected ──
+      const profile = harnessOpts.profile as AgentProfile;
+      expect(profile.id).toBe('coder');
+
+      // ── onAgentSpawn receives task.id, agentId, phaseId, stepIndex, profileId ──
+      const spawnArgs = (onAgentSpawn.mock.calls as unknown[][])[0][0] as Record<string, unknown>;
+      expect(spawnArgs.taskId).toBe('task-alpha');
+      expect(spawnArgs.agentId).toBe('lane-gamma');
+      expect(spawnArgs.phaseId).toBe('phase-zeta');
+      expect(spawnArgs.stepIndex).toBe(5);
+      expect(spawnArgs.profile).toBe('coder');
+
+      // ── onAgentComplete receives consistent identity ──
+      const completeArgs = (onAgentComplete.mock.calls as unknown[][])[0][0] as Record<string, unknown>;
+      expect(completeArgs.agentId).toBe('lane-gamma');
+      expect(completeArgs.phaseId).toBe('phase-zeta');
+      expect(completeArgs.taskId).toBe('task-alpha');
+      expect(completeArgs.stepIndex).toBe(5);
+
+      // ── return value carries the session output + tracked session ──
+      expect(result.type).toBe('approved');
+      if (result.type === 'approved') {
+        expect(result.output).toBe('wired-output');
+      }
+      expect(trackedSession.session).toBe(session);
+    });
+
+    it('threads the optional 7th parameter (existingSessionPath) to spawnAgent as resumeSessionPath', async () => {
+      setupHarnessMocks();
+
+      const existingPath = '/resume/path/0-0-implement.jsonl';
+      const profiles = createProfilesMap(defaultProfile);
+      const execCtx = createStepExecutionContext();
+
+      await runStep({
+        task: makeTask(),
+        step: baseStep,
+        agentId: 'lane-0',
+        ctx: defaultCtx,
+        profiles,
+        execCtx,
+        existingSessionPath: existingPath,
+      });
+
+      const harnessOpts = mockCreateHarness.mock.calls[0][0] as Record<string, unknown>;
+      expect(harnessOpts.resumeSessionPath).toBe(existingPath);
+      // When existingSessionPath is provided, sessionDir should be undefined
+      expect(harnessOpts.sessionDir).toBeUndefined();
+    });
+
+    it('does NOT pass resumeSessionPath when the 7th parameter is omitted', async () => {
+      setupHarnessMocks();
+
+      const profiles = createProfilesMap(defaultProfile);
+      const execCtx = createStepExecutionContext();
+
+      await runStep({ task: makeTask(), step: baseStep, agentId: 'lane-0', ctx: defaultCtx, profiles, execCtx });
+
+      const harnessOpts = mockCreateHarness.mock.calls[0][0] as Record<string, unknown>;
+      expect(harnessOpts.resumeSessionPath).toBeUndefined();
+      expect(harnessOpts.sessionDir).toBeDefined();
+    });
+
+    it('threads ctx.attempt to promptForStructured maxRetries (attempt=0 → 3)', async () => {
+      setupHarnessMocks();
+      mockPromptForStructured.mockResolvedValue({
+        result: { approved: true },
+        attempts: 1,
+      });
+
+      const schema = z.object({ approved: z.boolean() });
+      const reviewStep: StepDefinition = {
+        name: 'review',
+        profileId: 'reviewer',
+        isReadOnly: true,
+        schema,
+      };
+
+      const profiles = createProfilesMap(defaultProfile, reviewerProfile);
+      const execCtx = createStepExecutionContext();
+
+      await runStep({
+        task: makeTask(),
+        step: reviewStep,
+        agentId: 'lane-0',
+        ctx: { stepIndex: 0, attempt: 0, execCount: 0 },
+        profiles,
+        execCtx,
+      });
+
+      const opts = mockPromptForStructured.mock.calls[0][3] as { maxRetries: number };
+      expect(opts.maxRetries).toBe(3);
+    });
+
+    it('threads ctx.attempt to promptForStructured maxRetries (attempt>0 → 1)', async () => {
+      setupHarnessMocks();
+      mockPromptForStructured.mockResolvedValue({
+        result: { approved: true },
+        attempts: 1,
+      });
+
+      const schema = z.object({ approved: z.boolean() });
+      const reviewStep: StepDefinition = {
+        name: 'review',
+        profileId: 'reviewer',
+        isReadOnly: true,
+        schema,
+      };
+
+      const profiles = createProfilesMap(defaultProfile, reviewerProfile);
+      const execCtx = createStepExecutionContext();
+
+      await runStep({
+        task: makeTask(),
+        step: reviewStep,
+        agentId: 'lane-0',
+        ctx: { stepIndex: 3, attempt: 5, execCount: 2 },
+        profiles,
+        execCtx,
+      });
+
+      const opts = mockPromptForStructured.mock.calls[0][3] as { maxRetries: number };
+      expect(opts.maxRetries).toBe(1);
+    });
+
+    it('threads step.isReadOnly=false — profile excludeTools unchanged (no write/edit)', async () => {
+      setupHarnessMocks();
+
+      const profiles = createProfilesMap(defaultProfile);
+      const execCtx = createStepExecutionContext();
+
+      await runStep({ task: makeTask(), step: baseStep, agentId: 'lane-0', ctx: defaultCtx, profiles, execCtx });
+
+      const harnessOpts = mockCreateHarness.mock.calls[0][0] as Record<string, unknown>;
+      const profile = harnessOpts.profile as AgentProfile;
+      expect(profile.excludeTools).not.toContain('write');
+      expect(profile.excludeTools).not.toContain('edit');
+    });
+
+    it('threads step.isReadOnly=true — profile excludeTools gains write/edit', async () => {
+      setupHarnessMocks();
+
+      const readOnlyStep: StepDefinition = { name: 'review', profileId: 'coder', isReadOnly: true };
+      const profiles = createProfilesMap(defaultProfile);
+      const execCtx = createStepExecutionContext();
+
+      await runStep({ task: makeTask(), step: readOnlyStep, agentId: 'lane-0', ctx: defaultCtx, profiles, execCtx });
+
+      const harnessOpts = mockCreateHarness.mock.calls[0][0] as Record<string, unknown>;
+      const profile = harnessOpts.profile as AgentProfile;
+      expect(profile.excludeTools).toContain('write');
+      expect(profile.excludeTools).toContain('edit');
+    });
+
+    it('passes skipFiles=true to buildPrompt when existingSessionPath is provided', async () => {
+      const session = makeSession(() => 'done');
+      setupHarnessMocks(session);
+
+      const task = makeTask({ files: ['src/a.ts'] });
+      const profiles = createProfilesMap(defaultProfile);
+      const execCtx = createStepExecutionContext();
+
+      await runStep({
+        task: makeTask(),
+        step: baseStep,
+        agentId: 'lane-0',
+        ctx: defaultCtx,
+        profiles,
+        execCtx,
+        existingSessionPath: '/resume/path.jsonl',
+      });
+
+      // When skipFiles is true (resume), the prompt should NOT include file contents.
+      // The task has files=['src/a.ts'] but with skipFiles the prompt omits them.
+      const promptedText = session.prompt.mock.calls[0][0] as string;
+      expect(promptedText).not.toContain('src/a.ts');
+    });
+
+    it('threads execCtx.signal to the abort TOCTOU guard', async () => {
+      const session = makeSession(() => 'should-not-run');
+      setupHarnessMocks(session);
+
+      const profiles = createProfilesMap(defaultProfile);
+      const execCtx = createStepExecutionContext({ signal: AbortSignal.abort() });
+
+      await expect(
+        runStep({ task: makeTask(), step: baseStep, agentId: 'lane-0', ctx: defaultCtx, profiles, execCtx }),
+      ).rejects.toThrow();
+
+      // Signal was aborted → prompt should never have been called
+      expect(session.prompt).not.toHaveBeenCalled();
+    });
+
+    it('threads execCtx.stepTimeoutMs to the per-prompt timeout race', async () => {
+      // Use a never-resolving session + a tiny timeout to prove the value is used
+      const session = {
+        prompt: mock(() => new Promise<void>(() => {})),
+        getLastAssistantText: mock(() => undefined),
+        getLastAssistantMessage: mock(() => undefined),
+        sessionId: 't-session',
+        subscribe: mock(() => () => {}),
+        abort: mock(async () => {}),
+        dispose: mock(() => {}),
+      };
+      mockCreateHarness.mockResolvedValue({ session, sessionId: 't-session', dispose: mock(() => {}) });
+
+      const profiles = createProfilesMap(defaultProfile);
+      const execCtx = createStepExecutionContext({ stepTimeoutMs: 10 });
+
+      let caught: unknown;
+      try {
+        await runStep({ task: makeTask(), step: baseStep, agentId: 'lane-0', ctx: defaultCtx, profiles, execCtx });
+      } catch (err) {
+        caught = err;
+      }
+
+      expect(caught).toBeDefined();
+      expect((caught as Error).message).toMatch(/timed out/i);
+    }, 5000);
+
+    it('threads agentId + phaseId + taskId to onAgentSpawn and onAgentComplete consistently', async () => {
+      setupHarnessMocks();
+
+      const onAgentSpawn = mock(() => {});
+      const onAgentComplete = mock(() => {});
+      const execCtx = createStepExecutionContext({
+        phaseId: 'my-phase',
+        onStatus: { onAgentSpawn, onAgentComplete } as unknown as StepExecutionContext['onStatus'],
+      });
+      const profiles = createProfilesMap(defaultProfile);
+
+      await runStep({
+        task: makeTask({ id: 'task-x' }),
+        step: baseStep,
+        agentId: 'lane-y',
+        ctx: defaultCtx,
+        profiles,
+        execCtx,
+      });
+
+      const spawnArgs = (onAgentSpawn.mock.calls as unknown[][])[0][0] as Record<string, unknown>;
+      const completeArgs = (onAgentComplete.mock.calls as unknown[][])[0][0] as Record<string, unknown>;
+
+      // All three identity fields must be consistent across both callbacks
+      expect(spawnArgs.agentId).toBe('lane-y');
+      expect(completeArgs.agentId).toBe('lane-y');
+      expect(spawnArgs.phaseId).toBe('my-phase');
+      expect(completeArgs.phaseId).toBe('my-phase');
+      expect(spawnArgs.taskId).toBe('task-x');
+      expect(completeArgs.taskId).toBe('task-x');
+    });
+
+    it('uses profile from the profiles map (not a default) for the step profileId', async () => {
+      const customProfile: AgentProfile = {
+        ...defaultProfile,
+        id: 'special',
+        name: 'Special',
+        model: 'gpt-5',
+      };
+      setupHarnessMocks();
+
+      const specialStep: StepDefinition = { name: 'work', profileId: 'special', isReadOnly: false };
+      const profiles = createProfilesMap(defaultProfile, customProfile);
+      const execCtx = createStepExecutionContext();
+
+      await runStep({ task: makeTask(), step: specialStep, agentId: 'lane-0', ctx: defaultCtx, profiles, execCtx });
+
+      const harnessOpts = mockCreateHarness.mock.calls[0][0] as Record<string, unknown>;
+      const profile = harnessOpts.profile as AgentProfile;
+      expect(profile.id).toBe('special');
+      expect(profile.model).toBe('gpt-5');
     });
   });
 });

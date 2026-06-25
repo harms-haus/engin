@@ -28,11 +28,9 @@
 //       createDefaultAuditor(auditLog), a structured_output event lands in the
 //       durable AuditLog with NO manual auditLog.append in the caller.
 //
-// NOTE (TDD): these tests are written against the PLANNED hook fire in runStep.
-// `hookRegistry` already exists on StepExecutionContext, so the file type-checks
-// cleanly today; the behavior tests go GREEN once runStep invokes the observe
-// hook after `structuredResult` resolves. Mocks follow the established pattern
-// in core/phase-tasks-hooks.test.ts (capture real modules → mock.module →
+// NOTE: `runStep` invokes the observe hook after `structuredResult` resolves
+// (see step-execution.ts). Mocks follow the established pattern in
+// core/phase-tasks-hooks.test.ts (capture real modules → mock.module →
 // static import).
 
 import { afterAll, beforeEach, describe, expect, it, mock } from 'bun:test';
@@ -220,14 +218,14 @@ describe('runStep — onStructuredOutput observe hook', () => {
     const captured: OnStructuredOutputArgs[] = [];
     reg.register({ onStructuredOutput: async (args) => void captured.push(args) });
 
-    const { result } = await runStep(
-      makeTask(),
-      makeReviewStep(),
-      'reviewer-agent',
-      { stepIndex: 1, attempt: 0, execCount: 1 },
-      new Map([['reviewer', reviewerProfile]]),
-      makeExecCtx({ hookRegistry: reg }),
-    );
+    const { result } = await runStep({
+      task: makeTask(),
+      step: makeReviewStep(),
+      agentId: 'reviewer-agent',
+      ctx: { stepIndex: 1, attempt: 0, execCount: 1 },
+      profiles: new Map([['reviewer', reviewerProfile]]),
+      execCtx: makeExecCtx({ hookRegistry: reg }),
+    });
 
     // The step is approved (the structured result flowed through unchanged).
     expect(result.type).toBe('approved');
@@ -248,14 +246,14 @@ describe('runStep — onStructuredOutput observe hook', () => {
     const captured: OnStructuredOutputArgs[] = [];
     reg.register({ onStructuredOutput: async (args) => void captured.push(args) });
 
-    const { result } = await runStep(
-      makeTask(),
-      makeReviewStep(),
-      'reviewer-agent',
-      { stepIndex: 0, attempt: 0, execCount: 1 },
-      new Map([['reviewer', reviewerProfile]]),
-      makeExecCtx({ hookRegistry: reg }),
-    );
+    const { result } = await runStep({
+      task: makeTask(),
+      step: makeReviewStep(),
+      agentId: 'reviewer-agent',
+      ctx: { stepIndex: 0, attempt: 0, execCount: 1 },
+      profiles: new Map([['reviewer', reviewerProfile]]),
+      execCtx: makeExecCtx({ hookRegistry: reg }),
+    });
 
     // Rejection flows through as a StepResult of type 'rejected'.
     expect(result.type).toBe('rejected');
@@ -274,14 +272,14 @@ describe('runStep — onStructuredOutput observe hook', () => {
     const captured: OnStructuredOutputArgs[] = [];
     reg.register({ onStructuredOutput: async (args) => void captured.push(args) });
 
-    await runStep(
-      makeTask({ id: 'task-shape' }),
-      makeReviewStep(),
-      'reviewer-agent',
-      { stepIndex: 3, attempt: 0, execCount: 1 },
-      new Map([['reviewer', reviewerProfile]]),
-      makeExecCtx({ hookRegistry: reg, phaseId: 'review-phase' }),
-    );
+    await runStep({
+      task: makeTask({ id: 'task-shape' }),
+      step: makeReviewStep(),
+      agentId: 'reviewer-agent',
+      ctx: { stepIndex: 3, attempt: 0, execCount: 1 },
+      profiles: new Map([['reviewer', reviewerProfile]]),
+      execCtx: makeExecCtx({ hookRegistry: reg, phaseId: 'review-phase' }),
+    });
 
     expect(captured).toHaveLength(1);
     expect(captured[0]).toEqual({
@@ -301,14 +299,14 @@ describe('runStep — onStructuredOutput observe hook', () => {
 
     const { registry, invokeObserve } = makeSpyRegistry(/* structuredSubs */ false);
 
-    const { result } = await runStep(
-      makeTask(),
-      makeReviewStep(),
-      'reviewer-agent',
-      { stepIndex: 0, attempt: 0, execCount: 1 },
-      new Map([['reviewer', reviewerProfile]]),
-      makeExecCtx({ hookRegistry: registry }),
-    );
+    const { result } = await runStep({
+      task: makeTask(),
+      step: makeReviewStep(),
+      agentId: 'reviewer-agent',
+      ctx: { stepIndex: 0, attempt: 0, execCount: 1 },
+      profiles: new Map([['reviewer', reviewerProfile]]),
+      execCtx: makeExecCtx({ hookRegistry: registry }),
+    });
 
     // Step still resolves normally (zero behavior change on the happy path).
     expect(result.type).toBe('approved');
@@ -323,14 +321,14 @@ describe('runStep — onStructuredOutput observe hook', () => {
     mockPromptForStructured.mockResolvedValue({ result: { approved: true }, attempts: 1 });
 
     // No hookRegistry on the execCtx at all.
-    const { result } = await runStep(
-      makeTask(),
-      makeReviewStep(),
-      'reviewer-agent',
-      { stepIndex: 0, attempt: 0, execCount: 1 },
-      new Map([['reviewer', reviewerProfile]]),
-      makeExecCtx(),
-    );
+    const { result } = await runStep({
+      task: makeTask(),
+      step: makeReviewStep(),
+      agentId: 'reviewer-agent',
+      ctx: { stepIndex: 0, attempt: 0, execCount: 1 },
+      profiles: new Map([['reviewer', reviewerProfile]]),
+      execCtx: makeExecCtx(),
+    });
 
     // Zero behavior change: the structured step resolves as approved.
     expect(result.type).toBe('approved');
@@ -357,14 +355,14 @@ describe('runStep — onStructuredOutput observe hook', () => {
       reg.register(createDefaultAuditor(auditLog));
 
       // NO manual auditLog.append here — the only writer is the auditor hook.
-      await runStep(
-        makeTask({ id: 'task-e2e' }),
-        makeReviewStep(),
-        'reviewer-agent',
-        { stepIndex: 2, attempt: 0, execCount: 1 },
-        new Map([['reviewer', reviewerProfile]]),
-        makeExecCtx({ hookRegistry: reg, phaseId: 'review-phase' }),
-      );
+      await runStep({
+        task: makeTask({ id: 'task-e2e' }),
+        step: makeReviewStep(),
+        agentId: 'reviewer-agent',
+        ctx: { stepIndex: 2, attempt: 0, execCount: 1 },
+        profiles: new Map([['reviewer', reviewerProfile]]),
+        execCtx: makeExecCtx({ hookRegistry: reg, phaseId: 'review-phase' }),
+      });
 
       const events = await auditLog.getEvents();
       expect(events).toHaveLength(1);
@@ -395,14 +393,14 @@ describe('runStep — onStructuredOutput observe hook', () => {
       const reg = makeRegistry();
       reg.register(createDefaultAuditor(auditLog));
 
-      await runStep(
-        makeTask({ id: 'task-query' }),
-        makeReviewStep(),
-        'reviewer-agent',
-        { stepIndex: 0, attempt: 0, execCount: 1 },
-        new Map([['reviewer', reviewerProfile]]),
-        makeExecCtx({ hookRegistry: reg }),
-      );
+      await runStep({
+        task: makeTask({ id: 'task-query' }),
+        step: makeReviewStep(),
+        agentId: 'reviewer-agent',
+        ctx: { stepIndex: 0, attempt: 0, execCount: 1 },
+        profiles: new Map([['reviewer', reviewerProfile]]),
+        execCtx: makeExecCtx({ hookRegistry: reg }),
+      });
 
       const byType = await auditLog.getEvents({ type: 'structured_output' });
       expect(byType).toHaveLength(1);
@@ -426,14 +424,14 @@ describe('runStep — non-structured steps do not fire onStructuredOutput', () =
 
     const { registry, invokeObserve } = makeSpyRegistry(/* structuredSubs */ true);
 
-    const { result } = await runStep(
-      makeTask(),
-      { name: 'implement', profileId: 'reviewer', isReadOnly: false },
-      'reviewer-agent',
-      { stepIndex: 0, attempt: 0, execCount: 1 },
-      new Map([['reviewer', reviewerProfile]]),
-      makeExecCtx({ hookRegistry: registry }),
-    );
+    const { result } = await runStep({
+      task: makeTask(),
+      step: { name: 'implement', profileId: 'reviewer', isReadOnly: false },
+      agentId: 'reviewer-agent',
+      ctx: { stepIndex: 0, attempt: 0, execCount: 1 },
+      profiles: new Map([['reviewer', reviewerProfile]]),
+      execCtx: makeExecCtx({ hookRegistry: registry }),
+    });
 
     // Free-form steps are always approved.
     expect(result.type).toBe('approved');
@@ -505,14 +503,14 @@ describe('runStep — fail-fast on empty/error non-structured replies', () => {
     );
 
     await expect(
-      runStep(
-        makeTask(),
-        nonStructuredStep,
-        'agent-1',
-        { stepIndex: 0, attempt: 0, execCount: 1 },
-        new Map([['reviewer', reviewerProfile]]),
-        makeExecCtx(),
-      ),
+      runStep({
+        task: makeTask(),
+        step: nonStructuredStep,
+        agentId: 'agent-1',
+        ctx: { stepIndex: 0, attempt: 0, execCount: 1 },
+        profiles: new Map([['reviewer', reviewerProfile]]),
+        execCtx: makeExecCtx(),
+      }),
     ).rejects.toThrow(/overloaded/i);
   });
 
@@ -528,14 +526,14 @@ describe('runStep — fail-fast on empty/error non-structured replies', () => {
     );
 
     await expect(
-      runStep(
-        makeTask(),
-        nonStructuredStep,
-        'agent-1',
-        { stepIndex: 0, attempt: 0, execCount: 1 },
-        new Map([['reviewer', reviewerProfile]]),
-        makeExecCtx(),
-      ),
+      runStep({
+        task: makeTask(),
+        step: nonStructuredStep,
+        agentId: 'agent-1',
+        ctx: { stepIndex: 0, attempt: 0, execCount: 1 },
+        profiles: new Map([['reviewer', reviewerProfile]]),
+        execCtx: makeExecCtx(),
+      }),
     ).rejects.toThrow(/no usable output/i);
   });
 
@@ -551,14 +549,14 @@ describe('runStep — fail-fast on empty/error non-structured replies', () => {
     );
 
     await expect(
-      runStep(
-        makeTask(),
-        nonStructuredStep,
-        'agent-1',
-        { stepIndex: 0, attempt: 0, execCount: 1 },
-        new Map([['reviewer', reviewerProfile]]),
-        makeExecCtx(),
-      ),
+      runStep({
+        task: makeTask(),
+        step: nonStructuredStep,
+        agentId: 'agent-1',
+        ctx: { stepIndex: 0, attempt: 0, execCount: 1 },
+        profiles: new Map([['reviewer', reviewerProfile]]),
+        execCtx: makeExecCtx(),
+      }),
     ).rejects.toThrow(/no usable output/i);
   });
 
@@ -573,14 +571,14 @@ describe('runStep — fail-fast on empty/error non-structured replies', () => {
       }),
     );
 
-    const { result } = await runStep(
-      makeTask(),
-      nonStructuredStep,
-      'agent-1',
-      { stepIndex: 0, attempt: 0, execCount: 1 },
-      new Map([['reviewer', reviewerProfile]]),
-      makeExecCtx(),
-    );
+    const { result } = await runStep({
+      task: makeTask(),
+      step: nonStructuredStep,
+      agentId: 'agent-1',
+      ctx: { stepIndex: 0, attempt: 0, execCount: 1 },
+      profiles: new Map([['reviewer', reviewerProfile]]),
+      execCtx: makeExecCtx(),
+    });
 
     expect(result.type).toBe('approved');
   });
@@ -592,14 +590,14 @@ describe('runStep — fail-fast on empty/error non-structured replies', () => {
   it('(d) session without messages array still approves (no regression)', async () => {
     mockSpawnAgent.mockResolvedValue(makeMockHandle());
 
-    const { result } = await runStep(
-      makeTask(),
-      nonStructuredStep,
-      'agent-1',
-      { stepIndex: 0, attempt: 0, execCount: 1 },
-      new Map([['reviewer', reviewerProfile]]),
-      makeExecCtx(),
-    );
+    const { result } = await runStep({
+      task: makeTask(),
+      step: nonStructuredStep,
+      agentId: 'agent-1',
+      ctx: { stepIndex: 0, attempt: 0, execCount: 1 },
+      profiles: new Map([['reviewer', reviewerProfile]]),
+      execCtx: makeExecCtx(),
+    });
 
     expect(result.type).toBe('approved');
   });

@@ -463,6 +463,8 @@ export class RunManager {
     for (const handle of handles) {
       handle.controller.abort();
     }
+    // Cancel every pending reap timer so no reaper survives shutdown.
+    this.registry.cancelAllReap();
     // Flush all stores so partial events are durable.
     for (const handle of handles) {
       try {

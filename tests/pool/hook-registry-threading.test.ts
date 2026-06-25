@@ -7,7 +7,7 @@
  *   LanePoolOptions.hookRegistry         (types.ts)
  *     -> TaskRunnerContext.hookRegistry   (built in lane-pool.ts runLane)
  *       -> StepExecutionContext.hookRegistry (built in runner-utils.ts buildExecCtx)
- *         -> runStep(execCtx)             (step-execution.ts)
+ *         -> runStep({ task: execCtx })             (step-execution.ts)
  *
  * Parallel `worktreeCwd` chain: when a LanePool creates a per-task worktree it
  * sets `worktreeCwd` on the TaskRunnerContext; `buildExecCtx` forwards it to
@@ -439,14 +439,14 @@ describe('runStep beforeStepPrompt seam', () => {
     const registry = makeFakeRegistry({ hasSubscribers: true, returnValue: 'TRANSFORMED-PROMPT' });
     const execCtx = createStepExecutionContext({ hookRegistry: registry });
 
-    await runStep(
-      makeTask({ prompt: 'original' }),
-      baseStep,
-      'lane-0',
-      defaultCtx,
-      createProfilesMap(defaultProfile),
+    await runStep({
+      task: makeTask({ prompt: 'original' }),
+      step: baseStep,
+      agentId: 'lane-0',
+      ctx: defaultCtx,
+      profiles: createProfilesMap(defaultProfile),
       execCtx,
-    );
+    });
 
     expect(registry.invokePipeline).toHaveBeenCalledTimes(1);
     // buildPrompt must be bypassed entirely when the seam fires.
@@ -460,7 +460,14 @@ describe('runStep beforeStepPrompt seam', () => {
     const registry = makeFakeRegistry({ hasSubscribers: true });
     const execCtx = createStepExecutionContext({ hookRegistry: registry });
 
-    await runStep(makeTask(), baseStep, 'lane-0', defaultCtx, createProfilesMap(defaultProfile), execCtx);
+    await runStep({
+      task: makeTask(),
+      step: baseStep,
+      agentId: 'lane-0',
+      ctx: defaultCtx,
+      profiles: createProfilesMap(defaultProfile),
+      execCtx,
+    });
 
     expect(mockBuildPrompt).not.toHaveBeenCalled();
   });
@@ -470,7 +477,14 @@ describe('runStep beforeStepPrompt seam', () => {
     const registry = makeFakeRegistry({ hasSubscribers: false });
     const execCtx = createStepExecutionContext({ hookRegistry: registry });
 
-    await runStep(makeTask(), baseStep, 'lane-0', defaultCtx, createProfilesMap(defaultProfile), execCtx);
+    await runStep({
+      task: makeTask(),
+      step: baseStep,
+      agentId: 'lane-0',
+      ctx: defaultCtx,
+      profiles: createProfilesMap(defaultProfile),
+      execCtx,
+    });
 
     expect(registry.invokePipeline).not.toHaveBeenCalled();
     expect(mockBuildPrompt).toHaveBeenCalledTimes(1);
@@ -480,7 +494,14 @@ describe('runStep beforeStepPrompt seam', () => {
     setupHarnessMocks();
     const execCtx = createStepExecutionContext(); // no hookRegistry
 
-    await runStep(makeTask(), baseStep, 'lane-0', defaultCtx, createProfilesMap(defaultProfile), execCtx);
+    await runStep({
+      task: makeTask(),
+      step: baseStep,
+      agentId: 'lane-0',
+      ctx: defaultCtx,
+      profiles: createProfilesMap(defaultProfile),
+      execCtx,
+    });
 
     expect(mockBuildPrompt).toHaveBeenCalledTimes(1);
   });
@@ -491,7 +512,14 @@ describe('runStep beforeStepPrompt seam', () => {
     const task = makeTask({ prompt: 'do the thing' });
     const execCtx = createStepExecutionContext({ hookRegistry: registry });
 
-    await runStep(task, baseStep, 'lane-0', defaultCtx, createProfilesMap(defaultProfile), execCtx);
+    await runStep({
+      task: task,
+      step: baseStep,
+      agentId: 'lane-0',
+      ctx: defaultCtx,
+      profiles: createProfilesMap(defaultProfile),
+      execCtx,
+    });
 
     expect(registry.invokePipeline).toHaveBeenCalledTimes(1);
     const initialValue = (registry.invokePipeline.mock.calls[0] as unknown[])[1];
@@ -503,7 +531,14 @@ describe('runStep beforeStepPrompt seam', () => {
     const registry = makeFakeRegistry({ hasSubscribers: true });
     const execCtx = createStepExecutionContext({ hookRegistry: registry });
 
-    await runStep(makeTask(), baseStep, 'lane-0', defaultCtx, createProfilesMap(defaultProfile), execCtx);
+    await runStep({
+      task: makeTask(),
+      step: baseStep,
+      agentId: 'lane-0',
+      ctx: defaultCtx,
+      profiles: createProfilesMap(defaultProfile),
+      execCtx,
+    });
 
     const name = (registry.invokePipeline.mock.calls[0] as unknown[])[0];
     expect(name).toBe('beforeStepPrompt');
@@ -519,7 +554,14 @@ describe('runStep beforeStepPrompt seam', () => {
       worktreeCwd: '/wt/task-1',
     });
 
-    await runStep(task, baseStep, 'lane-0', defaultCtx, createProfilesMap(defaultProfile), execCtx);
+    await runStep({
+      task: task,
+      step: baseStep,
+      agentId: 'lane-0',
+      ctx: defaultCtx,
+      profiles: createProfilesMap(defaultProfile),
+      execCtx,
+    });
 
     const args = (registry.invokePipeline.mock.calls[0] as unknown[])[2] as Record<string, unknown>;
     expect(args.task).toBe(task);
@@ -534,7 +576,14 @@ describe('runStep beforeStepPrompt seam', () => {
     const registry = makeFakeRegistry({ hasSubscribers: true });
     const execCtx = createStepExecutionContext({ hookRegistry: registry });
 
-    await runStep(makeTask(), baseStep, 'lane-0', defaultCtx, createProfilesMap(defaultProfile), execCtx);
+    await runStep({
+      task: makeTask(),
+      step: baseStep,
+      agentId: 'lane-0',
+      ctx: defaultCtx,
+      profiles: createProfilesMap(defaultProfile),
+      execCtx,
+    });
 
     const args = (registry.invokePipeline.mock.calls[0] as unknown[])[2] as Record<string, unknown>;
     expect(args.worktreeCwd).toBeUndefined();
@@ -554,14 +603,14 @@ describe('runStep beforeStepPrompt seam', () => {
       schema: z.object({ approved: z.boolean() }),
     };
 
-    await runStep(
-      makeTask(),
-      reviewStep,
-      'lane-0',
-      defaultCtx,
-      createProfilesMap(defaultProfile, reviewerProfile),
+    await runStep({
+      task: makeTask(),
+      step: reviewStep,
+      agentId: 'lane-0',
+      ctx: defaultCtx,
+      profiles: createProfilesMap(defaultProfile, reviewerProfile),
       execCtx,
-    );
+    });
 
     expect(mockBuildPrompt).not.toHaveBeenCalled();
     expect(mockPromptForStructured).toHaveBeenCalledTimes(1);
@@ -582,14 +631,14 @@ describe('runStep beforeStepPrompt seam', () => {
       schema: z.object({ approved: z.boolean() }),
     };
 
-    await runStep(
-      makeTask(),
-      reviewStep,
-      'lane-0',
-      defaultCtx,
-      createProfilesMap(defaultProfile, reviewerProfile),
+    await runStep({
+      task: makeTask(),
+      step: reviewStep,
+      agentId: 'lane-0',
+      ctx: defaultCtx,
+      profiles: createProfilesMap(defaultProfile, reviewerProfile),
       execCtx,
-    );
+    });
 
     expect(registry.invokePipeline).not.toHaveBeenCalled();
     expect(mockBuildPrompt).toHaveBeenCalledTimes(1);
@@ -604,7 +653,14 @@ describe('runStep beforeStepPrompt seam', () => {
     const registry = makeFakeRegistry({ hasSubscribers: true, returnValue: 'AWAITED-PROMPT' });
     const execCtx = createStepExecutionContext({ hookRegistry: registry });
 
-    await runStep(makeTask(), baseStep, 'lane-0', defaultCtx, createProfilesMap(defaultProfile), execCtx);
+    await runStep({
+      task: makeTask(),
+      step: baseStep,
+      agentId: 'lane-0',
+      ctx: defaultCtx,
+      profiles: createProfilesMap(defaultProfile),
+      execCtx,
+    });
 
     // session.prompt must receive the resolved string, not a Promise object.
     expect(session.prompt).toHaveBeenCalledWith('AWAITED-PROMPT');
@@ -845,14 +901,14 @@ describe('regression: optional hookRegistry preserves existing behavior', () => 
     const session = makeSession(() => 'done');
     setupHarnessMocks(session);
 
-    await runStep(
-      makeTask(),
-      baseStep,
-      'lane-0',
-      defaultCtx,
-      createProfilesMap(defaultProfile),
-      createStepExecutionContext(),
-    );
+    await runStep({
+      task: makeTask(),
+      step: baseStep,
+      agentId: 'lane-0',
+      ctx: defaultCtx,
+      profiles: createProfilesMap(defaultProfile),
+      execCtx: createStepExecutionContext(),
+    });
 
     expect(mockBuildPrompt).toHaveBeenCalledTimes(1);
     expect(session.prompt).toHaveBeenCalledTimes(1);

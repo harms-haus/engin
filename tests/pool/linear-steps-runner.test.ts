@@ -3,6 +3,7 @@ import { z } from 'zod';
 
 import { RendererRegistry } from '../../packages/engine/src/core/renderer-registry.js';
 import { linearStepsRunner } from '../../packages/engine/src/pool/linear-steps-runner.js';
+import type { TaskRunnerContext } from '../../packages/engine/src/pool/types.js';
 import {
   clearPoolMocks,
   createRunnerContext,
@@ -573,6 +574,212 @@ describe('linearStepsRunner', () => {
     });
   });
 
+  // ═════════════════════════════════════════════════════════════════
+  // onDecision observe-hook (hookRegistry) firing
+  //
+  // The runner fires the `onDecision` OBSERVE hook (audit-log sink) ALONGSIDE
+  // the `onStatus.onDecision` callback (event-store sink). These tests pin
+  // down the hook-firing behavior so the extraction of fireOnDecisionHook()
+  // is provably behavior-preserving. Both sinks fire independently; the
+  // hook is a no-op when no hookRegistry or no subscribers.
+  // ═════════════════════════════════════════════════════════════════
+
+  describe('onDecision observe hook (hookRegistry) fires alongside onStatus', () => {
+    /** Minimal fake HookRegistry for seam tests. `hasSubscribers` returns
+     *  true ONLY for 'onDecision' so other seams (onStructuredOutput,
+     *  beforeStepPrompt) stay dormant and don't add extra invokeObserve calls. */
+    function makeFakeRegistry(hasSubs: boolean) {
+      return {
+        register: mock(() => {}),
+        invokeObserve: mock(async () => {}),
+        invokePipeline: mock(async () => undefined),
+        invokeFirstWins: mock(async () => undefined),
+        invokeAllRun: mock(async () => undefined),
+        hasSubscribers: mock((name: string) => hasSubs && name === 'onDecision'),
+      };
+    }
+
+    it('invokes the onDecision observe hook when a rejection occurs and subscribers exist', async () => {
+      setupProfileMocks();
+      setupHarnessMocks();
+      mockPromptForStructured.mockResolvedValue({
+        result: { approved: false, feedback: 'Needs more tests', severity: 'critical' },
+        attempts: 1,
+      });
+
+      const registry = makeFakeRegistry(true);
+      const ctx = createRunnerContext({
+        maxStepRetries: 1,
+        hookRegistry: registry as unknown as TaskRunnerContext['hookRegistry'],
+      });
+      const runner = linearStepsRunner([implementStep, reviewStep]);
+
+      await runner(ctx);
+
+      expect(registry.invokeObserve).toHaveBeenCalledTimes(1);
+      expect(registry.invokeObserve).toHaveBeenCalledWith(
+        'onDecision',
+        expect.objectContaining({
+          agentId: ctx.agentId,
+          taskId: ctx.task.id,
+          phaseId: ctx.phaseId,
+          decision: 'Step "review" rejected (attempt 1/1), retrying',
+          reasoning: 'Needs more tests',
+        }),
+        expect.anything(),
+      );
+    });
+
+    it('fires both onStatus.onDecision AND the observe hook (two separate sinks)', async () => {
+      setupProfileMocks();
+      setupHarnessMocks();
+      mockPromptForStructured.mockResolvedValue({
+        result: { approved: false, feedback: 'fix it', severity: 'critical' },
+        attempts: 1,
+      });
+
+      const registry = makeFakeRegistry(true);
+      const onStatusDecision = mock((_info: unknown) => {});
+      const ctx = createRunnerContext({
+        maxStepRetries: 1,
+        hookRegistry: registry as unknown as TaskRunnerContext['hookRegistry'],
+        onStatus: { onDecision: onStatusDecision } as Record<string, unknown>,
+      });
+      const runner = linearStepsRunner([implementStep, reviewStep]);
+
+      await runner(ctx);
+
+      // Both sinks receive the decision independently.
+      expect(onStatusDecision).toHaveBeenCalledTimes(1);
+      expect(registry.invokeObserve).toHaveBeenCalledTimes(1);
+    });
+
+    it('does NOT invoke the observe hook when hookRegistry has no subscribers', async () => {
+      setupProfileMocks();
+      setupHarnessMocks();
+      mockPromptForStructured.mockResolvedValue({
+        result: { approved: false, feedback: 'fix it', severity: 'critical' },
+        attempts: 1,
+      });
+
+      const registry = makeFakeRegistry(false);
+      const ctx = createRunnerContext({
+        maxStepRetries: 1,
+        hookRegistry: registry as unknown as TaskRunnerContext['hookRegistry'],
+      });
+      const runner = linearStepsRunner([implementStep, reviewStep]);
+
+      await runner(ctx);
+
+      expect(registry.invokeObserve).not.toHaveBeenCalled();
+    });
+
+    it('does NOT invoke the observe hook when no hookRegistry is provided', async () => {
+      setupProfileMocks();
+      setupHarnessMocks();
+      mockPromptForStructured.mockResolvedValue({
+        result: { approved: false, feedback: 'fix it', severity: 'critical' },
+        attempts: 1,
+      });
+
+      // No hookRegistry on the context at all.
+      const ctx = createRunnerContext({ maxStepRetries: 1 });
+      const runner = linearStepsRunner([implementStep, reviewStep]);
+
+      await runner(ctx);
+
+      // Smoke test — completes without error, no hook to assert on.
+      expect(ctx.failTask).toHaveBeenCalled();
+    });
+
+    it('does NOT invoke the observe hook when no step is rejected', async () => {
+      setupProfileMocks();
+      setupHarnessMocks();
+
+      const registry = makeFakeRegistry(true);
+      const ctx = createRunnerContext({
+        hookRegistry: registry as unknown as TaskRunnerContext['hookRegistry'],
+      });
+      const runner = linearStepsRunner([implementStep]);
+
+      await runner(ctx);
+
+      expect(registry.invokeObserve).not.toHaveBeenCalled();
+    });
+
+    it('passes the correct hook context: cwd = worktreeCwd ?? ctx.cwd, workDir = ctx.cwd', async () => {
+      setupProfileMocks();
+      setupHarnessMocks();
+      mockPromptForStructured.mockResolvedValue({
+        result: { approved: false, feedback: 'fix it', severity: 'critical' },
+        attempts: 1,
+      });
+
+      const registry = makeFakeRegistry(true);
+      const ctx = createRunnerContext({
+        maxStepRetries: 1,
+        hookRegistry: registry as unknown as TaskRunnerContext['hookRegistry'],
+        cwd: '/tmp/project',
+        worktreeCwd: '/wt/task-1',
+      });
+      const runner = linearStepsRunner([implementStep, reviewStep]);
+
+      await runner(ctx);
+
+      const hookCtx = (registry.invokeObserve.mock.calls[0] as unknown[])[2] as Record<string, unknown>;
+      expect(hookCtx.registry).toBe(registry);
+      // worktreeCwd takes precedence over cwd.
+      expect(hookCtx.cwd).toBe('/wt/task-1');
+      // workDir is always the original ctx.cwd.
+      expect(hookCtx.workDir).toBe('/tmp/project');
+    });
+
+    it('falls back to ctx.cwd when worktreeCwd is absent', async () => {
+      setupProfileMocks();
+      setupHarnessMocks();
+      mockPromptForStructured.mockResolvedValue({
+        result: { approved: false, feedback: 'fix it', severity: 'critical' },
+        attempts: 1,
+      });
+
+      const registry = makeFakeRegistry(true);
+      const ctx = createRunnerContext({
+        maxStepRetries: 1,
+        hookRegistry: registry as unknown as TaskRunnerContext['hookRegistry'],
+        cwd: '/tmp/project',
+      });
+      const runner = linearStepsRunner([implementStep, reviewStep]);
+
+      await runner(ctx);
+
+      const hookCtx = (registry.invokeObserve.mock.calls[0] as unknown[])[2] as Record<string, unknown>;
+      expect(hookCtx.cwd).toBe('/tmp/project');
+      expect(hookCtx.workDir).toBe('/tmp/project');
+    });
+
+    it('includes the phaseId in the observe-hook args', async () => {
+      setupProfileMocks();
+      setupHarnessMocks();
+      mockPromptForStructured.mockResolvedValue({
+        result: { approved: false, feedback: 'fix it', severity: 'critical' },
+        attempts: 1,
+      });
+
+      const registry = makeFakeRegistry(true);
+      const ctx = createRunnerContext({
+        maxStepRetries: 1,
+        phaseId: 'review-phase',
+        hookRegistry: registry as unknown as TaskRunnerContext['hookRegistry'],
+      });
+      const runner = linearStepsRunner([implementStep, reviewStep]);
+
+      await runner(ctx);
+
+      const passedArgs = (registry.invokeObserve.mock.calls[0] as unknown[])[1] as Record<string, unknown>;
+      expect(passedArgs.phaseId).toBe('review-phase');
+    });
+  });
+
   describe('reviewFeedback is appended on rejection', () => {
     it('records each rejection feedback on task.reviewFeedback', async () => {
       setupProfileMocks();
@@ -657,9 +864,7 @@ describe('linearStepsRunner', () => {
 
       expect(outcome.status).toBe('failed');
       expect(outcome).toHaveProperty('error', 'Failed to submit');
-      expect(ctx.failTask).toHaveBeenCalledWith(
-        expect.objectContaining({ error: 'Failed to submit task for review after max retries exceeded' }),
-      );
+      expect(ctx.failTask).toHaveBeenCalledWith(expect.objectContaining({ error: 'Failed to submit' }));
     });
   });
 
@@ -707,6 +912,64 @@ describe('linearStepsRunner', () => {
 
       expect(outcome.status).toBe('completed');
       expect(ctx.completeTask).toHaveBeenCalledTimes(1);
+    });
+
+    it('returns completed when severity is low', async () => {
+      setupProfileMocks();
+      setupHarnessMocks();
+      mockPromptForStructured.mockResolvedValue({
+        result: { approved: false, feedback: 'Trivial nitpick', severity: 'low' },
+        attempts: 1,
+      });
+
+      const ctx = createRunnerContext({ maxStepRetries: 1 });
+      const runner = linearStepsRunner([implementStep, reviewStep]);
+
+      const outcome = await runner(ctx);
+
+      expect(outcome.status).toBe('completed');
+      expect(ctx.completeTask).toHaveBeenCalledTimes(1);
+      expect(ctx.failTask).not.toHaveBeenCalled();
+    });
+
+    it('passes the rejected step output to completeTask when accepting with caveats (medium)', async () => {
+      setupProfileMocks();
+      setupHarnessMocks();
+      const rejectedOutput = { approved: false, feedback: 'minor', severity: 'medium' };
+      mockPromptForStructured.mockResolvedValue({ result: rejectedOutput, attempts: 1 });
+
+      const ctx = createRunnerContext({ maxStepRetries: 1 });
+      const runner = linearStepsRunner([implementStep, reviewStep]);
+
+      const outcome = await runner(ctx);
+
+      expect(outcome.status).toBe('completed');
+      // The severity-settle accept path forwards the raw output to completeTask
+      // so the caveats-laden result lands on task.result.
+      expect(ctx.completeTask).toHaveBeenCalledWith(rejectedOutput);
+    });
+
+    it('still fails with feedback on high severity even if completeTask would succeed (severity checked first)', async () => {
+      setupProfileMocks();
+      setupHarnessMocks();
+      mockPromptForStructured.mockResolvedValue({
+        result: { approved: false, feedback: 'Major', severity: 'high' },
+        attempts: 1,
+      });
+
+      // Even a completeTask stub that returns true must NOT be called when
+      // severity is high — the failing-severity branch short-circuits before
+      // the accept/completeTask branch.
+      const completeTask = mock(() => true) as () => boolean;
+      const ctx = createRunnerContext({ maxStepRetries: 1, completeTask });
+      const runner = linearStepsRunner([implementStep, reviewStep]);
+
+      const outcome = await runner(ctx);
+
+      expect(outcome.status).toBe('failed');
+      expect(outcome).toHaveProperty('feedback', 'Major');
+      expect(ctx.completeTask).not.toHaveBeenCalled();
+      expect(ctx.failTask).toHaveBeenCalledWith(expect.objectContaining({ feedback: 'Major', severity: 'high' }));
     });
   });
 

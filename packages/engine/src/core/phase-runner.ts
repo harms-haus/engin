@@ -39,6 +39,7 @@ import type {
   PhaseTransition,
   ShouldRetryPhaseArgs,
 } from '../hooks/types.js';
+import { DEFAULT_MAX_ROUNDS } from '../pool/constants.js';
 import type { WorkflowStatusTracker } from '../tracking/workflow-status.js';
 
 /**
@@ -95,12 +96,6 @@ export interface PhaseRunnerOptions {
 }
 
 /**
- * The historical ≤3-rounds bound — the default `maxRounds` when the caller
- * omits `PhaseRunnerOptions.maxRounds`. Reproduces the scouting retry limit
- * previously hard-coded in `spir.ts`.
- */
-const DEFAULT_MAX_ROUNDS = 3;
-
 /**
  * The phase orchestration layer.
  *

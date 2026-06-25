@@ -42,9 +42,9 @@ import {
   deleteBranchForce,
   getCurrentBranch,
   getMainBranch,
-  populateWorktree,
   removeWorktree,
   resetHard,
+  restoreSavedBranch,
   squashMergeBranch,
   stageAll,
   stageFiles,
@@ -54,6 +54,7 @@ import type { Task, WorktreeInfo } from './types.js';
 import { runTooledFixup } from './worktree-fixup.js';
 import { resolveConflictsWithAgent } from './worktree-lifecycle.js';
 import { commitWorktreeChanges } from './worktree-operations.js';
+import { populateWorktree } from './worktree-populate.js';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -221,10 +222,8 @@ export class WorktreeManager {
   private safeResetMainWorktree(): void {
     try {
       abortMerge(this.mainWorktreePath);
-    } catch (err) {
-      // No merge in progress (the squash succeeded without leaving MERGE_HEAD)
-      // — `git merge --abort` then errors. Expected; not warned.
-      void err;
+    } catch {
+      // No merge in progress — git merge --abort then errors. Expected; not warned.
     }
     try {
       resetHard(this.mainWorktreePath);
@@ -716,10 +715,29 @@ export class WorktreeManager {
   }
 
   /**
-   * Sweeps orphaned worktree metadata via `git worktree prune`. Exposed so
-   * callers can prune without going through {@link setupMainWorktree}.
+   * Cull a task worktree after a failed fix loop, unless the task should be
+   * isolated (preserved for inspection). Best-effort: cull failures are
+   * swallowed + warned so cleanup never masks the original failure.
+   *
+   * `preserve=true` short-circuits before any git work — the worktree is
+   * left in place for human inspection (e.g. a security-sensitive failure).
+   * `preserve=false` delegates to {@link cullTaskWorktree}.
    */
-  async prune(): Promise<void> {
+  async cullOrPreserve(taskId: string, preserve: boolean): Promise<void> {
+    if (preserve) return;
+    try {
+      await this.cullTaskWorktree(taskId);
+    } catch (err) {
+      console.warn(
+        `[WorktreeManager] Failed to cull worktree for task ${taskId}: ${err instanceof Error ? err.message : err}`,
+      );
+    }
+  }
+
+  /**
+   * Sweeps orphaned git worktree metadata via `git worktree prune`.
+   */
+  async gitWorktreePrune(): Promise<void> {
     worktreePrune(this.repoRoot);
   }
 
@@ -933,20 +951,5 @@ export class WorktreeManager {
       ? this.mainBranch.slice(ENGIN_PREFIX.length)
       : this.mainBranch;
     return `${ENGIN_PREFIX}${mainSlug}${TASK_SEPARATOR}${taskId}`;
-  }
-}
-
-// ─── Internal Helpers ───────────────────────────────────────────────────────
-
-/**
- * Restores the previously-checked-out branch. Errors are swallowed because
- * the repo may be in a detached-HEAD state where the symbolic ref is gone.
- * Mirrors the private helper of the same name in worktree-operations.ts.
- */
-function restoreSavedBranch(repoRoot: string, savedBranch: string): void {
-  try {
-    checkoutBranch(repoRoot, savedBranch);
-  } catch {
-    // Ignore — may be detached HEAD.
   }
 }

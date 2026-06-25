@@ -56,7 +56,7 @@ import type {
 } from '../hooks/types.js';
 import { WorkflowStatusTracker } from '../tracking/workflow-status.js';
 import type { PhaseDefinition, PhaseRunnerOptions } from './phase-runner.js';
-import { createDefaultPhaseRunner, PhaseRunner } from './phase-runner.js';
+import { PhaseRunner } from './phase-runner.js';
 
 // ── Fixture helpers ─────────────────────────────────────────────────────────
 
@@ -319,6 +319,49 @@ describe('PhaseRunner — shouldRetryPhase (≤3 rounds)', () => {
     // Round strictly increases across retries (1, 2, 3) — the documented
     // "≤3 rounds" semantics.
     expect(rounds).toEqual([1, 2, 3]);
+  });
+
+  it('default maxRounds is exactly 3 — pinning the shared DEFAULT_MAX_ROUNDS value', async () => {
+    // CHARACTERIZATION: after the consolidation refactor, the PhaseRunner
+    // default MUST remain 3 (the shared DEFAULT_MAX_ROUNDS constant). An
+    // always-retry hook with no explicit maxRounds option should cap
+    // execution at exactly 3 runs — proving the default is the historical
+    // magic number 3, not a local copy that could drift.
+    const expectedRounds = 3;
+    let runs = 0;
+    const phase = makePhase({
+      id: 'ceiling',
+      run: async () => {
+        runs++;
+        return runs;
+      },
+    });
+    const registry = createHookRegistry();
+    registry.register({ shouldRetryPhase: () => true });
+
+    // NO explicit maxRounds → defaults to the shared constant.
+    await new PhaseRunner(makeOptions({ phases: [phase], hookRegistry: registry })).run();
+
+    expect(runs).toBe(expectedRounds);
+  });
+
+  it('maxRounds=1 means exactly one run (no retries) even when the hook always asks to retry', async () => {
+    // Boundary: maxRounds=1 is the minimum non-zero ceiling — the phase runs
+    // once and the retry loop never re-enters. Pins the lower bound so a
+    // refactor of the default does not alter the single-round semantics.
+    let runs = 0;
+    const phase = makePhase({
+      id: 'once-only',
+      run: async () => {
+        runs++;
+      },
+    });
+    const registry = createHookRegistry();
+    registry.register({ shouldRetryPhase: () => true });
+
+    await new PhaseRunner(makeOptions({ phases: [phase], hookRegistry: registry, maxRounds: 1 })).run();
+
+    expect(runs).toBe(1);
   });
 });
 
@@ -882,44 +925,5 @@ describe('PhaseRunner — hook invocation', () => {
     expect(captured?.result).toEqual({ value: 7 });
     expect(typeof captured?.durationMs).toBe('number');
     expect(captured?.durationMs).toBeGreaterThanOrEqual(0);
-  });
-});
-
-// ── createDefaultPhaseRunner factory ────────────────────────────────────────
-
-describe('createDefaultPhaseRunner', () => {
-  it('returns a PhaseRunner instance', () => {
-    const runner = createDefaultPhaseRunner(makeOptions({ phases: [makePhase({ id: 'A' })] }));
-    expect(runner).toBeInstanceOf(PhaseRunner);
-  });
-
-  it('runs phases with the default (zero-config) behaviors', async () => {
-    const order: string[] = [];
-    const phases: PhaseDefinition[] = [
-      makePhase({
-        id: 'A',
-        run: async () => {
-          order.push('A');
-        },
-      }),
-      makePhase({
-        id: 'B',
-        run: async () => {
-          order.push('B');
-        },
-      }),
-      makePhase({
-        id: 'C',
-        run: async () => {
-          order.push('C');
-        },
-      }),
-    ];
-
-    await createDefaultPhaseRunner(makeOptions({ phases })).run();
-
-    expect(order).toEqual(['A', 'B', 'C']);
-    expect(tracker.currentPhaseId).toBe('C');
-    expect(tracker.completedPhaseIds).toEqual(['A', 'B']);
   });
 });

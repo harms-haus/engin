@@ -1,28 +1,8 @@
-// ─── fixLoop primitive + default isolation/lane-error hooks ────────────────
-//
-// `fixLoop` (§5 item #7) collapses the ~400-line final-review fixer loop into
-// a hook-driven primitive. It composes with `runStep` (from step-execution.ts)
-// for BOTH the review and fixer steps — it does NOT re-implement agent
-// spawning or session management.
-//
-// Loop contract:
-//   1. Run the review step via `runStep`. If approved → { status: 'completed' }.
-//   2. If rejected, enter the fix loop (up to `maxRounds`, default 3):
-//        a. BEFORE each fixer attempt, invoke `shouldIsolate` (first-wins).
-//           If it returns true → ISOLATE: do NOT run the fixer, preserve the
-//           worktree (do not cull it), and return { status: 'failed' }.
-//        b. Run each fixer step via `runStep` (in order). If a fixer step is
-//           rejected or throws → fire `onLaneError` (observe) with the error.
-//        c. Re-run the review. If approved → { status: 'completed' }.
-//   3. If maxRounds is exhausted → { status: 'failed' }, and (when a worktree
-//      is in use) CULL the task worktree via
-//      `worktreeManager.cullTaskWorktree(task.id)` — UNLESS `shouldIsolate`
-//      returned true at the point of failure, in which case the worktree is
-//      PRESERVED (cull is skipped).
-//
-// `defaultOnLaneError` (ObserveHook<OnLaneErrorArgs>) logs the error via
-// `console.warn`. `defaultShouldIsolate` (FirstWinsHook<boolean | undefined,
-// ShouldIsolateArgs>) returns `false` (don't isolate — cull by default).
+// fixLoop: hook-driven review → fix → re-review loop. Composes with `runStep`
+// (from step-execution.ts) for both the review and fixer steps — it does NOT
+// re-implement agent spawning or session management.
+// Also exports `defaultOnLaneError` (logs via console.warn) and
+// `defaultShouldIsolate` (returns false — cull by default).
 
 import type { AgentProfile, Task } from '../core/types.js';
 import { safeErrorMessage } from '../core/utils.js';
@@ -34,6 +14,7 @@ import type {
   OnLaneErrorArgs,
   ShouldIsolateArgs,
 } from '../hooks/types.js';
+import { DEFAULT_MAX_ROUNDS } from './constants.js';
 import type { StepExecutionContext } from './step-execution.js';
 import { runStep } from './step-execution.js';
 import type { StepDefinition, StepResult, TaskOutcome } from './types.js';
@@ -112,9 +93,6 @@ export const defaultShouldIsolate: FirstWinsHook<boolean | undefined, ShouldIsol
 
 // ─── fixLoop ──────────────────────────────────────────────────────────────
 
-/** Default cap on fixer rounds when `FixLoopOptions.maxRounds` is omitted. */
-const DEFAULT_MAX_ROUNDS = 3;
-
 /**
  * Run the review → fix → re-review loop until the review approves or
  * `maxRounds` is exhausted.
@@ -128,11 +106,14 @@ const DEFAULT_MAX_ROUNDS = 3;
  *
  * Worktree handling:
  *  - On exhaustion with `shouldIsolate` returning false (the default), the
- *    task worktree is CULLED via `worktreeManager.cullTaskWorktree(task.id)`
- *    when a `worktreeManager` is present (best-effort; cull failures are
- *    swallowed + warned so cleanup never masks the original failure).
+ *    task worktree is CULLED via
+ *    `worktreeManager.cullOrPreserve(task.id, false)` when a `worktreeManager`
+ *    is present. The best-effort cull + error-swallowing discipline lives in
+ *    `WorktreeManager` (separation of concerns — `fixLoop` only decides
+ *    isolate-vs-cull, it does not orchestrate the cleanup).
  *  - On isolation (`shouldIsolate` returns true), the worktree is PRESERVED
- *    (cull is skipped) so a human can inspect the failed branch.
+ *    via `worktreeManager.cullOrPreserve(task.id, true)` (cull is skipped) so
+ *    a human can inspect the failed branch.
  *  - When no `worktreeManager` is configured, the loop is a no-op for culling
  *    (nothing to cull, nothing to preserve).
  *
@@ -171,9 +152,7 @@ export async function fixLoop(options: FixLoopOptions): Promise<TaskOutcome> {
 
   /** Build the HookContext passed to every hook invocation. */
   const buildHookCtx = (): HookContext => {
-    // Callers are inside `if (!hookRegistry) return` guards, so the registry
-    // is always defined here. The throw makes that precondition explicit and
-    // narrows the type without a non-null assertion.
+    // narrows the type — callers guard on hookRegistry before calling.
     if (!hookRegistry) throw new Error('buildHookCtx called without a hookRegistry');
     return {
       registry: hookRegistry,
@@ -227,18 +206,18 @@ export async function fixLoop(options: FixLoopOptions): Promise<TaskOutcome> {
 
   /** Run a single step via `runStep` and dispose its session. */
   const runOnce = async (step: StepDefinition, stepIndex: number): Promise<StepResult> => {
-    const { result, trackedSession } = await runStep(
+    const { result, trackedSession } = await runStep({
       task,
       step,
-      laneId,
+      agentId: laneId,
       // `attempt` is 0 — the fixLoop does not implement per-step retry (the
       // surrounding LanePool / TaskRunner handles retries via maxStepRetries).
       // `execCount` mirrors the stepIndex so the persisted session directory
       // is unique per step position; the value is opaque to the loop logic.
-      { stepIndex, attempt: 0, execCount: stepIndex },
+      ctx: { stepIndex, attempt: 0, execCount: stepIndex },
       profiles,
       execCtx,
-    );
+    });
     try {
       trackedSession.dispose();
     } catch (err) {
@@ -306,17 +285,14 @@ export async function fixLoop(options: FixLoopOptions): Promise<TaskOutcome> {
   // ── Exhaustion / isolation cleanup ────────────────────────────────────
   //
   // Cull the task worktree UNLESS the loop exited via shouldIsolate=true
-  // (the worktree is PRESERVED for inspection in that case). Culling is best-
-  // effort: cullTaskWorktree failures are swallowed + warned so cleanup never
-  // masks the original failure. When no worktreeManager is configured the
-  // cull step is a no-op.
+  // (the worktree is PRESERVED for inspection in that case). The cull-
+  // or-preserve decision is delegated to `worktreeManager.cullOrPreserve`,
+  // which owns the best-effort cull + error-swallowing discipline. When no
+  // worktreeManager is configured the cleanup is a no-op (nothing to cull,
+  // nothing to preserve).
 
-  if (!isolated && execCtx.worktreeManager) {
-    try {
-      await execCtx.worktreeManager.cullTaskWorktree(task.id);
-    } catch (err) {
-      console.warn(`[fix-loop] Failed to cull worktree for task ${task.id}: ${safeErrorMessage(err)}`);
-    }
+  if (execCtx.worktreeManager) {
+    await execCtx.worktreeManager.cullOrPreserve(task.id, isolated);
   }
 
   // The failed outcome surfaces the most recent review feedback so callers

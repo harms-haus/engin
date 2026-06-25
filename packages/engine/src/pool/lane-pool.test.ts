@@ -23,11 +23,8 @@
 //   (e) pre-existing hookRegistry subscribers are preserved ALONGSIDE the
 //       auditor (observe = fan-out; both fire).
 //
-// NOTE (TDD): `LanePool.run()` does not yet perform this registration, so the
-// positive scenarios (a), (b), (e) are RED until the implementation lands; the
-// negative scenarios (c), (d) pass today. `LanePoolOptions.auditLog` already
-// exists on the type, so the file type-checks cleanly. Mocks follow the
-// established pattern in core/phase-tasks-hooks.test.ts.
+// NOTE: `LanePool.run()` performs this registration (see lane-pool.ts).
+// Mocks follow the established pattern in core/phase-tasks-hooks.test.ts.
 //
 // Approach: drive a REAL TaskTracker + REAL HookRegistry + REAL AuditLog and a
 // no-op TaskRunner that settles its task, so run() terminates quickly. Only

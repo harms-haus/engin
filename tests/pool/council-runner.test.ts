@@ -93,7 +93,7 @@ describe('councilRunner', () => {
 
     it('includes worker outputs in synthesizer prompt', async () => {
       let callCount = 0;
-      mockRunStep.mockImplementation(async (_task: Task, _step: StepDefinition) => {
+      mockRunStep.mockImplementation(async (_params: { task: Task; step: StepDefinition }) => {
         callCount++;
         // Return different outputs per worker
         if (callCount <= 2) {
@@ -122,7 +122,7 @@ describe('councilRunner', () => {
 
       // Third call: synthesizer should receive the combined prompt
       const synthCallArgs = mockRunStep.mock.calls[2];
-      const synthTask = synthCallArgs[0] as Task;
+      const synthTask = (synthCallArgs[0] as { task: Task }).task;
       expect(synthTask.prompt).toContain('## Worker Outputs');
       expect(synthTask.prompt).toContain('### Worker 0');
       expect(synthTask.prompt).toContain('Worker 0 result');
@@ -167,7 +167,7 @@ describe('councilRunner', () => {
 
       await runner(ctx);
 
-      const synthTask = mockRunStep.mock.calls[2][0] as Task;
+      const synthTask = (mockRunStep.mock.calls[2][0] as { task: Task }).task;
       // Exact format previously inlined in council-runner.ts, now provided by
       // the default composeWorkerOutputsPrompt helper. The original prompt is
       // preserved (appended to, not replaced).
@@ -248,7 +248,7 @@ describe('councilRunner', () => {
 
       // The synthesizer call (2nd runStep) must receive the composer's return
       // value by reference (no cloning / re-wrapping by the runner).
-      const synthTask = mockRunStep.mock.calls[1][0] as Task;
+      const synthTask = (mockRunStep.mock.calls[1][0] as { task: Task }).task;
       expect(synthTask).toBe(customTask);
       expect(synthTask.prompt).toBe('COMPLETELY DIFFERENT PROMPT');
       expect(synthTask.title).toBe('custom-synth-title');
@@ -379,7 +379,7 @@ describe('councilRunner', () => {
 
       await runner(ctx);
 
-      const synthTask = mockRunStep.mock.calls[1][0] as Task;
+      const synthTask = (mockRunStep.mock.calls[1][0] as { task: Task }).task;
       // Non-string outputs are JSON.stringify-ed by the default composer
       // (matching the legacy inline behavior).
       expect(synthTask.prompt).toContain(JSON.stringify(objOutput));
@@ -409,7 +409,7 @@ describe('councilRunner', () => {
       await runner(ctx);
 
       // execCtx is the 6th positional argument (index 5) to runStep.
-      const execCtx = mockRunStep.mock.calls[0][5] as {
+      const execCtx = (mockRunStep.mock.calls[0][0] as Record<string, unknown>).execCtx as {
         rendererRegistry?: unknown;
         sessionBaseDir?: string;
         cwd?: string;
@@ -556,7 +556,7 @@ describe('councilRunner', () => {
 
       // Verify synthesizer received the rejected worker's feedback
       const synthCallArgs = mockRunStep.mock.calls[2];
-      const synthTask = synthCallArgs[0] as Task;
+      const synthTask = (synthCallArgs[0] as { task: Task }).task;
       expect(synthTask.prompt).toContain('Worker 0 review feedback');
       expect(synthTask.prompt).toContain('Worker 1 output');
       expect(ctx.completeTask).toHaveBeenCalledTimes(1);

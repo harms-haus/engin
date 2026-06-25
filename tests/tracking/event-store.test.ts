@@ -837,4 +837,157 @@ describe('EventStore', () => {
       expect(JSON.parse(lastTwo[1]).seq).toBe(1052);
     });
   });
+
+  // ── writeQueue backpressure guard (persistent write failures) ──────
+  //
+  // Under sustained write pressure with persistent disk failures (e.g. disk
+  // full), the writeQueue promise chain must not grow unboundedly. After a
+  // threshold of consecutive failures, the store stops attempting disk writes
+  // while keeping the in-memory projection / ring buffer live. A successful
+  // write after a transient failure resets the counter so writes resume.
+
+  describe('writeQueue backpressure guard', () => {
+    // Each test spies on fs.appendFile to force / observe disk-write outcomes.
+    // mockRestore() runs in a `finally` so a failing (RED) assertion cannot leak
+    // the spy into a sibling test and corrupt its call counts.
+
+    it('stops calling appendFile after 10 consecutive write failures', async () => {
+      const store = new EventStore(dir);
+      // Force every disk append to fail persistently (e.g. disk full). mkdir
+      // still succeeds (the temp dir exists) so ensureDir is satisfied and the
+      // failure lands on appendFile itself.
+      const appendSpy = spyOn(fs, 'appendFile').mockRejectedValue(new Error('ENOSPC: no space left on device'));
+      try {
+        // Each append + flush drives exactly one drain → one appendFile attempt.
+        for (let i = 0; i < 10; i++) {
+          store.append('sidebar_updated', { title: `fail-${i}` });
+          await store.flush();
+        }
+        // 10 consecutive failures → counter reaches the threshold.
+        expect(appendSpy).toHaveBeenCalledTimes(10);
+
+        // Further appends must NOT trigger appendFile — the guard short-circuits
+        // the write attempt to prevent unbounded promise-chain growth.
+        store.append('sidebar_updated', { title: 'guarded-1' });
+        await store.flush();
+        store.append('sidebar_updated', { title: 'guarded-2' });
+        await store.flush();
+
+        expect(appendSpy).toHaveBeenCalledTimes(10); // no new attempts
+      } finally {
+        appendSpy.mockRestore();
+      }
+    });
+
+    it('a successful write resets the failure counter so writes resume', async () => {
+      const store = new EventStore(dir);
+      let shouldFail = true;
+      const appendSpy = spyOn(fs, 'appendFile').mockImplementation(
+        () => (shouldFail ? Promise.reject(new Error('transient')) : Promise.resolve()) as Promise<void>,
+      );
+      try {
+        // 9 failures — below the threshold, so writes are still attempted.
+        for (let i = 0; i < 9; i++) {
+          store.append('sidebar_updated', { title: `f-${i}` });
+          await store.flush();
+        }
+        expect(appendSpy).toHaveBeenCalledTimes(9);
+
+        // A successful write resets the consecutive-failure counter to 0.
+        shouldFail = false;
+        store.append('sidebar_updated', { title: 'recover' });
+        await store.flush();
+        expect(appendSpy).toHaveBeenCalledTimes(10);
+
+        // After the reset, another burst of sub-threshold failures must STILL be
+        // attempted (the counter was cleared, so the guard has not tripped).
+        shouldFail = true;
+        for (let i = 0; i < 9; i++) {
+          store.append('sidebar_updated', { title: `f2-${i}` });
+          await store.flush();
+        }
+        expect(appendSpy).toHaveBeenCalledTimes(19); // all attempted, none short-circuited
+      } finally {
+        appendSpy.mockRestore();
+      }
+    });
+
+    it('keeps the in-memory projection and ring buffer updating while writes fail', async () => {
+      const store = new EventStore(dir);
+      const appendSpy = spyOn(fs, 'appendFile').mockRejectedValue(new Error('ENOSPC'));
+      try {
+        // Append well past the failure threshold — the guard trips, but the
+        // in-memory state must keep evolving for every event.
+        for (let i = 0; i < 15; i++) {
+          store.append('sidebar_updated', { title: `t${i}` });
+          await store.flush();
+        }
+
+        const proj = store.getProjection();
+        expect(proj.seq).toBe(15);
+        expect(proj.sidebar.title).toBe('t14');
+
+        // Ring buffer retains all events despite zero successful disk writes.
+        const events = store.getEventsSince(0);
+        expect(events).toHaveLength(15);
+        expect(events[14].seq).toBe(15);
+      } finally {
+        appendSpy.mockRestore();
+      }
+    });
+
+    it('flush() resolves cleanly under sustained persistent write failures', async () => {
+      const store = new EventStore(dir);
+      const appendSpy = spyOn(fs, 'appendFile').mockRejectedValue(new Error('ENOSPC'));
+      try {
+        for (let i = 0; i < 20; i++) {
+          store.append('sidebar_updated', { title: `t${i}` });
+          // flush() must never reject — the writeQueue swallows write errors.
+          await expect(store.flush()).resolves.toBeUndefined();
+        }
+      } finally {
+        appendSpy.mockRestore();
+      }
+    });
+
+    it('subscribers keep being notified while writes fail', async () => {
+      const store = new EventStore(dir);
+      const appendSpy = spyOn(fs, 'appendFile').mockRejectedValue(new Error('ENOSPC'));
+      try {
+        let notifications = 0;
+        store.subscribe(() => {
+          notifications++;
+        });
+
+        for (let i = 0; i < 12; i++) {
+          store.append('sidebar_updated', { title: `t${i}` });
+          await store.flush();
+        }
+        // Every append fires the subscriber synchronously, independent of disk.
+        expect(notifications).toBe(12);
+      } finally {
+        appendSpy.mockRestore();
+      }
+    });
+
+    it('does not stop writes when failures are intermittent (below threshold between successes)', async () => {
+      const store = new EventStore(dir);
+      // Alternating fail / succeed — the counter never reaches the threshold
+      // because each success resets it, so every write is attempted.
+      let shouldFail = true;
+      const appendSpy = spyOn(fs, 'appendFile').mockImplementation(
+        () => (shouldFail ? Promise.reject(new Error('flaky')) : Promise.resolve()) as Promise<void>,
+      );
+      try {
+        for (let i = 0; i < 30; i++) {
+          store.append('sidebar_updated', { title: `t${i}` });
+          await store.flush();
+          shouldFail = !shouldFail;
+        }
+        expect(appendSpy).toHaveBeenCalledTimes(30); // none short-circuited
+      } finally {
+        appendSpy.mockRestore();
+      }
+    });
+  });
 });

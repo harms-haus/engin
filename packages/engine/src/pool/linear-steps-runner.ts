@@ -13,8 +13,7 @@
 //   4. Returns TaskOutcome directly instead of mutating the TaskTracker.
 
 import { appendReviewFeedback } from '../core/task-feedback.js';
-import { buildExecCtx, createSessionMap, handleRunnerError } from './runner-utils.js';
-import { extractSeverity, isFailingSeverity } from './severity.js';
+import { buildExecCtx, createSessionMap, handleRunnerError, settleBySeverity } from './runner-utils.js';
 import { runStep } from './step-execution.js';
 import type { StepDefinition, TaskOutcome, TaskRunner, TaskRunnerContext } from './types.js';
 
@@ -62,15 +61,15 @@ export function linearStepsRunner(steps: StepDefinition[]): TaskRunner {
         const existingSessionPath = existing?.sessionPath;
 
         // Step 4d: Execute the step
-        const { result, trackedSession } = await runStep(
+        const { result, trackedSession } = await runStep({
           task,
           step,
           agentId,
-          { stepIndex: currentStepIndex, attempt: currentAttempt, execCount },
+          ctx: { stepIndex: currentStepIndex, attempt: currentAttempt, execCount },
           profiles,
           execCtx,
           existingSessionPath,
-        );
+        });
 
         // Step 4e: Dispose old session for this step, store new one.
         // createSessionMap.set() disposes the previous entry at this key
@@ -122,29 +121,9 @@ export function linearStepsRunner(steps: StepDefinition[]): TaskRunner {
           );
         }
 
-        // Step 4h: Max retries reached
+        // Step 4h: Max retries reached — severity-based settle
         if (newAttempt >= maxStepRetries) {
-          const severity = extractSeverity(result.output);
-
-          if (isFailingSeverity(severity)) {
-            // Critical/high → task failed
-            ctx.failTask({ completed: false, feedback: result.feedback, severity });
-            taskSessions.disposeAll();
-            return { status: 'failed', feedback: result.feedback };
-          }
-
-          // Medium/low → accept as completed with caveats
-          if (ctx.completeTask(result.output)) {
-            taskSessions.disposeAll();
-            return { status: 'completed', output: result.output };
-          }
-
-          ctx.failTask({
-            completed: false,
-            error: 'Failed to submit task for review after max retries exceeded',
-          });
-          taskSessions.disposeAll();
-          return { status: 'failed', error: 'Failed to submit' };
+          return settleBySeverity(ctx, result.output, result.feedback, taskSessions.disposeAll);
         }
 
         // Step 4i: Retry – back up one step

@@ -12,15 +12,10 @@
  * names `agentsById` / `tasksById` (Immer-typed `Draft<WorkflowStoreState>`),
  * whereas the shared helpers operate on the CANONICAL projection names
  * (`agents` / `tasks`). The store therefore maps its fields onto the canonical
- * names around each shared-helper call. These tests pin BOTH halves of that
- * contract:
+ * names around each shared-helper call. These tests pin that delegation
+ * contract dynamically:
  *
- * Part A — Source inspection (migration pin): the store imports the helpers
- *   from the shared module and no longer defines local copies. These are
- *   intentionally RED until the refactor lands and GREEN thereafter — a clear
- *   go/no-go signal mirroring migration.shared-imports.test.ts.
- *
- * Part B — Delegation parity: each test drives the store's PUBLIC API and then
+ * Delegation parity: each test drives the store's PUBLIC API and then
  *   asserts the store's OBSERVABLE state is byte-identical to what the SHARED
  *   helpers produce when invoked directly on an equivalent state. This
  *   dynamically pins the delegation: a wrong helper, a botched *ById↔canonical
@@ -30,9 +25,6 @@
  *   not duplicating — the hardcoded assertions in workflow-store.test.ts.
  */
 
-import { readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 // ── Shared modules under test (invoked directly for parity comparison) ──────
@@ -43,13 +35,6 @@ import { reconcileSelection, toProjection, writeProjectionToState } from '@engin
 import type { AgentEntity, EventRecord, TaskEntity, WorkflowProjection } from '../protocol-types';
 import type { WorkflowStoreState } from './workflow-store';
 import { useWorkflowStore } from './workflow-store';
-
-const here = dirname(fileURLToPath(import.meta.url)); // packages/web/src/store
-
-/** Read the workflow-store source (this directory). */
-function readSrc(): string {
-  return readFileSync(join(here, 'workflow-store.ts'), 'utf8');
-}
 
 // ─── Fixture builders ──────────────────────────────────────────────────────
 
@@ -187,45 +172,7 @@ function getState(): ReturnType<typeof useWorkflowStore.getState> {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Part A — Source inspection (migration pin)
-// ═══════════════════════════════════════════════════════════════════════════
-
-describe('refactor — workflow-store sources projection helpers from @engin/shared', () => {
-  it("imports from '@engin/shared/projection-helpers'", () => {
-    expect(readSrc()).toContain("from '@engin/shared/projection-helpers'");
-  });
-
-  it('imports the directly-used helpers (writeProjectionToState, toProjection, reconcileSelection) as named bindings', () => {
-    // Extract the named-import block for the shared module so the assertion is
-    // robust to re-ordering / line-wrapping inside the braces.
-    const src = readSrc();
-    const m = src.match(/import\s*\{([^}]*)\}\s*from\s*['"]@engin\/shared\/projection-helpers['"]/);
-    expect(m, 'expected an import from @engin/shared/projection-helpers').not.toBeNull();
-    const named = m![1];
-    expect(named).toContain('writeProjectionToState');
-    expect(named).toContain('toProjection');
-    expect(named).toContain('reconcileSelection');
-  });
-
-  it('no longer defines a LOCAL capAgentLogs function', () => {
-    expect(readSrc()).not.toContain('function capAgentLogs(');
-  });
-
-  it('no longer defines a LOCAL toProjection function', () => {
-    expect(readSrc()).not.toContain('function toProjection(');
-  });
-
-  it('no longer defines a LOCAL writeProjectionToState function', () => {
-    expect(readSrc()).not.toContain('function writeProjectionToState(');
-  });
-
-  it('no longer defines a LOCAL reconcileSelection function', () => {
-    expect(readSrc()).not.toContain('function reconcileSelection(');
-  });
-});
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Part B — Delegation parity (store observable == shared helper output)
+// Delegation parity (store observable == shared helper output)
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe('refactor — store delegates correctly to the shared helpers', () => {

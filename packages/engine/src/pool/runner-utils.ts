@@ -11,10 +11,9 @@
 //   4. Wrapping runner bodies in a uniform error envelope that disposes
 //      sessions, fails the task, and never re-throws.
 //
-// IMPORTANT: the runners themselves are NOT refactored in this task — that is
-// done in subsequent tasks. This module is additive only.
 
 import { safeErrorMessage } from '../core/utils.js';
+import { extractSeverity, isFailingSeverity } from './severity.js';
 import type { StepExecutionContext } from './step-execution.js';
 import type { StepResult, TaskOutcome, TaskRunnerContext, TrackedSession } from './types.js';
 
@@ -161,6 +160,41 @@ export function settleResult(ctx: TaskRunnerContext, result: StepResult, dispose
   ctx.failTask({ completed: false, feedback: result.feedback });
   disposeAll();
   return { status: 'failed', feedback: result.feedback };
+}
+
+// ─── Severity-based settle helper ───────────────────────────────────────────
+
+/**
+ * Settle a result using severity-based logic: critical/high → fail,
+ * medium/low/none → accept as completed with caveats.
+ *
+ * Shared by the linear-steps and reflection runners for the max-retries /
+ * max-rounds-exhausted paths. The feedback string is forwarded to
+ * `failTask` on the failing path; `disposeAll()` runs AFTER the settle call,
+ * matching the ordering used by every runner's settle block.
+ */
+export function settleBySeverity(
+  ctx: TaskRunnerContext,
+  output: unknown,
+  feedback: string,
+  disposeAll: () => void,
+): TaskOutcome {
+  const severity = extractSeverity(output);
+
+  if (isFailingSeverity(severity)) {
+    ctx.failTask({ completed: false, feedback, severity });
+    disposeAll();
+    return { status: 'failed', feedback };
+  }
+
+  if (ctx.completeTask(output)) {
+    disposeAll();
+    return { status: 'completed', output };
+  }
+
+  ctx.failTask({ completed: false, error: 'Failed to submit' });
+  disposeAll();
+  return { status: 'failed', error: 'Failed to submit' };
 }
 
 // ─── Error envelope ─────────────────────────────────────────────────────────

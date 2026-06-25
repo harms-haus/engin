@@ -6,7 +6,7 @@ import type {
   PhaseEntity,
   WorkflowProjection,
 } from '@engin/shared/event-types';
-import { createInitialProjection, MAX_RUN_LOG } from '@engin/shared/event-types';
+import { createInitialProjection, MAX_RUN_LOG, MAX_WORKFLOW_EVENT_LOG } from '@engin/shared/event-types';
 import { describe, expect, it } from 'bun:test';
 
 // Also verify re-exports exist from core/types.ts
@@ -547,6 +547,23 @@ describe('MAX_RUN_LOG', () => {
   it('is exported as a number equal to 200', () => {
     expect(typeof MAX_RUN_LOG).toBe('number');
     expect(MAX_RUN_LOG).toBe(200);
+  });
+});
+
+describe('MAX_WORKFLOW_EVENT_LOG', () => {
+  // Consolidated shared constant (defined alongside MAX_RUN_LOG) used by BOTH
+  // the TUI ClientStore and the web WorkflowStore to bound workflowEventLog.
+  // Previously the two stores diverged (TUI = 10000, web = 1000); this is the
+  // single source of truth. The unified value is 10000 (the larger cap) so
+  // long-running workflows keep ample scroll-back.
+  it('is exported as a number equal to 10000', () => {
+    expect(typeof MAX_WORKFLOW_EVENT_LOG).toBe('number');
+    expect(MAX_WORKFLOW_EVENT_LOG).toBe(10000);
+  });
+
+  it('is distinct from MAX_RUN_LOG (a separate server-console log cap)', () => {
+    expect(MAX_WORKFLOW_EVENT_LOG).not.toBe(MAX_RUN_LOG);
+    expect(MAX_WORKFLOW_EVENT_LOG).toBeGreaterThan(MAX_RUN_LOG);
   });
 });
 

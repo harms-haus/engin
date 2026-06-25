@@ -21,7 +21,8 @@ import type { RunHandle } from './run-manager.js';
  * `broadcast` serializes the payload ONCE (before iterating) and delivers the
  * identical string to every subscriber whose `readyState === 1` (OPEN),
  * swallowing `send()` errors so a single stale socket cannot break delivery
- * to the rest.
+ * to the rest. CLOSING/CLOSED sockets (and sockets that error on `send()`)
+ * are pruned from the set during iteration so unclean disconnects do not leak.
  */
 export class SubscriptionManager {
   /**
@@ -59,9 +60,11 @@ export class SubscriptionManager {
    * Deliver a message to every OPEN subscriber of the run.
    *
    * The payload is `JSON.stringify`-ed ONCE (before iterating) and the
-   * identical string is sent to each socket. Subscribers whose
-   * `readyState !== 1` are skipped, and any error thrown by a stale socket's
-   * `send()` is swallowed so one dead socket cannot break delivery to the rest.
+   * identical string is sent to each socket. As a side effect, dead sockets
+   * are pruned from `handle.subscribers`: any socket whose `readyState` is
+   * CLOSING (2) or CLOSED (3), or whose `send()` throws, is deleted during
+   * iteration so unclean disconnects do not accumulate. Sockets in the
+   * CONNECTING (0) state are left alone — they may still establish.
    *
    * @param runId  The run being broadcast to (tags the message upstream; the
    *               subscriber set lives on `handle`).
@@ -71,12 +74,16 @@ export class SubscriptionManager {
   broadcast(_runId: string, msg: ServerMessage, handle: RunHandle): void {
     const payload = JSON.stringify(msg);
     for (const ws of handle.subscribers) {
-      if (ws.readyState === 1) {
+      if (ws.readyState === WebSocket.OPEN) {
         try {
           ws.send(payload);
         } catch {
-          // Ignore send errors on stale sockets.
+          // Send error — clean up the stale socket.
+          handle.subscribers.delete(ws);
         }
+      } else if (ws.readyState >= WebSocket.CLOSING) {
+        // CLOSING or CLOSED — prune dead sockets to avoid unbounded growth.
+        handle.subscribers.delete(ws);
       }
     }
   }

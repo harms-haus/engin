@@ -44,7 +44,7 @@ describe('worktree_merge_result — ServerMessage variant', () => {
     const failed: ServerMessage = { type: 'worktree_merge_result', runId: 'r1', outcome: 'failed' };
     const declined: ServerMessage = { type: 'worktree_merge_result', runId: 'r1', outcome: 'declined' };
     void [clean, conflicts, resolved, failed, declined];
-    expect(true).toBe(true);
+    // Compile-time type check — runtime verification is in the isServerMessage suite.
   });
 
   it('accepts the optional cleanupError / worktreePath / branchName fields', () => {
@@ -57,7 +57,7 @@ describe('worktree_merge_result — ServerMessage variant', () => {
       branchName: 'engin/r1',
     };
     void withExtras;
-    expect(true).toBe(true);
+    // Compile-time type check — runtime verification is in the isServerMessage suite.
   });
 
   it('treats runId and outcome as required fields', () => {
@@ -66,7 +66,7 @@ describe('worktree_merge_result — ServerMessage variant', () => {
     // @ts-expect-error — outcome is required on worktree_merge_result
     const noOutcome: ServerMessage = { type: 'worktree_merge_result', runId: 'r1' };
     void [noRunId, noOutcome];
-    expect(true).toBe(true);
+    // Compile-time type check — runtime verification is in the isServerMessage suite.
   });
 
   it('rejects an outcome value outside the documented union', () => {
@@ -74,7 +74,7 @@ describe('worktree_merge_result — ServerMessage variant', () => {
     // @ts-expect-error — 'merged' is not part of the outcome union
     const badOutcome: ServerMessage = { type: 'worktree_merge_result', runId: 'r1', outcome: 'merged' };
     void badOutcome;
-    expect(true).toBe(true);
+    // Compile-time type check — runtime verification is in the isServerMessage suite.
   });
 });
 
@@ -138,7 +138,7 @@ describe('worktree_action — ClientMessage actions', () => {
     const resolve: ClientMessage = { type: 'worktree_action', runId: 'r1', action: 'resolve' };
     const decline: ClientMessage = { type: 'worktree_action', runId: 'r1', action: 'decline' };
     void [merge, resolve, decline];
-    expect(true).toBe(true);
+    // Compile-time type check — runtime verification is in the isServerMessage suite.
   });
 
   it('rejects the legacy pr / discard / keep actions', () => {
@@ -149,7 +149,7 @@ describe('worktree_action — ClientMessage actions', () => {
     // @ts-expect-error — 'keep' action was removed from worktree_action
     const keep: ClientMessage = { type: 'worktree_action', runId: 'r1', action: 'keep' };
     void [pr, discard, keep];
-    expect(true).toBe(true);
+    // Compile-time type check — runtime verification is in the isServerMessage suite.
   });
 });
 
@@ -169,7 +169,7 @@ describe('start_run — worktree gate removed', () => {
       apiKeys: { openai: 'sk-xxx' },
     };
     void sr;
-    expect(true).toBe(true);
+    // Compile-time type check — runtime verification is in the isServerMessage suite.
   });
 
   it('rejects the removed worktree?: boolean field', () => {
@@ -184,7 +184,7 @@ describe('start_run — worktree gate removed', () => {
       worktree: true,
     };
     void gated;
-    expect(true).toBe(true);
+    // Compile-time type check — runtime verification is in the isServerMessage suite.
   });
 });
 
@@ -208,7 +208,7 @@ describe('RunSummary — worktree display field is preserved', () => {
       },
     };
     void withWorktree;
-    expect(true).toBe(true);
+    // Compile-time type check — runtime verification is in the isServerMessage suite.
   });
 
   it('still allows omitting the optional worktree field', () => {
@@ -221,6 +221,6 @@ describe('RunSummary — worktree display field is preserved', () => {
       startedAt: '2026-06-18T00:00:00Z',
     };
     void withoutWorktree;
-    expect(true).toBe(true);
+    // Compile-time type check — runtime verification is in the isServerMessage suite.
   });
 });

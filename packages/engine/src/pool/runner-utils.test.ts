@@ -25,6 +25,11 @@ import {
   handleRunnerError,
   settleResult,
 } from './runner-utils.js';
+// settleBySeverity is being extracted in a follow-up refactor step. We import
+// the module namespace so that, until the export exists, the settleBySeverity
+// tests below fail individually (runtime "not a function") instead of
+// breaking the entire test file with a hard module-load error.
+import * as runnerUtils from './runner-utils.js';
 import type { StepExecutionContext } from './step-execution.js';
 import type { StepResult, TaskOutcome, TaskRunnerContext, TrackedSession } from './types.js';
 
@@ -383,22 +388,18 @@ describe('buildExecCtx', () => {
     expect(a).toEqual(b);
   });
 
-  // ── auditLog forwarding (default-auditor wiring) ───────────────────────
+  // ── auditLog forwarding ───────────────────────────────────────────────
   //
-  // NOTE (TDD): `auditLog` is a PLANNED optional field on TaskRunnerContext /
-  // StepExecutionContext (the "Wire default auditor" task). Until those types
-  // declare it, the field is set via a plain-object ctx (spread + cast to the
-  // interface, which is a valid superset cast) and read off execCtx via a
-  // minimal cast — so this file type-checks today and goes GREEN once
-  // buildExecCtx forwards `auditLog` alongside the other optional fields.
+  // `buildExecCtx` forwards the optional `auditLog` field so it threads
+  // through to StepExecutionContext for the default-auditor wiring.
 
   it('forwards auditLog from ctx to execCtx (reference identity)', () => {
     const auditLog = new AuditLog(tmpdir());
-    const ctx = { ...makeCtx(), auditLog } as TaskRunnerContext;
+    const ctx = makeCtx({ auditLog });
 
     const execCtx = buildExecCtx(ctx);
 
-    expect((execCtx as { auditLog?: AuditLog }).auditLog).toBe(auditLog);
+    expect(execCtx.auditLog).toBe(auditLog);
   });
 
   it('leaves auditLog undefined when ctx omits it', () => {
@@ -406,7 +407,7 @@ describe('buildExecCtx', () => {
 
     const execCtx = buildExecCtx(ctx);
 
-    expect((execCtx as { auditLog?: AuditLog }).auditLog).toBeUndefined();
+    expect(execCtx.auditLog).toBeUndefined();
   });
 });
 
@@ -585,3 +586,271 @@ describe('handleRunnerError', () => {
     expect(call).not.toThrow();
   });
 });
+
+// ── settleBySeverity ───────────────────────────────────────────────────────
+//
+// settleBySeverity() encapsulates the severity-based settle logic duplicated
+// between linear-steps-runner (max-retries path) and reflection-runner
+// (max-rounds-exhausted path). It uses extractSeverity + isFailingSeverity
+// from severity.ts to decide: critical/high → fail, medium/low/none → accept
+// as completed with caveats. These tests define the contract the extracted
+// helper MUST satisfy so the runner refactor is provably behavior-preserving.
+
+describe('settleBySeverity', () => {
+  // Resolve the export via the namespace so this test block fails at runtime
+  // (not at module-load time) until the helper is implemented.
+  const settleBySeverity: typeof runnerUtils.settleBySeverity = runnerUtils.settleBySeverity;
+
+  // ── Failing severity (critical / high) ──────────────────────────────
+
+  it('critical severity → calls failTask with feedback+severity, disposes, returns failed', () => {
+    const sequence: string[] = [];
+    const failTask = mock((r?: unknown) => {
+      sequence.push('failTask');
+    });
+    const disposeAll = mock(() => {
+      sequence.push('disposeAll');
+    });
+    const ctx = makeCtx({ failTask });
+    const output = { approved: false, feedback: 'Security vuln', severity: 'critical' };
+
+    const outcome: TaskOutcome = settleBySeverity(ctx, output, 'Security vuln', disposeAll);
+
+    expect(failTask).toHaveBeenCalledTimes(1);
+    expect(failTask).toHaveBeenCalledWith({ completed: false, feedback: 'Security vuln', severity: 'critical' });
+    expect(disposeAll).toHaveBeenCalledTimes(1);
+    expect(outcome).toEqual({ status: 'failed', feedback: 'Security vuln' });
+    // failTask must run BEFORE disposeAll (matches runner ordering).
+    expect(sequence).toEqual(['failTask', 'disposeAll']);
+  });
+
+  it('high severity → calls failTask with feedback+severity, disposes, returns failed', () => {
+    const failTask = mock((_r?: unknown) => undefined);
+    const disposeAll = mock(() => {});
+    const ctx = makeCtx({ failTask });
+    const output = { severity: 'high' };
+
+    const outcome = settleBySeverity(ctx, output, 'Major issue', disposeAll);
+
+    expect(failTask).toHaveBeenCalledWith({ completed: false, feedback: 'Major issue', severity: 'high' });
+    expect(disposeAll).toHaveBeenCalledTimes(1);
+    expect(outcome).toEqual({ status: 'failed', feedback: 'Major issue' });
+  });
+
+  it('failing severity → does not call completeTask', () => {
+    const completeTask = mock((_r?: unknown) => true);
+    const ctx = makeCtx({ completeTask });
+
+    settleBySeverity(
+      ctx,
+      { severity: 'critical' },
+      'fail',
+      mock(() => {}),
+    );
+
+    expect(completeTask).not.toHaveBeenCalled();
+  });
+
+  // ── Non-failing severity (medium / low / none) → accept with caveats ──
+
+  it('medium severity → calls completeTask with output, disposes, returns completed', () => {
+    const sequence: string[] = [];
+    const completeTask = mock((r?: unknown) => {
+      sequence.push('completeTask');
+      return true;
+    });
+    const disposeAll = mock(() => {
+      sequence.push('disposeAll');
+    });
+    const ctx = makeCtx({ completeTask });
+    const output = { approved: false, feedback: 'minor', severity: 'medium' };
+
+    const outcome = settleBySeverity(ctx, output, 'minor', disposeAll);
+
+    expect(completeTask).toHaveBeenCalledTimes(1);
+    expect(completeTask).toHaveBeenCalledWith(output);
+    expect(disposeAll).toHaveBeenCalledTimes(1);
+    expect(outcome).toEqual({ status: 'completed', output });
+    // completeTask must run BEFORE disposeAll.
+    expect(sequence).toEqual(['completeTask', 'disposeAll']);
+  });
+
+  it('low severity → calls completeTask with output, disposes, returns completed', () => {
+    const completeTask = mock((_r?: unknown) => true);
+    const disposeAll = mock(() => {});
+    const ctx = makeCtx({ completeTask });
+    const output = { severity: 'low' };
+
+    const outcome = settleBySeverity(ctx, output, 'nitpick', disposeAll);
+
+    expect(completeTask).toHaveBeenCalledWith(output);
+    expect(disposeAll).toHaveBeenCalledTimes(1);
+    expect(outcome).toEqual({ status: 'completed', output });
+  });
+
+  it('no severity field on output (defaults to medium) → accepts as completed', () => {
+    // extractSeverity returns 'medium' when output lacks a severity field,
+    // and isFailingSeverity('medium') is false → accept path.
+    const completeTask = mock((_r?: unknown) => true);
+    const ctx = makeCtx({ completeTask });
+    const output = { approved: false, feedback: 'meh' };
+
+    const outcome = settleBySeverity(
+      ctx,
+      output,
+      'meh',
+      mock(() => {}),
+    );
+
+    expect(completeTask).toHaveBeenCalledWith(output);
+    expect(outcome).toEqual({ status: 'completed', output });
+  });
+
+  it('non-string severity field on output (defaults to medium) → accepts as completed', () => {
+    // extractSeverity returns 'medium' when the severity value is not a string.
+    const completeTask = mock((_r?: unknown) => true);
+    const ctx = makeCtx({ completeTask });
+    const output = { severity: 42 };
+
+    const outcome = settleBySeverity(
+      ctx,
+      output,
+      'meh',
+      mock(() => {}),
+    );
+
+    expect(completeTask).toHaveBeenCalledWith(output);
+    expect(outcome.status).toBe('completed');
+  });
+
+  it('non-failing severity → does not call failTask when completeTask returns true', () => {
+    const failTask = mock((_r?: unknown) => undefined);
+    const ctx = makeCtx({ completeTask: mock(() => true), failTask });
+
+    settleBySeverity(
+      ctx,
+      { severity: 'medium' },
+      'minor',
+      mock(() => {}),
+    );
+
+    expect(failTask).not.toHaveBeenCalled();
+  });
+
+  // ── Non-failing but completeTask returns false (cancelled/raced) ─────
+
+  it('non-failing severity but completeTask returns false → fails with "Failed to submit"', () => {
+    const sequence: string[] = [];
+    const completeTask = mock((r?: unknown) => {
+      sequence.push('completeTask');
+      return false;
+    });
+    const failTask = mock((r?: unknown) => {
+      sequence.push('failTask');
+    });
+    const disposeAll = mock(() => {
+      sequence.push('disposeAll');
+    });
+    const ctx = makeCtx({ completeTask, failTask });
+
+    const outcome = settleBySeverity(ctx, { severity: 'medium' }, 'minor', disposeAll);
+
+    expect(completeTask).toHaveBeenCalledTimes(1);
+    expect(failTask).toHaveBeenCalledTimes(1);
+    expect(failTask).toHaveBeenCalledWith({ completed: false, error: 'Failed to submit' });
+    expect(disposeAll).toHaveBeenCalledTimes(1);
+    expect(outcome).toEqual({ status: 'failed', error: 'Failed to submit' });
+    // Ordering: completeTask → failTask → disposeAll.
+    expect(sequence).toEqual(['completeTask', 'failTask', 'disposeAll']);
+  });
+
+  // ── Edge cases for output shapes ─────────────────────────────────────
+
+  it('handles a primitive output (no severity) by defaulting to medium → completed', () => {
+    // extractSeverity on a non-object returns 'medium'.
+    const completeTask = mock((_r?: unknown) => true);
+    const ctx = makeCtx({ completeTask });
+
+    const outcome = settleBySeverity(
+      ctx,
+      'just a string',
+      'fb',
+      mock(() => {}),
+    );
+
+    expect(completeTask).toHaveBeenCalledWith('just a string');
+    expect(outcome).toEqual({ status: 'completed', output: 'just a string' });
+  });
+
+  it('passes the raw output (not just severity) to completeTask on the accept path', () => {
+    const completeTask = mock((_r?: unknown) => true);
+    const ctx = makeCtx({ completeTask });
+    const output = { approved: false, feedback: 'caveats', severity: 'low', extra: 'data' };
+
+    settleBySeverity(
+      ctx,
+      output,
+      'caveats',
+      mock(() => {}),
+    );
+
+    expect(completeTask).toHaveBeenCalledWith(output);
+  });
+
+  it('uses the feedback argument (not output.feedback) for the failTask call', () => {
+    // The feedback string passed to settleBySeverity is what lands in failTask,
+    // not output.feedback. This mirrors the runners which pass a resolved
+    // feedback string (e.g. `result.feedback ?? 'No feedback provided'`).
+    const failTask = mock((_r?: unknown) => undefined);
+    const ctx = makeCtx({ failTask });
+    const output = { severity: 'critical', feedback: 'DIFFERENT' };
+
+    settleBySeverity(
+      ctx,
+      output,
+      'resolved feedback',
+      mock(() => {}),
+    );
+
+    expect(failTask).toHaveBeenCalledWith({
+      completed: false,
+      feedback: 'resolved feedback',
+      severity: 'critical',
+    });
+  });
+
+  it('always calls disposeAll exactly once regardless of the branch taken', () => {
+    const ctxOk = makeCtx();
+    const disposeFail = mock(() => {});
+    settleBySeverity(ctxOk, { severity: 'critical' }, 'fb', disposeFail);
+    expect(disposeFail).toHaveBeenCalledTimes(1);
+
+    const disposeAccept = mock(() => {});
+    settleBySeverity(ctxOk, { severity: 'medium' }, 'fb', disposeAccept);
+    expect(disposeAccept).toHaveBeenCalledTimes(1);
+
+    const ctxFalse = makeCtx({ completeTask: mock(() => false) });
+    const disposeCompleteFalse = mock(() => {});
+    settleBySeverity(ctxFalse, { severity: 'low' }, 'fb', disposeCompleteFalse);
+    expect(disposeCompleteFalse).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ── fireOnDecisionHook (removed) ──────────────────────────────────────────
+//
+// The 16 TDD tests for `fireOnDecisionHook` were removed because the helper
+// was a PLANNED refactoring extraction (encapsulating the onDecision observe-
+// hook firing boilerplate) that never landed in runner-utils.ts. The tests
+// were RED — they failed with "TypeError: fireOnDecisionHook is not a
+// function" — and the behavior they would have pinned is ALREADY covered:
+//
+//   • The onDecision hook is fired inline in linear-steps-runner.ts (Step 4g),
+//     reflection-runner.ts (Step 4d), and multi-step-task.ts (Step 4i-2).
+//   • End-to-end onDecision hook firing through the real LanePool execution
+//     path is verified in hooks/defaults/auditor-integration.test.ts (test 3).
+//   • The onDecision subscriber REGISTRATION seam in LanePool.run() is
+//     verified in lane-pool.test.ts (tests a–e).
+//
+// If fireOnDecisionHook is ever extracted from runner-utils.ts, these tests
+// should be re-introduced at that time as characterization tests against the
+// real export.

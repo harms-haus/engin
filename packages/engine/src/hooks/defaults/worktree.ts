@@ -15,7 +15,7 @@
 // `populateWorktree` subscriber still gets the legacy worktree population
 // behavior unchanged.
 
-import { populateWorktree } from '../../core/git.js';
+import { populateWorktree } from '../../core/worktree-populate.js';
 import type {
   AfterTaskWorktreeArgs,
   BeforeTaskWorktreeArgs,

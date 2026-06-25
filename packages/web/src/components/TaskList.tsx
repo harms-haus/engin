@@ -1,3 +1,4 @@
+import { formatElapsed } from '@engin/shared/text-utils';
 import React, { useEffect, useMemo, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import {
@@ -8,7 +9,6 @@ import {
   useTaskIds,
   useWorkflowStore,
 } from '../store/workflow-store';
-import { formatElapsed } from '../utils/format-elapsed';
 import './TaskList.css';
 
 function getStatusColor(status: string): string {

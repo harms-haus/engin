@@ -15,6 +15,9 @@ import type { TaskProcessorContext } from './task-processor.js';
 import { reportError, safeCompleteTask, safeFailTask } from './task-processor.js';
 import type { LanePoolOptions, LanePoolResult, TaskOutcome, TaskRunner, TaskRunnerContext } from './types.js';
 
+/** Default maximum retries per step on agent crash. */
+const DEFAULT_MAX_STEP_RETRIES = 5;
+
 // ─── LanePool ───────────────────────────────────────────────────────────────
 
 /**
@@ -188,15 +191,9 @@ export class LanePool {
     }
 
     // ── Deadlock onTaskRejected observer ──────────────────────────────
-    // isPoolDone() fails deadlocked tasks (blocked with missing deps) by
-    // mutating them to 'failed' and emitting TaskSettled — but it does NOT
-    // fire onStatus lifecycle callbacks (the tracker is a pure write model
-    // with no dependency on onStatus). Without this observer, the TUI/web
-    // never learns which task deadlocked or why. We listen to TaskSettled,
-    // detect freshly-deadlocked tasks (result.error starts with 'deadlocked:'),
-    // and fire onTaskRejected once per deadlocked task. The Set guards
-    // against duplicate emission (isPoolDone itself is idempotent, but the
-    // event may fire for other settled tasks between deadlock checks).
+    // The tracker fails deadlocked tasks but doesn't fire onStatus callbacks,
+    // so we listen to TaskSettled and surface deadlocked tasks (result.error
+    // starts with 'deadlocked:') via onTaskRejected. The Set deduplicates.
     const deadlockedSurfaced = new Set<string>();
     const onTaskSettled = () => {
       // Scan ONLY failed tasks (O(failed), typically O(1)) instead of the
@@ -524,20 +521,11 @@ export class LanePool {
       const resolvedRunner = resolved;
 
       // ── Per-task worktree setup ──────────────────────────────────────────
-      // When a worktreeManager is configured, claim a fresh per-task
-      // worktree BEFORE calling the runner so the agent's `cwd` (and
-      // every spawned session) operates inside the isolated branch.
-      //
-      // If the worktree is created successfully, the runner's
-      // `completeTask` is DEFERRED: rather than settling the task in
-      // the tracker immediately, the result is captured and the task is
-      // settled only AFTER `mergeTaskBranch` runs. This lets a failed
-      // merge downgrade the outcome to `failed` before the task is
-      // marked `complete` in the tracker (a transition the tracker
-      // itself forbids).
-      //
-      // If worktree creation throws, the agent falls back to the
-      // configured `cwd` and the existing (immediate-settle) path runs.
+      // Claim a fresh worktree before invoking the runner so the agent runs
+      // inside the isolated branch. On success, `completeTask` is DEFERRED
+      // until after mergeTaskBranch so a failed merge can downgrade the
+      // outcome to `failed` (the tracker forbids complete→failed). On
+      // failure, fall back to the configured cwd with immediate settlement.
       const useWorktree = !!this.options.worktreeManager;
       let worktreeCreated = false;
       let deferredResult: unknown;
@@ -553,28 +541,22 @@ export class LanePool {
         sessionBaseDir: this.options.sessionBaseDir,
         cwd: this.options.cwd,
         apiKeys: this.options.apiKeys,
-        maxStepRetries: this.options.maxStepRetries ?? 5,
+        maxStepRetries: this.options.maxStepRetries ?? DEFAULT_MAX_STEP_RETRIES,
         rendererRegistry: this.options.rendererRegistry,
         hookRegistry: this.options.hookRegistry,
         auditLog: this.options.auditLog,
         signal: this.options.signal,
         worktreeManager: this.options.worktreeManager,
         stepTimeoutMs: this.options.stepTimeoutMs,
-        // In worktree mode, defer settlement until after merge so a
-        // failed merge can flip the outcome to `failed`. The closure
-        // reads `worktreeCreated` at call time — which is set BEFORE
-        // the runner is invoked below — so the deferred path is taken
-        // only when the worktree was actually created.
+        // In worktree mode, defer settlement until after merge so a failed
+        // merge can downgrade the outcome (reads worktreeCreated at call time).
         completeTask: (result?: unknown) => {
           if (worktreeCreated) {
             deferredResult = result;
             deferredCompletion = true;
             return true;
           }
-          // Non-deferred path: worktreeCreated === false ⇒ the agent ran in the
-          // configured pool cwd (no isolated per-task worktree), so there is no
-          // worktree-rooted absolute path to strip. Relativization is intentionally
-          // deferred-path-only.
+          // Non-worktree path: no worktree-rooted paths to relativize.
           return safeCompleteTask(task.id, result, processorCtx);
         },
         failTask: (result?: unknown) => safeFailTask(task.id, result ?? { completed: false }, processorCtx),
@@ -602,10 +584,8 @@ export class LanePool {
       let outcome: TaskOutcome = await resolvedRunner(runnerCtx);
 
       // ── Merge on success (worktree mode only) ────────────────────────
-      // After the runner reports `completed`, squash-merge the task
-      // branch into the main-wt branch. If the merge fails (conflicts
-      // the agent couldn't resolve, or an unexpected throw), the task
-      // is settled as `failed` instead of `completed`.
+      // Squash-merge the task branch into the main branch. A failed merge
+      // settles the task as `failed` instead of `completed`.
       if (outcome.status === 'completed' && worktreeCreated && worktreeManager) {
         let mergeSucceeded = true;
         let mergeError: string | undefined;
@@ -621,26 +601,18 @@ export class LanePool {
         }
 
         if (mergeSucceeded) {
-          // Merge succeeded — now settle the task as completed using
-          // the deferred result the runner supplied via completeTask.
-          // Only settle if the runner actually called completeTask;
-          // otherwise the task is left in its current (non-complete)
-          // state, matching the non-worktree behavior for a runner that
-          // returns `completed` without settling.
+          // Settle as completed using the deferred result (only if the
+          // runner actually called completeTask — otherwise leave the
+          // task unsettled, matching the non-worktree behavior).
           if (deferredCompletion) {
-            // Relativize the deferred result so absolute worktree paths (e.g. an
-            // implementation review's issues[].file) become repo-relative before settling
-            // into the tracker. Implementation tasks run via LanePool→linearStepsRunner
-            // (not runStepTask/runMultiStepTask), so THIS deferred seam is what
-            // relativizes their results; the phase-tasks seams cover the standalone
-            // primitives used by other phases. Complementary across code paths; idempotent.
+            // Relativize absolute worktree paths (e.g. issues[].file) to repo-relative
+            // before settling. Implementation tasks run via LanePool→linearStepsRunner,
+            // so this deferred seam is what relativizes their results.
             deferredResult = relativizePathsIn(deferredResult, [runnerCtx.cwd, worktreeManager.mainWorktreePath]);
             safeCompleteTask(task.id, deferredResult, processorCtx);
           }
         } else {
-          // Merge failed — settle as failed so the task is NOT
-          // reported as complete. safeFailTask works here because the
-          // task was never actually settled in the deferred path.
+          // Merge failed — settle as failed (task was never settled in the deferred path).
           const reason = mergeError ?? 'Merge failed';
           safeFailTask(task.id, { completed: false, error: reason }, processorCtx);
           outcome = { status: 'failed', error: reason };

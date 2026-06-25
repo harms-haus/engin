@@ -19,6 +19,7 @@ export * from './core/worktree-fixup.js';
 export * from './core/worktree-lifecycle.js';
 export * from './core/worktree-manager.js';
 export * from './core/worktree-operations.js';
+export * from './core/worktree-populate.js';
 export * from './hooks/index.js';
 
 // ─── Pool ────────────────────────────────────────────────────────────────

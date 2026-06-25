@@ -80,19 +80,23 @@ export function clearTaskSessions(sessionBaseDir: string, taskId: string): void 
   rmSync(join(sessionBaseDir, taskId), { recursive: true, force: true });
 }
 
+/** Parameters for {@link runStep}. */
+export interface RunStepParams {
+  task: Task;
+  step: StepDefinition;
+  agentId: string;
+  ctx: RunStepContext;
+  profiles: Map<string, AgentProfile>;
+  execCtx: StepExecutionContext;
+  existingSessionPath?: string;
+}
+
 /**
  * Run a single step: load the profile, create a harness session, prompt
  * the agent, and determine approval.
  */
-export async function runStep(
-  task: Task,
-  step: StepDefinition,
-  agentId: string,
-  ctx: RunStepContext,
-  profiles: Map<string, AgentProfile>,
-  execCtx: StepExecutionContext,
-  existingSessionPath?: string,
-): Promise<{ result: StepResult; trackedSession: TrackedSession }> {
+export async function runStep(params: RunStepParams): Promise<{ result: StepResult; trackedSession: TrackedSession }> {
+  const { task, step, agentId, ctx, profiles, execCtx, existingSessionPath } = params;
   // Validate task id and step name against path traversal
   assertSafeName(task.id, 'task id');
   assertSafeName(step.name, 'step name');

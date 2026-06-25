@@ -38,9 +38,9 @@ export function validateWebSocketOrigin(req: Request): boolean {
     try {
       const originUrl = new URL(origin);
 
-      // Bug 1 — Non-HTTP scheme Origins (e.g. capacitor://, file://, ionic://)
-      // Mobile browsers and Capacitor apps send origins with app-specific
-      // schemes. These are safe same-app connections that should be allowed.
+      // Non-HTTP scheme Origins (e.g. capacitor://, file://, ionic://) are
+      // allowed because mobile browsers and Capacitor apps send origins with
+      // app-specific schemes. These are safe same-app connections.
       if (originUrl.protocol !== 'http:' && originUrl.protocol !== 'https:') {
         return true;
       }
@@ -54,15 +54,15 @@ export function validateWebSocketOrigin(req: Request): boolean {
       const targetHostname = targetParts[0]?.toLowerCase() || '';
       const targetPort = targetParts.length > 1 ? targetParts.slice(1).join(':') : '';
 
-      // Bug 3 — Compare hostnames case-insensitively (RFC 3986).
-      // originUrl.hostname is already lowercased by the URL constructor.
+      // Hostnames are compared case-insensitively per RFC 3986. The URL
+      // constructor already lowercases `originUrl.hostname`.
       if (originUrl.hostname.toLowerCase() !== targetHostname) {
         return false;
       }
 
-      // Bug 2 — Port omission: only compare ports when both are present
-      // and non-empty. If one side omits the port (default scheme port),
-      // treat it as a match.
+      // Ports are only compared when both Origin and Host explicitly carry
+      // one. If either side omits the port (defaulting to the scheme's
+      // well-known port), the check is skipped to avoid false negatives.
       const originPort = originUrl.port;
       if (originPort && targetPort && originPort !== targetPort) {
         return false;

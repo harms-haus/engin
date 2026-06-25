@@ -34,7 +34,7 @@
 //     async createTaskWorktree(taskId: string, taskPrompt?: string): Promise<string>;
 //     async mergeTaskBranch(taskId: string): Promise<{ success: boolean; conflictsResolved: boolean }>;
 //     async cullTaskWorktree(taskId: string): Promise<void>;
-//     async prune(): Promise<void>;
+//     async gitWorktreePrune(): Promise<void>;
 //     async finalMergeToMain(): Promise<{ success: boolean; conflicts: string[]; conflictsResolved: boolean }>;
 //     async resolveFinalMergeConflicts(conflicts: string[], taskPrompt: string): Promise<boolean>;
 //     async abortFinalMerge(): Promise<void>;
@@ -83,14 +83,11 @@ const mockListConflictedFiles = mock((_repoRoot: string): string[] => []);
 const mockAbortMerge = mock((_repoRoot: string): void => {});
 
 // ─── Mock functions for worktree-operations.ts ──────────────────────────────
+//
+// Only commitWorktreeChanges is mocked — mergeWorktreeToMain was removed from
+// worktree-operations.ts (dead code: WorktreeManager handles merges directly).
 
 const mockCommitWorktreeChanges = mock(async (_opts: unknown): Promise<void> => {});
-const mockMergeWorktreeToMain = mock(
-  async (_opts: unknown): Promise<{ success: boolean; conflictsResolved: boolean; cleanupError?: string }> => ({
-    success: true,
-    conflictsResolved: false,
-  }),
-);
 
 // ─── Mock functions for worktree-lifecycle.ts ───────────────────────────────
 
@@ -146,7 +143,6 @@ mock.module('../../packages/engine/src/core/git.js', () => ({
 
 mock.module('../../packages/engine/src/core/worktree-operations.js', () => ({
   commitWorktreeChanges: mockCommitWorktreeChanges,
-  mergeWorktreeToMain: mockMergeWorktreeToMain,
 }));
 
 mock.module('../../packages/engine/src/core/worktree-lifecycle.js', () => ({
@@ -694,20 +690,30 @@ describe('cullTaskWorktree', () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// prune
+// gitWorktreePrune
 // ═══════════════════════════════════════════════════════════════════════════════
 
-describe('prune', () => {
-  it('calls worktreePrune on the repo root', async () => {
+describe('gitWorktreePrune', () => {
+  it('sweeps orphaned git worktree metadata via git worktree prune (delegates to repoRoot)', async () => {
     const wm = makeManager({ repoRoot: '/fake/repo' });
-    await wm.prune();
+    await wm.gitWorktreePrune();
 
     expect(mockWorktreePrune).toHaveBeenCalledWith('/fake/repo');
   });
 
+  it('passes the configured repoRoot exactly once per call', async () => {
+    mockWorktreePrune.mockClear();
+    const wm = makeManager({ repoRoot: '/another/root' });
+
+    await wm.gitWorktreePrune();
+
+    expect(mockWorktreePrune).toHaveBeenCalledTimes(1);
+    expect(mockWorktreePrune).toHaveBeenCalledWith('/another/root');
+  });
+
   it('resolves with void', async () => {
     const wm = makeManager();
-    await expect(wm.prune()).resolves.toBeUndefined();
+    await expect(wm.gitWorktreePrune()).resolves.toBeUndefined();
   });
 });
 
@@ -1005,7 +1011,7 @@ describe('WorktreeManager module surface', () => {
     expect(typeof wm.createTaskWorktree).toBe('function');
     expect(typeof wm.mergeTaskBranch).toBe('function');
     expect(typeof wm.cullTaskWorktree).toBe('function');
-    expect(typeof wm.prune).toBe('function');
+    expect(typeof wm.gitWorktreePrune).toBe('function');
     expect(typeof wm.finalMergeToMain).toBe('function');
     expect(typeof wm.resolveFinalMergeConflicts).toBe('function');
     expect(typeof wm.abortFinalMerge).toBe('function');

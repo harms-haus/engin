@@ -19,6 +19,7 @@
  * - selector hooks
  */
 
+import { MAX_WORKFLOW_EVENT_LOG } from '@engin/shared/event-types';
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { EventRecord, RunSummary, WorkflowProjection } from '../protocol-types';
 import type { WorkflowStoreState } from './workflow-store';
@@ -608,20 +609,61 @@ describe('store – workflowEventLog', () => {
     expect(log[0].seq).toBe(1);
   });
 
-  it('caps workflowEventLog at 1000 entries (oldest dropped)', () => {
+  it('caps workflowEventLog at MAX_WORKFLOW_EVENT_LOG (10000), dropping the oldest (FIFO)', () => {
+    // The web store shares the consolidated MAX_WORKFLOW_EVENT_LOG constant
+    // from @engin/shared/event-types (unified to 10000 — previously the web
+    // store used a local 1000, 10× smaller than the TUI). Feeding more than
+    // the cap trims the oldest entries so memory stays bounded.
     const store = useWorkflowStore.getState();
     const events: EventRecord[] = [];
-    for (let i = 1; i <= 1001; i++) {
+    for (let i = 1; i <= MAX_WORKFLOW_EVENT_LOG + 1; i++) {
       events.push(evt('workflow_started', { taskPrompt: `run-${i}` }, {}, i));
     }
     store.applyEvents(SELECTED_RUN, events);
 
     const log = useWorkflowStore.getState().workflowEventLog;
-    expect(log).toHaveLength(1000);
+    expect(log).toHaveLength(MAX_WORKFLOW_EVENT_LOG);
+    // Oldest entry (seq 1) dropped; first retained is seq 2.
     expect(log[0].seq).toBe(2);
     expect(log[0].line).toContain('run-2');
-    expect(log[999].seq).toBe(1001);
-    expect(log[999].line).toContain('run-1001');
+    expect(log[log.length - 1].seq).toBe(MAX_WORKFLOW_EVENT_LOG + 1);
+    expect(log[log.length - 1].line).toContain(`run-${MAX_WORKFLOW_EVENT_LOG + 1}`);
+  });
+
+  it('uses the SAME cap value as the TUI ClientStore (unified MAX_WORKFLOW_EVENT_LOG)', () => {
+    // Regression guard for the 1000-vs-10000 divergence: the web store must
+    // cap at the shared constant, not a smaller local value.
+    expect(MAX_WORKFLOW_EVENT_LOG).toBe(10000);
+
+    const store = useWorkflowStore.getState();
+    // Feed exactly the cap + a handful more in batches (realistic delivery).
+    const total = MAX_WORKFLOW_EVENT_LOG + 50;
+    const batch = 500;
+    for (let start = 1; start <= total; start += batch) {
+      const events: EventRecord[] = [];
+      const end = Math.min(start + batch - 1, total);
+      for (let i = start; i <= end; i++) events.push(evt('workflow_started', { taskPrompt: `run-${i}` }, {}, i));
+      store.applyEvents(SELECTED_RUN, events);
+    }
+
+    const log = useWorkflowStore.getState().workflowEventLog;
+    expect(log).toHaveLength(MAX_WORKFLOW_EVENT_LOG);
+    // First 50 entries trimmed; oldest retained is seq 51.
+    expect(log[0].seq).toBe(total - MAX_WORKFLOW_EVENT_LOG + 1);
+    expect(log[log.length - 1].seq).toBe(total);
+  });
+
+  it('does NOT trim workflowEventLog at the old web cap of 1000', () => {
+    // The previous web-only cap (1000) is gone — feeding just over 1000 loud
+    // events must retain ALL of them (the unified cap is 10000).
+    const store = useWorkflowStore.getState();
+    const events: EventRecord[] = [];
+    for (let i = 1; i <= 1001; i++) events.push(evt('workflow_started', { taskPrompt: `run-${i}` }, {}, i));
+    store.applyEvents(SELECTED_RUN, events);
+
+    const log = useWorkflowStore.getState().workflowEventLog;
+    expect(log).toHaveLength(1001); // nothing dropped below the 10000 cap
+    expect(log[0].seq).toBe(1); // oldest retained
   });
 
   it('applySnapshot resets workflowEventLog on a fresh start (state.seq === 0)', () => {

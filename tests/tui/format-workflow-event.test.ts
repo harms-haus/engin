@@ -314,12 +314,12 @@ describe('formatWorkflowEventLine', () => {
       const line = formatWorkflowEventLine(
         ev('auto_retry_started', { attempt: 2, maxAttempts: 5, delayMs: 3000, errorMessage: 'timeout' }),
       );
-      expect(line).toBe('🔄 Retrying (attempt 2/5) in 3000ms: timeout');
+      expect(line).toBe('🔄 Retrying (attempt 2/5) in 3s: timeout');
     });
 
     it('omits the suffix when errorMessage is missing', () => {
       const line = formatWorkflowEventLine(ev('auto_retry_started', { attempt: 1, maxAttempts: 3, delayMs: 1000 }));
-      expect(line).toBe('🔄 Retrying (attempt 1/3) in 1000ms');
+      expect(line).toBe('🔄 Retrying (attempt 1/3) in 1s');
     });
 
     it('omits the suffix when errorMessage is empty string', () => {
@@ -331,7 +331,7 @@ describe('formatWorkflowEventLine', () => {
 
     it('defaults missing attempt/maxAttempts/delayMs defensively', () => {
       const line = formatWorkflowEventLine(ev('auto_retry_started', {}));
-      expect(line).toBe('🔄 Retrying (attempt 1/1) in 0ms');
+      expect(line).toBe('🔄 Retrying (attempt 1/1)');
     });
 
     it('strips ANSI escape codes from errorMessage in retry line', () => {
@@ -339,7 +339,7 @@ describe('formatWorkflowEventLine', () => {
       const line = formatWorkflowEventLine(
         ev('auto_retry_started', { attempt: 1, maxAttempts: 3, delayMs: 1000, errorMessage: ansiMsg }),
       );
-      expect(line).toBe('🔄 Retrying (attempt 1/3) in 1000ms: overloaded (429)');
+      expect(line).toBe('🔄 Retrying (attempt 1/3) in 1s: overloaded (429)');
       expect(line).not.toContain('\x1b');
     });
 
@@ -356,7 +356,7 @@ describe('formatWorkflowEventLine', () => {
       const line = formatWorkflowEventLine(
         ev('auto_retry_started', { attempt: 2, maxAttempts: 4, delayMs: 2000, errorMessage: messy }),
       );
-      expect(line).toBe('🔄 Retrying (attempt 2/4) in 2000ms: first second');
+      expect(line).toBe('🔄 Retrying (attempt 2/4) in 2s: first second');
       expect(line).not.toContain('\x1b');
       expect(line).not.toContain('\n');
     });

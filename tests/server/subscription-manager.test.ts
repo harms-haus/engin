@@ -237,6 +237,119 @@ describe('SubscriptionManager', () => {
       // No subscribers at all.
       expect(() => mgr.broadcast('bcast-empty', { type: 'run_complete', runId: 'bcast-empty' }, handle)).not.toThrow();
     });
+
+    // ── Dead-socket cleanup ───────────────────────────────────────────────
+    //
+    // After unclean disconnects (network drop, process kill), dead sockets
+    // accumulate in the subscriber set. `broadcast` must evict them to prevent
+    // an unbounded memory leak and avoid re-iterating them on every future
+    // broadcast.
+
+    it('removes CLOSING (readyState 2) sockets from the subscriber set after broadcast', () => {
+      const mgr = new SubscriptionManager();
+      const handle = makeHandle('bcast-cleanup-closing');
+      const closing = makeMockWs({ readyState: 2 }); // CLOSING
+      mgr.subscribe(closing.ws, 'bcast-cleanup-closing', handle);
+      expect(handle.subscribers.has(closing.ws)).toBe(true);
+
+      mgr.broadcast('bcast-cleanup-closing', { type: 'run_complete', runId: 'bcast-cleanup-closing' }, handle);
+
+      expect(handle.subscribers.has(closing.ws)).toBe(false);
+      expect(handle.subscribers.size).toBe(0);
+    });
+
+    it('removes CLOSED (readyState 3) sockets from the subscriber set after broadcast', () => {
+      const mgr = new SubscriptionManager();
+      const handle = makeHandle('bcast-cleanup-closed');
+      const closed = makeMockWs({ readyState: 3 }); // CLOSED
+      mgr.subscribe(closed.ws, 'bcast-cleanup-closed', handle);
+
+      mgr.broadcast('bcast-cleanup-closed', { type: 'run_complete', runId: 'bcast-cleanup-closed' }, handle);
+
+      expect(handle.subscribers.has(closed.ws)).toBe(false);
+    });
+
+    it('removes a socket whose send() throws (stale mid-send) from the subscriber set', () => {
+      const mgr = new SubscriptionManager();
+      const handle = makeHandle('bcast-cleanup-throw');
+      const stale = makeMockWs({ readyState: 1, sendThrows: true }); // OPEN but send fails
+      mgr.subscribe(stale.ws, 'bcast-cleanup-throw', handle);
+      expect(handle.subscribers.has(stale.ws)).toBe(true);
+
+      mgr.broadcast('bcast-cleanup-throw', { type: 'run_complete', runId: 'bcast-cleanup-throw' }, handle);
+
+      expect(handle.subscribers.has(stale.ws)).toBe(false);
+    });
+
+    it('does NOT remove CONNECTING (readyState 0) sockets — they may still establish', () => {
+      const mgr = new SubscriptionManager();
+      const handle = makeHandle('bcast-cleanup-connecting');
+      const connecting = makeMockWs({ readyState: 0 }); // CONNECTING
+      mgr.subscribe(connecting.ws, 'bcast-cleanup-connecting', handle);
+
+      mgr.broadcast('bcast-cleanup-connecting', { type: 'run_complete', runId: 'bcast-cleanup-connecting' }, handle);
+
+      // CONNECTING sockets are retained so a subsequent OPEN transition can
+      // start receiving broadcasts.
+      expect(handle.subscribers.has(connecting.ws)).toBe(true);
+    });
+
+    it('does NOT remove OPEN (readyState 1) sockets that deliver successfully', () => {
+      const mgr = new SubscriptionManager();
+      const handle = makeHandle('bcast-cleanup-open');
+      const open = makeMockWs({ readyState: 1 });
+      mgr.subscribe(open.ws, 'bcast-cleanup-open', handle);
+
+      mgr.broadcast('bcast-cleanup-open', { type: 'run_complete', runId: 'bcast-cleanup-open' }, handle);
+
+      expect(handle.subscribers.has(open.ws)).toBe(true);
+    });
+
+    it('evicts dead sockets while still delivering to OPEN ones in the same broadcast', () => {
+      const mgr = new SubscriptionManager();
+      const handle = makeHandle('bcast-cleanup-mixed');
+      const open1 = makeMockWs({ readyState: 1 });
+      const closing = makeMockWs({ readyState: 2 });
+      const closed = makeMockWs({ readyState: 3 });
+      const stale = makeMockWs({ readyState: 1, sendThrows: true });
+      const open2 = makeMockWs({ readyState: 1 });
+      mgr.subscribe(open1.ws, 'bcast-cleanup-mixed', handle);
+      mgr.subscribe(closing.ws, 'bcast-cleanup-mixed', handle);
+      mgr.subscribe(closed.ws, 'bcast-cleanup-mixed', handle);
+      mgr.subscribe(stale.ws, 'bcast-cleanup-mixed', handle);
+      mgr.subscribe(open2.ws, 'bcast-cleanup-mixed', handle);
+
+      const msg: ServerMessage = { type: 'run_failed', runId: 'bcast-cleanup-mixed', error: 'x', phase: 'plan' };
+      expect(() => mgr.broadcast('bcast-cleanup-mixed', msg, handle)).not.toThrow();
+
+      // OPEN sockets (including one before and after the dead ones) received it.
+      expect(open1.sent).toHaveLength(1);
+      expect(open2.sent).toHaveLength(1);
+      // Dead sockets were evicted; only the two healthy OPEN sockets remain.
+      expect(handle.subscribers.size).toBe(2);
+      expect(handle.subscribers.has(open1.ws)).toBe(true);
+      expect(handle.subscribers.has(open2.ws)).toBe(true);
+      expect(handle.subscribers.has(closing.ws)).toBe(false);
+      expect(handle.subscribers.has(closed.ws)).toBe(false);
+      expect(handle.subscribers.has(stale.ws)).toBe(false);
+    });
+
+    it('purged dead sockets are not re-iterated on a subsequent broadcast', () => {
+      const mgr = new SubscriptionManager();
+      const handle = makeHandle('bcast-cleanup-reiterate');
+      const closed = makeMockWs({ readyState: 3 });
+      mgr.subscribe(closed.ws, 'bcast-cleanup-reiterate', handle);
+
+      mgr.broadcast('bcast-cleanup-reiterate', { type: 'run_complete', runId: 'bcast-cleanup-reiterate' }, handle);
+      // First broadcast evicted the dead socket.
+      expect(handle.subscribers.size).toBe(0);
+
+      // A second broadcast should still be safe and the set should remain empty.
+      expect(() =>
+        mgr.broadcast('bcast-cleanup-reiterate', { type: 'run_complete', runId: 'bcast-cleanup-reiterate' }, handle),
+      ).not.toThrow();
+      expect(handle.subscribers.size).toBe(0);
+    });
   });
 
   // ─── unsubscribe ─────────────────────────────────────────────────────────

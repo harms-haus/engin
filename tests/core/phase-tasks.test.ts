@@ -66,6 +66,7 @@ mock.module('../../packages/engine/src/core/structured-output.js', () => ({
 
 import type { RunStepTaskOptions } from '../../packages/engine/src/core/phase-tasks.js';
 import { runMultiStepTask, runStepTask } from '../../packages/engine/src/core/phase-tasks.js';
+import type { HookRegistry } from '../../packages/engine/src/hooks/types.js';
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
 
@@ -2066,6 +2067,153 @@ describe('runMultiStepTask', () => {
       // The lazy prompt received the ALREADY-RELATIVE planner result.
       expect(reviewerLazyPrompt).toHaveBeenCalledTimes(1);
       expect(reviewerLazyPrompt.mock.calls[0]![0]).toEqual(['plan.md']);
+    });
+  });
+
+  // ── onDecision observe hook (hookRegistry) ──────────────────────────
+  //
+  // runMultiStepTask fires the `onDecision` OBSERVE hook (audit-log sink)
+  // ALONGSIDE the `onStatus.onDecision` callback (event-store sink) on each
+  // step rejection. These tests pin down the hook-firing behavior so the
+  // extraction of fireOnDecisionHook() is provably behavior-preserving.
+  // phase-tasks uses `effectiveCwd` (worktree path or original cwd) as the
+  // hook context `cwd` and the original `cwd` as `workDir`.
+
+  describe('onDecision observe hook (hookRegistry)', () => {
+    /** Minimal fake HookRegistry. `hasSubscribers` returns true ONLY for
+     *  'onDecision' so other seams stay dormant. */
+    function makeFakeRegistry(hasSubs: boolean) {
+      return {
+        register: mock(() => {}),
+        invokeObserve: mock(async () => {}),
+        invokePipeline: mock(async () => undefined),
+        invokeFirstWins: mock(async () => undefined),
+        invokeAllRun: mock(async () => undefined),
+        hasSubscribers: mock((name: string) => hasSubs && name === 'onDecision'),
+      };
+    }
+
+    it('invokes the onDecision observe hook on each step rejection', async () => {
+      setupSessionPerProfile({});
+      mockPromptForStructured.mockResolvedValue({ result: { ready: false, feedback: 'too vague' }, attempts: 1 });
+
+      const registry = makeFakeRegistry(true);
+      const res = await runMultiStepTask({
+        ...makeTwoStepOptions({ maxStepRetries: 2 }),
+        hookRegistry: registry as unknown as HookRegistry,
+      });
+
+      // 2 rejections (maxStepRetries=2) → 2 observe-hook invocations.
+      expect(res.approved).toBe(false);
+      expect(registry.invokeObserve).toHaveBeenCalledTimes(2);
+    });
+
+    it('passes agentId=taskId, taskId, phaseId, decision and reasoning into the args', async () => {
+      setupSessionPerProfile({});
+      mockPromptForStructured.mockResolvedValue({ result: { ready: false, feedback: 'too vague' }, attempts: 1 });
+
+      const registry = makeFakeRegistry(true);
+      await runMultiStepTask({
+        ...makeTwoStepOptions({ maxStepRetries: 1 }),
+        hookRegistry: registry as unknown as HookRegistry,
+      });
+
+      expect(registry.invokeObserve).toHaveBeenCalledWith(
+        'onDecision',
+        expect.objectContaining({
+          agentId: 'planning',
+          taskId: 'planning',
+          phaseId: 'plan-phase',
+          decision: 'Step "review-plan" rejected (attempt 1/1)',
+          reasoning: 'too vague',
+        }),
+        expect.anything(),
+      );
+    });
+
+    it('fires both onStatus.onDecision AND the observe hook (two separate sinks)', async () => {
+      setupSessionPerProfile({});
+      mockPromptForStructured.mockResolvedValue({ result: { ready: false, feedback: 'too vague' }, attempts: 1 });
+
+      const registry = makeFakeRegistry(true);
+      const onStatus = createStatusCallbacksSpy();
+      await runMultiStepTask({
+        ...makeTwoStepOptions({ maxStepRetries: 1, onStatus: onStatus as unknown as StatusCallbacks }),
+        hookRegistry: registry as unknown as HookRegistry,
+      });
+
+      expect(onStatus.onDecision).toHaveBeenCalledTimes(1);
+      expect(registry.invokeObserve).toHaveBeenCalledTimes(1);
+    });
+
+    it('does NOT invoke the observe hook when hookRegistry has no subscribers', async () => {
+      setupSessionPerProfile({});
+      mockPromptForStructured.mockResolvedValue({ result: { ready: false, feedback: 'too vague' }, attempts: 1 });
+
+      const registry = makeFakeRegistry(false);
+      await runMultiStepTask({
+        ...makeTwoStepOptions({ maxStepRetries: 1 }),
+        hookRegistry: registry as unknown as HookRegistry,
+      });
+
+      expect(registry.invokeObserve).not.toHaveBeenCalled();
+    });
+
+    it('does NOT invoke the observe hook when no hookRegistry is provided', async () => {
+      setupSessionPerProfile({});
+      mockPromptForStructured.mockResolvedValue({ result: { ready: false, feedback: 'too vague' }, attempts: 1 });
+
+      const res = await runMultiStepTask(makeTwoStepOptions({ maxStepRetries: 1 }));
+
+      // Smoke test — completes without error.
+      expect(res.approved).toBe(false);
+    });
+
+    it('does NOT invoke the observe hook when no step is rejected', async () => {
+      setupSessionPerProfile({});
+      mockPromptForStructured.mockResolvedValue({ result: { ready: true }, attempts: 1 });
+
+      const registry = makeFakeRegistry(true);
+      await runMultiStepTask({
+        ...makeTwoStepOptions(),
+        hookRegistry: registry as unknown as HookRegistry,
+      });
+
+      expect(registry.invokeObserve).not.toHaveBeenCalled();
+    });
+
+    it('passes hook context with cwd = effectiveCwd and workDir = cwd (no worktree)', async () => {
+      setupSessionPerProfile({});
+      mockPromptForStructured.mockResolvedValue({ result: { ready: false, feedback: 'too vague' }, attempts: 1 });
+
+      const registry = makeFakeRegistry(true);
+      await runMultiStepTask({
+        ...makeTwoStepOptions({ maxStepRetries: 1 }),
+        hookRegistry: registry as unknown as HookRegistry,
+      });
+
+      const hookCtx = (registry.invokeObserve.mock.calls[0] as unknown[])[2] as Record<string, unknown>;
+      expect(hookCtx.registry).toBe(registry);
+      expect(hookCtx.cwd).toBe('/tmp/project');
+      expect(hookCtx.workDir).toBe('/tmp/project');
+    });
+
+    it('uses the worktree path as cwd and original cwd as workDir when a worktree is active', async () => {
+      setupSessionPerProfile({});
+      mockPromptForStructured.mockResolvedValue({ result: { ready: false, feedback: 'too vague' }, attempts: 1 });
+
+      const registry = makeFakeRegistry(true);
+      const wtm = makeMockWorktreeManager({ worktreePath: '/wt/planning' });
+      await runMultiStepTask({
+        ...makeTwoStepOptions({ maxStepRetries: 1 }),
+        worktreeManager: wtm as unknown as WorktreeManager,
+        hookRegistry: registry as unknown as HookRegistry,
+      });
+
+      const hookCtx = (registry.invokeObserve.mock.calls[0] as unknown[])[2] as Record<string, unknown>;
+      // effectiveCwd becomes the worktree path; workDir stays the original cwd.
+      expect(hookCtx.cwd).toBe('/wt/planning');
+      expect(hookCtx.workDir).toBe('/tmp/project');
     });
   });
 });

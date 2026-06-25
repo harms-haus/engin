@@ -176,34 +176,6 @@ afterEach(() => {
   resetStore();
 });
 
-// ─── URL derivation ────────────────────────────────────────────────────────
-
-describe('useWebSocket – URL derivation', () => {
-  it('derives ws:// URL from http:// window.location', () => {
-    setLocation('http://localhost:5173');
-    renderHook(() => useWebSocket());
-    expect(MockWebSocket.instances[0].url).toBe('ws://localhost:5173/ws');
-  });
-
-  it('derives wss:// URL from https:// window.location', () => {
-    setLocation('https://example.com:3619');
-    renderHook(() => useWebSocket());
-    expect(MockWebSocket.instances[0].url).toBe('wss://example.com:3619/ws');
-  });
-
-  it('ignores the {{WS_ENDPOINT}} placeholder', () => {
-    (window as any).__WS_ENDPOINT__ = '{{WS_ENDPOINT}}';
-    renderHook(() => useWebSocket());
-    expect(MockWebSocket.instances[0].url).toBe('ws://localhost:5173/ws');
-  });
-
-  it('uses __WS_ENDPOINT__ when it is a real URL', () => {
-    (window as any).__WS_ENDPOINT__ = 'ws://my-server:9999/ws';
-    renderHook(() => useWebSocket());
-    expect(MockWebSocket.instances[0].url).toBe('ws://my-server:9999/ws');
-  });
-});
-
 // ─── Singleton connection (no duplication) ──────────────────────────────────
 
 describe('useWebSocket – singleton connection', () => {

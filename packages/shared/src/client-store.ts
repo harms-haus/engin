@@ -13,19 +13,11 @@
  */
 
 import type { EventRecord, TaskStatus, WorkflowProjection } from './event-types.js';
-import { createInitialProjection, MAX_RUN_LOG } from './event-types.js';
+import { createInitialProjection, MAX_RUN_LOG, MAX_WORKFLOW_EVENT_LOG } from './event-types.js';
 import { evolve } from './evolve.js';
 import { formatWorkflowEventLine } from './format-workflow-event.js';
 import { formatWorkflowSummary } from './format-workflow-summary.js';
 import { reconcileSelection, toProjection, writeProjectionToState } from './projection-helpers.js';
-
-// ─── Workflow Event-Log Cap ─────────────────────────────────────────────────
-// Maximum number of entries retained in `workflowEventLog`. Older entries are
-// dropped (FIFO) once this limit is exceeded so memory stays bounded for
-// long-running workflows. The cap is generous (well above the TUI's visible
-// window) to preserve ample scroll-back; the TUI only ever displays `maxLines`
-// rows, so a bounded buffer loses nothing the user can see in practice.
-const MAX_WORKFLOW_EVENT_LOG = 10000;
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 

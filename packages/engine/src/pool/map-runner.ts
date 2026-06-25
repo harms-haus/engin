@@ -8,7 +8,7 @@
 
 import type { Task } from '../core/types.js';
 import { safeErrorMessage } from '../core/utils.js';
-import { composeItemPrompt } from './prompt-builder.js';
+import { composeItemPrompt as defaultComposeItemPrompt } from './prompt-builder.js';
 import { buildExecCtx, createSessionTracker, handleRunnerError } from './runner-utils.js';
 import { runStep } from './step-execution.js';
 import type { StepDefinition, TaskOutcome, TaskRunner, TaskRunnerContext } from './types.js';
@@ -51,7 +51,7 @@ export function mapRunner(options: MapRunnerOptions): TaskRunner {
   const { items: getItems, step, concurrency: concurrencyOpt } = options;
   // Default to the shared item-prompt composer, preserving the legacy prompt
   // format unless the caller supplies a custom composition strategy.
-  const composeItem = options.composeItemPrompt ?? composeItemPrompt;
+  const composeItem = options.composeItemPrompt ?? defaultComposeItemPrompt;
 
   return async (ctx: TaskRunnerContext): Promise<TaskOutcome> => {
     const { task, agentId, profiles, onStatus } = ctx;
@@ -80,14 +80,14 @@ export function mapRunner(options: MapRunnerOptions): TaskRunner {
         // original ctx.task is never mutated — the composer returns a new Task.
         const itemTask = composeItem(task, index, items.length, item);
 
-        const { result, trackedSession } = await runStep(
-          itemTask,
+        const { result, trackedSession } = await runStep({
+          task: itemTask,
           step,
           agentId,
-          { stepIndex: index, attempt: 0, execCount: 0 },
+          ctx: { stepIndex: index, attempt: 0, execCount: 0 },
           profiles,
           execCtx,
-        );
+        });
 
         // CRITICAL: track the session immediately after runStep succeeds
         tracker.add(trackedSession);

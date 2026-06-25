@@ -3,7 +3,13 @@ import type { AgentEntity, LogEntry, TaskEntity, WorkflowProjection } from '@eng
 import { createInitialProjection } from '@engin/shared';
 import { describe, expect, it, spyOn } from 'bun:test';
 import { Dashboard } from '../../../packages/tui/src/components/dashboard.js';
-import { stripAnsi } from '../../../packages/tui/src/theme.js';
+
+/** Strip ANSI escape sequences (CSI and OSC) — local helper to avoid importing dead theme export. */
+function stripAnsi(str: string): string {
+  if (!str.includes('\x1b')) return str;
+
+  return str.replace(/\x1b\[[^a-zA-Z]*[a-zA-Z]/g, '').replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, '');
+}
 
 const WIDTH = 80;
 

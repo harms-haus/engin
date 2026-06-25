@@ -19,7 +19,7 @@
 
 // ─── Value exports ───────────────────────────────────────────────────────────
 
-export { MAX_RUN_LOG, createInitialProjection } from './event-types.js';
+export { MAX_RUN_LOG, MAX_WORKFLOW_EVENT_LOG, createInitialProjection } from './event-types.js';
 export { MAX_AGENT_LOG, evolve } from './evolve.js';
 export { formatTokenCount } from './format-token-count.js';
 export { formatToolCall } from './format-tool-call.js';

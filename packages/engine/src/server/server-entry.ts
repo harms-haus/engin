@@ -89,11 +89,19 @@ async function main(): Promise<void> {
     controlServer.broadcast({ type: 'runs', runs: runManager.listRuns() });
   };
 
+  // The Bun.serve handle keeps the event loop alive on its own; this keepalive
+  // interval is a belt-and-braces guard so a future refactor that stops the
+  // server mid-shutdown cannot accidentally exit before the SIGTERM handler
+  // runs. It is unref'd so it never blocks exit on its own.
+  const keepalive = setInterval(() => undefined, 60_000);
+  keepalive.unref();
+
   let shuttingDown = false;
 
   const shutdown = async (signal: string): Promise<void> => {
     if (shuttingDown) return;
     shuttingDown = true;
+    clearInterval(keepalive);
     process.stderr.write(`server-entry: received ${signal}, shutting down\n`);
     // Stop the control server — its onShutdown hook cancels active runs,
     // flushes stores, and disposes bridges BEFORE closing the socket.
@@ -111,13 +119,6 @@ async function main(): Promise<void> {
   process.on('SIGINT', () => void shutdown('SIGINT'));
 
   process.stderr.write(`server-entry: listening on ${controlServer.url} (pid ${process.pid})\n`);
-
-  // The Bun.serve handle keeps the event loop alive on its own; this keepalive
-  // interval is a belt-and-braces guard so a future refactor that stops the
-  // server mid-shutdown cannot accidentally exit before the SIGTERM handler
-  // runs. It is unref'd so it never blocks exit on its own.
-  const keepalive = setInterval(() => undefined, 60_000);
-  keepalive.unref();
 }
 
 const isDirectRun = process.argv[1] && import.meta.url === `file://${process.argv[1]}`;

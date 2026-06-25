@@ -148,7 +148,7 @@ describe('formatWorkflowEventLine — auto_retry events', () => {
     const line = formatWorkflowEventLine(event);
     expect(line).not.toBeNull();
     expect(line).toContain('2/5');
-    expect(line).toContain('1000ms');
+    expect(line).toContain('1s');
     expect(line).toContain('rate limited');
   });
 

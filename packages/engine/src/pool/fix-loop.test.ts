@@ -37,7 +37,7 @@ import type { AgentProfile, Task } from '../core/types.js';
 import type { WorktreeManager } from '../core/worktree-manager.js';
 import { createHookRegistry } from '../hooks/registry.js';
 import type { HookContext, OnLaneErrorArgs, ShouldIsolateArgs, WorkflowHooks } from '../hooks/types.js';
-import type { StepExecutionContext } from './step-execution.js';
+import type { RunStepParams, StepExecutionContext } from './step-execution.js';
 import type { StepDefinition, StepResult, TrackedSession } from './types.js';
 
 // ─── Capture real step-execution before mocking ────────────────────────────
@@ -179,11 +179,30 @@ function makeExecCtx(overrides: Partial<StepExecutionContext> = {}): StepExecuti
   };
 }
 
-/** Build a mock WorktreeManager exposing only `cullTaskWorktree` (a spy). */
-function makeWorktreeManager(): { instance: WorktreeManager; cull: ReturnType<typeof mock> } {
+/**
+ * Build a mock WorktreeManager exposing `cullTaskWorktree` AND the new
+ * `cullOrPreserve` method (a spy that delegates to `cullTaskWorktree`,
+ * mirroring the real WorktreeManager's implementation).
+ *
+ * After the refactor, `fixLoop` calls `cullOrPreserve(task.id, isolated)`
+ * instead of `cullTaskWorktree(task.id)` directly. The delegation means the
+ * EXISTING assertions on `cull` (cullTaskWorktree) remain valid both before
+ * AND after the refactor — the observable behavior (cull happens on
+ * exhaustion, is skipped on isolation) is preserved. The `cullOrPreserve`
+ * spy additionally lets tests assert the new delegation contract directly.
+ */
+function makeWorktreeManager(): {
+  instance: WorktreeManager;
+  cull: ReturnType<typeof mock>;
+  cullOrPreserve: ReturnType<typeof mock>;
+} {
   const cull = mock(async (_taskId: string) => {});
-  const instance = { cullTaskWorktree: cull } as unknown as WorktreeManager;
-  return { instance, cull };
+  const cullOrPreserve = mock(async (taskId: string, preserve: boolean) => {
+    if (preserve) return;
+    await cull(taskId);
+  });
+  const instance = { cullTaskWorktree: cull, cullOrPreserve } as unknown as WorktreeManager;
+  return { instance, cull, cullOrPreserve };
 }
 
 /** Minimal HookContext for directly invoking default hooks. */
@@ -230,7 +249,7 @@ function sequence(results: Array<StepResult | Error>): void {
     if (next === undefined) {
       throw new Error(
         `mockRunStep: unexpected extra call #${idx + 1}; only ${results.length} scripted. ` +
-          `step=${(args[1] as StepDefinition | undefined)?.name ?? '?'}`,
+          `step=${(args[0] as RunStepParams | undefined)?.step?.name ?? '?'}`,
       );
     }
     if (next instanceof Error) throw next;
@@ -240,7 +259,7 @@ function sequence(results: Array<StepResult | Error>): void {
 
 /** The ordered list of StepDefinitions passed to each runStep call. */
 function callSteps(): StepDefinition[] {
-  return mockRunStep.mock.calls.map((c) => c[1] as StepDefinition);
+  return mockRunStep.mock.calls.map((c) => (c[0] as RunStepParams).step);
 }
 
 /** Convenience: the ordered list of step names passed to each runStep call. */
@@ -406,6 +425,43 @@ describe('fixLoop — (c) maxRounds exhausted', () => {
     expect(outcome.status).toBe('failed');
     expect(callStepNames()).toEqual(['review', 'fix', 'review']);
     expect(mockRunStep).toHaveBeenCalledTimes(3);
+  });
+
+  it('default maxRounds is exactly 3 — pinning the shared DEFAULT_MAX_ROUNDS value', async () => {
+    // CHARACTERIZATION: the fixLoop default MUST remain 3 after the
+    // consolidation refactor (the shared DEFAULT_MAX_ROUNDS constant). We run
+    // the loop to exhaustion with NO maxRounds option and verify it makes
+    // exactly 7 calls (4 reviews + 3 fixer runs) — proving the default is the
+    // historical magic number 3, not a local copy that could drift.
+    sequence([
+      rejected('r1'),
+      approved('f1'),
+      rejected('r2'),
+      approved('f2'),
+      rejected('r3'),
+      approved('f3'),
+      rejected('r4'),
+    ]);
+
+    await fixLoop(makeOptions());
+
+    // 4 reviews + 3 fixer runs = 7 calls (maxRounds=3 → maxRounds+1 reviews).
+    expect(mockRunStep).toHaveBeenCalledTimes(7);
+    // The last call is always a review (re-review after the final fixer round).
+    expect(callStepNames()[callStepNames().length - 1]).toBe('review');
+  });
+
+  it('maxRounds=0 means no fixer rounds: a rejected initial review fails immediately', async () => {
+    // Edge: zero fixer rounds → the loop body never executes; the initial
+    // rejected review is the terminal state. Pins the boundary so a refactor
+    // of the default does not alter the zero-rounds semantics.
+    sequence([rejected('nope')]);
+
+    const outcome = await fixLoop(makeOptions({ maxRounds: 0 }));
+
+    expect(outcome.status).toBe('failed');
+    expect(callStepNames()).toEqual(['review']);
+    expect(mockRunStep).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -853,7 +909,7 @@ describe('defaults compose through the HookRegistry', () => {
 //     fixer agent runs in the isolated worktree — the precondition for a
 //     tooled edit/re-stage/self-verify fixer.
 //
-// runStep call args (positional): [task, step, laneId, ctx, profiles, execCtx].
+// runStep receives a single RunStepParams object (c[0] in mock calls).
 
 describe('fixLoop — (f) fixer step composition (runStep contract for tooled fix-up)', () => {
   // A tooled-fix-up-style fixer: implementer profile + write tools enabled.
@@ -868,15 +924,15 @@ describe('fixLoop — (f) fixer step composition (runStep contract for tooled fi
 
     await fixLoop(makeOptions({ fixerSteps: [tooledFixStep] }));
 
-    // calls[1] is the fixer call: [task, step, laneId, ctx, profiles, execCtx].
+    // calls[1] is the fixer call — a single RunStepParams object at c[0].
     const fixerCall = mockRunStep.mock.calls[1];
     expect(fixerCall).toBeDefined();
-    expect(fixerCall[1]).toBe(tooledFixStep);
+    const fixerParams = fixerCall[0] as RunStepParams;
+    expect(fixerParams.step).toBe(tooledFixStep);
     // isReadOnly:false → spawnAgent arms the fixer with write/edit/bash tools,
     // the precondition for an edit + re-stage + self-verify fixer.
-    const passedStep = fixerCall[1] as StepDefinition;
-    expect(passedStep.isReadOnly).toBe(false);
-    expect(passedStep.profileId).toBe('implementer');
+    expect(fixerParams.step.isReadOnly).toBe(false);
+    expect(fixerParams.step.profileId).toBe('implementer');
   });
 
   it('passes a stable laneId (fixLoop:<taskId>) to every runStep call', async () => {
@@ -884,7 +940,7 @@ describe('fixLoop — (f) fixer step composition (runStep contract for tooled fi
 
     await fixLoop(makeOptions({ fixerSteps: [tooledFixStep] }));
 
-    const laneIds = mockRunStep.mock.calls.map((c) => c[2]);
+    const laneIds = mockRunStep.mock.calls.map((c) => (c[0] as RunStepParams).agentId);
     expect(laneIds).toEqual([`fixLoop:${task.id}`, `fixLoop:${task.id}`, `fixLoop:${task.id}`]);
   });
 
@@ -894,7 +950,7 @@ describe('fixLoop — (f) fixer step composition (runStep contract for tooled fi
 
     await fixLoop(makeOptions({ fixerSteps: [tooledFixStep, secondFixerStep] }));
 
-    const ctxs = mockRunStep.mock.calls.map((c) => c[3]);
+    const ctxs = mockRunStep.mock.calls.map((c) => (c[0] as RunStepParams).ctx);
     // review always at position 0; fixer steps at 1..N; review re-run at 0 again.
     expect(ctxs[0]).toEqual({ stepIndex: 0, attempt: 0, execCount: 0 });
     expect(ctxs[1]).toEqual({ stepIndex: 1, attempt: 0, execCount: 1 });
@@ -909,7 +965,7 @@ describe('fixLoop — (f) fixer step composition (runStep contract for tooled fi
     await fixLoop(makeOptions({ profiles, fixerSteps: [tooledFixStep] }));
 
     for (const c of mockRunStep.mock.calls) {
-      expect(c[4]).toBe(profiles);
+      expect((c[0] as RunStepParams).profiles).toBe(profiles);
     }
   });
 
@@ -922,9 +978,9 @@ describe('fixLoop — (f) fixer step composition (runStep contract for tooled fi
     // Every step receives the SAME execCtx instance; the fixer call's execCtx
     // carries the worktree cwd the tooled fix-up agent must operate in.
     for (const c of mockRunStep.mock.calls) {
-      expect(c[5]).toBe(execCtx);
+      expect((c[0] as RunStepParams).execCtx).toBe(execCtx);
     }
-    const fixerExecCtx = mockRunStep.mock.calls[1][5] as StepExecutionContext;
+    const fixerExecCtx = (mockRunStep.mock.calls[1][0] as RunStepParams).execCtx;
     expect(fixerExecCtx.worktreeCwd).toBe('/tmp/wt/task-1/tooled');
   });
 
@@ -934,8 +990,8 @@ describe('fixLoop — (f) fixer step composition (runStep contract for tooled fi
     await fixLoop(makeOptions({ fixerSteps: [tooledFixStep] }));
 
     for (const c of mockRunStep.mock.calls) {
-      // 7th positional arg (existingSessionPath) is omitted → undefined.
-      expect(c[6]).toBeUndefined();
+      // existingSessionPath is omitted → undefined.
+      expect((c[0] as RunStepParams).existingSessionPath).toBeUndefined();
     }
   });
 
@@ -1064,5 +1120,80 @@ describe('fixLoop — (g) hookRegistry absent (default behavior)', () => {
 
     expect(onLaneError).toHaveBeenCalledTimes(1);
     expect((onLaneError.mock.calls[0][0] as OnLaneErrorArgs).error).toContain('fixer boom');
+  });
+});
+
+// ─── fixLoop — (h) cullOrPreserve delegation contract ───────────────────────
+//
+// After the separation-of-concerns refactor, `fixLoop` delegates worktree
+// culling to `worktreeManager.cullOrPreserve(taskId, preserve)` instead of
+// calling `cullTaskWorktree` inline (the try/catch + console.warn now lives in
+// WorktreeManager). These tests pin the NEW delegation contract:
+//   - On exhaustion (not isolated): `cullOrPreserve` is called with
+//     `(task.id, false)` — the worktree IS culled.
+//   - On isolation (shouldIsolate=true): `cullOrPreserve` is called with
+//     `(task.id, true)` — the worktree is PRESERVED.
+//   - On approval (completed): `cullOrPreserve` is NOT called at all — the
+//     worktree is preserved for the merge step.
+//
+// The mock `makeWorktreeManager` exposes BOTH `cullOrPreserve` (delegating to
+// `cullTaskWorktree`) so the EXISTING cull/preserve assertions remain valid
+// before AND after the refactor, while these NEW assertions lock the exact
+// `(taskId, preserve)` args passed through the new delegation seam.
+
+describe('fixLoop — (h) cullOrPreserve delegation contract', () => {
+  it('on exhaustion → calls cullOrPreserve(task.id, false)', async () => {
+    const { instance, cullOrPreserve } = makeWorktreeManager();
+    sequence([rejected('r1'), approved('f1'), rejected('r2')]);
+
+    await fixLoop(
+      makeOptions({
+        maxRounds: 1,
+        execCtx: makeExecCtx({ worktreeManager: instance, worktreeCwd: '/tmp/wt/task-1' }),
+      }),
+    );
+
+    expect(cullOrPreserve).toHaveBeenCalledTimes(1);
+    expect(cullOrPreserve).toHaveBeenCalledWith(task.id, false);
+  });
+
+  it('on isolation (shouldIsolate=true) → calls cullOrPreserve(task.id, true)', async () => {
+    const reg = createHookRegistry();
+    reg.defineHook('shouldIsolate', 'first-wins');
+    reg.register({ shouldIsolate: async () => true });
+    const { instance, cullOrPreserve } = makeWorktreeManager();
+    sequence([rejected('boom')]);
+
+    await fixLoop(
+      makeOptions({
+        hookRegistry: reg,
+        execCtx: makeExecCtx({ worktreeManager: instance, worktreeCwd: '/tmp/wt/task-1' }),
+      }),
+    );
+
+    expect(cullOrPreserve).toHaveBeenCalledTimes(1);
+    expect(cullOrPreserve).toHaveBeenCalledWith(task.id, true);
+  });
+
+  it('on approval → does NOT call cullOrPreserve (worktree preserved for merge)', async () => {
+    const { instance, cullOrPreserve } = makeWorktreeManager();
+    sequence([approved('done')]);
+
+    await fixLoop(
+      makeOptions({
+        execCtx: makeExecCtx({ worktreeManager: instance, worktreeCwd: '/tmp/wt/task-1' }),
+      }),
+    );
+
+    expect(cullOrPreserve).not.toHaveBeenCalled();
+  });
+
+  it('on exhaustion WITHOUT a worktreeManager → does not throw (no cull path)', async () => {
+    // No worktreeManager → cullOrPreserve is unreachable; the loop must not throw.
+    sequence([rejected('r1'), approved('f1'), rejected('r2')]);
+
+    await expect(fixLoop(makeOptions({ maxRounds: 1 }))).resolves.toMatchObject({
+      status: 'failed',
+    });
   });
 });

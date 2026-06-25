@@ -3,7 +3,7 @@
  * Uses Immer middleware for safe structural updates.
  */
 
-import { MAX_RUN_LOG, type TaskStatus } from '@engin/shared/event-types';
+import { MAX_RUN_LOG, MAX_WORKFLOW_EVENT_LOG, type TaskStatus } from '@engin/shared/event-types';
 import { evolve as evolveClient } from '@engin/shared/evolve';
 import { formatWorkflowEventLine } from '@engin/shared/format-workflow-event';
 import {
@@ -27,8 +27,6 @@ import type {
   TaskEntity,
   WorkflowProjection,
 } from '../protocol-types';
-
-const MAX_WORKFLOW_EVENT_LOG = 1000;
 
 // ─── Send bridge ─────────────────────────────────────────────────────────────
 // Module-level send reference set by useWebSocket on acquire, cleared on release.
@@ -275,7 +273,7 @@ export const useWorkflowStore = create<WorkflowStoreState>()(
         }
         if (collected.length > 0) {
           const combined = [...s.workflowEventLog, ...collected];
-          s.workflowEventLog = combined.slice(combined.length - MAX_WORKFLOW_EVENT_LOG);
+          s.workflowEventLog = combined.slice(Math.max(0, combined.length - MAX_WORKFLOW_EVENT_LOG));
         }
       }),
 

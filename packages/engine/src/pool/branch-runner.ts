@@ -64,14 +64,14 @@ export function branchRunner(options: BranchRunnerOptions): TaskRunner {
       }
 
       // ── Step 3: Run the selected step ───────────────────────────────
-      const { result, trackedSession } = await runStep(
-        ctx.task,
-        selectedStep,
-        ctx.agentId,
-        { stepIndex: 0, attempt: 0, execCount: 0 },
-        ctx.profiles,
-        buildExecCtx(ctx),
-      );
+      const { result, trackedSession } = await runStep({
+        task: ctx.task,
+        step: selectedStep,
+        agentId: ctx.agentId,
+        ctx: { stepIndex: 0, attempt: 0, execCount: 0 },
+        profiles: ctx.profiles,
+        execCtx: buildExecCtx(ctx),
+      });
       tracker.add(trackedSession);
 
       // ── Step 4: Settle based on result ──────────────────────────────

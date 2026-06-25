@@ -951,16 +951,149 @@ describe('RunManager', () => {
       expect(sent.some((m) => m.type === 'worktree_merge_result')).toBe(false);
     });
 
-    it('is a no-op when the handle has no worktreeManager', async () => {
+    it('is a no-op when the handle has no worktreeManager (non-git fallback, run already terminal)', async () => {
       const { manager } = createManager();
-      const { sent } = registerWorktreeRun(manager, {
+      const { handle, sent } = registerWorktreeRun(manager, {
         runId: 'wt-nowtm',
         worktreeManager: undefined,
       });
+      // Simulate the non-git fallback: the run completed without ever
+      // creating a worktreeManager. Setting a terminal status ensures the
+      // bounded wait bails immediately instead of polling for the full 5 s.
+      handle.status = 'complete';
 
       await manager.handleWorktreeAction('wt-nowtm', 'merge');
 
       expect(sent.some((m) => m.type === 'worktree_merge_result')).toBe(false);
+    });
+
+    // ─── wait-for-worktreeManager guard (async-write vs sync-read race) ─────
+    //
+    // The executor populates `handle.worktreeManager` ASYNCHRONOUSLY (LLM
+    // branch-slug generation). A `worktree_action` that arrives before setup
+    // completes must NOT be silently dropped: handleWorktreeAction now polls
+    // briefly for the manager, bails if the run fails first, and times out
+    // gracefully if the manager never appears (non-git fallback / executor
+    // crash).
+    describe('wait-for-worktreeManager guard', () => {
+      it('waits for worktreeManager to be populated asynchronously before proceeding', async () => {
+        const { manager } = createManager();
+        const wtm = makeMockWorktreeManager({
+          finalMerge: { success: true, conflicts: [], conflictsResolved: false },
+        });
+        const { handle, sent } = registerWorktreeRun(manager, {
+          runId: 'wt-wait',
+          worktreeManager: undefined,
+        });
+
+        // Simulate the executor finishing worktree setup shortly after the
+        // client's `worktree_action` is in flight.
+        setTimeout(() => {
+          handle.worktreeManager = wtm;
+        }, 50);
+
+        await manager.handleWorktreeAction('wt-wait', 'merge');
+
+        // The action was NOT dropped: the merge proceeded once the manager
+        // became available.
+        expect(wtm.finalMergeToMain).toHaveBeenCalledTimes(1);
+        expect(wtm.cleanup).toHaveBeenCalledTimes(1);
+        const results = sent.filter((m) => m.type === 'worktree_merge_result');
+        expect(results).toHaveLength(1);
+        expect(results[0].outcome).toBe('clean');
+      });
+
+      it('stops waiting and drops the action if the run fails before worktreeManager is set', async () => {
+        const { manager } = createManager();
+        const wtm = makeMockWorktreeManager();
+        const { handle, sent } = registerWorktreeRun(manager, {
+          runId: 'wt-failwait',
+          worktreeManager: undefined,
+        });
+
+        // The run fails (e.g. executor throws during worktree setup) before a
+        // manager is ever attached. The wait must bail immediately rather than
+        // spinning until the timeout.
+        setTimeout(() => {
+          handle.status = 'failed';
+        }, 50);
+
+        const start = Date.now();
+        await manager.handleWorktreeAction('wt-failwait', 'merge');
+        const elapsed = Date.now() - start;
+
+        expect(wtm.finalMergeToMain).not.toHaveBeenCalled();
+        expect(sent.some((m) => m.type === 'worktree_merge_result')).toBe(false);
+        // Bailed well before the full 5s timeout window.
+        expect(elapsed).toBeLessThan(2000);
+      });
+
+      it('stops waiting and drops the action if the run completes before worktreeManager is set', async () => {
+        // A run can reach 'complete' without a worktreeManager in the non-git
+        // fallback path. The bounded wait must bail on ANY terminal status
+        // (not just 'failed') so it does not spin for the full 5 s after the
+        // run has already settled.
+        const { manager } = createManager();
+        const wtm = makeMockWorktreeManager();
+        const { handle, sent } = registerWorktreeRun(manager, {
+          runId: 'wt-completewait',
+          worktreeManager: undefined,
+        });
+
+        setTimeout(() => {
+          handle.status = 'complete';
+        }, 50);
+
+        const start = Date.now();
+        await manager.handleWorktreeAction('wt-completewait', 'merge');
+        const elapsed = Date.now() - start;
+
+        expect(wtm.finalMergeToMain).not.toHaveBeenCalled();
+        expect(sent.some((m) => m.type === 'worktree_merge_result')).toBe(false);
+        // Bailed well before the full 5s timeout window.
+        expect(elapsed).toBeLessThan(2000);
+      });
+
+      it('returns without action when worktreeManager is never set within the bounded timeout', async () => {
+        // Use fake timers to avoid a real 5 s wall-clock delay: each 100 ms
+        // poll advances a virtual clock so the deadline is reached in a few
+        // microseconds of real time. Only 100 ms-poll timers are accelerated;
+        // all other timers use the real scheduler.
+        const realDateNow = Date.now;
+        const realSetTimeout = globalThis.setTimeout;
+        let virtualTime = realDateNow();
+        Date.now = () => virtualTime;
+        globalThis.setTimeout = ((cb: any, delay?: number, ...args: any[]) => {
+          if (delay === 100) {
+            // Fast-forward the virtual clock by the poll interval so the
+            // deadline check in the polling loop trips after ~50 iterations.
+            virtualTime += 100;
+            return realSetTimeout(cb, 0, ...args);
+          }
+          return realSetTimeout(cb, delay, ...args);
+        }) as any;
+
+        try {
+          const { manager } = createManager();
+          const { sent } = registerWorktreeRun(manager, {
+            runId: 'wt-timeout',
+            // No worktreeManager is ever attached, and the run stays 'running'.
+            worktreeManager: undefined,
+          });
+
+          const realStart = realDateNow();
+          await manager.handleWorktreeAction('wt-timeout', 'merge');
+          const realElapsed = realDateNow() - realStart;
+
+          // No broadcast — the wait exhausted its bounded budget and gave up.
+          expect(sent.some((m) => m.type === 'worktree_merge_result')).toBe(false);
+          // The virtual deadline was reached without a real 5 s stall.
+          expect(realElapsed).toBeLessThan(2000);
+        } finally {
+          Date.now = realDateNow;
+          globalThis.setTimeout = realSetTimeout as any;
+        }
+      });
     });
 
     describe('merge', () => {

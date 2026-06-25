@@ -1,7 +1,124 @@
 import { describe, expect, it } from 'bun:test';
 import type { Task } from '../../packages/engine/src/core/types.js';
-import type { StepDefinition } from '../../packages/engine/src/pool/types.js';
+import type {
+  LanePoolOptions,
+  LanePoolResult,
+  StepDefinition,
+  StepResult,
+  TaskOutcome,
+  TaskRunner,
+  TaskRunnerContext,
+  TrackedSession,
+} from '../../packages/engine/src/pool/types.js';
+import * as poolTypes from '../../packages/engine/src/pool/types.js';
 import { TaskTracker } from '../../packages/engine/src/tracking/task-status.js';
+
+// ─── pool/types.ts module type surface (characterization) ───────────────────
+//
+// These tests pin down the observable type surface of pool/types.ts: every
+// type that real consumers import must remain present and usable.
+
+describe('pool/types.ts type surface', () => {
+  it('module loads at runtime (no syntax/import errors)', () => {
+    expect(poolTypes).toBeDefined();
+    // The module is purely type declarations plus a re-export; there are no
+    // runtime values. The import itself succeeding is the assertion.
+    expect(Object.keys(poolTypes)).toEqual([]);
+  });
+
+  // Type-level assertions below — these compile only when the named types are
+  // exported with the expected shapes. If a refactor accidentally removes or
+  // renames one, the file fails to type-check.
+
+  it('StepResult discriminated union shape', () => {
+    const approved: StepResult = { type: 'approved', output: 42 };
+    const rejected: StepResult = { type: 'rejected', feedback: 'no good' };
+    const rejectedWithOutput: StepResult = { type: 'rejected', feedback: 'no', output: 'data' };
+
+    expect(approved.type).toBe('approved');
+    expect(rejected.type).toBe('rejected');
+    expect(rejectedWithOutput.type).toBe('rejected');
+  });
+
+  it('TaskOutcome discriminated union shape', () => {
+    const completed: TaskOutcome = { status: 'completed' };
+    const completedWithOutput: TaskOutcome = { status: 'completed', output: 'done' };
+    const failed: TaskOutcome = { status: 'failed', error: 'boom' };
+    const failedWithFeedback: TaskOutcome = { status: 'failed', feedback: 'retry' };
+
+    expect(completed.status).toBe('completed');
+    expect(completedWithOutput.output).toBe('done');
+    expect(failed.status).toBe('failed');
+    expect(failedWithFeedback.feedback).toBe('retry');
+  });
+
+  it('LanePoolResult interface shape', () => {
+    const result: LanePoolResult = { completedTasks: 3, failedTasks: 1 };
+    expect(result.completedTasks).toBe(3);
+    expect(result.failedTasks).toBe(1);
+  });
+
+  it('TrackedSession interface shape (compile-time structural check)', () => {
+    // Build a value matching the TrackedSession shape; compiles only when the
+    // interface has `session`, `dispose`, and `sessionPath`.
+    const tracked: TrackedSession = {
+      session: { prompt: (() => {}) as never },
+      dispose: () => {},
+      sessionPath: '/tmp/session',
+    };
+    expect(tracked.sessionPath).toBe('/tmp/session');
+    expect(typeof tracked.dispose).toBe('function');
+  });
+
+  it('LanePoolOptions required fields are recognized (compile-time)', () => {
+    const opts: LanePoolOptions = {
+      maxConcurrentLanes: 2,
+      profilesDirs: ['/profiles'],
+      sessionBaseDir: '/sessions',
+      cwd: '/cwd',
+      taskTracker: new TaskTracker(),
+      phaseId: 'phase-1',
+    };
+    expect(opts.maxConcurrentLanes).toBe(2);
+    expect(opts.phaseId).toBe('phase-1');
+  });
+
+  it('TaskRunner and TaskRunnerContext signatures are usable (compile-time)', async () => {
+    const runner: TaskRunner = async (ctx: TaskRunnerContext): Promise<TaskOutcome> => {
+      expect(typeof ctx.completeTask).toBe('function');
+      ctx.completeTask('result');
+      return { status: 'completed', output: 'result' };
+    };
+
+    // Fabricate a minimal context object typed as TaskRunnerContext to confirm
+    // the interface is importable and structurally usable.
+    const ctx = {
+      task: {
+        id: 't1',
+        title: 'T',
+        prompt: 'p',
+        profile: 'coder',
+        files: [],
+        dependencies: [],
+        phaseId: 'phase-1',
+        status: 'active',
+      } as unknown as TaskRunnerContext['task'],
+      agentId: 'agent-1',
+      profiles: new Map(),
+      onStatus: undefined,
+      activeSessions: new Set(),
+      phaseId: 'phase-1',
+      sessionBaseDir: '/s',
+      cwd: '/c',
+      maxStepRetries: 5,
+      completeTask: (_result?: unknown) => true,
+      failTask: (_result?: unknown) => {},
+    } as unknown as TaskRunnerContext;
+
+    const outcome = await runner(ctx);
+    expect(outcome.status).toBe('completed');
+  });
+});
 
 // ─── getStepsForTask with TaskTracker integration ───────────────────────────
 

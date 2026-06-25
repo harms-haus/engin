@@ -6,8 +6,7 @@
 // or maxRounds is exhausted.
 
 import { appendReviewFeedback } from '../core/task-feedback.js';
-import { buildExecCtx, createSessionMap, handleRunnerError, settleResult } from './runner-utils.js';
-import { extractSeverity, isFailingSeverity } from './severity.js';
+import { buildExecCtx, createSessionMap, handleRunnerError, settleBySeverity, settleResult } from './runner-utils.js';
 import { runStep } from './step-execution.js';
 import type { StepDefinition, TaskOutcome, TaskRunner, TaskRunnerContext } from './types.js';
 
@@ -61,15 +60,15 @@ export function reflectionRunner(options: ReflectionRunnerOptions): TaskRunner {
         const existingDraftSession = sessionMap.sessions.get(0);
         const draftExistingSessionPath = existingDraftSession?.sessionPath;
 
-        const { result: draftResult, trackedSession: draftTrackedSession } = await runStep(
+        const { result: draftResult, trackedSession: draftTrackedSession } = await runStep({
           task,
-          options.draftStep,
+          step: options.draftStep,
           agentId,
-          { stepIndex: 0, attempt: zeroStepAttempt, execCount: draftExecCount },
+          ctx: { stepIndex: 0, attempt: zeroStepAttempt, execCount: draftExecCount },
           profiles,
           execCtx,
-          draftExistingSessionPath,
-        );
+          existingSessionPath: draftExistingSessionPath,
+        });
 
         // set() disposes the previous draft session (if any) before storing the new one
         sessionMap.set(0, draftTrackedSession);
@@ -89,15 +88,15 @@ export function reflectionRunner(options: ReflectionRunnerOptions): TaskRunner {
         const existingCriticSession = sessionMap.sessions.get(1);
         const criticExistingSessionPath = existingCriticSession?.sessionPath;
 
-        const { result: criticResult, trackedSession: criticTrackedSession } = await runStep(
+        const { result: criticResult, trackedSession: criticTrackedSession } = await runStep({
           task,
-          options.criticStep,
+          step: options.criticStep,
           agentId,
-          { stepIndex: 1, attempt: zeroStepAttempt, execCount: criticExecCount },
+          ctx: { stepIndex: 1, attempt: zeroStepAttempt, execCount: criticExecCount },
           profiles,
           execCtx,
-          criticExistingSessionPath,
-        );
+          existingSessionPath: criticExistingSessionPath,
+        });
 
         // set() disposes the previous critic session (if any) before storing the new one
         sessionMap.set(1, criticTrackedSession);
@@ -151,35 +150,20 @@ export function reflectionRunner(options: ReflectionRunnerOptions): TaskRunner {
 
       // ── Step 5: Max rounds exhausted ──────────────────────────────────
       // lastCriticResult is guaranteed to be set here because maxRounds > 0.
-      // The settle logic here is more complex than settleResult's simple
-      // approved/rejected mapping: it branches on severity to decide whether
-      // to fail (critical/high) or accept with caveats (medium/low/none),
-      // and respects the completeTask boolean for the accepted case.
+      // settleBySeverity branches on severity to decide whether to fail
+      // (critical/high) or accept with caveats (medium/low/none), and
+      // respects the completeTask boolean for the accepted case.
       if (!lastCriticResult) {
         ctx.failTask({ completed: false, error: 'No critic result produced' });
         sessionMap.disposeAll();
         return { status: 'failed', error: 'No critic result produced' };
       }
-      const finalCriticResult = lastCriticResult;
-      const severity = extractSeverity(finalCriticResult.output);
-      const feedback = finalCriticResult.feedback ?? 'No feedback provided';
-
-      if (isFailingSeverity(severity)) {
-        // Critical/high → task failed
-        ctx.failTask({ completed: false, feedback, severity });
-        sessionMap.disposeAll();
-        return { status: 'failed', feedback };
-      }
-
-      // Medium/low/none → accept as completed with caveats
-      if (ctx.completeTask(finalCriticResult.output)) {
-        sessionMap.disposeAll();
-        return { status: 'completed', output: finalCriticResult.output };
-      }
-
-      ctx.failTask({ completed: false, error: 'Failed to submit' });
-      sessionMap.disposeAll();
-      return { status: 'failed', error: 'Failed to submit' };
+      return settleBySeverity(
+        ctx,
+        lastCriticResult.output,
+        lastCriticResult.feedback ?? 'No feedback provided',
+        sessionMap.disposeAll,
+      );
     } catch (err) {
       // ── Step 6: Unexpected error – never re-throw ────────────────────
       return handleRunnerError(err, ctx, sessionMap.disposeAll);

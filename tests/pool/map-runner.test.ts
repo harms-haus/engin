@@ -74,7 +74,7 @@ describe('mapRunner', () => {
         step: testStep,
       });
 
-      mockRunStep.mockImplementation((itemTask: Task) => {
+      mockRunStep.mockImplementation(({ task: itemTask }: { task: Task }) => {
         const ts = makeTrackedSession().trackedSession;
         // Last char of the full prompt = last char of the item string
         const prompt = itemTask.prompt;
@@ -100,7 +100,7 @@ describe('mapRunner', () => {
       const items = ['item-a', 'item-b'];
       const runner = mapRunner({ items: () => items, step: testStep });
 
-      mockRunStep.mockImplementation((itemTask: Task) => {
+      mockRunStep.mockImplementation(({ task: itemTask }: { task: Task }) => {
         const ts = makeTrackedSession().trackedSession;
         const lastChar = itemTask.prompt[itemTask.prompt.length - 1];
         return Promise.resolve({
@@ -140,13 +140,13 @@ describe('mapRunner', () => {
 
       // Check first call prompt includes item 1
       const firstCallArgs = mockRunStep.mock.calls[0];
-      const firstTask = firstCallArgs[0] as Task;
+      const firstTask = (firstCallArgs[0] as { task: Task }).task;
       expect(firstTask.prompt).toContain('## Item 1 of 2');
       expect(firstTask.prompt).toContain('apple');
 
       // Check second call prompt includes item 2
       const secondCallArgs = mockRunStep.mock.calls[1];
-      const secondTask = secondCallArgs[0] as Task;
+      const secondTask = (secondCallArgs[0] as { task: Task }).task;
       expect(secondTask.prompt).toContain('## Item 2 of 2');
       expect(secondTask.prompt).toContain('banana');
     });
@@ -491,7 +491,7 @@ describe('mapRunner', () => {
       });
 
       const ts = makeTrackedSession().trackedSession;
-      mockRunStep.mockImplementation((_itemTask: Task) => {
+      mockRunStep.mockImplementation(({ task: _itemTask }: { task: Task }) => {
         return Promise.resolve({
           result: { type: 'approved' as const, output: 'ok' },
           trackedSession: ts,
@@ -502,11 +502,11 @@ describe('mapRunner', () => {
       await runner(ctx);
 
       // Check what was passed to runStep
-      const firstCallTask = mockRunStep.mock.calls[0][0] as Task;
+      const firstCallTask = (mockRunStep.mock.calls[0][0] as { task: Task }).task;
       expect(firstCallTask.prompt).toContain('hello');
       expect(firstCallTask.prompt).toContain('## Item 1 of 2');
 
-      const secondCallTask = mockRunStep.mock.calls[1][0] as Task;
+      const secondCallTask = (mockRunStep.mock.calls[1][0] as { task: Task }).task;
       expect(secondCallTask.prompt).toContain('world');
       expect(secondCallTask.prompt).toContain('## Item 2 of 2');
     });
@@ -519,7 +519,7 @@ describe('mapRunner', () => {
       });
 
       const ts = makeTrackedSession().trackedSession;
-      mockRunStep.mockImplementation((_itemTask: Task) => {
+      mockRunStep.mockImplementation(({ task: _itemTask }: { task: Task }) => {
         return Promise.resolve({
           result: { type: 'approved' as const, output: 'ok' },
           trackedSession: ts,
@@ -529,11 +529,11 @@ describe('mapRunner', () => {
       const ctx = createRunnerContext();
       await runner(ctx);
 
-      const firstCallTask = mockRunStep.mock.calls[0][0] as Task;
+      const firstCallTask = (mockRunStep.mock.calls[0][0] as { task: Task }).task;
       expect(firstCallTask.prompt).toContain('{"key":"value"}');
       expect(firstCallTask.prompt).toContain('## Item 1 of 2');
 
-      const secondCallTask = mockRunStep.mock.calls[1][0] as Task;
+      const secondCallTask = (mockRunStep.mock.calls[1][0] as { task: Task }).task;
       expect(secondCallTask.prompt).toContain('[1,2,3]');
       expect(secondCallTask.prompt).toContain('## Item 2 of 2');
     });
@@ -733,7 +733,7 @@ describe('mapRunner', () => {
       });
 
       const ts = makeTrackedSession().trackedSession;
-      mockRunStep.mockImplementation((_task: Task) => {
+      mockRunStep.mockImplementation(({ task: _task }: { task: Task }) => {
         const delay = Math.random() * 20;
         return new Promise((resolve) =>
           setTimeout(() => {
@@ -786,12 +786,12 @@ describe('mapRunner', () => {
       const ctx = createRunnerContext();
       await runner(ctx);
 
-      const firstTask = mockRunStep.mock.calls[0][0] as Task;
+      const firstTask = (mockRunStep.mock.calls[0][0] as { task: Task }).task;
       expect(firstTask.prompt).toBe('CUSTOM|idx=0|total=2|item=one');
       // A custom composer fully replaces the default header.
       expect(firstTask.prompt).not.toContain('## Item');
 
-      const secondTask = mockRunStep.mock.calls[1][0] as Task;
+      const secondTask = (mockRunStep.mock.calls[1][0] as { task: Task }).task;
       expect(secondTask.prompt).toBe('CUSTOM|idx=1|total=2|item=two');
     });
 
@@ -916,7 +916,7 @@ describe('mapRunner', () => {
       await runner(ctx);
 
       // Outputs are collected in input order regardless of concurrency.
-      const prompts = mockRunStep.mock.calls.map((c) => (c[0] as Task).prompt);
+      const prompts = mockRunStep.mock.calls.map((c) => (c[0] as { task: Task }).task.prompt);
       expect(prompts).toEqual(['SEQ-0-a', 'SEQ-1-b', 'SEQ-2-c', 'SEQ-3-d']);
     });
 
@@ -976,8 +976,46 @@ describe('mapRunner', () => {
       await runner(createRunnerContext());
 
       for (const call of mockRunStep.mock.calls) {
-        expect((call[0] as Task).prompt).not.toContain('## Item');
+        expect((call[0] as { task: Task }).task.prompt).not.toContain('## Item');
       }
+    });
+
+    it('explicitly passing composeItemPrompt: undefined still uses the default composer', async () => {
+      // Pins the `?? ` fallback the rename touches: an explicit `undefined`
+      // option must fall through to the shared prompt-builder default, NOT be
+      // treated as a custom override. A rename that swaps the operands of `??`
+      // (e.g. `composeItemPrompt ?? options.composeItemPrompt`) would still pass
+      // the omitted-option tests but would fail here because `undefined` is not
+      // callable.
+      const items = ['one', 'two'];
+      const runner = mapRunner(
+        mapOptions({
+          items: () => items,
+          step: testStep,
+          composeItemPrompt: undefined,
+        }),
+      );
+
+      const ts = makeTrackedSession().trackedSession;
+      mockRunStep.mockImplementation(() =>
+        Promise.resolve({
+          result: { type: 'approved' as const, output: 'ok' },
+          trackedSession: ts,
+        }),
+      );
+
+      const task = makeTask({ prompt: 'BASE' });
+      await runner(createRunnerContext({ task }));
+
+      // The default `## Item X of Y` header must appear — proving the shared
+      // prompt-builder helper was selected despite the explicit undefined.
+      expect((mockRunStep.mock.calls[0][0] as { task: Task }).task.prompt).toBe(
+        composeItemPrompt(task, 0, 2, 'one').prompt,
+      );
+      expect((mockRunStep.mock.calls[1][0] as { task: Task }).task.prompt).toBe(
+        composeItemPrompt(task, 1, 2, 'two').prompt,
+      );
+      expect((mockRunStep.mock.calls[0][0] as { task: Task }).task.prompt).toContain('## Item 1 of 2');
     });
 
     it('passing the shared composeItemPrompt helper as the option reproduces the default exactly', async () => {
@@ -1004,12 +1042,12 @@ describe('mapRunner', () => {
 
       mockRunStep.mockImplementation(impl);
       await runnerExplicit(createRunnerContext({ task }));
-      const explicitPrompts = mockRunStep.mock.calls.map((c) => (c[0] as Task).prompt);
+      const explicitPrompts = mockRunStep.mock.calls.map((c) => (c[0] as { task: Task }).task.prompt);
 
       mockRunStep.mockClear();
       mockRunStep.mockImplementation(impl);
       await runnerDefault(createRunnerContext({ task }));
-      const defaultPrompts = mockRunStep.mock.calls.map((c) => (c[0] as Task).prompt);
+      const defaultPrompts = mockRunStep.mock.calls.map((c) => (c[0] as { task: Task }).task.prompt);
 
       expect(explicitPrompts).toEqual(defaultPrompts);
       // And both match the helper output directly.
@@ -1045,8 +1083,8 @@ describe('mapRunner', () => {
       // The composed prompt must equal what the shared helper produces.
       const expectedFirst = composeItemPrompt(task, 0, 2, 'alpha');
       const expectedSecond = composeItemPrompt(task, 1, 2, 'beta');
-      expect((mockRunStep.mock.calls[0][0] as Task).prompt).toBe(expectedFirst.prompt);
-      expect((mockRunStep.mock.calls[1][0] as Task).prompt).toBe(expectedSecond.prompt);
+      expect((mockRunStep.mock.calls[0][0] as { task: Task }).task.prompt).toBe(expectedFirst.prompt);
+      expect((mockRunStep.mock.calls[1][0] as { task: Task }).task.prompt).toBe(expectedSecond.prompt);
     });
 
     it('produces the exact ## Item X of Y header + item string for string items', async () => {
@@ -1064,8 +1102,8 @@ describe('mapRunner', () => {
       const task = makeTask({ prompt: 'BASE' });
       await runner(createRunnerContext({ task }));
 
-      expect((mockRunStep.mock.calls[0][0] as Task).prompt).toBe('BASE\n## Item 1 of 2\nhello');
-      expect((mockRunStep.mock.calls[1][0] as Task).prompt).toBe('BASE\n## Item 2 of 2\nworld');
+      expect((mockRunStep.mock.calls[0][0] as { task: Task }).task.prompt).toBe('BASE\n## Item 1 of 2\nhello');
+      expect((mockRunStep.mock.calls[1][0] as { task: Task }).task.prompt).toBe('BASE\n## Item 2 of 2\nworld');
     });
 
     it('JSON.stringifies non-string items via the default composer', async () => {
@@ -1083,8 +1121,8 @@ describe('mapRunner', () => {
       const task = makeTask({ prompt: 'BASE' });
       await runner(createRunnerContext({ task }));
 
-      expect((mockRunStep.mock.calls[0][0] as Task).prompt).toBe('BASE\n## Item 1 of 2\n{"k":1}');
-      expect((mockRunStep.mock.calls[1][0] as Task).prompt).toBe('BASE\n## Item 2 of 2\n[9,9]');
+      expect((mockRunStep.mock.calls[0][0] as { task: Task }).task.prompt).toBe('BASE\n## Item 1 of 2\n{"k":1}');
+      expect((mockRunStep.mock.calls[1][0] as { task: Task }).task.prompt).toBe('BASE\n## Item 2 of 2\n[9,9]');
     });
 
     it('spreads all other task fields onto the composed item task', async () => {
@@ -1102,7 +1140,7 @@ describe('mapRunner', () => {
       const task = makeTask({ id: 'keep-id', title: 'Keep Title', profile: 'coder' });
       await runner(createRunnerContext({ task }));
 
-      const composed = mockRunStep.mock.calls[0][0] as Task;
+      const composed = (mockRunStep.mock.calls[0][0] as { task: Task }).task;
       expect(composed.id).toBe('keep-id');
       expect(composed.title).toBe('Keep Title');
       expect(composed.profile).toBe('coder');
@@ -1188,7 +1226,7 @@ describe('mapRunner', () => {
       await runner(ctx);
 
       // runStep(task, step, agentId, runStepCtx, profiles, execCtx) — execCtx is arg 5.
-      const execCtx = mockRunStep.mock.calls[0][5];
+      const execCtx = (mockRunStep.mock.calls[0][0] as Record<string, unknown>).execCtx;
       expect(execCtx).toMatchObject({ rendererRegistry });
     });
 
@@ -1215,7 +1253,7 @@ describe('mapRunner', () => {
       });
       await runner(ctx);
 
-      const execCtx = mockRunStep.mock.calls[0][5] as Record<string, unknown>;
+      const execCtx = (mockRunStep.mock.calls[0][0] as Record<string, unknown>).execCtx;
       expect(execCtx.sessionBaseDir).toBe('/tmp/sb');
       expect(execCtx.cwd).toBe('/tmp/cwd');
       expect(execCtx.apiKeys).toBe(apiKeys);

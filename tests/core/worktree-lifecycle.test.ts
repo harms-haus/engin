@@ -99,8 +99,6 @@ const mockMergeBranch = mock(() => ({ success: true }));
 const mockAbortMerge = mock(() => {});
 const mockPushBranch = mock(() => {});
 const mockGetDiff = mock(() => 'diff --git a/file.txt b/file.txt');
-const mockReadWorktreeCopyList = mock((): string[] => []);
-const mockCopyFilesToWorktree = mock(() => {});
 const mockGetMainBranch = mock(() => 'main');
 const mockGetCurrentBranch = mock(() => 'main');
 const mockSanitizeBranchSlug = mock((text: string): string => text);
@@ -202,8 +200,6 @@ mock.module('../../packages/engine/src/core/git.ts', () => ({
   abortMerge: mockAbortMerge,
   pushBranch: mockPushBranch,
   getDiff: mockGetDiff,
-  readWorktreeCopyList: mockReadWorktreeCopyList,
-  copyFilesToWorktree: mockCopyFilesToWorktree,
   getMainBranch: mockGetMainBranch,
   getCurrentBranch: mockGetCurrentBranch,
   sanitizeBranchSlug: mockSanitizeBranchSlug,
@@ -317,8 +313,6 @@ beforeEach(() => {
   mockGetRepoRoot.mockReturnValue('/fake/repo/root');
   mockCreateWorktree.mockReturnValue(undefined);
   mockRemoveWorktree.mockReturnValue(undefined);
-  mockReadWorktreeCopyList.mockReturnValue([]);
-  mockCopyFilesToWorktree.mockReturnValue(undefined);
   mockPushBranch.mockReturnValue(undefined);
   mockGetDiff.mockReturnValue('diff content here');
   mockStageAll.mockReturnValue(undefined);
@@ -513,18 +507,6 @@ describe('setupWorktree', () => {
     await setupWorktree('/my/project', '/run/work', ['/profiles'], 'test task');
 
     expect(mockCreateWorktree).not.toHaveBeenCalled();
-  });
-
-  it('does NOT call copyFilesToWorktree directly (delegates to WorktreeManager)', async () => {
-    await setupWorktree('/my/project', '/run/work', ['/profiles'], 'test task');
-
-    expect(mockCopyFilesToWorktree).not.toHaveBeenCalled();
-  });
-
-  it('does NOT call readWorktreeCopyList directly (delegates to WorktreeManager)', async () => {
-    await setupWorktree('/my/project', '/run/work', ['/profiles'], 'test task');
-
-    expect(mockReadWorktreeCopyList).not.toHaveBeenCalled();
   });
 
   it('does NOT call removeWorktree during setup (cleanup is deferred to the manager)', async () => {
@@ -723,16 +705,40 @@ describe('generateCommitMessage', () => {
     expect(msg).toBe('fix: resolve parser bug');
   });
 
-  it('truncates diff to 8000 characters in the prompt', async () => {
+  it('truncates diff to exactly 8000 characters in the prompt (oversized)', async () => {
+    // Pin the exact truncation threshold. If MAX_AGENT_CONTEXT changes this
+    // test must be updated — it is not a loose upper-bound assertion.
     const longDiff = 'x'.repeat(10000);
 
     await generateCommitMessage(['/profiles'], '/my/project', 'task', longDiff);
 
     const promptArg = (mockPromptForStructured as ReturnType<typeof mock>).mock.calls[0][1] as string;
-    // The diff in the prompt should be truncated to 8000 chars
-    // Find the diff portion — it should not contain more than 8000 x's
-    const xRun = promptArg.match(/x+/)?.[0];
-    expect(xRun?.length).toBeLessThanOrEqual(8000);
+    // The diff portion must be truncated to exactly 8000 x's — not the full 10000.
+    const xRun = promptArg.match(/x+/)?.[0] ?? '';
+    expect(xRun.length).toBe(8000);
+  });
+
+  it('does not truncate a diff whose length is exactly 8000 (boundary)', async () => {
+    // diff.length > 8000 is the truncation condition, so exactly 8000 must be
+    // passed through verbatim — no slicing.
+    const exactDiff = 'x'.repeat(8000);
+
+    await generateCommitMessage(['/profiles'], '/my/project', 'task', exactDiff);
+
+    const promptArg = (mockPromptForStructured as ReturnType<typeof mock>).mock.calls[0][1] as string;
+    const xRun = promptArg.match(/x+/)?.[0] ?? '';
+    expect(xRun.length).toBe(8000);
+  });
+
+  it('truncates a diff whose length is 8001 (boundary off-by-one)', async () => {
+    // Just over the cap must trigger truncation to exactly 8000.
+    const diff = 'x'.repeat(8001);
+
+    await generateCommitMessage(['/profiles'], '/my/project', 'task', diff);
+
+    const promptArg = (mockPromptForStructured as ReturnType<typeof mock>).mock.calls[0][1] as string;
+    const xRun = promptArg.match(/x+/)?.[0] ?? '';
+    expect(xRun.length).toBe(8000);
   });
 
   it('falls back to "Worktree changes for:" message on error', async () => {
@@ -933,18 +939,28 @@ describe('resolveConflictsWithAgent', () => {
     expect(opts.errorContext).toContain('bbb');
   });
 
-  it('caps the conflict context at 8000 characters', async () => {
-    // Weakness #6 fix: cap total error context like generateCommitMessage
+  it('caps the conflict context content run at exactly 8000 characters', async () => {
+    // Weakness #6 fix: cap total error context like generateCommitMessage.
+    // Pin the exact threshold — not a loose upper bound. If MAX_AGENT_CONTEXT
+    // changes this test must be updated.
     await writeFile(join(getDir(), 'big.ts'), 'x'.repeat(20000));
     mockRunTooledFixup.mockResolvedValue({ success: true, attempts: 1 });
 
     await resolveConflictsWithAgent(['/profiles'], getDir(), ['big.ts'], 'Fix conflicts');
 
     const opts = mockRunTooledFixup.mock.calls[0][0];
-    // The content run must be capped at 8000 — not the full 20000
-    const xRun = opts.errorContext.match(/x+/)?.[0] ?? '';
-    expect(xRun.length).toBeLessThanOrEqual(8000);
+    // conflictContext is sliced to exactly MAX_AGENT_CONTEXT (8000) chars
+    // total — including the per-file "File: <name>\n" header. So the raw
+    // x-run is shorter than 8000 by the header length. Instead, verify the
+    // sliced conflict-context portion (between the wrapper prefix and the
+    // truncation marker) is exactly 8000 chars long.
+    const beforeMarker = opts.errorContext.split('... (truncated)')[0];
+    const wrapperPrefix = 'Merge conflicts detected in the following files:\n\n';
+    const slicedConflictContext = beforeMarker.slice(wrapperPrefix.length);
+    expect(slicedConflictContext.length).toBe(8000);
     expect(opts.errorContext).toContain('... (truncated)');
+    // And the original 20000-char content did NOT pass through in full.
+    expect(opts.errorContext).not.toContain('x'.repeat(8001));
   });
 
   it('does not truncate conflict content under the 8000 cap', async () => {

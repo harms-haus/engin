@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
+import type { TaskRunner } from '../../packages/engine/src/pool/types.js';
 import { useTempDir } from '../helpers/use-temp-dir.js';
 import {
   LanePool,
@@ -1420,5 +1421,69 @@ describe('LanePool', () => {
       const task = tracker.getTask('task-1')!;
       expect(task.status).toBe('complete');
     });
+  });
+});
+
+// ── maxStepRetries default value (DEFAULT_MAX_STEP_RETRIES) ────────────────
+//
+// Characterization test pinning down the default value of `runnerCtx.maxStepRetries`
+// when `options.maxStepRetries` is omitted. The pool uses the literal magic
+// number `5` as the fallback (`this.options.maxStepRetries ?? 5`). This test
+// guards against accidental drift if that fallback is later refactored into a
+// named constant (DEFAULT_MAX_STEP_RETRIES) or otherwise changed.
+
+describe('LanePool — maxStepRetries default value', () => {
+  /** A runner that captures the `maxStepRetries` it receives on its context. */
+  function capturingRunner(seen: { value?: number }): TaskRunner {
+    return async (ctx) => {
+      seen.value = ctx.maxStepRetries;
+      ctx.completeTask('done');
+      return { status: 'completed', output: 'done' };
+    };
+  }
+
+  it('defaults maxStepRetries to 5 when options.maxStepRetries is omitted', async () => {
+    setupProfileMocks();
+    setupHarnessMocks();
+    const seen: { value?: number } = {};
+    // Intentionally do NOT set maxStepRetries — exercise the ?? 5 fallback.
+    const { pool, tracker } = createPoolAndTracker({
+      getRunnerForTask: () => capturingRunner(seen),
+    });
+    const result = await pool.run();
+
+    expect(result.completedTasks).toBe(1);
+    expect(result.failedTasks).toBe(0);
+    expect(seen.value).toBe(5);
+    expect(tracker.getTask('task-1')?.status).toBe('complete');
+  });
+
+  it('respects an explicit maxStepRetries override (does not fall back to 5)', async () => {
+    setupProfileMocks();
+    setupHarnessMocks();
+    const seen: { value?: number } = {};
+    const { pool } = createPoolAndTracker({
+      maxStepRetries: 3,
+      getRunnerForTask: () => capturingRunner(seen),
+    });
+    const result = await pool.run();
+
+    expect(result.completedTasks).toBe(1);
+    expect(seen.value).toBe(3);
+  });
+
+  it('respects an explicit maxStepRetries of 0 (does not fall back to the default)', async () => {
+    setupProfileMocks();
+    setupHarnessMocks();
+    const seen: { value?: number } = {};
+    const { pool } = createPoolAndTracker({
+      maxStepRetries: 0,
+      getRunnerForTask: () => capturingRunner(seen),
+    });
+    const result = await pool.run();
+
+    expect(result.completedTasks).toBe(1);
+    // ?? only falls back on nullish (undefined), so 0 must be preserved.
+    expect(seen.value).toBe(0);
   });
 });

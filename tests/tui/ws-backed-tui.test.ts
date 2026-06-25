@@ -530,6 +530,169 @@ describe('createWsBackedTui', () => {
     });
   });
 
+  // ── Projection shape passed to syncFromProjection (toProjection contract) ──
+  //
+  // `createWsBackedTui` rebuilds a `WorkflowProjection` from the
+  // `ClientStoreState` via a `toProjection` helper. These tests pin down the
+  // EXACT shape handed to `dashboard.syncFromProjection` so that swapping the
+  // local `toProjection` for the shared `@engin/shared/projection-helpers`
+  // `toProjection` cannot silently change what the dashboard receives.
+  describe('synced projection shape (toProjection contract)', () => {
+    it('always resets runLog to an empty array (never leaks the store RunLogEntry[] runLog)', () => {
+      const ctx = createTestDeps();
+      ctx.clientStore.applyEvents([ev('workflow_started', { taskPrompt: 'x', resumed: false }, {}, 1)]);
+      // Append runLog entries — these must NOT bleed into the synced projection.
+      ctx.clientStore.appendRunLog('warn', 'careful', ISO_NOW);
+      ctx.clientStore.appendRunLog('error', 'boom', ISO_NOW);
+
+      const proj = ctx.dashboard.lastSyncedProjection as { runLog: unknown[] };
+      expect(Array.isArray(proj.runLog)).toBe(true);
+      expect(proj.runLog).toEqual([]);
+    });
+
+    it('resets runLog to [] even when the store has no runLog entries', () => {
+      const ctx = createTestDeps();
+      ctx.clientStore.applyEvents([ev('phase_started', { phase: 'p', round: 1 }, {}, 1)]);
+      const proj = ctx.dashboard.lastSyncedProjection as { runLog: unknown[] };
+      expect(proj.runLog).toEqual([]);
+    });
+
+    it('copies every WorkflowProjection field from the store state', () => {
+      const ctx = createTestDeps();
+      ctx.clientStore.applyEvents([
+        ev('workflow_started', { taskPrompt: 'ship it', resumed: false }, {}, 1),
+        ev('phase_registered', { id: 'p1', label: 'Plan', icon: '📋' }, {}, 2),
+        ev('phase_started', { phase: 'p1', round: 1 }, {}, 3),
+        ev('task_registered', { taskId: 't1', title: 'Task A', phaseId: 'p1', steps: [], dependencies: [] }, {}, 4),
+        ev('agent_spawned', { profile: 'coder' }, { agentId: 'a1', taskId: 't1' }, 5),
+        ev('sidebar_updated', { title: 'My WF', indicator: '🟢' }, {}, 6),
+      ]);
+      const state = ctx.clientStore.getState();
+      const proj = ctx.dashboard.lastSyncedProjection as Record<string, unknown>;
+
+      // Every projection field is mirrored from the corresponding state field.
+      expect(proj['seq']).toBe(state.seq);
+      expect(proj['taskPrompt']).toBe(state.taskPrompt);
+      expect(proj['phases']).toBe(state.phases);
+      expect(proj['currentPhaseId']).toBe(state.currentPhaseId);
+      expect(proj['completedPhaseIds']).toBe(state.completedPhaseIds);
+      expect(proj['tasks']).toBe(state.tasks);
+      expect(proj['agents']).toBe(state.agents);
+      expect(proj['sidebar']).toBe(state.sidebar);
+      expect(proj['status']).toBe(state.status);
+      expect(proj['stats']).toBe(state.stats);
+      // error / failedPhase are optional; assert they're at least present keys.
+      expect(proj).toHaveProperty('error');
+      expect(proj).toHaveProperty('failedPhase');
+    });
+
+    it('mirrors error and failedPhase when the workflow fails', () => {
+      const ctx = createTestDeps();
+      ctx.clientStore.applyEvents([
+        ev('phase_started', { phase: 'planning', round: 1 }, {}, 1),
+        ev('workflow_failed', { phase: 'planning', error: 'kaboom' }, {}, 2),
+      ]);
+      const state = ctx.clientStore.getState();
+      const proj = ctx.dashboard.lastSyncedProjection as {
+        error?: string;
+        failedPhase?: string;
+        status: string;
+      };
+      expect(proj.status).toBe('failed');
+      expect(proj.error).toBe(state.error);
+      expect(proj.failedPhase).toBe(state.failedPhase);
+    });
+
+    it('mirrors seq from the store state', () => {
+      const ctx = createTestDeps();
+      ctx.clientStore.applyEvents([ev('workflow_started', { taskPrompt: 'x', resumed: false }, {}, 7)]);
+      const state = ctx.clientStore.getState();
+      const proj = ctx.dashboard.lastSyncedProjection as { seq: number };
+      expect(proj.seq).toBe(state.seq);
+    });
+
+    it('does NOT leak ClientStore-only fields into the projection', () => {
+      const ctx = createTestDeps();
+      ctx.clientStore.applyEvents([
+        ev('phase_started', { phase: 'p', round: 1 }, {}, 1),
+        ev('agent_spawned', { profile: 'coder' }, { agentId: 'a1', taskId: 't1' }, 2),
+      ]);
+      ctx.clientStore.appendRunLog('warn', 'hey', ISO_NOW);
+      const proj = ctx.dashboard.lastSyncedProjection as Record<string, unknown>;
+
+      // Selection / prev-tracking / event-log fields live on ClientStoreState
+      // but are NOT part of WorkflowProjection — they must not appear on the
+      // projection handed to the dashboard.
+      expect(proj).not.toHaveProperty('workflowEventLog');
+      expect(proj).not.toHaveProperty('selectedPhaseId');
+      expect(proj).not.toHaveProperty('selectedTaskId');
+      expect(proj).not.toHaveProperty('selectedStepIndex');
+      expect(proj).not.toHaveProperty('userPinnedPhase');
+      expect(proj).not.toHaveProperty('userPinnedStep');
+      expect(proj).not.toHaveProperty('prevCurrentPhaseId');
+      expect(proj).not.toHaveProperty('prevSelectedTaskStatus');
+    });
+
+    it('produces a projection whose enumerable keys are exactly the WorkflowProjection fields', () => {
+      const ctx = createTestDeps();
+      ctx.clientStore.applyEvents([ev('phase_started', { phase: 'p', round: 1 }, {}, 1)]);
+      const proj = ctx.dashboard.lastSyncedProjection as Record<string, unknown>;
+      expect(Object.keys(proj).sort()).toEqual(
+        [
+          'seq',
+          'taskPrompt',
+          'phases',
+          'currentPhaseId',
+          'completedPhaseIds',
+          'tasks',
+          'agents',
+          'sidebar',
+          'status',
+          'error',
+          'failedPhase',
+          'stats',
+          'runLog',
+        ].sort(),
+      );
+    });
+
+    it('produces a fresh projection object on every sync (not a stale cached reference)', () => {
+      const ctx = createTestDeps();
+      ctx.clientStore.applyEvents([ev('phase_started', { phase: 'p1', round: 1 }, {}, 1)]);
+      const first = ctx.dashboard.lastSyncedProjection;
+      ctx.clientStore.applyEvents([ev('phase_completed', { phase: 'p1', durationMs: 0 }, {}, 2)]);
+      const second = ctx.dashboard.lastSyncedProjection;
+      expect(second).not.toBe(first);
+    });
+
+    it('snapshot syncs also produce a projection with runLog reset to []', () => {
+      const ctx = createTestDeps();
+      ctx.clientStore.applySnapshot(
+        {
+          seq: 9,
+          taskPrompt: 'snap',
+          phases: [{ id: 'exec', label: 'Exec', icon: '⚡', taskIds: [] }],
+          currentPhaseId: 'exec',
+          completedPhaseIds: [],
+          tasks: {},
+          agents: {},
+          sidebar: { title: '', indicator: '' },
+          status: 'running',
+          stats: { totalTokens: 0, agentCount: 0 },
+          // Non-empty runLog on the snapshot itself — must still be reset.
+          runLog: [
+            { level: 'info', message: 'ignored', timestamp: ISO_NOW },
+            { level: 'warn', message: 'also ignored', timestamp: ISO_NOW },
+          ],
+        },
+        9,
+      );
+      const proj = ctx.dashboard.lastSyncedProjection as { runLog: unknown[]; seq: number };
+      expect(proj.runLog).toEqual([]);
+      expect(proj.seq).toBe(9);
+    });
+  });
+
   // ── requestRender ─────────────────────────────────────────────────────────
 
   describe('requestRender', () => {

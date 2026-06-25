@@ -1,22 +1,26 @@
 // ────────────────────────────────────────────────────────────────────────────
-// ClientStore – workflowEventLog cap removal (companion to client-store.test.ts).
+// ClientStore – workflowEventLog cap behavior (companion to client-store.test.ts).
 //
-// The event-log widget now retains the WHOLE log, so the store-level cap that
-// previously truncated `workflowEventLog` at 1000 entries inside
-// `ClientStore.applyEvents` had to be removed — otherwise events were silently
-// dropped before ever reaching the TUI.
+// The workflow event log is bounded at MAX_WORKFLOW_EVENT_LOG (10000) so memory
+// stays bounded for long-running workflows. Older entries are dropped FIFO once
+// the cap is exceeded; the visible window is always smaller, so a bounded
+// buffer loses nothing the user can see in practice. The exact boundary
+// trimming (10025 events → exactly 10000 retained, oldest dropped) is pinned in
+// `tests/shared/max-workflow-event-log.test.ts`, which also verifies the
+// constant is the shared single source of truth.
 //
-// These tests pin the uncapped behavior:
-//   • feeding >1000 loud workflow events through `applyEvents` (in batches)
-//     yields a `workflowEventLog` whose length EXCEEDS 1000;
-//   • nothing is dropped — every loud event is present, including the oldest;
-//   • seq ordering is preserved across many batches;
+// THIS file focuses on the orthogonal behaviors that must hold REGARDLESS of
+// the cap value, plus the below-cap (no-drop) retention path:
+//   • below the cap (sub-10000 volumes) nothing is dropped — every loud event
+//     is present, including the oldest, in seq order across many batches;
 //   • summary-line injection (the workflow_completed two-line aggregate) still
-//     appends and is NOT truncated by any cap;
-//   • the runLog cap (MAX_RUN_LOG, a separate server-console log) is untouched.
+//     appends below the cap AND survives when trimming is ACTIVE at the
+//     boundary (the newest summary lines are retained, never the dropped tail);
+//   • the runLog cap (MAX_RUN_LOG, a separate server-console log) is untouched
+//     by the workflow-event-log cap — the two collections are independent.
 //
-// This file is deliberately SEPARATE so a regression that reintroduces the
-// cap is caught here with a focused, easy-to-read failure.
+// This file is deliberately SEPARATE so a regression that drops summary lines
+// or bleeds the runLog cap is caught here with a focused, easy-to-read failure.
 // ────────────────────────────────────────────────────────────────────────────
 
 import { describe, expect, it } from 'bun:test';
@@ -30,7 +34,14 @@ import { formatWorkflowEventLine } from '@engin/shared/format-workflow-event';
 // ── Constants ───────────────────────────────────────────────────────────────
 
 const ISO_NOW = '2026-06-15T00:00:00.000Z';
-const OLD_CAP = 1000; // the previous store-level cap that was REMOVED
+
+// The workflow-event-log cap. This file characterizes BEHAVIOR (below-cap
+// retention, summary-line injection, runLog independence) that holds regardless
+// of where the constant is defined, so it uses a local mirror of the value
+// rather than importing the shared symbol. The single-source-of-truth export
+// (from @engin/shared/event-types) + barrel re-export is verified in
+// `tests/shared/max-workflow-event-log.test.ts` and `tests/tracking/event-types.test.ts`.
+const CAP = 10000; // mirrors MAX_WORKFLOW_EVENT_LOG
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -55,52 +66,57 @@ function loudEntries(events: EventRecord[]): WorkflowEventLogEntry[] {
     .filter((e): e is WorkflowEventLogEntry => e.line !== null);
 }
 
-// ────────────────────────────────────────────────────────────────────────────
-// Cap removal — no truncation beyond 1000
-// ────────────────────────────────────────────────────────────────────────────
-
-describe('ClientStore – workflowEventLog is uncapped (no 1000-entry cap)', () => {
-  it('retains MORE than 1000 entries when fed >1000 loud events in batches', () => {
-    // Verification scenario from the task: feed >1000 workflow events through
-    // ClientStore.applyEvents (in batches) and assert the log length EXCEEDS
-    // 1000 (nothing dropped).
-    const total = OLD_CAP + 50; // 1050 loud events
-    const batchSize = 100;
-    const store = new ClientStore();
-
-    let seq = 0;
-    for (let batchStart = 0; batchStart < total; batchStart += batchSize) {
-      const batch: EventRecord[] = [];
-      const batchEnd = Math.min(batchStart + batchSize, total);
-      for (let i = batchStart; i < batchEnd; i++) {
-        batch.push(loudEvent(++seq));
-      }
-      store.applyEvents(batch);
+/** Feed `total` loud events into the store in batches of `batchSize`. */
+function feedLoud(store: ClientStore, total: number, batchSize: number): EventRecord[] {
+  const all: EventRecord[] = [];
+  let seq = 0;
+  for (let batchStart = 0; batchStart < total; batchStart += batchSize) {
+    const batch: EventRecord[] = [];
+    const batchEnd = Math.min(batchStart + batchSize, total);
+    for (let i = batchStart; i < batchEnd; i++) {
+      const e = loudEvent(++seq);
+      batch.push(e);
+      all.push(e);
     }
+    store.applyEvents(batch);
+  }
+  return all;
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Below-cap retention — nothing is dropped while under MAX_WORKFLOW_EVENT_LOG
+// ────────────────────────────────────────────────────────────────────────────
+
+describe('ClientStore – workflowEventLog below-cap retention (no drop under 10000)', () => {
+  it('retains every loud event below the cap (>1000 events, batched)', () => {
+    // The old web-only cap was 1000; the unified cap is 10000. Volumes above
+    // 1000 but well below 10000 must retain everything (the web store's
+    // previous 1000 cap is what this guards against regressing).
+    const total = 1050;
+    const store = new ClientStore();
+    feedLoud(store, total, 100);
 
     const log = store.getState().workflowEventLog;
-    expect(log.length).toBeGreaterThan(OLD_CAP);
     expect(log).toHaveLength(total); // every loud event present
   });
 
-  it('does NOT drop the oldest entry when crossing 1000 (single batch)', () => {
-    // Previous behavior dropped seq 1 once the slice window slid past 1000.
+  it('keeps the oldest entry below the cap (single batch)', () => {
     const store = new ClientStore();
     const events: EventRecord[] = [];
-    for (let i = 1; i <= OLD_CAP + 1; i++) events.push(loudEvent(i));
+    for (let i = 1; i <= 1001; i++) events.push(loudEvent(i));
     store.applyEvents(events);
 
     const log = store.getState().workflowEventLog;
-    expect(log).toHaveLength(OLD_CAP + 1);
+    expect(log).toHaveLength(1001);
     // Oldest (seq 1) is RETAINED, not dropped.
     expect(log[0].seq).toBe(1);
-    expect(log[log.length - 1].seq).toBe(OLD_CAP + 1);
+    expect(log[log.length - 1].seq).toBe(1001);
   });
 
-  it('does NOT drop the oldest entry when crossing 1000 (batched)', () => {
+  it('keeps the oldest entry below the cap (one event per batch)', () => {
     const store = new ClientStore();
-    const total = OLD_CAP + 5;
-    // Small batches to exercise the accumulation path across the old boundary.
+    const total = 1005;
+    // Single-event batches to exercise the accumulation path.
     for (let i = 1; i <= total; i++) {
       store.applyEvents([loudEvent(i)]);
     }
@@ -111,23 +127,11 @@ describe('ClientStore – workflowEventLog is uncapped (no 1000-entry cap)', () 
     expect(log[total - 1].seq).toBe(total);
   });
 
-  it('keeps every loud entry in seq order across many batches', () => {
-    const total = OLD_CAP * 2; // 2000 events, well past the old cap
+  it('keeps every loud entry in seq order across many batches (sub-cap volume)', () => {
+    const total = 2000; // above the old 1000 cap, below the 10000 cap
     const batchSize = 37; // odd batch size so the final batch is partial
     const store = new ClientStore();
-    const allLoud: EventRecord[] = [];
-
-    let seq = 0;
-    for (let batchStart = 0; batchStart < total; batchStart += batchSize) {
-      const batch: EventRecord[] = [];
-      const batchEnd = Math.min(batchStart + batchSize, total);
-      for (let i = batchStart; i < batchEnd; i++) {
-        const e = loudEvent(++seq);
-        batch.push(e);
-        allLoud.push(e);
-      }
-      store.applyEvents(batch);
-    }
+    const allLoud = feedLoud(store, total, batchSize);
 
     const log = store.getState().workflowEventLog;
     expect(log).toHaveLength(total);
@@ -137,34 +141,26 @@ describe('ClientStore – workflowEventLog is uncapped (no 1000-entry cap)', () 
     expect(log).toEqual(loudEntries(allLoud));
   });
 
-  it('retains a large volume (5000+) of loud events without truncation', () => {
-    const total = 5000;
-    const batchSize = 500;
+  it('retains a large sub-cap volume (5000) of loud events without truncation', () => {
+    const total = 5000; // half the cap — nothing trimmed
     const store = new ClientStore();
-
-    let seq = 0;
-    for (let batchStart = 0; batchStart < total; batchStart += batchSize) {
-      const batch: EventRecord[] = [];
-      const batchEnd = Math.min(batchStart + batchSize, total);
-      for (let i = batchStart; i < batchEnd; i++) batch.push(loudEvent(++seq));
-      store.applyEvents(batch);
-    }
+    feedLoud(store, total, 500);
 
     expect(store.getState().workflowEventLog).toHaveLength(total);
   });
 });
 
 // ────────────────────────────────────────────────────────────────────────────
-// Summary-line injection survives the cap removal
+// Summary-line injection survives both below-cap and active-trimming paths
 // ────────────────────────────────────────────────────────────────────────────
 
-describe('ClientStore – summary lines survive uncapped accumulation', () => {
-  it('appends the workflow_completed summary lines after >1000 loud events', () => {
-    // Pre-fill the log past the old cap, THEN fire a workflow_completed with a
-    // positive totalDurationMs. The two summary lines must still be appended
-    // (not truncated by any cap) and keyed to the completed event's seq.
+describe('ClientStore – summary lines survive accumulation and trimming', () => {
+  it('appends the workflow_completed summary lines below the cap', () => {
+    // Pre-fill the log below the cap, THEN fire a workflow_completed with a
+    // positive totalDurationMs. The two summary lines must be appended and
+    // keyed to the completed event's seq.
     const store = new ClientStore();
-    const fillCount = OLD_CAP + 10;
+    const fillCount = 1010;
     const fillEvents: EventRecord[] = [];
     for (let i = 1; i <= fillCount; i++) fillEvents.push(loudEvent(i));
     store.applyEvents(fillEvents);
@@ -183,15 +179,45 @@ describe('ClientStore – summary lines survive uncapped accumulation', () => {
     expect(log[log.length - 2].line).toBe('📊 Tokens: ↑0 in · ↓0 out');
     expect(log[log.length - 1].line).toBe('⏱ Time: 4.0s total · 0.0s agent (0%)');
   });
+
+  it('retains the newest summary lines when trimming is ACTIVE at the cap boundary', () => {
+    // The critical edge case: fill PAST the cap so trimming drops the oldest
+    // tail, THEN fire workflow_completed in the SAME overshoot. The three
+    // completion/summary entries are the NEWEST, so they must be retained
+    // (FIFO drops the oldest, never the just-appended tail).
+    const store = new ClientStore();
+    const fillCount = CAP + 50;
+    const fillEvents: EventRecord[] = [];
+    for (let i = 1; i <= fillCount; i++) fillEvents.push(loudEvent(i));
+    store.applyEvents(fillEvents);
+    // Trimming already engaged: capped exactly at CAP.
+    expect(store.getState().workflowEventLog).toHaveLength(CAP);
+
+    const completedSeq = fillCount + 1;
+    store.applyEvents([ev('workflow_completed', { totalDurationMs: 4000, agentCount: 0 }, completedSeq)]);
+
+    const log = store.getState().workflowEventLog;
+    // Capped at CAP (1 completion + 2 summary appended, 3 oldest loud lines
+    // trimmed to keep the total at the cap).
+    expect(log).toHaveLength(CAP);
+    // The three newest entries are the completion line + 2 summary lines, all
+    // keyed to completedSeq.
+    expect(log[log.length - 1].seq).toBe(completedSeq);
+    expect(log[log.length - 2].seq).toBe(completedSeq);
+    expect(log[log.length - 3].seq).toBe(completedSeq);
+    expect(log[log.length - 2].line).toBe('📊 Tokens: ↑0 in · ↓0 out');
+    expect(log[log.length - 1].line).toBe('⏱ Time: 4.0s total · 0.0s agent (0%)');
+  });
 });
 
 // ────────────────────────────────────────────────────────────────────────────
-// runLog cap is OUT OF SCOPE and unchanged (MAX_RUN_LOG still enforced)
+// runLog cap is independent (MAX_RUN_LOG still enforced, separate collection)
 // ────────────────────────────────────────────────────────────────────────────
 
-describe('ClientStore – runLog cap (MAX_RUN_LOG) is unchanged', () => {
+describe('ClientStore – runLog cap (MAX_RUN_LOG) is independent of the event-log cap', () => {
   it('still caps runLog at MAX_RUN_LOG (a separate server-console log)', () => {
-    // The workflow-event-log cap removal must NOT affect the runLog cap.
+    // The workflow-event-log cap must NOT affect the runLog cap — the two are
+    // distinct collections with distinct caps.
     const store = new ClientStore();
     for (let i = 0; i < MAX_RUN_LOG + 50; i++) {
       store.appendRunLog('info', `line-${i}`, ISO_NOW);
@@ -200,5 +226,11 @@ describe('ClientStore – runLog cap (MAX_RUN_LOG) is unchanged', () => {
     expect(runLog).toHaveLength(MAX_RUN_LOG);
     // Oldest dropped; first kept entry is line-50.
     expect(runLog[0].message).toBe('line-50');
+  });
+
+  it('workflowEventLog cap (10000) and runLog cap (200) are distinct values', () => {
+    // Regression guard: the two caps must never be confused or aliased.
+    expect(CAP).not.toBe(MAX_RUN_LOG);
+    expect(CAP).toBeGreaterThan(MAX_RUN_LOG);
   });
 });

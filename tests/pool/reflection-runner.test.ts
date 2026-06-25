@@ -3,6 +3,7 @@ import { z } from 'zod';
 
 import { RendererRegistry } from '../../packages/engine/src/core/renderer-registry.js';
 import { reflectionRunner } from '../../packages/engine/src/pool/reflection-runner.js';
+import type { TaskRunnerContext } from '../../packages/engine/src/pool/types.js';
 import {
   clearPoolMocks,
   createRunnerContext,
@@ -227,6 +228,41 @@ describe('max rounds exhausted with medium severity', () => {
 
     const ctx = createRunnerContext();
     const runner = reflectionRunner({ draftStep, criticStep, maxRounds: 3 });
+
+    const outcome = await runner(ctx);
+
+    expect(outcome.status).toBe('completed');
+    expect(ctx.completeTask).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns failed when severity is high', async () => {
+    setupProfileMocks();
+    setupHarnessMocks();
+    setupCriticMock(false, 'Major issue', 'high');
+
+    const ctx = createRunnerContext();
+    const runner = reflectionRunner({ draftStep, criticStep, maxRounds: 3 });
+
+    const outcome = await runner(ctx);
+
+    expect(outcome.status).toBe('failed');
+    expect(outcome).toHaveProperty('feedback', 'Major issue');
+    expect(ctx.failTask).toHaveBeenCalledWith(expect.objectContaining({ feedback: 'Major issue', severity: 'high' }));
+    expect(ctx.completeTask).not.toHaveBeenCalled();
+  });
+
+  it('returns completed when no severity field is present (defaults to medium)', async () => {
+    setupProfileMocks();
+    setupHarnessMocks();
+    // Critic output omits severity → extractSeverity returns 'medium' →
+    // isFailingSeverity is false → accept with caveats.
+    mockPromptForStructured.mockResolvedValue({
+      result: { approved: false, feedback: 'no severity here' },
+      attempts: 1,
+    });
+
+    const ctx = createRunnerContext();
+    const runner = reflectionRunner({ draftStep, criticStep, maxRounds: 1 });
 
     const outcome = await runner(ctx);
 
@@ -810,5 +846,199 @@ describe('shared runner utilities integration', () => {
     const firstOpts = (harnessArgs[0] as unknown[])[0] as Record<string, unknown>;
     expect(firstOpts.cwd).toBe('/tmp/cwd-fwd');
     expect(firstOpts.apiKeys).toBe(apiKeys);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// onDecision observe-hook (hookRegistry) firing
+//
+// The reflection runner fires the `onDecision` OBSERVE hook (audit-log sink)
+// ALONGSIDE the `onStatus.onDecision` callback (event-store sink) on each
+// critic rejection. These tests pin down the hook-firing behavior so the
+// extraction of fireOnDecisionHook() is provably behavior-preserving.
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe('onDecision observe hook (hookRegistry) fires alongside onStatus', () => {
+  /** Minimal fake HookRegistry. `hasSubscribers` returns true ONLY for
+   *  'onDecision' so other seams (onStructuredOutput, beforeStepPrompt) stay
+   *  dormant. */
+  function makeFakeRegistry(hasSubs: boolean) {
+    return {
+      register: mock(() => {}),
+      invokeObserve: mock(async () => {}),
+      invokePipeline: mock(async () => undefined),
+      invokeFirstWins: mock(async () => undefined),
+      invokeAllRun: mock(async () => undefined),
+      hasSubscribers: mock((name: string) => hasSubs && name === 'onDecision'),
+    };
+  }
+
+  it('invokes the onDecision observe hook on each critic rejection', async () => {
+    setupProfileMocks();
+    setupHarnessMocks();
+    setupCriticSequence([
+      { approved: false, feedback: 'Fix this', severity: 'medium' },
+      { approved: false, feedback: 'Still needs work', severity: 'medium' },
+      { approved: true, feedback: 'Good', severity: 'low' },
+    ]);
+
+    const registry = makeFakeRegistry(true);
+    const ctx = createRunnerContext({
+      hookRegistry: registry as unknown as TaskRunnerContext['hookRegistry'],
+    });
+    const runner = reflectionRunner({ draftStep, criticStep, maxRounds: 3 });
+
+    await runner(ctx);
+
+    // Two rejections → two observe-hook invocations.
+    expect(registry.invokeObserve).toHaveBeenCalledTimes(2);
+  });
+
+  it('passes agentId, taskId, phaseId, decision and reasoning into the args', async () => {
+    setupProfileMocks();
+    setupHarnessMocks();
+    setupCriticSequence([
+      { approved: false, feedback: 'Fix this', severity: 'medium' },
+      { approved: true, feedback: 'Good', severity: 'low' },
+    ]);
+
+    const registry = makeFakeRegistry(true);
+    const ctx = createRunnerContext({
+      hookRegistry: registry as unknown as TaskRunnerContext['hookRegistry'],
+    });
+    const runner = reflectionRunner({ draftStep, criticStep, maxRounds: 3 });
+
+    await runner(ctx);
+
+    expect(registry.invokeObserve).toHaveBeenCalledWith(
+      'onDecision',
+      expect.objectContaining({
+        agentId: ctx.agentId,
+        taskId: ctx.task.id,
+        phaseId: ctx.phaseId,
+        decision: 'Critic rejected (round 1/3), retrying',
+        reasoning: 'Fix this',
+      }),
+      expect.anything(),
+    );
+  });
+
+  it('defaults reasoning to "No feedback provided" when critic feedback is absent', async () => {
+    setupProfileMocks();
+    setupHarnessMocks();
+    // Critic rejects with no feedback field.
+    mockPromptForStructured.mockResolvedValue({
+      result: { approved: false, severity: 'critical' },
+      attempts: 1,
+    });
+
+    const registry = makeFakeRegistry(true);
+    const ctx = createRunnerContext({
+      hookRegistry: registry as unknown as TaskRunnerContext['hookRegistry'],
+    });
+    const runner = reflectionRunner({ draftStep, criticStep, maxRounds: 1 });
+
+    await runner(ctx);
+
+    const passedArgs = (registry.invokeObserve.mock.calls[0] as unknown[])[1] as Record<string, unknown>;
+    expect(passedArgs.reasoning).toBe('No feedback provided');
+  });
+
+  it('fires both onStatus.onDecision AND the observe hook (two separate sinks)', async () => {
+    setupProfileMocks();
+    setupHarnessMocks();
+    setupCriticSequence([
+      { approved: false, feedback: 'Fix this', severity: 'medium' },
+      { approved: true, feedback: 'Good', severity: 'low' },
+    ]);
+
+    const registry = makeFakeRegistry(true);
+    const onStatusDecision = mock((_info: unknown) => {});
+    const ctx = createRunnerContext({
+      hookRegistry: registry as unknown as TaskRunnerContext['hookRegistry'],
+      onStatus: { onDecision: onStatusDecision } as Record<string, unknown>,
+    });
+    const runner = reflectionRunner({ draftStep, criticStep, maxRounds: 3 });
+
+    await runner(ctx);
+
+    expect(onStatusDecision).toHaveBeenCalledTimes(1);
+    expect(registry.invokeObserve).toHaveBeenCalledTimes(1);
+  });
+
+  it('does NOT invoke the observe hook when hookRegistry has no subscribers', async () => {
+    setupProfileMocks();
+    setupHarnessMocks();
+    setupCriticSequence([
+      { approved: false, feedback: 'Fix this', severity: 'medium' },
+      { approved: true, feedback: 'Good', severity: 'low' },
+    ]);
+
+    const registry = makeFakeRegistry(false);
+    const ctx = createRunnerContext({
+      hookRegistry: registry as unknown as TaskRunnerContext['hookRegistry'],
+    });
+    const runner = reflectionRunner({ draftStep, criticStep, maxRounds: 3 });
+
+    await runner(ctx);
+
+    expect(registry.invokeObserve).not.toHaveBeenCalled();
+  });
+
+  it('does NOT invoke the observe hook when no hookRegistry is provided', async () => {
+    setupProfileMocks();
+    setupHarnessMocks();
+    setupCriticSequence([
+      { approved: false, feedback: 'Fix this', severity: 'medium' },
+      { approved: true, feedback: 'Good', severity: 'low' },
+    ]);
+
+    const ctx = createRunnerContext();
+    const runner = reflectionRunner({ draftStep, criticStep, maxRounds: 3 });
+
+    await runner(ctx);
+
+    // Smoke test — completes without error, no hook to assert on.
+    expect(ctx.completeTask).toHaveBeenCalledTimes(1);
+  });
+
+  it('does NOT invoke the observe hook when critic approves on first round', async () => {
+    setupProfileMocks();
+    setupHarnessMocks();
+    setupCriticMock(true, 'Good');
+
+    const registry = makeFakeRegistry(true);
+    const ctx = createRunnerContext({
+      hookRegistry: registry as unknown as TaskRunnerContext['hookRegistry'],
+    });
+    const runner = reflectionRunner({ draftStep, criticStep, maxRounds: 3 });
+
+    await runner(ctx);
+
+    expect(registry.invokeObserve).not.toHaveBeenCalled();
+  });
+
+  it('passes the correct hook context: cwd = worktreeCwd ?? ctx.cwd, workDir = ctx.cwd', async () => {
+    setupProfileMocks();
+    setupHarnessMocks();
+    setupCriticSequence([
+      { approved: false, feedback: 'Fix this', severity: 'medium' },
+      { approved: true, feedback: 'Good', severity: 'low' },
+    ]);
+
+    const registry = makeFakeRegistry(true);
+    const ctx = createRunnerContext({
+      hookRegistry: registry as unknown as TaskRunnerContext['hookRegistry'],
+      cwd: '/tmp/project',
+      worktreeCwd: '/wt/task-1',
+    });
+    const runner = reflectionRunner({ draftStep, criticStep, maxRounds: 3 });
+
+    await runner(ctx);
+
+    const hookCtx = (registry.invokeObserve.mock.calls[0] as unknown[])[2] as Record<string, unknown>;
+    expect(hookCtx.registry).toBe(registry);
+    expect(hookCtx.cwd).toBe('/wt/task-1');
+    expect(hookCtx.workDir).toBe('/tmp/project');
   });
 });

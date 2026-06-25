@@ -1,5 +1,5 @@
 import type { ClientStore, ClientStoreState } from '@engin/shared/client-store';
-import type { WorkflowProjection } from '@engin/shared/event-types';
+import { toProjection } from '@engin/shared/projection-helpers';
 import type { Dashboard } from './components/dashboard.js';
 import type { EventLog } from './components/event-log.js';
 
@@ -72,25 +72,6 @@ export function createWsBackedTui(deps: {
 
     // 4. Request a re-render.
     requestRender();
-  }
-
-  /** Reconstruct a `WorkflowProjection` from the client store state. */
-  function toProjection(state: ClientStoreState): WorkflowProjection {
-    return {
-      seq: state.seq,
-      taskPrompt: state.taskPrompt,
-      phases: state.phases,
-      currentPhaseId: state.currentPhaseId,
-      completedPhaseIds: state.completedPhaseIds,
-      tasks: state.tasks,
-      agents: state.agents,
-      sidebar: state.sidebar,
-      status: state.status,
-      error: state.error,
-      failedPhase: state.failedPhase,
-      stats: state.stats,
-      runLog: [],
-    };
   }
 
   // Subscribe to store notifications.

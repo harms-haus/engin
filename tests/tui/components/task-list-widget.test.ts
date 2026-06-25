@@ -2,7 +2,14 @@ import { visibleWidth } from '@earendil-works/pi-tui';
 import type { TaskEntity } from '@engin/shared';
 import { describe, expect, it } from 'bun:test';
 import { TaskListWidget } from '../../../packages/tui/src/components/task-list-widget.js';
-import { dim, statusColor, statusIcon, stripAnsi, yellow } from '../../../packages/tui/src/theme.js';
+import { dim, statusColor, statusIcon, yellow } from '../../../packages/tui/src/theme.js';
+
+/** Strip ANSI escape sequences (CSI and OSC) — local helper to avoid importing dead theme export. */
+function stripAnsi(str: string): string {
+  if (!str.includes('\x1b')) return str;
+  // eslint-disable-next-line no-control-regex
+  return str.replace(/\x1b\[[^a-zA-Z]*[a-zA-Z]/g, '').replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, '');
+}
 
 const UP = '\x1b[A';
 const DOWN = '\x1b[B';

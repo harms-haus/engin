@@ -5,16 +5,17 @@ import {
   bgStatusBar,
   blue,
   bold,
+  borderLine,
   cyan,
   darkRed,
   dim,
-  formatElapsed,
   green,
   magenta,
   normal,
   red,
   statusColor,
   statusIcon,
+  underline,
   yellow,
 } from '../../packages/tui/src/theme.js';
 
@@ -63,8 +64,32 @@ describe('ANSI style functions', () => {
     expect(darkRed('hi')).toBe('\x1b[38;5;131mhi\x1b[0m');
   });
 
+  it('underline wraps with 4m and resets', () => {
+    expect(underline('hi')).toBe('\x1b[4mhi\x1b[0m');
+  });
+
   it('normal returns input unchanged with no ANSI wrapping', () => {
     expect(normal('hi')).toBe('hi');
+  });
+});
+
+describe('borderLine', () => {
+  it('repeats the fill character to fill innerWidth', () => {
+    expect(borderLine('╭', '─', '╮', 5)).toBe('╭─────╮');
+  });
+
+  it('produces only borders when innerWidth is 0', () => {
+    expect(borderLine('╭', '─', '╮', 0)).toBe('╭╮');
+  });
+
+  it('uses the fill character exactly innerWidth times', () => {
+    const result = borderLine('L', '=', 'R', 3);
+    expect(result).toBe('L===R');
+    expect(result.length).toBe(5);
+  });
+
+  it('handles multi-character fill by repeating the whole string', () => {
+    expect(borderLine('L', 'ab', 'R', 2)).toBe('LababR');
   });
 });
 
@@ -85,25 +110,6 @@ describe('statusColor', () => {
   it('returns a function', () => {
     const fn = statusColor('active');
     expect(typeof fn).toBe('function');
-  });
-});
-
-describe('formatElapsed', () => {
-  const cases: [number, string][] = [
-    [0, '<1s'],
-    [500, '<1s'],
-    [999, '<1s'],
-    [1000, '1s'],
-    [42000, '42s'],
-    [59999, '59s'],
-    [60000, '1m'],
-    [135000, '2m15s'],
-    [3600000, '1h'],
-    [5025000, '1h23m'],
-  ];
-
-  it.each(cases)('formatElapsed(%d) returns %s', (ms, expected) => {
-    expect(formatElapsed(ms)).toBe(expected);
   });
 });
 

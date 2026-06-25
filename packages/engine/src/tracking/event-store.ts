@@ -32,6 +32,13 @@ export class EventStore {
   private writeQueue: Promise<void> = Promise.resolve();
   private disposed = false;
 
+  // Backpressure guard: after enough consecutive write failures the store
+  // stops attempting disk writes so the promise chain cannot grow without
+  // bound under sustained pressure (e.g. disk full). The in-memory ring
+  // buffer and projection keep updating — only persistence is short-circuited.
+  private consecutiveWriteFailures = 0;
+  private static readonly MAX_CONSECUTIVE_WRITE_FAILURES = 10;
+
   // ── Write coalescing (F2) ────────────────────────────────────────────────
   // Records appended within the same microtask tick are accumulated in
   // `pendingRecords` and flushed to disk in a SINGLE `appendFile` call by
@@ -274,16 +281,26 @@ export class EventStore {
     if (batch.length === 0) return;
     this.writeQueue = this.writeQueue
       .then(async () => {
+        if (this.consecutiveWriteFailures >= EventStore.MAX_CONSECUTIVE_WRITE_FAILURES) {
+          return; // Persistent failure detected — stop attempting disk writes.
+        }
         await this.ensureDir();
         const payload = batch.map((r) => JSON.stringify(r)).join('\n') + '\n';
         await appendFile(this.logPath, payload, 'utf-8');
+        this.consecutiveWriteFailures = 0; // Reset on success.
       })
       .catch((err) => {
+        this.consecutiveWriteFailures++;
         // Log write errors so silent permanent data loss is visible on restart.
         // Uses the module-load-time reference (NOT the possibly-overridden
         // global console.error) to avoid a feedback loop with RunManager's
         // console capture override.
         persistError('[EventStore] Failed to persist events:', err);
+        if (this.consecutiveWriteFailures === EventStore.MAX_CONSECUTIVE_WRITE_FAILURES) {
+          persistError(
+            `[EventStore] ${EventStore.MAX_CONSECUTIVE_WRITE_FAILURES} consecutive write failures — stopping disk writes to prevent unbounded queue growth.`,
+          );
+        }
       });
   }
 

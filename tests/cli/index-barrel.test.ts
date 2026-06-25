@@ -213,7 +213,6 @@ describe('CLI barrel — does NOT re-export TUI internals', () => {
     'statusIcon',
     'borderLine',
     'stripAnsi',
-    'formatElapsed',
     'bgDark',
     'bgStatusBar',
     'darkRed',

@@ -1524,7 +1524,8 @@ describe('evolve', () => {
       const key = 'a1::t1';
       expect(state.agents[key].log).toHaveLength(1);
       expect(state.agents[key].log[0].type).toBe('text');
-      expect(state.agents[key].log[0].content).toBe('Retrying (attempt 1/3) in 2000ms: overloaded');
+      // formatDuration(2000) → '2s' (≥1000ms renders as seconds)
+      expect(state.agents[key].log[0].content).toBe('Retrying (attempt 1/3) in 2s: overloaded');
       expect(state.agents[key].log[0].id).toBe(`log-${eventSeq}`);
       expect(state.agents[key].log[0].metadata).toEqual({
         attempt: 1,
@@ -1557,7 +1558,8 @@ describe('evolve', () => {
 
       const agent = state.agents['a1'];
       expect(agent.log).toHaveLength(1);
-      expect(agent.log[0].content).toBe('Retrying (attempt 2/5) in 1000ms');
+      // formatDuration(1000) → '1s' (≥1000ms renders as seconds)
+      expect(agent.log[0].content).toBe('Retrying (attempt 2/5) in 1s');
       expect(agent.log[0].metadata).toEqual({ attempt: 2, maxAttempts: 5, delayMs: 1000, errorMessage: '' });
     });
 
@@ -1819,7 +1821,8 @@ describe('evolve', () => {
       expect(state.seq).toBe(4); // workflow_started=1, agent_spawned=2, retry_started=3, retry_completed=4
       expect(agent.log).toHaveLength(2);
       expect(agent.log[0].type).toBe('text');
-      expect(agent.log[0].content).toBe('Retrying (attempt 1/3) in 2000ms: overloaded');
+      // formatDuration(2000) → '2s' (≥1000ms renders as seconds)
+      expect(agent.log[0].content).toBe('Retrying (attempt 1/3) in 2s: overloaded');
       expect(agent.log[0].metadata).toEqual({ attempt: 1, maxAttempts: 3, delayMs: 2000, errorMessage: 'overloaded' });
       expect(agent.log[1].type).toBe('text');
       expect(agent.log[1].content).toBe('Retry succeeded');

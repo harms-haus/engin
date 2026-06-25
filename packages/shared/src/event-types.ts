@@ -95,6 +95,13 @@ export interface AgentEntity {
 // entries are dropped (FIFO) when this limit is exceeded.
 export const MAX_RUN_LOG = 200;
 
+// ─── Workflow Event Log Cap ──────────────────────────────────────────────────
+// Maximum number of entries retained in the workflow event log (FIFO). Older
+// entries are dropped once this limit is exceeded so memory stays bounded for
+// long-running workflows. The cap is generous (well above any visible window)
+// to preserve ample scroll-back.
+export const MAX_WORKFLOW_EVENT_LOG = 10000;
+
 // ─── Workflow Projection ─────────────────────────────────────────────────────
 
 export interface WorkflowProjection {

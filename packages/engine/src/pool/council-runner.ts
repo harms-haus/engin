@@ -67,14 +67,14 @@ export function councilRunner(options: CouncilRunnerOptions): TaskRunner {
           stepName: worker.name,
           agentId: ctx.agentId,
         });
-        return runStep(
-          ctx.task,
-          worker,
-          ctx.agentId,
-          { stepIndex: i, attempt: 0, execCount: 0 },
-          ctx.profiles,
+        return runStep({
+          task: ctx.task,
+          step: worker,
+          agentId: ctx.agentId,
+          ctx: { stepIndex: i, attempt: 0, execCount: 0 },
+          profiles: ctx.profiles,
           execCtx,
-        );
+        });
       });
 
       const workerResults = await Promise.allSettled(workerPromises);
@@ -123,14 +123,14 @@ export function councilRunner(options: CouncilRunnerOptions): TaskRunner {
       // prompt format. The original ctx.task is never mutated.
       const synthTask = composeSynthesizerPrompt(ctx.task, outputs);
 
-      const synthResult = await runStep(
-        synthTask,
-        synthesizer,
-        ctx.agentId,
-        { stepIndex: workers.length, attempt: 0, execCount: 0 },
-        ctx.profiles,
+      const synthResult = await runStep({
+        task: synthTask,
+        step: synthesizer,
+        agentId: ctx.agentId,
+        ctx: { stepIndex: workers.length, attempt: 0, execCount: 0 },
+        profiles: ctx.profiles,
         execCtx,
-      );
+      });
       tracker.add(synthResult.trackedSession);
 
       // ── Step 6: Settle based on synthesizer result ─────────────────────

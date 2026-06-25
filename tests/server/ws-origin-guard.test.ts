@@ -16,10 +16,10 @@
 //   • Localhost binds (Host starts with localhost / 127.0.0.1 / ::1 / [::1])
 //     bypass the check — any Origin is allowed.
 //   • Otherwise, the Origin URL is parsed and validated:
-//       - Bug 1: non-HTTP schemes (capacitor://, file://, ionic://) are allowed.
+//       - Non-HTTP schemes (capacitor://, file://, ionic://) are allowed.
 //       - The Host header (NOT X-Forwarded-Host) is the comparison target.
-//       - Bug 3: hostnames compare case-insensitively (RFC 3986).
-//       - Bug 2: ports compare only when BOTH Origin and Host specify one.
+//       - Hostnames compare case-insensitively (RFC 3986).
+//       - Ports compare only when BOTH Origin and Host specify one.
 //       - Malformed Origin URLs are rejected (false).
 //
 // The function reads ONLY `origin` and `host` from the request headers, so it
@@ -131,9 +131,9 @@ describe('validateWebSocketOrigin', () => {
     });
   });
 
-  // ─── Bug 1: non-HTTP scheme Origins ───────────────────────────────────────
+  // ─── Non-HTTP scheme Origins ──────────────────────────────────────────────────
 
-  describe('non-HTTP scheme Origins (Bug 1)', () => {
+  describe('non-HTTP scheme Origins', () => {
     it('allows a capacitor:// scheme Origin', () => {
       expect(validateWebSocketOrigin(makeReq('0.0.0.0:8080', 'capacitor://localhost'))).toBe(true);
     });
@@ -147,9 +147,9 @@ describe('validateWebSocketOrigin', () => {
     });
   });
 
-  // ─── Bug 2: port omission ────────────────────────────────────────────────
+  // ─── Port omission ────────────────────────────────────────────────────────────
 
-  describe('port omission (Bug 2)', () => {
+  describe('port omission', () => {
     it('allows an Origin that omits the port when Host has one', () => {
       expect(validateWebSocketOrigin(makeReq('0.0.0.0:8080', 'http://0.0.0.0'))).toBe(true);
     });
@@ -163,9 +163,9 @@ describe('validateWebSocketOrigin', () => {
     });
   });
 
-  // ─── Bug 3: case-insensitive hostname ─────────────────────────────────────
+  // ─── Case-insensitive hostname ──────────────────────────────────────────────
 
-  describe('case-insensitive hostname comparison (Bug 3)', () => {
+  describe('case-insensitive hostname comparison', () => {
     it('matches when the Origin hostname differs in case from the Host', () => {
       expect(validateWebSocketOrigin(makeReq('Example.com:8080', 'http://example.com:8080'))).toBe(true);
     });
@@ -176,6 +176,51 @@ describe('validateWebSocketOrigin', () => {
 
     it('still rejects a genuinely different hostname even when case differs', () => {
       expect(validateWebSocketOrigin(makeReq('0.0.0.0:8080', 'http://EVIL.com:8080'))).toBe(false);
+    });
+  });
+
+  // ─── Scheme-bypass boundary: only non-HTTP schemes skip host matching ────
+
+  describe('scheme-bypass only applies to non-HTTP schemes', () => {
+    it('an http:// Origin with a mismatched hostname is NOT auto-allowed', () => {
+      // http: is an HTTP scheme, so the scheme bypass does NOT apply. A
+      // mismatched hostname must still be rejected by the host-matching path.
+      expect(validateWebSocketOrigin(makeReq('0.0.0.0:8080', 'http://evil.com:8080'))).toBe(false);
+    });
+
+    it('an https:// Origin with a mismatched hostname is NOT auto-allowed', () => {
+      expect(validateWebSocketOrigin(makeReq('0.0.0.0:8080', 'https://evil.com:8080'))).toBe(false);
+    });
+  });
+
+  // ─── Port-comparison boundaries: both-present vs omitted ──────────────────
+
+  describe('port comparison when both sides omit a port', () => {
+    it('allows when neither Origin nor Host carries a port', () => {
+      // When neither side carries a port (both default to the scheme's
+      // well-known port), the port check is skipped to avoid false negatives.
+      expect(validateWebSocketOrigin(makeReq('my.host', 'http://my.host'))).toBe(true);
+    });
+  });
+
+  // ─── Hostname-matching boundaries: case folding vs real differences ──────
+
+  describe('hostname matching distinguishes case-folding from real differences', () => {
+    it('matches when BOTH hostname sides are upper/mixed case', () => {
+      expect(validateWebSocketOrigin(makeReq('My.Host:8080', 'http://MY.HOST:8080'))).toBe(true);
+    });
+
+    it('rejects a hostname that differs only by a trailing dot', () => {
+      // A trailing dot is a real hostname difference, not a case difference,
+      // so it must NOT be folded away by the case-insensitive comparison.
+      expect(validateWebSocketOrigin(makeReq('example.com:8080', 'http://example.com.:8080'))).toBe(false);
+    });
+  });
+
+  describe('empty / whitespace Origin header', () => {
+    it('treats an empty-string Origin header as absent (allowed)', () => {
+      // `headers.get('origin')` returns '' (falsy) → behaves like no Origin.
+      expect(validateWebSocketOrigin(makeReq('0.0.0.0:8080', ''))).toBe(true);
     });
   });
 

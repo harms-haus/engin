@@ -13,6 +13,9 @@ import type { WorktreeInfo } from './types.js';
 import { runTooledFixup } from './worktree-fixup.js';
 import { WorktreeManager } from './worktree-manager.js';
 
+/** Maximum character length for agent context (diffs, conflict text) to avoid token overflow. */
+const MAX_AGENT_CONTEXT = 8000;
+
 // ─── Shared Helpers ──────────────────────────────────────────────────────────
 
 async function loadWorkerProfile(profilesDirs: string[]) {
@@ -107,7 +110,7 @@ export async function generateCommitMessage(
   const session = await requireAgentPlugin(profile.agent).createSession({ profile, cwd: worktreePath, apiKeys });
 
   try {
-    const truncatedDiff = diff.length > 8000 ? diff.slice(0, 8000) : diff;
+    const truncatedDiff = diff.length > MAX_AGENT_CONTEXT ? diff.slice(0, MAX_AGENT_CONTEXT) : diff;
     const { result } = await promptForStructured(
       session,
       `Generate a concise commit message for the following changes.\n\nTask: ${taskPrompt}\n\nDiff:\n${truncatedDiff}`,
@@ -135,7 +138,7 @@ export async function generateCommitMessage(
 //   3. No verification  -> `runTooledFixup` runs tsc + eslint after each turn.
 //   4. stageAll sweeps  -> only `stageFiles(repoRoot, conflicts)` is staged.
 //   5. Silent writeFileSync catch -> the agent edits files directly via tools.
-//   6. No size cap      -> the conflict context is capped at 8000 chars.
+//   6. No size cap      -> the conflict context is capped at MAX_AGENT_CONTEXT chars.
 //   7. Single-shot      -> a retry budget of 3 attempts is requested.
 
 export async function resolveConflictsWithAgent(
@@ -151,8 +154,7 @@ export async function resolveConflictsWithAgent(
 
   // Build conflict context: read each conflicted file's current content (with
   // conflict markers intact) so the agent sees both sides of every conflict.
-  // The whole set is concatenated and capped at MAX_CONTEXT chars.
-  const MAX_CONTEXT = 8000;
+  // The whole set is concatenated and capped at MAX_AGENT_CONTEXT chars.
   let conflictContext = '';
   for (const conflict of conflicts) {
     let fileContent: string;
@@ -164,8 +166,8 @@ export async function resolveConflictsWithAgent(
 
     conflictContext += `File: ${conflict}\n${fileContent}\n\n`;
 
-    if (conflictContext.length > MAX_CONTEXT) {
-      conflictContext = `${conflictContext.slice(0, MAX_CONTEXT)}... (truncated)`;
+    if (conflictContext.length > MAX_AGENT_CONTEXT) {
+      conflictContext = `${conflictContext.slice(0, MAX_AGENT_CONTEXT)}... (truncated)`;
       break;
     }
   }

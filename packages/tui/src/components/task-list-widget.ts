@@ -1,6 +1,7 @@
 import { type Component, matchesKey, truncateToWidth, visibleWidth } from '@earendil-works/pi-tui';
 import type { TaskEntity } from '@engin/shared';
-import { bold, dim, formatElapsed, normal, statusColor, statusIcon } from '../theme.js';
+import { formatElapsed } from '@engin/shared/text-utils';
+import { bold, dim, normal, statusColor, statusIcon } from '../theme.js';
 
 // ─── Task List Widget ───────────────────────────────────────────────────────
 

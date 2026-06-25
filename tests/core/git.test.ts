@@ -16,7 +16,6 @@ import {
   abortMerge,
   checkoutBranch,
   commitChanges,
-  copyFilesToWorktree,
   createSymlinkWithRetry,
   createWorktree,
   deleteBranchForce,
@@ -30,8 +29,8 @@ import {
   populateWorktree,
   pushBranch,
   readWorktreeCopyEntries,
-  readWorktreeCopyList,
   removeWorktree,
+  restoreSavedBranch,
   sanitizeBranchSlug,
   squashMergeBranch,
   stageAll,
@@ -327,6 +326,40 @@ describe('checkoutBranch', () => {
   });
 });
 
+// ─── restoreSavedBranch ───────────────────────────────────────────────────
+
+describe('restoreSavedBranch', () => {
+  const { getDir } = useTempDir();
+
+  it('switches to an existing branch (happy path)', () => {
+    const dir = getDir();
+    initRepo(dir);
+    rawGit(['checkout', '-b', 'feature-a'], dir);
+
+    restoreSavedBranch(dir, 'feature-a');
+    expect(getCurrentBranch(dir)).toBe('feature-a');
+  });
+
+  it('swallows errors when the branch does not exist (detached-HEAD contract)', () => {
+    const dir = getDir();
+    initRepo(dir);
+
+    // checkoutBranch would throw for a non-existent branch; restoreSavedBranch
+    // must swallow the error because the repo may be in a detached-HEAD state
+    // where the symbolic ref is gone.
+    expect(() => restoreSavedBranch(dir, 'nonexistent')).not.toThrow();
+  });
+
+  it('is a no-op when called with the already-checked-out branch', () => {
+    const dir = getDir();
+    initRepo(dir);
+
+    // Already on 'main' — calling restoreSavedBranch with 'main' should be a no-op.
+    expect(() => restoreSavedBranch(dir, 'main')).not.toThrow();
+    expect(getCurrentBranch(dir)).toBe('main');
+  });
+});
+
 // ─── mergeBranch ────────────────────────────────────────────────────────────
 
 describe('mergeBranch', () => {
@@ -510,79 +543,6 @@ describe('getDiff', () => {
     const diff = getDiff(dir);
     expect(diff).toContain('unstaged modified');
     expect(diff).toContain('staged content');
-  });
-});
-
-// ─── readWorktreeCopyList ───────────────────────────────────────────────────
-
-describe('readWorktreeCopyList', () => {
-  const { getDir } = useTempDir();
-
-  it('returns empty array when .worktreecopy does not exist', () => {
-    const dir = getDir();
-    mkdirSync(dir, { recursive: true });
-    expect(readWorktreeCopyList(dir)).toEqual([]);
-  });
-
-  it('returns file paths listed in .worktreecopy', () => {
-    const dir = getDir();
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, '.worktreecopy'), 'file1.txt\nfile2.txt\n');
-    expect(readWorktreeCopyList(dir)).toEqual(['file1.txt', 'file2.txt']);
-  });
-
-  it('filters out empty lines and comments', () => {
-    const dir = getDir();
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, '.worktreecopy'), '# comment\nfile1.txt\n\n  file2.txt  \n# another comment\n');
-    const result = readWorktreeCopyList(dir);
-    expect(result).toEqual(['file1.txt', 'file2.txt']);
-  });
-
-  it('trims whitespace from each line', () => {
-    const dir = getDir();
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, '.worktreecopy'), '  spaced.txt  \n');
-    expect(readWorktreeCopyList(dir)).toEqual(['spaced.txt']);
-  });
-});
-
-// ─── copyFilesToWorktree ────────────────────────────────────────────────────
-
-describe('copyFilesToWorktree', () => {
-  const { getDir } = useTempDir();
-
-  it('copies listed files into the worktree path, creating dirs as needed', () => {
-    const dir = getDir();
-    mkdirSync(dir, { recursive: true });
-
-    // Create source files
-    writeFileSync(join(dir, 'top.txt'), 'top');
-    mkdirSync(join(dir, 'sub'), { recursive: true });
-    writeFileSync(join(dir, 'sub', 'nested.txt'), 'nested');
-
-    // Create target (worktree) dir
-    const target = join(dir, 'worktree');
-    mkdirSync(target, { recursive: true });
-
-    copyFilesToWorktree(dir, target, ['top.txt', 'sub/nested.txt']);
-
-    expect(readFileSync(join(target, 'top.txt'), 'utf-8')).toBe('top');
-    expect(readFileSync(join(target, 'sub', 'nested.txt'), 'utf-8')).toBe('nested');
-  });
-
-  it('overwrites existing files in the worktree', () => {
-    const dir = getDir();
-    mkdirSync(dir, { recursive: true });
-
-    writeFileSync(join(dir, 'data.txt'), 'source-content');
-
-    const target = join(dir, 'worktree');
-    mkdirSync(target, { recursive: true });
-    writeFileSync(join(target, 'data.txt'), 'old-content');
-
-    copyFilesToWorktree(dir, target, ['data.txt']);
-    expect(readFileSync(join(target, 'data.txt'), 'utf-8')).toBe('source-content');
   });
 });
 

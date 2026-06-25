@@ -13,6 +13,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ZodType } from 'zod';
 import { z } from 'zod';
+import type { HookRegistry } from '../hooks/types.js';
 import type { AgentProfile } from './types.js';
 
 // ─── Capture real modules before mocking ──────────────────────────────────
@@ -421,6 +422,272 @@ describe('runMultiStepTask — attempt context + session resume', () => {
     }
     // The in-memory fallback specifically yields the runtime sessionId.
     expect(spawnCalls[0].sessionPath).toBe('planner-session');
+  });
+});
+
+// ── onDecision observe-hook (hookRegistry) firing ─────────────────────
+//
+// runMultiStepTask fires the `onDecision` OBSERVE hook (audit-log sink)
+// ALONGSIDE the `onStatus.onDecision` callback (event-store sink) on each
+// step rejection. These tests pin down the hook-firing behavior so the
+// extraction of fireOnDecisionHook() is provably behavior-preserving.
+// Note: phase-tasks uses `effectiveCwd` (the worktree path, or original cwd
+// when no worktree) as the hook context `cwd`, and the original `cwd` as
+// `workDir` — distinct from the runners which use `worktreeCwd ?? cwd`.
+
+describe('runMultiStepTask — onDecision observe hook (hookRegistry)', () => {
+  /** Minimal fake HookRegistry. `hasSubscribers` returns true ONLY for
+   *  'onDecision' so other seams (onStructuredOutput, beforeStepPrompt)
+   *  stay dormant. */
+  function makeFakeRegistry(hasSubs: boolean) {
+    return {
+      register: mock(() => {}),
+      invokeObserve: mock(async () => {}),
+      invokePipeline: mock(async () => undefined),
+      invokeFirstWins: mock(async () => undefined),
+      invokeAllRun: mock(async () => undefined),
+      hasSubscribers: mock((name: string) => hasSubs && name === 'onDecision'),
+    };
+  }
+
+  beforeEach(() => {
+    setupProfiles([plannerProfile, reviewerProfile]);
+    mockPlugin.createSession.mockImplementation(async (opts: { profile: AgentProfile }) => {
+      return makeMockSession(opts.profile.id, () => 'output');
+    });
+  });
+
+  it('invokes the onDecision observe hook when a step is rejected', async () => {
+    mockPromptForStructured
+      .mockResolvedValueOnce({ result: { approved: false }, attempts: 1 })
+      .mockResolvedValueOnce({ result: { approved: true }, attempts: 1 });
+
+    const registry = makeFakeRegistry(true);
+
+    await runMultiStepTask({
+      profilesDirs: ['/tmp/profiles'],
+      phaseId: 'test-phase',
+      taskId: 'task-1',
+      title: 'Test Task',
+      cwd: '/tmp/project',
+      hookRegistry: registry as unknown as HookRegistry,
+      steps: [
+        { stepName: 'plan', profileId: 'planner', prompt: 'Write plan' },
+        {
+          stepName: 'review',
+          profileId: 'reviewer',
+          prompt: 'Review the plan',
+          isReadOnly: true,
+          schema: z.object({ approved: z.boolean() }) as unknown as ZodType<unknown>,
+          isApproved: (r) => (r as { approved?: boolean }).approved === true,
+          getFeedback: () => 'Plan needs work',
+        },
+      ],
+    });
+
+    expect(registry.invokeObserve).toHaveBeenCalledTimes(1);
+    expect(registry.invokeObserve).toHaveBeenCalledWith(
+      'onDecision',
+      expect.objectContaining({
+        agentId: 'task-1',
+        taskId: 'task-1',
+        phaseId: 'test-phase',
+        decision: 'Step "review" rejected (attempt 1/3)',
+        reasoning: 'Plan needs work',
+      }),
+      expect.anything(),
+    );
+  });
+
+  it('fires both onStatus.onDecision AND the observe hook (two separate sinks)', async () => {
+    mockPromptForStructured
+      .mockResolvedValueOnce({ result: { approved: false }, attempts: 1 })
+      .mockResolvedValueOnce({ result: { approved: true }, attempts: 1 });
+
+    const registry = makeFakeRegistry(true);
+    const onStatusDecision = mock((_info: unknown) => {});
+
+    await runMultiStepTask({
+      profilesDirs: ['/tmp/profiles'],
+      phaseId: 'test-phase',
+      taskId: 'task-1',
+      title: 'Test Task',
+      cwd: '/tmp/project',
+      hookRegistry: registry as unknown as HookRegistry,
+      onStatus: { onDecision: onStatusDecision } as Record<string, unknown>,
+      steps: [
+        { stepName: 'plan', profileId: 'planner', prompt: 'Write plan' },
+        {
+          stepName: 'review',
+          profileId: 'reviewer',
+          prompt: 'Review the plan',
+          isReadOnly: true,
+          schema: z.object({ approved: z.boolean() }) as unknown as ZodType<unknown>,
+          isApproved: (r) => (r as { approved?: boolean }).approved === true,
+          getFeedback: () => 'Plan needs work',
+        },
+      ],
+    });
+
+    expect(onStatusDecision).toHaveBeenCalledTimes(1);
+    expect(registry.invokeObserve).toHaveBeenCalledTimes(1);
+  });
+
+  it('does NOT invoke the observe hook when hookRegistry has no subscribers', async () => {
+    mockPromptForStructured
+      .mockResolvedValueOnce({ result: { approved: false }, attempts: 1 })
+      .mockResolvedValueOnce({ result: { approved: true }, attempts: 1 });
+
+    const registry = makeFakeRegistry(false);
+
+    await runMultiStepTask({
+      profilesDirs: ['/tmp/profiles'],
+      phaseId: 'test-phase',
+      taskId: 'task-1',
+      title: 'Test Task',
+      cwd: '/tmp/project',
+      hookRegistry: registry as unknown as HookRegistry,
+      steps: [
+        { stepName: 'plan', profileId: 'planner', prompt: 'Write plan' },
+        {
+          stepName: 'review',
+          profileId: 'reviewer',
+          prompt: 'Review the plan',
+          isReadOnly: true,
+          schema: z.object({ approved: z.boolean() }) as unknown as ZodType<unknown>,
+          isApproved: (r) => (r as { approved?: boolean }).approved === true,
+          getFeedback: () => 'Plan needs work',
+        },
+      ],
+    });
+
+    expect(registry.invokeObserve).not.toHaveBeenCalled();
+  });
+
+  it('does NOT invoke the observe hook when no hookRegistry is provided', async () => {
+    mockPromptForStructured
+      .mockResolvedValueOnce({ result: { approved: false }, attempts: 1 })
+      .mockResolvedValueOnce({ result: { approved: true }, attempts: 1 });
+
+    const res = await runMultiStepTask({
+      profilesDirs: ['/tmp/profiles'],
+      phaseId: 'test-phase',
+      taskId: 'task-1',
+      title: 'Test Task',
+      cwd: '/tmp/project',
+      steps: [
+        { stepName: 'plan', profileId: 'planner', prompt: 'Write plan' },
+        {
+          stepName: 'review',
+          profileId: 'reviewer',
+          prompt: 'Review the plan',
+          isReadOnly: true,
+          schema: z.object({ approved: z.boolean() }) as unknown as ZodType<unknown>,
+          isApproved: (r) => (r as { approved?: boolean }).approved === true,
+          getFeedback: () => 'Plan needs work',
+        },
+      ],
+    });
+
+    // Smoke test — completes without error.
+    expect(res.approved).toBe(true);
+  });
+
+  it('does NOT invoke the observe hook when no step is rejected', async () => {
+    mockPromptForStructured.mockResolvedValue({ result: { approved: true }, attempts: 1 });
+
+    const registry = makeFakeRegistry(true);
+
+    await runMultiStepTask({
+      profilesDirs: ['/tmp/profiles'],
+      phaseId: 'test-phase',
+      taskId: 'task-1',
+      title: 'Test Task',
+      cwd: '/tmp/project',
+      hookRegistry: registry as unknown as HookRegistry,
+      steps: [
+        { stepName: 'plan', profileId: 'planner', prompt: 'Write plan' },
+        {
+          stepName: 'review',
+          profileId: 'reviewer',
+          prompt: 'Review the plan',
+          isReadOnly: true,
+          schema: z.object({ approved: z.boolean() }) as unknown as ZodType<unknown>,
+          isApproved: (r) => (r as { approved?: boolean }).approved === true,
+        },
+      ],
+    });
+
+    expect(registry.invokeObserve).not.toHaveBeenCalled();
+  });
+
+  it('passes the hook context with cwd = effectiveCwd and workDir = cwd (no worktree)', async () => {
+    mockPromptForStructured
+      .mockResolvedValueOnce({ result: { approved: false }, attempts: 1 })
+      .mockResolvedValueOnce({ result: { approved: true }, attempts: 1 });
+
+    const registry = makeFakeRegistry(true);
+
+    await runMultiStepTask({
+      profilesDirs: ['/tmp/profiles'],
+      phaseId: 'test-phase',
+      taskId: 'task-1',
+      title: 'Test Task',
+      cwd: '/tmp/project',
+      hookRegistry: registry as unknown as HookRegistry,
+      steps: [
+        { stepName: 'plan', profileId: 'planner', prompt: 'Write plan' },
+        {
+          stepName: 'review',
+          profileId: 'reviewer',
+          prompt: 'Review the plan',
+          isReadOnly: true,
+          schema: z.object({ approved: z.boolean() }) as unknown as ZodType<unknown>,
+          isApproved: (r) => (r as { approved?: boolean }).approved === true,
+          getFeedback: () => 'Plan needs work',
+        },
+      ],
+    });
+
+    const hookCtx = (registry.invokeObserve.mock.calls[0] as unknown[])[2] as Record<string, unknown>;
+    expect(hookCtx.registry).toBe(registry);
+    // Without a worktree, effectiveCwd === cwd.
+    expect(hookCtx.cwd).toBe('/tmp/project');
+    expect(hookCtx.workDir).toBe('/tmp/project');
+  });
+
+  it('uses agentId = taskId (not a separate agent id)', async () => {
+    mockPromptForStructured
+      .mockResolvedValueOnce({ result: { approved: false }, attempts: 1 })
+      .mockResolvedValueOnce({ result: { approved: true }, attempts: 1 });
+
+    const registry = makeFakeRegistry(true);
+
+    await runMultiStepTask({
+      profilesDirs: ['/tmp/profiles'],
+      phaseId: 'test-phase',
+      taskId: 'task-99',
+      title: 'Test Task',
+      cwd: '/tmp/project',
+      hookRegistry: registry as unknown as HookRegistry,
+      steps: [
+        { stepName: 'plan', profileId: 'planner', prompt: 'Write plan' },
+        {
+          stepName: 'review',
+          profileId: 'reviewer',
+          prompt: 'Review the plan',
+          isReadOnly: true,
+          schema: z.object({ approved: z.boolean() }) as unknown as ZodType<unknown>,
+          isApproved: (r) => (r as { approved?: boolean }).approved === true,
+          getFeedback: () => 'Plan needs work',
+        },
+      ],
+    });
+
+    const passedArgs = (registry.invokeObserve.mock.calls[0] as unknown[])[1] as Record<string, unknown>;
+    // phase-tasks uses taskId as the agentId.
+    expect(passedArgs.agentId).toBe('task-99');
+    expect(passedArgs.taskId).toBe('task-99');
   });
 });
 

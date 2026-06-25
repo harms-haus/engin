@@ -27,6 +27,15 @@ export class RunRegistry {
   private readonly runs = new Map<string, RunHandle>();
 
   /**
+   * Tracked pending reap timers, keyed by runId. Every timer armed by
+   * {@link scheduleReap} is recorded here so it can be cancelled via
+   * {@link cancelReap} / {@link cancelAllReap} — preventing the recursive
+   * `setTimeout` chain from rescheduling itself after the run is removed or
+   * the registry is shut down.
+   */
+  private readonly reapTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+  /**
    * Store a handle keyed by its `runId`. Overwrites any previous handle for
    * the same runId — this is the mechanism that lets a resumed run replace its
    * completed predecessor.
@@ -59,8 +68,14 @@ export class RunRegistry {
     return this.runs.values();
   }
 
-  /** Remove a handle from the registry. No-op for an unknown runId. */
+  /**
+   * Remove a handle from the registry AND cancel any pending reap timer for
+   * it. No-op for an unknown runId. Cancelling the timer here is what closes
+   * the recursive `setTimeout` leak: without it, a removed run's reaper would
+   * keep rescheduling itself even though the handle is gone.
+   */
   remove(runId: string): void {
+    this.cancelReap(runId);
     this.runs.delete(runId);
   }
 
@@ -101,20 +116,49 @@ export class RunRegistry {
    *                 subscribers.
    */
   scheduleReap(runId: string, delayMs: number, onReap: () => void): void {
+    // Re-arming replaces any previous timer for this runId so we never hold
+    // two dangling timers for the same run.
+    this.cancelReap(runId);
     const tick = (): void => {
       const handle = this.runs.get(runId);
       // Only reap when the handle is still present and has left 'running'.
-      if (!handle || handle.status === 'running') return;
+      if (!handle || handle.status === 'running') {
+        this.reapTimers.delete(runId);
+        return;
+      }
       // Defer while clients are subscribed (inspection pause / merge in flight)
       // so the final-merge result broadcast can be delivered. Reschedule on
       // the same cadence and re-check; the handle reaps once the last
-      // subscriber disconnects.
+      // subscriber disconnects. Track the new timer so cancelReap / remove
+      // can still clear it.
       if (handle.subscribers.size > 0) {
-        setTimeout(tick, delayMs);
+        this.reapTimers.set(runId, setTimeout(tick, delayMs));
         return;
       }
+      this.reapTimers.delete(runId);
       onReap();
     };
-    setTimeout(tick, delayMs);
+    this.reapTimers.set(runId, setTimeout(tick, delayMs));
+  }
+
+  /**
+   * Cancel a pending reap timer for a single runId. No-op if no timer is
+   * armed for that runId (including unknown runIds).
+   */
+  cancelReap(runId: string): void {
+    const timer = this.reapTimers.get(runId);
+    if (timer) {
+      clearTimeout(timer);
+      this.reapTimers.delete(runId);
+    }
+  }
+
+  /**
+   * Cancel every pending reap timer across all runIds. Used during graceful
+   * shutdown to ensure no reaper survives the registry.
+   */
+  cancelAllReap(): void {
+    for (const timer of this.reapTimers.values()) clearTimeout(timer);
+    this.reapTimers.clear();
   }
 }
