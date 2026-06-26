@@ -372,8 +372,8 @@ describe('source: runner-utils.ts — buildExecCtx forwards hookRegistry', () =>
 describe('source: lane-pool.ts — forwards hookRegistry + sets worktreeCwd', () => {
   const src = tryReadSource(LANE_POOL_TS);
 
-  it('threads options.hookRegistry into the TaskRunnerContext built by runLane', () => {
-    expect(src).toMatch(/hookRegistry:\s*this\.options\.hookRegistry/);
+  it('threads the scoped hookRegistry clone into the TaskRunnerContext built by processTask', () => {
+    expect(src).toMatch(/hookRegistry:\s*this\.scopedHookRegistry/);
   });
 
   it('sets worktreeCwd on the runner context to the created worktree path', () => {
@@ -709,8 +709,14 @@ describe('LanePoolOptions.hookRegistry -> TaskRunnerContext', () => {
     await pool.run();
 
     expect(capturedCtx).toBeDefined();
-    // Identity must be preserved — the exact same instance reference.
-    expect((capturedCtx as unknown as Record<string, unknown>).hookRegistry).toBe(registry);
+    // LanePool clones the registry per run() (scopedHookRegistry) so pool-internal
+    // subscriber registrations (e.g. the default auditor) never mutate the original.
+    // The TaskRunnerContext receives the clone — verify it is defined and is a
+    // independent HookRegistry instance (not the original).
+    const threadedRegistry = (capturedCtx as unknown as Record<string, unknown>).hookRegistry as HookRegistry;
+    expect(threadedRegistry).toBeDefined();
+    expect(threadedRegistry).not.toBe(registry);
+    expect(typeof threadedRegistry.hasSubscribers).toBe('function');
   });
 
   it('sets TaskRunnerContext.hookRegistry to undefined when the option is omitted', async () => {

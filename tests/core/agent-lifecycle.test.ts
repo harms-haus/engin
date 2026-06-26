@@ -14,27 +14,42 @@
 // Renderer invocation is intentionally NOT part of spawnAgent — it stays in the
 // callers (runStep / runStepTask), which have different rendering needs.
 
-import { afterAll, beforeEach, describe, expect, it, mock } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
+import type { AgentLifecycleOptions } from '../../packages/engine/src/core/agent-lifecycle.js';
+import { spawnAgent } from '../../packages/engine/src/core/agent-lifecycle.js';
+import type { AgentPlugin, AgentRuntime, AgentSessionOptions } from '../../packages/engine/src/core/agent-plugin.js';
+import { clearAgentPluginRegistry, registerAgentPlugin } from '../../packages/engine/src/core/agent-registry.js';
 import type { AgentProfile, StatusCallbacks } from '../../packages/engine/src/core/types.js';
 
-// ─── Capture real modules before mocking ──────────────────────────────────
-// Without the restore, these relative-path mock.module() registrations leak
-// into sibling test files under CI's parallel scheduling (mirrors the pattern
-// in tests/core/phase-tasks.test.ts).
-const realAgentRegistry = Object.assign({}, await import('../../packages/engine/src/core/agent-registry.js'));
+// ─── Fake agent plugin (real-registry-backed, no global module mock) ───────
+//
+// Previously this file used `mock.module('../../packages/engine/src/core/
+// agent-registry.js', ...)` to replace `requireAgentPlugin` with a stub.
+// bun's `mock.module` is PROCESS-GLOBAL and leaks across test files under the
+// full suite's parallel scheduling, breaking agent-registry.test.ts /
+// agents/index.test.ts / engine-index.test.ts which rely on the real registry.
+//
+// Instead we register a FAKE plugin into the REAL (module-level) registry and
+// have every test profile reference this plugin's id. Registry mutations are
+// naturally scoped (per-test beforeEach/afterEach) and cannot leak the way a
+// persistent module mock does. The fake id (`__test-agent-lifecycle__`) is
+// unique to this file so it never collides with ids checked by sibling suites.
+
+const FAKE_PLUGIN_ID = '__test-agent-lifecycle__';
 
 // ─── Mock Dependencies ─────────────────────────────────────────────────────
+//
+// `mockCreateHarness` is the per-test hook controlling what the fake plugin's
+// `createSession` returns. `setupHarness()` wires it to resolve a wrapper
+// `{ session, sessionId, dispose }`; the fake plugin unwraps that onto the
+// inner session object IN-PLACE (matching the real createSession contract:
+// it returns the inner AgentRuntime, whose sessionId/dispose the caller reads).
 
 const mockCreateHarness = mock() as ReturnType<typeof mock> & ((...args: unknown[]) => unknown);
 
-// Compatibility shim: spawnAgent resolves sessions via
-// requireAgentPlugin(profile.agent).createSession(opts). We mock the
-// registry so createSession delegates to mockCreateHarness, whose return
-// value { session, sessionId, dispose } is unwrapped to the inner session
-// (the AgentRuntime), matching the real createSession contract.
-const mockRequireAgentPlugin = mock((..._args: unknown[]) => ({
-  id: 'pi-coding-agent',
-  createSession: async (opts: unknown) => {
+const fakePlugin: AgentPlugin = {
+  id: FAKE_PLUGIN_ID,
+  createSession: async (opts: AgentSessionOptions): Promise<AgentRuntime> => {
     const w = (await mockCreateHarness(opts)) as {
       session: Record<string, unknown>;
       sessionId?: string;
@@ -47,17 +62,9 @@ const mockRequireAgentPlugin = mock((..._args: unknown[]) => ({
     if (w.dispose) (w.session as { dispose: () => void }).dispose = w.dispose;
     if (w.sessionId) (w.session as { sessionId: string }).sessionId = w.sessionId;
     if (w.contextWindow !== undefined) (w.session as { contextWindow: number }).contextWindow = w.contextWindow;
-    return w.session;
+    return w.session as unknown as AgentRuntime;
   },
-}));
-mock.module('../../packages/engine/src/core/agent-registry.js', () => ({
-  requireAgentPlugin: (...args: unknown[]) => mockRequireAgentPlugin(...args),
-}));
-
-// ─── Import after mocks ────────────────────────────────────────────────────
-
-import type { AgentLifecycleOptions } from '../../packages/engine/src/core/agent-lifecycle.js';
-import { spawnAgent } from '../../packages/engine/src/core/agent-lifecycle.js';
+};
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
 
@@ -66,6 +73,7 @@ const defaultProfile: AgentProfile = {
   name: 'Coder',
   provider: 'openai',
   model: 'gpt-4',
+  agent: FAKE_PLUGIN_ID,
   thinkingLevel: 'medium' as const,
   systemPrompt: 'You are a coding agent.',
   excludeTools: [] as string[],
@@ -151,6 +159,15 @@ function makeStatusSpy(): StatusCallbacks & { callOrder: string[] } {
 
 beforeEach(() => {
   mockCreateHarness.mockReset();
+  registerAgentPlugin(fakePlugin);
+});
+
+afterEach(() => {
+  // Prevent the fake plugin from leaking into sibling test files under the
+  // full suite's parallel scheduling. Uses the real registry (naturally
+  // scoped) instead of a process-global `mock.module` that would replace
+  // requireAgentPlugin for every other file in the process.
+  clearAgentPluginRegistry();
 });
 
 // ─── Tests ──────────────────────────────────────────────────────────────────
@@ -759,15 +776,4 @@ describe('spawnAgent', () => {
       expect(activeSessions.has(session as unknown as { abort(): Promise<void> })).toBe(false);
     });
   });
-});
-
-// ─── Restore real modules so the harness-factory mock doesn't leak ───────
-//
-// Without this, the relative-path mock.module() registration for
-// harness-factory.js persists across files and would replace the real
-// createHarness in sibling suites (e.g. harness-factory.test.ts,
-// phase-tasks.test.ts) when CI schedules them in the same process.
-// Mirrors the capture→restore pattern in tests/core/phase-tasks.test.ts.
-afterAll(() => {
-  mock.module('../../packages/engine/src/core/agent-registry.js', () => realAgentRegistry);
 });

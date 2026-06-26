@@ -55,6 +55,7 @@ import { join } from 'node:path';
 const realGit = Object.assign({}, await import('../../packages/engine/src/core/git.js'));
 const realWorktreeOperations = Object.assign({}, await import('../../packages/engine/src/core/worktree-operations.js'));
 const realWorktreeLifecycle = Object.assign({}, await import('../../packages/engine/src/core/worktree-lifecycle.js'));
+const realWorktreePopulate = Object.assign({}, await import('../../packages/engine/src/core/worktree-populate.js'));
 
 // ─── Mock functions for git.ts ──────────────────────────────────────────────
 
@@ -126,7 +127,6 @@ mock.module('../../packages/engine/src/core/git.js', () => ({
   createWorktree: mockCreateWorktree,
   removeWorktree: mockRemoveWorktree,
   worktreePrune: mockWorktreePrune,
-  populateWorktree: mockPopulateWorktree,
   sanitizeBranchSlug: mockSanitizeBranchSlug,
   squashMergeBranch: mockSquashMergeBranch,
   stageFiles: mockStageFiles,
@@ -139,6 +139,11 @@ mock.module('../../packages/engine/src/core/git.js', () => ({
   checkoutBranch: mockCheckoutBranch,
   listConflictedFiles: mockListConflictedFiles,
   abortMerge: mockAbortMerge,
+}));
+
+mock.module('../../packages/engine/src/core/worktree-populate.js', () => ({
+  ...realWorktreePopulate,
+  populateWorktree: mockPopulateWorktree,
 }));
 
 mock.module('../../packages/engine/src/core/worktree-operations.js', () => ({
@@ -161,6 +166,7 @@ afterAll(() => {
   mock.module('../../packages/engine/src/core/git.js', () => realGit);
   mock.module('../../packages/engine/src/core/worktree-operations.js', () => realWorktreeOperations);
   mock.module('../../packages/engine/src/core/worktree-lifecycle.js', () => realWorktreeLifecycle);
+  mock.module('../../packages/engine/src/core/worktree-populate.js', () => realWorktreePopulate);
 });
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────

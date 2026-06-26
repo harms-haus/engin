@@ -415,7 +415,7 @@ describe('WorkflowStatusTracker – worktree persistence', () => {
     });
 
     it('WorktreeInfo is in the WorkflowState interface', async () => {
-      const typesPath = join(import.meta.dir, '..', '..', 'packages', 'engine', 'src', 'core', 'types.ts');
+      const typesPath = join(import.meta.dir, '..', '..', 'packages', 'engine', 'src', 'core', 'types', 'workflow.ts');
       const source = await fs.readFile(typesPath, 'utf-8');
 
       // WorkflowState should have a worktree field
@@ -423,7 +423,7 @@ describe('WorkflowStatusTracker – worktree persistence', () => {
     });
 
     it('WorktreeInfo interface has required fields', async () => {
-      const typesPath = join(import.meta.dir, '..', '..', 'packages', 'engine', 'src', 'core', 'types.ts');
+      const typesPath = join(import.meta.dir, '..', '..', 'packages', 'engine', 'src', 'core', 'types', 'workflow.ts');
       const source = await fs.readFile(typesPath, 'utf-8');
 
       // Find the WorktreeInfo interface

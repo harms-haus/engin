@@ -34,13 +34,24 @@
 // file COMPILES against the current source while the assertions are RED until
 // the two `export *` lines are added. They turn GREEN once the barrel is updated.
 
-import { describe, expect, it } from 'bun:test';
+import { beforeEach, describe, expect, it } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 // ── Engine public barrel (resolved via the workspace symlink to
 //    packages/engine, whose package.json exports "./src/index.ts") ──────────
 import * as engineBarrel from '@harms-haus/engin-engine';
+
+// Guard against cross-file registry clearing (e.g. agent-lifecycle.test.ts /
+// agent-registry.test.ts calling `clearAgentPluginRegistry()` in afterEach).
+// The module-level side-effect imports run once at load time; a parallel test
+// file may wipe the registry before these tests execute. Importing the adapter
+// objects directly lets us re-register them before each test, ensuring the
+// registry is always populated for the requireAgentPlugin assertions below.
+import { codexAdapter } from '../packages/engine/src/agents/codex/adapter.js';
+import { cursorAdapter } from '../packages/engine/src/agents/cursor/adapter.js';
+import { piCodingAgentAdapter } from '../packages/engine/src/agents/pi-coding-agent/adapter.js';
+import { registerAgentPlugin } from '../packages/engine/src/core/agent-registry.js';
 
 // Direct source bindings — used to assert the barrel re-exports the correct
 // named symbol (matching `.name`), not a re-declaration or stub. These resolve
@@ -55,6 +66,12 @@ import { WorktreeManager as SourceWorktreeManager } from '../packages/engine/src
 // without TypeScript errors for names that are (deliberately, test-first) not
 // yet re-exported by the barrel.
 const barrel = engineBarrel as unknown as Record<string, unknown>;
+
+beforeEach(() => {
+  registerAgentPlugin(piCodingAgentAdapter);
+  registerAgentPlugin(codexAdapter);
+  registerAgentPlugin(cursorAdapter);
+});
 
 // ── Source path helpers (mirrors tests/tracking/shim-removal.test.ts) ──────
 const ENGINE_SRC = resolve(import.meta.dir, '../packages/engine/src');
@@ -91,7 +108,7 @@ interface ManagerInstance {
   createTaskWorktree(taskId: string, taskPrompt?: string): Promise<string>;
   mergeTaskBranch(taskId: string): Promise<{ success: boolean; conflictsResolved: boolean }>;
   cullTaskWorktree(taskId: string): Promise<void>;
-  prune(): Promise<void>;
+  gitWorktreePrune(): Promise<void>;
   finalMergeToMain(): Promise<{ success: boolean; conflicts: string[]; conflictsResolved: boolean }>;
   resolveFinalMergeConflicts(conflicts: string[], taskPrompt: string): Promise<boolean>;
   abortFinalMerge(): Promise<void>;
@@ -216,7 +233,7 @@ describe('engine barrel — re-exports worktree-manager + worktree-fixup values'
       'createTaskWorktree',
       'mergeTaskBranch',
       'cullTaskWorktree',
-      'prune',
+      'gitWorktreePrune',
       'finalMergeToMain',
       'resolveFinalMergeConflicts',
       'abortFinalMerge',

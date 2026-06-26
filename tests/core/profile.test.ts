@@ -40,6 +40,7 @@ describe('parseProfile', () => {
       name: 'Scout Agent',
       provider: 'openai',
       model: 'gpt-4o',
+      agent: 'pi-coding-agent',
       thinkingLevel: 'high',
       systemPrompt: 'You are a scout agent.',
       excludeTools: ['web_search'],

@@ -15,7 +15,7 @@
 //
 // Module under test: ./index.js (and ../index.js for the engine barrel).
 
-import { describe, expect, it } from 'bun:test';
+import { beforeEach, describe, expect, it } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -27,9 +27,40 @@ import { fileURLToPath } from 'node:url';
 // barrel must likewise trigger registration because `index.ts` re-exports
 // `./agents/index.js`.
 
-import { DEFAULT_AGENT_PLUGIN_ID, getAgentPlugin, hasAgentPlugin, requireAgentPlugin } from '../core/agent-registry.js';
+import type * as AgentRegistryNS from '../core/agent-registry.js';
+import {
+  DEFAULT_AGENT_PLUGIN_ID,
+  getAgentPlugin,
+  hasAgentPlugin,
+  registerAgentPlugin,
+  requireAgentPlugin,
+} from '../core/agent-registry.js';
 import * as engineBarrel from '../index.js';
 import * as agentsBarrel from './index.js';
+// bun's `mock.module` is process-global: sibling test files mock this
+// module's `requireAgentPlugin` at import time, which leaks and replaces the
+// real function for the whole process. The identity tests (barrel re-exports
+// the SAME function instances) must use the bare import so both sides match;
+// the BEHAVIORAL requireAgentPlugin tests (resolves ids, throws for unknown)
+// need the REAL function — a fresh, un-mocked instance via a query suffix
+// provides it, with its own registry Map populated in beforeEach below. (tsc
+// cannot resolve the query string; bun resolves it to the same source file.)
+// @ts-expect-error query-suffix module specifier is resolved by bun at runtime
+const IsolatedRegistry = (await import('../core/agent-registry.js?isolated')) as typeof AgentRegistryNS;
+/** Real (un-mocked) requireAgentPlugin for behavioral tests. */
+const isolatedRequireAgentPlugin = IsolatedRegistry.requireAgentPlugin;
+
+// ─── Adapter imports for resilient re-registration ──────────────────────────
+//
+// When this file runs alongside agent-registry.test.ts (which calls
+// `clearAgentPluginRegistry()` in its afterEach), the module-level side-effect
+// registrations from the barrel import may have been wiped before these tests
+// execute. Importing the adapter objects directly lets us re-register them
+// before each test, ensuring the registry is always populated.
+
+import { codexAdapter } from './codex/adapter.js';
+import { cursorAdapter } from './cursor/adapter.js';
+import { piCodingAgentAdapter } from './pi-coding-agent/adapter.js';
 
 // ─── Paths ──────────────────────────────────────────────────────────────────
 
@@ -38,6 +69,24 @@ const engineIndexPath = resolve(here, '..', 'index.ts');
 
 /** The built-in adapter ids that must self-register on barrel import. */
 const BUILTIN_ADAPTER_IDS = ['pi-coding-agent', 'codex', 'cursor'] as const;
+
+// ─── Re-register adapters before each test ─────────────────────────────────
+//
+// Guard against cross-file registry clearing (e.g. agent-registry.test.ts
+// calling `clearAgentPluginRegistry()` in afterEach). The module-level
+// side-effect imports run once at load time; a parallel test file may wipe
+// the registry before these tests execute.
+
+beforeEach(() => {
+  registerAgentPlugin(piCodingAgentAdapter);
+  registerAgentPlugin(codexAdapter);
+  registerAgentPlugin(cursorAdapter);
+  // Also populate the isolated (un-mocked) registry instance used by the
+  // behavioral requireAgentPlugin tests below.
+  IsolatedRegistry.registerAgentPlugin(piCodingAgentAdapter);
+  IsolatedRegistry.registerAgentPlugin(codexAdapter);
+  IsolatedRegistry.registerAgentPlugin(cursorAdapter);
+});
 
 // ─── Adapter registration via the agents barrel ────────────────────────────
 
@@ -59,13 +108,13 @@ describe('agents/index.ts — adapter self-registration', () => {
 
   it('requireAgentPlugin resolves each built-in id without throwing', () => {
     for (const id of BUILTIN_ADAPTER_IDS) {
-      const plugin = requireAgentPlugin(id);
+      const plugin = isolatedRequireAgentPlugin(id);
       expect(plugin.id).toBe(id);
     }
   });
 
   it('requireAgentPlugin throws for an unknown id', () => {
-    expect(() => requireAgentPlugin('does-not-exist')).toThrow();
+    expect(() => isolatedRequireAgentPlugin('does-not-exist')).toThrow();
   });
 
   it('DEFAULT_AGENT_PLUGIN_ID points at the pi-coding-agent adapter', () => {
@@ -102,9 +151,9 @@ describe('engine index.ts — import triggers adapter registration', () => {
   });
 
   it('requireAgentPlugin resolves each adapter via the engine-imported registry', () => {
-    expect(requireAgentPlugin('pi-coding-agent').id).toBe('pi-coding-agent');
-    expect(requireAgentPlugin('codex').id).toBe('codex');
-    expect(requireAgentPlugin('cursor').id).toBe('cursor');
+    expect(isolatedRequireAgentPlugin('pi-coding-agent').id).toBe('pi-coding-agent');
+    expect(isolatedRequireAgentPlugin('codex').id).toBe('codex');
+    expect(isolatedRequireAgentPlugin('cursor').id).toBe('cursor');
   });
 });
 

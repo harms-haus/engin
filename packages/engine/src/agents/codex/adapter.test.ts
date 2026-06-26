@@ -279,13 +279,18 @@ describe('codex adapter — createSession configuration', () => {
     );
   });
 
-  it('uses danger-full-access sandbox by default when no write dirs are restricted', async () => {
+  it('uses workspace-write sandbox with empty additionalDirectories by default', async () => {
     await codexAdapter.createSession({
       profile: makeProfile(),
       cwd: '/tmp/work',
     });
 
-    expect(state.lastThreadOptions).toEqual(expect.objectContaining({ sandboxMode: 'danger-full-access' }));
+    expect(state.lastThreadOptions).toEqual(
+      expect.objectContaining({
+        sandboxMode: 'workspace-write',
+        additionalDirectories: [],
+      }),
+    );
   });
 });
 

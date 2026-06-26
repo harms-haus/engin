@@ -72,6 +72,7 @@ import type { Task } from '../../packages/engine/src/core/types.js';
 const realGit = Object.assign({}, await import('../../packages/engine/src/core/git.js'));
 const realWorktreeOperations = Object.assign({}, await import('../../packages/engine/src/core/worktree-operations.js'));
 const realWorktreeLifecycle = Object.assign({}, await import('../../packages/engine/src/core/worktree-lifecycle.js'));
+const realWorktreePopulate = Object.assign({}, await import('../../packages/engine/src/core/worktree-populate.js'));
 
 // ─── Mock functions for git.ts ──────────────────────────────────────────────
 
@@ -116,7 +117,6 @@ mock.module('../../packages/engine/src/core/git.js', () => ({
   createWorktree: mockCreateWorktree,
   removeWorktree: mockRemoveWorktree,
   worktreePrune: mockWorktreePrune,
-  populateWorktree: mockPopulateWorktree,
   squashMergeBranch: mockSquashMergeBranch,
   stageFiles: mockStageFiles,
   deleteBranchForce: mockDeleteBranchForce,
@@ -137,6 +137,11 @@ mock.module('../../packages/engine/src/core/worktree-lifecycle.js', () => ({
   resolveConflictsWithAgent: mockResolveConflictsWithAgent,
 }));
 
+mock.module('../../packages/engine/src/core/worktree-populate.js', () => ({
+  ...realWorktreePopulate,
+  populateWorktree: mockPopulateWorktree,
+}));
+
 // ─── Import SUT + real HookRegistry after mocks ──────────────────────────────
 
 import { WorktreeManager, type WorktreeManagerOptions } from '../../packages/engine/src/core/worktree-manager.js';
@@ -154,6 +159,7 @@ afterAll(() => {
   mock.module('../../packages/engine/src/core/git.js', () => realGit);
   mock.module('../../packages/engine/src/core/worktree-operations.js', () => realWorktreeOperations);
   mock.module('../../packages/engine/src/core/worktree-lifecycle.js', () => realWorktreeLifecycle);
+  mock.module('../../packages/engine/src/core/worktree-populate.js', () => realWorktreePopulate);
 });
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────

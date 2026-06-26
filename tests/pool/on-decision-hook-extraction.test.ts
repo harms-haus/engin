@@ -1,24 +1,22 @@
 /**
- * @fileoverview Source-contract tests for the fireOnDecisionHook extraction.
+ * @fileoverview Source-contract tests for the onDecision hook pattern
+ * across the three runner files and multi-step-task.
  *
- * These tests assert the STRUCTURAL requirements of the completed refactor:
- *   1. `fireOnDecisionHook` is exported from `runner-utils.ts`
- *   2. All three call sites (linear-steps-runner, reflection-runner,
- *      phase-tasks) call `fireOnDecisionHook(...)` instead of the inline
- *      ~15-line `hookRegistry?.hasSubscribers('onDecision')` boilerplate.
- *   3. The inline boilerplate block is removed from all three call sites.
+ * These tests assert the STRUCTURAL requirements of the current state:
+ *   1. The settle helpers (settleResult, settleBySeverity, handleRunnerError)
+ *      are exported from `runner-utils.ts` — the deduplication from commit
+ *      8567c29 unified these but did NOT extract the onDecision boilerplate.
+ *   2. `fireOnDecisionHook` is NOT exported from runner-utils.ts (the
+ *      onDecision extraction was not performed).
+ *   3. All three call sites (linear-steps-runner, reflection-runner,
+ *      multi-step-task) contain inline `hookRegistry?.hasSubscribers('onDecision')`
+ *      boilerplate with `invokeObserve('onDecision', ...)`.
+ *   4. Each call site also has `onStatus?.onDecision?.(...)` inline (the
+ *      store callback fires alongside the hook).
  *
  * They use the `tryReadSource` pattern from `hook-registry-threading.test.ts`:
  * source files are read at runtime and matched against regex patterns. Every
- * assertion is RED until the implementer completes the extraction, then goes
- * GREEN. This provides a definitive, grep-level checklist that the refactor is
- * done — complementing the behavioral characterization tests in
- * linear-steps-runner.test.ts / reflection-runner.test.ts / phase-tasks.test.ts
- * (which pin down the OBSERVABLE behavior the extraction must preserve).
- *
- * The behavioral tests (188 of them) already pass against the current inline
- * code; they are the safety net. These source-contract tests are the
- * completion signal.
+ * assertion is RED until the source matches, then goes GREEN.
  */
 
 import { describe, expect, it } from 'bun:test';
@@ -33,7 +31,7 @@ const CORE_SRC = resolve(import.meta.dir, '../../packages/engine/src/core');
 const RUNNER_UTILS_TS = resolve(POOL_SRC, 'runner-utils.ts');
 const LINEAR_STEPS_TS = resolve(POOL_SRC, 'linear-steps-runner.ts');
 const REFLECTION_TS = resolve(POOL_SRC, 'reflection-runner.ts');
-const PHASE_TASKS_TS = resolve(CORE_SRC, 'phase-tasks.ts');
+const MULTI_STEP_TASK_TS = resolve(CORE_SRC, 'multi-step-task.ts');
 
 /** Read a source file defensively (empty string when absent) so the file
  *  compiles now and assertions are RED until the source lands. */
@@ -42,91 +40,53 @@ function tryReadSource(absPath: string): string {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// runner-utils.ts — fireOnDecisionHook export
+// runner-utils.ts — settle helpers (the actual unification from commit 8567c29)
 // ═══════════════════════════════════════════════════════════════════════════
 
-describe('source: runner-utils.ts — fireOnDecisionHook export', () => {
+describe('source: runner-utils.ts — exported settle helpers', () => {
   const src = tryReadSource(RUNNER_UTILS_TS);
 
-  it('imports HookRegistry (type-only) from ../hooks/types.js', () => {
-    expect(src).toMatch(/import\s+type\s*\{[^}]*\bHookRegistry\b[^}]*\}\s*from\s*['"]\.\.\/hooks\/types\.js['"]/);
+  it('exports settleBySeverity (used by linear-steps and reflection runners)', () => {
+    expect(src).toMatch(/export\s+function\s+settleBySeverity\b/);
   });
 
-  it('exports a function named fireOnDecisionHook', () => {
-    expect(src).toMatch(/export\s+async\s+function\s+fireOnDecisionHook\b/);
+  it('exports settleResult (used by reflection runner)', () => {
+    expect(src).toMatch(/export\s+function\s+settleResult\b/);
   });
 
-  it('accepts hookRegistry as the first parameter (HookRegistry | undefined)', () => {
-    expect(src).toMatch(/fireOnDecisionHook\s*\(\s*hookRegistry\s*:\s*HookRegistry\s*\|\s*undefined/);
+  it('exports buildExecCtx (builds StepExecutionContext from TaskRunnerContext)', () => {
+    expect(src).toMatch(/export\s+function\s+buildExecCtx\b/);
   });
 
-  it('accepts the args object { agentId, decision, reasoning, taskId, phaseId } as the second parameter', () => {
-    expect(src).toMatch(/args\s*:\s*\{[^}]*agentId[^}]*decision[^}]*reasoning[^}]*taskId[^}]*phaseId[^}]*\}/s);
+  it('exports handleRunnerError (uniform error envelope for runners)', () => {
+    expect(src).toMatch(/export\s+function\s+handleRunnerError\b/);
   });
 
-  it('accepts a ctx parameter with cwd, worktreeCwd?, workDir?, signal?', () => {
-    expect(src).toMatch(/ctx\s*:\s*\{\s*cwd:\s*string/);
-    expect(src).toMatch(/worktreeCwd\s*\?\s*:\s*string/);
-    expect(src).toMatch(/workDir\s*\?\s*:\s*string/);
-    expect(src).toMatch(/signal\s*\?\s*:\s*AbortSignal/);
+  it('does NOT export fireOnDecisionHook (onDecision remains inline in runners)', () => {
+    expect(src).not.toMatch(/export\s+(?:async\s+)?function\s+fireOnDecisionHook\b/);
   });
-
-  it('returns Promise<void>', () => {
-    expect(src).toMatch(/\)\s*:\s*Promise<void>/);
-  });
-
-  it('gates on hookRegistry?.hasSubscribers("onDecision")', () => {
-    expect(src).toMatch(/hookRegistry\s*\?\.\s*hasSubscribers\(['"]onDecision['"]\)/);
-  });
-
-  it('invokes invokeObserve("onDecision", args, hookCtx) when subscribers exist', () => {
-    expect(src).toMatch(/invokeObserve\(\s*['"]onDecision['"]\s*,/);
-  });
-
-  it('resolves cwd as worktreeCwd ?? ctx.cwd', () => {
-    // The hook context cwd must use worktreeCwd when available, falling back
-    // to ctx.cwd. This covers both the runner pattern (worktreeCwd ?? ctx.cwd)
-    // and the phase-tasks pattern (effectiveCwd passed as cwd).
-    expect(src).toMatch(/worktreeCwd\s*\?\?\s*ctx\.cwd/);
-  });
-
-  it('defaults workDir to ctx.cwd when ctx.workDir is not provided', () => {
-    // ctx.workDir ?? ctx.cwd — so the phase-tasks call site (which passes a
-    // distinct workDir) overrides it, while the runner call sites (which omit
-    // workDir) get ctx.cwd.
-    expect(src).toMatch(/workDir\s*\?\?\s*ctx\.cwd/);
-  });
-
-  // NOTE: signal forwarding is verified behaviorally in runner-utils.test.ts
-  // (fireOnDecisionHook > forwards ctx.signal into the hookCtx). We omit a
-  // source-contract assertion for it here because /signal:\s*ctx\.signal/
-  // also matches the pre-existing buildExecCtx function, producing a false
-  // positive.
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Call site: linear-steps-runner.ts
 // ═══════════════════════════════════════════════════════════════════════════
 
-describe('source: linear-steps-runner.ts — calls fireOnDecisionHook', () => {
+describe('source: linear-steps-runner.ts — inline onDecision hook', () => {
   const src = tryReadSource(LINEAR_STEPS_TS);
 
-  it('imports fireOnDecisionHook from ./runner-utils.js', () => {
-    expect(src).toMatch(/import\s*\{[^}]*\bfireOnDecisionHook\b[^}]*\}\s*from\s*['"]\.\/runner-utils\.js['"]/);
+  it('imports settle helpers from ./runner-utils.js', () => {
+    expect(src).toMatch(/import\s*\{[^}]*\bsettleBySeverity\b[^}]*\}\s*from\s*['"]\.\/runner-utils\.js['"]/);
   });
 
-  it('calls fireOnDecisionHook(...) in the rejection path', () => {
-    expect(src).toMatch(/fireOnDecisionHook\s*\(/);
+  it('gates the onDecision hook on ctx.hookRegistry?.hasSubscribers("onDecision")', () => {
+    expect(src).toMatch(/ctx\.hookRegistry\s*\?\.\s*hasSubscribers\(['"]onDecision['"]\)/);
   });
 
-  it('removes the inline hookRegistry?.hasSubscribers("onDecision") boilerplate', () => {
-    // After extraction, the inline `if (ctx.hookRegistry?.hasSubscribers('onDecision'))`
-    // block must be gone — replaced by the helper call.
-    expect(src).not.toMatch(/ctx\.hookRegistry\s*\?\.\s*hasSubscribers\(['"]onDecision['"]\)/);
+  it('calls ctx.hookRegistry.invokeObserve("onDecision", ...) inline', () => {
+    expect(src).toMatch(/ctx\.hookRegistry\.invokeObserve\(\s*['"]onDecision['"]/);
   });
 
-  it('keeps the onStatus?.onDecision?.(...) call inline (NOT extracted)', () => {
-    // The onStatus callback stays — only the hook-firing is extracted.
+  it('keeps the onStatus?.onDecision?.(...) call inline (store callback)', () => {
     expect(src).toMatch(/onStatus\s*\?\.\s*onDecision\s*\?\./);
   });
 });
@@ -135,46 +95,46 @@ describe('source: linear-steps-runner.ts — calls fireOnDecisionHook', () => {
 // Call site: reflection-runner.ts
 // ═══════════════════════════════════════════════════════════════════════════
 
-describe('source: reflection-runner.ts — calls fireOnDecisionHook', () => {
+describe('source: reflection-runner.ts — inline onDecision hook', () => {
   const src = tryReadSource(REFLECTION_TS);
 
-  it('imports fireOnDecisionHook from ./runner-utils.js', () => {
-    expect(src).toMatch(/import\s*\{[^}]*\bfireOnDecisionHook\b[^}]*\}\s*from\s*['"]\.\/runner-utils\.js['"]/);
+  it('imports settle helpers from ./runner-utils.js', () => {
+    expect(src).toMatch(/import\s*\{[^}]*\bsettleBySeverity\b[^}]*\}\s*from\s*['"]\.\/runner-utils\.js['"]/);
   });
 
-  it('calls fireOnDecisionHook(...) in the critic-rejection path', () => {
-    expect(src).toMatch(/fireOnDecisionHook\s*\(/);
+  it('gates the onDecision hook on ctx.hookRegistry?.hasSubscribers("onDecision")', () => {
+    expect(src).toMatch(/ctx\.hookRegistry\s*\?\.\s*hasSubscribers\(['"]onDecision['"]\)/);
   });
 
-  it('removes the inline hookRegistry?.hasSubscribers("onDecision") boilerplate', () => {
-    expect(src).not.toMatch(/ctx\.hookRegistry\s*\?\.\s*hasSubscribers\(['"]onDecision['"]\)/);
+  it('calls ctx.hookRegistry.invokeObserve("onDecision", ...) inline', () => {
+    expect(src).toMatch(/ctx\.hookRegistry\.invokeObserve\(\s*['"]onDecision['"]/);
   });
 
-  it('keeps the onStatus?.onDecision?.(...) call inline (NOT extracted)', () => {
+  it('keeps the onStatus?.onDecision?.(...) call inline (store callback)', () => {
     expect(src).toMatch(/onStatus\s*\?\.\s*onDecision\s*\?\./);
   });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Call site: phase-tasks.ts (runMultiStepTask)
+// Call site: multi-step-task.ts (re-exported via phase-tasks.ts barrel)
 // ═══════════════════════════════════════════════════════════════════════════
 
-describe('source: phase-tasks.ts — calls fireOnDecisionHook', () => {
-  const src = tryReadSource(PHASE_TASKS_TS);
+describe('source: multi-step-task.ts — inline onDecision hook', () => {
+  const src = tryReadSource(MULTI_STEP_TASK_TS);
 
-  it('imports fireOnDecisionHook from ../pool/runner-utils.js', () => {
-    expect(src).toMatch(/import\s*\{[^}]*\bfireOnDecisionHook\b[^}]*\}\s*from\s*['"]\.\.\/pool\/runner-utils\.js['"]/);
+  it('imports HookRegistry (type-only) from ../hooks/types.js', () => {
+    expect(src).toMatch(/import\s+type\s*\{[^}]*\bHookRegistry\b[^}]*\}\s*from\s*['"]\.\.\/hooks\/types\.js['"]/);
   });
 
-  it('calls fireOnDecisionHook(...) in the step-rejection path', () => {
-    expect(src).toMatch(/fireOnDecisionHook\s*\(/);
+  it('gates the onDecision hook on hookRegistry?.hasSubscribers("onDecision")', () => {
+    expect(src).toMatch(/hookRegistry\s*\?\.\s*hasSubscribers\(['"]onDecision['"]\)/);
   });
 
-  it('removes the inline hookRegistry?.hasSubscribers("onDecision") boilerplate', () => {
-    expect(src).not.toMatch(/hookRegistry\s*\?\.\s*hasSubscribers\(['"]onDecision['"]\)/);
+  it('calls hookRegistry.invokeObserve("onDecision", ...) inline', () => {
+    expect(src).toMatch(/hookRegistry\.invokeObserve\(\s*['"]onDecision['"]/);
   });
 
-  it('keeps the onStatus?.onDecision?.(...) call inline (NOT extracted)', () => {
+  it('keeps the onStatus?.onDecision?.(...) call inline (store callback)', () => {
     expect(src).toMatch(/onStatus\s*\?\.\s*onDecision\s*\?\./);
   });
 });

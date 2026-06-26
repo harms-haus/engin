@@ -16,17 +16,28 @@
 //
 // Module under test: ./agent-registry.js
 
-import { afterEach, describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 
 import type { AgentPlugin, AgentRuntime, AgentSessionOptions } from './agent-plugin.js';
-import {
+import type * as AgentRegistryNS from './agent-registry.js';
+
+// bun's `mock.module` is PROCESS-GLOBAL: ~11 sibling test files mock this
+// module (at file-import time, before any test runs), which replaces
+// `requireAgentPlugin` for the whole process and leaks into these registry
+// unit tests. Importing with a query suffix yields a FRESH, un-mocked module
+// instance with its own registry Map, so these mechanics tests run against a
+// clean, isolated registry regardless of sibling mocks. (tsc cannot resolve
+// the query string; bun resolves it to the same source file.)
+// @ts-expect-error query-suffix module specifier is resolved by bun at runtime
+const AgentRegistry = (await import('./agent-registry.js?isolated')) as typeof AgentRegistryNS;
+const {
   clearAgentPluginRegistry,
   DEFAULT_AGENT_PLUGIN_ID,
   getAgentPlugin,
   hasAgentPlugin,
   registerAgentPlugin,
   requireAgentPlugin,
-} from './agent-registry.js';
+} = AgentRegistry;
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
 
@@ -49,6 +60,9 @@ function makePlugin(id: string): AgentPlugin {
 }
 
 // Ensure a clean registry between every test so they remain independent.
+beforeEach(() => {
+  clearAgentPluginRegistry();
+});
 afterEach(() => {
   clearAgentPluginRegistry();
 });
