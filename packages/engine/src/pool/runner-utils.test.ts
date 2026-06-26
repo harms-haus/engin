@@ -589,12 +589,13 @@ describe('handleRunnerError', () => {
 
 // ── settleBySeverity ───────────────────────────────────────────────────────
 //
-// settleBySeverity() encapsulates the severity-based settle logic duplicated
-// between linear-steps-runner (max-retries path) and reflection-runner
-// (max-rounds-exhausted path). It uses extractSeverity + isFailingSeverity
-// from severity.ts to decide: critical/high → fail, medium/low/none → accept
-// as completed with caveats. These tests define the contract the extracted
-// helper MUST satisfy so the runner refactor is provably behavior-preserving.
+// settleBySeverity() encapsulates the severity-based settle logic used by
+// the reflection runner (max-rounds-exhausted path). It uses
+// extractSeverity + isFailingSeverity from severity.ts to decide:
+// critical/high → fail, medium/low/none → accept as completed with caveats.
+// (The linear-steps runner's max-retries path previously shared this helper
+// but now fails unconditionally on review-limit exhaustion.) These tests
+// define the contract the extracted helper MUST satisfy.
 
 describe('settleBySeverity', () => {
   // Resolve the export via the namespace so this test block fails at runtime

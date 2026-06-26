@@ -168,8 +168,10 @@ export function settleResult(ctx: TaskRunnerContext, result: StepResult, dispose
  * Settle a result using severity-based logic: critical/high → fail,
  * medium/low/none → accept as completed with caveats.
  *
- * Shared by the linear-steps and reflection runners for the max-retries /
- * max-rounds-exhausted paths. The feedback string is forwarded to
+ * Used by the reflection runner for the max-rounds-exhausted path. (The
+ * linear-steps runner previously shared this helper for its max-retries
+ * path, but now FAILS unconditionally when the review limit is exhausted —
+ * see linear-steps-runner.ts Step 4h.) The feedback string is forwarded to
  * `failTask` on the failing path; `disposeAll()` runs AFTER the settle call,
  * matching the ordering used by every runner's settle block.
  */

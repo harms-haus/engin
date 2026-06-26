@@ -13,7 +13,8 @@
 //   4. Returns TaskOutcome directly instead of mutating the TaskTracker.
 
 import { appendReviewFeedback } from '../core/task-feedback.js';
-import { buildExecCtx, createSessionMap, handleRunnerError, settleBySeverity } from './runner-utils.js';
+import { buildExecCtx, createSessionMap, handleRunnerError } from './runner-utils.js';
+import { extractSeverity } from './severity.js';
 import { runStep } from './step-execution.js';
 import type { StepDefinition, TaskOutcome, TaskRunner, TaskRunnerContext } from './types.js';
 
@@ -121,9 +122,19 @@ export function linearStepsRunner(steps: StepDefinition[]): TaskRunner {
           );
         }
 
-        // Step 4h: Max retries reached — severity-based settle
+        // Step 4h: Max retries reached — the review limit is exhausted.
+        // A step that cannot be approved within its review budget is a HARD
+        // failure: the task MUST be marked FAILED, never accepted as
+        // "completed with caveats". Previously this delegated to
+        // settleBySeverity, which accepted medium/low/none severity — that
+        // let a task complete despite every review rejecting it (the
+        // implementation simply never converged). The severity is still
+        // forwarded to failTask so downstream consumers retain signal.
         if (newAttempt >= maxStepRetries) {
-          return settleBySeverity(ctx, result.output, result.feedback, taskSessions.disposeAll);
+          const severity = extractSeverity(result.output);
+          ctx.failTask({ completed: false, feedback: result.feedback, severity });
+          taskSessions.disposeAll();
+          return { status: 'failed', feedback: result.feedback };
         }
 
         // Step 4i: Retry – back up one step
