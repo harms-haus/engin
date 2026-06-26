@@ -74,8 +74,13 @@ describe('source: runner-utils.ts — exported settle helpers', () => {
 describe('source: linear-steps-runner.ts — inline onDecision hook', () => {
   const src = tryReadSource(LINEAR_STEPS_TS);
 
-  it('imports settle helpers from ./runner-utils.js', () => {
-    expect(src).toMatch(/import\s*\{[^}]*\bsettleBySeverity\b[^}]*\}\s*from\s*['"]\.\/runner-utils\.js['"]/);
+  it('imports extractSeverity from ./severity.js (unconditional fail on exhaustion)', () => {
+    // The linear runner no longer delegates exhaustion to settleBySeverity;
+    // it fails unconditionally and only needs extractSeverity to forward
+    // the reviewer's severity to failTask.
+    expect(src).toMatch(/import\s*\{[^}]*\bextractSeverity\b[^}]*\}\s*from\s*['"]\.\/severity\.js['"]/);
+    // settleBySeverity must no longer be invoked (a comment reference is fine).
+    expect(src).not.toMatch(/\bsettleBySeverity\s*\(/);
   });
 
   it('gates the onDecision hook on ctx.hookRegistry?.hasSubscribers("onDecision")', () => {

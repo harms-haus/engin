@@ -1108,7 +1108,7 @@ describe('LanePool', () => {
       expect(tracker.getTask('task-1')!.status).toBe('failed');
     });
 
-    it('marks task as completed when severity is medium after max retries', async () => {
+    it('marks task as failed when severity is medium after max retries (exhaustion always fails)', async () => {
       setupProfileMocks();
       setupHarnessMocks();
       mockPromptForStructured.mockResolvedValue({
@@ -1117,11 +1117,11 @@ describe('LanePool', () => {
       });
       const { pool, tracker } = createPoolAndTracker({ maxStepRetries: 2, getStepsForTask: () => sevSteps() });
       const result = await pool.run();
-      expect(result.completedTasks).toBe(1);
-      expect(tracker.getTask('task-1')!.status).toBe('complete');
+      expect(result.failedTasks).toBe(1);
+      expect(tracker.getTask('task-1')!.status).toBe('failed');
     });
 
-    it('marks task as completed when severity is low after max retries', async () => {
+    it('marks task as failed when severity is low after max retries (exhaustion always fails)', async () => {
       setupProfileMocks();
       setupHarnessMocks();
       mockPromptForStructured.mockResolvedValue({
@@ -1130,8 +1130,8 @@ describe('LanePool', () => {
       });
       const { pool, tracker } = createPoolAndTracker({ maxStepRetries: 2, getStepsForTask: () => sevSteps() });
       const result = await pool.run();
-      expect(result.completedTasks).toBe(1);
-      expect(tracker.getTask('task-1')!.status).toBe('complete');
+      expect(result.failedTasks).toBe(1);
+      expect(tracker.getTask('task-1')!.status).toBe('failed');
     });
 
     it('marks task as failed when severity is high after max retries', async () => {
@@ -1147,7 +1147,7 @@ describe('LanePool', () => {
       expect(tracker.getTask('task-1')!.status).toBe('failed');
     });
 
-    it('defaults to medium severity when no severity field', async () => {
+    it('defaults to medium severity when no severity field (exhaustion still fails)', async () => {
       setupProfileMocks();
       setupHarnessMocks();
       mockPromptForStructured.mockResolvedValue({ result: { approved: false, feedback: 'meh' }, attempts: 1 });
@@ -1164,8 +1164,8 @@ describe('LanePool', () => {
         ],
       });
       const result = await pool.run();
-      expect(result.completedTasks).toBe(1);
-      expect(tracker.getTask('task-1')!.status).toBe('complete');
+      expect(result.failedTasks).toBe(1);
+      expect(tracker.getTask('task-1')!.status).toBe('failed');
     });
 
     it('default maxStepRetries is now 5', async () => {

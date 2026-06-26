@@ -170,7 +170,7 @@ describe('linearStepsRunner', () => {
   });
 
   describe('max retries with medium severity', () => {
-    it('returns completed when severity is medium', async () => {
+    it('returns failed when severity is medium (exhaustion always fails)', async () => {
       setupProfileMocks();
       setupHarnessMocks();
 
@@ -196,9 +196,14 @@ describe('linearStepsRunner', () => {
 
       const outcome = await runner(ctx);
 
-      expect(outcome.status).toBe('completed');
-      expect(ctx.completeTask).toHaveBeenCalledTimes(1);
-      expect(ctx.failTask).not.toHaveBeenCalled();
+      // Exhausting the review budget is a HARD failure regardless of severity
+      // — the task must never be accepted as "completed with caveats".
+      expect(outcome.status).toBe('failed');
+      expect(ctx.failTask).toHaveBeenCalledTimes(1);
+      expect(ctx.failTask).toHaveBeenCalledWith(
+        expect.objectContaining({ feedback: 'Minor style issues', severity: 'medium' }),
+      );
+      expect(ctx.completeTask).not.toHaveBeenCalled();
     });
   });
 
@@ -845,8 +850,8 @@ describe('linearStepsRunner', () => {
     });
   });
 
-  describe('custom settle: completeTask returns false on medium-severity exhaustion', () => {
-    it('fails with "Failed to submit" rather than accepting as completed', async () => {
+  describe('exhaustion does not consult completeTask (unconditional fail)', () => {
+    it('never calls completeTask on medium-severity exhaustion, even if it would succeed', async () => {
       setupProfileMocks();
       setupHarnessMocks();
       mockPromptForStructured.mockResolvedValue({
@@ -854,17 +859,20 @@ describe('linearStepsRunner', () => {
         attempts: 1,
       });
 
-      const ctx = createRunnerContext({
-        maxStepRetries: 1,
-        completeTask: mock(() => false) as () => boolean,
-      });
+      // A completeTask stub that WOULD succeed — it must never be invoked
+      // because exhaustion fails unconditionally.
+      const completeTask = mock(() => true) as () => boolean;
+      const ctx = createRunnerContext({ maxStepRetries: 1, completeTask });
       const runner = linearStepsRunner([implementStep, reviewStep]);
 
       const outcome = await runner(ctx);
 
       expect(outcome.status).toBe('failed');
-      expect(outcome).toHaveProperty('error', 'Failed to submit');
-      expect(ctx.failTask).toHaveBeenCalledWith(expect.objectContaining({ error: 'Failed to submit' }));
+      expect(outcome).toHaveProperty('feedback', 'minor issues');
+      expect(ctx.completeTask).not.toHaveBeenCalled();
+      expect(ctx.failTask).toHaveBeenCalledWith(
+        expect.objectContaining({ feedback: 'minor issues', severity: 'medium' }),
+      );
     });
   });
 
@@ -888,7 +896,7 @@ describe('linearStepsRunner', () => {
       expect(ctx.completeTask).not.toHaveBeenCalled();
     });
 
-    it('returns completed when the rejected output has no severity field (defaults to medium)', async () => {
+    it('returns failed when the rejected output has no severity field (defaults to medium)', async () => {
       setupProfileMocks();
       setupHarnessMocks();
       mockPromptForStructured.mockResolvedValue({
@@ -910,11 +918,13 @@ describe('linearStepsRunner', () => {
 
       const outcome = await runner(ctx);
 
-      expect(outcome.status).toBe('completed');
-      expect(ctx.completeTask).toHaveBeenCalledTimes(1);
+      // Missing severity defaults to 'medium' but exhaustion still fails.
+      expect(outcome.status).toBe('failed');
+      expect(ctx.completeTask).not.toHaveBeenCalled();
+      expect(ctx.failTask).toHaveBeenCalledWith(expect.objectContaining({ feedback: 'meh', severity: 'medium' }));
     });
 
-    it('returns completed when severity is low', async () => {
+    it('returns failed when severity is low (exhaustion always fails)', async () => {
       setupProfileMocks();
       setupHarnessMocks();
       mockPromptForStructured.mockResolvedValue({
@@ -927,12 +937,14 @@ describe('linearStepsRunner', () => {
 
       const outcome = await runner(ctx);
 
-      expect(outcome.status).toBe('completed');
-      expect(ctx.completeTask).toHaveBeenCalledTimes(1);
-      expect(ctx.failTask).not.toHaveBeenCalled();
+      expect(outcome.status).toBe('failed');
+      expect(ctx.completeTask).not.toHaveBeenCalled();
+      expect(ctx.failTask).toHaveBeenCalledWith(
+        expect.objectContaining({ feedback: 'Trivial nitpick', severity: 'low' }),
+      );
     });
 
-    it('passes the rejected step output to completeTask when accepting with caveats (medium)', async () => {
+    it('forwards feedback+severity to failTask on medium-severity exhaustion (no completeTask)', async () => {
       setupProfileMocks();
       setupHarnessMocks();
       const rejectedOutput = { approved: false, feedback: 'minor', severity: 'medium' };
@@ -943,13 +955,14 @@ describe('linearStepsRunner', () => {
 
       const outcome = await runner(ctx);
 
-      expect(outcome.status).toBe('completed');
-      // The severity-settle accept path forwards the raw output to completeTask
-      // so the caveats-laden result lands on task.result.
-      expect(ctx.completeTask).toHaveBeenCalledWith(rejectedOutput);
+      // Exhaustion fails unconditionally; the reviewer output is NOT passed to
+      // completeTask. failTask receives the feedback + extracted severity.
+      expect(outcome.status).toBe('failed');
+      expect(ctx.completeTask).not.toHaveBeenCalled();
+      expect(ctx.failTask).toHaveBeenCalledWith(expect.objectContaining({ feedback: 'minor', severity: 'medium' }));
     });
 
-    it('still fails with feedback on high severity even if completeTask would succeed (severity checked first)', async () => {
+    it('fails with feedback on high severity (exhaustion fails unconditionally)', async () => {
       setupProfileMocks();
       setupHarnessMocks();
       mockPromptForStructured.mockResolvedValue({
@@ -957,9 +970,8 @@ describe('linearStepsRunner', () => {
         attempts: 1,
       });
 
-      // Even a completeTask stub that returns true must NOT be called when
-      // severity is high — the failing-severity branch short-circuits before
-      // the accept/completeTask branch.
+      // A completeTask stub that returns true is never called on exhaustion —
+      // exhaustion fails unconditionally regardless of severity.
       const completeTask = mock(() => true) as () => boolean;
       const ctx = createRunnerContext({ maxStepRetries: 1, completeTask });
       const runner = linearStepsRunner([implementStep, reviewStep]);
