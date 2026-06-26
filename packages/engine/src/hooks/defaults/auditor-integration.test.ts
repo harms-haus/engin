@@ -310,12 +310,18 @@ describe('LanePool default auditor — end-to-end wiring', () => {
     await pool.run();
 
     // The rejection fires BOTH a structured_output event (the rejected result
-    // is still observed) AND a decision event. Filter to the decision event.
+    // is still observed) AND a decision event. Because exhausting the review
+    // budget now FAILS the task (rather than accepting with caveats), the
+    // non-retryable failure also emits its own decision event — so filter to
+    // the STEP-REJECTION decision by its reasoning (the reviewer's feedback).
     const decisions = await auditLog.getEvents({ type: 'decision' });
-    expect(decisions).toHaveLength(1);
-    expect(decisions[0].type).toBe('decision');
+    const stepRejections = (decisions as Extract<AuditEvent, { type: 'decision' }>[]).filter(
+      (d) => d.reasoning === 'needs more tests',
+    );
+    expect(stepRejections).toHaveLength(1);
+    expect(stepRejections[0].type).toBe('decision');
 
-    const [decision] = decisions as Extract<AuditEvent, { type: 'decision' }>[];
+    const [decision] = stepRejections;
     expect(decision.taskId).toBe('task-decision');
     expect(decision.agentId).toBeTypeOf('string');
     expect(decision.agentId.length).toBeGreaterThan(0);
@@ -355,21 +361,30 @@ describe('LanePool default auditor — end-to-end wiring', () => {
 
     await pool.run();
 
-    // Store side: the onStatus.onDecision callback fired exactly once.
-    expect(storeDecisions).toHaveLength(1);
-    expect(storeDecisions[0].taskId).toBe('task-both');
-    expect(storeDecisions[0].reasoning).toBe('tests missing');
-    expect(storeDecisions[0].decision).toContain('rejected');
+    // Store side: the onStatus.onDecision callback fires for BOTH the
+    // step rejection AND the subsequent non-retryable task failure (exhausting
+    // the review budget now fails the task; the task-failure decision carries
+    // the same feedback as its reasoning). Filter to the STEP-REJECTION
+    // decision by its decision text to assert the wiring once. (The audit hook
+    // only receives the step rejection — see audit-side assertions below.)
+    const storeStepRejections = storeDecisions.filter((d) => d.decision.includes('rejected (attempt'));
+    expect(storeStepRejections).toHaveLength(1);
+    expect(storeStepRejections[0].taskId).toBe('task-both');
+    expect(storeStepRejections[0].reasoning).toBe('tests missing');
+    expect(storeStepRejections[0].decision).toContain('rejected');
 
-    // Audit side: the default auditor appended exactly one decision event.
+    // Audit side: the default auditor appended the step-rejection decision
+    // (among others). Filter to it.
     const auditDecisions = await auditLog.getEvents({ type: 'decision' });
-    expect(auditDecisions).toHaveLength(1);
-    expect(auditDecisions[0].type).toBe('decision');
+    const auditStepRejections = (auditDecisions as Extract<AuditEvent, { type: 'decision' }>[]).filter(
+      (d) => d.reasoning === 'tests missing',
+    );
+    expect(auditStepRejections).toHaveLength(1);
+    expect(auditStepRejections[0].type).toBe('decision');
 
-    // Both sinks received the SAME decision payload (same taskId / reasoning).
-    const [auditDecision] = auditDecisions as Extract<AuditEvent, { type: 'decision' }>[];
-    expect(auditDecision.taskId).toBe(storeDecisions[0].taskId);
-    expect(auditDecision.reasoning).toBe(storeDecisions[0].reasoning);
+    // Both sinks received the SAME step-rejection payload (same taskId / reasoning).
+    expect(auditStepRejections[0].taskId).toBe(storeStepRejections[0].taskId);
+    expect(auditStepRejections[0].reasoning).toBe(storeStepRejections[0].reasoning);
   });
 
   // ── (4) No auditLog → no auditor (backward compat) ──────────────────────
