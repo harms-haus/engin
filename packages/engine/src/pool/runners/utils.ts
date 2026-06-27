@@ -48,6 +48,11 @@ export async function runSessionViaGate(ctx: RunnerContext, spec: SessionSpec): 
       ...(ctx.worktreeCwd !== undefined ? { worktreeCwd: ctx.worktreeCwd } : {}),
       phaseId: ctx.phaseId,
       agentId: ctx.agentId,
+      // Forward the owning task's id so session lifecycle callbacks
+      // (onSessionStart / onSessionComplete) can tag the session_started /
+      // session_completed events with taskId. Without this, the TUI/web cannot
+      // associate a session with its task (it filters sessions by taskId).
+      taskId: ctx.task.id,
       ...(ctx.apiKeys !== undefined ? { apiKeys: ctx.apiKeys } : {}),
       ...(ctx.onStatus !== undefined ? { onStatus: ctx.onStatus } : {}),
       activeSessions: ctx.activeSessions,

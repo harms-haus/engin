@@ -116,6 +116,11 @@ export interface RunSessionContext {
   phaseId: string;
   /** Agent identifier propagated to lifecycle callbacks. */
   agentId: string;
+  /** Owning task id propagated to lifecycle callbacks (onSessionStart /
+   *  onSessionComplete) so downstream consumers (TUI/web) can associate the
+   *  session with its task. Optional because some meta-sessions (e.g. title
+   *  generation) are genuinely task-less. */
+  taskId?: string;
   /** Optional API key overrides by provider. */
   apiKeys?: Record<string, string>;
   /** Status callback handlers (onSessionStart / onSessionComplete / agent-status
@@ -444,6 +449,7 @@ async function executeAttempt(
     agentId: ctx.agentId,
     profile: ctx.spec.profile,
     phaseId: ctx.phaseId,
+    taskId: ctx.taskId,
     sessionId,
     sessionPath,
     ...(session.contextWindow !== undefined ? { contextWindow: session.contextWindow } : {}),
@@ -505,6 +511,7 @@ async function executeAttempt(
       agentId: ctx.agentId,
       profile: ctx.spec.profile,
       phaseId: ctx.phaseId,
+      taskId: ctx.taskId,
       sessionId,
       runnerRole: ctx.spec.runnerRole,
       attempt: ctx.spec.attempt,

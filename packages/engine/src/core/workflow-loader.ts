@@ -1,5 +1,5 @@
 import { readdir, stat } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, resolve, sep } from 'node:path';
 import { resolveWorkflowsDirs } from './config.js';
 import type { WorkflowEntry, WorkflowModule } from './types.js';
 import { isEnoentError, validateWorkflowName } from './utils.js';
@@ -41,11 +41,26 @@ export async function loadWorkflow(name: string, cwd: string): Promise<WorkflowM
     }
 
     // Bust Bun's module cache so re-imports after eviction pick up disk changes.
+    // Bust Bun's module cache so re-imports after eviction pick up disk changes.
     // Bun supports require() in ESM context and respects require.cache,
     // unlike import() which uses a separate internal ESM module cache.
+    //
+    // IMPORTANT: evicting only `main.ts` is NOT enough — Bun reuses cached
+    // transitive imports (shared `.lib/*.ts` modules, sibling workflow files)
+    // because their cache entries remain. A long-lived daemon would keep
+    // serving stale workflow code after edits. Evict EVERY cache entry whose
+    // resolved path lives under a workflow directory so the whole module
+    // tree is re-read from disk on each load.
     const resolved = require.resolve(filePath);
     // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
     delete require.cache[resolved];
+    const workflowRoots = dirs.map((d) => resolve(d));
+    for (const cachePath of Object.keys(require.cache)) {
+      if (workflowRoots.some((root) => cachePath.startsWith(root + sep) || cachePath === root)) {
+        // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
+        delete require.cache[cachePath];
+      }
+    }
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const mod = require(filePath);
     const workflow: WorkflowModule = mod.default ?? mod;
