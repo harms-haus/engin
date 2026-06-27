@@ -60,8 +60,7 @@ export const HOOK_DECLARATIONS = {
   beforePhaseTransition: { rule: 'first-wins' },
   shouldRetryPhase: { rule: 'first-wins' },
   beforeTask: { rule: 'first-wins' },
-  claimPolicy: { rule: 'first-wins' },
-  concurrencyKey: { rule: 'first-wins' },
+
   beforeTaskWorktreeCreate: { rule: 'first-wins' },
   onTaskMerge: { rule: 'first-wins' },
   onMergeConflict: { rule: 'first-wins' },
@@ -76,7 +75,7 @@ export const HOOK_DECLARATIONS = {
   afterPhase: { rule: 'observe' },
   wakeStrategy: { rule: 'observe' },
   onLaneIdle: { rule: 'observe' },
-  onLaneStall: { rule: 'observe' },
+
   afterTaskWorktreeCreate: { rule: 'observe' },
 } as const satisfies Record<keyof WorkflowHooks, HookDeclaration>;
 

@@ -3,8 +3,8 @@
 // This module houses engine-wide runtime constants that are shared across
 // multiple consumers. The first such constant is `DEFAULT_MAX_ROUNDS` — the
 // default ceiling on retry/fixer rounds, previously duplicated as a local
-// `const DEFAULT_MAX_ROUNDS = 3` in BOTH:
-//   - pool/fix-loop.ts   (the fixLoop primitive's default maxRounds)
+// `const DEFAULT_MAX_ROUNDS = 3` in:
+//   - the legacy fix-loop primitive (default maxRounds)
 //   - core/phase-runner.ts (the PhaseRunner's default maxRounds)
 //
 // The consolidation refactor extracts the constant into this single shared

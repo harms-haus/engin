@@ -916,7 +916,7 @@ describe('git lock — serialization + merge-commit rollback', () => {
     expect(mockResetHard).toHaveBeenCalledWith('/run/work/worktree');
     expect(mockCleanUntracked).toHaveBeenCalledWith('/run/work/worktree');
     // The ORIGINAL commit error is surfaced (not the fix-up's lastError).
-    // The failed task's worktree is NOT culled — lane-pool preserves it.
+    // The failed task's worktree is NOT culled — the pool preserves it.
     expect(mockRemoveWorktree).not.toHaveBeenCalled();
     // No second commit attempt (fix-up failed → no retry).
     expect(mockCommitChanges).toHaveBeenCalledTimes(1);

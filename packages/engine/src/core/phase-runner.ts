@@ -23,7 +23,7 @@
 //   - afterPhase             → no-op
 //
 // CRITICAL: The PhaseRunner does NOT own task execution — that stays with
-// LanePool/runStepTask. Each phase's `run()` callback owns its own task
+// RunnerPool/runTask. Each phase's `run()` callback owns its own task
 // execution; the runner only owns the phase loop, transitions, retry, and
 // result collection.
 
@@ -93,13 +93,6 @@ export interface PhaseRunnerOptions {
   workDir: string;
   signal?: AbortSignal;
   maxRounds?: number; // default 3 — reproduces the ≤3-rounds logic
-  /**
-   * Minimum number of tasks that must reach `status: 'complete'` for a phase
-   * to succeed. Defaults to `1`. When `0`, the guard is disabled (backward
-   * compat). The guard triggers ONLY when the phase has ≥1 task registered with
-   * `phaseId === phase.id`; a taskless phase never triggers it.
-   */
-  minPhaseCompletions?: number; // default 1 — phase-completion hard-stop guard
 }
 
 /**
@@ -113,14 +106,13 @@ export interface PhaseRunnerOptions {
  * exposes the tracker's settled tasks to the `onPhaseSettled` hook.
  *
  * The runner does NOT execute tasks itself — each phase's `run()` callback
- * owns its task execution (typically via LanePool / runStepTask). The runner
+ * owns its task execution (typically via RunnerPool / runTask). The runner
  * owns only the phase loop, transitions, retry, and result collection.
  */
 export class PhaseRunner {
   private readonly options: PhaseRunnerOptions;
   private readonly registry: HookRegistry;
   private readonly maxRounds: number;
-  private readonly minPhaseCompletions: number;
 
   constructor(options: PhaseRunnerOptions) {
     this.options = options;
@@ -130,7 +122,6 @@ export class PhaseRunner {
     // which the runner interprets as "use the built-in default behavior".
     this.registry = options.hookRegistry ?? createHookRegistry();
     this.maxRounds = options.maxRounds ?? DEFAULT_MAX_ROUNDS;
-    this.minPhaseCompletions = options.minPhaseCompletions ?? 1;
   }
 
   /**
@@ -229,32 +220,12 @@ export class PhaseRunner {
       }
       const durationMs = Date.now() - startTime;
 
-      // 5b. Phase-completion hard-stop guard: after the phase has run (and
-      //     exhausted its retries) but BEFORE onPhaseSettled / afterPhase /
-      //     beforePhaseTransition, verify the phase produced enough completed
-      //     tasks. When disabled (minPhaseCompletions === 0) or the phase
-      //     registered no tasks, the guard is skipped. Otherwise, if the count
-      //     of `complete` tasks falls below the threshold, THROW — propagating
-      //     out of run() to halt the entire workflow (no further phases run, no
-      //     later hooks fire for this phase).
-      if (this.minPhaseCompletions > 0) {
-        const phaseTasks = tracker.taskTracker.getTasksByPhase(phase.id);
-        if (phaseTasks.length > 0) {
-          const completedCount = phaseTasks.filter((t) => t.status === 'complete').length;
-          if (completedCount < this.minPhaseCompletions) {
-            throw new Error(
-              `Phase "${phase.id}" failed: ${completedCount}/${phaseTasks.length} tasks completed (minimum: ${this.minPhaseCompletions}). Aborting workflow.`,
-            );
-          }
-        }
-      }
-
       // 6. onPhaseSettled (all-run): hand subscribers the tracker's settled
       //    tasks so they may collect results into the shared state. The same
       //    `state` reference is forwarded, so mutations are visible to later
       //    phases. Guarded by hasSubscribers to avoid allocating getAllTasks()
       //    when no subscriber is registered (matches discipline in
-      //    step-execution.ts / lane-pool.ts / scheduler.ts).
+      //    the legacy execution modules).
       if (this.registry.hasSubscribers('onPhaseSettled')) {
         const settledArgs: OnPhaseSettledArgs = {
           phaseId: phase.id,

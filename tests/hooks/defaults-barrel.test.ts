@@ -103,12 +103,10 @@ const EXPECTED_EXPORTS = [
   'defaultBeforeRunMerge',
   'defaultBeforeStepPrompt',
   'defaultCollectContext',
-  'defaultOnLaneError',
   'defaultOnPhaseSettled',
   'defaultOnTaskMerge',
   'defaultOnWorkflowAbort',
   'defaultOnWorkflowResume',
-  'defaultShouldIsolate',
   'defaultShouldRetryPhase',
 ] as const;
 

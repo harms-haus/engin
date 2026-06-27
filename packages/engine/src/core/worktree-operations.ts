@@ -10,7 +10,7 @@
 //   - `commitWorktreeChanges` — used by WorktreeManager (worktree-manager.ts)
 //     to stage + commit pending worktree changes (with a lint fix-up safety
 //     net that retries the commit once when the pre-commit hook rejects it).
-//   - `createLintValidationGate` — the PRIMARY lint defence used by runStepTask
+//   - `createLintValidationGate` — the PRIMARY lint defence used by oneStepTask
 //     validation; runs `prettier --write` + a single `eslint --fix` pass.
 
 import { commitChanges, getDiff, stageAll } from './git.js';
@@ -108,7 +108,7 @@ export async function commitWorktreeChanges(opts: CommitWorktreeOptions): Promis
 // ─── createLintValidationGate ────────────────────────────────────────────────
 
 /**
- * Create a `validateOutput` callback suitable for `runStepTask`'s
+ * Create a `validateOutput` callback suitable for `oneStepTask`'s
  * `validateOutput` option. This is the PRIMARY lint defence: it runs
  * `prettier --write` + a single `eslint --fix` pass in the worktree
  * (format, then auto-fix + report). Returns `{ error: 'Lint errors

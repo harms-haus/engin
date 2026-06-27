@@ -2,8 +2,7 @@
 //
 // Shared helper that looks up a per-profile renderer and, when the agent
 // produced output, fires the `onAgentRender` status callback. Extracted from
-// the previously-duplicated inline blocks in `phase-tasks.ts` (runStepTask and
-// runMultiStepTask) and `pool/step-execution.ts` (runStep).
+// the legacy inline blocks in the old task execution modules.
 
 import type { RendererRegistry } from './renderer-registry.js';
 import { extractJsonFromText } from './structured-output.js';

@@ -189,7 +189,7 @@ The `--worktree` gate is gone. The executor probes `isGitRepo(handle.cwd)`:
 - **Non-git cwd** — `console.warn` and run in-place (`options.cwd = handle.cwd`, no manager,
   no worktrees). The client's non-git confirm prompt (see below) runs before this point.
 
-### Per task (`runStepTask` / `runMultiStepTask` / `LanePool`)
+### Per task (`RunnerPool` session path)
 
 Before `spawnAgent`, when a `WorktreeManager` is present:
 
@@ -222,8 +222,7 @@ absolute worktree paths inside it to repo-relative tails. A task that ran in its
 per-task worktree may emit absolute worktree paths in its structured output (e.g. an
 `issues[].file` from a code review); once that worktree is culled after the merge, those
 paths would be dead for any downstream task. The engine strips them at its result-capture
-seams — `runStepTask` and `runMultiStepTask` (`core/phase-tasks.ts`) and the deferred-result
-path of `LanePool.processTask` (`pool/lane-pool.ts`) — via
+seams — `RunnerPool` task processing and the `runSession` session primitive — via
 `relativizePathsIn(result, [taskWorktreePath, mainWorktreePath])` (source:
 `core/path-relativizer.ts`). The transform recurses over strings/objects/arrays
 (longest-root-first, start-of-string boundary match, exact-root → `.`), is idempotent and
@@ -232,7 +231,7 @@ non-mutating, and leaves non-string leaves untouched. The consume side
 downstream task's worktree cwd, so a relativized path resolves correctly there. This is
 purely internal — not part of the public engine API.
 
-### Task fails / retries (`LanePool.maybeRetryFailedTask`)
+### Task fails / retries (`RunnerPool` retry valve)
 
 `cullTaskWorktree(taskId)` (force) runs before `resetTaskForRetry`, so the next attempt
 creates a fresh worktree. Cull is idempotent and best-effort — removal errors are swallowed
@@ -363,24 +362,20 @@ caller's failure path.
 The safety net catches what slips through; the **primary** defence is the
 `createLintValidationGate(worktreePath)` helper
 (`packages/engine/src/core/worktree-operations.ts`). It returns a `validateOutput` callback
-suitable for `runStepTask` / `runMultiStepTask`'s `validateOutput` option:
-
-1. Run `eslint --fix` (fire-and-forget — its exit code does not influence the result).
-2. Run `prettier --write` (fire-and-forget).
-3. Run `eslint` (no `--fix`) and check the exit code. Non-zero → return
-   `{ error: 'Lint errors remain: …' }`; otherwise return `undefined` (accept).
-
-Wire it into a write step so the implementing agent — which has full task context — fixes
-its own lint errors in its existing tool loop, and the code is already clean by commit time:
+was designed for the removed `runStepTask` / `runMultiStepTask` primitives
+(the session-first engine validates output via runner specs instead). The helper
+still works for custom `validateOutput` callbacks, but `runStepTask` no longer
+exists — wire it into your own agent tool loop when you need lint verification
+before committing:
 
 ```typescript
-import { createLintValidationGate, runStepTask } from '@harms-haus/engin-engine';
+import { createLintValidationGate } from '@harms-haus/engin-engine';
 
-await runStepTask({
-  // …
-  cwd: taskWorktreePath,
-  validateOutput: createLintValidationGate(taskWorktreePath),
-});
+const gate = createLintValidationGate(taskWorktreePath);
+const result = await gate();
+if (result?.error) {
+  console.warn('Lint errors remain:', result.error);
+}
 ```
 
 ### Hardened conflict resolver
@@ -411,7 +406,7 @@ worktree is transparent. When git is available:
 - `options.cwd` is the **main worktree path** (not the original cwd).
 - `options.worktree` carries the main worktree info.
 - `options.worktreeManager` is available for workflows that opt into per-task worktree
-  support (forward it to `runStepTask` / `runMultiStepTask` / `LanePool`).
+  support (forward it to `RunnerPool` / composable runners).
 
 See [Building a new workflow → Worktrees](../guides/building-workflows.md#worktrees) for
 the authoring surface and the `.worktreecopy` convention.
@@ -428,4 +423,4 @@ the authoring surface and the `.worktreecopy` convention.
   `TaskWorktreeInfo`, `WorktreeCopyEntry`, and the `worktree_merge_result` ServerMessage.
 - [Building a new workflow](../guides/building-workflows.md) — `.worktreecopy` for authors,
   the `worktreeManager` option, and `createLintValidationGate`.
-- [Task pool & execution](task-pool.md) — the per-task worktree hook points in `LanePool`.
+- [Task pool & execution](task-pool.md) — the per-task worktree hook points in `RunnerPool`.

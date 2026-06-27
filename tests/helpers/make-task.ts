@@ -2,7 +2,7 @@ import type { Task } from '../../packages/engine/src/core/types.js';
 
 /**
  * Creates a Task with sensible defaults.
- * Canonical version based on lane-pool.test.ts (provides id default).
+ * Canonical version based on legacy pool tests (provides id default).
  */
 export function makeTask(overrides?: Partial<Task>): Task {
   return {

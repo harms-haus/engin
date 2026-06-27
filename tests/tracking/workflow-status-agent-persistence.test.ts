@@ -51,21 +51,29 @@ describe('WorkflowStatusTracker – agent persistence', () => {
       expect(sessions[0].taskId).toBe('task-42');
     });
 
-    it('stores stepIndex when provided', () => {
-      tracker.recordAgentSpawn('agent-1', 'coder', 'implementing', 'task-42', 2);
+    it('stores runnerRole and attempt when provided', () => {
+      tracker.recordAgentSpawn('agent-1', 'coder', 'implementing', 'task-42', 'coder', 2);
 
       const sessions = tracker.spawnedAgents;
+      const a = sessions[0];
+      expect(a.runnerRole).toBe('coder');
+      expect(a.attempt).toBe(2);
     });
 
-    it('stores stepIndex via object overload', () => {
+    it('stores runnerRole/attempt via object overload', () => {
       tracker.recordAgentSpawn({
         agentId: 'a1',
         profile: 'coder',
         phaseId: 'implementing',
         taskId: 'task-42',
+        runnerRole: 'coder',
+        attempt: 1,
       });
 
       const sessions = tracker.spawnedAgents;
+      const a = sessions[0];
+      expect(a.runnerRole).toBe('coder');
+      expect(a.attempt).toBe(1);
     });
 
     it('appends multiple records in order', () => {

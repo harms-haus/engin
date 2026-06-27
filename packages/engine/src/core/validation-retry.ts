@@ -27,7 +27,7 @@ interface RetryableSession {
  *   `undefined` / `{}` to accept.
  * - After `maxAttempts` (default 3) consecutive failures, throws an
  *   `Agent output failed validation after N attempts: <error>` error — matching
- *   the message previously inlined in `runStepTask` / `runMultiStepTask`.
+ *   the message previously inlined in `oneStepTask` / `multiStepTask`.
  *
  * @returns the session's last assistant text on success.
  */

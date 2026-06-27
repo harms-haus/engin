@@ -44,7 +44,7 @@ import type { CompositionRule, HookContext, HookRegistry as HookRegistryInterfac
 
 // ── asHooks helper ─────────────────────────────────────────────────────────
 // `WorkflowHooks` grew real declared fields via declaration merging (the
-// step / lane / workflow / phase / scheduler / worktree hooks), so a plain
+// step / lane / workflow / phase / pool / worktree hooks), so a plain
 // object literal carrying an ARBITRARY hook name (onLog / merge / decide / …
 // declared ad-hoc via defineHook) fails excess-property checking. The
 // registry's runtime contract accepts ANY hook name (defineHook + auto-
@@ -88,7 +88,7 @@ function makeMockHook<T extends (...args: never[]) => unknown>(impl?: T): Return
  */
 const hookName = (name: string): never => name as never;
 
-// ── console.warn spy (manual, version-safe — mirrors runner-utils.test.ts) ──
+// ── console.warn spy (manual, version-safe — mirrors legacy runner tests) ──
 //
 // observe must swallow per-subscriber failures and surface them through
 // console.warn (one bad subscriber must not break the fan-out). We capture

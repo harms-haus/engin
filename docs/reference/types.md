@@ -658,13 +658,10 @@ level (matching [Hooks §3](hooks.md#3-hook-catalog)). `Task` is defined in `cor
 
 #### Scheduler / execution level
 
-| Type                 | Fields                                                                               |
-| -------------------- | ------------------------------------------------------------------------------------ |
-| `ClaimPolicyArgs`    | `{ tracker: unknown; laneId: string; maxClaim: number }`                             |
-| `ConcurrencyKeyArgs` | `{ task: Task }`                                                                     |
-| `WakeStrategyArgs`   | `{ laneId: string; reason: 'task-ready' \| 'task-settled' \| 'timeout' \| 'abort' }` |
-| `OnLaneIdleArgs`     | `{ laneId: string; consecutiveTimeouts: number }`                                    |
-| `OnLaneStallArgs`    | `{ laneId: string; consecutiveTimeouts: number; threshold: number }`                 |
+| Type               | Fields                                                                               |
+| ------------------ | ------------------------------------------------------------------------------------ |
+| `WakeStrategyArgs` | `{ laneId: string; reason: 'task-ready' \| 'task-settled' \| 'timeout' \| 'abort' }` |
+| `OnLaneIdleArgs`   | `{ laneId: string; consecutiveTimeouts: number }`                                    |
 
 #### Worktree lifecycle
 

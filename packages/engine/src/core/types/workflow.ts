@@ -10,7 +10,8 @@ export interface PersistedAgentRecord {
   profile: string;
   phaseId: string;
   taskId?: string;
-  stepIndex?: number;
+  runnerRole?: string;
+  attempt?: number;
   completedAt?: string;
 }
 
@@ -60,9 +61,9 @@ export interface WorkflowRunOptions {
   rendererRegistry?: RendererRegistry;
   /** WorktreeManager for isolated git worktree execution */
   worktreeManager?: WorktreeManager;
-  /** The engine-assembled hook registry. Forwarded to LanePool / runStepTask / runMultiStepTask so engine primitives can invoke hooks. */
+  /** The engine-assembled hook registry. Forwarded to RunnerPool / runTask so engine primitives can invoke hooks. */
   hookRegistry?: HookRegistry;
-  /** Optional per-prompt timeout in milliseconds. Forwarded to LanePool so
+  /** Optional per-prompt timeout in milliseconds. Forwarded to RunnerPool so
    *  each `session.prompt()` call is raced against a timeout. Unset/0/NaN → no
    *  timeout (zero behavior change). */
   stepTimeoutMs?: number;

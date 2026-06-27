@@ -124,7 +124,7 @@ Tests live in `tests/` and are organised by domain:
 tests/
 ├── cli/         # parse-args, commands, sigint, session-selector, run/resume guards
 ├── core/        # agent-loop, agent-lifecycle, agent-plugin, agent-registry, config, phase-runner, phase-tasks, profile, structured-output, worktree-lifecycle, ...
-├── pool/        # runner-pool, session, session-gate, runners/ (singleSession, linearRunner, reviewRunner, …), lane-pool (legacy), severity, validation, types
+├── pool/        # runner-pool, session, session-gate, runners/ (singleSession, linearRunner, reviewRunner, …), severity, validation, types
 ├── tracking/    # audit-log, event-store, evolve, task-status, workflow-status, workflow-serializer
 ├── server/      # daemon, run-manager, control-server, status-bridge, auth, bind-guard
 ├── shared/      # engine-client, client-store, protocol-types parity

@@ -1,6 +1,6 @@
 // ─── Session Primitive ─────────────────────────────────────────────────────
 //
-// `runSession` is the single-step session primitive that LanePool delegates
+// `runSession` is the single-step session primitive that RunnerPool delegates
 // to. It encapsulates the full agent session lifecycle for one prompt turn:
 //
 //   1. Idempotency check (`.complete` sentinel + `result.json`)
@@ -12,8 +12,8 @@
 //   5. Watchdog (activity-based timeout + escalation)
 //   6. Lifecycle callbacks (onSessionStart / onSessionComplete only)
 //
-// Unlike `step-execution.ts:runStep` (which delegates to `spawnAgent` and
-// fires the full agent/step callback cascade), `runSession` fires ONLY
+// Unlike the legacy step runner (which delegated to `spawnAgent` and
+// fired the full agent/step callback cascade), `runSession` fires ONLY
 // `onSessionStart` and `onSessionComplete`. This keeps the session primitive
 // a clean single-step building block for higher-level orchestrators that
 // manage their own task/step lifecycle.
@@ -420,7 +420,7 @@ async function executeAttempt(
     });
     // Pre-attach a no-op catch so that when the watchdog wins and the abort
     // propagates into `work`, the resulting rejection is swallowed (mirrors
-    // step-execution.ts ~lines 205-208).
+    // the same pattern from the legacy step runner).
     work.catch(() => {
       /* swallow abort-triggered rejection from the raced loser */
     });
@@ -624,8 +624,6 @@ export async function runSession(ctx: RunSessionContext): Promise<SessionResult>
  * directory guarantees a retry / resume restarts with a clean slate.
  *
  * This is the canonical `clearTaskSessions` for the session primitive path.
- * (The duplicate in `step-execution.ts` is slated for deletion in Phase C / C4
- * once all call sites migrate to the session primitive.)
  *
  * No-op (does not throw) when the directory does not exist.
  */

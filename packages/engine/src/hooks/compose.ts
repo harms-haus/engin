@@ -11,7 +11,7 @@
 // DESIGN DECISION (pinned by compose.test.ts):
 //
 //   observe/influence-hook firing from within `onStatus` is DEFERRED to the
-//   engine primitives (runStep, LanePool, PhaseRunner) that own a proper
+//   engine primitives (runStep, RunnerPool, PhaseRunner) that own a proper
 //   `HookContext`. The composed `onStatus` wraps ONLY the store callbacks — so
 //   `composeHooks(storeCallbacks, hooks).onStatus` is behaviorally IDENTICAL
 //   to `storeCallbacks` (zero behavior change — the firmest constraint in

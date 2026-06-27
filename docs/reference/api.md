@@ -273,18 +273,12 @@ Same as `resolveApiKey` but throws with a helpful error listing expected env var
 
 ## Single-agent task primitive
 
-### `runStepTask<T>(opts: RunStepTaskOptions): Promise<T>` ⚠️ Deprecated
+### `runStepTask<T>(opts: RunStepTaskOptions): Promise<T>` 🗑️ Removed
 
-Run one agent as a one-step task. See
-[Building a new workflow → `runStepTask`](../guides/building-workflows.md#primitive-1--single-agent-tasks-with-runsteptask)
-and [Types reference → `RunStepTaskOptions`](types.md#runsteptaskoptions) for the full
-lifecycle and options.
-
-> **Deprecated.** `runStepTask` remains exported but uses the old step-execution path
-> (`spawnAgent` / `buildPrompt`) that predates the session-first engine. New workflows
-> should prefer [`runSession`](#runsession) for single-session tasks, or
-> [`RunnerPool`](#runnerpool) with `singleSession` for tasks that participate in the
-> phase/task/session hierarchy.
+**Removed in the session-first redesign.** Was used to run one agent as a one-step task.
+Use [`runSession`](#runsession) for single-session tasks, or
+[`RunnerPool`](#runnerpool) with `singleSession` for tasks that participate in the
+phase/task/session hierarchy.
 
 ## Session primitive
 
@@ -369,16 +363,16 @@ error?: string }`.
 | `coordinatorRunner` | `(coordinatorSpec: SessionSpec, opts: CoordinatorRunnerOptions) => Runner` | Runs a coordinator session (must fully resolve first), then delegates to `opts.childRunner(coordinatorResult)` to build + run children.                                |
 | `coalescingRunner`  | `(coordinatorSpec: SessionSpec, opts: CoalescingRunnerOptions) => Runner`  | Coordinator → children → coordinator loop. Each round the coordinator returns `{ done, children?, feedback? }`; `done: true` → completed. Loops to `maxRounds`.        |
 
-### Deprecated runners
+### Removed runners
 
 The following runners from the old step-execution path (the removed `LanePool` /
-`Scheduler`) remain exported but are **deprecated** — new code should use the composable
+`Scheduler`) were **removed** in the session-first redesign. Use the composable
 runners above with [`RunnerPool`](#runnerpool).
 
-| Runner              | Notes                                                                                                                                        |
-| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| `linearStepsRunner` | Wraps a `StepDefinition[]` into a `TaskRunner` with reviewer back-up retry. Used by the removed `LanePool`. Deprecated — use `linearRunner`. |
-| `reflectionRunner`  | Two-step draft→critic loop with session resume. Deprecated — prefer `reviewRunner`.                                                          |
+| Runner              | Replacement                                       |
+| ------------------- | ------------------------------------------------- |
+| `linearStepsRunner` | Use `linearRunner` with `singleSession` children. |
+| `reflectionRunner`  | Use `coalescingRunner` or `reviewRunner`.         |
 
 ## Tracking
 
@@ -413,7 +407,7 @@ and [Worktrees reference](worktrees.md) for the full method table and semantics.
 
 ### `createLintValidationGate(worktreePath): () => Promise<{ error?: string } | undefined>`
 
-Returns a `validateOutput` callback for the deprecated `runStepTask` / `runMultiStepTask`
+Returns a `validateOutput` callback for the removed `runStepTask` / `runMultiStepTask`
 primitives (the session-first engine validates output via runner specs instead). Runs
 `eslint --fix` + `prettier --write` (fire-and-forget), then a final `eslint` check;
 returns `{ error }` when lint errors remain, else `undefined`. The argument is the

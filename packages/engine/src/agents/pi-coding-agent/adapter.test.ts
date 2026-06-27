@@ -22,7 +22,7 @@ import type { AgentProfile } from '../../core/types.js';
 // ─── Capture real modules before mocking ───────────────────────────────────
 //
 // Saved so they can be restored in `afterAll`, mirroring the pattern used in
-// agent-lifecycle.test.ts / phase-tasks.test.ts.
+// agent-lifecycle.test.ts.
 
 const realPiAi = Object.assign({}, await import('@earendil-works/pi-ai'));
 const realPiAgent = Object.assign({}, await import('@earendil-works/pi-coding-agent'));

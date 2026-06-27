@@ -33,7 +33,7 @@ import { composeHooks } from './compose.js';
 import { createHookRegistry, HookRegistry } from './registry.js';
 import type { HookContext, WorkflowHooks } from './types.js';
 
-// ── Fixture helpers (inline make* pattern — mirrors runner-utils.test.ts) ───
+// ── Fixture helpers (inline make* pattern — mirrors legacy runner tests) ───
 //
 // Manual mocks only — no shared test-utilities module. Each helper builds an
 // isolated, spyable fixture so every `it` is independent.
@@ -102,7 +102,7 @@ function asHooks(hooks: Record<string, unknown>): WorkflowHooks {
  */
 const hookName = (name: string): never => name as never;
 
-// ── console.warn spy (manual, version-safe — mirrors runner-utils.test.ts) ──
+// ── console.warn spy (manual, version-safe — mirrors legacy runner tests) ──
 //
 // Error isolation (§9 #2): observe must swallow per-subscriber failures and
 // surface them through console.warn (one bad subscriber must not break the

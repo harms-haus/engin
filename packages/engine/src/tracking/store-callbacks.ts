@@ -5,7 +5,7 @@ interface StoreLike {
   append(
     type: EventType,
     data: Record<string, unknown>,
-    metadata?: { agentId?: string; taskId?: string; phaseId?: string; stepIndex?: number },
+    metadata?: { agentId?: string; taskId?: string; phaseId?: string; runnerRole?: string; attempt?: number },
   ): unknown;
 }
 

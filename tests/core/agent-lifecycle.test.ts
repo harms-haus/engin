@@ -1,7 +1,7 @@
 // ─── Tests for spawnAgent (agent-lifecycle helper) ───────────────────────────
 //
 // `spawnAgent` extracts the duplicated agent lifecycle previously inlined in
-// `pool/step-execution.ts:runStep` and `core/phase-tasks.ts:runStepTask`:
+// `pool/session.ts:runSession` and the legacy task execution modules:
 //   - profile lookup + read-only adjustment (strip write/edit)
 //   - harness creation via createHarness
 //   - activeSessions tracking (before any status callback — TOCTOU safety)

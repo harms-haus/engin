@@ -70,12 +70,10 @@ const HOOKS_EXPORT_LINE = "export * from './hooks/index.js';";
 const PRESERVED_VALUE_EXPORTS: string[] = [
   // NOTE: `createHarness` was removed from the barrel — harness-factory.js was
   // deleted and is not re-exported from the engine public surface.
-  'runMultiStepTask',
   'EventStore',
   'createStoreCallbacks',
   'StatusBridge',
   'startDaemon',
-  'LanePool',
   'WorktreeManager',
   'runTooledFixup',
 ];

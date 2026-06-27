@@ -2,8 +2,8 @@
 //
 // These are test-first specs for the helper extracted from the renderer
 // invocation blocks inlined in BOTH:
-//   - packages/engine/src/core/phase-tasks.ts (runStepTask / runMultiStepTask)
-//   - packages/engine/src/pool/step-execution.ts (runStep)
+//   - packages/engine/src/core/renderer-invocation.ts (shared helper)
+//   - packages/engine/src/pool/session.ts (runSession)
 //
 // Extracting this into one function eliminates the renderer duplication.
 //
@@ -243,7 +243,7 @@ describe('invokeRenderer — onAgentRender callback', () => {
 // ─── agentId / taskId / profileId propagation ───────────────────────────────
 
 describe('invokeRenderer — field propagation', () => {
-  it('passes agentId distinct from taskId (step-execution style)', () => {
+  it('passes agentId distinct from taskId (session-style)', () => {
     const registry = registryWith('coder', () => 'rendered output');
     const onAgentRender = mock((_info: RenderInfo) => {});
 

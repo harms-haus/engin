@@ -369,7 +369,7 @@ export class RunExecutor {
     // manager + info are forwarded so the workflow can spawn per-task
     // worktrees off the main one. `onStatus` is the COMPOSED surface (not the
     // raw storeCallbacks) and `hookRegistry` is forwarded so workflow code
-    // that constructs LanePool / calls runStepTask can pass `hookRegistry:
+    // that constructs RunnerPool / calls runTask can pass `hookRegistry:
     // options.hookRegistry` and the engine primitives can invoke hooks at the
     // proper lifecycle seams.
     const options: WorkflowRunOptions = {

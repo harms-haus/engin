@@ -1,7 +1,7 @@
 // ─── Tests for runWithValidationRetry (core/validation-retry.ts) ────────────
 //
 // These are test-first specs for the helper extracted from the `validateOutput`
-// branch of `runStepTask` (packages/engine/src/core/phase-tasks.ts) and the
+// branch of the legacy task execution path and the
 // equivalent branch of `runMultiStepTask`.
 //
 // The contract under test:

@@ -1,7 +1,7 @@
 // ─── Tests for WorktreeManager.cullOrPreserve ──────────────────────────────
 //
 // The separation-of-concerns refactor moves the worktree culling orchestration
-// OUT of `fixLoop` (pool/fix-loop.ts) and INTO `WorktreeManager` as a new
+// OUT of the legacy fix-loop primitive and INTO `WorktreeManager` as a new
 // `cullOrPreserve(taskId, preserve)` method. This file pins the new method's
 // contract so the refactor is provably safe:
 //

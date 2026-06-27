@@ -2,7 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import { existsSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { clearTaskSessions } from '../../packages/engine/src/pool/step-execution.js';
+import { clearTaskSessions } from '../../packages/engine/src/pool/session.js';
 import { useTempDir } from '../helpers/use-temp-dir.js';
 
 describe('clearTaskSessions', () => {

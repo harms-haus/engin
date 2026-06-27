@@ -270,24 +270,49 @@ export class WorkflowStatusTracker {
     this._worktree = { ...info };
   }
 
-  recordAgentSpawn(agentId: string, profile: string, phaseId: string, taskId?: string, stepIndex?: number): void;
+  recordAgentSpawn(
+    agentId: string,
+    profile: string,
+    phaseId: string,
+    taskId?: string,
+    runnerRole?: string,
+    attempt?: number,
+  ): void;
   recordAgentSpawn(info: {
     agentId: string;
     profile: string;
     phaseId: string;
     taskId?: string;
-    stepIndex?: number;
+    runnerRole?: string;
+    attempt?: number;
   }): void;
   recordAgentSpawn(
-    agentIdOrInfo: string | { agentId: string; profile: string; phaseId: string; taskId?: string; stepIndex?: number },
+    agentIdOrInfo:
+      | string
+      | {
+          agentId: string;
+          profile: string;
+          phaseId: string;
+          taskId?: string;
+          runnerRole?: string;
+          attempt?: number;
+        },
     profile?: string,
     phaseId?: string,
     taskId?: string,
-    stepIndex?: number,
+    runnerRole?: string,
+    attempt?: number,
   ): void {
     let record: PersistedAgentRecord;
     if (typeof agentIdOrInfo === 'string') {
-      record = { agentId: agentIdOrInfo, profile: profile as string, phaseId: phaseId as string, taskId, stepIndex };
+      record = {
+        agentId: agentIdOrInfo,
+        profile: profile as string,
+        phaseId: phaseId as string,
+        taskId,
+        runnerRole,
+        attempt,
+      };
     } else {
       record = { ...agentIdOrInfo };
     }

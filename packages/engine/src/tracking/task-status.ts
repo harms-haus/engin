@@ -107,7 +107,7 @@ export class TaskTracker extends EventEmitter {
   /**
    * Returns only the tasks currently in the `'failed'` status.
    *
-   * Used by the {@link LanePool} deadlock-surface observer (the
+   * Used by the {@link RunnerPool} deadlock-surface observer (the
    * `TaskSettled` listener in `run()`) so that per-settlement deadlock
    * detection scans only failed tasks — O(failed), typically O(1) — instead
    * of allocating and iterating the entire task set on every settlement
@@ -296,7 +296,7 @@ export class TaskTracker extends EventEmitter {
    * Emits `TaskReady` so waiting lanes wake up to re-claim the task.
    *
    * Unlike {@link resetFailedTasks} (which resets every failed task and is
-   * used on resume), this targets one task and is used by the LanePool for
+   * used on resume), this targets one task and is used by the RunnerPool for
    * same-run retries. The tracker is session-agnostic, so clearing of any
    * persisted session data is the caller's responsibility.
    */

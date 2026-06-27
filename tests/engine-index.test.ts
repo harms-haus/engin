@@ -125,7 +125,6 @@ const ORIGINAL_CORE_SPECIFIERS = [
   'config.js',
   'git.js',
   'phase-runner.js',
-  'phase-tasks.js',
   'profile.js',
   'renderer-registry.js',
   'schema-describe.js',
@@ -150,7 +149,6 @@ const PRESERVED_VALUE_EXPORTS: string[] = [
   // deleted and is not re-exported from the engine public surface.
   'loadProfilesFromDirs',
   'generateWorkflowTitle',
-  'runMultiStepTask',
   'ensureDir',
   'loadEnvFiles',
   'EventStore',
@@ -158,7 +156,6 @@ const PRESERVED_VALUE_EXPORTS: string[] = [
   'StatusBridge',
   'startControlServer',
   'startDaemon',
-  'LanePool',
 ];
 // NOTE: `spawnAgent` (core/agent-lifecycle.js) is deliberately NOT in this list
 // — it is an engine-internal helper consumed via direct source imports and has

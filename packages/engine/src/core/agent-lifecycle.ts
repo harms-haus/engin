@@ -1,8 +1,8 @@
 // ─── Agent Lifecycle Helper ─────────────────────────────────────────────────
 //
-// `spawnAgent` extracts the duplicated agent lifecycle previously inlined in
-// `pool/step-execution.ts:runStep` and `core/phase-tasks.ts:runStepTask` /
-// `runMultiStepTask`:
+// `spawnAgent` extracts the duplicated agent lifecycle previously inlined
+// in the legacy task execution modules (`runStep` / `oneStepTask` /
+// `multiStepTask`):
 //   - profile lookup + read-only adjustment (strip write/edit)
 //   - session creation via the agent plugin registry
 //   - activeSessions tracking (before any status callback — TOCTOU safety)
@@ -13,7 +13,7 @@
 //     from activeSessions.
 //
 // Renderer invocation is intentionally NOT part of spawnAgent — it stays in the
-// callers (runStep / runStepTask / runMultiStepTask), which have different
+// callers (runStep / oneStepTask / multiStepTask), which have different
 // rendering needs. Likewise, disposal of the underlying session is the caller's
 // responsibility (via `handle.dispose()`); `complete()` only fires the lifecycle
 // callback and untracks the session.

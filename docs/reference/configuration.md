@@ -161,10 +161,11 @@ If `.engin-state.json` exists in `workDir`, the workflow's `run()` can resume. T
   `events.jsonl` to rebuild the projection before the workflow continues.
 
 > **Clean break.** The event model and projection shape changed substantially in recent
-> versions. The step-based entity model was replaced by a session-first model: `StepEntity`
-> is gone, replaced by `SessionEntity`; new event types include `phase_registered`,
-> `task_registered`, `session_started`, and `session_completed`; and the projection now tracks
-> `sessions` keyed by session id with `stats.sessionCount` (formerly `agentCount`). Old runs
+> versions. The step-based entity model was replaced by a session-first model: entities are
+> now session-oriented (`SessionEntity`) rather than step-oriented. New event types include
+> `phase_registered`, `task_registered`, `session_started`, and `session_completed`; the
+> projection now tracks `sessions` keyed by session id with `stats.sessionCount` (formerly
+> `agentCount`). Old runs
 > created with the previous event model will not resume correctly — `evolve()` cannot
 > interpret legacy events against the new projection. Delete or archive old `work/`
 > directories from prior versions.

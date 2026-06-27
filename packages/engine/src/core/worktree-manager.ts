@@ -263,7 +263,7 @@ export class WorktreeManager {
    *
    * On exhaustion (fix-up fails OR the retry commit also throws): roll the
    * shared worktree back to a clean HEAD ({@link safeResetMainWorktree}) and
-   * re-throw the ORIGINAL commit error. The caller (lane-pool) treats a merge
+   * re-throw the ORIGINAL commit error. The caller (the pool) treats a merge
    * failure as non-retriable and PRESERVES the task worktree, so the approved
    * work is never thrown away or re-run from step 1.
    */
@@ -474,8 +474,8 @@ export class WorktreeManager {
   /**
    * Synthesizes a minimal {@link Task} from a taskId + prompt for hook args
    * when the caller did not provide a full Task object (backward compat with
-   * the `createTaskWorktree(taskId, taskPrompt?)` signature used by
-   * phase-tasks.ts). The synthesized task carries enough context (id, title,
+   * the `createTaskWorktree(taskId, taskPrompt?)` signature used by the
+   * legacy task execution modules). The synthesized task carries enough context (id, title,
    * prompt) for a hook subscriber to branch on; fields the caller did not
    * supply default to empty values.
    */

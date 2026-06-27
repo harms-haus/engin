@@ -80,7 +80,6 @@ interface ExpectedPhaseRunnerOptions {
   workDir: string;
   signal?: AbortSignal;
   maxRounds?: number;
-  minPhaseCompletions?: number;
 }
 
 assertEqual<Equal<PhaseDefinition, ExpectedPhaseDefinition>>('PhaseDefinition exact shape');

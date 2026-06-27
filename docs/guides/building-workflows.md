@@ -27,20 +27,20 @@ The default export (or the module itself) must have a `run` function. The option
 
 `WorkflowRunOptions` is what the engine passes in:
 
-| Field                 | Type                     | Meaning                                                                                                                                      |
-| --------------------- | ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| `cwd`                 | `string`                 | Working directory. For git-repo runs this is the **main worktree path**, not the original cwd.                                               |
-| `workDir`             | `string`                 | Directory for workflow state persistence.                                                                                                    |
-| `maxConcurrentTasks?` | `number`                 | **Deprecated.** Map to `maxConcurrentSessions` on `RunnerPool`. Max parallel agents (default `5`).                                           |
-| `apiKeys?`            | `Record<string, string>` | Provider → API key overrides.                                                                                                                |
-| `onStatus?`           | `StatusCallbacks`        | The engine's wired-up status callbacks. **Use this.**                                                                                        |
-| `verbose?`            | `boolean`                | True when running with verbose console output.                                                                                               |
-| `signal?`             | `AbortSignal`            | Cooperative cancellation signal.                                                                                                             |
-| `tracker?`            | `unknown`                | A pre-created `WorkflowStatusTracker`, if any.                                                                                               |
-| `worktree?`           | `WorktreeInfo`           | Main worktree info (git-repo runs only).                                                                                                     |
-| `worktreeManager?`    | `WorktreeManager`        | Per-run worktree manager. Forward to `runStepTask` / `RunnerPool` for per-task worktrees.                                                    |
-| `rendererRegistry?`   | `RendererRegistry`       | Optional registry of per-profile output renderers.                                                                                           |
-| `hookRegistry?`       | `HookRegistry`           | The engine-assembled hook registry. Forward to `RunnerPool` / `runStepTask` to activate pool/session hooks (see [§11](#11-authoring-hooks)). |
+| Field                    | Type                     | Meaning                                                                                                                                     |
+| ------------------------ | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cwd`                    | `string`                 | Working directory. For git-repo runs this is the **main worktree path**, not the original cwd.                                              |
+| `workDir`                | `string`                 | Directory for workflow state persistence.                                                                                                   |
+| `maxConcurrentSessions?` | `number`                 | Max concurrent agent sessions (default `5`).                                                                                                |
+| `apiKeys?`               | `Record<string, string>` | Provider → API key overrides.                                                                                                               |
+| `onStatus?`              | `StatusCallbacks`        | The engine's wired-up status callbacks. **Use this.**                                                                                       |
+| `verbose?`               | `boolean`                | True when running with verbose console output.                                                                                              |
+| `signal?`                | `AbortSignal`            | Cooperative cancellation signal.                                                                                                            |
+| `tracker?`               | `unknown`                | A pre-created `WorkflowStatusTracker`, if any.                                                                                              |
+| `worktree?`              | `WorktreeInfo`           | Main worktree info (git-repo runs only).                                                                                                    |
+| `worktreeManager?`       | `WorktreeManager`        | Per-run worktree manager. Forward to `runSession` / `RunnerPool` for per-task worktrees.                                                    |
+| `rendererRegistry?`      | `RendererRegistry`       | Optional registry of per-profile output renderers.                                                                                          |
+| `hookRegistry?`          | `HookRegistry`           | The engine-assembled hook registry. Forward to `RunnerPool` / `runSession` to activate pool/session hooks (see [§11](#11-authoring-hooks)). |
 
 That's the whole contract. Everything else — phases, tasks, steps, agents — is your workflow's
 internal structure, communicated to the engine purely through `options.onStatus`.
@@ -61,7 +61,7 @@ engin enforces a rigid hierarchy (see [Overview → The rigid hierarchy](../conc
 
 You orchestrate this hierarchy with two primitives:
 
-1. **`runSession`** (wrapped by `runStepTask`) — runs one agent session as a single-task.
+1. **`runSession`** — runs one agent session as a single-task.
    Best for phases that need a single agent (a scout, a planner, a summariser).
 2. **`RunnerPool`** — runs many tasks concurrently, each through its own runner tree built
    from composable runners (`singleSession`, `reviewRunner`, `linearRunner`, etc.). Best
@@ -126,7 +126,7 @@ authoring are the phase lifecycle hooks:
 Registering phases up front lets the TUI and web client render the full phase bar before any
 agent has run. The other callbacks (`onTaskRegister`, `onTaskStart`, `onAgentSpawn`,
 `onStepStart`, `onAgentComplete`, `onTaskComplete`, `onTaskRejected`, …) are fired for you by
-`runStepTask` and the `RunnerPool`. You generally do not call them directly.
+`runSession` and the `RunnerPool`. You generally do not call them directly.
 
 > Always guard with `?.`: `options.onStatus?.onPhaseRegister?.(...)`. The field is optional and
 > individual methods are optional.
@@ -136,14 +136,9 @@ For the complete callback surface, see
 
 ---
 
-## 5. Primitive 1 — single-session tasks with `runStepTask`
+## 5. Primitive 1 — single-session tasks with `runSession`
 
-> **Legacy.** `runStepTask` remains supported but uses the old step-execution path
-> (`spawnAgent` / `buildPrompt`). For **new** single-session tasks, prefer `runSession`
-> directly, or `singleSession({ ... })` inside a `RunnerPool`. Both paths coexist;
-> `runStepTask` is best for standalone single-agent phases where you don't need a pool.
-
-`runStepTask` runs one agent session as a one-step task. It is the simplest way to execute
+`runSession` runs one agent session as a one-step task. It is the simplest way to execute
 an agent that participates in the hierarchy. Pass a Zod `schema` and it returns validated
 structured output; omit it and it returns the raw assistant text.
 
@@ -153,7 +148,7 @@ Here is a complete, runnable workflow that scouts a codebase and prints the resu
 // ~/.config/engin/workflows/apidoc/main.ts
 import {
   resolveProfilesDirs,
-  runStepTask,
+  runSession,
   type WorkflowModule,
   type WorkflowRunOptions,
 } from '@harms-haus/engin-engine';
@@ -171,7 +166,7 @@ export async function run(taskPrompt: string, options: WorkflowRunOptions) {
   onStatus?.onPhaseRegister?.({ id: 'scouting', label: 'Scouting', icon: '🔍' });
   onStatus?.onPhaseStart?.({ phase: 'scouting', round: 0 });
 
-  const result = await runStepTask({
+  const result = await runSession({
     profilesDirs,
     phaseId: 'scouting',
     taskId: 'scout',
@@ -193,7 +188,7 @@ const module: WorkflowModule = { run, name: 'apidoc', description: 'Generate API
 export default module;
 ```
 
-### `RunStepTaskOptions` reference
+### `RunSessionOptions` reference
 
 | Field           | Required       | Description                                                                                                                                                                                                                                                                 |
 | --------------- | -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -218,7 +213,7 @@ adjust profile → resolve the profile agent plugin and call `createSession` (vi
 `onSessionComplete` (always, in `finally`) → on success `onTaskComplete`, on error
 `onTaskRejected` then re-throw.
 
-> **Abort semantics.** `runStepTask` checks `signal.aborted` exactly once, before any callbacks
+> **Abort semantics.** `runSession` checks `signal.aborted` exactly once, before any callbacks
 > fire. It does not register an abort listener or forward the signal downstream. Use it for
 > "should we even start?" checks; for mid-run cancellation rely on the surrounding
 > `RunnerPool`/CLI flow.
@@ -409,9 +404,9 @@ maxConcurrentSessions, perModel: modelConcurrency })`. Runners call
 > **When there is nothing to do.** If the tracker has no tasks, `pool.run()` returns
 > `{ completedTasks: 0, failedTasks: 0 }` **without loading profiles or starting coroutines**.
 
-> **`WorkflowRunOptions.maxConcurrentTasks` is deprecated.** The new config field is
+> **`WorkflowRunOptions.maxConcurrentSessions` is deprecated.** The new config field is
 > `maxConcurrentSessions` (on `WorkflowConfig` or passed directly to `RunnerPool`).
-> Workflows like `spir.ts` map `options.maxConcurrentTasks ?? config.defaultMaxConcurrentSessions`
+> Workflows like `spir.ts` map `options.maxConcurrentSessions ?? config.defaultMaxConcurrentSessions`
 > into the pool's `maxConcurrentSessions`. Use `defaultMaxConcurrentSessions` in your
 > workflow config and `modelConcurrency` for per-model caps.
 
@@ -419,8 +414,8 @@ maxConcurrentSessions, perModel: modelConcurrency })`. Runners call
 
 ## 7. Structured output with Zod
 
-Both `runStepTask` and the session primitive accept a `schema` (on `SessionSpec` or
-`RunStepTaskOptions`). When provided:
+Both `runSession` and the session primitive accept a `schema` (on `SessionSpec` or
+`SessionSpec`). When provided:
 
 - The schema is turned into a human-readable description and appended to the prompt
   (`schemaToString`), so the model knows the exact shape to produce.
@@ -428,7 +423,7 @@ Both `runStepTask` and the session primitive accept a `schema` (on `SessionSpec`
 counting with string/escape awareness), repaired with `parseJsonWithRepair`, and validated
 with `schema.safeParse`.
 - On failure, the prompt is rebuilt from scratch with the latest error and retried. The default
-  is **3 attempts** for `runStepTask` and for a session's first try.
+  is **3 attempts** for `runSession` and for a session's first try.
 
 Define your schemas with `.describe()` on each field — those descriptions become part of the
 prompt and materially improve output quality:
@@ -546,7 +541,7 @@ Set approved=true only if the page is ready to ship.
 import {
   RunnerPool,
   resolveProfilesDirs,
-  runStepTask,
+  runSession,
   TaskTracker,
   reviewRunner,
   type Runner,
@@ -601,7 +596,7 @@ export async function run(taskPrompt: string, options: WorkflowRunOptions) {
 
   // ── Phase 1: Scout ──────────────────────────────────────────────────────
   onStatus?.onPhaseStart?.({ phase: 'scouting', round: 0 });
-  const scout = await runStepTask({
+  const scout = await runSession({
     profilesDirs,
     phaseId: 'scouting',
     taskId: 'scout',
@@ -617,7 +612,7 @@ export async function run(taskPrompt: string, options: WorkflowRunOptions) {
 
   // ── Phase 2: Outline ────────────────────────────────────────────────────
   onStatus?.onPhaseStart?.({ phase: 'outlining', round: 0 });
-  const outline = await runStepTask({
+  const outline = await runSession({
     profilesDirs,
     phaseId: 'outlining',
     taskId: 'outliner',
@@ -702,7 +697,7 @@ export async function run(taskPrompt: string, options: WorkflowRunOptions) {
   }
 
   const pool = new RunnerPool({
-    maxConcurrentSessions: options.maxConcurrentTasks ?? 5,
+    maxConcurrentSessions: options.maxConcurrentSessions ?? 5,
     modelConcurrency: {},
     profilesDirs,
     sessionBaseDir: `${workDir}/sessions`,
@@ -720,7 +715,7 @@ export async function run(taskPrompt: string, options: WorkflowRunOptions) {
 
   // ── Phase 4: Index ──────────────────────────────────────────────────────
   onStatus?.onPhaseStart?.({ phase: 'indexing', round: 0 });
-  await runStepTask({
+  await runSession({
     profilesDirs,
     phaseId: 'indexing',
     taskId: 'indexer',
@@ -794,11 +789,11 @@ For non-git runs, `options.cwd` is the original cwd and no worktrees are created
 
 The main worktree hosts the accumulated result; each task gets its **own** worktree on
 `engin/{mainSlug}--{taskId}` so concurrent tasks never trip over each other. To opt a task
-into per-task isolation, forward `options.worktreeManager` to `runStepTask`,
-`runMultiStepTask`, or `RunnerPool`:
+into per-task isolation, forward `options.worktreeManager` to `runSession`,
+`runSession`, or `RunnerPool`:
 
 ```typescript
-await runStepTask({
+await runSession({
   // …
   cwd: options.cwd,
   worktreeManager: options.worktreeManager, // ← enables per-task worktree
@@ -863,17 +858,17 @@ When a task writes code that will be committed inside a worktree, wire
 `createLintValidationGate(worktreePath)` into the step's `validateOutput` option so the
 implementing agent fixes its own lint errors _before_ commit time:
 
-> **Note on `RunnerPool`.** `createLintValidationGate` is designed for the `runStepTask` /
-> `runMultiStepTask` `validateOutput` option. `RunnerPool` tasks use composable runners that
+> **Note on `RunnerPool`.** `createLintValidationGate` is designed for the `runSession` /
+> `runSession` `validateOutput` option. `RunnerPool` tasks use composable runners that
 > manage their own session lifecycle; for lint validation in a runner pool, use
 > `singleSession` with a dedicated validation step, or wire `createLintValidationGate` into
-> a `runStepTask` called from within your runner.
+> a `runSession` called from within your runner.
 
 ```typescript
 import {
   createLintValidationGate,
   resolveProfilesDirs,
-  runStepTask,
+  runSession,
   type WorkflowModule,
   type WorkflowRunOptions,
 } from '@harms-haus/engin-engine';
@@ -882,7 +877,7 @@ export async function run(taskPrompt: string, options: WorkflowRunOptions) {
   const { cwd, onStatus } = options;
   const profilesDirs = resolveProfilesDirs(cwd, 'my-workflow');
 
-  await runStepTask({
+  await runSession({
     profilesDirs,
     phaseId: 'implementing',
     taskId: 'implement',
@@ -897,7 +892,7 @@ export async function run(taskPrompt: string, options: WorkflowRunOptions) {
 }
 ```
 
-Note: when you forward `options.worktreeManager` to `runStepTask` / `runMultiStepTask`, the primitive creates a per-task worktree dynamically and runs the agent inside it; `createLintValidationGate` cannot be pre-bound to that path (its callback takes no arguments), so in per-task-worktree mode the commit-time fix-up safety net is the primary lint check. Use `createLintValidationGate(cwd)` only when the task runs directly against `cwd` (no forwarded `worktreeManager`).
+Note: when you forward `options.worktreeManager` to `runSession` / `runSession`, the primitive creates a per-task worktree dynamically and runs the agent inside it; `createLintValidationGate` cannot be pre-bound to that path (its callback takes no arguments), so in per-task-worktree mode the commit-time fix-up safety net is the primary lint check. Use `createLintValidationGate(cwd)` only when the task runs directly against `cwd` (no forwarded `worktreeManager`).
 
 The gate runs `eslint --fix` + `prettier --write` (fire-and-forget), then a final
 `eslint` check; if errors remain it returns `{ error }`, which triggers the validation
@@ -916,14 +911,14 @@ before the prompt body. Binary files are skipped; files over 10 KB are truncated
 cheaper and more reliable than asking the agent to find and read the right files itself.
 
 > **Session-first note.** `files` are inlined by the `beforeSessionPrompt` / `collectContext`
-> default when running through the legacy `runStepTask` path. In a `RunnerPool`, the file
+> default when running through the legacy `runSession` path. In a `RunnerPool`, the file
 > context is injected via `buildPrompt`-equivalent logic in the session primitive — include
 > the file contents directly in your session `prompt` if you need deterministic control.
 
 ### Thread intermediate results through prompts
 
 Phases are independent — the pool does not know what the scout produced. Thread results
-yourself by capturing the return value of `runStepTask` and interpolating it into the next
+yourself by capturing the return value of `runSession` and interpolating it into the next
 phase's prompt (as we did with `scout.summary` and `outline.pages`). For larger payloads,
 write them to a file in `workDir` and reference the path.
 
@@ -946,7 +941,7 @@ against `^[a-zA-Z0-9_-]+$`. Use kebab-case IDs and simple role names (e.g. `exec
 
 ### Respect the abort signal at phase boundaries
 
-`runStepTask` checks `signal.aborted` once at the start. Between phases, check
+`runSession` checks `signal.aborted` once at the start. Between phases, check
 `options.signal?.aborted` yourself and return early if the user cancelled. Inside a `RunnerPool`,
 abort is handled by the pool (it aborts in-flight sessions).
 
@@ -986,11 +981,11 @@ export default module;
 ```
 
 **Forward the registry to your primitives.** The engine assembles `options.hookRegistry` for
-you, but pool/session hooks only fire if you forward it into the `RunnerPool` / `runStepTask` you
+you, but pool/session hooks only fire if you forward it into the `RunnerPool` / `runSession` you
 construct. A workflow with no `hooks` field (or an empty registry) is byte-for-byte unchanged —
 every seam is gated on `hasSubscribers(name)` and falls back to the legacy path.
 
-> **NOTE.** In the session-first engine, `RunnerPool` has no `getStepsForTask` — tasks are
+> **NOTE.** In the session-first engine, `RunnerPool` has no `getRunnerForTask` — tasks are
 > resolved via `getRunnerForTask` (or the `beforeTask` hook returning `{ runner }`). The task
 > registration event (`onTaskRegister`) carries no step definitions. The TUI/web agent log
 > shows sessions (with their `runnerRole`) dynamically as they start.
@@ -999,18 +994,18 @@ every seam is gated on `hasSubscribers(name)` and falls back to the legacy path.
 
 `beforeSessionPrompt` is a **pipeline** hook: each subscriber receives the current prompt string
 and returns the next (seeded with `task.prompt`). It fires inside `runStep` (the legacy
-step-execution path used by `runStepTask`) and fully replaces `buildPrompt` when it has a
+step-execution path used by `runSession`) and fully replaces `buildPrompt` when it has a
 subscriber. Add it to the `apidoc` writer pool so every drafted page follows the repo's style:
 
 > **Session-first note.** `beforeSessionPrompt` is currently wired in the legacy
-> step-execution path (`runStepTask`, `linearStepsRunner`, `reflectionRunner`, `fixLoop`).
+> step-execution path (`runSession`, `linearStepsRunner`, `reflectionRunner`, `fixLoop`).
 > The new session primitive (`runSession` / `RunnerPool`) does **not** yet consult
 > `beforeSessionPrompt` — it builds the prompt from the `SessionSpec` directly. For runner-pool
 > prompt customization, append to the `prompt` field of your `SessionSpec`.
 
 ```typescript
 const pool = new RunnerPool({
-  maxConcurrentSessions: options.maxConcurrentTasks ?? 5,
+  maxConcurrentSessions: options.maxConcurrentSessions ?? 5,
   modelConcurrency: {},
   profilesDirs,
   sessionBaseDir: `${workDir}/sessions`,
@@ -1073,7 +1068,7 @@ You have a few options:
   to see turn-level output, or watch the TUI.
 - **Resume after interruption.** Each run writes state to
   `.engin/work/<timestamp>-apidoc/`. Run `engin resume` and pick the run to continue.
-- **Unit-test the building blocks.** `runStepTask`, the `TaskTracker`, and the `evolve`
+- **Unit-test the building blocks.** `runSession`, the `TaskTracker`, and the `evolve`
   reducer are all plain functions/classes you can import and exercise in isolation. See the
   existing tests under `tests/` for patterns (e.g. `tests/core/phase-tasks.test.ts`).
 - **Mock the agent seam.** The agent plugin's `createSession` (and the `AgentRuntime` it
@@ -1098,7 +1093,7 @@ pieces:
 - **`audit-deps`** — Scout dependencies → plan per-package audits → `RunnerPool` of
   `investigate (read-only) → recommend` where the recommend step writes a report file.
 
-Each is just a different arrangement of `runSession`/`runStepTask` and `RunnerPool` with
+Each is just a different arrangement of `runSession`/`runSession` and `RunnerPool` with
 composable runner trees, different schemas, and profiles. Once you internalise the two
 primitives and the phase/task/session hierarchy, you can model almost any multi-agent
 pipeline.

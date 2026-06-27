@@ -205,13 +205,12 @@ Legend for **Wired?**: ✓ = invoked from engine source; ⚠ = declared in `type
 | `beforeSessionPrompt` | pipe | `BeforeSessionPromptArgs` | `string`                    | legacy `buildPrompt` assembly (`defaultBeforeSessionPrompt`)                                   | ✓ step-execution | Transform the session prompt before it is sent to the agent.            |
 | `collectContext`      | all  | `CollectContextArgs`      | `ContextBlock \| undefined` | inline `task.files` contents (`defaultCollectContext`); concatenated by `CONTEXT_BLOCK_REDUCER | ✗²               | Contribute labeled context blocks (file contents, diffs) to the prompt. |
 
-> ² `beforeSessionPrompt` is wired in `step-execution.ts` (the legacy step-execution path
-> still used by `runStepTask`, `linearStepsRunner`, `reflectionRunner`, and `fixLoop`). When
-> it has a subscriber it fully replaces `buildPrompt`. The new session primitive
-> (`runSession` / `RunnerPool`) does **not** yet consult `beforeSessionPrompt` — it builds
-> the prompt from the `SessionSpec` directly. `collectContext` is **declared but not
-> invoked** from `step-execution.ts` today — the shipped `defaultCollectContext` is inlined
-> into `defaultBeforeSessionPrompt` instead. Treat `collectContext` as the documented extension
+> ² `beforeSessionPrompt` was wired in the removed `step-execution.ts` (the legacy
+> step-execution path). The new session primitive (`runSession` / `RunnerPool`)
+> builds the prompt from the `SessionSpec` directly and does **not** consult
+> `beforeSessionPrompt`. `collectContext` is **declared but not yet invoked** — the
+> shipped `defaultCollectContext` is inlined into `defaultBeforeSessionPrompt`
+> instead. Treat `collectContext` as the documented extension
 > point for additional context providers; the engine does not yet fan it out independently.
 
 ### Worktree lifecycle
@@ -511,7 +510,7 @@ A migration of the final-review phase onto `fixLoop` was **evaluated and decline
 
 - **Multi-dimension fan-out.** Each reviewer dimension is an independent lane; findings from
   one dimension must never mix into another dimension's fixer. The final-review phase spawns
-  a **per-lane fixer `RunnerPool`** and uses `runStepTask` for per-finding work — a
+  a **per-lane fixer `RunnerPool`** and uses `runSession` for per-finding work — a
   parallel-fan-out model `fixLoop`'s single-task signature (`{ task, reviewStep,
 fixerSteps }`) cannot express.
 - **History-aware verify prompts.** Each lane maintains its **own per-dimension history**
@@ -525,5 +524,5 @@ fixerSteps }`) cannot express.
 This is a **deliberate design boundary**: `fixLoop` is the primitive for **single-task**
 review/fix loops (and the seam where `shouldIsolate` / `onLaneError` fire), while
 multi-dimensional, per-finding parallel review stays in workflow code built on `RunnerPool` +
-`runStepTask`. Documenting this boundary here is the required record of the skipped t-40
+`runSession`. Documenting this boundary here is the required record of the skipped t-40
 migration.

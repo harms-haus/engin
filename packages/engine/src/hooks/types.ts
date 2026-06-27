@@ -405,16 +405,6 @@ export interface WorkflowHooks {
 
 // ── Scheduler / execution level argument types ─────────────────────────────
 
-export interface ClaimPolicyArgs {
-  tracker: unknown;
-  laneId: string;
-  maxClaim: number;
-}
-
-export interface ConcurrencyKeyArgs {
-  task: Task;
-}
-
 export interface WakeStrategyArgs {
   laneId: string;
   reason: 'task-ready' | 'task-settled' | 'timeout' | 'abort';
@@ -425,44 +415,11 @@ export interface OnLaneIdleArgs {
   consecutiveTimeouts: number;
 }
 
-export interface OnLaneStallArgs {
-  laneId: string;
-  consecutiveTimeouts: number;
-  threshold: number;
-}
-
 // ── Scheduler / execution level hooks ──────────────────────────────────────
 
 export interface WorkflowHooks {
   /**
-   * First-wins hook: decides how many / which tasks to claim from the queue.
-   * Returning a non-empty `Task[]` selects tasks to claim; returning `undefined`
-   * (or an empty array) abstains and lets the default scheduler decide. NOTE:
-   * exactly ONE task is claimed per invocation (the first array element);
-   * `maxClaim` is advisory and batch claiming is not yet supported (extras are
-   * ignored with a warning). Enables priority queueing and affinity scheduling.
-   */
-  claimPolicy?:
-    | FirstWinsHook<Task[] | undefined, ClaimPolicyArgs>
-    | FirstWinsHook<Task[] | undefined, ClaimPolicyArgs>[];
-
-  /**
-   * First-wins hook: returns a concurrency key string for a task. Tasks
-   * sharing the same key run serially (one at a time per lane). Returning
-   * `undefined` means "no concurrency limit" (default). Use this to
-   * rate-limit work on a per-resource or per-dimension basis.
-   *
-   * IMPORTANT: This hook controls only task EXECUTION concurrency. It must
-   * NOT parallelize task-branch merges into the shared main worktree branch.
-   * Merges remain serialized via the WorktreeManager git lock to maintain a
-   * linear history.
-   */
-  concurrencyKey?:
-    | FirstWinsHook<string | undefined, ConcurrencyKeyArgs>
-    | FirstWinsHook<string | undefined, ConcurrencyKeyArgs>[];
-
-  /**
-   * Observe hook: fired when the scheduler decides to wake a lane (i.e.,
+   * Observe hook: fired when the pool decides to wake a lane (i.e.,
    * begin processing tasks). The `reason` indicates what triggered the wake.
    * Useful for telemetry and adaptive scheduling strategies.
    */
@@ -474,13 +431,6 @@ export interface WorkflowHooks {
    * scaling down lane resources or triggering diagnostics.
    */
   onLaneIdle?: ObserveHook<OnLaneIdleArgs> | ObserveHook<OnLaneIdleArgs>[];
-
-  /**
-   * Observe hook: fired when a lane is considered stalled (consecutive
-   * timeouts exceed the given threshold). Useful for crash recovery and
-   * escalation logic.
-   */
-  onLaneStall?: ObserveHook<OnLaneStallArgs> | ObserveHook<OnLaneStallArgs>[];
 }
 
 // ── Worktree lifecycle argument types ─────────────────────────────────────
