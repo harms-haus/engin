@@ -78,6 +78,13 @@ export class SessionGate {
     this.signal = signal;
   }
 
+  /** Current number of available total (cross-model) concurrency slots.
+   *  Lets callers (e.g. RunnerPool) limit how many tasks they start so tasks
+   *  aren't marked active before a session slot is actually available. */
+  availableTotal(): number {
+    return this.totalAvailable;
+  }
+
   /** Compute the per-model key for a profile. Prefers the 3-part
    *  `${provider}:${model}:${agent}` key when an agent is set AND a cap
    *  exists for it; otherwise falls back to the 2-part key. */

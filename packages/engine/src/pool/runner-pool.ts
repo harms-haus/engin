@@ -183,21 +183,26 @@ export class RunnerPool {
       while (true) {
         if (this.options.signal?.aborted) break;
 
-        // ── Claim + start all ready tasks ──────────────────────────────
-        // All ready tasks are claimed and their coroutines started. The
-        // SessionGate is the sole concurrency cap — each runner gates itself
-        // via ctx.gate.run so excess sessions block until a slot frees.
+        // ── Claim + start ready tasks (up to available session slots) ──
+        // Claim only as many tasks as the SessionGate can run concurrently.
+        // This prevents marking tasks 'active' (▶ in the TUI) when they're
+        // actually queued behind the concurrency limit — tasks stay 'ready'
+        // until a session slot is available for them.
         const ready = taskTracker.getReadyTasks();
         if (ready.length > 0) {
-          const claimed = taskTracker.claimTasks(ready.length, 'runner-pool');
-          for (const t of claimed) {
-            const agentId = `runner-${t.id}`;
-            const p = this.processTask(t, agentId, profiles);
-            inflight.add(p);
-            p.then(
-              () => inflight.delete(p),
-              () => inflight.delete(p),
-            );
+          const avail = this.gate.availableTotal();
+          const toClaim = Math.min(ready.length, avail);
+          if (toClaim > 0) {
+            const claimed = taskTracker.claimTasks(toClaim, 'runner-pool');
+            for (const t of claimed) {
+              const agentId = `runner-${t.id}`;
+              const p = this.processTask(t, agentId, profiles);
+              inflight.add(p);
+              p.then(
+                () => inflight.delete(p),
+                () => inflight.delete(p),
+              );
+            }
           }
         }
 
