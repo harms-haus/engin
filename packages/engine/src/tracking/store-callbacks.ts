@@ -63,6 +63,14 @@ export function createStoreCallbacks(store: StoreLike): StatusCallbacks {
           agentId: info.agentId,
           taskId: info.taskId,
           phaseId: info.phaseId,
+          // runnerRole + attempt are REQUIRED to disambiguate sessions that
+          // share an agent+task (e.g. a reviewRunner's execute vs review
+          // sessions, or multiple attempts). Without them the projection
+          // keys sessions by agentId::taskId only and collapses distinct
+          // sessions into one. extractSessionIdentity reads these from
+          // metadata first.
+          ...(info.runnerRole !== undefined ? { runnerRole: info.runnerRole } : {}),
+          ...(info.attempt !== undefined ? { attempt: info.attempt } : {}),
         },
       );
     },
@@ -71,7 +79,13 @@ export function createStoreCallbacks(store: StoreLike): StatusCallbacks {
       store.append(
         'session_completed',
         { agentId: info.agentId, profile: info.profile, sessionId: info.sessionId },
-        { agentId: info.agentId, taskId: info.taskId, phaseId: info.phaseId },
+        {
+          agentId: info.agentId,
+          taskId: info.taskId,
+          phaseId: info.phaseId,
+          ...(info.runnerRole !== undefined ? { runnerRole: info.runnerRole } : {}),
+          ...(info.attempt !== undefined ? { attempt: info.attempt } : {}),
+        },
       );
     },
 
