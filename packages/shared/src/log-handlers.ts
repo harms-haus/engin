@@ -1,17 +1,16 @@
 // ─── Log / decision / render handlers ───────────────────────────────────────
 //
-// Handlers for agent log entries, decisions, errors, renders, server-captured
+// Handlers for session log entries, decisions, errors, renders, server-captured
 // console output, and sidebar updates:
 // decision, error, agent_rendered, log, sidebar_updated.
 
 import type { EventRecord, LogEntry, WorkflowProjection } from './event-types.js';
 import { MAX_RUN_LOG } from './event-types.js';
-import { capLog, clone, resolveAgent } from './evolve-utils.js';
+import { capLog, clone, extractSessionIdentity, resolveSession } from './evolve-utils.js';
 
 export function handleDecision(state: WorkflowProjection, event: EventRecord): WorkflowProjection {
-  const agentId = String(event.metadata.agentId ?? '');
-  const taskId = event.metadata.taskId;
-  const resolved = resolveAgent(state.agents, agentId, taskId);
+  const { agentId, taskId } = extractSessionIdentity(event);
+  const resolved = resolveSession(state.sessions, agentId, taskId);
   if (!resolved) return clone(state, { seq: event.seq });
   const { key, entity: existing } = resolved;
   const entry = {
@@ -22,8 +21,8 @@ export function handleDecision(state: WorkflowProjection, event: EventRecord): W
     metadata: { reasoning: event.data.reasoning },
   };
   return clone(state, {
-    agents: {
-      ...state.agents,
+    sessions: {
+      ...state.sessions,
       [key]: clone(existing, { log: capLog(existing.log, entry) }),
     },
     seq: event.seq,
@@ -31,9 +30,8 @@ export function handleDecision(state: WorkflowProjection, event: EventRecord): W
 }
 
 export function handleError(state: WorkflowProjection, event: EventRecord): WorkflowProjection {
-  const agentId = String(event.metadata.agentId ?? '');
-  const taskId = event.metadata.taskId;
-  const resolved = resolveAgent(state.agents, agentId, taskId);
+  const { agentId, taskId } = extractSessionIdentity(event);
+  const resolved = resolveSession(state.sessions, agentId, taskId);
   if (!resolved) return clone(state, { seq: event.seq });
   const { key, entity: existing } = resolved;
   const entry = {
@@ -43,8 +41,8 @@ export function handleError(state: WorkflowProjection, event: EventRecord): Work
     content: String(event.data.error ?? ''),
   };
   return clone(state, {
-    agents: {
-      ...state.agents,
+    sessions: {
+      ...state.sessions,
       [key]: clone(existing, { log: capLog(existing.log, entry) }),
     },
     seq: event.seq,
@@ -52,9 +50,8 @@ export function handleError(state: WorkflowProjection, event: EventRecord): Work
 }
 
 export function handleAgentRendered(state: WorkflowProjection, event: EventRecord): WorkflowProjection {
-  const agentId = String(event.metadata.agentId ?? '');
-  const taskId = event.metadata.taskId;
-  const resolved = resolveAgent(state.agents, agentId, taskId);
+  const { agentId, taskId } = extractSessionIdentity(event);
+  const resolved = resolveSession(state.sessions, agentId, taskId);
   if (!resolved) return clone(state, { seq: event.seq });
   const { key, entity: existing } = resolved;
   const entry = {
@@ -64,8 +61,8 @@ export function handleAgentRendered(state: WorkflowProjection, event: EventRecor
     content: String(event.data.rendered ?? ''),
   };
   return clone(state, {
-    agents: {
-      ...state.agents,
+    sessions: {
+      ...state.sessions,
       [key]: clone(existing, { log: capLog(existing.log, entry) }),
     },
     seq: event.seq,

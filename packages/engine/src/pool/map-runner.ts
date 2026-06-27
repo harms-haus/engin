@@ -54,7 +54,7 @@ export function mapRunner(options: MapRunnerOptions): TaskRunner {
   const composeItem = options.composeItemPrompt ?? defaultComposeItemPrompt;
 
   return async (ctx: TaskRunnerContext): Promise<TaskOutcome> => {
-    const { task, agentId, profiles, onStatus } = ctx;
+    const { task, agentId, profiles } = ctx;
 
     const tracker = createSessionTracker(agentId, task.id);
     const execCtx = buildExecCtx(ctx);
@@ -69,13 +69,6 @@ export function mapRunner(options: MapRunnerOptions): TaskRunner {
 
       // ── Step 2: Worker function ──────────────────────────────────────
       const processItem = async (item: unknown, index: number): Promise<{ output: unknown }> => {
-        onStatus?.onStepStart?.({
-          taskId: task.id,
-          stepIndex: index,
-          stepName: step.name,
-          agentId,
-        });
-
         // Compose the item-specific task via the (configurable) composer. The
         // original ctx.task is never mutated — the composer returns a new Task.
         const itemTask = composeItem(task, index, items.length, item);

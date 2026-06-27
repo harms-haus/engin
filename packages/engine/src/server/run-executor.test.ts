@@ -384,7 +384,7 @@ describe('RunExecutor.execute — options.hookRegistry is forwarded', () => {
     await run.executor.execute(run.handle, workflow, run.storeCallbacks, run.msg);
 
     const registry = captured.options!.hookRegistry!;
-    expect(registry.hasSubscribers('beforeStepPrompt')).toBe(false);
+    expect(registry.hasSubscribers('beforeSessionPrompt')).toBe(false);
     expect(registry.hasSubscribers('shouldRetryPhase')).toBe(false);
     expect(registry.hasSubscribers('anyName')).toBe(false);
   });
@@ -392,20 +392,20 @@ describe('RunExecutor.execute — options.hookRegistry is forwarded', () => {
   it('populates the registry from a SINGLE provider object (workflow.hooks)', async () => {
     const run = await makeRun();
     const { workflow, captured } = makeWorkflow({
-      hooks: asHooks({ beforeStepPrompt: mock(() => undefined) }),
+      hooks: asHooks({ beforeSessionPrompt: mock(() => undefined) }),
     });
 
     await run.executor.execute(run.handle, workflow, run.storeCallbacks, run.msg);
 
     const registry = captured.options!.hookRegistry!;
-    expect(registry.hasSubscribers('beforeStepPrompt')).toBe(true);
+    expect(registry.hasSubscribers('beforeSessionPrompt')).toBe(true);
   });
 
   it('populates the registry from an ARRAY of providers (HookProvider = WorkflowHooks[])', async () => {
     const run = await makeRun();
     const { workflow, captured } = makeWorkflow({
       hooks: [
-        asHooks({ beforeStepPrompt: mock(() => undefined) }),
+        asHooks({ beforeSessionPrompt: mock(() => undefined) }),
         asHooks({ shouldRetryPhase: mock(() => undefined), onPhaseSettled: mock(() => undefined) }),
       ],
     });
@@ -413,7 +413,7 @@ describe('RunExecutor.execute — options.hookRegistry is forwarded', () => {
     await run.executor.execute(run.handle, workflow, run.storeCallbacks, run.msg);
 
     const registry = captured.options!.hookRegistry!;
-    expect(registry.hasSubscribers('beforeStepPrompt')).toBe(true);
+    expect(registry.hasSubscribers('beforeSessionPrompt')).toBe(true);
     expect(registry.hasSubscribers('shouldRetryPhase')).toBe(true);
     expect(registry.hasSubscribers('onPhaseSettled')).toBe(true);
   });
@@ -421,7 +421,7 @@ describe('RunExecutor.execute — options.hookRegistry is forwarded', () => {
   it('each execute() call gets a fresh, independent registry (no shared state across runs)', async () => {
     const run = await makeRun();
     const { workflow: wfWithHooks, captured: capA } = makeWorkflow({
-      hooks: asHooks({ beforeStepPrompt: mock(() => undefined) }),
+      hooks: asHooks({ beforeSessionPrompt: mock(() => undefined) }),
     });
     const { workflow: wfNoHooks, captured: capB } = makeWorkflow();
 
@@ -429,8 +429,8 @@ describe('RunExecutor.execute — options.hookRegistry is forwarded', () => {
     await run.executor.execute(run.handle, wfNoHooks, run.storeCallbacks, run.msg);
 
     expect(capA.options!.hookRegistry).not.toBe(capB.options!.hookRegistry);
-    expect(capA.options!.hookRegistry!.hasSubscribers('beforeStepPrompt')).toBe(true);
-    expect(capB.options!.hookRegistry!.hasSubscribers('beforeStepPrompt')).toBe(false);
+    expect(capA.options!.hookRegistry!.hasSubscribers('beforeSessionPrompt')).toBe(true);
+    expect(capB.options!.hookRegistry!.hasSubscribers('beforeSessionPrompt')).toBe(false);
   });
 });
 
@@ -444,7 +444,6 @@ describe('RunExecutor.execute — store callbacks always fire (zero behavior cha
     const run = await makeRun();
     const { workflow } = makeWorkflow({
       hooks: asHooks({
-        beforeStepPrompt: mock(() => undefined),
         shouldRetryPhase: mock(() => undefined),
       }),
       runImpl: (options) => {
@@ -1088,7 +1087,6 @@ async function emitTaskOutcomes(
       phaseId: 'p1',
       title: `Task ${id}`,
       dependencies: [],
-      steps: [{ name: 'step-0', profileId: 'coder', isReadOnly: false }],
     });
     cb.onTaskStart({ taskId: id, title: `Task ${id}`, agentId: `agent-${id}`, phaseId: 'p1' });
     if (taskStatus === 'complete') {
@@ -1222,7 +1220,6 @@ describe('RunExecutor.execute — nothing-succeeded detection', () => {
           phaseId: 'p1',
           title: 'Task t1',
           dependencies: [],
-          steps: [{ name: 'step-0', profileId: 'coder', isReadOnly: false }],
         });
         // Task t2: registered + started → 'active' in projection.
         cb.onTaskRegister({
@@ -1230,7 +1227,6 @@ describe('RunExecutor.execute — nothing-succeeded detection', () => {
           phaseId: 'p1',
           title: 'Task t2',
           dependencies: [],
-          steps: [{ name: 'step-0', profileId: 'coder', isReadOnly: false }],
         });
         cb.onTaskStart({ taskId: 't2', title: 'Task t2', agentId: 'agent-t2', phaseId: 'p1' });
         // Task t3: rejected → 'failed' in projection.
@@ -1239,7 +1235,6 @@ describe('RunExecutor.execute — nothing-succeeded detection', () => {
           phaseId: 'p1',
           title: 'Task t3',
           dependencies: [],
-          steps: [{ name: 'step-0', profileId: 'coder', isReadOnly: false }],
         });
         cb.onTaskStart({ taskId: 't3', title: 'Task t3', agentId: 'agent-t3', phaseId: 'p1' });
         cb.onTaskRejected({ taskId: 't3', title: 'Task t3', reason: 'failed' });
@@ -1271,7 +1266,6 @@ describe('RunExecutor.execute — nothing-succeeded detection', () => {
           phaseId: 'p1',
           title: 'Task t1',
           dependencies: [],
-          steps: [{ name: 'step-0', profileId: 'coder', isReadOnly: false }],
         });
         cb.onTaskStart({ taskId: 't1', title: 'Task t1', agentId: 'a1', phaseId: 'p1' });
         // onTaskRejected maps to 'failed' in the projection regardless of reason.

@@ -436,30 +436,8 @@ describe('branchRunner - condition uses task data', () => {
   });
 });
 
-describe('branchRunner - onStepStart callback', () => {
-  it('fires onStepStart with correct info', async () => {
-    setupProfileMocks();
-    setupHarnessMocks();
-    const onStepStart = mock(() => {});
-    const ctx = createRunnerContext({
-      onStatus: { onStepStart },
-    });
-
-    const runner = branchRunner({
-      branches: [{ condition: () => true, step: coderStep }],
-    });
-
-    await runner(ctx);
-
-    expect(onStepStart).toHaveBeenCalledTimes(1);
-    expect(onStepStart).toHaveBeenCalledWith({
-      taskId: ctx.task.id,
-      stepIndex: 0,
-      stepName: coderStep.name,
-      agentId: ctx.agentId,
-    });
-  });
-});
+// removed in C1 per §2.7 — onStepStart callback was replaced by the session primitive's
+// onSessionStart; branch-runner no longer fires a per-step status callback.
 
 describe('branchRunner - completeTask receives output', () => {
   it('passes the step output to completeTask so it lands on task.result', async () => {

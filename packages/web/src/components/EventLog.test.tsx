@@ -64,10 +64,10 @@ function seedEmptySnapshot(): void {
       currentPhaseId: '',
       completedPhaseIds: [],
       tasks: {},
-      agents: {},
+      sessions: {},
       sidebar: { title: '', indicator: '' },
       status: 'running',
-      stats: { totalTokens: 0, agentCount: 0 },
+      stats: { totalTokens: 0, sessionCount: 0 },
       runLog: [],
     },
     1,
@@ -98,7 +98,7 @@ function scrollTo(el: HTMLDivElement, scrollTop: number): void {
 
 function resetStore(): void {
   useWorkflowStore.setState({
-    agentsById: {},
+    sessionsById: {},
     tasksById: {},
     phases: [],
     currentPhaseId: '',
@@ -109,13 +109,11 @@ function resetStore(): void {
     error: undefined,
     failedPhase: undefined,
     seq: 0,
-    stats: { totalTokens: 0, agentCount: 0 },
+    stats: { totalTokens: 0, sessionCount: 0 },
     workflowEventLog: [],
     selectedPhaseId: null,
     selectedTaskId: null,
-    selectedStepIndex: null,
     userPinnedPhase: false,
-    userPinnedStep: false,
     runs: [],
     selectedRunId: RUN_ID,
     runLogs: {},
@@ -166,10 +164,10 @@ describe('EventLog – workflow-level event rendering', () => {
   });
 
   it('renders workflow_completed with emoji line', () => {
-    pushEventsAct([mkEvent(1, 'workflow_completed', { totalDurationMs: 12500, agentCount: 3 })]);
+    pushEventsAct([mkEvent(1, 'workflow_completed', { totalDurationMs: 12500, sessionCount: 3 })]);
 
     const { container } = render(<EventLog />);
-    expect(container.textContent).toContain('🎉 Complete in 12.5s (3 agents)');
+    expect(container.textContent).toContain('🎉 Complete in 12.5s (3 sessions)');
   });
 
   it('renders workflow_failed with emoji line', () => {
@@ -179,18 +177,18 @@ describe('EventLog – workflow-level event rendering', () => {
     expect(container.textContent).toContain('💥 Failed at exec: timeout');
   });
 
-  it('renders agent_spawned with emoji line', () => {
-    pushEventsAct([mkEvent(1, 'agent_spawned', { profile: 'coder' }, { agentId: 'a1' })]);
+  it('renders session_started with emoji line', () => {
+    pushEventsAct([mkEvent(1, 'session_started', { profile: 'coder' }, { agentId: 'a1' })]);
 
     const { container } = render(<EventLog />);
-    expect(container.textContent).toContain('⏳ Agent a1 spawned (coder)');
+    expect(container.textContent).toContain('⏳ Session a1 started (coder)');
   });
 
-  it('renders agent_completed with emoji line', () => {
-    pushEventsAct([mkEvent(1, 'agent_completed', {}, { agentId: 'a1' })]);
+  it('renders session_completed with emoji line', () => {
+    pushEventsAct([mkEvent(1, 'session_completed', {}, { agentId: 'a1' })]);
 
     const { container } = render(<EventLog />);
-    expect(container.textContent).toContain('✅ Agent a1 complete');
+    expect(container.textContent).toContain('✅ Session a1 complete');
   });
 
   it('renders task_completed with emoji line', () => {

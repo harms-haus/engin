@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react';
+import { selectNextSession } from '@engin/shared/projection-helpers';
+import { useEffect, useMemo, useState } from 'react';
 import { useAutoScroll } from '../hooks/useAutoScroll';
 import { useWebSocket } from '../hooks/useWebSocket';
-import type { StepEntity } from '../protocol-types';
-import { useHasSnapshot, useSelectedStepIndex, useStatus, useWorkflowStore } from '../store/workflow-store';
+import type { SessionEntity } from '../protocol-types';
+import { useHasSnapshot, useSelectedSessionId, useStatus, useWorkflowStore } from '../store/workflow-store';
 import { formatEntryContent, shouldRenderEntry } from '../utils/format-entry';
 import './AgentLog.css';
 
@@ -14,18 +15,17 @@ export function AgentLog() {
 
   // Selection state from the store
   const selectedTaskId = useWorkflowStore((s) => s.selectedTaskId);
-  const selectedStepIndex = useSelectedStepIndex();
-  const tasksById = useWorkflowStore((s) => s.tasksById);
-  const agentsById = useWorkflowStore((s) => s.agentsById);
-  const selectStep = useWorkflowStore((s) => s.selectStep);
+  const selectedSessionId = useSelectedSessionId();
+  const sessionsById = useWorkflowStore((s) => s.sessionsById);
+  const selectSession = useWorkflowStore((s) => s.selectSession);
   const selectedRunId = useWorkflowStore((s) => s.selectedRunId);
 
-  // Derive task, steps, and agent from selection state
-  const task = selectedTaskId ? (tasksById[selectedTaskId] ?? null) : null;
-  const steps: StepEntity[] = task?.steps ?? [];
-  const activeStepIndex = task?.activeStepIndex;
-  const selectedStep = steps[selectedStepIndex ?? -1] ?? null;
-  const agent = selectedStep?.agentKey ? (agentsById[selectedStep.agentKey] ?? null) : null;
+  // Derive sessions and selected agent from selection state
+  const sessions = useMemo<SessionEntity[]>(
+    () => Object.values(sessionsById).filter((a) => a.taskId === selectedTaskId),
+    [sessionsById, selectedTaskId],
+  );
+  const agent = selectedSessionId ? (sessionsById[selectedSessionId] ?? null) : null;
 
   // Auto-scroll on new log entries – only when the user is already at/near
   // the bottom so we don't yank them away from content they're reading.
@@ -52,10 +52,24 @@ export function AgentLog() {
     }
   }, [status]);
 
+  // ArrowLeft/ArrowRight keyboard navigation: cycle through the per-task session
+  // list (WAI-ARIA tab pattern). Only active when there are sessions for the
+  // selected task. Tab moves focus naturally out of the component.
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+    if (sessions.length === 0) return;
+    e.preventDefault();
+    const direction = e.key === 'ArrowRight' ? 1 : -1;
+    const next = selectNextSession(sessions, selectedSessionId, direction);
+    if (next !== null) {
+      selectSession(next);
+    }
+  };
+
   const emptyMessage = hasSnapshot ? 'No agent selected' : 'Connecting to workflow…';
 
   return (
-    <div className="agent-log">
+    <div className="agent-log" onKeyDown={handleKeyDown}>
       {/* Header stats */}
       {agent && (
         <div
@@ -81,52 +95,24 @@ export function AgentLog() {
         )}
       </div>
 
-      {/* Step tab bar */}
-      {steps.length > 0 && (
-        <div className="agent-log__step-bar" role="tablist" aria-label="Task steps">
-          {steps.map((step, index) => {
-            const isSelected = index === selectedStepIndex;
-            const hasAgent = step.agentKey !== undefined;
-            const isActive = index === activeStepIndex;
-            const isDone = activeStepIndex !== undefined && index < activeStepIndex;
-            const isPending = activeStepIndex !== undefined && index > activeStepIndex;
-
-            let marker: string;
-            let markerLabel: string;
-            if (isDone) {
-              marker = '✓';
-              markerLabel = 'done';
-            } else if (isActive) {
-              marker = '▶';
-              markerLabel = 'active';
-            } else {
-              marker = '○';
-              markerLabel = 'pending';
-            }
+      {/* Session tab bar */}
+      {sessions.length > 0 && (
+        <div className="agent-log__session-bar" role="tablist" aria-label="Task sessions">
+          {sessions.map((session) => {
+            const isSelected = session.uid === selectedSessionId;
+            const ariaLabel = session.runnerRole ? `${session.profile} (${session.runnerRole})` : session.profile;
 
             return (
               <button
-                key={index}
+                key={session.uid}
                 role="tab"
                 aria-selected={isSelected}
-                aria-label={`Step ${index + 1}: ${step.name} (${markerLabel})${!hasAgent ? ', no agent assigned' : ''}`}
-                className={
-                  `agent-log__step-tab` +
-                  (isSelected ? ' agent-log__step-tab--selected' : '') +
-                  (!hasAgent ? ' agent-log__step-tab--dimmed' : '') +
-                  (isDone ? ' agent-log__step-tab--done' : '') +
-                  (isActive ? ' agent-log__step-tab--active' : '') +
-                  (isPending ? ' agent-log__step-tab--pending' : '')
-                }
-                onClick={() => {
-                  if (hasAgent) {
-                    selectStep(index);
-                  }
-                }}
-                disabled={!hasAgent}
+                aria-label={ariaLabel}
+                className={`agent-log__session-tab${isSelected ? ' agent-log__session-tab--selected' : ''}`}
+                onClick={() => selectSession(session.uid)}
               >
-                <span className="agent-log__step-marker">{marker}</span>
-                <span className="agent-log__step-name">{step.name}</span>
+                <span className="agent-log__session-name">{session.profile}</span>
+                {session.runnerRole && <span className="agent-log__session-role">{session.runnerRole}</span>}
               </button>
             );
           })}

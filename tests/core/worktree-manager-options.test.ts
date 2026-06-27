@@ -124,6 +124,7 @@ const sampleTask: Task = {
   files: [],
   dependencies: [],
   status: 'ready',
+  worktree: 'none',
   phaseId: 'phase-1',
 };
 
@@ -180,8 +181,8 @@ function baseStepTaskOptions(): Omit<RunStepTaskOptions, 'worktreeManager'> {
     phaseId: 'phase-1',
     taskId: 'task-1',
     title: 'Step task',
-    stepName: 'do-it',
     profileId: 'coder',
+    stepName: 'step',
     cwd: '/repo',
     prompt: 'do the work',
   };
@@ -193,8 +194,8 @@ function baseMultiStepOptions(): Omit<RunMultiStepTaskOptions, 'worktreeManager'
     phaseId: 'phase-1',
     taskId: 'task-1',
     title: 'Multi-step task',
-    steps: [{ stepName: 'plan', profileId: 'coder', prompt: 'plan the work' }],
     cwd: '/repo',
+    steps: [],
   };
 }
 

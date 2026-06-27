@@ -449,7 +449,7 @@ describe('§10 step 1 / §9 #1 — default-vs-override (backward compat)', () =>
     const { callbacks } = makeMockStatusCallbacks();
     const { registry } = composeHooks(callbacks, []);
 
-    expect(registry.hasSubscribers('beforeStepPrompt')).toBe(false);
+    expect(registry.hasSubscribers('beforeSessionPrompt')).toBe(false);
     expect(registry.hasSubscribers('onDecision')).toBe(false);
     expect(registry.hasSubscribers('shouldRetryPhase')).toBe(false);
     expect(registry.hasSubscribers('doesNotExist')).toBe(false);
@@ -459,7 +459,7 @@ describe('§10 step 1 / §9 #1 — default-vs-override (backward compat)', () =>
     const { callbacks } = makeMockStatusCallbacks();
     const { registry } = composeHooks(callbacks, {});
 
-    expect(registry.hasSubscribers('beforeStepPrompt')).toBe(false);
+    expect(registry.hasSubscribers('beforeSessionPrompt')).toBe(false);
   });
 });
 
@@ -477,7 +477,7 @@ describe('§9 #3 — store always fires (composed onStatus never bypasses the st
   it('the store callback fires when an influence hook is registered alongside it', () => {
     const { callbacks, calls } = makeMockStatusCallbacks();
     const influence = makeMockHook();
-    const { onStatus } = composeHooks(callbacks, asHooks({ beforeStepPrompt: influence }));
+    const { onStatus } = composeHooks(callbacks, asHooks({ beforeSessionPrompt: influence }));
 
     const info = { taskPrompt: 't', resumed: false, workDir: '/w' };
     onStatus.onWorkflowStart?.(info);
@@ -506,7 +506,6 @@ describe('§9 #3 — store always fires (composed onStatus never bypasses the st
     const { onStatus } = composeHooks(
       callbacks,
       asHooks({
-        beforeStepPrompt: makeMockHook(),
         onDecision: makeMockHook(),
         shouldRetryPhase: makeMockHook(),
       }),

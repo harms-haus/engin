@@ -22,9 +22,8 @@ function makeTask(
 ): TaskEntity {
   return {
     phaseId: 'p1',
-    steps: [],
+
     dependencies: [],
-    activeStepIndex: undefined,
     startedAt: undefined,
     completedAt: undefined,
     ...overrides,
@@ -182,25 +181,21 @@ describe('TaskListWidget', () => {
       expect(stripAnsi(lines[1])).toBe(statusIcon('ready') + '  t-02  BBBB');
     });
 
-    it('shows the step column for active multi-step tasks', () => {
+    it('shows the session-count column for active tasks with sessions', () => {
       const widget = new TaskListWidget();
       widget.updateTasks([
         makeTask({
           id: 't1',
           title: 'Run',
           status: 'active',
-          steps: [
-            { name: 'plan', index: 0 },
-            { name: 'do', index: 1 },
-          ],
-          activeStepIndex: 0,
         }),
       ]);
+      widget.setSessionCounts({ t1: 2 });
       const lines = widget.render(WIDTH);
-      // Step is its own column (2-space gap), NOT appended to the title with ' - '.
-      // Format is `${index+1}/${total} ${stepName}` (no 'step ' prefix, no ': ').
-      expect(stripAnsi(lines[0])).toBe(statusIcon('active') + '  t-01  Run  1/2 plan');
-      expect(lines[0]).toContain(dim('1/2 plan'));
+      // Session-count column (2-space gap), NOT appended to the title with ' - '.
+      // Format is `${N} session(s)` (dim-wrapped).
+      expect(stripAnsi(lines[0])).toBe(statusIcon('active') + '  t-01  Run  2 sessions');
+      expect(lines[0]).toContain(dim('2 sessions'));
     });
 
     it('active task with a single step does not show step progress (requires > 1 step)', () => {
@@ -210,8 +205,7 @@ describe('TaskListWidget', () => {
           id: 't1',
           title: 'Run',
           status: 'active',
-          steps: [{ name: 'only', index: 0 }],
-          activeStepIndex: 0,
+
           startedAt: Date.now() - 5000,
         }),
       ]);
@@ -655,116 +649,97 @@ describe('TaskListWidget', () => {
   });
 
   describe('status-dependent row formats', () => {
-    describe('active tasks with step annotation', () => {
-      it('active task with activeStepIndex and multiple steps renders step in its own column', () => {
+    describe('active tasks with session annotation', () => {
+      it('active task with sessions renders session count in its own column', () => {
         const widget = new TaskListWidget();
         widget.updateTasks([
           makeTask({
             id: 't1',
             title: 'My Task',
             status: 'active',
-            steps: [
-              { name: 'setup', index: 0 },
-              { name: 'review', index: 1 },
-              { name: 'deploy', index: 2 },
-            ],
-            activeStepIndex: 1,
             startedAt: Date.now() - 5000,
           }),
         ]);
+        widget.setSessionCounts({ t1: 2 });
         const lines = widget.render(WIDTH);
         expect(lines).toHaveLength(1);
         const line = lines[0];
-        // Step annotation appears in its own column (dim-wrapped)
-        expect(line).toContain(dim('2/3 review'));
-        // No status-keyword fallback text
-        expect(line).not.toContain(dim('active'));
+        // Session count annotation appears in its own column (dim-wrapped)
+        expect(line).toContain(dim('2 sessions'));
         // Elapsed time still shown in the title column
         expect(line).toContain('5s');
         expect(line).toContain('My Task');
-        // The step is separated from the title by a 2-space gap, not ' - '
+        // The session count is separated from the title by a 2-space gap, not ' - '
         const stripped = stripAnsi(line);
-        expect(stripped).toContain('5s  2/3 review');
+        expect(stripped).toContain('5s  2 sessions');
         expect(stripped).not.toContain(' - step');
       });
 
-      it('active task without activeStepIndex shows no step column', () => {
+      it('active task without session counts shows no session-count column', () => {
         const widget = new TaskListWidget();
         widget.updateTasks([
           makeTask({
             id: 't1',
             title: 'My Task',
             status: 'active',
-            steps: [
-              { name: 'setup', index: 0 },
-              { name: 'run', index: 1 },
-            ],
-            activeStepIndex: undefined,
             startedAt: Date.now() - 5000,
           }),
         ]);
         const lines = widget.render(WIDTH);
         expect(lines).toHaveLength(1);
         const line = lines[0];
-        // No step annotation and no status-text fallback
-        expect(line).not.toContain('step');
-        expect(line).not.toContain(dim('active'));
+        // No session count annotation (no setSessionCounts call)
+        expect(line).not.toContain('session');
         // Elapsed still shown in title column
         expect(line).toContain('5s');
         expect(line).toContain('My Task');
-        // Only one ' - ' separator (title - elapsed); step is gone entirely
+        // Only one ' - ' separator (title - elapsed); session count column is gone entirely
         const stripped = stripAnsi(line);
         expect((stripped.match(/ - /g) || []).length).toBe(1);
       });
 
-      it('active task with activeStepIndex out of bounds shows no step column', () => {
+      it('active task with zero session counts shows no session-count column', () => {
         const widget = new TaskListWidget();
         widget.updateTasks([
           makeTask({
             id: 't1',
-            title: 'Out of bounds',
+            title: 'Zero Sessions',
             status: 'active',
-            steps: [{ name: 'setup', index: 0 }],
-            activeStepIndex: 5, // out of bounds
             startedAt: Date.now() - 3000,
           }),
         ]);
+        widget.setSessionCounts({ t1: 0 });
         const lines = widget.render(WIDTH);
         expect(lines).toHaveLength(1);
         const line = lines[0];
-        // steps.length === 1 (not > 1) AND index out of bounds → no step column
-        expect(line).not.toContain('step');
-        expect(line).not.toContain(dim('active'));
+        // 0 session count → no column emitted
+        expect(line).not.toContain('session');
         expect(line).toContain('3s');
       });
 
-      it('active task without startedAt shows title and step column but no elapsed', () => {
+      it('active task without startedAt shows title and session-count column but no elapsed', () => {
         const widget = new TaskListWidget();
         widget.updateTasks([
           makeTask({
             id: 't1',
             title: 'No Elapsed',
             status: 'active',
-            steps: [
-              { name: 'plan', index: 0 },
-              { name: 'execute', index: 1 },
-            ],
-            activeStepIndex: 0,
             // no startedAt
           }),
         ]);
+        widget.setSessionCounts({ t1: 1 });
         const lines = widget.render(WIDTH);
         expect(lines).toHaveLength(1);
         const line = lines[0];
-        // Step shown in its own column
-        expect(line).toContain(dim('1/2 plan'));
+        // Session count shown in its own column
+        expect(line).toContain(dim('1 session'));
         expect(line).toContain('No Elapsed');
-        // No ' - ' separators: title has no elapsed, step is a separate column
+        // No ' - ' separators: title has no elapsed, session count is a separate column
         const stripped = stripAnsi(line);
         expect((stripped.match(/ - /g) || []).length).toBe(0);
         expect(stripped).not.toMatch(/\d+[smh]/);
-        // Step column separated from title by a 2-space gap
-        expect(stripped).toContain('No Elapsed  1/2 plan');
+        // Session count column separated from title by a 2-space gap
+        expect(stripped).toContain('No Elapsed  1 session');
       });
     });
 

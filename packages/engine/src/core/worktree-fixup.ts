@@ -135,8 +135,6 @@ export async function runTooledFixup(opts: FixupOptions): Promise<FixupResult> {
         allowedWriteDirs: [opts.worktreePath],
         phaseId: 'worktree-fixup',
         taskId: 'fixup',
-        stepIndex: 0,
-        stepName: 'fixup',
         apiKeys: opts.apiKeys,
       },
       profiles,

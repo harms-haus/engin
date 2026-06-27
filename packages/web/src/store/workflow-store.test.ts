@@ -43,10 +43,10 @@ function blankProjection(overrides?: Partial<WorkflowProjection>): WorkflowProje
     currentPhaseId: '',
     completedPhaseIds: [],
     tasks: {},
-    agents: {},
+    sessions: {},
     sidebar: { title: '', indicator: '' },
     status: 'running',
-    stats: { totalTokens: 0, agentCount: 0 },
+    stats: { totalTokens: 0, sessionCount: 0 },
     runLog: [],
     ...overrides,
   };
@@ -85,7 +85,7 @@ const SELECTED_RUN = 'run-1';
 
 function resetStore(): void {
   useWorkflowStore.setState({
-    agentsById: {},
+    sessionsById: {},
     tasksById: {},
     phases: [],
     currentPhaseId: '',
@@ -96,13 +96,11 @@ function resetStore(): void {
     error: undefined,
     failedPhase: undefined,
     seq: 0,
-    stats: { totalTokens: 0, agentCount: 0 },
+    stats: { totalTokens: 0, sessionCount: 0 },
     workflowEventLog: [],
     selectedPhaseId: null,
     selectedTaskId: null,
-    selectedStepIndex: null,
     userPinnedPhase: false,
-    userPinnedStep: false,
     // Multi-run fields
     runs: [],
     selectedRunId: null,
@@ -177,9 +175,7 @@ describe('store – selectedRunId & selectRun', () => {
       selectedRunId: 'run-old',
       selectedPhaseId: 'exec',
       selectedTaskId: 't1',
-      selectedStepIndex: 2,
       userPinnedPhase: true,
-      userPinnedStep: true,
     });
 
     useWorkflowStore.getState().selectRun('run-new');
@@ -188,9 +184,7 @@ describe('store – selectedRunId & selectRun', () => {
     expect(s.selectedRunId).toBe('run-new');
     expect(s.selectedPhaseId).toBeNull();
     expect(s.selectedTaskId).toBeNull();
-    expect(s.selectedStepIndex).toBeNull();
     expect(s.userPinnedPhase).toBe(false);
-    expect(s.userPinnedStep).toBe(false);
   });
 
   it('selectRun subscribes to the new run via the bridge (so the server streams its snapshot)', () => {
@@ -229,7 +223,7 @@ describe('store – selectedRunId & selectRun', () => {
       currentPhaseId: 'exec',
       completedPhaseIds: ['plan', 'exec'],
       workflowEventLog: [{ seq: 1, line: 'stale event line' }],
-      stats: { totalTokens: 1234, agentCount: 2 },
+      stats: { totalTokens: 1234, sessionCount: 2 },
     });
 
     useWorkflowStore.getState().selectRun('run-new');
@@ -240,7 +234,7 @@ describe('store – selectedRunId & selectRun', () => {
     expect(s.currentPhaseId).toBe('');
     expect(s.completedPhaseIds).toEqual([]);
     expect(s.workflowEventLog).toEqual([]);
-    expect(s.stats).toEqual({ totalTokens: 0, agentCount: 0 });
+    expect(s.stats).toEqual({ totalTokens: 0, sessionCount: 0 });
   });
 });
 
@@ -379,17 +373,16 @@ describe('store – applySnapshot (projection)', () => {
       currentPhaseId: 'exec',
       completedPhaseIds: ['plan'],
       tasks: {
-        t1: { id: 't1', title: 'Task 1', status: 'complete', phaseId: 'plan', steps: [], dependencies: [] },
+        t1: { id: 't1', title: 'Task 1', status: 'complete', phaseId: 'plan', dependencies: [] },
         t2: {
           id: 't2',
           title: 'Task 2',
           status: 'active',
           phaseId: 'exec',
-          steps: [],
           dependencies: [],
         },
       },
-      agents: {
+      sessions: {
         'a1::t1': {
           uid: 'a1::t1',
           agentId: 'a1',
@@ -402,11 +395,13 @@ describe('store – applySnapshot (projection)', () => {
           inputTokens: 1000,
           outputTokens: 500,
           taskTitle: 'Task 1',
+          runnerRole: 'executor',
+          attempt: 1,
         },
       },
       sidebar: { title: 'My App', indicator: 'green' },
       status: 'running',
-      stats: { totalTokens: 1500, agentCount: 1 },
+      stats: { totalTokens: 1500, sessionCount: 1 },
       runLog: [],
     };
 
@@ -421,13 +416,13 @@ describe('store – applySnapshot (projection)', () => {
     expect(s.phases[0].id).toBe('plan');
     expect(Object.keys(s.tasksById)).toHaveLength(2);
     expect(s.tasksById['t1'].status).toBe('complete');
-    expect(Object.keys(s.agentsById)).toHaveLength(1);
-    expect(s.agentsById['a1::t1'].toolCallCount).toBe(5);
+    expect(Object.keys(s.sessionsById)).toHaveLength(1);
+    expect(s.sessionsById['a1::t1'].toolCallCount).toBe(5);
     expect(s.sidebar.title).toBe('My App');
     expect(s.stats.totalTokens).toBe(1500);
   });
 
-  it('replaces agentsById with defensive log cap', () => {
+  it('replaces sessionsById with defensive log cap', () => {
     const logs = Array.from({ length: 510 }, (_, i) => ({
       id: `log-${i}`,
       timestamp: '2025-01-01T00:00:00.000Z',
@@ -436,7 +431,7 @@ describe('store – applySnapshot (projection)', () => {
     }));
 
     const snapshot = blankProjection({
-      agents: {
+      sessions: {
         a1: {
           uid: 'a1',
           agentId: 'a1',
@@ -448,6 +443,8 @@ describe('store – applySnapshot (projection)', () => {
           inputTokens: 0,
           outputTokens: 0,
           taskTitle: '',
+          runnerRole: 'executor',
+          attempt: 1,
         },
       },
     });
@@ -455,9 +452,9 @@ describe('store – applySnapshot (projection)', () => {
     useWorkflowStore.getState().applySnapshot(SELECTED_RUN, snapshot, 1);
     const s = useWorkflowStore.getState();
 
-    expect(s.agentsById['a1'].log.length).toBe(500);
-    expect(s.agentsById['a1'].log[0].content).toBe('entry-10');
-    expect(s.agentsById['a1'].log[499].content).toBe('entry-509');
+    expect(s.sessionsById['a1'].log.length).toBe(500);
+    expect(s.sessionsById['a1'].log[0].content).toBe('entry-10');
+    expect(s.sessionsById['a1'].log[499].content).toBe('entry-509');
   });
 
   it('sets getSeq() to match the seq argument', () => {
@@ -477,15 +474,15 @@ describe('store – applyEvents (projection)', () => {
     store.applyEvents(SELECTED_RUN, [
       evt('workflow_started', { taskPrompt: 'hello' }, {}, 1),
       evt('phase_started', { phase: 'scouting' }, {}, 2),
-      evt('task_registered', { id: 't1', title: 'Task 1', phaseId: 'scouting', steps: [], dependencies: [] }, {}, 3),
-      evt('agent_spawned', { profile: 'coder' }, { agentId: 'a1', taskId: 't1' }, 4),
+      evt('task_registered', { id: 't1', title: 'Task 1', phaseId: 'scouting', dependencies: [] }, {}, 3),
+      evt('session_started', { profile: 'coder' }, { agentId: 'a1', taskId: 't1' }, 4),
     ]);
 
     const s = useWorkflowStore.getState();
     expect(s.taskPrompt).toBe('hello');
     expect(s.currentPhaseId).toBe('scouting');
     expect(s.tasksById['t1'].title).toBe('Task 1');
-    expect(s.agentsById['a1::t1'].profile).toBe('coder');
+    expect(s.sessionsById['a1::t1'].profile).toBe('coder');
     expect(s.seq).toBe(4);
   });
 
@@ -506,7 +503,7 @@ describe('store – applyEvents (projection)', () => {
     const store = useWorkflowStore.getState();
 
     store.applyEvents(SELECTED_RUN, [
-      evt('agent_spawned', { profile: 'p' }, { agentId: 'a1', taskId: 't1' }, 1),
+      evt('session_started', { profile: 'p' }, { agentId: 'a1', taskId: 't1' }, 1),
       evt('tool_call_started', { toolName: 'read' }, { agentId: 'a1', taskId: 't1' }, 2),
       evt(
         'turn_ended',
@@ -517,7 +514,7 @@ describe('store – applyEvents (projection)', () => {
     ]);
 
     const s = useWorkflowStore.getState();
-    const agent = s.agentsById['a1::t1'];
+    const agent = s.sessionsById['a1::t1'];
     expect(agent.toolCallCount).toBe(1);
     expect(agent.inputTokens).toBe(100);
     expect(agent.outputTokens).toBe(50);
@@ -529,24 +526,24 @@ describe('store – applyEvents (projection)', () => {
     const store = useWorkflowStore.getState();
 
     store.applyEvents(SELECTED_RUN, [
-      evt('agent_spawned', { profile: 'p' }, { agentId: 'a1', taskId: 't1' }, 1),
+      evt('session_started', { profile: 'p' }, { agentId: 'a1', taskId: 't1' }, 1),
       evt('tool_call_started', { toolName: 'a' }, { agentId: 'a1', taskId: 't1' }, 2),
       evt('tool_call_started', { toolName: 'b' }, { agentId: 'a1', taskId: 't1' }, 3),
       evt('turn_ended', { tokens: { input: 50, output: 25 } }, { agentId: 'a1', taskId: 't1' }, 4),
       evt('decision', { decision: 'proceed' }, { agentId: 'a1', taskId: 't1' }, 5),
       // Re-spawn
-      evt('agent_spawned', { profile: 'p' }, { agentId: 'a1', taskId: 't1' }, 6),
+      evt('session_started', { profile: 'p' }, { agentId: 'a1', taskId: 't1' }, 6),
     ]);
 
     const s = useWorkflowStore.getState();
-    const agent = s.agentsById['a1::t1'];
+    const agent = s.sessionsById['a1::t1'];
 
     expect(agent.toolCallCount).toBe(2);
     expect(agent.inputTokens).toBe(50);
     expect(agent.outputTokens).toBe(25);
     expect(agent.log.length).toBe(3);
     expect(agent.active).toBe(true);
-    expect(s.stats.agentCount).toBe(1);
+    expect(s.stats.sessionCount).toBe(1);
   });
 });
 
@@ -741,16 +738,13 @@ describe('store – selection actions', () => {
           title: 'Task 1',
           status: 'active',
           phaseId: 'exec',
-          steps: [],
           dependencies: [],
-          activeStepIndex: 1,
         },
         t2: {
           id: 't2',
           title: 'Task 2',
           status: 'ready',
           phaseId: 'exec',
-          steps: [],
           dependencies: [],
         },
       },
@@ -758,37 +752,16 @@ describe('store – selection actions', () => {
     useWorkflowStore.getState().applySnapshot(SELECTED_RUN, snapshot, 1);
     useWorkflowStore.getState().selectPhase('exec');
 
-    useWorkflowStore.getState().selectStep(0);
-    expect(useWorkflowStore.getState().userPinnedStep).toBe(true);
-
     useWorkflowStore.getState().selectTask('t2');
     const s = useWorkflowStore.getState();
     expect(s.selectedTaskId).toBe('t2');
-    expect(s.selectedStepIndex).toBeNull();
-    expect(s.userPinnedStep).toBe(false);
-  });
-
-  it('selectStep sets selectedStepIndex and userPinnedStep=true', () => {
-    useWorkflowStore.getState().selectStep(2);
-    const s = useWorkflowStore.getState();
-    expect(s.selectedStepIndex).toBe(2);
-    expect(s.userPinnedStep).toBe(true);
-  });
-
-  it('selectStep with null sets step to null and pins', () => {
-    useWorkflowStore.getState().selectStep(null);
-    const s = useWorkflowStore.getState();
-    expect(s.selectedStepIndex).toBeNull();
-    expect(s.userPinnedStep).toBe(true);
   });
 
   it('resetSelection clears all selection state (incl. the prev-tracking fields)', () => {
     useWorkflowStore.setState({
       selectedPhaseId: 'exec',
       selectedTaskId: 't1',
-      selectedStepIndex: 2,
       userPinnedPhase: true,
-      userPinnedStep: true,
       prevCurrentPhaseId: 'exec',
       prevSelectedTaskStatus: 'active',
     } as Partial<WorkflowStoreState>);
@@ -797,9 +770,7 @@ describe('store – selection actions', () => {
     const s = useWorkflowStore.getState() as WorkflowStoreState & PrevTrackingFields;
     expect(s.selectedPhaseId).toBeNull();
     expect(s.selectedTaskId).toBeNull();
-    expect(s.selectedStepIndex).toBeNull();
     expect(s.userPinnedPhase).toBe(false);
-    expect(s.userPinnedStep).toBe(false);
     // The prev-tracking fields reset too so stale transition state does not
     // leak into the next selection cycle.
     expect(s.prevCurrentPhaseId).toBeNull();
@@ -822,7 +793,7 @@ describe('store – follow rules', () => {
           { id: 'exec', label: 'Exec', icon: '⚡', taskIds: ['t1'] },
         ],
         tasks: {
-          t1: { id: 't1', title: 'T1', status: 'ready', phaseId: 'exec', steps: [], dependencies: [] },
+          t1: { id: 't1', title: 'T1', status: 'ready', phaseId: 'exec', dependencies: [] },
         },
       });
       useWorkflowStore.getState().applySnapshot(SELECTED_RUN, snapshot, 1);
@@ -840,7 +811,7 @@ describe('store – follow rules', () => {
           { id: 'review', label: 'Review', icon: '🔍', taskIds: ['t2'] },
         ],
         tasks: {
-          t2: { id: 't2', title: 'T2', status: 'ready', phaseId: 'review', steps: [], dependencies: [] },
+          t2: { id: 't2', title: 'T2', status: 'ready', phaseId: 'review', dependencies: [] },
         },
       });
       useWorkflowStore.getState().applySnapshot(SELECTED_RUN, snapshot2, 2);
@@ -857,7 +828,7 @@ describe('store – follow rules', () => {
           { id: 'exec', label: 'Exec', icon: '⚡', taskIds: [] },
         ],
         tasks: {
-          t1: { id: 't1', title: 'T1', status: 'active', phaseId: 'scouting', steps: [], dependencies: [] },
+          t1: { id: 't1', title: 'T1', status: 'active', phaseId: 'scouting', dependencies: [] },
         },
       });
       useWorkflowStore.getState().applySnapshot(SELECTED_RUN, snapshot, 1);
@@ -873,7 +844,7 @@ describe('store – follow rules', () => {
           { id: 'exec', label: 'Exec', icon: '⚡', taskIds: ['t2'] },
         ],
         tasks: {
-          t2: { id: 't2', title: 'T2', status: 'active', phaseId: 'exec', steps: [], dependencies: [] },
+          t2: { id: 't2', title: 'T2', status: 'active', phaseId: 'exec', dependencies: [] },
         },
       });
       useWorkflowStore.getState().applySnapshot(SELECTED_RUN, snapshot2, 2);
@@ -894,8 +865,8 @@ describe('store – follow rules', () => {
         currentPhaseId: 'exec',
         phases: [{ id: 'exec', label: 'Exec', icon: '⚡', taskIds: ['t1', 't2'] }],
         tasks: {
-          t1: { id: 't1', title: 'T1', status: 'ready', phaseId: 'exec', steps: [], dependencies: [] },
-          t2: { id: 't2', title: 'T2', status: 'active', phaseId: 'exec', steps: [], dependencies: [] },
+          t1: { id: 't1', title: 'T1', status: 'ready', phaseId: 'exec', dependencies: [] },
+          t2: { id: 't2', title: 'T2', status: 'active', phaseId: 'exec', dependencies: [] },
         },
       });
       useWorkflowStore.getState().applySnapshot(SELECTED_RUN, snapshot, 1);
@@ -909,8 +880,8 @@ describe('store – follow rules', () => {
         currentPhaseId: 'exec',
         phases: [{ id: 'exec', label: 'Exec', icon: '⚡', taskIds: ['t1', 't2'] }],
         tasks: {
-          t1: { id: 't1', title: 'T1', status: 'ready', phaseId: 'exec', steps: [], dependencies: [] },
-          t2: { id: 't2', title: 'T2', status: 'active', phaseId: 'exec', steps: [], dependencies: [] },
+          t1: { id: 't1', title: 'T1', status: 'ready', phaseId: 'exec', dependencies: [] },
+          t2: { id: 't2', title: 'T2', status: 'active', phaseId: 'exec', dependencies: [] },
         },
       });
       useWorkflowStore.getState().applySnapshot(SELECTED_RUN, snapshot, 1);
@@ -942,7 +913,6 @@ describe('store – follow rules', () => {
               title: 'T1',
               status: 'active',
               phaseId: 'exec',
-              steps: [],
               dependencies: [],
               startedAt: 50,
             },
@@ -965,7 +935,6 @@ describe('store – follow rules', () => {
               title: 'T1',
               status: 'complete',
               phaseId: 'exec',
-              steps: [],
               dependencies: [],
               startedAt: 50,
             },
@@ -974,7 +943,6 @@ describe('store – follow rules', () => {
               title: 'T2',
               status: 'active',
               phaseId: 'exec',
-              steps: [],
               dependencies: [],
               startedAt: 100,
             },
@@ -983,7 +951,6 @@ describe('store – follow rules', () => {
               title: 'T3',
               status: 'active',
               phaseId: 'exec',
-              steps: [],
               dependencies: [],
               startedAt: 200,
             },
@@ -993,7 +960,6 @@ describe('store – follow rules', () => {
       );
 
       expect(useWorkflowStore.getState().selectedTaskId).toBe('t3');
-      expect(useWorkflowStore.getState().userPinnedStep).toBe(false);
     });
 
     it('keeps the completed task selected when no active task remains (req 2)', () => {
@@ -1008,7 +974,6 @@ describe('store – follow rules', () => {
               title: 'T1',
               status: 'active',
               phaseId: 'exec',
-              steps: [],
               dependencies: [],
               startedAt: 10,
             },
@@ -1030,11 +995,10 @@ describe('store – follow rules', () => {
               title: 'T1',
               status: 'complete',
               phaseId: 'exec',
-              steps: [],
               dependencies: [],
               startedAt: 10,
             },
-            t2: { id: 't2', title: 'T2', status: 'ready', phaseId: 'exec', steps: [], dependencies: [], startedAt: 20 },
+            t2: { id: 't2', title: 'T2', status: 'ready', phaseId: 'exec', dependencies: [], startedAt: 20 },
           },
         }),
         2,
@@ -1055,18 +1019,12 @@ describe('store – follow rules', () => {
             title: 'T1',
             status: 'active',
             phaseId: 'exec',
-            steps: [
-              { name: 'step0', index: 0 },
-              { name: 'step1', index: 1 },
-            ],
             dependencies: [],
-            activeStepIndex: 0,
           },
         },
       });
       useWorkflowStore.getState().applySnapshot(SELECTED_RUN, snapshot, 1);
       useWorkflowStore.getState().selectPhase('exec');
-      expect(useWorkflowStore.getState().selectedStepIndex).toBe(0);
 
       const snapshot2 = blankProjection({
         currentPhaseId: 'exec',
@@ -1077,17 +1035,11 @@ describe('store – follow rules', () => {
             title: 'T1',
             status: 'active',
             phaseId: 'exec',
-            steps: [
-              { name: 'step0', index: 0 },
-              { name: 'step1', index: 1 },
-            ],
             dependencies: [],
-            activeStepIndex: 1,
           },
         },
       });
       useWorkflowStore.getState().applySnapshot(SELECTED_RUN, snapshot2, 2);
-      expect(useWorkflowStore.getState().selectedStepIndex).toBe(1);
     });
 
     it('does NOT sync selectedStepIndex when step is pinned', () => {
@@ -1100,21 +1052,12 @@ describe('store – follow rules', () => {
             title: 'T1',
             status: 'active',
             phaseId: 'exec',
-            steps: [
-              { name: 'step0', index: 0 },
-              { name: 'step1', index: 1 },
-            ],
             dependencies: [],
-            activeStepIndex: 0,
           },
         },
       });
       useWorkflowStore.getState().applySnapshot(SELECTED_RUN, snapshot, 1);
       useWorkflowStore.getState().selectPhase('exec');
-
-      useWorkflowStore.getState().selectStep(1);
-      expect(useWorkflowStore.getState().selectedStepIndex).toBe(1);
-      expect(useWorkflowStore.getState().userPinnedStep).toBe(true);
 
       const snapshot3 = blankProjection({
         currentPhaseId: 'exec',
@@ -1125,18 +1068,11 @@ describe('store – follow rules', () => {
             title: 'T1',
             status: 'active',
             phaseId: 'exec',
-            steps: [
-              { name: 'step0', index: 0 },
-              { name: 'step1', index: 1 },
-              { name: 'step2', index: 2 },
-            ],
             dependencies: [],
-            activeStepIndex: 2,
           },
         },
       });
       useWorkflowStore.getState().applySnapshot(SELECTED_RUN, snapshot3, 3);
-      expect(useWorkflowStore.getState().selectedStepIndex).toBe(1);
     });
   });
 
@@ -1153,28 +1089,20 @@ describe('store – follow rules', () => {
           title: 'T1',
           status: 'active',
           phaseId: 'scouting',
-          steps: [{ name: 's0', index: 0 }],
           dependencies: [],
-          activeStepIndex: 0,
         },
       },
     });
     useWorkflowStore.getState().applySnapshot(SELECTED_RUN, snapshot, 1);
     useWorkflowStore.getState().selectPhase('scouting');
     expect(useWorkflowStore.getState().selectedTaskId).toBe('t1');
-    expect(useWorkflowStore.getState().selectedStepIndex).toBe(0);
 
     useWorkflowStore
       .getState()
       .applyEvents(SELECTED_RUN, [
         evt('phase_completed', { phase: 'scouting' }, {}, 2),
         evt('phase_started', { phase: 'exec' }, {}, 3),
-        evt(
-          'task_registered',
-          { id: 't2', title: 'Exec Task', phaseId: 'exec', steps: [{ name: 's0', index: 0 }], dependencies: [] },
-          {},
-          4,
-        ),
+        evt('task_registered', { id: 't2', title: 'Exec Task', phaseId: 'exec', dependencies: [] }, {}, 4),
         evt('task_started', { taskId: 't2' }, {}, 5),
       ]);
 
@@ -1185,7 +1113,6 @@ describe('store – follow rules', () => {
     // step stays null.
     expect(s.selectedPhaseId).toBe('exec');
     expect(s.selectedTaskId).toBe('t2');
-    expect(s.selectedStepIndex).toBeNull();
   });
 });
 
@@ -1198,10 +1125,10 @@ describe('store – selectors', () => {
     useWorkflowStore
       .getState()
       .applyEvents(SELECTED_RUN, [
-        evt('agent_spawned', { profile: 'p' }, { agentId: 'a1', taskId: 't1' }, 1),
-        evt('agent_spawned', { profile: 'q' }, { agentId: 'a2' }, 2),
+        evt('session_started', { profile: 'p' }, { agentId: 'a1', taskId: 't1' }, 1),
+        evt('session_started', { profile: 'q' }, { agentId: 'a2' }, 2),
       ]);
-    const ids = Object.keys(useWorkflowStore.getState().agentsById);
+    const ids = Object.keys(useWorkflowStore.getState().sessionsById);
     expect(ids).toContain('a1::t1');
     expect(ids).toContain('a2');
   });
@@ -1210,8 +1137,8 @@ describe('store – selectors', () => {
     useWorkflowStore
       .getState()
       .applyEvents(SELECTED_RUN, [
-        evt('task_registered', { id: 't1', title: 'A', phaseId: 'p1', steps: [], dependencies: [] }, {}, 1),
-        evt('task_registered', { id: 't2', title: 'B', phaseId: 'p1', steps: [], dependencies: [] }, {}, 2),
+        evt('task_registered', { id: 't1', title: 'A', phaseId: 'p1', dependencies: [] }, {}, 1),
+        evt('task_registered', { id: 't2', title: 'B', phaseId: 'p1', dependencies: [] }, {}, 2),
       ]);
     const ids = Object.keys(useWorkflowStore.getState().tasksById);
     expect(ids).toContain('t1');

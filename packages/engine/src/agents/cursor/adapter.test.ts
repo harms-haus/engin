@@ -1,4 +1,4 @@
-// ─── Tests for agents/cursor/adapter.ts — Cursor SDK adapter ────────────────
+// ─── Tests for sessions/cursor/adapter.ts — Cursor SDK adapter ────────────────
 //
 // Validates the Cursor SDK adapter implementing `AgentPlugin` with
 // `id: 'cursor'`. The Cursor SDK (`@cursor/sdk`) is mocked at the module

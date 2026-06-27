@@ -7,6 +7,9 @@
  * preserve accumulated log / tokens / toolCallCount.
  */
 
+import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import type { EventRecord, WorkflowProjection } from '../protocol-types';
 // The evolve-client shim has been deleted; evolve is sourced directly from the
@@ -24,10 +27,10 @@ function blankProjection(overrides?: Partial<WorkflowProjection>): WorkflowProje
     currentPhaseId: '',
     completedPhaseIds: [],
     tasks: {},
-    agents: {},
+    sessions: {},
     sidebar: { title: '', indicator: '' },
     status: 'running',
-    stats: { totalTokens: 0, agentCount: 0 },
+    stats: { totalTokens: 0, sessionCount: 0 },
     runLog: [],
     ...overrides,
   };
@@ -142,38 +145,41 @@ describe('evolveClient – phase lifecycle', () => {
   });
 });
 
-// ─── Agent lifecycle ──────────────────────────────────────────────────────
+// ─── Session lifecycle ──────────────────────────────────────────────────────
 
-describe('evolveClient – agent lifecycle', () => {
-  it('agent_spawned creates a new agent and increments agentCount', () => {
+describe('evolveClient – session lifecycle', () => {
+  it('session_started creates a new session and increments sessionCount', () => {
     const s = evolveClient(
       blankProjection(),
-      event('agent_spawned', { profile: 'coder' }, { agentId: 'a1', taskId: 't1', phaseId: 'exec' }, 1),
+      event('session_started', { profile: 'coder' }, { agentId: 'a1', taskId: 't1', phaseId: 'exec' }, 1),
     );
-    expect(Object.keys(s.agents)).toHaveLength(1);
-    expect(s.agents['a1::t1']).toBeDefined();
-    expect(s.agents['a1::t1'].agentId).toBe('a1');
-    expect(s.agents['a1::t1'].profile).toBe('coder');
-    expect(s.agents['a1::t1'].phaseId).toBe('exec');
-    expect(s.agents['a1::t1'].active).toBe(true);
-    expect(s.agents['a1::t1'].toolCallCount).toBe(0);
-    expect(s.agents['a1::t1'].inputTokens).toBe(0);
-    expect(s.agents['a1::t1'].outputTokens).toBe(0);
-    expect(s.stats.agentCount).toBe(1);
+    expect(Object.keys(s.sessions)).toHaveLength(1);
+    expect(s.sessions['a1::t1']).toBeDefined();
+    expect(s.sessions['a1::t1'].agentId).toBe('a1');
+    expect(s.sessions['a1::t1'].profile).toBe('coder');
+    expect(s.sessions['a1::t1'].phaseId).toBe('exec');
+    expect(s.sessions['a1::t1'].active).toBe(true);
+    expect(s.sessions['a1::t1'].toolCallCount).toBe(0);
+    expect(s.sessions['a1::t1'].inputTokens).toBe(0);
+    expect(s.sessions['a1::t1'].outputTokens).toBe(0);
+    expect(s.stats.sessionCount).toBe(1);
   });
 
-  it('agent_spawned without taskId uses plain key', () => {
-    const s = evolveClient(blankProjection(), event('agent_spawned', { profile: 'legacy' }, { agentId: 'legacy' }, 1));
-    expect(s.agents['legacy']).toBeDefined();
-    expect(s.agents['legacy'].uid).toBe('legacy');
-    expect(s.stats.agentCount).toBe(1);
+  it('session_started without taskId uses plain key', () => {
+    const s = evolveClient(
+      blankProjection(),
+      event('session_started', { profile: 'legacy' }, { agentId: 'legacy' }, 1),
+    );
+    expect(s.sessions['legacy']).toBeDefined();
+    expect(s.sessions['legacy'].uid).toBe('legacy');
+    expect(s.stats.sessionCount).toBe(1);
   });
 
-  it('agent_spawned UPSERT preserves accumulated state (kb-11 root-cause)', () => {
+  it('session_started UPSERT preserves accumulated state (kb-11 root-cause)', () => {
     // 1. First spawn
     let s = evolveClient(
       blankProjection(),
-      event('agent_spawned', { profile: 'coder' }, { agentId: 'a1', taskId: 't1' }, 1),
+      event('session_started', { profile: 'coder' }, { agentId: 'a1', taskId: 't1' }, 1),
     );
 
     // 2. Accumulate some state (simulating turn/tool events)
@@ -189,25 +195,25 @@ describe('evolveClient – agent lifecycle', () => {
     s = evolveClient(s, event('tool_call_started', { toolName: 'read' }, { agentId: 'a1', taskId: 't1' }, 3));
 
     // Verify accumulation
-    expect(s.agents['a1::t1'].inputTokens).toBe(100);
-    expect(s.agents['a1::t1'].outputTokens).toBe(50);
-    expect(s.agents['a1::t1'].toolCallCount).toBe(1);
-    expect(s.agents['a1::t1'].log.length).toBe(2); // text + tool_call_start
+    expect(s.sessions['a1::t1'].inputTokens).toBe(100);
+    expect(s.sessions['a1::t1'].outputTokens).toBe(50);
+    expect(s.sessions['a1::t1'].toolCallCount).toBe(1);
+    expect(s.sessions['a1::t1'].log.length).toBe(2); // text + tool_call_start
 
     // 3. Re-spawn (same agentId + taskId) — should preserve accumulated state
-    s = evolveClient(s, event('agent_spawned', { profile: 'coder' }, { agentId: 'a1', taskId: 't1' }, 4));
+    s = evolveClient(s, event('session_started', { profile: 'coder' }, { agentId: 'a1', taskId: 't1' }, 4));
 
     // Accumulated values must be preserved
-    expect(s.agents['a1::t1'].inputTokens).toBe(100);
-    expect(s.agents['a1::t1'].outputTokens).toBe(50);
-    expect(s.agents['a1::t1'].toolCallCount).toBe(1);
-    expect(s.agents['a1::t1'].log.length).toBe(2);
-    expect(s.agents['a1::t1'].active).toBe(true);
-    // agentCount should NOT increment (same agent re-spawned)
-    expect(s.stats.agentCount).toBe(1);
+    expect(s.sessions['a1::t1'].inputTokens).toBe(100);
+    expect(s.sessions['a1::t1'].outputTokens).toBe(50);
+    expect(s.sessions['a1::t1'].toolCallCount).toBe(1);
+    expect(s.sessions['a1::t1'].log.length).toBe(2);
+    expect(s.sessions['a1::t1'].active).toBe(true);
+    // sessionCount should NOT increment (same session re-spawned)
+    expect(s.stats.sessionCount).toBe(1);
   });
 
-  it('agent_spawned preserves taskTitle from existing task', () => {
+  it('session_started preserves taskTitle from existing task', () => {
     // 1. Register a task
     let s = evolveClient(
       blankProjection(),
@@ -217,7 +223,6 @@ describe('evolveClient – agent lifecycle', () => {
           taskId: 't1',
           title: 'My Task',
           phaseId: 'exec',
-          steps: [{ name: 'write-tests', profileId: 'coder' }],
         },
         {},
         1,
@@ -225,30 +230,30 @@ describe('evolveClient – agent lifecycle', () => {
     );
 
     // 2. Spawn agent for that task
-    s = evolveClient(s, event('agent_spawned', { profile: 'coder' }, { agentId: 'a1', taskId: 't1' }, 2));
-    expect(s.agents['a1::t1'].taskTitle).toBe('My Task');
+    s = evolveClient(s, event('session_started', { profile: 'coder' }, { agentId: 'a1', taskId: 't1' }, 2));
+    expect(s.sessions['a1::t1'].taskTitle).toBe('My Task');
   });
 
-  it('agent_completed marks agent inactive', () => {
+  it('session_completed marks session inactive', () => {
     let s = evolveClient(
       blankProjection(),
-      event('agent_spawned', { profile: 'coder' }, { agentId: 'a1', taskId: 't1' }, 1),
+      event('session_started', { profile: 'coder' }, { agentId: 'a1', taskId: 't1' }, 1),
     );
-    s = evolveClient(s, event('agent_completed', {}, { agentId: 'a1', taskId: 't1', timestamp: '2025-01-01' }, 2));
-    expect(s.agents['a1::t1'].active).toBe(false);
-    expect(s.agents['a1::t1'].completedAt).toBe('2025-01-01');
+    s = evolveClient(s, event('session_completed', {}, { agentId: 'a1', taskId: 't1', timestamp: '2025-01-01' }, 2));
+    expect(s.sessions['a1::t1'].active).toBe(false);
+    expect(s.sessions['a1::t1'].completedAt).toBe('2025-01-01');
   });
 
-  it('agent_completed resolves agent without taskId via search', () => {
-    let s = evolveClient(blankProjection(), event('agent_spawned', { profile: 'coder' }, { agentId: 'a1' }, 1));
+  it('session_completed resolves session without taskId via search', () => {
+    let s = evolveClient(blankProjection(), event('session_started', { profile: 'coder' }, { agentId: 'a1' }, 1));
     // Complete without taskId — should find a1 by agentId search
-    s = evolveClient(s, event('agent_completed', {}, { agentId: 'a1', timestamp: '2025-01-01' }, 2));
-    expect(s.agents['a1'].active).toBe(false);
+    s = evolveClient(s, event('session_completed', {}, { agentId: 'a1', timestamp: '2025-01-01' }, 2));
+    expect(s.sessions['a1'].active).toBe(false);
   });
 
-  it('agent_completed on unknown agent is a no-op', () => {
-    const s = evolveClient(blankProjection(), event('agent_completed', {}, { agentId: 'ghost' }, 1));
-    expect(Object.keys(s.agents)).toHaveLength(0);
+  it('session_completed on unknown session is a no-op', () => {
+    const s = evolveClient(blankProjection(), event('session_completed', {}, { agentId: 'ghost' }, 1));
+    expect(Object.keys(s.sessions)).toHaveLength(0);
     expect(s.seq).toBe(1);
   });
 });
@@ -265,10 +270,6 @@ describe('evolveClient – task lifecycle', () => {
           taskId: 't1',
           title: 'Task 1',
           phaseId: 'exec',
-          steps: [
-            { name: 'write', profileId: 'coder' },
-            { name: 'review', profileId: 'reviewer', isReadOnly: true },
-          ],
           dependencies: ['t0'],
         },
         {},
@@ -279,15 +280,7 @@ describe('evolveClient – task lifecycle', () => {
     expect(s.tasks['t1'].title).toBe('Task 1');
     expect(s.tasks['t1'].phaseId).toBe('exec');
     expect(s.tasks['t1'].status).toBe('ready');
-    expect(s.tasks['t1'].steps).toHaveLength(2);
-    expect(s.tasks['t1'].steps[0].name).toBe('write');
-    expect(s.tasks['t1'].steps[0].profile).toBe('coder');
-    expect(s.tasks['t1'].steps[0].isReadOnly).toBeFalsy();
-    expect(s.tasks['t1'].steps[1].name).toBe('review');
-    expect(s.tasks['t1'].steps[1].profile).toBe('reviewer');
-    expect(s.tasks['t1'].steps[1].isReadOnly).toBe(true);
     expect(s.tasks['t1'].dependencies).toEqual(['t0']);
-    expect(s.tasks['t1'].activeStepIndex).toBeUndefined();
   });
 
   it('task_registered does not overwrite existing tasks', () => {
@@ -299,7 +292,6 @@ describe('evolveClient – task lifecycle', () => {
           taskId: 't1',
           title: 'Original',
           phaseId: 'exec',
-          steps: [{ name: 'write', profileId: 'coder' }],
         },
         {},
         1,
@@ -313,7 +305,6 @@ describe('evolveClient – task lifecycle', () => {
           taskId: 't1',
           title: 'New',
           phaseId: 'other',
-          steps: [{ name: 'write', profileId: 'coder' }],
         },
         {},
         2,
@@ -333,7 +324,6 @@ describe('evolveClient – task lifecycle', () => {
           taskId: 't1',
           title: 'Task',
           phaseId: 'exec',
-          steps: [{ name: 'write', profileId: 'coder' }],
         },
         {},
         2,
@@ -352,7 +342,6 @@ describe('evolveClient – task lifecycle', () => {
           id: 't-fallback',
           title: 'Fallback',
           phaseId: 'exec',
-          steps: [{ name: 'write', profileId: 'coder' }],
         },
         {},
         1,
@@ -371,7 +360,6 @@ describe('evolveClient – task lifecycle', () => {
           taskId: 't1',
           title: 'Task',
           phaseId: 'exec',
-          steps: [{ name: 'write', profileId: 'coder' }],
         },
         {},
         1,
@@ -387,101 +375,6 @@ describe('evolveClient – task lifecycle', () => {
     expect(s.seq).toBe(1);
   });
 
-  it('step_started sets activeStepIndex on the task', () => {
-    let s = evolveClient(
-      blankProjection(),
-      event(
-        'task_registered',
-        {
-          taskId: 't1',
-          title: 'T',
-          phaseId: 'exec',
-          steps: [
-            { name: 'write', profileId: 'coder' },
-            { name: 'review', profileId: 'reviewer' },
-          ],
-        },
-        {},
-        1,
-      ),
-    );
-    s = evolveClient(s, event('step_started', { taskId: 't1', stepIndex: 1 }, {}, 2));
-    expect(s.tasks['t1'].activeStepIndex).toBe(1);
-  });
-
-  it('step_started links agentKey when agentId provided in metadata', () => {
-    let s = evolveClient(
-      blankProjection(),
-      event(
-        'task_registered',
-        {
-          taskId: 't1',
-          title: 'T',
-          phaseId: 'exec',
-          steps: [
-            { name: 'write', profileId: 'coder' },
-            { name: 'review', profileId: 'reviewer' },
-          ],
-        },
-        {},
-        1,
-      ),
-    );
-    // Spawn agent for step 0
-    s = evolveClient(s, event('agent_spawned', { profile: 'coder' }, { agentId: 'a1', taskId: 't1', stepIndex: 0 }, 2));
-    // Start step 0 with agent link
-    s = evolveClient(s, event('step_started', { taskId: 't1', stepIndex: 0, agentId: 'a1' }, { taskId: 't1' }, 3));
-    expect(s.tasks['t1'].activeStepIndex).toBe(0);
-    expect(s.tasks['t1'].steps[0].agentKey).toBe('a1::t1::0');
-  });
-
-  it('step_started is a no-op when task does not exist', () => {
-    const s = evolveClient(blankProjection(), event('step_started', { taskId: 'ghost', stepIndex: 0 }, {}, 1));
-    expect(s.seq).toBe(1);
-  });
-
-  it('step_started is a no-op when stepIndex is not a number', () => {
-    let s = evolveClient(
-      blankProjection(),
-      event(
-        'task_registered',
-        {
-          taskId: 't1',
-          title: 'T',
-          phaseId: 'exec',
-          steps: [{ name: 'write', profileId: 'coder' }],
-        },
-        {},
-        1,
-      ),
-    );
-    s = evolveClient(s, event('step_started', { taskId: 't1', stepIndex: 'invalid' }, {}, 2));
-    expect(s.tasks['t1'].activeStepIndex).toBeUndefined();
-  });
-
-  it('task_completed sets status to complete and clears activeStepIndex', () => {
-    let s = evolveClient(
-      blankProjection(),
-      event(
-        'task_registered',
-        {
-          taskId: 't1',
-          title: 'T',
-          phaseId: 'exec',
-          steps: [{ name: 'write', profileId: 'coder' }],
-        },
-        {},
-        1,
-      ),
-    );
-    s = evolveClient(s, event('task_started', { taskId: 't1', title: 'T' }, {}, 2));
-    s = evolveClient(s, event('step_started', { taskId: 't1', stepIndex: 0 }, {}, 3));
-    s = evolveClient(s, event('task_completed', { taskId: 't1' }, { timestamp: '2025-01-01' }, 4));
-    expect(s.tasks['t1'].status).toBe('complete');
-    expect(s.tasks['t1'].completedAt).toBe('2025-01-01');
-    // activeStepIndex is NOT automatically cleared by task_completed (handled by consumer)
-  });
-
   it('task_rejected sets status failed', () => {
     let s = evolveClient(
       blankProjection(),
@@ -491,7 +384,6 @@ describe('evolveClient – task lifecycle', () => {
           taskId: 't1',
           title: 'T',
           phaseId: 'exec',
-          steps: [{ name: 'write', profileId: 'coder' }],
         },
         {},
         1,
@@ -511,26 +403,26 @@ describe('evolveClient – task lifecycle', () => {
 
 // ─── Agent log / decisions / errors ─────────────────────────────────────
 
-describe('evolveClient – agent log, decisions, errors', () => {
+describe('evolveClient – session log, decisions, errors', () => {
   it('decision adds a log entry', () => {
-    let s = evolveClient(blankProjection(), event('agent_spawned', { profile: 'p' }, { agentId: 'a1' }, 1));
+    let s = evolveClient(blankProjection(), event('session_started', { profile: 'p' }, { agentId: 'a1' }, 1));
     s = evolveClient(s, event('decision', { decision: 'go left', reasoning: 'because' }, { agentId: 'a1' }, 2));
-    expect(s.agents['a1'].log).toHaveLength(1);
-    expect(s.agents['a1'].log[0].type).toBe('decision');
-    expect(s.agents['a1'].log[0].content).toBe('go left');
+    expect(s.sessions['a1'].log).toHaveLength(1);
+    expect(s.sessions['a1'].log[0].type).toBe('decision');
+    expect(s.sessions['a1'].log[0].content).toBe('go left');
   });
 
   it('error adds a log entry', () => {
-    let s = evolveClient(blankProjection(), event('agent_spawned', { profile: 'p' }, { agentId: 'a1' }, 1));
+    let s = evolveClient(blankProjection(), event('session_started', { profile: 'p' }, { agentId: 'a1' }, 1));
     s = evolveClient(s, event('error', { error: 'oops' }, { agentId: 'a1' }, 2));
-    expect(s.agents['a1'].log).toHaveLength(1);
-    expect(s.agents['a1'].log[0].type).toBe('error');
-    expect(s.agents['a1'].log[0].content).toBe('oops');
+    expect(s.sessions['a1'].log).toHaveLength(1);
+    expect(s.sessions['a1'].log[0].type).toBe('error');
+    expect(s.sessions['a1'].log[0].content).toBe('oops');
   });
 
   it('decision on unknown agent is a no-op', () => {
     const s = evolveClient(blankProjection(), event('decision', { decision: 'x' }, { agentId: 'ghost' }, 1));
-    expect(Object.keys(s.agents)).toHaveLength(0);
+    expect(Object.keys(s.sessions)).toHaveLength(0);
     expect(s.seq).toBe(1);
   });
 });
@@ -544,7 +436,7 @@ describe('evolveClient – turn lifecycle', () => {
   });
 
   it('turn_ended accumulates tokens and adds text/thinking log entries', () => {
-    let s = evolveClient(blankProjection(), event('agent_spawned', { profile: 'p' }, { agentId: 'a1' }, 1));
+    let s = evolveClient(blankProjection(), event('session_started', { profile: 'p' }, { agentId: 'a1' }, 1));
     s = evolveClient(
       s,
       event(
@@ -560,13 +452,13 @@ describe('evolveClient – turn lifecycle', () => {
         2,
       ),
     );
-    expect(s.agents['a1'].inputTokens).toBe(200);
-    expect(s.agents['a1'].outputTokens).toBe(100);
-    expect(s.agents['a1'].log).toHaveLength(2);
-    expect(s.agents['a1'].log[0].type).toBe('text');
-    expect(s.agents['a1'].log[0].content).toBe('Hello world');
-    expect(s.agents['a1'].log[1].type).toBe('thinking');
-    expect(s.agents['a1'].log[1].content).toBe('Hmm...');
+    expect(s.sessions['a1'].inputTokens).toBe(200);
+    expect(s.sessions['a1'].outputTokens).toBe(100);
+    expect(s.sessions['a1'].log).toHaveLength(2);
+    expect(s.sessions['a1'].log[0].type).toBe('text');
+    expect(s.sessions['a1'].log[0].content).toBe('Hello world');
+    expect(s.sessions['a1'].log[1].type).toBe('thinking');
+    expect(s.sessions['a1'].log[1].content).toBe('Hmm...');
     expect(s.stats.totalTokens).toBe(300);
   });
 
@@ -584,7 +476,7 @@ describe('evolveClient – turn lifecycle', () => {
 
 describe('evolveClient – tool call lifecycle', () => {
   it('tool_call_started increments toolCallCount and adds log', () => {
-    let s = evolveClient(blankProjection(), event('agent_spawned', { profile: 'p' }, { agentId: 'a1' }, 1));
+    let s = evolveClient(blankProjection(), event('session_started', { profile: 'p' }, { agentId: 'a1' }, 1));
     s = evolveClient(
       s,
       event(
@@ -594,23 +486,23 @@ describe('evolveClient – tool call lifecycle', () => {
         2,
       ),
     );
-    expect(s.agents['a1'].toolCallCount).toBe(1);
-    expect(s.agents['a1'].log).toHaveLength(1);
-    expect(s.agents['a1'].log[0].type).toBe('tool_call_start');
-    expect(s.agents['a1'].log[0].content).toBe('read_file');
-    expect(s.agents['a1'].log[0].metadata?.toolCallId).toBe('tc1');
+    expect(s.sessions['a1'].toolCallCount).toBe(1);
+    expect(s.sessions['a1'].log).toHaveLength(1);
+    expect(s.sessions['a1'].log[0].type).toBe('tool_call_start');
+    expect(s.sessions['a1'].log[0].content).toBe('read_file');
+    expect(s.sessions['a1'].log[0].metadata?.toolCallId).toBe('tc1');
     // arguments are preserved so the UI can render a human-readable summary
-    expect(s.agents['a1'].log[0].metadata?.arguments).toEqual({ path: 'a.ts' });
+    expect(s.sessions['a1'].log[0].metadata?.arguments).toEqual({ path: 'a.ts' });
   });
 
   it('tool_call_ended adds a log entry (no count increment)', () => {
-    let s = evolveClient(blankProjection(), event('agent_spawned', { profile: 'p' }, { agentId: 'a1' }, 1));
+    let s = evolveClient(blankProjection(), event('session_started', { profile: 'p' }, { agentId: 'a1' }, 1));
     s = evolveClient(s, event('tool_call_started', { toolName: 'read_file' }, { agentId: 'a1' }, 2));
     s = evolveClient(s, event('tool_call_ended', { toolName: 'read_file', isError: false }, { agentId: 'a1' }, 3));
     // toolCallCount only incremented on started, not ended
-    expect(s.agents['a1'].toolCallCount).toBe(1);
-    expect(s.agents['a1'].log).toHaveLength(2);
-    expect(s.agents['a1'].log[1].type).toBe('tool_call_end');
+    expect(s.sessions['a1'].toolCallCount).toBe(1);
+    expect(s.sessions['a1'].log).toHaveLength(2);
+    expect(s.sessions['a1'].log[1].type).toBe('tool_call_end');
   });
 
   it('tool_call_started on unknown agent is a no-op', () => {
@@ -642,17 +534,17 @@ describe('evolveClient – sidebar', () => {
 
 describe('evolveClient – log cap', () => {
   it('caps agent log at 500 entries', () => {
-    let s = evolveClient(blankProjection(), event('agent_spawned', { profile: 'p' }, { agentId: 'a1' }, 1));
+    let s = evolveClient(blankProjection(), event('session_started', { profile: 'p' }, { agentId: 'a1' }, 1));
 
     // Add 510 decisions to exceed the cap
     for (let i = 2; i <= 511; i++) {
       s = evolveClient(s, event('decision', { decision: `d-${i}` }, { agentId: 'a1' }, i));
     }
 
-    expect(s.agents['a1'].log.length).toBe(500);
+    expect(s.sessions['a1'].log.length).toBe(500);
     // First retained entry should be d-12 (entries 12..511 = 500 entries)
-    expect(s.agents['a1'].log[0].content).toBe('d-12');
-    expect(s.agents['a1'].log[499].content).toBe('d-511');
+    expect(s.sessions['a1'].log[0].content).toBe('d-12');
+    expect(s.sessions['a1'].log[499].content).toBe('d-511');
   });
 });
 
@@ -680,7 +572,6 @@ describe('evolveClient – full sequence parity', () => {
           taskId: 't1',
           title: 'Task 1',
           phaseId: 'exec',
-          steps: [{ name: 'write', profileId: 'coder' }],
         },
         {},
         3,
@@ -695,33 +586,33 @@ describe('evolveClient – full sequence parity', () => {
     );
     expect(s.tasks['t1'].status).toBe('active');
 
-    // 5. agent_spawned
+    // 5. session_started
     s = evolveClient(
       s,
-      event('agent_spawned', { profile: 'coder' }, { agentId: 'a1', taskId: 't1', phaseId: 'exec' }, 5),
+      event('session_started', { profile: 'coder' }, { agentId: 'a1', taskId: 't1', phaseId: 'exec' }, 5),
     );
-    expect(s.agents['a1::t1'].active).toBe(true);
-    expect(s.stats.agentCount).toBe(1);
+    expect(s.sessions['a1::t1'].active).toBe(true);
+    expect(s.stats.sessionCount).toBe(1);
 
     // 6. turn_ended with tokens
     s = evolveClient(
       s,
       event('turn_ended', { tokens: { input: 500, output: 200 } }, { agentId: 'a1', taskId: 't1' }, 6),
     );
-    expect(s.agents['a1::t1'].inputTokens).toBe(500);
-    expect(s.agents['a1::t1'].outputTokens).toBe(200);
+    expect(s.sessions['a1::t1'].inputTokens).toBe(500);
+    expect(s.sessions['a1::t1'].outputTokens).toBe(200);
     expect(s.stats.totalTokens).toBe(700);
 
     // 7. tool_call_started
     s = evolveClient(s, event('tool_call_started', { toolName: 'write_file' }, { agentId: 'a1', taskId: 't1' }, 7));
-    expect(s.agents['a1::t1'].toolCallCount).toBe(1);
+    expect(s.sessions['a1::t1'].toolCallCount).toBe(1);
 
     // 8. tool_call_ended
     s = evolveClient(
       s,
       event('tool_call_ended', { toolName: 'write_file', isError: false }, { agentId: 'a1', taskId: 't1' }, 8),
     );
-    expect(s.agents['a1::t1'].log).toHaveLength(2); // tool_call_start + tool_call_end
+    expect(s.sessions['a1::t1'].log).toHaveLength(2); // tool_call_start + tool_call_end
 
     // 9. turn_ended with more tokens + content
     s = evolveClient(
@@ -736,14 +627,14 @@ describe('evolveClient – full sequence parity', () => {
         9,
       ),
     );
-    expect(s.agents['a1::t1'].inputTokens).toBe(800);
-    expect(s.agents['a1::t1'].outputTokens).toBe(300);
-    expect(s.agents['a1::t1'].log).toHaveLength(3); // + text
+    expect(s.sessions['a1::t1'].inputTokens).toBe(800);
+    expect(s.sessions['a1::t1'].outputTokens).toBe(300);
+    expect(s.sessions['a1::t1'].log).toHaveLength(3); // + text
     expect(s.stats.totalTokens).toBe(1100);
 
-    // 10. agent_completed
-    s = evolveClient(s, event('agent_completed', {}, { agentId: 'a1', taskId: 't1', timestamp: '2025-01-01' }, 10));
-    expect(s.agents['a1::t1'].active).toBe(false);
+    // 10. session_completed
+    s = evolveClient(s, event('session_completed', {}, { agentId: 'a1', taskId: 't1', timestamp: '2025-01-01' }, 10));
+    expect(s.sessions['a1::t1'].active).toBe(false);
 
     // 11. task_completed
     s = evolveClient(s, event('task_completed', { taskId: 't1' }, { timestamp: '2025-01-01' }, 11));
@@ -763,7 +654,7 @@ describe('evolveClient – full sequence parity', () => {
     let s = blankProjection();
 
     // First spawn
-    s = evolveClient(s, event('agent_spawned', { profile: 'p' }, { agentId: 'a1', taskId: 't1' }, 1));
+    s = evolveClient(s, event('session_started', { profile: 'p' }, { agentId: 'a1', taskId: 't1' }, 1));
 
     // Accumulate state
     s = evolveClient(s, event('tool_call_started', { toolName: 'a' }, { agentId: 'a1', taskId: 't1' }, 2));
@@ -772,25 +663,25 @@ describe('evolveClient – full sequence parity', () => {
     s = evolveClient(s, event('decision', { decision: 'proceed' }, { agentId: 'a1', taskId: 't1' }, 5));
 
     // Verify pre-re-spawn state
-    expect(s.agents['a1::t1'].toolCallCount).toBe(2);
-    expect(s.agents['a1::t1'].inputTokens).toBe(50);
-    expect(s.agents['a1::t1'].outputTokens).toBe(25);
-    expect(s.agents['a1::t1'].log.length).toBe(3); // 2 tool_starts + 1 decision
-    expect(s.agents['a1::t1'].active).toBe(true);
-    expect(s.stats.agentCount).toBe(1);
+    expect(s.sessions['a1::t1'].toolCallCount).toBe(2);
+    expect(s.sessions['a1::t1'].inputTokens).toBe(50);
+    expect(s.sessions['a1::t1'].outputTokens).toBe(25);
+    expect(s.sessions['a1::t1'].log.length).toBe(3); // 2 tool_starts + 1 decision
+    expect(s.sessions['a1::t1'].active).toBe(true);
+    expect(s.stats.sessionCount).toBe(1);
 
     // Re-spawn
-    s = evolveClient(s, event('agent_spawned', { profile: 'p' }, { agentId: 'a1', taskId: 't1' }, 6));
+    s = evolveClient(s, event('session_started', { profile: 'p' }, { agentId: 'a1', taskId: 't1' }, 6));
 
     // ALL accumulated state must be preserved
-    expect(s.agents['a1::t1'].toolCallCount).toBe(2);
-    expect(s.agents['a1::t1'].inputTokens).toBe(50);
-    expect(s.agents['a1::t1'].outputTokens).toBe(25);
-    expect(s.agents['a1::t1'].log.length).toBe(3);
-    expect(s.agents['a1::t1'].active).toBe(true); // re-activated
-    expect(s.agents['a1::t1'].completedAt).toBeUndefined(); // cleared
-    // agentCount must NOT increment
-    expect(s.stats.agentCount).toBe(1);
+    expect(s.sessions['a1::t1'].toolCallCount).toBe(2);
+    expect(s.sessions['a1::t1'].inputTokens).toBe(50);
+    expect(s.sessions['a1::t1'].outputTokens).toBe(25);
+    expect(s.sessions['a1::t1'].log.length).toBe(3);
+    expect(s.sessions['a1::t1'].active).toBe(true); // re-activated
+    expect(s.sessions['a1::t1'].completedAt).toBeUndefined(); // cleared
+    // sessionCount must NOT increment
+    expect(s.stats.sessionCount).toBe(1);
 
     // Continue accumulating after re-spawn
     s = evolveClient(s, event('tool_call_started', { toolName: 'c' }, { agentId: 'a1', taskId: 't1' }, 7));
@@ -804,17 +695,14 @@ describe('evolveClient – full sequence parity', () => {
       ),
     );
 
-    expect(s.agents['a1::t1'].toolCallCount).toBe(3);
-    expect(s.agents['a1::t1'].inputTokens).toBe(80);
-    expect(s.agents['a1::t1'].outputTokens).toBe(40);
-    expect(s.agents['a1::t1'].log.length).toBe(5); // 3 prior + tool_start + text
+    expect(s.sessions['a1::t1'].toolCallCount).toBe(3);
+    expect(s.sessions['a1::t1'].inputTokens).toBe(80);
+    expect(s.sessions['a1::t1'].outputTokens).toBe(40);
+    expect(s.sessions['a1::t1'].log.length).toBe(5); // 3 prior + tool_start + text
   });
 });
 
 // ── Shared evolve-parity fixture ─────────────────────────────────────────
-import { readFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 

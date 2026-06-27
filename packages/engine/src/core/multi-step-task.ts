@@ -96,7 +96,7 @@ export interface RunMultiStepTaskOptions {
   rendererRegistry?: RendererRegistry;
   /**
    * Optional registry of workflow hooks. When provided AND it has subscribers
-   * for `beforeStepPrompt`, each step's resolved prompt is passed through the
+   * for `beforeSessionPrompt`, each step's resolved prompt is passed through the
    * pipeline hook (seeded with the step prompt) and the pipeline's return
    * value replaces the prompt sent to the agent. Absent or no subscribers →
    * zero behavior change.
@@ -104,7 +104,7 @@ export interface RunMultiStepTaskOptions {
   hookRegistry?: HookRegistry;
   /**
    * Files to inline into each step's prompt via the engine's default
-   * `beforeStepPrompt` / `collectContext` hook (seeded onto the synthesized
+   * `beforeSessionPrompt` / `collectContext` hook (seeded onto the synthesized
    * `task.files` shared by every step). Absent or empty → no file context
    * (unless a subscriber contributes it another way).
    */
@@ -218,7 +218,6 @@ export async function runMultiStepTask(opts: RunMultiStepTaskOptions): Promise<M
     phaseId,
     title,
     dependencies: [],
-    steps: steps.map((s) => ({ name: s.stepName, profileId: s.profileId, isReadOnly: s.isReadOnly ?? false })),
   });
 
   onStatus?.onTaskStart?.({ taskId, title, agentId: taskId, phaseId, startedAt: Date.now() });
@@ -272,6 +271,7 @@ export async function runMultiStepTask(opts: RunMultiStepTaskOptions): Promise<M
       dependencies: [],
       status: 'ready',
       phaseId,
+      worktree: 'none',
     };
 
     let stepIndex = 0;
@@ -304,7 +304,7 @@ export async function runMultiStepTask(opts: RunMultiStepTaskOptions): Promise<M
         typeof step.prompt === 'function' ? await step.prompt([...results], { attempt: execCount }) : step.prompt;
       const promptText = appendFeedbackHistory(basePrompt, feedbackHistory);
 
-      // 4b-2. `beforeStepPrompt` hook seam: when a hookRegistry with
+      // 4b-2. `beforeSessionPrompt` hook seam: when a hookRegistry with
       //       subscribers is threaded in, the pipeline transforms the resolved
       //       step prompt (seeded with `promptText`) and its return value
       //       replaces the prompt sent to the agent. Mirrors runStepTask /
@@ -315,9 +315,9 @@ export async function runMultiStepTask(opts: RunMultiStepTaskOptions): Promise<M
         profileId: step.profileId,
         isReadOnly: step.isReadOnly ?? false,
       };
-      const effectivePrompt = hookRegistry?.hasSubscribers('beforeStepPrompt')
+      const effectivePrompt = hookRegistry?.hasSubscribers('beforeSessionPrompt')
         ? ((await hookRegistry.invokePipeline(
-            'beforeStepPrompt',
+            'beforeSessionPrompt',
             promptText,
             { task, step: stepDefinition, prompt: promptText, cwd: effectiveCwd, worktreeCwd: effectiveCwd },
             { registry: hookRegistry, cwd: effectiveCwd, workDir: cwd, signal },
@@ -356,8 +356,6 @@ export async function runMultiStepTask(opts: RunMultiStepTaskOptions): Promise<M
           cwd: effectiveCwd,
           phaseId,
           taskId,
-          stepIndex,
-          stepName: step.stepName,
           isReadOnly: step.isReadOnly,
           apiKeys,
           allowedWriteDirs: step.allowedWriteDirs,
@@ -396,7 +394,14 @@ export async function runMultiStepTask(opts: RunMultiStepTaskOptions): Promise<M
           if (hookRegistry?.hasSubscribers('onStructuredOutput')) {
             await hookRegistry.invokeObserve(
               'onStructuredOutput',
-              { agentId: taskId, output: structured.result, taskId, phaseId, stepIndex },
+              {
+                agentId: taskId,
+                output: structured.result,
+                taskId,
+                phaseId,
+                runnerRole: step.profileId,
+                attempt: execCount,
+              },
               { registry: hookRegistry, cwd: effectiveCwd, workDir: cwd, signal },
             );
           }

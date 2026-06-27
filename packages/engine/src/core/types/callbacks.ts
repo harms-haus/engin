@@ -3,24 +3,26 @@ export interface WorkflowStatusCallbacks {
   onPhaseRegister?: (info: { id: string; label: string; icon: string }) => void;
   onPhaseStart?: (info: { phase: string; round: number }) => void;
   onPhaseComplete?: (info: { phase: string; durationMs: number }) => void;
-  onAgentSpawn?: (info: {
+  onSessionStart?: (info: {
     agentId: string;
     profile: string;
     phaseId: string;
     taskId?: string;
-    stepIndex?: number;
     sessionId?: string;
     sessionPath?: string;
     /** Resolved model's context window (from pi-ai `Model.contextWindow`). */
     contextWindow?: number;
+    runnerRole?: string;
+    attempt?: number;
   }) => void;
-  onAgentComplete?: (info: {
+  onSessionComplete?: (info: {
     agentId: string;
     profile: string;
     phaseId: string;
     taskId?: string;
-    stepIndex?: number;
     sessionId?: string;
+    runnerRole?: string;
+    attempt?: number;
   }) => void;
   onTaskStart?: (info: {
     taskId: string;
@@ -29,14 +31,7 @@ export interface WorkflowStatusCallbacks {
     phaseId?: string;
     startedAt?: number;
   }) => void;
-  onTaskRegister?: (info: {
-    taskId: string;
-    phaseId: string;
-    title: string;
-    dependencies: string[];
-    steps: { name: string; profileId: string; isReadOnly: boolean }[];
-  }) => void;
-  onStepStart?: (info: { taskId: string; stepIndex: number; stepName: string; agentId: string }) => void;
+  onTaskRegister?: (info: { taskId: string; phaseId: string; title: string; dependencies: string[] }) => void;
   onTaskComplete?: (info: { taskId: string; title: string }) => void;
   onTaskRejected?: (info: { taskId: string; title: string; reason: string }) => void;
   onDecision?: (info: { agentId: string; decision: string; reasoning: string; taskId?: string }) => void;
@@ -96,11 +91,10 @@ export const STATUS_CALLBACK_METHODS: readonly string[] = Object.freeze([
   'onPhaseStart',
   'onPhaseComplete',
   'onPhaseRegister',
-  'onAgentSpawn',
-  'onAgentComplete',
+  'onSessionStart',
+  'onSessionComplete',
   'onTaskStart',
   'onTaskRegister',
-  'onStepStart',
   'onTaskComplete',
   'onTaskRejected',
   'onDecision',

@@ -19,11 +19,11 @@ import { create } from 'zustand';
 import { immer } from 'zustand/middleware/immer';
 import { useShallow } from 'zustand/react/shallow';
 import type {
-  AgentEntity,
   ClientMessage,
   EventRecord,
   PhaseEntity,
   RunSummary,
+  SessionEntity,
   TaskEntity,
   WorkflowProjection,
 } from '../protocol-types';
@@ -57,7 +57,7 @@ export function setStoreUnsubscribeRunFn(fn: ((runId: string) => void) | null): 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 // capAgentLogs / toProjection / writeProjectionToState / reconcileSelection
 // live in @engin/shared/projection-helpers (shared with the TUI ClientStore).
-// The web store's projection fields carry the suffixed names `agentsById` /
+// The web store's projection fields carry the suffixed names `sessionsById` /
 // `tasksById` (Immer-typed `Draft<WorkflowStoreState>`), whereas the shared
 // helpers speak the CANONICAL projection names (`agents` / `tasks`).
 // {@link canonicalView} bridges that gap so the helpers can read/write the
@@ -65,7 +65,7 @@ export function setStoreUnsubscribeRunFn(fn: ((runId: string) => void) | null): 
 // duplicating any projection/selection logic in this module.
 
 /**
- * Expose the store's `agentsById` / `tasksById` Immer-draft fields under the
+ * Expose the store's `sessionsById` / `tasksById` Immer-draft fields under the
  * canonical projection names (`agents` / `tasks`) the shared helpers expect.
  *
  * Reads and writes pass straight through to the underlying Immer draft, so
@@ -79,14 +79,14 @@ function canonicalView(state: Draft<WorkflowStoreState>): WritableProjectionStat
   return new Proxy(state as object, {
     get(t, p) {
       const s = t as WorkflowStoreState;
-      if (p === 'agents') return s.agentsById;
+      if (p === 'sessions') return s.sessionsById;
       if (p === 'tasks') return s.tasksById;
       return Reflect.get(s, p);
     },
     set(t, p, value) {
       const s = t as WorkflowStoreState;
-      if (p === 'agents') {
-        s.agentsById = value as Record<string, AgentEntity>;
+      if (p === 'sessions') {
+        s.sessionsById = value as Record<string, SessionEntity>;
         return true;
       }
       if (p === 'tasks') {
@@ -115,7 +115,7 @@ export interface RunLogEntry {
 
 export interface WorkflowStoreState {
   // Normalized projection fields
-  agentsById: Record<string, AgentEntity>;
+  sessionsById: Record<string, SessionEntity>;
   tasksById: Record<string, TaskEntity>;
   phases: PhaseEntity[];
   currentPhaseId: string;
@@ -129,15 +129,15 @@ export interface WorkflowStoreState {
   error?: string;
   failedPhase?: string;
   seq: number;
-  stats: { totalTokens: number; agentCount: number };
+  stats: { totalTokens: number; sessionCount: number };
   workflowEventLog: WorkflowEventLogEntry[];
 
   // Selection state
   selectedPhaseId: string | null;
   selectedTaskId: string | null;
-  selectedStepIndex: number | null;
+  selectedSessionId: string | null;
   userPinnedPhase: boolean;
-  userPinnedStep: boolean;
+  userPinnedSession: boolean;
   /**
    * Previous-state fields the shared `reconcileSelection` write-back populates
    * on every call (through the `canonicalView` proxy → Immer draft) so the
@@ -147,10 +147,6 @@ export interface WorkflowStoreState {
    *                             (synced + advanced → follow).
    *   prevSelectedTaskStatus  — drives task-completion-reselection
    *                             (active → complete|failed|cancelled).
-   *
-   * NOTE: there is intentionally NO prevActiveStepIndex — the shared
-   * step-follow stays the broad userPinnedStep-gated rule (the TUI's
-   * expanded-state exception is not mirrored here).
    */
   prevCurrentPhaseId: string | null;
   prevSelectedTaskStatus: TaskStatus | null;
@@ -172,7 +168,7 @@ export interface WorkflowStoreState {
   setFailed: (runId: string, error: string, failedPhase: string) => void;
   selectPhase: (id: string | null) => void;
   selectTask: (id: string | null) => void;
-  selectStep: (index: number | null) => void;
+  selectSession: (id: string | null) => void;
   resetSelection: () => void;
 }
 
@@ -183,7 +179,7 @@ export interface WorkflowStoreState {
  *  entities / event log / seq into the view while the first snapshot is in
  *  flight. (Includes `seq: 0` so the first snapshot clears the event log.) */
 const EMPTY_PROJECTION = {
-  agentsById: {} as Record<string, AgentEntity>,
+  sessionsById: {} as Record<string, SessionEntity>,
   tasksById: {} as Record<string, TaskEntity>,
   phases: [] as PhaseEntity[],
   currentPhaseId: '',
@@ -194,12 +190,12 @@ const EMPTY_PROJECTION = {
   error: undefined as string | undefined,
   failedPhase: undefined as string | undefined,
   seq: 0,
-  stats: { totalTokens: 0, agentCount: 0 },
+  stats: { totalTokens: 0, sessionCount: 0 },
   workflowEventLog: [] as WorkflowEventLogEntry[],
 };
 
 const INITIAL_STATE = {
-  agentsById: {} as Record<string, AgentEntity>,
+  sessionsById: {} as Record<string, SessionEntity>,
   tasksById: {} as Record<string, TaskEntity>,
   phases: [] as PhaseEntity[],
   currentPhaseId: '',
@@ -210,13 +206,13 @@ const INITIAL_STATE = {
   error: undefined as string | undefined,
   failedPhase: undefined as string | undefined,
   seq: 0,
-  stats: { totalTokens: 0, agentCount: 0 },
+  stats: { totalTokens: 0, sessionCount: 0 },
   workflowEventLog: [] as WorkflowEventLogEntry[],
   selectedPhaseId: null as string | null,
   selectedTaskId: null as string | null,
-  selectedStepIndex: null as number | null,
+  selectedSessionId: null as string | null,
   userPinnedPhase: false,
-  userPinnedStep: false,
+  userPinnedSession: false,
   // Prev-tracking fields (mirrors the selectRun reset). Declared optional on
   // the interface; always initialized here so the store starts from a known
   // baseline regardless of what a prior session wrote.
@@ -322,9 +318,9 @@ export const useWorkflowStore = create<WorkflowStoreState>()(
         Object.assign(state, EMPTY_PROJECTION);
         state.selectedPhaseId = null;
         state.selectedTaskId = null;
-        state.selectedStepIndex = null;
+        state.selectedSessionId = null;
         state.userPinnedPhase = false;
-        state.userPinnedStep = false;
+        state.userPinnedSession = false;
         // Reset the prev-tracking fields too so the previous run's transition
         // state does not leak into the new run's first reconcile pass.
         state.prevCurrentPhaseId = null;
@@ -357,36 +353,36 @@ export const useWorkflowStore = create<WorkflowStoreState>()(
         state.selectedPhaseId = id;
         // Pinned if a completed phase is explicitly selected
         state.userPinnedPhase = id !== null && state.completedPhaseIds.includes(id);
-        // Reset task/step when phase changes
+        // Reset task/session when phase changes
         state.selectedTaskId = null;
-        state.selectedStepIndex = null;
-        state.userPinnedStep = false;
-        // Run follow rules to settle on initial task/step
+        state.selectedSessionId = null;
+        state.userPinnedSession = false;
+        // Run follow rules to settle on initial task/session
         reconcileSelection(canonicalView(state));
       }),
 
     selectTask: (id: string | null) =>
       set((state) => {
         state.selectedTaskId = id;
-        state.selectedStepIndex = null;
-        state.userPinnedStep = false;
-        // Run follow rules to settle on initial step
+        state.selectedSessionId = null;
+        state.userPinnedSession = false;
+        // Run follow rules to settle on initial session
         reconcileSelection(canonicalView(state));
       }),
 
-    selectStep: (index: number | null) =>
+    selectSession: (id: string | null) =>
       set((state) => {
-        state.selectedStepIndex = index;
-        state.userPinnedStep = true;
+        state.selectedSessionId = id;
+        state.userPinnedSession = true;
       }),
 
     resetSelection: () =>
       set((state) => {
         state.selectedPhaseId = null;
         state.selectedTaskId = null;
-        state.selectedStepIndex = null;
+        state.selectedSessionId = null;
         state.userPinnedPhase = false;
-        state.userPinnedStep = false;
+        state.userPinnedSession = false;
         state.prevCurrentPhaseId = null;
         state.prevSelectedTaskStatus = null;
       }),
@@ -395,9 +391,9 @@ export const useWorkflowStore = create<WorkflowStoreState>()(
 
 // ─── Selector hooks ─────────────────────────────────────────────────────────
 
-export const useAgentIds = () => useWorkflowStore(useShallow((s) => Object.keys(s.agentsById)));
+export const useSessionIds = () => useWorkflowStore(useShallow((s) => Object.keys(s.sessionsById)));
 
-export const useAgentById = (id: string) => useWorkflowStore((s) => s.agentsById[id]);
+export const useSessionById = (id: string) => useWorkflowStore((s) => s.sessionsById[id]);
 
 export const useTaskIds = () => useWorkflowStore(useShallow((s) => Object.keys(s.tasksById)));
 
@@ -423,7 +419,7 @@ export const useSelectedPhaseId = () => useWorkflowStore((s) => s.selectedPhaseI
 
 export const useSelectedTaskId = () => useWorkflowStore((s) => s.selectedTaskId);
 
-export const useSelectedStepIndex = () => useWorkflowStore((s) => s.selectedStepIndex);
+export const useSelectedSessionId = () => useWorkflowStore((s) => s.selectedSessionId);
 
 export const useHasSnapshot = () => useWorkflowStore((s) => s.seq > 0);
 

@@ -4,52 +4,89 @@
 // `workflow-handlers.ts`, `phase-handlers.ts`, etc. Keeping them here avoids
 // circular imports between handlers and the dispatcher in `evolve.ts`.
 
-import type { AgentEntity, EventRecord, WorkflowProjection } from './event-types.js';
+import type { EventRecord, SessionEntity, WorkflowProjection } from './event-types.js';
 
-export const MAX_AGENT_LOG = 500;
+export const MAX_SESSION_LOG = 500;
 
 /** Signature shared by every per-event-type handler. */
 export type EventHandler = (state: WorkflowProjection, event: EventRecord) => WorkflowProjection;
 
-/**
- * Stable key for an agent entity.
- * - If taskId is undefined → just agentId (non-task agents like scouts/planners).
- * - If taskId is defined AND stepIndex is defined → agentId::taskId::stepIndex.
- * - If taskId is defined but stepIndex is undefined → agentId::taskId (backward-compatible).
- */
-export function agentKey(agentId: string, taskId?: string, stepIndex?: number): string {
-  if (taskId === undefined) return agentId;
-  if (stepIndex !== undefined) return `${agentId}::${taskId}::${stepIndex}`;
-  return `${agentId}::${taskId}`;
+/** Identity fields extracted from an event for session resolution. */
+export interface SessionIdentity {
+  agentId: string;
+  taskId?: string;
+  runnerRole?: string;
+  attempt?: number;
 }
 
 /**
- * Resolve an agent entity by agentId (and optional taskId / stepIndex).
+ * Extract session identity fields from an event with metadata??data precedence.
  *
- * 1. Fast path — try exact key match using all available identifiers.
- * 2. Fallback — search all agents for best match:
- *    - Filter by agentId (required) and taskId (if defined).
- *    - Prefer the last active agent (or any matching agent if none active).
- *
- * This unified fallback is critical because events such as `agent_completed`
- * may carry agentId + taskId but NOT stepIndex (legacy events). With per-step
- * keys, the exact-key match would fail, and the fallback ensures resolution.
+ * Precedence: `event.metadata` is tried first; if undefined, `event.data` is
+ * used as fallback. This ensures events that carry identity in `data` (legacy
+ * producers) resolve to the same session key as those that carry it in
+ * `metadata` (canonical producers), eliminating silent O(n) fallback lookups.
  */
-export function resolveAgent(
-  agents: Record<string, AgentEntity>,
+export function extractSessionIdentity(event: EventRecord): SessionIdentity {
+  return {
+    agentId: String(event.metadata.agentId ?? event.data.agentId ?? ''),
+    taskId: event.metadata.taskId,
+    runnerRole: (event.metadata.runnerRole as string | undefined) ?? (event.data.runnerRole as string | undefined),
+    attempt: (event.metadata.attempt as number | undefined) ?? (event.data.attempt as number | undefined),
+  };
+}
+
+/**
+ * Stable key for a session entity.
+ * Combines agentId, taskId, runnerRole, and attempt into a unique string.
+ * - If taskId is undefined → just agentId (non-task sessions like scouts/planners).
+ * - Otherwise → agentId::taskId[::runnerRole][::attempt].
+ */
+export function sessionKey(agentId: string, taskId?: string, runnerRole?: string, attempt?: number): string {
+  if (taskId === undefined) return agentId;
+  const parts = [agentId, taskId];
+  if (runnerRole !== undefined) parts.push(runnerRole);
+  if (attempt !== undefined) parts.push(String(attempt));
+  return parts.join('::');
+}
+
+/**
+ * Resolve a session entity by session key (agentId + taskId + runnerRole + attempt).
+ *
+ * 1. Fast path — try exact session key match.
+ * 2. Fallback — search all sessions for best match.
+ *
+ * Only skip a session when runnerRole differs AND attempt matches — that
+ * combination means the session is a *different* session for the same retry
+ * iteration (e.g. executor vs reviewer at attempt 1). When the attempt
+ * differs we stay lenient to cover legacy/fuzzy resolution.
+ */
+export function resolveSession(
+  sessions: Record<string, SessionEntity>,
   agentId: string,
   taskId?: string,
-  stepIndex?: number,
-): { key: string; entity: AgentEntity } | undefined {
-  // 1. Exact key match (fast path)
-  const exactKey = agentKey(agentId, taskId, stepIndex);
-  if (agents[exactKey]) return { key: exactKey, entity: agents[exactKey] };
+  runnerRole?: string,
+  attempt?: number,
+): { key: string; entity: SessionEntity } | undefined {
+  // 1. Exact session key match (fast path)
+  const exactKey = sessionKey(agentId, taskId, runnerRole, attempt);
+  if (sessions[exactKey]) return { key: exactKey, entity: sessions[exactKey] };
 
-  // 2. Search fallback — iterate all agents for best match
-  let best: { key: string; entity: AgentEntity } | undefined;
-  for (const [k, v] of Object.entries(agents)) {
+  // 2. Search fallback — iterate all sessions for best match.
+  let best: { key: string; entity: SessionEntity } | undefined;
+  for (const [k, v] of Object.entries(sessions)) {
     if (v.agentId !== agentId) continue;
     if (taskId !== undefined && v.taskId !== taskId) continue;
+    if (
+      runnerRole !== undefined &&
+      v.runnerRole !== undefined &&
+      v.runnerRole !== runnerRole &&
+      attempt !== undefined &&
+      v.attempt !== undefined &&
+      v.attempt === attempt
+    ) {
+      continue;
+    }
     if (v.active) {
       best = { key: k, entity: v };
     } else if (!best) {
@@ -65,14 +102,14 @@ export function clone<T>(obj: T, patch: Partial<T>): T {
 }
 
 /**
- * Cap the log at MAX_AGENT_LOG. When `entry` is provided the append is folded
+ * Cap the log at MAX_SESSION_LOG. When `entry` is provided the append is folded
  * in, producing a single O(n) allocation instead of a spread + slice.
  */
-export function capLog(log: AgentEntity['log'], entry?: AgentEntity['log'][number]): AgentEntity['log'] {
+export function capLog(log: SessionEntity['log'], entry?: SessionEntity['log'][number]): SessionEntity['log'] {
   if (entry === undefined) {
-    return log.length <= MAX_AGENT_LOG ? log : log.slice(log.length - MAX_AGENT_LOG);
+    return log.length <= MAX_SESSION_LOG ? log : log.slice(log.length - MAX_SESSION_LOG);
   }
-  if (log.length < MAX_AGENT_LOG) {
+  if (log.length < MAX_SESSION_LOG) {
     return [...log, entry];
   }
   // At capacity — drop oldest + add newest in one allocation.

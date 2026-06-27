@@ -4,13 +4,12 @@
 // auto_retry_started, auto_retry_completed.
 
 import type { EventRecord, LogEntry, WorkflowProjection } from './event-types.js';
-import { capLog, clone, resolveAgent } from './evolve-utils.js';
+import { capLog, clone, extractSessionIdentity, resolveSession } from './evolve-utils.js';
 import { formatDuration, sanitizeDisplayText } from './text-utils.js';
 
 export function handleAutoRetryStarted(state: WorkflowProjection, event: EventRecord): WorkflowProjection {
-  const agentId = String(event.metadata.agentId ?? '');
-  const taskId = event.metadata.taskId;
-  const resolved = resolveAgent(state.agents, agentId, taskId);
+  const { agentId, taskId } = extractSessionIdentity(event);
+  const resolved = resolveSession(state.sessions, agentId, taskId);
   if (!resolved) return clone(state, { seq: event.seq });
   const { key, entity: existing } = resolved;
   const attempt = Number(event.data.attempt ?? 1);
@@ -27,8 +26,8 @@ export function handleAutoRetryStarted(state: WorkflowProjection, event: EventRe
     metadata: { attempt, maxAttempts, delayMs, errorMessage },
   };
   return clone(state, {
-    agents: {
-      ...state.agents,
+    sessions: {
+      ...state.sessions,
       [key]: clone(existing, { log: capLog(existing.log, entry) }),
     },
     seq: event.seq,
@@ -36,9 +35,8 @@ export function handleAutoRetryStarted(state: WorkflowProjection, event: EventRe
 }
 
 export function handleAutoRetryCompleted(state: WorkflowProjection, event: EventRecord): WorkflowProjection {
-  const agentId = String(event.metadata.agentId ?? '');
-  const taskId = event.metadata.taskId;
-  const resolved = resolveAgent(state.agents, agentId, taskId);
+  const { agentId, taskId } = extractSessionIdentity(event);
+  const resolved = resolveSession(state.sessions, agentId, taskId);
   if (!resolved) return clone(state, { seq: event.seq });
   const { key, entity: existing } = resolved;
   const success = event.data.success === true;
@@ -52,8 +50,8 @@ export function handleAutoRetryCompleted(state: WorkflowProjection, event: Event
     metadata: { success, attempt, finalError },
   };
   return clone(state, {
-    agents: {
-      ...state.agents,
+    sessions: {
+      ...state.sessions,
       [key]: clone(existing, { log: capLog(existing.log, entry) }),
     },
     seq: event.seq,

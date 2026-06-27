@@ -122,8 +122,8 @@ describe('phase-tasks public API surface', () => {
       phaseId: 'p',
       taskId: 't',
       title: 'T',
-      stepName: 's',
       profileId: 'coder',
+      stepName: 'step',
       cwd: '/tmp',
       prompt: 'x',
       // Abort immediately so it rejects cheaply without callbacks.
@@ -157,10 +157,10 @@ describe('phase-tasks public API surface', () => {
       phaseId: 'phase',
       taskId: 'task',
       title: 'Title',
-      stepName: 'step',
       profileId: 'coder',
       cwd: '/tmp',
       prompt: 'do work',
+      stepName: 'step',
     };
     expect(stepOpts.prompt).toBe('do work');
 
@@ -177,9 +177,8 @@ describe('phase-tasks public API surface', () => {
       taskId: 'task',
       title: 'Title',
       cwd: '/tmp',
-      steps: [stepDef],
+      steps: [{ stepName: 'step', profileId: 'coder', prompt: 'x' }],
     };
-    expect(multiOpts.steps).toHaveLength(1);
 
     const result: MultiStepTaskResult = { results: [], approved: true };
     expect(result.approved).toBe(true);
@@ -202,8 +201,8 @@ describe('runStepTask — early abort + error paths', () => {
         phaseId: 'p',
         taskId: 't',
         title: 'T',
-        stepName: 's',
         profileId: 'coder',
+        stepName: 'step',
         cwd: '/tmp',
         prompt: 'x',
         signal: AbortSignal.abort(),
@@ -230,8 +229,8 @@ describe('runStepTask — early abort + error paths', () => {
         phaseId: 'p',
         taskId: 't',
         title: 'T',
-        stepName: 's',
         profileId: 'missing-profile',
+        stepName: 'step',
         cwd: '/tmp',
         prompt: 'x',
       });
@@ -263,8 +262,8 @@ describe('runStepTask — early abort + error paths', () => {
       phaseId: 'my-phase',
       taskId: 'task-42',
       title: 'My Task',
-      stepName: 'scout',
       profileId: 'coder',
+      stepName: 'step',
       cwd: '/tmp/project',
       prompt: 'explore',
       onStatus: { onTaskRegister, onTaskStart, onTaskComplete, onTaskRejected },
@@ -279,9 +278,6 @@ describe('runStepTask — early abort + error paths', () => {
     expect(reg.phaseId).toBe('my-phase');
     expect(reg.title).toBe('My Task');
     expect(reg.dependencies).toEqual([]);
-    const steps = reg.steps as Array<Record<string, unknown>>;
-    expect(steps).toHaveLength(1);
-    expect(steps[0]).toEqual({ name: 'scout', profileId: 'coder', isReadOnly: false });
 
     // onTaskStart fires.
     expect(onTaskStart).toHaveBeenCalledTimes(1);
@@ -308,8 +304,8 @@ describe('runStepTask — early abort + error paths', () => {
         phaseId: 'p',
         taskId: 'task-9',
         title: 'T',
-        stepName: 's',
         profileId: 'nope',
+        stepName: 'step',
         cwd: '/tmp',
         prompt: 'x',
         onStatus: { onTaskComplete, onTaskRejected },
@@ -336,8 +332,8 @@ describe('runStepTask — early abort + error paths', () => {
       phaseId: 'p',
       taskId: 't',
       title: 'T',
-      stepName: 'review',
       profileId: 'reviewer',
+      stepName: 'review',
       cwd: '/tmp',
       prompt: 'review',
       schema: z.object({ approved: z.boolean(), comment: z.string() }) as unknown as ZodType<unknown>,
@@ -362,7 +358,7 @@ describe('runMultiStepTask — guards + exhaustion + registration', () => {
         taskId: 't',
         title: 'T',
         cwd: '/tmp',
-        steps: [{ stepName: 's', profileId: 'coder', prompt: 'x' }],
+        steps: [],
         signal: AbortSignal.abort(),
         onStatus: { onTaskRegister, onTaskStart },
       });
@@ -415,20 +411,16 @@ describe('runMultiStepTask — guards + exhaustion + registration', () => {
       title: 'Multi',
       cwd: '/tmp/project',
       steps: [
-        { stepName: 'plan', profileId: 'planner', prompt: 'plan', isReadOnly: true },
-        { stepName: 'execute', profileId: 'reviewer', prompt: 'exec' },
+        { stepName: 'plan', profileId: 'planner', prompt: 'Plan' },
+        { stepName: 'review', profileId: 'reviewer', prompt: 'Review' },
       ],
       onStatus: { onTaskRegister, onTaskStart, onTaskComplete },
     });
 
-    // Registered exactly once, with both steps.
+    // Registered exactly once.
     expect(onTaskRegister).toHaveBeenCalledTimes(1);
     const reg = onTaskRegister.mock.calls[0][0] as Record<string, unknown>;
     expect(reg.taskId).toBe('task-multi');
-    const steps = reg.steps as Array<Record<string, unknown>>;
-    expect(steps).toHaveLength(2);
-    expect(steps[0]).toEqual({ name: 'plan', profileId: 'planner', isReadOnly: true });
-    expect(steps[1]).toEqual({ name: 'execute', profileId: 'reviewer', isReadOnly: false });
 
     expect(onTaskStart).toHaveBeenCalledTimes(1);
     expect(onTaskComplete).toHaveBeenCalledTimes(1);
@@ -453,19 +445,18 @@ describe('runMultiStepTask — guards + exhaustion + registration', () => {
       taskId: 'task-exhaust',
       title: 'Exhaust',
       cwd: '/tmp',
-      maxStepRetries: 2,
       steps: [
-        { stepName: 'plan', profileId: 'planner', prompt: 'plan' },
         {
-          stepName: 'review',
-          profileId: 'reviewer',
-          prompt: 'review',
+          stepName: 'step1',
+          profileId: 'planner',
+          prompt: 'Do work',
           isReadOnly: true,
           schema: z.object({ approved: z.boolean() }) as unknown as ZodType<unknown>,
-          isApproved: (r) => (r as { approved?: boolean }).approved === true,
+          isApproved: (r: unknown) => (r as { approved?: boolean }).approved === true,
           getFeedback: () => 'no good',
         },
       ],
+      maxStepRetries: 2,
       onStatus: { onTaskRejected, onTaskComplete, onDecision },
     });
 
@@ -502,19 +493,17 @@ describe('runMultiStepTask — guards + exhaustion + registration', () => {
       taskId: 't',
       title: 'T',
       cwd: '/tmp',
-      maxStepRetries: 1,
       steps: [
-        { stepName: 'plan', profileId: 'planner', prompt: 'plan' },
         {
-          stepName: 'review',
-          profileId: 'reviewer',
-          prompt: 'review',
+          stepName: 'step1',
+          profileId: 'planner',
+          prompt: 'Do work',
           isReadOnly: true,
           schema: z.object({ approved: z.boolean() }) as unknown as ZodType<unknown>,
-          isApproved: (r) => (r as { approved?: boolean }).approved === true,
-          // No getFeedback — should fall back to generic message.
+          isApproved: (r: unknown) => (r as { approved?: boolean }).approved === true,
         },
       ],
+      maxStepRetries: 1,
       onStatus: { onDecision },
     });
 
@@ -538,10 +527,7 @@ describe('runMultiStepTask — guards + exhaustion + registration', () => {
         taskId: 'task-missing',
         title: 'T',
         cwd: '/tmp',
-        steps: [
-          { stepName: 'plan', profileId: 'planner', prompt: 'plan' },
-          { stepName: 'review', profileId: 'reviewer', prompt: 'review' },
-        ],
+        steps: [{ stepName: 'step1', profileId: 'reviewer', prompt: 'Do work' }],
       });
     } catch (e) {
       err = e;

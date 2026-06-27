@@ -47,8 +47,8 @@
 // `formatWorkflowEventLine` from `@engin/shared/format-workflow-event`.
 //
 // NOTE: `ClientStoreState` EXTENDS `WorkflowProjection`, so the projection
-// fields are read as `state.agents`, `state.tasks`, `state.phases`,
-// `state.currentPhaseId`, etc. (NOT the web store's `agentsById`/`tasksById`).
+// fields are read as `state.sessions`, `state.tasks`, `state.phases`,
+// `state.currentPhaseId`, etc. (NOT the web store's `sessionsById`/`tasksById`).
 // ────────────────────────────────────────────────────────────────────────────
 
 import { beforeEach, describe, expect, it } from 'bun:test';
@@ -65,7 +65,7 @@ import { formatWorkflowEventLine } from '@engin/shared/format-workflow-event';
 
 // ── Constants ───────────────────────────────────────────────────────────────
 const ISO_NOW = '2026-06-15T00:00:00.000Z';
-const MAX_AGENT_LOG = 500; // @engin/shared/evolve MAX_AGENT_LOG
+const MAX_SESSION_LOG = 500; // @engin/shared/evolve MAX_SESSION_LOG
 // NOTE: workflowEventLog is capped at MAX_WORKFLOW_EVENT_LOG (10000) in
 // packages/shared/src/client-store.ts so memory stays bounded for long-running
 // workflows; entries beyond the cap are dropped FIFO (oldest first). The
@@ -108,21 +108,19 @@ describe('ClientStore – construction & getState', () => {
     expect(s.currentPhaseId).toBe('');
     expect(s.completedPhaseIds).toEqual([]);
     expect(s.tasks).toEqual({});
-    expect(s.agents).toEqual({});
+    expect(s.sessions).toEqual({});
     expect(s.sidebar).toEqual({ title: '', indicator: '' });
     expect(s.status).toBe('running');
     expect(s.error).toBeUndefined();
     expect(s.failedPhase).toBeUndefined();
-    expect(s.stats).toEqual({ totalTokens: 0, agentCount: 0 });
+    expect(s.stats).toEqual({ totalTokens: 0, sessionCount: 0 });
   });
 
   it('initializes selection state to nulls / false', () => {
     const s = new ClientStore().getState();
     expect(s.selectedPhaseId).toBeNull();
     expect(s.selectedTaskId).toBeNull();
-    expect(s.selectedStepIndex).toBeNull();
     expect(s.userPinnedPhase).toBe(false);
-    expect(s.userPinnedStep).toBe(false);
   });
 
   it('initializes workflowEventLog to an empty array', () => {
@@ -241,10 +239,10 @@ describe('ClientStore – applySnapshot', () => {
       currentPhaseId: 'exec',
       completedPhaseIds: ['plan'],
       tasks: {
-        t1: { id: 't1', title: 'Task 1', status: 'complete', phaseId: 'plan', steps: [], dependencies: [] },
-        t2: { id: 't2', title: 'Task 2', status: 'active', phaseId: 'exec', steps: [], dependencies: [] },
+        t1: { id: 't1', title: 'Task 1', status: 'complete', phaseId: 'plan', dependencies: [] },
+        t2: { id: 't2', title: 'Task 2', status: 'active', phaseId: 'exec', dependencies: [] },
       },
-      agents: {
+      sessions: {
         'a1::t1': {
           uid: 'a1::t1',
           agentId: 'a1',
@@ -257,11 +255,13 @@ describe('ClientStore – applySnapshot', () => {
           inputTokens: 1000,
           outputTokens: 500,
           taskTitle: 'Task 1',
+          runnerRole: 'executor',
+          attempt: 1,
         },
       },
       sidebar: { title: 'My App', indicator: 'green' },
       status: 'running',
-      stats: { totalTokens: 1500, agentCount: 1 },
+      stats: { totalTokens: 1500, sessionCount: 1 },
       runLog: [],
     };
 
@@ -276,8 +276,8 @@ describe('ClientStore – applySnapshot', () => {
     expect(s.phases[0].id).toBe('plan');
     expect(Object.keys(s.tasks)).toHaveLength(2);
     expect(s.tasks['t1'].status).toBe('complete');
-    expect(Object.keys(s.agents)).toHaveLength(1);
-    expect(s.agents['a1::t1'].toolCallCount).toBe(5);
+    expect(Object.keys(s.sessions)).toHaveLength(1);
+    expect(s.sessions['a1::t1'].toolCallCount).toBe(5);
     expect(s.sidebar.title).toBe('My App');
     expect(s.stats.totalTokens).toBe(1500);
   });
@@ -292,7 +292,7 @@ describe('ClientStore – applySnapshot', () => {
     const store = new ClientStore();
     const snapshot = blankProjection({
       phases: [{ id: 'p1', label: 'P1', icon: '', taskIds: [] }],
-      tasks: { t1: { id: 't1', title: 'T', status: 'ready', phaseId: 'p1', steps: [], dependencies: [] } },
+      tasks: { t1: { id: 't1', title: 'T', status: 'ready', phaseId: 'p1', dependencies: [] } },
       completedPhaseIds: ['p1'],
     });
 
@@ -301,7 +301,7 @@ describe('ClientStore – applySnapshot', () => {
     // Mutate the original snapshot AFTER applying — state must be unaffected.
     snapshot.phases.push({ id: 'p2', label: 'P2', icon: '', taskIds: [] });
     snapshot.completedPhaseIds.push('pX');
-    snapshot.tasks['t2'] = { id: 't2', title: 'X', status: 'ready', phaseId: '', steps: [], dependencies: [] };
+    snapshot.tasks['t2'] = { id: 't2', title: 'X', status: 'ready', phaseId: '', dependencies: [] };
 
     const s = store.getState();
     expect(s.phases).toHaveLength(1);
@@ -310,9 +310,9 @@ describe('ClientStore – applySnapshot', () => {
     expect(Object.keys(s.tasks)).toEqual(['t1']);
   });
 
-  it('caps oversized agent logs at MAX_AGENT_LOG (500)', () => {
+  it('caps oversized agent logs at MAX_SESSION_LOG (500)', () => {
     const store = new ClientStore();
-    const logs = Array.from({ length: MAX_AGENT_LOG + 10 }, (_, i) => ({
+    const logs = Array.from({ length: MAX_SESSION_LOG + 10 }, (_, i) => ({
       id: `log-${i}`,
       timestamp: ISO_NOW,
       type: 'text' as const,
@@ -320,7 +320,7 @@ describe('ClientStore – applySnapshot', () => {
     }));
 
     const snapshot = blankProjection({
-      agents: {
+      sessions: {
         a1: {
           uid: 'a1',
           agentId: 'a1',
@@ -332,17 +332,19 @@ describe('ClientStore – applySnapshot', () => {
           inputTokens: 0,
           outputTokens: 0,
           taskTitle: '',
+          runnerRole: 'executor',
+          attempt: 1,
         },
       },
     });
 
     store.applySnapshot(snapshot, 1);
-    const agent = store.getState().agents['a1'];
+    const agent = store.getState().sessions['a1'];
 
-    expect(agent.log).toHaveLength(MAX_AGENT_LOG);
+    expect(agent.log).toHaveLength(MAX_SESSION_LOG);
     // Oldest 10 entries dropped; first remaining is entry-10.
     expect(agent.log[0].content).toBe('entry-10');
-    expect(agent.log[MAX_AGENT_LOG - 1].content).toBe(`entry-${MAX_AGENT_LOG + 9}`);
+    expect(agent.log[MAX_SESSION_LOG - 1].content).toBe(`entry-${MAX_SESSION_LOG + 9}`);
   });
 
   it('clears workflowEventLog on a fresh start (state.seq === 0)', () => {
@@ -397,9 +399,8 @@ describe('ClientStore – applySnapshot', () => {
             title: 'T1',
             status: 'active',
             phaseId: 'exec',
-            steps: [{ name: 's0', index: 0 }],
+
             dependencies: [],
-            activeStepIndex: 0,
           },
         },
       }),
@@ -412,7 +413,6 @@ describe('ClientStore – applySnapshot', () => {
     // Task follow picks the first active task in the phase.
     expect(s.selectedTaskId).toBe('t1');
     // Step follow syncs to activeStepIndex.
-    expect(s.selectedStepIndex).toBe(0);
   });
 
   it('notifies listeners', () => {
@@ -436,15 +436,15 @@ describe('ClientStore – applyEvents', () => {
     store.applyEvents([
       ev('workflow_started', { taskPrompt: 'hello' }, {}, 1),
       ev('phase_started', { phase: 'scouting' }, {}, 2),
-      ev('task_registered', { id: 't1', title: 'Task 1', phaseId: 'scouting', steps: [], dependencies: [] }, {}, 3),
-      ev('agent_spawned', { profile: 'coder' }, { agentId: 'a1', taskId: 't1' }, 4),
+      ev('task_registered', { id: 't1', title: 'Task 1', phaseId: 'scouting', dependencies: [] }, {}, 3),
+      ev('session_started', { profile: 'coder' }, { agentId: 'a1', taskId: 't1' }, 4),
     ]);
 
     const s = store.getState();
     expect(s.taskPrompt).toBe('hello');
     expect(s.currentPhaseId).toBe('scouting');
     expect(s.tasks['t1'].title).toBe('Task 1');
-    expect(s.agents['a1::t1'].profile).toBe('coder');
+    expect(s.sessions['a1::t1'].profile).toBe('coder');
     expect(s.seq).toBe(4);
   });
 
@@ -457,7 +457,7 @@ describe('ClientStore – applyEvents', () => {
   it('accumulates tokens and tool-call counts across events', () => {
     const store = new ClientStore();
     store.applyEvents([
-      ev('agent_spawned', { profile: 'p' }, { agentId: 'a1', taskId: 't1' }, 1),
+      ev('session_started', { profile: 'p' }, { agentId: 'a1', taskId: 't1' }, 1),
       ev('tool_call_started', { toolName: 'read' }, { agentId: 'a1', taskId: 't1' }, 2),
       ev(
         'turn_ended',
@@ -468,7 +468,7 @@ describe('ClientStore – applyEvents', () => {
     ]);
 
     const s = store.getState();
-    const agent = s.agents['a1::t1'];
+    const agent = s.sessions['a1::t1'];
     expect(agent.toolCallCount).toBe(1);
     expect(agent.inputTokens).toBe(100);
     expect(agent.outputTokens).toBe(50);
@@ -479,23 +479,23 @@ describe('ClientStore – applyEvents', () => {
   it('re-spawn preserves accumulated agent state and does not double-count (kb-11 parity)', () => {
     const store = new ClientStore();
     store.applyEvents([
-      ev('agent_spawned', { profile: 'p' }, { agentId: 'a1', taskId: 't1' }, 1),
+      ev('session_started', { profile: 'p' }, { agentId: 'a1', taskId: 't1' }, 1),
       ev('tool_call_started', { toolName: 'a' }, { agentId: 'a1', taskId: 't1' }, 2),
       ev('tool_call_started', { toolName: 'b' }, { agentId: 'a1', taskId: 't1' }, 3),
       ev('turn_ended', { tokens: { input: 50, output: 25 } }, { agentId: 'a1', taskId: 't1' }, 4),
       ev('decision', { decision: 'proceed' }, { agentId: 'a1', taskId: 't1' }, 5),
       // Re-spawn the same agent key.
-      ev('agent_spawned', { profile: 'p' }, { agentId: 'a1', taskId: 't1' }, 6),
+      ev('session_started', { profile: 'p' }, { agentId: 'a1', taskId: 't1' }, 6),
     ]);
 
     const s = store.getState();
-    const agent = s.agents['a1::t1'];
+    const agent = s.sessions['a1::t1'];
     expect(agent.toolCallCount).toBe(2);
     expect(agent.inputTokens).toBe(50);
     expect(agent.outputTokens).toBe(25);
     expect(agent.log.length).toBe(3); // 2 tool_call_start + 1 decision
     expect(agent.active).toBe(true);
-    expect(s.stats.agentCount).toBe(1); // NOT incremented on re-spawn
+    expect(s.stats.sessionCount).toBe(1); // NOT incremented on re-spawn
   });
 
   it('produces a projection identical to folding evolve() manually', () => {
@@ -510,7 +510,7 @@ describe('ClientStore – applyEvents', () => {
           id: 't1',
           title: 'T',
           phaseId: 'p1',
-          steps: [{ name: 's', profileId: 'c', isReadOnly: false }],
+
           dependencies: [],
         },
         {},
@@ -531,7 +531,7 @@ describe('ClientStore – applyEvents', () => {
     expect(s.phases).toEqual(expected.phases);
     expect(s.completedPhaseIds).toEqual(expected.completedPhaseIds);
     expect(s.tasks).toEqual(expected.tasks);
-    expect(s.agents).toEqual(expected.agents);
+    expect(s.sessions).toEqual(expected.sessions);
     expect(s.stats).toEqual(expected.stats);
     expect(s.status).toBe(expected.status);
   });
@@ -666,23 +666,19 @@ describe('ClientStore – selectPhase', () => {
         currentPhaseId: 'exec',
         phases: [{ id: 'exec', label: 'Exec', icon: '⚡', taskIds: ['t1', 't2'] }],
         tasks: {
-          t1: { id: 't1', title: 'T1', status: 'ready', phaseId: 'exec', steps: [], dependencies: [] },
-          t2: { id: 't2', title: 'T2', status: 'active', phaseId: 'exec', steps: [], dependencies: [] },
+          t1: { id: 't1', title: 'T1', status: 'ready', phaseId: 'exec', dependencies: [] },
+          t2: { id: 't2', title: 'T2', status: 'active', phaseId: 'exec', dependencies: [] },
         },
       }),
       1,
     );
 
     // Pin a step first so we can observe it being reset.
-    store.selectStep(0);
-    expect(store.getState().userPinnedStep).toBe(true);
 
     store.selectPhase('exec');
     const s = store.getState();
     // Task follow picks the first active task (t2).
-    expect(s.selectedTaskId).toBe('t2');
-    expect(s.selectedStepIndex).toBeNull(); // reset
-    expect(s.userPinnedStep).toBe(false); // reset
+    expect(s.selectedTaskId).toBe('t2'); // reset // reset
   });
 
   it('respects an explicit non-current phase selection (tightened phase-follow does not snap back)', () => {
@@ -732,31 +728,21 @@ describe('ClientStore – selectTask', () => {
             title: 'T1',
             status: 'active',
             phaseId: 'exec',
-            steps: [
-              { name: 's0', index: 0 },
-              { name: 's1', index: 1 },
-            ],
+
             dependencies: [],
-            activeStepIndex: 1,
           },
         },
       }),
       1,
     );
     // Reconcile after snapshot picks exec → t1 → step 1.
-    expect(store.getState().selectedStepIndex).toBe(1);
 
     // Pin step 0.
-    store.selectStep(0);
-    expect(store.getState().selectedStepIndex).toBe(0);
-    expect(store.getState().userPinnedStep).toBe(true);
 
     // Re-select the same task — step pin resets and reconcile re-syncs to 1.
     store.selectTask('t1');
     const s = store.getState();
     expect(s.selectedTaskId).toBe('t1');
-    expect(s.selectedStepIndex).toBe(1);
-    expect(s.userPinnedStep).toBe(false);
   });
 
   it('selectTask(null) is reconciled back to the first active task (task-follow rule)', () => {
@@ -775,9 +761,8 @@ describe('ClientStore – selectTask', () => {
             title: 'T1',
             status: 'active',
             phaseId: 'exec',
-            steps: [{ name: 's0', index: 0 }],
+
             dependencies: [],
-            activeStepIndex: 0,
           },
         },
       }),
@@ -790,8 +775,6 @@ describe('ClientStore – selectTask', () => {
     // Re-selected by the task-follow rule.
     expect(s.selectedTaskId).toBe('t1');
     // Step pin reset, then step-follow re-synced to activeStepIndex 0.
-    expect(s.selectedStepIndex).toBe(0);
-    expect(s.userPinnedStep).toBe(false);
   });
 
   it('selectTask(null) stays null when the selected phase has no tasks', () => {
@@ -809,8 +792,6 @@ describe('ClientStore – selectTask', () => {
     store.selectTask(null);
     const s = store.getState();
     expect(s.selectedTaskId).toBeNull();
-    expect(s.selectedStepIndex).toBeNull();
-    expect(s.userPinnedStep).toBe(false);
   });
 
   it('notifies listeners', () => {
@@ -827,27 +808,29 @@ describe('ClientStore – selectTask', () => {
 describe('ClientStore – selectStep', () => {
   it('sets selectedStepIndex and userPinnedStep=true', () => {
     const store = new ClientStore();
-    store.selectStep(2);
     const s = store.getState();
-    expect(s.selectedStepIndex).toBe(2);
-    expect(s.userPinnedStep).toBe(true);
   });
 
   it('selectStep(null) sets step to null and still pins', () => {
     const store = new ClientStore();
-    store.selectStep(null);
     const s = store.getState();
-    expect(s.selectedStepIndex).toBeNull();
-    expect(s.userPinnedStep).toBe(true);
   });
 
-  it('notifies listeners', () => {
+  it('notifies listeners after applyEvents', () => {
     const store = new ClientStore();
     let calls = 0;
     store.subscribe(() => {
       calls++;
     });
-    store.selectStep(3);
+    expect(calls).toBe(0);
+    store.applyEvents([
+      {
+        seq: 1,
+        type: 'workflow_started',
+        data: { taskPrompt: 'x' },
+        metadata: { timestamp: new Date().toISOString() },
+      },
+    ]);
     expect(calls).toBe(1);
   });
 });
@@ -880,7 +863,7 @@ describe('ClientStore – follow rules', () => {
           completedPhaseIds: [],
           phases: [{ id: 'scouting', label: 'Scouting', icon: '🔍', taskIds: ['t1'] }],
           tasks: {
-            t1: { id: 't1', title: 'T1', status: 'active', phaseId: 'scouting', steps: [], dependencies: [] },
+            t1: { id: 't1', title: 'T1', status: 'active', phaseId: 'scouting', dependencies: [] },
           },
         }),
         1,
@@ -903,7 +886,7 @@ describe('ClientStore – follow rules', () => {
             { id: 'exec', label: 'Exec', icon: '⚡', taskIds: ['t2'] },
           ],
           tasks: {
-            t2: { id: 't2', title: 'T2', status: 'active', phaseId: 'exec', steps: [], dependencies: [] },
+            t2: { id: 't2', title: 'T2', status: 'active', phaseId: 'exec', dependencies: [] },
           },
         }),
         2,
@@ -926,7 +909,7 @@ describe('ClientStore – follow rules', () => {
             { id: 'exec', label: 'Exec', icon: '⚡', taskIds: ['t1'] },
           ],
           tasks: {
-            t1: { id: 't1', title: 'T1', status: 'ready', phaseId: 'exec', steps: [], dependencies: [] },
+            t1: { id: 't1', title: 'T1', status: 'ready', phaseId: 'exec', dependencies: [] },
           },
         }),
         1,
@@ -947,7 +930,7 @@ describe('ClientStore – follow rules', () => {
             { id: 'review', label: 'Review', icon: '🔍', taskIds: ['t2'] },
           ],
           tasks: {
-            t2: { id: 't2', title: 'T2', status: 'ready', phaseId: 'review', steps: [], dependencies: [] },
+            t2: { id: 't2', title: 'T2', status: 'ready', phaseId: 'review', dependencies: [] },
           },
         }),
         2,
@@ -964,8 +947,8 @@ describe('ClientStore – follow rules', () => {
           currentPhaseId: 'exec',
           phases: [{ id: 'exec', label: 'Exec', icon: '⚡', taskIds: ['t1', 't2'] }],
           tasks: {
-            t1: { id: 't1', title: 'T1', status: 'ready', phaseId: 'exec', steps: [], dependencies: [] },
-            t2: { id: 't2', title: 'T2', status: 'active', phaseId: 'exec', steps: [], dependencies: [] },
+            t1: { id: 't1', title: 'T1', status: 'ready', phaseId: 'exec', dependencies: [] },
+            t2: { id: 't2', title: 'T2', status: 'active', phaseId: 'exec', dependencies: [] },
           },
         }),
         1,
@@ -981,8 +964,8 @@ describe('ClientStore – follow rules', () => {
           currentPhaseId: 'exec',
           phases: [{ id: 'exec', label: 'Exec', icon: '⚡', taskIds: ['t1', 't2'] }],
           tasks: {
-            t1: { id: 't1', title: 'T1', status: 'ready', phaseId: 'exec', steps: [], dependencies: [] },
-            t2: { id: 't2', title: 'T2', status: 'complete', phaseId: 'exec', steps: [], dependencies: [] },
+            t1: { id: 't1', title: 'T1', status: 'ready', phaseId: 'exec', dependencies: [] },
+            t2: { id: 't2', title: 'T2', status: 'complete', phaseId: 'exec', dependencies: [] },
           },
         }),
         1,
@@ -998,8 +981,8 @@ describe('ClientStore – follow rules', () => {
           currentPhaseId: 'exec',
           phases: [{ id: 'exec', label: 'Exec', icon: '⚡', taskIds: ['t1', 't2'] }],
           tasks: {
-            t1: { id: 't1', title: 'T1', status: 'ready', phaseId: 'exec', steps: [], dependencies: [] },
-            t2: { id: 't2', title: 'T2', status: 'active', phaseId: 'exec', steps: [], dependencies: [] },
+            t1: { id: 't1', title: 'T1', status: 'ready', phaseId: 'exec', dependencies: [] },
+            t2: { id: 't2', title: 'T2', status: 'active', phaseId: 'exec', dependencies: [] },
           },
         }),
         1,
@@ -1031,7 +1014,7 @@ describe('ClientStore – follow rules', () => {
               title: 'T1',
               status: 'active',
               phaseId: 'exec',
-              steps: [],
+
               dependencies: [],
               startedAt: 50,
             },
@@ -1053,7 +1036,7 @@ describe('ClientStore – follow rules', () => {
               title: 'T1',
               status: 'complete',
               phaseId: 'exec',
-              steps: [],
+
               dependencies: [],
               startedAt: 50,
             },
@@ -1062,7 +1045,7 @@ describe('ClientStore – follow rules', () => {
               title: 'T2',
               status: 'active',
               phaseId: 'exec',
-              steps: [],
+
               dependencies: [],
               startedAt: 100,
             },
@@ -1071,7 +1054,7 @@ describe('ClientStore – follow rules', () => {
               title: 'T3',
               status: 'active',
               phaseId: 'exec',
-              steps: [],
+
               dependencies: [],
               startedAt: 200,
             },
@@ -1095,7 +1078,7 @@ describe('ClientStore – follow rules', () => {
               title: 'T1',
               status: 'active',
               phaseId: 'exec',
-              steps: [],
+
               dependencies: [],
               startedAt: 10,
             },
@@ -1116,11 +1099,11 @@ describe('ClientStore – follow rules', () => {
               title: 'T1',
               status: 'complete',
               phaseId: 'exec',
-              steps: [],
+
               dependencies: [],
               startedAt: 10,
             },
-            t2: { id: 't2', title: 'T2', status: 'ready', phaseId: 'exec', steps: [], dependencies: [], startedAt: 20 },
+            t2: { id: 't2', title: 'T2', status: 'ready', phaseId: 'exec', dependencies: [], startedAt: 20 },
           },
         }),
         2,
@@ -1143,19 +1126,14 @@ describe('ClientStore – follow rules', () => {
               title: 'T1',
               status: 'active',
               phaseId: 'exec',
-              steps: [
-                { name: 's0', index: 0 },
-                { name: 's1', index: 1 },
-              ],
+
               dependencies: [],
-              activeStepIndex: 0,
             },
           },
         }),
         1,
       );
       store.selectPhase('exec');
-      expect(store.getState().selectedStepIndex).toBe(0);
 
       // activeStepIndex advances to 1 via a new snapshot.
       store.applySnapshot(
@@ -1168,18 +1146,13 @@ describe('ClientStore – follow rules', () => {
               title: 'T1',
               status: 'active',
               phaseId: 'exec',
-              steps: [
-                { name: 's0', index: 0 },
-                { name: 's1', index: 1 },
-              ],
+
               dependencies: [],
-              activeStepIndex: 1,
             },
           },
         }),
         2,
       );
-      expect(store.getState().selectedStepIndex).toBe(1);
     });
 
     it('does NOT sync selectedStepIndex when the step is user-pinned', () => {
@@ -1190,13 +1163,8 @@ describe('ClientStore – follow rules', () => {
           title: 'T1',
           status: 'active',
           phaseId: 'exec',
-          steps: [
-            { name: 's0', index: 0 },
-            { name: 's1', index: 1 },
-            { name: 's2', index: 2 },
-          ],
+
           dependencies: [],
-          activeStepIndex: 0,
         },
       });
 
@@ -1211,9 +1179,6 @@ describe('ClientStore – follow rules', () => {
       store.selectPhase('exec');
 
       // Pin to step 1.
-      store.selectStep(1);
-      expect(store.getState().selectedStepIndex).toBe(1);
-      expect(store.getState().userPinnedStep).toBe(true);
 
       // activeStepIndex advances to 2 — pinned selection must NOT follow.
       store.applySnapshot(
@@ -1221,12 +1186,11 @@ describe('ClientStore – follow rules', () => {
           currentPhaseId: 'exec',
           phases: [{ id: 'exec', label: 'Exec', icon: '⚡', taskIds: ['t1'] }],
           tasks: {
-            t1: { ...baseTasks()['t1'], activeStepIndex: 2 },
+            t1: { ...baseTasks()['t1'] },
           },
         }),
         2,
       );
-      expect(store.getState().selectedStepIndex).toBe(1); // still pinned to 1
     });
   });
 
@@ -1245,9 +1209,8 @@ describe('ClientStore – follow rules', () => {
             title: 'T1',
             status: 'active',
             phaseId: 'scouting',
-            steps: [{ name: 's0', index: 0 }],
+
             dependencies: [],
-            activeStepIndex: 0,
           },
         },
       }),
@@ -1255,18 +1218,12 @@ describe('ClientStore – follow rules', () => {
     );
     store.selectPhase('scouting');
     expect(store.getState().selectedTaskId).toBe('t1');
-    expect(store.getState().selectedStepIndex).toBe(0);
 
     // Complete scouting, start exec, register + start a task there.
     store.applyEvents([
       ev('phase_completed', { phase: 'scouting' }, {}, 2),
       ev('phase_started', { phase: 'exec' }, {}, 3),
-      ev(
-        'task_registered',
-        { id: 't2', title: 'Exec Task', phaseId: 'exec', steps: [{ name: 's0', index: 0 }], dependencies: [] },
-        {},
-        4,
-      ),
+      ev('task_registered', { id: 't2', title: 'Exec Task', phaseId: 'exec', dependencies: [] }, {}, 4),
       ev('task_started', { taskId: 't2' }, {}, 5),
     ]);
 
@@ -1277,7 +1234,6 @@ describe('ClientStore – follow rules', () => {
     // step stays null.
     expect(s.selectedPhaseId).toBe('exec');
     expect(s.selectedTaskId).toBe('t2');
-    expect(s.selectedStepIndex).toBeNull();
   });
 });
 
@@ -1312,10 +1268,10 @@ describe('ClientStore – workflowEventLog building', () => {
       ev('phase_started', { phase: 'p1', round: 1 }, {}, 3),
       ev('task_registered', { id: 't1', title: 'Task 1', phaseId: 'p1', stepCount: 1 }, { phaseId: 'p1' }, 4),
       ev('task_started', { taskId: 't1', title: 'Task 1' }, {}, 5),
-      ev('agent_spawned', { profile: 'coder' }, { agentId: 'a1', taskId: 't1' }, 6),
+      ev('session_started', { profile: 'coder' }, { agentId: 'a1', taskId: 't1' }, 6),
       ev('task_completed', { taskId: 't1' }, {}, 7),
       ev('phase_completed', { phase: 'p1', durationMs: 2500 }, {}, 8),
-      ev('workflow_completed', { totalDurationMs: 5000, agentCount: 1 }, {}, 9),
+      ev('workflow_completed', { totalDurationMs: 5000, sessionCount: 1 }, {}, 9),
     ];
 
     const store = new ClientStore();
@@ -1332,14 +1288,14 @@ describe('ClientStore – workflowEventLog building', () => {
     expect(store.getState().workflowEventLog).toEqual([
       ...expected,
       { seq: 9, line: '📊 Tokens: ↑0 in · ↓0 out' },
-      { seq: 9, line: '⏱ Time: 5.0s total · 0.0s agent (0%)' },
+      { seq: 9, line: '⏱ Time: 5.0s total · 0.0s session (0%)' },
     ]);
   });
 
   it('excludes events for which formatWorkflowEventLine returns null (verbose events)', () => {
     const events: EventRecord[] = [
       ev('workflow_started', { taskPrompt: 'x' }, {}, 1),
-      ev('agent_spawned', { profile: 'p' }, { agentId: 'a1', taskId: 't1' }, 2),
+      ev('session_started', { profile: 'p' }, { agentId: 'a1', taskId: 't1' }, 2),
       ev('decision', { decision: 'proceed' }, { agentId: 'a1' }, 3),
       ev('tool_call_started', { toolName: 'read' }, { agentId: 'a1' }, 4),
       ev('turn_ended', { tokens: { input: 1, output: 1 } }, { agentId: 'a1' }, 5),
@@ -1467,12 +1423,8 @@ describe('ClientStore – prev-tracking fields', () => {
             title: 'T1',
             status: 'active',
             phaseId: 'exec',
-            steps: [
-              { name: 's0', index: 0 },
-              { name: 's1', index: 1 },
-            ],
+
             dependencies: [],
-            activeStepIndex: 2,
           },
         },
       }),
@@ -1483,7 +1435,6 @@ describe('ClientStore – prev-tracking fields', () => {
     // Reconcile settled on exec → t1 → step 2.
     expect(s.selectedPhaseId).toBe('exec');
     expect(s.selectedTaskId).toBe('t1');
-    expect(s.selectedStepIndex).toBe(2);
     // The write-back mirrors the post-follow current values.
     expect(s.prevCurrentPhaseId).toBe('exec');
     expect(s.prevSelectedTaskStatus).toBe('active');

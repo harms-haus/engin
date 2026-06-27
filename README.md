@@ -24,7 +24,12 @@ engin is a **client/server system**:
 Internally, engin is a 5-package workspace: `shared` (pure types, the protocol, the
 `evolve` reducer, `EngineClient`, `ClientStore`), `engine` (the server + execution),
 `tui` (the terminal client), `cli` (the published `@harms-haus/engin` binary), and
-`web` (the React client). See [Architecture](docs/concepts/architecture.md) for the
+`web` (the React client). Execution is session-first: a `RunnerPool` drains a
+`TaskTracker` and dispatches each task to a composable runner tree built from
+`singleSession`, `linearRunner`, `reviewRunner`, and other combinators. Concurrency
+is governed by `SessionGate` (a two-level total + per-model FIFO gate). Each runner
+calls the `runSession` session primitive, which owns the full agent session lifecycle
+for one prompt turn. See [Architecture](docs/concepts/architecture.md) for the
 full layout and how status flows.
 
 ## Install

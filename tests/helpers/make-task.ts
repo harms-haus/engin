@@ -14,6 +14,7 @@ export function makeTask(overrides?: Partial<Task>): Task {
     dependencies: [],
     status: 'ready',
     phaseId: 'phase-1',
+    worktree: 'none',
     ...overrides,
   };
 }

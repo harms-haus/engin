@@ -21,7 +21,7 @@ import { join } from 'node:path';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
-interface PersistedAgentRecord {
+export interface PersistedAgentRecord {
   agentId: string;
   profile: string;
   phase: string;

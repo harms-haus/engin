@@ -789,29 +789,8 @@ describe('councilRunner', () => {
   });
 
   describe('status callbacks', () => {
-    it('fires onStepStart for each worker and the synthesizer', async () => {
-      mockRunStep.mockResolvedValue({
-        result: { type: 'approved', output: 'output' },
-        trackedSession: makeTrackedSession().trackedSession,
-      });
-
-      const onStepStart = mock(() => {});
-      const ctx = createRunnerContext({ onStatus: { onStepStart } });
-      const runner = councilRunner({
-        workers: [
-          { name: 'alpha', profileId: 'coder', isReadOnly: false },
-          { name: 'beta', profileId: 'coder', isReadOnly: false },
-        ],
-        synthesizer: { name: 'gamma', profileId: 'coder', isReadOnly: false },
-      });
-
-      await runner(ctx);
-
-      expect(onStepStart).toHaveBeenCalledTimes(3);
-      expect(onStepStart).toHaveBeenNthCalledWith(1, expect.objectContaining({ stepIndex: 0, stepName: 'alpha' }));
-      expect(onStepStart).toHaveBeenNthCalledWith(2, expect.objectContaining({ stepIndex: 1, stepName: 'beta' }));
-      expect(onStepStart).toHaveBeenNthCalledWith(3, expect.objectContaining({ stepIndex: 2, stepName: 'gamma' }));
-    });
+    // onStepStart removed in C2 — step lifecycle no longer fires onStepStart.
+    // Council runner still runs workers and synthesizer correctly (tested above in success path).
   });
 
   describe('error handling', () => {

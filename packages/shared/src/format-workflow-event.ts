@@ -11,7 +11,7 @@ export function formatWorkflowEventLine(ev: EventRecord): string | null {
   const m = ev.metadata;
 
   switch (ev.type) {
-    // ── Workflow lifecycle ─────────────────────────────────
+    // ── Workflow lifecycle ─────────────────────────────────────────────────
     case 'workflow_started':
       return '🚀 Workflow started: "' + String(d.taskPrompt ?? '') + '" (resumed: ' + String(d.resumed ?? false) + ')';
 
@@ -20,14 +20,14 @@ export function formatWorkflowEventLine(ev: EventRecord): string | null {
         '🎉 Complete in ' +
         (Number(d.totalDurationMs ?? 0) / 1000).toFixed(1) +
         's (' +
-        String(d.agentCount ?? 0) +
-        ' agents)'
+        String(d.sessionCount ?? 0) +
+        ' sessions)'
       );
 
     case 'workflow_failed':
       return '💥 Failed at ' + String(d.phase ?? '') + ': ' + String(d.error ?? '');
 
-    // ── Phase lifecycle ──────────────────────────────────
+    // ── Phase lifecycle ────────────────────────────────────────────────────
     case 'phase_registered':
       return '📝 Phase registered: ' + String(d.label ?? '');
 
@@ -37,23 +37,17 @@ export function formatWorkflowEventLine(ev: EventRecord): string | null {
     case 'phase_completed':
       return '✅ Phase ' + String(d.phase ?? '') + ' done (' + (Number(d.durationMs ?? 0) / 1000).toFixed(1) + 's)';
 
-    // ── Agent lifecycle ──────────────────────────────────
-    case 'agent_spawned':
-      return '⏳ Agent ' + String(d.agentId ?? m.agentId ?? '') + ' spawned (' + String(d.profile ?? '') + ')';
+    // ── Session lifecycle ──────────────────────────────────────────────────
+    case 'session_started':
+      return '⏳ Session ' + String(d.agentId ?? m.agentId ?? '') + ' started (' + String(d.profile ?? '') + ')';
 
-    case 'agent_completed':
-      return '✅ Agent ' + String(d.agentId ?? m.agentId ?? '') + ' complete';
+    case 'session_completed':
+      return '✅ Session ' + String(d.agentId ?? m.agentId ?? '') + ' complete';
 
-    // ── Task lifecycle ───────────────────────────────────
+    // ── Task lifecycle ─────────────────────────────────────────────────────
     case 'task_registered':
       return (
-        '📋 Task registered: "' +
-        String(d.title ?? '') +
-        '" (phase: ' +
-        String(d.phaseId ?? m.phaseId ?? '') +
-        ', ' +
-        String(Array.isArray(d.steps) ? d.steps.length : (d.stepCount ?? 0)) +
-        ' steps)'
+        '📋 Task registered: "' + String(d.title ?? '') + '" (phase: ' + String(d.phaseId ?? m.phaseId ?? '') + ')'
       );
 
     case 'task_started':
@@ -65,7 +59,7 @@ export function formatWorkflowEventLine(ev: EventRecord): string | null {
     case 'task_rejected':
       return '❌ Task ' + String(d.taskId ?? m.taskId ?? '') + ' rejected: ' + String(d.reason ?? '');
 
-    // ── Errors ───────────────────────────────────────────
+    // ── Errors ─────────────────────────────────────────────────────────────
     case 'error':
       return (
         '⚠️ Error in ' +
@@ -77,28 +71,14 @@ export function formatWorkflowEventLine(ev: EventRecord): string | null {
         ')'
       );
 
-    // ── Sidebar ──────────────────────────────────────────
+    // ── Sidebar ────────────────────────────────────────────────────────────
     case 'sidebar_updated':
       if (d.title) {
         return '📌 ' + String(d.title);
       }
       return null;
 
-    // ── Step lifecycle ────────────────────────────────────
-    case 'step_started':
-      return (
-        'Step ' +
-        String(d.stepIndex ?? m.stepIndex ?? '') +
-        ' started: ' +
-        String(d.stepName ?? '') +
-        ' (task: ' +
-        String(d.taskId ?? m.taskId ?? '') +
-        ', agent: ' +
-        String(d.agentId ?? m.agentId ?? '') +
-        ')'
-      );
-
-    // ── Auto-retry lifecycle ────────────────────────────────
+    // ── Auto-retry lifecycle ────────────────────────────────────────────────
     case 'auto_retry_started': {
       const attempt = Number(d.attempt ?? 1);
       const maxAttempts = Number(d.maxAttempts ?? 1);
@@ -118,9 +98,9 @@ export function formatWorkflowEventLine(ev: EventRecord): string | null {
       return `❌ Retry failed: ${finalError}`;
     }
 
-    // ── Verbose events — no event log line ────────────────
+    // ── Verbose events — no event log line ──────────────────────────────────
     // decision, turn_started, turn_ended, tool_call_started,
-    // tool_call_ended, tasks_added — intentionally silent
+    // tool_call_ended — intentionally silent
     default:
       return null;
   }

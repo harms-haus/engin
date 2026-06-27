@@ -218,9 +218,9 @@ describe('(b) registry contains the registered influence hooks', () => {
   it('registers a single influence hook from a single provider object', () => {
     const { callbacks } = makeRecordingStore();
     const fn = mock(() => undefined);
-    const { registry } = composeHooks(callbacks, asHooks({ beforeStepPrompt: fn }));
+    const { registry } = composeHooks(callbacks, asHooks({ beforeSessionPrompt: fn }));
 
-    expect(registry.hasSubscribers('beforeStepPrompt')).toBe(true);
+    expect(registry.hasSubscribers('beforeSessionPrompt')).toBe(true);
   });
 
   it('registers multiple distinct hooks from one provider', () => {
@@ -228,13 +228,11 @@ describe('(b) registry contains the registered influence hooks', () => {
     const { registry } = composeHooks(
       callbacks,
       asHooks({
-        beforeStepPrompt: mock(() => undefined),
         shouldRetryPhase: mock(() => undefined),
         onPhaseSettled: mock(() => undefined),
       }),
     );
 
-    expect(registry.hasSubscribers('beforeStepPrompt')).toBe(true);
     expect(registry.hasSubscribers('shouldRetryPhase')).toBe(true);
     expect(registry.hasSubscribers('onPhaseSettled')).toBe(true);
   });
@@ -243,20 +241,20 @@ describe('(b) registry contains the registered influence hooks', () => {
     const { callbacks } = makeRecordingStore();
     const a = mock(() => undefined);
     const b = mock(() => undefined);
-    const { registry } = composeHooks(callbacks, asHooks({ beforeStepPrompt: [a, b] }));
+    const { registry } = composeHooks(callbacks, asHooks({ beforeSessionPrompt: [a, b] }));
 
-    expect(registry.hasSubscribers('beforeStepPrompt')).toBe(true);
+    expect(registry.hasSubscribers('beforeSessionPrompt')).toBe(true);
   });
 
   it('normalizes an ARRAY of providers (HookProvider = WorkflowHooks | WorkflowHooks[])', () => {
     const { callbacks } = makeRecordingStore();
     const providers: HookProvider = [
-      asHooks({ beforeStepPrompt: mock(() => undefined) }),
+      asHooks({ beforeSessionPrompt: mock(() => undefined) }),
       asHooks({ shouldRetryPhase: mock(() => undefined) }),
     ];
     const { registry } = composeHooks(callbacks, providers);
 
-    expect(registry.hasSubscribers('beforeStepPrompt')).toBe(true);
+    expect(registry.hasSubscribers('beforeSessionPrompt')).toBe(true);
     expect(registry.hasSubscribers('shouldRetryPhase')).toBe(true);
   });
 
@@ -264,12 +262,15 @@ describe('(b) registry contains the registered influence hooks', () => {
     const { callbacks } = makeRecordingStore();
     const a = mock(() => undefined);
     const b = mock(() => undefined);
-    const { registry } = composeHooks(callbacks, [asHooks({ beforeStepPrompt: a }), asHooks({ beforeStepPrompt: b })]);
+    const { registry } = composeHooks(callbacks, [
+      asHooks({ beforeSessionPrompt: a }),
+      asHooks({ beforeSessionPrompt: b }),
+    ]);
 
-    expect(registry.hasSubscribers('beforeStepPrompt')).toBe(true);
+    expect(registry.hasSubscribers('beforeSessionPrompt')).toBe(true);
     // Both subscribers are registered — verify by fanning out via the registry
     // (the hook is auto-declared 'observe' by register()).
-    await registry.invokeObserve(hookName('beforeStepPrompt'), undefined, makeCtx(registry));
+    await registry.invokeObserve(hookName('beforeSessionPrompt'), undefined, makeCtx(registry));
     expect(a).toHaveBeenCalledTimes(1);
     expect(b).toHaveBeenCalledTimes(1);
   });
@@ -277,10 +278,10 @@ describe('(b) registry contains the registered influence hooks', () => {
   it('registers influence hooks that are invokable via the registry', async () => {
     const { callbacks } = makeRecordingStore();
     const seen: unknown[] = [];
-    const { registry } = composeHooks(callbacks, asHooks({ beforeStepPrompt: (args: unknown) => seen.push(args) }));
+    const { registry } = composeHooks(callbacks, asHooks({ beforeSessionPrompt: (args: unknown) => seen.push(args) }));
 
     const args = { prompt: 'hello' };
-    await registry.invokeObserve(hookName('beforeStepPrompt'), args, makeCtx(registry));
+    await registry.invokeObserve(hookName('beforeSessionPrompt'), args, makeCtx(registry));
 
     expect(seen).toEqual([args]);
   });
@@ -289,7 +290,7 @@ describe('(b) registry contains the registered influence hooks', () => {
     const { callbacks } = makeRecordingStore();
     const { registry } = composeHooks(callbacks, {});
 
-    expect(registry.hasSubscribers('beforeStepPrompt')).toBe(false);
+    expect(registry.hasSubscribers('beforeSessionPrompt')).toBe(false);
     expect(registry.hasSubscribers('anyHook')).toBe(false);
   });
 
@@ -297,17 +298,17 @@ describe('(b) registry contains the registered influence hooks', () => {
     const { callbacks } = makeRecordingStore();
     const { registry } = composeHooks(callbacks, []);
 
-    expect(registry.hasSubscribers('beforeStepPrompt')).toBe(false);
+    expect(registry.hasSubscribers('beforeSessionPrompt')).toBe(false);
   });
 
   it('each composeHooks call returns a fresh, independent registry (no shared state)', () => {
     const { callbacks } = makeRecordingStore();
-    const { registry: regA } = composeHooks(callbacks, asHooks({ beforeStepPrompt: mock(() => undefined) }));
+    const { registry: regA } = composeHooks(callbacks, asHooks({ beforeSessionPrompt: mock(() => undefined) }));
     const { registry: regB } = composeHooks(callbacks, {});
 
     expect(regA).not.toBe(regB);
-    expect(regA.hasSubscribers('beforeStepPrompt')).toBe(true);
-    expect(regB.hasSubscribers('beforeStepPrompt')).toBe(false);
+    expect(regA.hasSubscribers('beforeSessionPrompt')).toBe(true);
+    expect(regB.hasSubscribers('beforeSessionPrompt')).toBe(false);
   });
 });
 
@@ -317,7 +318,7 @@ describe('(c) store callbacks always fire even when influence hooks are register
   it('a store callback fires on onStatus even when an influence hook is also registered', () => {
     const { callbacks, calls } = makeRecordingStore();
     const influence = mock(() => undefined);
-    const { onStatus } = composeHooks(callbacks, asHooks({ beforeStepPrompt: influence }));
+    const { onStatus } = composeHooks(callbacks, asHooks({ beforeSessionPrompt: influence }));
 
     const info = { taskPrompt: 't', resumed: false, workDir: '/w' };
     onStatus.onWorkflowStart?.(info);
@@ -333,7 +334,6 @@ describe('(c) store callbacks always fire even when influence hooks are register
     const { onStatus } = composeHooks(
       callbacks,
       asHooks({
-        beforeStepPrompt: mock(() => undefined),
         shouldRetryPhase: mock(() => undefined),
         onPhaseSettled: mock(() => undefined),
       }),
@@ -377,7 +377,7 @@ describe('(c) store callbacks always fire even when influence hooks are register
   it('store callbacks fire even when influence hooks are provided as an array of providers', () => {
     const { callbacks, calls } = makeRecordingStore();
     const { onStatus } = composeHooks(callbacks, [
-      asHooks({ beforeStepPrompt: mock(() => undefined) }),
+      asHooks({ beforeSessionPrompt: mock(() => undefined) }),
       asHooks({ shouldRetryPhase: mock(() => undefined) }),
     ]);
 

@@ -160,11 +160,10 @@ function createStatusCallbacksSpy(): StatusCallbacks & {
   onTaskStart: ReturnType<typeof mock>;
   onTaskComplete: ReturnType<typeof mock>;
   onTaskRejected: ReturnType<typeof mock>;
-  onAgentSpawn: ReturnType<typeof mock>;
-  onAgentComplete: ReturnType<typeof mock>;
+  onSessionStart: ReturnType<typeof mock>;
+  onSessionComplete: ReturnType<typeof mock>;
   onAgentRender: ReturnType<typeof mock>;
   onDecision: ReturnType<typeof mock>;
-  onStepStart: ReturnType<typeof mock>;
   onTurnStart: ReturnType<typeof mock>;
   onTurnEnd: ReturnType<typeof mock>;
   onToolCallStart: ReturnType<typeof mock>;
@@ -189,20 +188,17 @@ function createStatusCallbacksSpy(): StatusCallbacks & {
     onTaskRejected: mock(() => {
       track('onTaskRejected');
     }),
-    onAgentSpawn: mock(() => {
-      track('onAgentSpawn');
+    onSessionStart: mock(() => {
+      track('onSessionStart');
     }),
-    onAgentComplete: mock(() => {
-      track('onAgentComplete');
+    onSessionComplete: mock(() => {
+      track('onSessionComplete');
     }),
     onAgentRender: mock(() => {
       track('onAgentRender');
     }),
     onDecision: mock(() => {
       track('onDecision');
-    }),
-    onStepStart: mock(() => {
-      track('onStepStart');
     }),
     onTurnStart: mock(() => {
       track('onTurnStart');
@@ -224,11 +220,10 @@ function createStatusCallbacksSpy(): StatusCallbacks & {
     onTaskStart: ReturnType<typeof mock>;
     onTaskComplete: ReturnType<typeof mock>;
     onTaskRejected: ReturnType<typeof mock>;
-    onAgentSpawn: ReturnType<typeof mock>;
-    onAgentComplete: ReturnType<typeof mock>;
+    onSessionStart: ReturnType<typeof mock>;
+    onSessionComplete: ReturnType<typeof mock>;
     onAgentRender: ReturnType<typeof mock>;
     onDecision: ReturnType<typeof mock>;
-    onStepStart: ReturnType<typeof mock>;
     onTurnStart: ReturnType<typeof mock>;
     onTurnEnd: ReturnType<typeof mock>;
     onToolCallStart: ReturnType<typeof mock>;
@@ -259,8 +254,7 @@ describe('runStepTask', () => {
       await expect(runStepTask(opts)).rejects.toThrow(DOMException);
       expect(onStatus.onTaskRegister).not.toHaveBeenCalled();
       expect(onStatus.onTaskStart).not.toHaveBeenCalled();
-      expect(onStatus.onAgentSpawn).not.toHaveBeenCalled();
-      expect(onStatus.onStepStart).not.toHaveBeenCalled();
+      expect(onStatus.onSessionStart).not.toHaveBeenCalled();
       expect(onStatus.onTaskRejected).not.toHaveBeenCalled();
       expect(onStatus.onTaskComplete).not.toHaveBeenCalled();
     });
@@ -282,7 +276,6 @@ describe('runStepTask', () => {
       expect(registerCall.phaseId).toBe('test-phase');
       expect(registerCall.title).toBe('Test Task');
       expect(registerCall.dependencies).toEqual([]);
-      expect(registerCall.steps).toEqual([{ name: 'implement', profileId: 'coder', isReadOnly: false }]);
 
       expect(onStatus.onTaskStart).toHaveBeenCalledTimes(1);
       const startCall = onStatus.onTaskStart.mock.calls[0]![0] as Record<string, unknown>;
@@ -463,50 +456,21 @@ describe('runStepTask', () => {
   // ─── Agent Spawn and Step Start ──────────────────────────────────────
 
   describe('agent spawn and step start callbacks', () => {
-    it('fires onAgentSpawn with correct fields', async () => {
+    it('fires onSessionStart with correct fields', async () => {
       setupProfilesMock(defaultProfile);
       setupHarnessMock();
 
       const onStatus = createStatusCallbacksSpy();
       await runStepTask(makeDefaultOptions({ onStatus: onStatus as unknown as StatusCallbacks }));
 
-      expect(onStatus.onAgentSpawn).toHaveBeenCalledTimes(1);
-      const spawnCall = onStatus.onAgentSpawn.mock.calls[0]![0] as Record<string, unknown>;
+      expect(onStatus.onSessionStart).toHaveBeenCalledTimes(1);
+      const spawnCall = onStatus.onSessionStart.mock.calls[0]![0] as Record<string, unknown>;
       expect(spawnCall.agentId).toBe('task-1');
       expect(spawnCall.profile).toBe('coder');
       expect(spawnCall.phaseId).toBe('test-phase');
       expect(spawnCall.taskId).toBe('task-1');
-      expect(spawnCall.stepIndex).toBe(0);
       expect(spawnCall.sessionId).toBe('test-session');
       expect(spawnCall.sessionPath).toBe('test-session');
-    });
-
-    it('fires onStepStart with correct fields', async () => {
-      setupProfilesMock(defaultProfile);
-      setupHarnessMock();
-
-      const onStatus = createStatusCallbacksSpy();
-      await runStepTask(makeDefaultOptions({ onStatus: onStatus as unknown as StatusCallbacks }));
-
-      expect(onStatus.onStepStart).toHaveBeenCalledTimes(1);
-      const stepStartCall = onStatus.onStepStart.mock.calls[0]![0] as Record<string, unknown>;
-      expect(stepStartCall.taskId).toBe('task-1');
-      expect(stepStartCall.stepIndex).toBe(0);
-      expect(stepStartCall.stepName).toBe('implement');
-      expect(stepStartCall.agentId).toBe('task-1');
-    });
-
-    it('fires onAgentSpawn before onStepStart', async () => {
-      setupProfilesMock(defaultProfile);
-      setupHarnessMock();
-
-      const onStatus = createStatusCallbacksSpy();
-      await runStepTask(makeDefaultOptions({ onStatus: onStatus as unknown as StatusCallbacks }));
-
-      const spawnIdx = onStatus.callOrder.indexOf('onAgentSpawn');
-      const stepStartIdx = onStatus.callOrder.indexOf('onStepStart');
-      expect(spawnIdx).toBeGreaterThanOrEqual(0);
-      expect(stepStartIdx).toBeGreaterThan(spawnIdx);
     });
   });
 
@@ -760,7 +724,7 @@ describe('runStepTask', () => {
   // ─── Finally Block ──────────────────────────────────────────────────
 
   describe('finally block', () => {
-    it('fires onAgentComplete and disposes harness even on success', async () => {
+    it('fires onSessionComplete and disposes harness even on success', async () => {
       setupProfilesMock(defaultProfile);
       const disposeMock = mock(() => {});
       mockCreateHarness.mockResolvedValue({
@@ -772,18 +736,17 @@ describe('runStepTask', () => {
       const onStatus = createStatusCallbacksSpy();
       await runStepTask(makeDefaultOptions({ onStatus: onStatus as unknown as StatusCallbacks }));
 
-      expect(onStatus.onAgentComplete).toHaveBeenCalledTimes(1);
-      const completeCall = onStatus.onAgentComplete.mock.calls[0]![0] as Record<string, unknown>;
+      expect(onStatus.onSessionComplete).toHaveBeenCalledTimes(1);
+      const completeCall = onStatus.onSessionComplete.mock.calls[0]![0] as Record<string, unknown>;
       expect(completeCall.agentId).toBe('task-1');
       expect(completeCall.profile).toBe('coder');
       expect(completeCall.phaseId).toBe('test-phase');
       expect(completeCall.taskId).toBe('task-1');
-      expect(completeCall.stepIndex).toBe(0);
 
       expect(disposeMock).toHaveBeenCalledTimes(1);
     });
 
-    it('fires onAgentComplete and disposes harness even on error', async () => {
+    it('fires onSessionComplete and disposes harness even on error', async () => {
       setupProfilesMock(defaultProfile);
       const disposeMock = mock(() => {});
       mockCreateHarness.mockResolvedValue({
@@ -806,13 +769,11 @@ describe('runStepTask', () => {
         runStepTask(makeDefaultOptions({ onStatus: onStatus as unknown as StatusCallbacks })),
       ).rejects.toThrow('fail');
 
-      expect(onStatus.onAgentComplete).toHaveBeenCalledTimes(1);
-      const completeCall = onStatus.onAgentComplete.mock.calls[0]![0] as Record<string, unknown>;
-      expect(completeCall.stepIndex).toBe(0);
+      expect(onStatus.onSessionComplete).toHaveBeenCalledTimes(1);
       expect(disposeMock).toHaveBeenCalledTimes(1);
     });
 
-    it('fires onAgentComplete before disposing the harness', async () => {
+    it('fires onSessionComplete before disposing the harness', async () => {
       setupProfilesMock(defaultProfile);
       const callOrder: string[] = [];
       const disposeMock = mock(() => {
@@ -820,8 +781,8 @@ describe('runStepTask', () => {
       });
       const onStatusSpy = {
         ...createStatusCallbacksSpy(),
-        onAgentComplete: mock(() => {
-          callOrder.push('onAgentComplete');
+        onSessionComplete: mock(() => {
+          callOrder.push('onSessionComplete');
         }),
       };
       mockCreateHarness.mockResolvedValue({
@@ -832,7 +793,7 @@ describe('runStepTask', () => {
 
       await runStepTask(makeDefaultOptions({ onStatus: onStatusSpy as unknown as StatusCallbacks }));
 
-      expect(callOrder).toEqual(['onAgentComplete', 'dispose']);
+      expect(callOrder).toEqual(['onSessionComplete', 'dispose']);
     });
   });
 
@@ -848,7 +809,7 @@ describe('runStepTask', () => {
 
       // onTaskComplete should be the last callback
       const completeIdx = onStatus.callOrder.indexOf('onTaskComplete');
-      const agentCompleteIdx = onStatus.callOrder.indexOf('onAgentComplete');
+      const agentCompleteIdx = onStatus.callOrder.indexOf('onSessionComplete');
       expect(completeIdx).toBeGreaterThan(agentCompleteIdx);
 
       expect(onStatus.onTaskComplete).toHaveBeenCalledTimes(1);
@@ -893,14 +854,7 @@ describe('runStepTask', () => {
       const onStatus = createStatusCallbacksSpy();
       await runStepTask(makeDefaultOptions({ onStatus: onStatus as unknown as StatusCallbacks }));
 
-      const expectedOrder = [
-        'onTaskRegister',
-        'onTaskStart',
-        'onAgentSpawn',
-        'onStepStart',
-        'onAgentComplete',
-        'onTaskComplete',
-      ];
+      const expectedOrder = ['onTaskRegister', 'onTaskStart', 'onSessionStart', 'onSessionComplete', 'onTaskComplete'];
 
       // Get the actual order of events that were fired
       const actualOrder = onStatus.callOrder.filter((name) => expectedOrder.includes(name));
@@ -1130,7 +1084,7 @@ describe('runStepTask', () => {
       expect((onStatus.onAgentRender.mock.calls[0]![0] as Record<string, unknown>).rendered).toBe('RENDERED');
     });
 
-    it('fires onAgentRender after the prompt completes and before onAgentComplete', async () => {
+    it('fires onAgentRender after the prompt completes and before onSessionComplete', async () => {
       setupProfilesMock(defaultProfile);
       const session = makeMockSession(() => '{"summary":"done"}').session;
       setupHarnessMock(session);
@@ -1144,12 +1098,10 @@ describe('runStepTask', () => {
       );
 
       const renderIdx = onStatus.callOrder.indexOf('onAgentRender');
-      const stepStartIdx = onStatus.callOrder.indexOf('onStepStart');
-      const agentCompleteIdx = onStatus.callOrder.indexOf('onAgentComplete');
+      const agentCompleteIdx = onStatus.callOrder.indexOf('onSessionComplete');
       const taskCompleteIdx = onStatus.callOrder.indexOf('onTaskComplete');
 
       expect(renderIdx).toBeGreaterThanOrEqual(0);
-      expect(renderIdx).toBeGreaterThan(stepStartIdx);
       expect(agentCompleteIdx).toBeGreaterThan(renderIdx);
       expect(taskCompleteIdx).toBeGreaterThan(renderIdx);
     });
@@ -1638,10 +1590,6 @@ describe('runMultiStepTask', () => {
       expect(reg.phaseId).toBe('plan-phase');
       expect(reg.title).toBe('Plan & Review');
       expect(reg.dependencies).toEqual([]);
-      expect(reg.steps).toEqual([
-        { name: 'plan', profileId: 'planner', isReadOnly: false },
-        { name: 'review-plan', profileId: 'reviewer', isReadOnly: true },
-      ]);
     });
 
     it('fires onTaskStart exactly once and onTaskComplete exactly once on success', async () => {
@@ -1659,7 +1607,7 @@ describe('runMultiStepTask', () => {
 
   // ── One agent per step ──────────────────────────────────────────────
 
-  describe('per-step agents', () => {
+  describe('per-step sessions', () => {
     it('creates a fresh harness (own session) per step, each with the step profile', async () => {
       setupSessionPerProfile({});
       mockPromptForStructured.mockResolvedValue({ result: { ready: true }, attempts: 1 });
@@ -1671,14 +1619,11 @@ describe('runMultiStepTask', () => {
       const profilesUsed = mockCreateHarness.mock.calls.map((c) => (c[0] as { profile: AgentProfile }).profile.id);
       expect(profilesUsed).toEqual(['planner', 'reviewer']);
 
-      expect(onStatus.onAgentSpawn).toHaveBeenCalledTimes(2);
-      const spawn0 = onStatus.onAgentSpawn.mock.calls[0]![0] as Record<string, unknown>;
-      const spawn1 = onStatus.onAgentSpawn.mock.calls[1]![0] as Record<string, unknown>;
+      expect(onStatus.onSessionStart).toHaveBeenCalledTimes(2);
+      const spawn0 = onStatus.onSessionStart.mock.calls[0]![0] as Record<string, unknown>;
+      const spawn1 = onStatus.onSessionStart.mock.calls[1]![0] as Record<string, unknown>;
       expect(spawn0.profile).toBe('planner');
-      expect(spawn0.stepIndex).toBe(0);
       expect(spawn1.profile).toBe('reviewer');
-      expect(spawn1.stepIndex).toBe(1);
-      expect(onStatus.onStepStart).toHaveBeenCalledTimes(2);
     });
 
     it('strips write/edit for read-only steps but not write steps', async () => {
@@ -1693,7 +1638,7 @@ describe('runMultiStepTask', () => {
       expect(reviewProfile.excludeTools).toContain('edit');
     });
 
-    it('fires onAgentComplete + disposes once per step (two harnesses disposed)', async () => {
+    it('fires onSessionComplete + disposes once per step (two harnesses disposed)', async () => {
       const disposeMock = mock(() => {});
       mockCreateHarness.mockImplementation(async (opts: { profile: AgentProfile }) => ({
         session: makeMockSession().session,
@@ -1704,12 +1649,7 @@ describe('runMultiStepTask', () => {
       const onStatus = createStatusCallbacksSpy();
       await runMultiStepTask(makeTwoStepOptions({ onStatus: onStatus as unknown as StatusCallbacks }));
 
-      expect(onStatus.onAgentComplete).toHaveBeenCalledTimes(2);
-      // Each step should carry the correct stepIndex
-      const step0Call = onStatus.onAgentComplete.mock.calls[0]![0] as Record<string, unknown>;
-      const step1Call = onStatus.onAgentComplete.mock.calls[1]![0] as Record<string, unknown>;
-      expect(step0Call.stepIndex).toBe(0);
-      expect(step1Call.stepIndex).toBe(1);
+      expect(onStatus.onSessionComplete).toHaveBeenCalledTimes(2);
       expect(disposeMock).toHaveBeenCalledTimes(2);
     });
   });

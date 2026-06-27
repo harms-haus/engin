@@ -111,6 +111,7 @@ function makeTask(id = 'task-1'): Task {
     dependencies: [],
     status: 'ready',
     phaseId: 'implement',
+    worktree: 'none',
   };
 }
 
@@ -137,7 +138,7 @@ function makeRegistry(): HookRegistry {
   const reg = createHookRegistry();
   reg.defineHook('onStructuredOutput', 'observe');
   reg.defineHook('onDecision', 'observe');
-  reg.defineHook('beforeStepPrompt', 'pipeline');
+  reg.defineHook('beforeSessionPrompt', 'pipeline');
   return reg;
 }
 
@@ -221,7 +222,6 @@ describe('LanePool.run() — default auditor registration', () => {
               output: { approved: true },
               taskId: 'task-b',
               phaseId: 'review',
-              stepIndex: 0,
             }),
         }),
       );
@@ -814,6 +814,7 @@ describe('LanePool — permanent-failure decision message UX', () => {
       dependencies: [],
       status: 'ready',
       phaseId: 'implement',
+      worktree: 'none',
     };
   }
 
@@ -986,6 +987,7 @@ describe('LanePool — deadlocked task fires onTaskRejected', () => {
       files: [],
       dependencies: ['nonexistent'],
       phaseId: 'test',
+      worktree: 'none',
     });
     // Sanity: the task is 'blocked' (dep doesn't exist).
     expect(tracker.getTask('deadlock-test')?.status).toBe('blocked');
@@ -1026,6 +1028,7 @@ describe('LanePool — deadlocked task fires onTaskRejected', () => {
       files: [],
       dependencies: ['no-such-task'],
       phaseId: 'test',
+      worktree: 'none',
     });
 
     const pool = new LanePool(

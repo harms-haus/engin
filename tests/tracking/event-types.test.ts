@@ -1,16 +1,16 @@
 import type {
-  AgentEntity,
   EventRecord,
   EventType,
   LogEntry,
   PhaseEntity,
+  SessionEntity,
   WorkflowProjection,
 } from '@engin/shared/event-types';
 import { createInitialProjection, MAX_RUN_LOG, MAX_WORKFLOW_EVENT_LOG } from '@engin/shared/event-types';
 import { describe, expect, it } from 'bun:test';
 
 // Also verify re-exports exist from core/types.ts
-import type { StepDefinition, StepEntity, TaskEntity, TaskStatus } from '../../packages/engine/src/core/types.js';
+import type { StepDefinition, TaskEntity, TaskStatus } from '../../packages/engine/src/core/types.js';
 
 // ── Type-level helpers ───────────────────────────────────────────────────────
 // These are compile-time checks: they verify the types are well-formed.
@@ -27,13 +27,12 @@ const EXPECTED_EVENT_TYPES: EventType[] = [
   'phase_registered',
   'phase_started',
   'phase_completed',
-  'agent_spawned',
-  'agent_completed',
+  'session_started',
+  'session_completed',
   'auto_retry_started',
   'auto_retry_completed',
   'task_registered',
   'task_started',
-  'step_started',
   'task_completed',
   'task_rejected',
   'decision',
@@ -57,13 +56,12 @@ const _EventTypeExhaustive: Record<EventType, true> = {
   phase_registered: true,
   phase_started: true,
   phase_completed: true,
-  agent_spawned: true,
-  agent_completed: true,
+  session_started: true,
+  session_completed: true,
   auto_retry_started: true,
   auto_retry_completed: true,
   task_registered: true,
   task_started: true,
-  step_started: true,
   task_completed: true,
   task_rejected: true,
   decision: true,
@@ -165,82 +163,73 @@ describe('EventType', () => {
     const t: EventType = 'task_registered';
     expect(t).toBe('task_registered');
   });
+});
 
-  it('includes step_started', () => {
-    const t: EventType = 'step_started';
-    expect(t).toBe('step_started');
-  });
+it('includes log', () => {
+  const t: EventType = 'log';
+  expect(t).toBe('log');
+});
 
-  it('includes log', () => {
-    const t: EventType = 'log';
-    expect(t).toBe('log');
-  });
+it('includes agent_rendered as a member (appended after log)', () => {
+  const t: EventType = 'agent_rendered';
+  expect(t).toBe('agent_rendered');
+});
 
-  it('includes agent_rendered as a member (appended after log)', () => {
-    const t: EventType = 'agent_rendered';
-    expect(t).toBe('agent_rendered');
-  });
+it('agent_rendered is the last member of EXPECTED_EVENT_TYPES (after log)', () => {
+  // Guards the required ordering: 'agent_rendered' appended after 'log'.
+  const lastIndex = EXPECTED_EVENT_TYPES.length - 1;
+  const logIndex = EXPECTED_EVENT_TYPES.indexOf('log');
+  expect(EXPECTED_EVENT_TYPES[lastIndex]).toBe('agent_rendered');
+  expect(logIndex).toBe(lastIndex - 1);
+});
+const validEvents: readonly string[] = EXPECTED_EVENT_TYPES;
 
-  it('agent_rendered is the last member of EXPECTED_EVENT_TYPES (after log)', () => {
-    // Guards the required ordering: 'agent_rendered' appended after 'log'.
-    const lastIndex = EXPECTED_EVENT_TYPES.length - 1;
-    const logIndex = EXPECTED_EVENT_TYPES.indexOf('log');
-    expect(EXPECTED_EVENT_TYPES[lastIndex]).toBe('agent_rendered');
-    expect(logIndex).toBe(lastIndex - 1);
-  });
+it('excludes tasks_added from the union', () => {
+  const validEvents: readonly string[] = EXPECTED_EVENT_TYPES;
+  expect(validEvents).not.toContain('tasks_added');
+});
 
-  it('excludes task_step_started from the union', () => {
-    const validEvents: readonly string[] = EXPECTED_EVENT_TYPES;
-    expect(validEvents).not.toContain('task_step_started');
-  });
+it('includes all legacy events that were kept', () => {
+  const legacy: EventType[] = [
+    'workflow_started',
+    'phase_started',
+    'phase_completed',
+    'session_started',
+    'session_completed',
+    'task_started',
+    'task_completed',
+    'task_rejected',
+    'decision',
+    'error',
+    'workflow_completed',
+    'workflow_failed',
+    'sidebar_updated',
+    'turn_started',
+    'turn_ended',
+    'tool_call_started',
+    'tool_call_ended',
+  ];
+  for (const t of legacy) {
+    const check: EventType = t;
+    expect(check).toBe(t);
+  }
+});
 
-  it('excludes tasks_added from the union', () => {
-    const validEvents: readonly string[] = EXPECTED_EVENT_TYPES;
-    expect(validEvents).not.toContain('tasks_added');
-  });
+it('has exactly 23 members (including log and agent_rendered)', () => {
+  // EXPECTED_EVENT_TYPES is typed as EventType[], so the array itself is a
+  // compile-time guard: any literal here that is not a valid union member is
+  // a type error. The length assertion catches a missing/extra member, and
+  // the duplicate check guards against accidental repetition.
+  expect(EXPECTED_EVENT_TYPES).toHaveLength(23);
+  expect(new Set(EXPECTED_EVENT_TYPES).size).toBe(EXPECTED_EVENT_TYPES.length);
+});
 
-  it('includes all legacy events that were kept', () => {
-    const legacy: EventType[] = [
-      'workflow_started',
-      'phase_started',
-      'phase_completed',
-      'agent_spawned',
-      'agent_completed',
-      'task_started',
-      'task_completed',
-      'task_rejected',
-      'decision',
-      'error',
-      'workflow_completed',
-      'workflow_failed',
-      'sidebar_updated',
-      'turn_started',
-      'turn_ended',
-      'tool_call_started',
-      'tool_call_ended',
-    ];
-    for (const t of legacy) {
-      const check: EventType = t;
-      expect(check).toBe(t);
-    }
-  });
-
-  it('has exactly 24 members (including log and agent_rendered)', () => {
-    // EXPECTED_EVENT_TYPES is typed as EventType[], so the array itself is a
-    // compile-time guard: any literal here that is not a valid union member is
-    // a type error. The length assertion catches a missing/extra member, and
-    // the duplicate check guards against accidental repetition.
-    expect(EXPECTED_EVENT_TYPES).toHaveLength(24);
-    expect(new Set(EXPECTED_EVENT_TYPES).size).toBe(EXPECTED_EVENT_TYPES.length);
-  });
-
-  it('EXPECTED_EVENT_TYPES contains every member of the EventType union', () => {
-    // Runtime Set comparison guards against drift in either direction: a
-    // missing member or an extra member will fail this assertion.
-    // _EventTypeExhaustive keys ARE the union members (typed via Record<EventType, true>).
-    const guardKeys = Object.keys(_EventTypeExhaustive) as EventType[];
-    expect(new Set(EXPECTED_EVENT_TYPES)).toEqual(new Set(guardKeys));
-  });
+it('EXPECTED_EVENT_TYPES contains every member of the EventType union', () => {
+  // Runtime Set comparison guards against drift in either direction: a
+  // missing member or an extra member will fail this assertion.
+  // _EventTypeExhaustive keys ARE the union members (typed via Record<EventType, true>).
+  const guardKeys = Object.keys(_EventTypeExhaustive) as EventType[];
+  expect(new Set(EXPECTED_EVENT_TYPES)).toEqual(new Set(guardKeys));
 });
 
 describe('EventRecord', () => {
@@ -259,7 +248,7 @@ describe('EventRecord', () => {
   it('metadata includes phaseId instead of phase', () => {
     const record: EventRecord = {
       seq: 2,
-      type: 'agent_spawned',
+      type: 'session_started',
       data: {},
       metadata: {
         timestamp: '2026-06-14T12:00:00Z',
@@ -277,15 +266,13 @@ describe('EventRecord', () => {
   it('metadata can include stepIndex', () => {
     const record: EventRecord = {
       seq: 3,
-      type: 'step_started',
+      type: 'log',
       data: {},
       metadata: {
         timestamp: '2026-06-14T12:00:00Z',
         taskId: 't1',
-        stepIndex: 0,
       },
     };
-    expect(record.metadata.stepIndex).toBe(0);
   });
 
   it('type accepts agent_rendered with agent metadata', () => {
@@ -315,7 +302,6 @@ describe('EventRecord', () => {
     expect(record.metadata.agentId).toBeUndefined();
     expect(record.metadata.taskId).toBeUndefined();
     expect(record.metadata.phaseId).toBeUndefined();
-    expect(record.metadata.stepIndex).toBeUndefined();
   });
 });
 
@@ -356,9 +342,9 @@ describe('PhaseEntity', () => {
   });
 });
 
-describe('AgentEntity', () => {
+describe('SessionEntity', () => {
   it('can be constructed with all required fields', () => {
-    const agent: AgentEntity = {
+    const agent: SessionEntity = {
       uid: 'a1::t1',
       agentId: 'a1',
       profile: 'coder',
@@ -370,6 +356,8 @@ describe('AgentEntity', () => {
       inputTokens: 0,
       outputTokens: 0,
       taskTitle: 'Build auth',
+      runnerRole: 'executor',
+      attempt: 1,
     };
     expect(agent.uid).toBe('a1::t1');
     expect(agent.agentId).toBe('a1');
@@ -382,7 +370,7 @@ describe('AgentEntity', () => {
   });
 
   it('uses phaseId instead of phase', () => {
-    const agent: AgentEntity = {
+    const agent: SessionEntity = {
       uid: 'a1',
       agentId: 'a1',
       profile: 'scout',
@@ -393,6 +381,8 @@ describe('AgentEntity', () => {
       inputTokens: 0,
       outputTokens: 0,
       taskTitle: '',
+      runnerRole: 'executor',
+      attempt: 1,
     };
     expect(agent.phaseId).toBe('scouting');
     // @ts-expect-error - phase is no longer a valid field
@@ -401,7 +391,7 @@ describe('AgentEntity', () => {
   });
 
   it('stepIndex is optional', () => {
-    const agent: AgentEntity = {
+    const agent: SessionEntity = {
       uid: 'a1',
       agentId: 'a1',
       profile: 'coder',
@@ -412,18 +402,17 @@ describe('AgentEntity', () => {
       inputTokens: 0,
       outputTokens: 0,
       taskTitle: '',
+      runnerRole: 'executor',
+      attempt: 1,
     };
-    expect(agent.stepIndex).toBeUndefined();
 
-    const agentWithStep: AgentEntity = {
+    const agentWithStep: SessionEntity = {
       ...agent,
-      stepIndex: 2,
     };
-    expect(agentWithStep.stepIndex).toBe(2);
   });
 
   it('optional fields: sessionId, sessionPath, completedAt', () => {
-    const agent: AgentEntity = {
+    const agent: SessionEntity = {
       uid: 'a1',
       agentId: 'a1',
       profile: 'coder',
@@ -434,6 +423,8 @@ describe('AgentEntity', () => {
       inputTokens: 100,
       outputTokens: 50,
       taskTitle: 'Task',
+      runnerRole: 'executor',
+      attempt: 1,
       sessionId: 'sess-1',
       sessionPath: '/tmp/sess',
       completedAt: '2026-06-14T12:00:00Z',
@@ -456,10 +447,10 @@ describe('WorkflowProjection', () => {
       currentPhaseId: 'impl',
       completedPhaseIds: ['scouting'],
       tasks: {},
-      agents: {},
+      sessions: {},
       sidebar: { title: 'Workflow', indicator: 'Running…' },
       status: 'running',
-      stats: { totalTokens: 500, agentCount: 2 },
+      stats: { totalTokens: 500, sessionCount: 2 },
       runLog: [],
     };
     expect(proj.seq).toBe(5);
@@ -470,7 +461,7 @@ describe('WorkflowProjection', () => {
     expect(proj.sidebar.title).toBe('Workflow');
     expect(proj.sidebar.indicator).toBe('Running…');
     expect(proj.status).toBe('running');
-    expect(proj.stats).toEqual({ totalTokens: 500, agentCount: 2 });
+    expect(proj.stats).toEqual({ totalTokens: 500, sessionCount: 2 });
   });
 
   it('uses phases array instead of currentPhase/completedPhases strings', () => {
@@ -481,10 +472,10 @@ describe('WorkflowProjection', () => {
       currentPhaseId: '',
       completedPhaseIds: [],
       tasks: {},
-      agents: {},
+      sessions: {},
       sidebar: { title: '', indicator: '' },
       status: 'running',
-      stats: { totalTokens: 0, agentCount: 0 },
+      stats: { totalTokens: 0, sessionCount: 0 },
       runLog: [],
     };
     // @ts-expect-error - currentPhase no longer exists
@@ -576,10 +567,10 @@ describe('createInitialProjection', () => {
     expect(proj.currentPhaseId).toBe('');
     expect(proj.completedPhaseIds).toEqual([]);
     expect(proj.tasks).toEqual({});
-    expect(proj.agents).toEqual({});
+    expect(proj.sessions).toEqual({});
     expect(proj.sidebar).toEqual({ title: '', indicator: '' });
     expect(proj.status).toBe('running');
-    expect(proj.stats).toEqual({ totalTokens: 0, agentCount: 0 });
+    expect(proj.stats).toEqual({ totalTokens: 0, sessionCount: 0 });
   });
 
   it('returns a fresh object each call (immutable factory)', () => {
@@ -621,28 +612,13 @@ describe('Re-exports from core/types.ts', () => {
       title: 'Build auth',
       phaseId: 'impl',
       status: 'active',
-      steps: [{ name: 'write-tests', index: 0 }],
+
       dependencies: [],
     };
     expect(task.id).toBe('t1');
     expect(task.phaseId).toBe('impl');
     expect(task.status).toBe('active');
-    expect(task.steps).toHaveLength(1);
-    expect(task.steps[0].name).toBe('write-tests');
     expect(task.dependencies).toEqual([]);
-  });
-
-  it('StepEntity is re-exported', () => {
-    const step: StepEntity = {
-      name: 'execute',
-      index: 1,
-      profile: 'coder',
-      isReadOnly: false,
-    };
-    expect(step.name).toBe('execute');
-    expect(step.index).toBe(1);
-    expect(step.profile).toBe('coder');
-    expect(step.isReadOnly).toBe(false);
   });
 
   it('TaskStatus is re-exported', () => {
@@ -673,25 +649,23 @@ describe('Type compatibility: WorkflowProjection can hold TaskEntity tasks', () 
       title: 'Build auth',
       phaseId: 'impl',
       status: 'active',
-      steps: [{ name: 'write-tests', index: 0 }],
+
       dependencies: ['t0'],
       startedAt: 1000,
     };
     expect(proj.tasks['t1'].phaseId).toBe('impl');
-    expect(proj.tasks['t1'].steps).toHaveLength(1);
     expect(proj.tasks['t1'].dependencies).toEqual(['t0']);
     expect(proj.tasks['t1'].startedAt).toBe(1000);
   });
 });
 
-describe('Type compatibility: AgentEntity with stepIndex', () => {
+describe('Type compatibility: SessionEntity with stepIndex', () => {
   it('can associate an agent with a specific step', () => {
-    const agent: AgentEntity = {
+    const agent: SessionEntity = {
       uid: 'a1::t1',
       agentId: 'a1',
       profile: 'coder',
       phaseId: 'impl',
-      stepIndex: 1,
       taskId: 't1',
       active: true,
       log: [],
@@ -699,8 +673,9 @@ describe('Type compatibility: AgentEntity with stepIndex', () => {
       inputTokens: 0,
       outputTokens: 0,
       taskTitle: 'Build auth',
+      runnerRole: 'executor',
+      attempt: 1,
     };
-    expect(agent.stepIndex).toBe(1);
   });
 });
 
@@ -721,14 +696,14 @@ describe('Type compatibility: PhaseEntity in projection.phases', () => {
   });
 });
 
-// ── AgentEntity: contextWindow & startedAt ─────────────────────────────────
+// ── SessionEntity: contextWindow & startedAt ─────────────────────────────────
 // These two new OPTIONAL fields are added alongside the existing token /
 // lifecycle fields. They are optional so that legacy events (which never
-// carried them) still produce valid AgentEntity values.
+// carried them) still produce valid SessionEntity values.
 
-describe('AgentEntity: contextWindow & startedAt', () => {
-  // A minimal, valid AgentEntity used as a base across these tests.
-  const baseAgent: AgentEntity = {
+describe('SessionEntity: contextWindow & startedAt', () => {
+  // A minimal, valid SessionEntity used as a base across these tests.
+  const baseAgent: SessionEntity = {
     uid: 'a1::t1',
     agentId: 'a1',
     profile: 'coder',
@@ -740,27 +715,29 @@ describe('AgentEntity: contextWindow & startedAt', () => {
     inputTokens: 0,
     outputTokens: 0,
     taskTitle: 'Build auth',
+    runnerRole: 'executor',
+    attempt: 1,
   };
 
   it('contextWindow is optional and defaults to undefined when omitted', () => {
-    const agent: AgentEntity = { ...baseAgent };
+    const agent: SessionEntity = { ...baseAgent };
     expect(agent.contextWindow).toBeUndefined();
   });
 
   it('startedAt is optional and defaults to undefined when omitted', () => {
-    const agent: AgentEntity = { ...baseAgent };
+    const agent: SessionEntity = { ...baseAgent };
     expect(agent.startedAt).toBeUndefined();
   });
 
   it('contextWindow can be set to the resolved model context size (number)', () => {
-    const agent: AgentEntity = { ...baseAgent, contextWindow: 200000 };
+    const agent: SessionEntity = { ...baseAgent, contextWindow: 200000 };
     expect(agent.contextWindow).toBe(200000);
     expect(typeof agent.contextWindow).toBe('number');
   });
 
   it('startedAt can be set to an ISO timestamp string', () => {
     const iso = '2026-06-18T12:00:00.000Z';
-    const agent: AgentEntity = { ...baseAgent, startedAt: iso };
+    const agent: SessionEntity = { ...baseAgent, startedAt: iso };
     expect(agent.startedAt).toBe(iso);
     expect(typeof agent.startedAt).toBe('string');
     // The value round-trips through Date parsing (i.e. it is a real ISO time).
@@ -768,12 +745,11 @@ describe('AgentEntity: contextWindow & startedAt', () => {
   });
 
   it('both new fields coexist with every existing field (no regressions)', () => {
-    const agent: AgentEntity = {
+    const agent: SessionEntity = {
       uid: 'a1::t1',
       agentId: 'a1',
       profile: 'coder',
       phaseId: 'impl',
-      stepIndex: 0,
       taskId: 't1',
       sessionId: 'sess-1',
       sessionPath: '/tmp/sess',
@@ -783,13 +759,14 @@ describe('AgentEntity: contextWindow & startedAt', () => {
       inputTokens: 1200,
       outputTokens: 800,
       taskTitle: 'Build auth',
+      runnerRole: 'executor',
+      attempt: 1,
       completedAt: '2026-06-18T13:00:00.000Z',
       contextWindow: 160000,
       startedAt: '2026-06-18T12:00:00.000Z',
     };
     // Existing fields are unchanged.
     expect(agent.uid).toBe('a1::t1');
-    expect(agent.stepIndex).toBe(0);
     expect(agent.sessionId).toBe('sess-1');
     expect(agent.sessionPath).toBe('/tmp/sess');
     expect(agent.toolCallCount).toBe(3);
@@ -804,8 +781,8 @@ describe('AgentEntity: contextWindow & startedAt', () => {
 
   it('a legacy agent (shaped like the pre-change schema) is still valid', () => {
     // Backward compatibility: an agent carrying none of the new optional
-    // fields must still satisfy AgentEntity and behave correctly.
-    const legacy: AgentEntity = {
+    // fields must still satisfy SessionEntity and behave correctly.
+    const legacy: SessionEntity = {
       uid: 'legacy',
       agentId: 'legacy',
       profile: 'scout',
@@ -816,6 +793,8 @@ describe('AgentEntity: contextWindow & startedAt', () => {
       inputTokens: 0,
       outputTokens: 0,
       taskTitle: 'Legacy task',
+      runnerRole: 'executor',
+      attempt: 1,
     };
     expect(legacy.contextWindow).toBeUndefined();
     expect(legacy.startedAt).toBeUndefined();
@@ -825,9 +804,9 @@ describe('AgentEntity: contextWindow & startedAt', () => {
   });
 });
 
-describe('AgentEntity field semantics: context % and duration', () => {
+describe('SessionEntity field semantics: context % and duration', () => {
   it('contextWindow allows computing a context-utilization percentage', () => {
-    const agent: AgentEntity = {
+    const agent: SessionEntity = {
       uid: 'a1',
       agentId: 'a1',
       profile: 'coder',
@@ -838,6 +817,8 @@ describe('AgentEntity field semantics: context % and duration', () => {
       inputTokens: 40000,
       outputTokens: 0,
       taskTitle: '',
+      runnerRole: 'executor',
+      attempt: 1,
       contextWindow: 200000,
     };
     const used = agent.inputTokens + agent.outputTokens;
@@ -845,8 +826,8 @@ describe('AgentEntity field semantics: context % and duration', () => {
     expect(pct).toBe(20);
   });
 
-  it('agents without contextWindow yield no defined context %', () => {
-    const agent: AgentEntity = {
+  it('sessions without contextWindow yield no defined context %', () => {
+    const agent: SessionEntity = {
       uid: 'a1',
       agentId: 'a1',
       profile: 'coder',
@@ -857,6 +838,8 @@ describe('AgentEntity field semantics: context % and duration', () => {
       inputTokens: 5000,
       outputTokens: 0,
       taskTitle: '',
+      runnerRole: 'executor',
+      attempt: 1,
     };
     const pct =
       agent.contextWindow != null
@@ -868,7 +851,7 @@ describe('AgentEntity field semantics: context % and duration', () => {
   it('startedAt + completedAt allow computing per-agent duration', () => {
     const start = '2026-06-18T12:00:00.000Z';
     const end = '2026-06-18T12:05:00.000Z';
-    const agent: AgentEntity = {
+    const agent: SessionEntity = {
       uid: 'a1',
       agentId: 'a1',
       profile: 'coder',
@@ -879,6 +862,8 @@ describe('AgentEntity field semantics: context % and duration', () => {
       inputTokens: 0,
       outputTokens: 0,
       taskTitle: '',
+      runnerRole: 'executor',
+      attempt: 1,
       startedAt: start,
       completedAt: end,
     };
@@ -887,7 +872,7 @@ describe('AgentEntity field semantics: context % and duration', () => {
   });
 
   it('startedAt alone (no completedAt) yields no end-to-end duration yet', () => {
-    const agent: AgentEntity = {
+    const agent: SessionEntity = {
       uid: 'a1',
       agentId: 'a1',
       profile: 'coder',
@@ -898,6 +883,8 @@ describe('AgentEntity field semantics: context % and duration', () => {
       inputTokens: 0,
       outputTokens: 0,
       taskTitle: '',
+      runnerRole: 'executor',
+      attempt: 1,
       startedAt: '2026-06-18T12:00:00.000Z',
     };
     // Without completedAt the agent is still running: no duration to compute.
@@ -907,15 +894,15 @@ describe('AgentEntity field semantics: context % and duration', () => {
 });
 
 describe('createInitialProjection: optional agent fields need no defaults', () => {
-  it('initial agents record is empty (optional fields need no defaults)', () => {
+  it('initial sessions record is empty (optional fields need no defaults)', () => {
     const proj = createInitialProjection();
-    expect(proj.agents).toEqual({});
-    expect(Object.keys(proj.agents)).toHaveLength(0);
+    expect(proj.sessions).toEqual({});
+    expect(Object.keys(proj.sessions)).toHaveLength(0);
   });
 
   it('can store an agent that uses the new optional fields', () => {
     const proj = createInitialProjection();
-    proj.agents['a1'] = {
+    proj.sessions['a1'] = {
       uid: 'a1',
       agentId: 'a1',
       profile: 'coder',
@@ -926,10 +913,12 @@ describe('createInitialProjection: optional agent fields need no defaults', () =
       inputTokens: 0,
       outputTokens: 0,
       taskTitle: '',
+      runnerRole: 'executor',
+      attempt: 1,
       contextWindow: 128000,
       startedAt: '2026-06-18T12:00:00.000Z',
     };
-    expect(proj.agents['a1'].contextWindow).toBe(128000);
-    expect(proj.agents['a1'].startedAt).toBe('2026-06-18T12:00:00.000Z');
+    expect(proj.sessions['a1'].contextWindow).toBe(128000);
+    expect(proj.sessions['a1'].startedAt).toBe('2026-06-18T12:00:00.000Z');
   });
 });

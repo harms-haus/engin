@@ -14,7 +14,7 @@
 //   - On each store notification, compute deltas and print only new entries,
 //     then advance the watermarks.
 //   - Watermarks are id/seq based (not length based): shared/client-store caps
-//     agent logs at MAX_AGENT_LOG (500) and workflowEventLog at 1000. Once
+//     session logs at MAX_SESSION_LOG (500) and workflowEventLog at 1000. Once
 //     capped, `.length` stays constant while content shifts, so a length-based
 //     watermark would silently drop all subsequent entries.
 
@@ -34,7 +34,7 @@ export interface StdoutRenderer {
   dispose: () => void;
 }
 
-interface AgentSnapshot {
+interface SessionSnapshot {
   /** id of the last LogEntry already rendered (null = nothing seen yet). */
   lastSeenLogId: string | null;
   inputTokens: number;
@@ -46,7 +46,7 @@ interface AgentSnapshot {
 // delta-based renderer. Each new agent log entry is mapped to an emoji line
 // (without the timestamp prefix — the caller prepends `formatTime()`).
 
-function formatVerboseAgentLogLine(entry: LogEntry, agentId: string): string | null {
+function formatVerboseSessionLogLine(entry: LogEntry, agentId: string): string | null {
   switch (entry.type) {
     case 'text':
       return `💬 ${entry.content}`;
@@ -88,7 +88,7 @@ export function createStdoutRenderer(deps: StdoutRendererDeps): StdoutRenderer {
   // was evicted by the cap we resync from the current head.
   let lastSeenEventSeq: number | null = null;
   let lastRunLogLength = 0;
-  const agentSnapshots = new Map<string, AgentSnapshot>();
+  const sessionSnapshots = new Map<string, SessionSnapshot>();
 
   // Snapshot current state on construction so pre-existing entries are not
   // re-printed on the first notification.
@@ -96,11 +96,11 @@ export function createStdoutRenderer(deps: StdoutRendererDeps): StdoutRenderer {
   const initialEventLog = initialState.workflowEventLog;
   lastSeenEventSeq = initialEventLog.length > 0 ? initialEventLog[initialEventLog.length - 1].seq : null;
   lastRunLogLength = initialState.runLog.length;
-  for (const [key, agent] of Object.entries(initialState.agents)) {
-    agentSnapshots.set(key, {
-      lastSeenLogId: agent.log.length > 0 ? agent.log[agent.log.length - 1].id : null,
-      inputTokens: agent.inputTokens,
-      outputTokens: agent.outputTokens,
+  for (const [key, session] of Object.entries(initialState.sessions)) {
+    sessionSnapshots.set(key, {
+      lastSeenLogId: session.log.length > 0 ? session.log[session.log.length - 1].id : null,
+      inputTokens: session.inputTokens,
+      outputTokens: session.outputTokens,
     });
   }
 
@@ -126,11 +126,11 @@ export function createStdoutRenderer(deps: StdoutRendererDeps): StdoutRenderer {
         lastSeenEventSeq = eventLog[eventLog.length - 1].seq;
       }
 
-      // 2. Agent log deltas + token deltas (verbose only).
+      // 2. Session log deltas + token deltas (verbose only).
       if (verbose) {
-        for (const [key, agent] of Object.entries(state.agents)) {
-          const prev = agentSnapshots.get(key);
-          const tokenBase: Pick<AgentSnapshot, 'inputTokens' | 'outputTokens'> = prev ?? {
+        for (const [key, session] of Object.entries(state.sessions)) {
+          const prev = sessionSnapshots.get(key);
+          const tokenBase: Pick<SessionSnapshot, 'inputTokens' | 'outputTokens'> = prev ?? {
             inputTokens: 0,
             outputTokens: 0,
           };
@@ -140,27 +140,27 @@ export function createStdoutRenderer(deps: StdoutRendererDeps): StdoutRenderer {
           // 500-entry cap) resync from the current head.
           let logStart = 0;
           if (lastSeenId !== null) {
-            const idx = agent.log.findIndex((e) => e.id === lastSeenId);
+            const idx = session.log.findIndex((e) => e.id === lastSeenId);
             logStart = idx === -1 ? 0 : idx + 1;
           }
 
-          for (let i = logStart; i < agent.log.length; i++) {
-            const line = formatVerboseAgentLogLine(agent.log[i], agent.agentId);
+          for (let i = logStart; i < session.log.length; i++) {
+            const line = formatVerboseSessionLogLine(session.log[i], session.agentId);
             if (line !== null) {
               console.log(`${formatTime()} ${line}`);
             }
           }
 
-          const deltaIn = agent.inputTokens - tokenBase.inputTokens;
-          const deltaOut = agent.outputTokens - tokenBase.outputTokens;
+          const deltaIn = session.inputTokens - tokenBase.inputTokens;
+          const deltaOut = session.outputTokens - tokenBase.outputTokens;
           if (deltaIn !== 0 || deltaOut !== 0) {
             console.log(`${formatTime()} 📊 Tokens: ${deltaIn} in / ${deltaOut} out`);
           }
 
-          agentSnapshots.set(key, {
-            lastSeenLogId: agent.log.length > 0 ? agent.log[agent.log.length - 1].id : lastSeenId,
-            inputTokens: agent.inputTokens,
-            outputTokens: agent.outputTokens,
+          sessionSnapshots.set(key, {
+            lastSeenLogId: session.log.length > 0 ? session.log[session.log.length - 1].id : lastSeenId,
+            inputTokens: session.inputTokens,
+            outputTokens: session.outputTokens,
           });
         }
       }

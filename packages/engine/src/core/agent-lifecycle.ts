@@ -6,10 +6,10 @@
 //   - profile lookup + read-only adjustment (strip write/edit)
 //   - session creation via the agent plugin registry
 //   - activeSessions tracking (before any status callback — TOCTOU safety)
-//   - onAgentSpawn firing (with sessionId + sessionPath)
+//   - onSessionStart firing (with sessionId + sessionPath)
 //   - onStepStart firing
 //   - returns a handle exposing session/dispose/sessionId/sessionPath + a
-//     `complete()` method that fires onAgentComplete and removes the session
+//     `complete()` method that fires onSessionComplete and removes the session
 //     from activeSessions.
 //
 // Renderer invocation is intentionally NOT part of spawnAgent — it stays in the
@@ -32,8 +32,10 @@ export interface AgentLifecycleOptions {
   cwd: string;
   phaseId: string;
   taskId: string;
-  stepIndex: number;
-  stepName?: string;
+  /** Optional role label propagated to onSessionStart / onSessionComplete. */
+  runnerRole?: string;
+  /** Attempt number (1-based). */
+  attempt?: number;
   /** When true, write/edit tools are stripped from the agent's toolset. */
   isReadOnly?: boolean;
   /** Optional API key overrides by provider. */
@@ -44,7 +46,7 @@ export interface AgentLifecycleOptions {
   sessionDir?: string;
   /** Path to an existing session file to resume. Takes precedence over `sessionDir`. */
   resumeSessionPath?: string;
-  /** Status callback handlers (agent spawn / step start / agent complete are fired here). */
+  /** Status callback handlers (session start / complete are fired here). */
   onStatus?: StatusCallbacks;
   /** Mutable set of active sessions. The spawned session is added here (before any
    *  callback fires) and removed by `handle.complete()`. Enables abort listeners
@@ -61,7 +63,7 @@ export interface AgentLifecycleHandle {
   sessionId: string;
   /** Resolved session path: sessionFile ?? resumeSessionPath ?? sessionDir ?? sessionId. */
   sessionPath: string;
-  /** Fires onAgentComplete and removes the session from activeSessions. Does NOT dispose. */
+  /** Fires onSessionComplete and removes the session from activeSessions. Does NOT dispose. */
   complete: () => void;
 }
 
@@ -132,27 +134,18 @@ export async function spawnAgent(
   //    behavior.
   const sessionPath = session.sessionFile ?? opts.resumeSessionPath ?? opts.sessionDir ?? sessionId;
 
-  // 6. Fire onAgentSpawn (after tracking) with sessionId + sessionPath + contextWindow.
-  opts.onStatus?.onAgentSpawn?.({
+  // 6. Fire onSessionStart (after tracking) with sessionId + sessionPath + contextWindow.
+  opts.onStatus?.onSessionStart?.({
     agentId: opts.agentId,
     profile: opts.profileId,
     phaseId: opts.phaseId,
     taskId: opts.taskId,
-    stepIndex: opts.stepIndex,
     sessionId,
     sessionPath,
     contextWindow,
   });
 
-  // 7. Fire onStepStart (after onAgentSpawn) so the step always has an agent linkage.
-  opts.onStatus?.onStepStart?.({
-    taskId: opts.taskId,
-    stepIndex: opts.stepIndex,
-    stepName: opts.stepName ?? '',
-    agentId: opts.agentId,
-  });
-
-  // 8. Return the handle. complete() fires onAgentComplete + untracks; dispose()
+  // 7. Return the handle. complete() fires onSessionComplete + untracks; dispose()
   //    tears down the session. The two are deliberately separate so callers can
   //    fire the completion callback (e.g. in a finally block) without disposing
   //    when they intend to keep the session alive, or dispose without the callback.
@@ -162,12 +155,11 @@ export async function spawnAgent(
     sessionId,
     sessionPath,
     complete: () => {
-      opts.onStatus?.onAgentComplete?.({
+      opts.onStatus?.onSessionComplete?.({
         agentId: opts.agentId,
         profile: opts.profileId,
         phaseId: opts.phaseId,
         taskId: opts.taskId,
-        stepIndex: opts.stepIndex,
         sessionId,
       });
       opts.activeSessions?.delete(session);

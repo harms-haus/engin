@@ -113,7 +113,7 @@ function setLocation(href: string): void {
 
 function resetStore(): void {
   useWorkflowStore.setState({
-    agentsById: {},
+    sessionsById: {},
     tasksById: {},
     phases: [],
     currentPhaseId: '',
@@ -124,13 +124,11 @@ function resetStore(): void {
     error: undefined,
     failedPhase: undefined,
     seq: 0,
-    stats: { totalTokens: 0, agentCount: 0 },
+    stats: { totalTokens: 0, sessionCount: 0 },
     workflowEventLog: [],
     selectedPhaseId: null,
     selectedTaskId: null,
-    selectedStepIndex: null,
     userPinnedPhase: false,
-    userPinnedStep: false,
     runs: [],
     selectedRunId: RUN_ID,
     runLogs: {},

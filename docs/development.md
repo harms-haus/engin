@@ -123,8 +123,8 @@ Tests live in `tests/` and are organised by domain:
 ```
 tests/
 ├── cli/         # parse-args, commands, sigint, session-selector, run/resume guards
-├── core/        # agent-loop, agent-lifecycle, agent-plugin, agent-registry, config, phase-tasks, profile, structured-output, worktree-lifecycle, ...
-├── pool/        # lane-pool, step-execution, prompt-builder, severity, validation, types
+├── core/        # agent-loop, agent-lifecycle, agent-plugin, agent-registry, config, phase-runner, phase-tasks, profile, structured-output, worktree-lifecycle, ...
+├── pool/        # runner-pool, session, session-gate, runners/ (singleSession, linearRunner, reviewRunner, …), lane-pool (legacy), severity, validation, types
 ├── tracking/    # audit-log, event-store, evolve, task-status, workflow-status, workflow-serializer
 ├── server/      # daemon, run-manager, control-server, status-bridge, auth, bind-guard
 ├── shared/      # engine-client, client-store, protocol-types parity
@@ -142,9 +142,14 @@ tests/
 - **Helpers** in `tests/helpers/` (`make-profile`, `make-session`, `make-task`, `use-temp-dir`,
   `env-sandbox`) keep tests terse and deterministic.
 - **Pure units** (`evolve`, `parseProfile`, `extractJsonFromText`) are tested in isolation.
-- **`runStepTask` and `LanePool`** are tested with mock `PromptableHarness`-shaped sessions to
-  avoid real model calls.
-- **Concurrency** tests (e.g. `lane-pool-wait-pattern`, `workflow-status-atomic-save`) cover the
+- **`RunnerPool`** is tested with mock agent-plugin sessions to avoid real model calls; tests
+  cover the drain-loop, `SessionGate` concurrency capping, runner resolution (`getRunnerForTask`
+  - `beforeTask` hook), and the retry valve.
+- **`runSession`** (the session primitive) is tested for idempotency (`.complete` sentinel +
+  `result.json` checksum), watchdog timeout/escalation, and structured/text/filesystem output modes.
+- **Composable runners** (`singleSession`, `linearRunner`, `reviewRunner`, `coalescingRunner`,
+  `coordinatorRunner`) are tested in isolation against synthetic `RunnerContext` values.
+- **Concurrency** tests (e.g. `session-gate`, `workflow-status-atomic-save`) cover the
   tricky timing/serialisation paths.
 
 ## Adding new profiles and workflows

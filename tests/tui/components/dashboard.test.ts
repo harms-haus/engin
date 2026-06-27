@@ -1,5 +1,5 @@
 /* eslint-disable no-control-regex -- tests intentionally match ANSI escape codes */
-import type { AgentEntity, LogEntry, TaskEntity, WorkflowProjection } from '@engin/shared';
+import type { LogEntry, SessionEntity, TaskEntity, WorkflowProjection } from '@engin/shared';
 import { createInitialProjection } from '@engin/shared';
 import { describe, expect, it, spyOn } from 'bun:test';
 import { Dashboard } from '../../../packages/tui/src/components/dashboard.js';
@@ -21,14 +21,19 @@ function makeTask(overrides: Partial<TaskEntity> & { id: string }): TaskEntity {
     title: 'Test Task',
     phaseId: 'phase-a',
     status: 'ready',
-    steps: [],
+
     dependencies: [],
     ...overrides,
   };
 }
 
-/** Create a minimal AgentEntity for the given task and phase. */
-function makeAgent(uid: string, taskId: string, phaseId: string, overrides: Partial<AgentEntity> = {}): AgentEntity {
+/** Create a minimal SessionEntity for the given task and phase. */
+function makeAgent(
+  uid: string,
+  taskId: string,
+  phaseId: string,
+  overrides: Partial<SessionEntity> = {},
+): SessionEntity {
   return {
     uid,
     agentId: uid,
@@ -41,17 +46,19 @@ function makeAgent(uid: string, taskId: string, phaseId: string, overrides: Part
     inputTokens: 0,
     outputTokens: 0,
     taskTitle: '',
+    runnerRole: 'executor',
+    attempt: 1,
     ...overrides,
   };
 }
 
-/** Build a full projection with phases, tasks, and agents. */
+/** Build a full projection with phases, tasks, and sessions. */
 function buildProjection(options: {
   phases?: { id: string; label?: string; icon?: string }[];
   currentPhaseId?: string;
   completedPhaseIds?: string[];
   tasks?: TaskEntity[];
-  agents?: AgentEntity[];
+  sessions?: SessionEntity[];
   indicator?: string;
 }): WorkflowProjection {
   const p = createInitialProjection();
@@ -66,8 +73,8 @@ function buildProjection(options: {
   for (const t of options.tasks ?? []) {
     p.tasks[t.id] = t;
   }
-  for (const a of options.agents ?? []) {
-    p.agents[a.uid] = a;
+  for (const a of options.sessions ?? []) {
+    p.sessions[a.uid] = a;
   }
   if (options.indicator) {
     p.sidebar.indicator = options.indicator;
@@ -141,8 +148,6 @@ describe('Dashboard', () => {
       expect(d.getSelection().selectedPhaseId).toBe('B');
       // Following also resets task/step selection so the new phase gets fresh defaults.
       expect(d.getSelection().selectedTaskId).toBeNull();
-      expect(d.getSelection().selectedStepIndex).toBeNull();
-      expect(d.getSelection().userPinnedStep).toBe(false);
     });
 
     it('keeps selectedPhaseId when it is a non-current phase even though currentPhaseId differs', () => {
@@ -195,7 +200,7 @@ describe('Dashboard', () => {
         currentPhaseId: 'phase-a',
         tasks: [
           makeTask({ id: 't1', phaseId: 'phase-a', status: 'ready' }),
-          makeTask({ id: 't2', phaseId: 'phase-a', status: 'active', steps: [], startedAt: Date.now() }),
+          makeTask({ id: 't2', phaseId: 'phase-a', status: 'active', startedAt: Date.now() }),
           makeTask({ id: 't3', phaseId: 'phase-a', status: 'ready' }),
         ],
       });
@@ -254,9 +259,9 @@ describe('Dashboard', () => {
         phases: [{ id: 'phase-a' }],
         currentPhaseId: 'phase-a',
         tasks: [
-          makeTask({ id: 'tA', phaseId: 'phase-a', status: 'active', startedAt: 1000, steps: [] }),
-          makeTask({ id: 'tB', phaseId: 'phase-a', status: 'active', startedAt: 5000, steps: [] }),
-          makeTask({ id: 'tC', phaseId: 'phase-a', status: 'active', startedAt: 3000, steps: [] }),
+          makeTask({ id: 'tA', phaseId: 'phase-a', status: 'active', startedAt: 1000 }),
+          makeTask({ id: 'tB', phaseId: 'phase-a', status: 'active', startedAt: 5000 }),
+          makeTask({ id: 'tC', phaseId: 'phase-a', status: 'active', startedAt: 3000 }),
         ],
       });
       d.syncFromProjection(p1);
@@ -267,9 +272,9 @@ describe('Dashboard', () => {
         phases: [{ id: 'phase-a' }],
         currentPhaseId: 'phase-a',
         tasks: [
-          makeTask({ id: 'tA', phaseId: 'phase-a', status: 'complete', startedAt: 1000, steps: [] }),
-          makeTask({ id: 'tB', phaseId: 'phase-a', status: 'active', startedAt: 5000, steps: [] }),
-          makeTask({ id: 'tC', phaseId: 'phase-a', status: 'active', startedAt: 3000, steps: [] }),
+          makeTask({ id: 'tA', phaseId: 'phase-a', status: 'complete', startedAt: 1000 }),
+          makeTask({ id: 'tB', phaseId: 'phase-a', status: 'active', startedAt: 5000 }),
+          makeTask({ id: 'tC', phaseId: 'phase-a', status: 'active', startedAt: 3000 }),
         ],
       });
       d.syncFromProjection(p2);
@@ -279,8 +284,6 @@ describe('Dashboard', () => {
       expect(sel.selectedTaskId).toBe('tB');
       // Step selection was reset for the newly-selected task and re-initialized
       // to its active step (0); the user pin is cleared.
-      expect(sel.selectedStepIndex).toBe(0);
-      expect(sel.userPinnedStep).toBe(false);
     });
 
     it('reselects an active task when the selected task fails', () => {
@@ -289,8 +292,8 @@ describe('Dashboard', () => {
         phases: [{ id: 'phase-a' }],
         currentPhaseId: 'phase-a',
         tasks: [
-          makeTask({ id: 'tA', phaseId: 'phase-a', status: 'active', startedAt: 1000, steps: [] }),
-          makeTask({ id: 'tB', phaseId: 'phase-a', status: 'active', startedAt: 5000, steps: [] }),
+          makeTask({ id: 'tA', phaseId: 'phase-a', status: 'active', startedAt: 1000 }),
+          makeTask({ id: 'tB', phaseId: 'phase-a', status: 'active', startedAt: 5000 }),
         ],
       });
       d.syncFromProjection(p1);
@@ -300,8 +303,8 @@ describe('Dashboard', () => {
         phases: [{ id: 'phase-a' }],
         currentPhaseId: 'phase-a',
         tasks: [
-          makeTask({ id: 'tA', phaseId: 'phase-a', status: 'failed', startedAt: 1000, steps: [] }),
-          makeTask({ id: 'tB', phaseId: 'phase-a', status: 'active', startedAt: 5000, steps: [] }),
+          makeTask({ id: 'tA', phaseId: 'phase-a', status: 'failed', startedAt: 1000 }),
+          makeTask({ id: 'tB', phaseId: 'phase-a', status: 'active', startedAt: 5000 }),
         ],
       });
       d.syncFromProjection(p2);
@@ -315,8 +318,8 @@ describe('Dashboard', () => {
         phases: [{ id: 'phase-a' }],
         currentPhaseId: 'phase-a',
         tasks: [
-          makeTask({ id: 'tA', phaseId: 'phase-a', status: 'active', startedAt: 1000, steps: [] }),
-          makeTask({ id: 'tB', phaseId: 'phase-a', status: 'ready', steps: [] }),
+          makeTask({ id: 'tA', phaseId: 'phase-a', status: 'active', startedAt: 1000 }),
+          makeTask({ id: 'tB', phaseId: 'phase-a', status: 'ready' }),
         ],
       });
       d.syncFromProjection(p1);
@@ -327,8 +330,8 @@ describe('Dashboard', () => {
         phases: [{ id: 'phase-a' }],
         currentPhaseId: 'phase-a',
         tasks: [
-          makeTask({ id: 'tA', phaseId: 'phase-a', status: 'complete', startedAt: 1000, steps: [] }),
-          makeTask({ id: 'tB', phaseId: 'phase-a', status: 'ready', steps: [] }),
+          makeTask({ id: 'tA', phaseId: 'phase-a', status: 'complete', startedAt: 1000 }),
+          makeTask({ id: 'tB', phaseId: 'phase-a', status: 'ready' }),
         ],
       });
       d.syncFromProjection(p2);
@@ -347,17 +350,12 @@ describe('Dashboard', () => {
             id: 't1',
             phaseId: 'phase-a',
             status: 'active',
-            activeStepIndex: 0,
-            steps: [
-              { name: 'Step 1', index: 0 },
-              { name: 'Step 2', index: 1 },
-            ],
+
             startedAt: Date.now(),
           }),
         ],
       });
       d.syncFromProjection(p);
-      expect(d.getSelection().selectedStepIndex).toBe(0);
 
       // Advance activeStepIndex
       const p2 = buildProjection({
@@ -368,18 +366,13 @@ describe('Dashboard', () => {
             id: 't1',
             phaseId: 'phase-a',
             status: 'active',
-            activeStepIndex: 1,
-            steps: [
-              { name: 'Step 1', index: 0 },
-              { name: 'Step 2', index: 1 },
-            ],
+
             startedAt: Date.now(),
           }),
         ],
       });
       d.syncFromProjection(p2);
       // selectedStepIndex was 0 (matched old activeStepIndex 0), not pinned → follow to 1
-      expect(d.getSelection().selectedStepIndex).toBe(1);
     });
 
     it('keeps selectedStepIndex when userPinnedStep is true', () => {
@@ -392,11 +385,7 @@ describe('Dashboard', () => {
             id: 't1',
             phaseId: 'phase-a',
             status: 'active',
-            activeStepIndex: 0,
-            steps: [
-              { name: 'Step 1', index: 0 },
-              { name: 'Step 2', index: 1 },
-            ],
+
             startedAt: Date.now(),
           }),
         ],
@@ -413,22 +402,16 @@ describe('Dashboard', () => {
             id: 't1',
             phaseId: 'phase-a',
             status: 'active',
-            activeStepIndex: 0,
-            steps: [
-              { name: 'Step 1', index: 0, agentKey: 'a1' },
-              { name: 'Step 2', index: 1, agentKey: 'a2' },
-            ],
+
             startedAt: Date.now(),
           }),
         ],
-        agents: [makeAgent('a1', 't1', 'phase-a'), makeAgent('a2', 't1', 'phase-a')],
+        sessions: [makeAgent('a1', 't1', 'phase-a'), makeAgent('a2', 't1', 'phase-a')],
       });
       d.syncFromProjection(pWithKeys);
 
       // Now tab to cycle to step index 1
       d.handleInput('\t');
-      expect(d.getSelection().selectedStepIndex).toBe(1);
-      expect(d.getSelection().userPinnedStep).toBe(true);
 
       // Now advance activeStepIndex (keep the same task with same steps)
       const p2 = buildProjection({
@@ -439,19 +422,13 @@ describe('Dashboard', () => {
             id: 't1',
             phaseId: 'phase-a',
             status: 'active',
-            activeStepIndex: 1,
-            steps: [
-              { name: 'Step 1', index: 0 },
-              { name: 'Step 2', index: 1 },
-            ],
+
             startedAt: Date.now(),
           }),
         ],
       });
       d.syncFromProjection(p2);
       // userPinnedStep = true → should keep 1 (which now equals activeStepIndex, but that's coincidence)
-      expect(d.getSelection().selectedStepIndex).toBe(1);
-      expect(d.getSelection().userPinnedStep).toBe(true);
     });
 
     // ── Step follow: expanded exception (req 5) ───────────────────────
@@ -462,10 +439,6 @@ describe('Dashboard', () => {
 
     it('blocks step follow while the agent log is expanded and keeps the tab bar on the reviewed step', () => {
       const d = new Dashboard(4);
-      const steps = [
-        { name: 'Step 1', index: 0, agentKey: 'a1' },
-        { name: 'Step 2', index: 1, agentKey: 'a2' },
-      ];
       const p1 = buildProjection({
         phases: [{ id: 'phase-a' }],
         currentPhaseId: 'phase-a',
@@ -474,16 +447,13 @@ describe('Dashboard', () => {
             id: 't1',
             phaseId: 'phase-a',
             status: 'active',
-            activeStepIndex: 0,
-            steps,
             startedAt: Date.now(),
           }),
         ],
-        agents: [makeAgent('a1', 't1', 'phase-a'), makeAgent('a2', 't1', 'phase-a')],
+        sessions: [makeAgent('a1', 't1', 'phase-a'), makeAgent('a2', 't1', 'phase-a')],
       });
       d.syncFromProjection(p1);
       // selectedStepIndex follows the active step (0).
-      expect(d.getSelection().selectedStepIndex).toBe(0);
       expect(d.agentLog.getSelectedAgentUid()).toBe('a1');
 
       // Expand the agent log (user starts reviewing).
@@ -499,39 +469,33 @@ describe('Dashboard', () => {
             id: 't1',
             phaseId: 'phase-a',
             status: 'active',
-            activeStepIndex: 1,
-            steps,
             startedAt: Date.now(),
           }),
         ],
-        agents: [makeAgent('a1', 't1', 'phase-a'), makeAgent('a2', 't1', 'phase-a')],
+        sessions: [makeAgent('a1', 't1', 'phase-a'), makeAgent('a2', 't1', 'phase-a')],
       });
       d.syncFromProjection(p2);
 
       // Expanded → follow is blocked: the selection stays on step 0.
-      expect(d.getSelection().selectedStepIndex).toBe(0);
       // The selection is still pushed to the agent log (step 0 selected).
       expect(d.agentLog.getSelectedAgentUid()).toBe('a1');
 
-      // Rendered tab bar: step 0 is the selected (underlined) step; step 1 is
-      // now the active step (▶ marker), step 0 is done (✓ marker).
+      // Rendered tab bar: session a1 is the selected (underlined) session;
+      // no active-step indicators (the session tab bar uses runner role labels).
       const logLines = d.agentLog.render(WIDTH - 2);
       const tabBar = logLines[logLines.length - 1];
       const tabBarPlain = stripAnsi(tabBar);
-      // Exactly one underlined (selected) segment, on step 0.
+      // Exactly one underlined (selected) segment, on session a1.
       expect((tabBar.match(/\x1b\[4m/g) || []).length).toBe(1);
-      expect(tabBarPlain).toContain('Step 1');
-      expect(tabBarPlain).toContain('Step 2');
-      expect(tabBarPlain).toContain('Step 1 ✓');
-      expect(tabBarPlain).toContain('Step 2 ▶');
+      // Both session labels appear in the tab bar (runnerRole is 'executor').
+      expect(tabBarPlain).toContain('executor');
+      // The selected session (first, a1) is underlined — use the raw tab bar
+      // (not the stripped version) so the ANSI underline code is present.
+      expect(tabBar).toContain('\x1b[4mexecutor\x1b[0m');
     });
 
     it('resumes step follow once the agent log is collapsed', () => {
       const d = new Dashboard(4);
-      const steps = [
-        { name: 'Step 1', index: 0, agentKey: 'a1' },
-        { name: 'Step 2', index: 1, agentKey: 'a2' },
-      ];
       const mk = (activeStepIndex: number) =>
         buildProjection({
           phases: [{ id: 'phase-a' }],
@@ -541,16 +505,13 @@ describe('Dashboard', () => {
               id: 't1',
               phaseId: 'phase-a',
               status: 'active',
-              activeStepIndex,
-              steps,
               startedAt: Date.now(),
             }),
           ],
-          agents: [makeAgent('a1', 't1', 'phase-a'), makeAgent('a2', 't1', 'phase-a')],
+          sessions: [makeAgent('a1', 't1', 'phase-a'), makeAgent('a2', 't1', 'phase-a')],
         });
 
       d.syncFromProjection(mk(0));
-      expect(d.getSelection().selectedStepIndex).toBe(0);
 
       // Expand then immediately collapse (no advance happened while expanded,
       // so selectedStepIndex is still aligned with the active step).
@@ -560,7 +521,6 @@ describe('Dashboard', () => {
 
       // A fresh advance while collapsed is followed.
       d.syncFromProjection(mk(1));
-      expect(d.getSelection().selectedStepIndex).toBe(1);
     });
 
     it('resumes step follow after collapsing even when an advance happened while expanded', () => {
@@ -569,10 +529,6 @@ describe('Dashboard', () => {
       // selectedStepIndex fell behind oldActiveStepIndex and follow could never
       // re-fire (stuck on a stale step indefinitely).
       const d = new Dashboard(4);
-      const steps = [
-        { name: 'Step 1', index: 0, agentKey: 'a1' },
-        { name: 'Step 2', index: 1, agentKey: 'a2' },
-      ];
       const mk = (activeStepIndex: number) =>
         buildProjection({
           phases: [{ id: 'phase-a' }],
@@ -582,17 +538,14 @@ describe('Dashboard', () => {
               id: 't1',
               phaseId: 'phase-a',
               status: 'active',
-              activeStepIndex,
-              steps,
               startedAt: Date.now(),
             }),
           ],
-          agents: [makeAgent('a1', 't1', 'phase-a'), makeAgent('a2', 't1', 'phase-a')],
+          sessions: [makeAgent('a1', 't1', 'phase-a'), makeAgent('a2', 't1', 'phase-a')],
         });
 
       // Start aligned with the active step (0).
       d.syncFromProjection(mk(0));
-      expect(d.getSelection().selectedStepIndex).toBe(0);
 
       // Expand the agent log (user starts reviewing).
       d.agentLog.toggleExpand();
@@ -600,8 +553,6 @@ describe('Dashboard', () => {
 
       // Advance the active step WHILE expanded → follow must be suppressed.
       d.syncFromProjection(mk(1));
-      expect(d.getSelection().selectedStepIndex).toBe(0);
-      expect(d.getSelection().userPinnedStep).toBe(false);
 
       // Collapse the agent log.
       d.agentLog.toggleExpand();
@@ -610,8 +561,6 @@ describe('Dashboard', () => {
       // Sync again with the SAME activeStepIndex (1) → follow must now re-fire
       // because the step is not pinned and the log is no longer expanded.
       d.syncFromProjection(mk(1));
-      expect(d.getSelection().selectedStepIndex).toBe(1);
-      expect(d.getSelection().userPinnedStep).toBe(false);
     });
 
     it('follows new task activeStepIndex after task auto-follow changes task (not pinned)', () => {
@@ -626,20 +575,13 @@ describe('Dashboard', () => {
             id: 't1',
             phaseId: 'phase-a',
             status: 'active',
-            activeStepIndex: 2,
-            steps: [
-              { name: 'Step 0', index: 0 },
-              { name: 'Step 1', index: 1 },
-              { name: 'Step 2', index: 2 },
-            ],
+
             startedAt: Date.now(),
           }),
           makeTask({
             id: 't2',
             phaseId: 'phase-a',
             status: 'ready',
-            activeStepIndex: 0,
-            steps: [{ name: 'Step 0', index: 0 }],
           }),
         ],
       });
@@ -647,7 +589,6 @@ describe('Dashboard', () => {
 
       // t1 (first active) is auto-selected; step follows activeStepIndex (2)
       expect(d.getSelection().selectedTaskId).toBe('t1');
-      expect(d.getSelection().selectedStepIndex).toBe(2);
 
       // ── Update: t1 removed, t2 becomes active → auto-follow should pick t2 ──
       const p2 = buildProjection({
@@ -658,8 +599,7 @@ describe('Dashboard', () => {
             id: 't2',
             phaseId: 'phase-a',
             status: 'active',
-            activeStepIndex: 0,
-            steps: [{ name: 'Step 0', index: 0 }],
+
             startedAt: Date.now(),
           }),
         ],
@@ -669,8 +609,6 @@ describe('Dashboard', () => {
       const sel = d.getSelection();
       expect(sel.selectedTaskId).toBe('t2');
       // Step index should follow t2's activeStepIndex (0), not carry over from t1 (2)
-      expect(sel.selectedStepIndex).toBe(0);
-      expect(sel.userPinnedStep).toBe(false);
     });
 
     it('resets pinned step selection when task auto-follow picks a different task', () => {
@@ -685,23 +623,17 @@ describe('Dashboard', () => {
             id: 't1',
             phaseId: 'phase-a',
             status: 'active',
-            activeStepIndex: 0,
-            steps: [
-              { name: 'Step 0', index: 0, agentKey: 'a1' },
-              { name: 'Step 1', index: 1, agentKey: 'a2' },
-            ],
+
             startedAt: Date.now(),
           }),
           makeTask({ id: 't2', phaseId: 'phase-a', status: 'ready' }),
         ],
-        agents: [makeAgent('a1', 't1', 'phase-a'), makeAgent('a2', 't1', 'phase-a')],
+        sessions: [makeAgent('a1', 't1', 'phase-a'), makeAgent('a2', 't1', 'phase-a')],
       });
       d.syncFromProjection(p1);
 
       // Pin step to index 1 (user manually selected it)
       d.handleInput('\t'); // tab once → step index 1
-      expect(d.getSelection().selectedStepIndex).toBe(1);
-      expect(d.getSelection().userPinnedStep).toBe(true);
 
       // ── Update: t1 completed, t2 becomes the only task in phase ──
       const p2 = buildProjection({
@@ -712,8 +644,7 @@ describe('Dashboard', () => {
             id: 't2',
             phaseId: 'phase-a',
             status: 'active',
-            activeStepIndex: 0,
-            steps: [{ name: 'Step 0', index: 0 }],
+
             startedAt: Date.now(),
           }),
         ],
@@ -724,8 +655,6 @@ describe('Dashboard', () => {
       expect(sel.selectedTaskId).toBe('t2');
       // Step index was pinned to 1 on t1, but t1 is gone → must reset.
       // After reset to null, STEP FOLLOW re-initializes to the new task's activeStepIndex.
-      expect(sel.selectedStepIndex).toBe(0);
-      expect(sel.userPinnedStep).toBe(false);
     });
 
     it('preserves step selection when task auto-follow keeps the same task', () => {
@@ -740,30 +669,22 @@ describe('Dashboard', () => {
             id: 't1',
             phaseId: 'phase-a',
             status: 'active',
-            activeStepIndex: 0,
-            steps: [
-              { name: 'Step 0', index: 0, agentKey: 'a1' },
-              { name: 'Step 1', index: 1, agentKey: 'a2' },
-            ],
+
             startedAt: Date.now(),
           }),
         ],
-        agents: [makeAgent('a1', 't1', 'phase-a'), makeAgent('a2', 't1', 'phase-a')],
+        sessions: [makeAgent('a1', 't1', 'phase-a'), makeAgent('a2', 't1', 'phase-a')],
       });
       d.syncFromProjection(p1);
 
       // Tab to pin step index 1
       d.handleInput('\t');
-      expect(d.getSelection().selectedStepIndex).toBe(1);
-      expect(d.getSelection().userPinnedStep).toBe(true);
 
       // ── Re-sync with same projection (task unchanged) ──
       d.syncFromProjection(p1);
 
       // Step selection should be preserved because the task didn't change
       expect(d.getSelection().selectedTaskId).toBe('t1');
-      expect(d.getSelection().selectedStepIndex).toBe(1);
-      expect(d.getSelection().userPinnedStep).toBe(true);
     });
   });
 
@@ -805,7 +726,7 @@ describe('Dashboard', () => {
       expect(d.taskList.getVisibleTaskCount()).toBe(1);
     });
 
-    it('pushes steps and agents to agentLog for selected task', () => {
+    it('pushes steps and sessions to agentLog for selected task', () => {
       const d = new Dashboard(4);
       const p = buildProjection({
         phases: [{ id: 'phase-a' }],
@@ -815,15 +736,11 @@ describe('Dashboard', () => {
             id: 't1',
             phaseId: 'phase-a',
             status: 'active',
-            activeStepIndex: 0,
-            steps: [
-              { name: 'Init', index: 0, agentKey: 'agent-1' },
-              { name: 'Build', index: 1, agentKey: 'agent-2' },
-            ],
+
             startedAt: Date.now(),
           }),
         ],
-        agents: [
+        sessions: [
           makeAgent('agent-1', 't1', 'phase-a'),
           makeAgent('agent-2', 't1', 'phase-a'),
           makeAgent('agent-other', 't2', 'phase-a'), // different task, should be filtered out
@@ -831,7 +748,7 @@ describe('Dashboard', () => {
       });
       d.syncFromProjection(p);
 
-      // agentLog should have 2 agents (filtered by taskId + phaseId)
+      // agentLog should have 2 sessions (filtered by taskId + phaseId)
       // We can't directly inspect agentLog's internal state, but we can check
       // that the selected agent uid is one of the expected ones
       expect(d.agentLog.getSelectedAgentUid()).toBe('agent-1');
@@ -943,9 +860,7 @@ describe('Dashboard', () => {
       const sel = d.getSelection();
       expect(sel.selectedPhaseId).toBeNull();
       expect(sel.selectedTaskId).toBeNull();
-      expect(sel.selectedStepIndex).toBeNull();
       expect(sel.userPinnedPhase).toBe(false);
-      expect(sel.userPinnedStep).toBe(false);
 
       // Mutating the returned copy should not affect internal state
       (sel as any).selectedPhaseId = 'changed';
@@ -968,8 +883,7 @@ describe('Dashboard', () => {
             id: 't1',
             phaseId: 'phase-a',
             status: 'active',
-            activeStepIndex: 0,
-            steps: [{ name: 'Step 1', index: 0 }],
+
             startedAt: Date.now(),
           }),
         ],
@@ -983,8 +897,6 @@ describe('Dashboard', () => {
 
       const after = d.getSelection();
       expect(after.selectedTaskId).toBeNull();
-      expect(after.selectedStepIndex).toBeNull();
-      expect(after.userPinnedStep).toBe(false);
       // Phase is preserved
       expect(after.selectedPhaseId).toBe('phase-a');
     });
@@ -1164,8 +1076,6 @@ describe('Dashboard', () => {
 
       const after = d.getSelection();
       expect(after.selectedTaskId).toBeNull();
-      expect(after.selectedStepIndex).toBeNull();
-      expect(after.userPinnedStep).toBe(false);
     });
 
     it('routes up/down to taskList when agentLog is collapsed', () => {
@@ -1175,7 +1085,7 @@ describe('Dashboard', () => {
         currentPhaseId: 'phase-a',
         tasks: [
           makeTask({ id: 't1', phaseId: 'phase-a', status: 'ready' }),
-          makeTask({ id: 't2', phaseId: 'phase-a', status: 'active', steps: [], startedAt: Date.now() }),
+          makeTask({ id: 't2', phaseId: 'phase-a', status: 'active', startedAt: Date.now() }),
         ],
       });
       d.syncFromProjection(p);
@@ -1210,12 +1120,11 @@ describe('Dashboard', () => {
             id: 't1',
             phaseId: 'phase-a',
             status: 'active',
-            activeStepIndex: 0,
-            steps: [{ name: 'Step 1', index: 0, agentKey: 'a1' }],
+
             startedAt: Date.now(),
           }),
         ],
-        agents: [makeAgent('a1', 't1', 'phase-a')],
+        sessions: [makeAgent('a1', 't1', 'phase-a')],
       });
       d.syncFromProjection(p);
       d.agentLog.toggleExpand();
@@ -1255,12 +1164,11 @@ describe('Dashboard', () => {
             id: 't1',
             phaseId: 'phase-a',
             status: 'active',
-            activeStepIndex: 0,
-            steps: [{ name: 'Step 1', index: 0, agentKey: 'a1' }],
+
             startedAt: Date.now(),
           }),
         ],
-        agents: [
+        sessions: [
           makeAgent('a1', 't1', 'phase-a', {
             log: logEntries,
           }),
@@ -1296,12 +1204,11 @@ describe('Dashboard', () => {
             id: 't1',
             phaseId: 'phase-a',
             status: 'active',
-            activeStepIndex: 0,
-            steps: [{ name: 'Step 1', index: 0, agentKey: 'a1' }],
+
             startedAt: Date.now(),
           }),
         ],
-        agents: [makeAgent('a1', 't1', 'phase-a')],
+        sessions: [makeAgent('a1', 't1', 'phase-a')],
       });
       d.syncFromProjection(p);
 
@@ -1345,15 +1252,11 @@ describe('Dashboard', () => {
             id: 't1',
             phaseId: 'phase-a',
             status: 'active',
-            activeStepIndex: 0,
-            steps: [
-              { name: 'Step 1', index: 0, agentKey: 'a1' },
-              { name: 'Step 2', index: 1, agentKey: 'a2' },
-            ],
+
             startedAt: Date.now(),
           }),
         ],
-        agents: [makeAgent('a1', 't1', 'phase-a'), makeAgent('a2', 't1', 'phase-a')],
+        sessions: [makeAgent('a1', 't1', 'phase-a'), makeAgent('a2', 't1', 'phase-a')],
       });
       d.syncFromProjection(p);
 
@@ -1363,17 +1266,14 @@ describe('Dashboard', () => {
       // Tab → cycle to next step (index 1) → agent a2
       d.handleInput('\t');
       expect(d.agentLog.getSelectedAgentUid()).toBe('a2');
-      expect(d.getSelection().selectedStepIndex).toBe(1);
 
       // Tab again → wrap around to step index 0 → agent a1
       d.handleInput('\t');
       expect(d.agentLog.getSelectedAgentUid()).toBe('a1');
-      expect(d.getSelection().selectedStepIndex).toBe(0);
 
       // Shift+Tab → backward to step index 1 → agent a2
       d.handleInput('\x1b[Z');
       expect(d.agentLog.getSelectedAgentUid()).toBe('a2');
-      expect(d.getSelection().selectedStepIndex).toBe(1);
     });
 
     it('tab sets userPinnedStep to true', () => {
@@ -1386,23 +1286,15 @@ describe('Dashboard', () => {
             id: 't1',
             phaseId: 'phase-a',
             status: 'active',
-            activeStepIndex: 0,
-            steps: [
-              { name: 'Step 1', index: 0, agentKey: 'a1' },
-              { name: 'Step 2', index: 1, agentKey: 'a2' },
-            ],
+
             startedAt: Date.now(),
           }),
         ],
-        agents: [makeAgent('a1', 't1', 'phase-a'), makeAgent('a2', 't1', 'phase-a')],
+        sessions: [makeAgent('a1', 't1', 'phase-a'), makeAgent('a2', 't1', 'phase-a')],
       });
       d.syncFromProjection(p);
 
-      expect(d.getSelection().userPinnedStep).toBe(false);
-
       d.handleInput('\t'); // tab → userPinnedStep = true
-
-      expect(d.getSelection().userPinnedStep).toBe(true);
     });
 
     it('does NOT route non-arrow/non-tab keys to any subcomponent', () => {
@@ -1449,7 +1341,7 @@ describe('Dashboard', () => {
         currentPhaseId: 'phase-a',
         tasks: [
           makeTask({ id: 't1', phaseId: 'phase-a', status: 'ready' }),
-          makeTask({ id: 't2', phaseId: 'phase-a', status: 'active', steps: [], startedAt: Date.now() }),
+          makeTask({ id: 't2', phaseId: 'phase-a', status: 'active', startedAt: Date.now() }),
           makeTask({ id: 't3', phaseId: 'phase-a', status: 'ready' }),
         ],
       });
@@ -1492,16 +1384,14 @@ describe('Dashboard', () => {
             id: 't1',
             phaseId: 'phase-a',
             status: 'active',
-            activeStepIndex: 0,
-            steps: [{ name: 'S1', index: 0 }],
+
             startedAt: Date.now(),
           }),
           makeTask({
             id: 't2',
             phaseId: 'phase-a',
             status: 'active',
-            activeStepIndex: 0,
-            steps: [{ name: 'S1', index: 0 }],
+
             startedAt: Date.now(),
           }),
         ],
@@ -1510,7 +1400,6 @@ describe('Dashboard', () => {
 
       // Select t1 (first active), step follows
       expect(d.getSelection().selectedTaskId).toBe('t1');
-      expect(d.getSelection().selectedStepIndex).toBe(0);
 
       // Down to t2
       d.handleInput('\x1b[B');
@@ -1519,8 +1408,6 @@ describe('Dashboard', () => {
       expect(after.selectedTaskId).toBe('t2');
       // Step follows to t2's activeStepIndex immediately (no longer deferred to
       // the next sync) so the agent log re-renders without waiting for an event.
-      expect(after.selectedStepIndex).toBe(0);
-      expect(after.userPinnedStep).toBe(false);
     });
   });
 });
@@ -1619,12 +1506,11 @@ describe('Dashboard ANSI-aware border padding', () => {
           id: 't1',
           phaseId: 'test',
           status: 'active',
-          activeStepIndex: 0,
-          steps: [{ name: 'Step 1', index: 0, agentKey: 'a1' }],
+
           startedAt: Date.now(),
         }),
       ],
-      agents: [
+      sessions: [
         makeAgent('a1', 't1', 'test', {
           log: [{ id: '1', timestamp: '', type: 'error' as const, content: 'something failed' }],
         }),
@@ -1655,12 +1541,11 @@ describe('Dashboard ANSI-aware border padding', () => {
           id: 't1',
           phaseId: 'plan',
           status: 'active',
-          activeStepIndex: 0,
-          steps: [{ name: 'Step 1', index: 0, agentKey: 'a1' }],
+
           startedAt: Date.now(),
         }),
       ],
-      agents: [
+      sessions: [
         makeAgent('a1', 't1', 'plan', {
           log: [{ id: '1', timestamp: '', type: 'text' as const, content: 'hi' }],
         }),

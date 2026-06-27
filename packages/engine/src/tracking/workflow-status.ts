@@ -243,6 +243,7 @@ export class WorkflowStatusTracker {
     this._taskTracker.addTask({
       id: info.taskId,
       phaseId: info.phaseId,
+      worktree: 'none',
       title: info.title,
       dependencies: info.dependencies,
       prompt: '',

@@ -119,9 +119,7 @@ function createMockDashboard() {
     getSelection: () => ({
       selectedPhaseId: null,
       selectedTaskId: null,
-      selectedStepIndex: null,
       userPinnedPhase: false,
-      userPinnedStep: false,
     }),
     forceReselect: () => {},
     getComputedHeight: () => 25,
@@ -241,14 +239,14 @@ describe('createWsBackedTui', () => {
 
     it('forwards workflow_completed line plus the two summary lines', () => {
       const ctx = createTestDeps();
-      ctx.clientStore.applyEvents([ev('workflow_completed', { totalDurationMs: 3456, agentCount: 5 }, {}, 1)]);
+      ctx.clientStore.applyEvents([ev('workflow_completed', { totalDurationMs: 3456, sessionCount: 5 }, {}, 1)]);
       // totalDurationMs > 0 → the shared ClientStore appends a two-line
-      // completion summary (empty agent set → 0 tokens / 0 agent time). All
+      // completion summary (empty session set → 0 tokens / 0 session time). All
       // three entries share seq 1, so the adapter drains them together.
       expect(ctx.eventLog.lines).toEqual([
-        '🎉 Complete in 3.5s (5 agents)',
+        '🎉 Complete in 3.5s (5 sessions)',
         '📊 Tokens: ↑0 in · ↓0 out',
-        '⏱ Time: 3.5s total · 0.0s agent (0%)',
+        '⏱ Time: 3.5s total · 0.0s session (0%)',
       ]);
     });
 
@@ -278,20 +276,20 @@ describe('createWsBackedTui', () => {
 
     it('forwards agent_spawned line (agentId from metadata)', () => {
       const ctx = createTestDeps();
-      ctx.clientStore.applyEvents([ev('agent_spawned', { profile: 'scout' }, { agentId: 'a1' }, 1)]);
-      expect(ctx.eventLog.lines).toEqual(['⏳ Agent a1 spawned (scout)']);
+      ctx.clientStore.applyEvents([ev('session_started', { profile: 'scout' }, { agentId: 'a1' }, 1)]);
+      expect(ctx.eventLog.lines).toEqual(['⏳ Session a1 started (scout)']);
     });
 
     it('forwards agent_completed line', () => {
       const ctx = createTestDeps();
       ctx.clientStore.applyEvents([
-        ev('agent_spawned', { profile: 'scout' }, { agentId: 'a1', taskId: 't1' }, 1),
-        ev('agent_completed', {}, { agentId: 'a1', taskId: 't1' }, 2),
+        ev('session_started', { profile: 'scout' }, { agentId: 'a1', taskId: 't1' }, 1),
+        ev('session_completed', {}, { agentId: 'a1', taskId: 't1' }, 2),
       ]);
-      expect(ctx.eventLog.lines).toContain('✅ Agent a1 complete');
+      expect(ctx.eventLog.lines).toContain('✅ Session a1 complete');
     });
 
-    it('forwards task_registered line (uses steps array length)', () => {
+    it('forwards task_registered line', () => {
       const ctx = createTestDeps();
       ctx.clientStore.applyEvents([
         ev(
@@ -300,16 +298,12 @@ describe('createWsBackedTui', () => {
             taskId: 't1',
             title: 'Task',
             phaseId: 'p1',
-            steps: [
-              { name: 'a', profileId: 'x' },
-              { name: 'b', profileId: 'y' },
-            ],
           },
           {},
           1,
         ),
       ]);
-      expect(ctx.eventLog.lines).toEqual(['📋 Task registered: "Task" (phase: p1, 2 steps)']);
+      expect(ctx.eventLog.lines).toEqual(['📋 Task registered: "Task" (phase: p1)']);
     });
 
     it('forwards task_started line', () => {
@@ -347,14 +341,7 @@ describe('createWsBackedTui', () => {
       ctx.clientStore.applyEvents([ev('sidebar_updated', { indicator: '🟢' }, {}, 1)]);
       expect(ctx.eventLog.lines).toEqual([]);
     });
-
-    it('forwards step_started line', () => {
-      const ctx = createTestDeps();
-      ctx.clientStore.applyEvents([
-        ev('step_started', { taskId: 't1', stepIndex: 0, stepName: 'step1' }, { agentId: 'a1' }, 1),
-      ]);
-      expect(ctx.eventLog.lines).toEqual(['Step 0 started: step1 (task: t1, agent: a1)']);
-    });
+    // step_started event line removed in C1/C2 — no longer emitted
   });
 
   // ── Verbose events produce no line ────────────────────────────────────────
@@ -363,10 +350,10 @@ describe('createWsBackedTui', () => {
     it('decision is silent', () => {
       const ctx = createTestDeps();
       ctx.clientStore.applyEvents([
-        ev('agent_spawned', { profile: 'p' }, { agentId: 'a1', taskId: 't1' }, 1),
+        ev('session_started', { profile: 'p' }, { agentId: 'a1', taskId: 't1' }, 1),
         ev('decision', { decision: 'proceed', reasoning: 'ok' }, { agentId: 'a1', taskId: 't1' }, 2),
       ]);
-      expect(ctx.eventLog.lines).toEqual(['⏳ Agent a1 spawned (p)']);
+      expect(ctx.eventLog.lines).toEqual(['⏳ Session a1 started (p)']);
     });
 
     it('turn_started is silent', () => {
@@ -418,11 +405,11 @@ describe('createWsBackedTui', () => {
       const ctx = createTestDeps();
       ctx.clientStore.applyEvents([
         ev('workflow_started', { taskPrompt: 'x', resumed: false }, {}, 1),
-        ev('agent_spawned', { profile: 'p' }, { agentId: 'a1', taskId: 't1' }, 2),
+        ev('session_started', { profile: 'p' }, { agentId: 'a1', taskId: 't1' }, 2),
         ev('decision', { decision: 'go' }, { agentId: 'a1', taskId: 't1' }, 3),
         ev('tool_call_started', { toolName: 'read' }, { agentId: 'a1', taskId: 't1' }, 4),
       ]);
-      expect(ctx.eventLog.lines).toEqual(['🚀 Workflow started: "x" (resumed: false)', '⏳ Agent a1 spawned (p)']);
+      expect(ctx.eventLog.lines).toEqual(['🚀 Workflow started: "x" (resumed: false)', '⏳ Session a1 started (p)']);
 
       // A subsequent batch only adds its own lines.
       ctx.clientStore.applyEvents([ev('phase_started', { phase: 'build', round: 1 }, {}, 5)]);
@@ -465,7 +452,7 @@ describe('createWsBackedTui', () => {
       expect(proj).toHaveProperty('currentPhaseId');
       expect(proj).toHaveProperty('completedPhaseIds');
       expect(proj).toHaveProperty('tasks');
-      expect(proj).toHaveProperty('agents');
+      expect(proj).toHaveProperty('sessions');
       expect(proj).toHaveProperty('sidebar');
       expect(proj['currentPhaseId']).toBe('scouting');
     });
@@ -475,7 +462,7 @@ describe('createWsBackedTui', () => {
       ctx.clientStore.applyEvents([
         ev('phase_registered', { id: 'p1', label: 'Plan', icon: '📋' }, {}, 1),
         ev('phase_started', { phase: 'p1', round: 1 }, {}, 2),
-        ev('task_registered', { taskId: 't1', title: 'Task A', phaseId: 'p1', steps: [], dependencies: [] }, {}, 3),
+        ev('task_registered', { taskId: 't1', title: 'Task A', phaseId: 'p1', dependencies: [] }, {}, 3),
       ]);
       const proj = ctx.dashboard.lastSyncedProjection as {
         phases: { id: string; taskIds: string[] }[];
@@ -487,17 +474,17 @@ describe('createWsBackedTui', () => {
       expect(proj.tasks['t1']).toBeDefined();
     });
 
-    it('reflects spawned agents in the synced projection', () => {
+    it('reflects spawned sessions in the synced projection', () => {
       const ctx = createTestDeps();
       ctx.clientStore.applyEvents([
         ev('phase_started', { phase: 'impl' }, {}, 1),
-        ev('agent_spawned', { profile: 'coder' }, { agentId: 'a1', taskId: 't1' }, 2),
+        ev('session_started', { profile: 'coder' }, { agentId: 'a1', taskId: 't1' }, 2),
       ]);
       const proj = ctx.dashboard.lastSyncedProjection as {
-        agents: Record<string, { agentId: string; profile: string; active: boolean }>;
+        sessions: Record<string, { agentId: string; profile: string; active: boolean }>;
       };
-      expect(Object.keys(proj.agents)).toHaveLength(1);
-      const agent = Object.values(proj.agents)[0];
+      expect(Object.keys(proj.sessions)).toHaveLength(1);
+      const agent = Object.values(proj.sessions)[0];
       expect(agent.agentId).toBe('a1');
       expect(agent.profile).toBe('coder');
       expect(agent.active).toBe(true);
@@ -516,10 +503,10 @@ describe('createWsBackedTui', () => {
           currentPhaseId: 'exec',
           completedPhaseIds: [],
           tasks: {},
-          agents: {},
+          sessions: {},
           sidebar: { title: '', indicator: '' },
           status: 'running',
-          stats: { totalTokens: 0, agentCount: 0 },
+          stats: { totalTokens: 0, sessionCount: 0 },
           runLog: [],
         },
         5,
@@ -563,8 +550,8 @@ describe('createWsBackedTui', () => {
         ev('workflow_started', { taskPrompt: 'ship it', resumed: false }, {}, 1),
         ev('phase_registered', { id: 'p1', label: 'Plan', icon: '📋' }, {}, 2),
         ev('phase_started', { phase: 'p1', round: 1 }, {}, 3),
-        ev('task_registered', { taskId: 't1', title: 'Task A', phaseId: 'p1', steps: [], dependencies: [] }, {}, 4),
-        ev('agent_spawned', { profile: 'coder' }, { agentId: 'a1', taskId: 't1' }, 5),
+        ev('task_registered', { taskId: 't1', title: 'Task A', phaseId: 'p1', dependencies: [] }, {}, 4),
+        ev('session_started', { profile: 'coder' }, { agentId: 'a1', taskId: 't1' }, 5),
         ev('sidebar_updated', { title: 'My WF', indicator: '🟢' }, {}, 6),
       ]);
       const state = ctx.clientStore.getState();
@@ -577,7 +564,7 @@ describe('createWsBackedTui', () => {
       expect(proj['currentPhaseId']).toBe(state.currentPhaseId);
       expect(proj['completedPhaseIds']).toBe(state.completedPhaseIds);
       expect(proj['tasks']).toBe(state.tasks);
-      expect(proj['agents']).toBe(state.agents);
+      expect(proj['sessions']).toBe(state.sessions);
       expect(proj['sidebar']).toBe(state.sidebar);
       expect(proj['status']).toBe(state.status);
       expect(proj['stats']).toBe(state.stats);
@@ -615,7 +602,7 @@ describe('createWsBackedTui', () => {
       const ctx = createTestDeps();
       ctx.clientStore.applyEvents([
         ev('phase_started', { phase: 'p', round: 1 }, {}, 1),
-        ev('agent_spawned', { profile: 'coder' }, { agentId: 'a1', taskId: 't1' }, 2),
+        ev('session_started', { profile: 'coder' }, { agentId: 'a1', taskId: 't1' }, 2),
       ]);
       ctx.clientStore.appendRunLog('warn', 'hey', ISO_NOW);
       const proj = ctx.dashboard.lastSyncedProjection as Record<string, unknown>;
@@ -645,7 +632,7 @@ describe('createWsBackedTui', () => {
           'currentPhaseId',
           'completedPhaseIds',
           'tasks',
-          'agents',
+          'sessions',
           'sidebar',
           'status',
           'error',
@@ -675,10 +662,10 @@ describe('createWsBackedTui', () => {
           currentPhaseId: 'exec',
           completedPhaseIds: [],
           tasks: {},
-          agents: {},
+          sessions: {},
           sidebar: { title: '', indicator: '' },
           status: 'running',
-          stats: { totalTokens: 0, agentCount: 0 },
+          stats: { totalTokens: 0, sessionCount: 0 },
           // Non-empty runLog on the snapshot itself — must still be reset.
           runLog: [
             { id: '1', timestamp: ISO_NOW, type: 'text', content: 'ignored' },
@@ -855,14 +842,14 @@ describe('createWsBackedTui', () => {
         ev('workflow_started', { taskPrompt: 'build', resumed: false }, {}, 1),
         ev('phase_registered', { id: 'p1', label: 'Plan', icon: '📋' }, {}, 2),
         ev('phase_started', { phase: 'p1', round: 1 }, {}, 3),
-        ev('agent_spawned', { profile: 'coder' }, { agentId: 'a1', taskId: 't1' }, 4),
+        ev('session_started', { profile: 'coder' }, { agentId: 'a1', taskId: 't1' }, 4),
         ev('decision', { decision: 'go' }, { agentId: 'a1', taskId: 't1' }, 5),
       ]);
       expect(ctx.eventLog.lines).toEqual([
         '🚀 Workflow started: "build" (resumed: false)',
         '📝 Phase registered: Plan',
         '📦 Phase: p1 (round 1)',
-        '⏳ Agent a1 spawned (coder)',
+        '⏳ Session a1 started (coder)',
       ]);
     });
 

@@ -45,7 +45,7 @@ function ev(
 
 function resetStore(): void {
   useWorkflowStore.setState({
-    agentsById: {},
+    sessionsById: {},
     tasksById: {},
     phases: [],
     currentPhaseId: '',
@@ -56,13 +56,11 @@ function resetStore(): void {
     error: undefined,
     failedPhase: undefined,
     seq: 0,
-    stats: { totalTokens: 0, agentCount: 0 },
+    stats: { totalTokens: 0, sessionCount: 0 },
     workflowEventLog: [],
     selectedPhaseId: null,
     selectedTaskId: null,
-    selectedStepIndex: null,
     userPinnedPhase: false,
-    userPinnedStep: false,
     runs: [],
     selectedRunId: 'run-1',
     runLogs: {},
@@ -81,10 +79,10 @@ describe('workflow-store — event log lines match @engin/shared/format-workflow
       ev('phase_started', { phase: 'p1', round: 1 }, {}, 3),
       ev('task_registered', { id: 't1', title: 'Task 1', phaseId: 'p1', stepCount: 1 }, { phaseId: 'p1' }, 4),
       ev('task_started', { taskId: 't1', title: 'Task 1' }, {}, 5),
-      ev('agent_spawned', { profile: 'coder' }, { agentId: 'a1', taskId: 't1' }, 6),
+      ev('session_started', { profile: 'coder' }, { agentId: 'a1', taskId: 't1' }, 6),
       ev('task_completed', { taskId: 't1' }, {}, 7),
       ev('phase_completed', { phase: 'p1', durationMs: 2500 }, {}, 8),
-      ev('workflow_completed', { totalDurationMs: 5000, agentCount: 1 }, {}, 9),
+      ev('workflow_completed', { totalDurationMs: 5000, sessionCount: 1 }, {}, 9),
     ];
 
     useWorkflowStore.getState().applyEvents('run-1', events);
@@ -102,7 +100,7 @@ describe('workflow-store — event log lines match @engin/shared/format-workflow
   it('excludes events for which formatWorkflowEventLine returns null (verbose events)', () => {
     const events: EventRecord[] = [
       ev('workflow_started', { taskPrompt: 'x' }, {}, 1),
-      ev('agent_spawned', { profile: 'p' }, { agentId: 'a1', taskId: 't1' }, 2),
+      ev('session_started', { profile: 'p' }, { agentId: 'a1', taskId: 't1' }, 2),
       ev('decision', { decision: 'proceed' }, { agentId: 'a1' }, 3),
       ev('tool_call_started', { toolName: 'read' }, { agentId: 'a1' }, 4),
       ev('turn_ended', { tokens: { input: 1, output: 1 } }, { agentId: 'a1' }, 5),

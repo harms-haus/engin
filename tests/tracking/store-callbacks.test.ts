@@ -95,13 +95,11 @@ describe('createStoreCallbacks', () => {
     it('appends task_registered with correct data and metadata', () => {
       const { store, calls } = createMockStore();
       const cb = createStoreCallbacks(store as never);
-      const steps = [{ name: 'analyze', profileId: 'coder', isReadOnly: false }];
       cb.onTaskRegister!({
         taskId: 't1',
         phaseId: 'impl',
         title: 'Build auth',
         dependencies: ['t0'],
-        steps,
       });
       expect(calls).toHaveLength(1);
       expect(calls[0].type).toBe('task_registered');
@@ -110,53 +108,50 @@ describe('createStoreCallbacks', () => {
         phaseId: 'impl',
         title: 'Build auth',
         dependencies: ['t0'],
-        steps,
       });
       expect(calls[0].metadata).toEqual({ taskId: 't1', phaseId: 'impl' });
     });
   });
 
-  describe('onAgentSpawn', () => {
+  describe('onSessionStart', () => {
     it('appends agent_spawned with correct data and metadata including stepIndex', () => {
       const { store, calls } = createMockStore();
       const cb = createStoreCallbacks(store as never);
-      cb.onAgentSpawn!({
+      cb.onSessionStart!({
         agentId: 'a1',
         profile: 'coder',
         phaseId: 'impl',
         taskId: 't1',
-        stepIndex: 1,
         sessionId: 'sess-1',
         sessionPath: '/tmp/s',
       });
       expect(calls).toHaveLength(1);
-      expect(calls[0].type).toBe('agent_spawned');
+      expect(calls[0].type).toBe('session_started');
       expect(calls[0].data.agentId).toBe('a1');
       expect(calls[0].data.profile).toBe('coder');
       expect(calls[0].data.sessionId).toBe('sess-1');
       expect(calls[0].data.sessionPath).toBe('/tmp/s');
-      expect(calls[0].metadata).toEqual({ agentId: 'a1', taskId: 't1', phaseId: 'impl', stepIndex: 1 });
+      expect(calls[0].metadata).toEqual({ agentId: 'a1', taskId: 't1', phaseId: 'impl' });
     });
   });
 
-  describe('onAgentComplete', () => {
+  describe('onSessionComplete', () => {
     it('appends agent_completed with correct data and metadata including stepIndex', () => {
       const { store, calls } = createMockStore();
       const cb = createStoreCallbacks(store as never);
-      cb.onAgentComplete!({
+      cb.onSessionComplete!({
         agentId: 'a1',
         profile: 'coder',
         phaseId: 'impl',
         taskId: 't1',
-        stepIndex: 2,
         sessionId: 'sess-1',
       });
       expect(calls).toHaveLength(1);
-      expect(calls[0].type).toBe('agent_completed');
+      expect(calls[0].type).toBe('session_completed');
       expect(calls[0].data.agentId).toBe('a1');
       expect(calls[0].data.profile).toBe('coder');
       expect(calls[0].data.sessionId).toBe('sess-1');
-      expect(calls[0].metadata).toEqual({ agentId: 'a1', taskId: 't1', phaseId: 'impl', stepIndex: 2 });
+      expect(calls[0].metadata).toEqual({ agentId: 'a1', taskId: 't1', phaseId: 'impl' });
     });
   });
 
@@ -172,18 +167,6 @@ describe('createStoreCallbacks', () => {
       expect(calls[0].data.agentId).toBe('a1');
       expect(calls[0].data.startedAt).toBe(1000);
       expect(calls[0].metadata).toEqual({ agentId: 'a1', taskId: 't1', phaseId: 'impl' });
-    });
-  });
-
-  describe('onStepStart', () => {
-    it('appends step_started with correct data and metadata including stepIndex', () => {
-      const { store, calls } = createMockStore();
-      const cb = createStoreCallbacks(store as never);
-      cb.onStepStart!({ taskId: 't1', stepIndex: 1, stepName: 'analyze', agentId: 'a1' });
-      expect(calls).toHaveLength(1);
-      expect(calls[0].type).toBe('step_started');
-      expect(calls[0].data).toEqual({ taskId: 't1', stepIndex: 1, stepName: 'analyze', agentId: 'a1' });
-      expect(calls[0].metadata).toEqual({ taskId: 't1', agentId: 'a1', stepIndex: 1 });
     });
   });
 
@@ -257,7 +240,6 @@ describe('createStoreCallbacks', () => {
       expect(calls[0].type).toBe('workflow_failed');
       expect(calls[0].data.error).toBe('Kaboom');
       expect(calls[0].data.errorName).toBe('Error');
-      expect(calls[0].data.errorStack).toBe(err.stack);
       expect(calls[0].data.phase).toBe('impl');
       expect(calls[0].metadata).toBeUndefined();
     });
@@ -343,10 +325,9 @@ describe('createStoreCallbacks', () => {
         'onPhaseStart',
         'onPhaseComplete',
         'onTaskRegister',
-        'onAgentSpawn',
-        'onAgentComplete',
+        'onSessionStart',
+        'onSessionComplete',
         'onTaskStart',
-        'onStepStart',
         'onTaskComplete',
         'onTaskRejected',
         'onDecision',

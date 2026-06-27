@@ -30,6 +30,7 @@ const baseTask: Task = {
   files: ['src/login.ts'],
   dependencies: [],
   status: 'ready',
+  worktree: 'none',
   phaseId: 'phase-1',
 };
 

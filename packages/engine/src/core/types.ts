@@ -9,4 +9,4 @@ export * from './types/workflow.js';
 
 export { getModel, parseJsonWithRepair } from '@earendil-works/pi-ai';
 export type { Model } from '@earendil-works/pi-ai';
-export type { StepDefinition, StepEntity, TaskEntity, TaskStatus } from '@engin/shared/types';
+export type { StepDefinition, TaskEntity, TaskStatus } from '@engin/shared/types';

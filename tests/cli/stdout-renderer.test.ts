@@ -22,7 +22,7 @@
 //      already formatted by `formatWorkflowEventLine`. The renderer prints
 //      new entries (delta from last-seen length) with a timestamp prefix.
 //
-//   2. Agent log deltas (state.agents[key].log): new LogEntry items since
+//   2. Agent log deltas (state.sessions[key].log): new LogEntry items since
 //      last notification. In verbose mode, these are formatted to match the
 //      current console-status.ts verbose output (💬/🧠/🔧/✅/❌/📊).
 //      In non-verbose mode, agent log entries are IGNORED.
@@ -65,7 +65,7 @@ import { createStdoutRenderer } from '../../packages/cli/src/cli/stdout-renderer
 // ── Dependencies ───────────────────────────────────────────────────────────
 import { ClientStore } from '@engin/shared/client-store';
 import type { EventRecord, EventType } from '@engin/shared/event-types';
-import { MAX_AGENT_LOG } from '@engin/shared/evolve';
+import { MAX_SESSION_LOG } from '@engin/shared/evolve';
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
@@ -153,7 +153,7 @@ describe('createStdoutRenderer', () => {
       store.applyEvents([
         ev('workflow_started', { taskPrompt: 'x' }, {}, 1),
         ev('phase_started', { phase: 'exec', round: 1 }, {}, 2),
-        ev('agent_spawned', { profile: 'coder' }, { agentId: 'a1' }, 3),
+        ev('session_started', { profile: 'coder' }, { agentId: 'a1' }, 3),
         ev('task_started', { taskId: 't1', title: 'Do thing' }, {}, 4),
       ]);
 
@@ -175,7 +175,7 @@ describe('createStdoutRenderer', () => {
       // Seed: spawn an agent so evolve can process tool_call / turn events.
       store.applyEvents([
         ev('workflow_started', { taskPrompt: 'x' }, {}, 1),
-        ev('agent_spawned', { profile: 'coder' }, { agentId: 'a1', taskId: 't1' }, 2),
+        ev('session_started', { profile: 'coder' }, { agentId: 'a1', taskId: 't1' }, 2),
       ]);
       logSpy.mockClear();
 
@@ -240,7 +240,7 @@ describe('createStdoutRenderer', () => {
       // Seed: workflow + agent spawn
       store.applyEvents([
         ev('workflow_started', { taskPrompt: 'x' }, {}, 1),
-        ev('agent_spawned', { profile: 'coder' }, { agentId: 'a1', taskId: 't1' }, 2),
+        ev('session_started', { profile: 'coder' }, { agentId: 'a1', taskId: 't1' }, 2),
       ]);
       logSpy.mockClear();
 
@@ -272,7 +272,7 @@ describe('createStdoutRenderer', () => {
 
       store.applyEvents([
         ev('workflow_started', { taskPrompt: 'x' }, {}, 1),
-        ev('agent_spawned', { profile: 'coder' }, { agentId: 'a1', taskId: 't1' }, 2),
+        ev('session_started', { profile: 'coder' }, { agentId: 'a1', taskId: 't1' }, 2),
       ]);
       logSpy.mockClear();
 
@@ -303,7 +303,7 @@ describe('createStdoutRenderer', () => {
 
       store.applyEvents([
         ev('workflow_started', { taskPrompt: 'x' }, {}, 1),
-        ev('agent_spawned', { profile: 'coder' }, { agentId: 'a1', taskId: 't1' }, 2),
+        ev('session_started', { profile: 'coder' }, { agentId: 'a1', taskId: 't1' }, 2),
       ]);
       logSpy.mockClear();
 
@@ -337,7 +337,7 @@ describe('createStdoutRenderer', () => {
 
       store.applyEvents([
         ev('workflow_started', { taskPrompt: 'x' }, {}, 1),
-        ev('agent_spawned', { profile: 'coder' }, { agentId: 'a1', taskId: 't1' }, 2),
+        ev('session_started', { profile: 'coder' }, { agentId: 'a1', taskId: 't1' }, 2),
       ]);
       logSpy.mockClear();
 
@@ -363,7 +363,7 @@ describe('createStdoutRenderer', () => {
 
       store.applyEvents([
         ev('workflow_started', { taskPrompt: 'x' }, {}, 1),
-        ev('agent_spawned', { profile: 'coder' }, { agentId: 'a1', taskId: 't1' }, 2),
+        ev('session_started', { profile: 'coder' }, { agentId: 'a1', taskId: 't1' }, 2),
       ]);
       logSpy.mockClear();
 
@@ -389,7 +389,7 @@ describe('createStdoutRenderer', () => {
 
       store.applyEvents([
         ev('workflow_started', { taskPrompt: 'x' }, {}, 1),
-        ev('agent_spawned', { profile: 'coder' }, { agentId: 'a1', taskId: 't1' }, 2),
+        ev('session_started', { profile: 'coder' }, { agentId: 'a1', taskId: 't1' }, 2),
       ]);
       logSpy.mockClear();
 
@@ -421,7 +421,7 @@ describe('createStdoutRenderer', () => {
 
       store.applyEvents([
         ev('workflow_started', { taskPrompt: 'x' }, {}, 1),
-        ev('agent_spawned', { profile: 'coder' }, { agentId: 'a1', taskId: 't1' }, 2),
+        ev('session_started', { profile: 'coder' }, { agentId: 'a1', taskId: 't1' }, 2),
       ]);
       logSpy.mockClear();
 
@@ -604,7 +604,7 @@ describe('createStdoutRenderer', () => {
 
       store.applyEvents([
         ev('workflow_started', { taskPrompt: 'x' }, {}, 1),
-        ev('agent_spawned', { profile: 'coder' }, { agentId: 'a1', taskId: 't1' }, 2),
+        ev('session_started', { profile: 'coder' }, { agentId: 'a1', taskId: 't1' }, 2),
       ]);
       logSpy.mockClear();
 
@@ -657,7 +657,7 @@ describe('createStdoutRenderer', () => {
 
       store.applyEvents([
         ev('workflow_started', { taskPrompt: 'x' }, {}, 1),
-        ev('agent_spawned', { profile: 'coder' }, { agentId: 'a1', taskId: 't1' }, 2),
+        ev('session_started', { profile: 'coder' }, { agentId: 'a1', taskId: 't1' }, 2),
         ev(
           'turn_ended',
           {
@@ -695,19 +695,19 @@ describe('createStdoutRenderer', () => {
   // ─── Agent log cap resync ─────────────────────────────────────────────
 
   describe('agent log cap resync', () => {
-    it('continues printing verbose entries after the MAX_AGENT_LOG cap is hit (id-based resync)', () => {
+    it('continues printing verbose entries after the MAX_SESSION_LOG cap is hit (id-based resync)', () => {
       // Seed workflow + agent.
       store.applyEvents([
         ev('workflow_started', { taskPrompt: 'x' }, {}, 1),
-        ev('agent_spawned', { profile: 'coder' }, { agentId: 'a1', taskId: 't1' }, 2),
+        ev('session_started', { profile: 'coder' }, { agentId: 'a1', taskId: 't1' }, 2),
       ]);
 
-      // Fill the agent's log up to MAX_AGENT_LOG (500) BEFORE creating the
+      // Fill the agent's log up to MAX_SESSION_LOG (500) BEFORE creating the
       // renderer, so the renderer snapshots the already-capped state. Each
       // turn_ended with a single text block appends one LogEntry.
       const fillEvents: EventRecord[] = [];
       let seq = 3;
-      for (let i = 0; i < MAX_AGENT_LOG; i++) {
+      for (let i = 0; i < MAX_SESSION_LOG; i++) {
         fillEvents.push(
           ev(
             'turn_ended',
@@ -728,8 +728,8 @@ describe('createStdoutRenderer', () => {
       logSpy.mockClear();
 
       // Sanity: the agent log is exactly at the cap.
-      const agentKey = Object.keys(store.getState().agents)[0];
-      expect(store.getState().agents[agentKey]!.log.length).toBe(MAX_AGENT_LOG);
+      const agentKey = Object.keys(store.getState().sessions)[0];
+      expect(store.getState().sessions[agentKey]!.log.length).toBe(MAX_SESSION_LOG);
 
       // Append one more entry. evolve caps the log (oldest evicted) so
       // log.length stays 500 while content shifts. A length-based watermark

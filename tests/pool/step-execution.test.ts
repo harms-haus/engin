@@ -599,13 +599,13 @@ describe('runStep (step-execution module)', () => {
         task: makeTask({ id: 'task-1' }),
         step: { name: 'implement', profileId: 'coder', isReadOnly: false },
         agentId: 'lane-0',
-        ctx: { stepIndex: 2, attempt: 1, execCount: 3 },
+        ctx: { stepIndex: 0, attempt: 1, execCount: 3 },
         profiles,
         execCtx,
       });
 
       const harnessOpts = mockCreateHarness.mock.calls[0][0] as Record<string, unknown>;
-      expect(harnessOpts.sessionDir).toContain('3-2-implement');
+      expect(harnessOpts.sessionDir).toContain('3-0-implement');
     });
 
     it('uses resumeSessionPath when provided', async () => {
@@ -695,12 +695,12 @@ describe('runStep (step-execution module)', () => {
   // ─── Status Callbacks ────────────────────────────────────────────────
 
   describe('status callbacks', () => {
-    it('fires onAgentSpawn with sessionId after harness creation', async () => {
+    it('fires onSessionStart with sessionId after harness creation', async () => {
       setupHarnessMocks();
 
-      const onAgentSpawn = mock(() => {});
+      const onSessionStart = mock(() => {});
       const execCtx = createStepExecutionContext({
-        onStatus: { onAgentSpawn } as unknown as StepExecutionContext['onStatus'],
+        onStatus: { onSessionStart } as unknown as StepExecutionContext['onStatus'],
       });
       const profiles = createProfilesMap(defaultProfile);
 
@@ -713,7 +713,7 @@ describe('runStep (step-execution module)', () => {
         execCtx,
       });
 
-      expect(onAgentSpawn).toHaveBeenCalledWith(
+      expect(onSessionStart).toHaveBeenCalledWith(
         expect.objectContaining({
           agentId: 'lane-0',
           profile: 'coder',
@@ -722,17 +722,17 @@ describe('runStep (step-execution module)', () => {
         }),
       );
       // Verify sessionId is present (from mocked harness)
-      const callArg = (onAgentSpawn.mock.calls as unknown[][])[0][0] as Record<string, unknown>;
+      const callArg = (onSessionStart.mock.calls as unknown[][])[0][0] as Record<string, unknown>;
       expect(callArg.sessionId).toBe('test-session');
       expect(typeof callArg.sessionPath).toBe('string');
     });
 
-    it('fires onAgentComplete with sessionId and stepIndex after execution', async () => {
+    it('fires onSessionComplete with sessionId and stepIndex after execution', async () => {
       setupHarnessMocks();
 
-      const onAgentComplete = mock(() => {});
+      const onSessionComplete = mock(() => {});
       const execCtx = createStepExecutionContext({
-        onStatus: { onAgentComplete } as unknown as StepExecutionContext['onStatus'],
+        onStatus: { onSessionComplete } as unknown as StepExecutionContext['onStatus'],
       });
       const profiles = createProfilesMap(defaultProfile);
 
@@ -745,29 +745,28 @@ describe('runStep (step-execution module)', () => {
         execCtx,
       });
 
-      expect(onAgentComplete).toHaveBeenCalledWith(
+      expect(onSessionComplete).toHaveBeenCalledWith(
         expect.objectContaining({
           agentId: 'lane-0',
           profile: 'coder',
           phaseId: 'implementing',
           taskId: 'task-1',
-          stepIndex: 0,
         }),
       );
       // Verify sessionId is present (from mocked harness)
-      const callArg = (onAgentComplete.mock.calls as unknown[][])[0][0] as Record<string, unknown>;
+      const callArg = (onSessionComplete.mock.calls as unknown[][])[0][0] as Record<string, unknown>;
       expect(callArg.sessionId).toBe('test-session');
     });
 
-    it('fires onAgentComplete even when prompt throws', async () => {
+    it('fires onSessionComplete even when prompt throws', async () => {
       const session = makeSession(() => {
         throw new Error('Prompt failed');
       });
       setupHarnessMocks(session);
 
-      const onAgentComplete = mock(() => {});
+      const onSessionComplete = mock(() => {});
       const execCtx = createStepExecutionContext({
-        onStatus: { onAgentComplete } as unknown as StepExecutionContext['onStatus'],
+        onStatus: { onSessionComplete } as unknown as StepExecutionContext['onStatus'],
       });
       const profiles = createProfilesMap(defaultProfile);
 
@@ -777,7 +776,7 @@ describe('runStep (step-execution module)', () => {
         // Expected — the error propagates
       }
 
-      expect(onAgentComplete).toHaveBeenCalledTimes(1);
+      expect(onSessionComplete).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -855,7 +854,7 @@ describe('runStep (step-execution module)', () => {
       });
     }
 
-    it('adds the session to activeSessions before firing onAgentSpawn', async () => {
+    it('adds the session to activeSessions before firing onSessionStart', async () => {
       const session = makeSessionWithAbort();
       setupHarnessMocks(session);
 
@@ -864,7 +863,7 @@ describe('runStep (step-execution module)', () => {
       const execCtx = createStepExecutionContext({
         activeSessions,
         onStatus: {
-          onAgentSpawn: () => {
+          onSessionStart: () => {
             trackedAtSpawn = activeSessions.has(session);
           },
         } as unknown as StepExecutionContext['onStatus'],
@@ -876,26 +875,8 @@ describe('runStep (step-execution module)', () => {
       expect(trackedAtSpawn).toBe(true);
     });
 
-    it('adds the session to activeSessions before firing onStepStart', async () => {
-      const session = makeSessionWithAbort();
-      setupHarnessMocks(session);
-
-      const activeSessions = new Set<{ abort(): Promise<void> }>();
-      let trackedAtStepStart = false;
-      const execCtx = createStepExecutionContext({
-        activeSessions,
-        onStatus: {
-          onStepStart: () => {
-            trackedAtStepStart = activeSessions.has(session);
-          },
-        } as unknown as StepExecutionContext['onStatus'],
-      });
-      const profiles = createProfilesMap(defaultProfile);
-
-      await runStep({ task: makeTask(), step: baseStep, agentId: 'lane-0', ctx: defaultCtx, profiles, execCtx });
-
-      expect(trackedAtStepStart).toBe(true);
-    });
+    // step lifecycle removed in C2; onStepStart no longer exists.
+    // TOCTOU safety (session tracked before onSessionStart) is tested above.
 
     it('keeps the session tracked across the first await (before prompt runs)', async () => {
       const session = makeSessionWithAbort();
@@ -918,7 +899,7 @@ describe('runStep (step-execution module)', () => {
       expect(trackedAtPrompt).toBe(true);
     });
 
-    it('an abort triggered from onAgentSpawn reaches the already-tracked session', async () => {
+    it('an abort triggered from onSessionStart reaches the already-tracked session', async () => {
       const abortFn = mock(async () => {});
       const session = Object.assign(
         makeSession(() => 'done'),
@@ -932,7 +913,7 @@ describe('runStep (step-execution module)', () => {
         onStatus: {
           // Mirrors the LanePool abort listener firing immediately after the
           // session is tracked (i.e. abort in the [tracked, prompt] window).
-          onAgentSpawn: () => {
+          onSessionStart: () => {
             for (const s of activeSessions) {
               s.abort().catch(() => {
                 /* swallow — we're shutting down */
@@ -960,7 +941,7 @@ describe('runStep (step-execution module)', () => {
       const execCtx = createStepExecutionContext({
         activeSessions,
         onStatus: {
-          onAgentSpawn: () => {
+          onSessionStart: () => {
             for (const s of activeSessions) {
               s.abort().catch(() => {
                 /* swallow */
@@ -1063,7 +1044,7 @@ describe('runStep (step-execution module)', () => {
       expect(result.type).toBe('approved');
     });
 
-    it('fires onAgentSpawn and onStepStart before throwing (agent is tracked so it is abortable)', async () => {
+    it('fires onSessionStart before throwing (agent is tracked so it is abortable)', async () => {
       const session = makeSession(() => 'unused');
       setupHarnessMocks(session);
 
@@ -1071,9 +1052,8 @@ describe('runStep (step-execution module)', () => {
       const execCtx = createStepExecutionContext({
         signal: AbortSignal.abort(),
         onStatus: {
-          onAgentSpawn: () => callOrder.push('spawn'),
-          onStepStart: () => callOrder.push('stepStart'),
-          onAgentComplete: () => callOrder.push('complete'),
+          onSessionStart: () => callOrder.push('spawn'),
+          onSessionComplete: () => callOrder.push('complete'),
         } as unknown as StepExecutionContext['onStatus'],
       });
       const profiles = createProfilesMap(defaultProfile);
@@ -1082,21 +1062,19 @@ describe('runStep (step-execution module)', () => {
         runStep({ task: makeTask(), step: baseStep, agentId: 'lane-0', ctx: defaultCtx, profiles, execCtx }),
       ).rejects.toThrow();
 
-      // The signal check is inside the try block AFTER spawn + stepStart, so the
+      // The signal check is inside the try block AFTER spawn, so the
       // agent is observable (and tracked in activeSessions) before the guard runs.
       expect(callOrder).toContain('spawn');
-      expect(callOrder).toContain('stepStart');
-      expect(callOrder.indexOf('stepStart')).toBeGreaterThan(callOrder.indexOf('spawn'));
     });
 
-    it('still fires onAgentComplete in the finally block when aborted', async () => {
+    it('still fires onSessionComplete in the finally block when aborted', async () => {
       const session = makeSession(() => 'unused');
       setupHarnessMocks(session);
 
-      const onAgentComplete = mock(() => {});
+      const onSessionComplete = mock(() => {});
       const execCtx = createStepExecutionContext({
         signal: AbortSignal.abort(),
-        onStatus: { onAgentComplete } as unknown as StepExecutionContext['onStatus'],
+        onStatus: { onSessionComplete } as unknown as StepExecutionContext['onStatus'],
       });
       const profiles = createProfilesMap(defaultProfile);
 
@@ -1104,7 +1082,7 @@ describe('runStep (step-execution module)', () => {
         runStep({ task: makeTask(), step: baseStep, agentId: 'lane-0', ctx: defaultCtx, profiles, execCtx }),
       ).rejects.toThrow();
 
-      expect(onAgentComplete).toHaveBeenCalledTimes(1);
+      expect(onSessionComplete).toHaveBeenCalledTimes(1);
     });
 
     it('removes the session from activeSessions even when aborted', async () => {
@@ -1444,7 +1422,7 @@ describe('runStep (step-execution module)', () => {
       expect(onAgentRender).not.toHaveBeenCalled();
     });
 
-    it('fires onAgentRender before onAgentComplete (ordering)', async () => {
+    it('fires onAgentRender before onSessionComplete (ordering)', async () => {
       const callOrder: string[] = [];
       const registry = new RendererRegistry();
       registry.register('coder', () => 'rendered output');
@@ -1455,7 +1433,7 @@ describe('runStep (step-execution module)', () => {
       const execCtx = createStepExecutionContext({
         onStatus: {
           onAgentRender: () => callOrder.push('render'),
-          onAgentComplete: () => callOrder.push('complete'),
+          onSessionComplete: () => callOrder.push('complete'),
         } as unknown as StepExecutionContext['onStatus'],
         rendererRegistry: registry,
       });
@@ -1871,7 +1849,7 @@ describe('runStep (step-execution module)', () => {
     });
 
     it(
-      'still fires onAgentComplete in finally when timeout fires',
+      'still fires onSessionComplete in finally when timeout fires',
       async () => {
         const session = makeNeverResolvingSession();
         mockCreateHarness.mockResolvedValue({
@@ -1880,10 +1858,10 @@ describe('runStep (step-execution module)', () => {
           dispose: mock(() => {}),
         });
 
-        const onAgentComplete = mock(() => {});
+        const onSessionComplete = mock(() => {});
         const execCtx = createStepExecutionContext({
           stepTimeoutMs: 10,
-          onStatus: { onAgentComplete } as unknown as StepExecutionContext['onStatus'],
+          onStatus: { onSessionComplete } as unknown as StepExecutionContext['onStatus'],
         });
         const profiles = createProfilesMap(defaultProfile);
 
@@ -1893,7 +1871,7 @@ describe('runStep (step-execution module)', () => {
           // Expected
         }
 
-        expect(onAgentComplete).toHaveBeenCalledTimes(1);
+        expect(onSessionComplete).toHaveBeenCalledTimes(1);
       },
       { timeout: 5000 },
     );
@@ -1972,14 +1950,14 @@ describe('runStep (step-execution module)', () => {
       const session = makeSession(() => 'wired-output');
       setupHarnessMocks(session);
 
-      const onAgentSpawn = mock(() => {});
-      const onAgentComplete = mock(() => {});
+      const onSessionStart = mock(() => {});
+      const onSessionComplete = mock(() => {});
       const activeSessions = new Set<{ abort(): Promise<void> }>();
 
       const task = makeTask({ id: 'task-alpha', title: 'Alpha', prompt: 'Do alpha' });
       const step: StepDefinition = { name: 'step-beta', profileId: 'coder', isReadOnly: false };
       const agentId = 'lane-gamma';
-      const ctx: RunStepContext = { stepIndex: 5, attempt: 2, execCount: 7 };
+      const ctx: RunStepContext = { stepIndex: 0, attempt: 2, execCount: 7 };
       const profiles = createProfilesMap(defaultProfile);
       const execCtx = createStepExecutionContext({
         sessionBaseDir: '/base-delta',
@@ -1987,7 +1965,7 @@ describe('runStep (step-execution module)', () => {
         phaseId: 'phase-zeta',
         apiKeys: { openai: 'key-eta' },
         activeSessions,
-        onStatus: { onAgentSpawn, onAgentComplete } as unknown as StepExecutionContext['onStatus'],
+        onStatus: { onSessionStart, onSessionComplete } as unknown as StepExecutionContext['onStatus'],
       });
 
       const { result, trackedSession } = await runStep({
@@ -2009,7 +1987,7 @@ describe('runStep (step-execution module)', () => {
       expect(harnessOpts.sessionDir).toContain('step-beta');
 
       // ── ctx.execCount + ctx.stepIndex flow to sessionDir as `${execCount}-${stepIndex}` ──
-      expect(harnessOpts.sessionDir).toContain('7-5-step-beta');
+      expect(harnessOpts.sessionDir).toContain('7-0-step-beta');
 
       // ── execCtx.sessionBaseDir flows to sessionDir prefix ──
       expect(harnessOpts.sessionDir).toContain('/base-delta');
@@ -2027,20 +2005,18 @@ describe('runStep (step-execution module)', () => {
       const profile = harnessOpts.profile as AgentProfile;
       expect(profile.id).toBe('coder');
 
-      // ── onAgentSpawn receives task.id, agentId, phaseId, stepIndex, profileId ──
-      const spawnArgs = (onAgentSpawn.mock.calls as unknown[][])[0][0] as Record<string, unknown>;
+      // ── onSessionStart receives task.id, agentId, phaseId, stepIndex, profileId ──
+      const spawnArgs = (onSessionStart.mock.calls as unknown[][])[0][0] as Record<string, unknown>;
       expect(spawnArgs.taskId).toBe('task-alpha');
       expect(spawnArgs.agentId).toBe('lane-gamma');
       expect(spawnArgs.phaseId).toBe('phase-zeta');
-      expect(spawnArgs.stepIndex).toBe(5);
       expect(spawnArgs.profile).toBe('coder');
 
-      // ── onAgentComplete receives consistent identity ──
-      const completeArgs = (onAgentComplete.mock.calls as unknown[][])[0][0] as Record<string, unknown>;
+      // ── onSessionComplete receives consistent identity ──
+      const completeArgs = (onSessionComplete.mock.calls as unknown[][])[0][0] as Record<string, unknown>;
       expect(completeArgs.agentId).toBe('lane-gamma');
       expect(completeArgs.phaseId).toBe('phase-zeta');
       expect(completeArgs.taskId).toBe('task-alpha');
-      expect(completeArgs.stepIndex).toBe(5);
 
       // ── return value carries the session output + tracked session ──
       expect(result.type).toBe('approved');
@@ -2139,7 +2115,7 @@ describe('runStep (step-execution module)', () => {
         task: makeTask(),
         step: reviewStep,
         agentId: 'lane-0',
-        ctx: { stepIndex: 3, attempt: 5, execCount: 2 },
+        ctx: { stepIndex: 0, attempt: 5, execCount: 2 },
         profiles,
         execCtx,
       });
@@ -2243,14 +2219,14 @@ describe('runStep (step-execution module)', () => {
       expect((caught as Error).message).toMatch(/timed out/i);
     }, 5000);
 
-    it('threads agentId + phaseId + taskId to onAgentSpawn and onAgentComplete consistently', async () => {
+    it('threads agentId + phaseId + taskId to onSessionStart and onSessionComplete consistently', async () => {
       setupHarnessMocks();
 
-      const onAgentSpawn = mock(() => {});
-      const onAgentComplete = mock(() => {});
+      const onSessionStart = mock(() => {});
+      const onSessionComplete = mock(() => {});
       const execCtx = createStepExecutionContext({
         phaseId: 'my-phase',
-        onStatus: { onAgentSpawn, onAgentComplete } as unknown as StepExecutionContext['onStatus'],
+        onStatus: { onSessionStart, onSessionComplete } as unknown as StepExecutionContext['onStatus'],
       });
       const profiles = createProfilesMap(defaultProfile);
 
@@ -2263,8 +2239,8 @@ describe('runStep (step-execution module)', () => {
         execCtx,
       });
 
-      const spawnArgs = (onAgentSpawn.mock.calls as unknown[][])[0][0] as Record<string, unknown>;
-      const completeArgs = (onAgentComplete.mock.calls as unknown[][])[0][0] as Record<string, unknown>;
+      const spawnArgs = (onSessionStart.mock.calls as unknown[][])[0][0] as Record<string, unknown>;
+      const completeArgs = (onSessionComplete.mock.calls as unknown[][])[0][0] as Record<string, unknown>;
 
       // All three identity fields must be consistent across both callbacks
       expect(spawnArgs.agentId).toBe('lane-y');

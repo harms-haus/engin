@@ -62,13 +62,13 @@ multi-run `runs` list.
 | Action                                                        | Behaviour                                                                                                                 |
 | ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
 | `setRuns(runs)` / `addRun(summary)`                           | Maintain the active-run list (from the `runs` / `run_started` messages).                                                  |
-| `selectRun(runId)`                                            | Set the selected run; reset phase/task/step selection.                                                                    |
+| `selectRun(runId)`                                            | Set the selected run; reset phase/task/session selection.                                                                 |
 | `applySnapshot(runId, snapshot, seq)`                         | Full projection replace for the selected run; clears the event log on a fresh start or server reset (seq went backwards). |
 | `applyEvents(runId, events)`                                  | Fold a batch through `evolveClient` (the shared `evolve`), reconcile selection, and append formatted event lines.         |
 | `setStatus(runId, status)` / `setFailed(runId, error, phase)` | Terminal lifecycle (`run_complete` / `run_failed`).                                                                       |
 | `appendRunLog(runId, entry)`                                  | Server-captured console output (`log` message).                                                                           |
 | `cancelRun(runId)`                                            | Sends `{ type: 'cancel_run', runId }` via the module-level send bridge.                                                   |
-| `selectPhase/Task/Step`                                       | Selection + follow rules (identical to the TUI).                                                                          |
+| `selectPhase/Task/Session`                                    | Selection + follow rules (identical to the TUI).                                                                          |
 
 A module-level `_sendFn` is set by `useWebSocket` on acquire / cleared on release so
 store actions (e.g. `cancelRun`) can send WS messages without depending on the React
@@ -115,7 +115,7 @@ already consume a projection; they are scoped to the selected run via the store.
 | `web/src/components/RunsFrame.tsx` | Active-run list: select + cancel.                                                       |
 | `web/src/components/PhaseBar.tsx`  | Clickable phase tabs; selecting a completed phase pins the view.                        |
 | `web/src/components/TaskList.tsx`  | Phase-filtered, click-to-select task list, sorted by status priority.                   |
-| `web/src/components/AgentLog.tsx`  | Agent detail log with step tab bar.                                                     |
+| `web/src/components/AgentLog.tsx`  | Agent detail log with session tab bar.                                                  |
 | `web/src/components/EventLog.tsx`  | Scrollable workflow-level event log.                                                    |
 | `web/src/store/workflow-store.ts`  | Zustand store: projection + selection + runs list.                                      |
 | `web/src/hooks/useWebSocket.ts`    | React adapter over the shared `EngineClient`.                                           |
@@ -124,18 +124,18 @@ already consume a projection; they are scoped to the selected run via the store.
 ### Centralised selection model
 
 Both the TUI and the web client use the **same five-piece selection model** with the
-**same follow rules** (phase / task / step). See [TUI reference → Dashboard](tui.md#dashboard--the-selection-model).
+**same follow rules** (phase / task / session). See [TUI reference → Dashboard](tui.md#dashboard--the-selection-model).
 
 | State               | TUI           | Web                    |
 | ------------------- | ------------- | ---------------------- |
 | `selectedPhaseId`   | `ClientStore` | `workflow-store` field |
 | `selectedTaskId`    | `ClientStore` | `workflow-store` field |
-| `selectedStepIndex` | `ClientStore` | `workflow-store` field |
+| `selectedSessionId` | `ClientStore` | `workflow-store` field |
 | `userPinnedPhase`   | `ClientStore` | `workflow-store` field |
-| `userPinnedStep`    | `ClientStore` | `workflow-store` field |
+| `userPinnedSession` | `ClientStore` | `workflow-store` field |
 
 These rules keep the UI focused on live activity while letting you pin to a specific
-phase or step for inspection.
+phase or session for inspection.
 
 ## Where to go next
 

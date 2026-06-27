@@ -5,8 +5,8 @@
 // be wired in a later task.
 
 // ─── Re-exports from core/types.ts ──────────────────────────────────────────
-import type { StepDefinition, StepEntity, TaskEntity, TaskStatus } from './types.js';
-export type { StepDefinition, StepEntity, TaskEntity, TaskStatus };
+import type { StepDefinition, TaskEntity, TaskStatus } from './types.js';
+export type { StepDefinition, TaskEntity, TaskStatus };
 
 // ─── LogEntry ──────────────────────────────────────────────────────────────
 // Canonical definition lives here (tracking core). The web layer re-exports
@@ -25,13 +25,12 @@ export type EventType =
   | 'phase_registered'
   | 'phase_started'
   | 'phase_completed'
-  | 'agent_spawned'
-  | 'agent_completed'
+  | 'session_started'
+  | 'session_completed'
   | 'auto_retry_started'
   | 'auto_retry_completed'
   | 'task_registered'
   | 'task_started'
-  | 'step_started'
   | 'task_completed'
   | 'task_rejected'
   | 'decision'
@@ -57,7 +56,8 @@ export interface EventRecord {
     agentId?: string;
     taskId?: string;
     phaseId?: string;
-    stepIndex?: number;
+    runnerRole?: string;
+    attempt?: number;
   };
 }
 
@@ -70,12 +70,11 @@ export interface PhaseEntity {
   taskIds: string[];
 }
 
-export interface AgentEntity {
+export interface SessionEntity {
   uid: string;
   agentId: string;
   profile: string;
   phaseId: string;
-  stepIndex?: number;
   taskId?: string;
   sessionId?: string;
   sessionPath?: string;
@@ -88,6 +87,8 @@ export interface AgentEntity {
   startedAt?: string;
   taskTitle: string;
   completedAt?: string;
+  runnerRole: string;
+  attempt: number;
 }
 
 // ─── Run Log Cap ────────────────────────────────────────────────────────────
@@ -111,7 +112,7 @@ export interface WorkflowProjection {
   currentPhaseId: string;
   completedPhaseIds: string[];
   tasks: Record<string, TaskEntity>;
-  agents: Record<string, AgentEntity>;
+  sessions: Record<string, SessionEntity>;
   sidebar: {
     title: string;
     indicator: string;
@@ -121,7 +122,7 @@ export interface WorkflowProjection {
   failedPhase?: string;
   stats: {
     totalTokens: number;
-    agentCount: number;
+    sessionCount: number;
   };
   /** Server-captured console output (capped at MAX_RUN_LOG entries). */
   runLog: LogEntry[];
@@ -137,10 +138,10 @@ export function createInitialProjection(): WorkflowProjection {
     currentPhaseId: '',
     completedPhaseIds: [],
     tasks: {},
-    agents: {},
+    sessions: {},
     sidebar: { title: '', indicator: '' },
     status: 'running',
-    stats: { totalTokens: 0, agentCount: 0 },
+    stats: { totalTokens: 0, sessionCount: 0 },
     runLog: [],
   };
 }

@@ -167,7 +167,7 @@ describe('ClientStore – summary lines survive accumulation and trimming', () =
     expect(store.getState().workflowEventLog).toHaveLength(fillCount);
 
     const completedSeq = fillCount + 1;
-    store.applyEvents([ev('workflow_completed', { totalDurationMs: 4000, agentCount: 0 }, completedSeq)]);
+    store.applyEvents([ev('workflow_completed', { totalDurationMs: 4000, sessionCount: 0 }, completedSeq)]);
 
     const log = store.getState().workflowEventLog;
     // fillCount loud lines + 1 completion line + 2 summary lines.
@@ -175,9 +175,9 @@ describe('ClientStore – summary lines survive accumulation and trimming', () =
     expect(log[log.length - 1].seq).toBe(completedSeq);
     expect(log[log.length - 2].seq).toBe(completedSeq);
     expect(log[log.length - 3].seq).toBe(completedSeq);
-    // The summary lines themselves (deterministic with 0 agents / 0 tokens).
+    // The summary lines themselves (deterministic with 0 sessions / 0 tokens).
     expect(log[log.length - 2].line).toBe('📊 Tokens: ↑0 in · ↓0 out');
-    expect(log[log.length - 1].line).toBe('⏱ Time: 4.0s total · 0.0s agent (0%)');
+    expect(log[log.length - 1].line).toBe('⏱ Time: 4.0s total · 0.0s session (0%)');
   });
 
   it('retains the newest summary lines when trimming is ACTIVE at the cap boundary', () => {
@@ -194,7 +194,7 @@ describe('ClientStore – summary lines survive accumulation and trimming', () =
     expect(store.getState().workflowEventLog).toHaveLength(CAP);
 
     const completedSeq = fillCount + 1;
-    store.applyEvents([ev('workflow_completed', { totalDurationMs: 4000, agentCount: 0 }, completedSeq)]);
+    store.applyEvents([ev('workflow_completed', { totalDurationMs: 4000, sessionCount: 0 }, completedSeq)]);
 
     const log = store.getState().workflowEventLog;
     // Capped at CAP (1 completion + 2 summary appended, 3 oldest loud lines
@@ -206,7 +206,7 @@ describe('ClientStore – summary lines survive accumulation and trimming', () =
     expect(log[log.length - 2].seq).toBe(completedSeq);
     expect(log[log.length - 3].seq).toBe(completedSeq);
     expect(log[log.length - 2].line).toBe('📊 Tokens: ↑0 in · ↓0 out');
-    expect(log[log.length - 1].line).toBe('⏱ Time: 4.0s total · 0.0s agent (0%)');
+    expect(log[log.length - 1].line).toBe('⏱ Time: 4.0s total · 0.0s session (0%)');
   });
 });
 

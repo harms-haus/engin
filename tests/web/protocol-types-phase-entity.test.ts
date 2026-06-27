@@ -2,7 +2,7 @@
  * Tests for Layer 1c: PhaseEntity replaces PhaseDescriptor in protocol-types.
  *
  * Verifies:
- * 1. PhaseEntity and StepEntity are re-exported from src/web/protocol-types.ts
+ * 1. PhaseEntity and  are re-exported from src/web/protocol-types.ts
  * 2. PhaseDescriptor is no longer defined locally (replaced by PhaseEntity)
  * 3. The web layer re-export (web/src/protocol-types.ts) picks up PhaseEntity
  * 4. ServerMessage / ClientMessage / isServerMessage still compile unchanged
@@ -12,7 +12,7 @@ import { describe, expect, it } from 'bun:test';
 
 // ─── 1. Compile-time: new types are exported ───────────────────────────────
 //
-// These imports verify at compile time that PhaseEntity and StepEntity are
+// These imports verify at compile time that PhaseEntity and  are
 // exported from the protocol-types module. If they were missing, tsc/Bun
 // would report "Module has no exported member".
 //
@@ -21,7 +21,7 @@ import { describe, expect, it } from 'bun:test';
 // consume the SAME module, so structural parity is trivially guaranteed;
 // these imports double as regression guards against future divergence.
 
-import type { PhaseEntity, StepEntity, WorkflowProjection } from '@engin/shared/protocol-types';
+import type { PhaseEntity, WorkflowProjection } from '@engin/shared/protocol-types';
 
 // ─── 2. Runtime: module exports confirm the expected shape ─────────────────
 
@@ -58,33 +58,6 @@ describe('PhaseEntity is re-exported from protocol-types', () => {
   });
 });
 
-describe('StepEntity is re-exported from protocol-types', () => {
-  it('StepEntity has the correct structural shape', () => {
-    const step: StepEntity = {
-      name: 'write-tests',
-      index: 0,
-      profile: 'coder',
-      isReadOnly: false,
-    };
-    expect(step.name).toBe('write-tests');
-    expect(step.index).toBe(0);
-    expect(step.profile).toBe('coder');
-    expect(step.isReadOnly).toBe(false);
-  });
-
-  it('StepEntity allows optional fields to be omitted', () => {
-    const step: StepEntity = {
-      name: 'review',
-      index: 1,
-    };
-    expect(step.name).toBe('review');
-    expect(step.index).toBe(1);
-    expect(step.profile).toBeUndefined();
-    expect(step.agentKey).toBeUndefined();
-    expect(step.isReadOnly).toBeUndefined();
-  });
-});
-
 // ─── 3. ServerMessage still works with updated WorkflowProjection ─────────
 
 import type { ClientMessage, ServerMessage } from '@engin/shared/protocol-types';
@@ -110,7 +83,7 @@ describe('ServerMessage – updated shape with WorkflowProjection (multi-run)', 
             title: 'Plan API',
             phaseId: 'plan',
             status: 'complete',
-            steps: [],
+
             dependencies: [],
             completedAt: '2025-01-01T00:00:00.000Z',
           },
@@ -119,18 +92,14 @@ describe('ServerMessage – updated shape with WorkflowProjection (multi-run)', 
             title: 'Implement API',
             phaseId: 'code',
             status: 'active',
-            steps: [
-              { name: 'write', index: 0, profile: 'coder' },
-              { name: 'test', index: 1, profile: 'tester' },
-            ],
-            activeStepIndex: 0,
+
             dependencies: ['t1'],
           },
         },
-        agents: {},
+        sessions: {},
         sidebar: { title: 'Engin', indicator: '🟢' },
         status: 'running',
-        stats: { totalTokens: 500, agentCount: 1 },
+        stats: { totalTokens: 500, sessionCount: 1 },
         runLog: [],
       },
     };
@@ -219,10 +188,10 @@ describe('isServerMessage – multi-run', () => {
         currentPhaseId: '',
         completedPhaseIds: [],
         tasks: {},
-        agents: {},
+        sessions: {},
         sidebar: { title: '', indicator: '' },
         status: 'running' as const,
-        stats: { totalTokens: 0, agentCount: 0 },
+        stats: { totalTokens: 0, sessionCount: 0 },
         runLog: [],
       },
     };
@@ -304,17 +273,17 @@ describe('PhaseEntity integration with WorkflowProjection', () => {
       currentPhaseId: 'p1',
       completedPhaseIds: [],
       tasks: {},
-      agents: {},
+      sessions: {},
       sidebar: { title: '', indicator: '' },
       status: 'running',
-      stats: { totalTokens: 0, agentCount: 0 },
+      stats: { totalTokens: 0, sessionCount: 0 },
       runLog: [],
     };
     expect(proj.phases[0].id).toBe('p1');
     expect(proj.phases[1].taskIds).toEqual(['t1']);
   });
 
-  it('WorkflowProjection.tasks value type includes StepEntity[]', () => {
+  it('WorkflowProjection.tasks value type includes []', () => {
     const proj: WorkflowProjection = {
       seq: 0,
       taskPrompt: '',
@@ -327,23 +296,15 @@ describe('PhaseEntity integration with WorkflowProjection', () => {
           title: 'Task 1',
           phaseId: 'p1',
           status: 'active',
-          steps: [
-            { name: 'step-0', index: 0 },
-            { name: 'step-1', index: 1, profile: 'prof', isReadOnly: true },
-          ],
-          activeStepIndex: 0,
+
           dependencies: [],
         },
       },
-      agents: {},
+      sessions: {},
       sidebar: { title: '', indicator: '' },
       status: 'running',
-      stats: { totalTokens: 0, agentCount: 0 },
+      stats: { totalTokens: 0, sessionCount: 0 },
       runLog: [],
     };
-    expect(proj.tasks.t1.steps).toHaveLength(2);
-    expect(proj.tasks.t1.steps[0].name).toBe('step-0');
-    expect(proj.tasks.t1.steps[1].profile).toBe('prof');
-    expect(proj.tasks.t1.steps[1].isReadOnly).toBe(true);
   });
 });

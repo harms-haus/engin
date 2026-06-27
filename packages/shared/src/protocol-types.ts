@@ -4,12 +4,11 @@ import type { EventRecord, WorkflowProjection } from './event-types.js';
 // This file is the single source of truth for the web-facing protocol:
 // the web app (`web/src/protocol-types.ts`) re-exports everything here.
 export type {
-  AgentEntity,
   EventRecord,
   EventType,
   LogEntry,
   PhaseEntity,
-  StepEntity,
+  SessionEntity,
   TaskEntity,
   WorkflowProjection,
 } from './event-types.js';

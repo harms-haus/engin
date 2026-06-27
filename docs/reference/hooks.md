@@ -8,7 +8,7 @@ invokes them at well-defined lifecycle seams.
 There are two categories of hook:
 
 - **Influence hooks** change what the engine _does_ — transform a prompt, decide whether to
-  retry a phase, veto a merge, claim a batch of tasks. They are composed under one of three
+  retry a phase, veto a merge, provide a runner. They are composed under one of three
   rules: `pipeline`, `first-wins`, or `all-run`.
 - **Observe hooks** watch what the engine _did_ — fire-and-forget fan-out with no return
   value, mirroring the existing `StatusCallbacks` model.
@@ -16,6 +16,7 @@ There are two categories of hook:
 Source:
 
 - Types (every hook signature, args, return, `CompositionRule`): `packages/engine/src/hooks/types.ts`.
+- Declarations (composition rule + reducer for every hook): `packages/engine/src/hooks/declarations.ts`.
 - Registry (`HookRegistry` + `createHookRegistry`): `packages/engine/src/hooks/registry.ts`.
 - Composition seam (`composeHooks`): `packages/engine/src/hooks/compose.ts`.
 - All-run reducers (`CONTEXT_BLOCK_REDUCER`, `PHASE_RESULTS_REDUCER`): `packages/engine/src/hooks/reducers.ts`.
@@ -23,9 +24,10 @@ Source:
 - Run wiring (the zero-behavior-change seam): `packages/engine/src/server/run-executor.ts`.
 
 > **Accuracy note.** If anything in this document ever disagrees with
-> `packages/engine/src/hooks/types.ts` (the canonical `WorkflowHooks` interface) or the
-> source files above, **the code wins**. The hook catalog below is regenerated against
-> `types.ts`; the "Wired?" column reflects the engine source at the time of writing.
+> `packages/engine/src/hooks/types.ts` (the canonical `WorkflowHooks` interface), the
+> declarations in `declarations.ts`, or the source files above, **the code wins**. The
+> hook catalog below is regenerated against `types.ts` + `declarations.ts`; the "Wired?"
+> column reflects the engine source at the time of writing.
 
 ---
 
@@ -69,8 +71,8 @@ meet the engine's status surface. It returns two things:
   `hookProviders` (normalized from a single provider or an array, registered in order).
 
 A critical design decision pins this seam: **observe/influence firing is NOT done inside
-`onStatus`**. It is deferred to the engine primitives (`runStep`, `LanePool`, `PhaseRunner`,
-`Scheduler`, `WorktreeManager`) that own a proper `HookContext` (cwd, workDir, signal).
+`onStatus`**. It is deferred to the engine primitives (`runStep`, `RunnerPool`, `PhaseRunner`,
+`WorktreeManager`) that own a proper `HookContext` (cwd, workDir, signal).
 Routing firing through those primitives keeps `onStatus` synchronous (matching today's store
 behaviour), avoids fabricating a hollow context, and leaves the fan-out decision in the
 hands of the code that owns a real one.
@@ -79,8 +81,8 @@ Consequence: **store callbacks ALWAYS fire**, even when a hook shares the same c
 name. `onStatus` never reaches into the registry. The two sinks are independent.
 
 `RunExecutor.execute` (in `run-executor.ts`) calls `composeHooks` and threads the resulting
-`registry` into `WorkflowRunOptions.hookRegistry`, from which it flows into `LanePool`,
-`PhaseRunner`, `Scheduler`, and `WorktreeManager`. When `workflow.hooks` is `undefined`,
+`registry` into `WorkflowRunOptions.hookRegistry`, from which it flows into `RunnerPool`,
+`PhaseRunner`, and `WorktreeManager`. When `workflow.hooks` is `undefined`,
 `workflow.hooks ?? []` yields an empty provider list → an empty registry AND an `onStatus`
 identical to `storeCallbacks` → zero behaviour change.
 
@@ -101,8 +103,8 @@ const workflow: WorkflowModule = {
 
   hooks: [
     {
-      // A pipeline hook: rewrite the step prompt before it reaches the agent.
-      beforeStepPrompt: async (value, args) => {
+      // A pipeline hook: rewrite the session prompt before it reaches the agent.
+      beforeSessionPrompt: async (value, args) => {
         return `${value}\n\nNote: this repo uses tabs, not spaces.`;
       },
 
@@ -148,7 +150,7 @@ auto-registers versus which it ships for workflows to adopt.
 ## 3. Hook catalog
 
 Every field of the `WorkflowHooks` interface from `types.ts` is listed below, grouped by
-level. **29 hooks total.** The `Wired?` column records whether the engine actually invokes
+level. **24 hooks total.** The `Wired?` column records whether the engine actually invokes
 the hook today, and where.
 
 Legend for **Type**: `obs` = observe, `pipe` = pipeline, `fw` = first-wins, `all` = all-run.
@@ -183,22 +185,34 @@ Legend for **Wired?**: ✓ = invoked from engine source; ⚠ = declared in `type
 
 ### Task level
 
-| Name         | Type | Args             | Returns                         | Default                                                             | Wired?      | When to use                                                       |
-| ------------ | ---- | ---------------- | ------------------------------- | ------------------------------------------------------------------- | ----------- | ----------------------------------------------------------------- |
-| `beforeTask` | fw   | `BeforeTaskArgs` | `BeforeTaskResult \| undefined` | _(none shipped — abstain = task runs normally with its seed steps)_ | ✓ lane-pool | Skip a task (`{ skip: true }`) or override its `steps` / `files`. |
+| Name         | Type | Args             | Returns                         | Default                                                         | Wired?        | When to use                                                        |
+| ------------ | ---- | ---------------- | ------------------------------- | --------------------------------------------------------------- | ------------- | ------------------------------------------------------------------ |
+| `beforeTask` | fw   | `BeforeTaskArgs` | `BeforeTaskResult \| undefined` | _(none shipped — abstain = task runs normally via runner pool)_ | ✓ runner-pool | Skip a task (`{ skip: true }`) or override its `runner` / `files`. |
 
-### Step level
+> **§2.14 — `BeforeTaskResult.runner`.** In the session-first engine,
+> `RunnerPool.resolveRunner` interprets the hook result dynamically: when a
+> subscriber returns `{ runner: <Runner> }`, that `Runner` function is used for
+> the task (takes precedence over `getRunnerForTask`). The `{ steps: [...] }`
+> field is legacy (left over from the `LanePool` + `getStepsForTask` era, now
+> removed) and is **not read** by `RunnerPool` — use `runner` instead.
+> `BeforeTaskArgs` carries only `{ task }`; the legacy `steps` array is no
+> longer seeded into the hook invocation.
 
-| Name               | Type | Args                   | Returns                     | Default                                                                                        | Wired?           | When to use                                                             |
-| ------------------ | ---- | ---------------------- | --------------------------- | ---------------------------------------------------------------------------------------------- | ---------------- | ----------------------------------------------------------------------- |
-| `beforeStepPrompt` | pipe | `BeforeStepPromptArgs` | `string`                    | legacy `buildPrompt` assembly (`defaultBeforeStepPrompt`)                                      | ✓ step-execution | Transform the step prompt before it is sent to the agent.               |
-| `collectContext`   | all  | `CollectContextArgs`   | `ContextBlock \| undefined` | inline `task.files` contents (`defaultCollectContext`); concatenated by `CONTEXT_BLOCK_REDUCER | ✗²               | Contribute labeled context blocks (file contents, diffs) to the prompt. |
+### Session level
 
-> ² `beforeStepPrompt` is wired in `step-execution.ts`; when it has a subscriber it fully
-> replaces `buildPrompt`. `collectContext` is **declared but not invoked** from
-> `step-execution.ts` today — the shipped `defaultCollectContext` is inlined into
-> `defaultBeforeStepPrompt` instead. Treat `collectContext` as the documented extension point
-> for additional context providers; the engine does not yet fan it out independently.
+| Name                  | Type | Args                      | Returns                     | Default                                                                                        | Wired?           | When to use                                                             |
+| --------------------- | ---- | ------------------------- | --------------------------- | ---------------------------------------------------------------------------------------------- | ---------------- | ----------------------------------------------------------------------- |
+| `beforeSessionPrompt` | pipe | `BeforeSessionPromptArgs` | `string`                    | legacy `buildPrompt` assembly (`defaultBeforeSessionPrompt`)                                   | ✓ step-execution | Transform the session prompt before it is sent to the agent.            |
+| `collectContext`      | all  | `CollectContextArgs`      | `ContextBlock \| undefined` | inline `task.files` contents (`defaultCollectContext`); concatenated by `CONTEXT_BLOCK_REDUCER | ✗²               | Contribute labeled context blocks (file contents, diffs) to the prompt. |
+
+> ² `beforeSessionPrompt` is wired in `step-execution.ts` (the legacy step-execution path
+> still used by `runStepTask`, `linearStepsRunner`, `reflectionRunner`, and `fixLoop`). When
+> it has a subscriber it fully replaces `buildPrompt`. The new session primitive
+> (`runSession` / `RunnerPool`) does **not** yet consult `beforeSessionPrompt` — it builds
+> the prompt from the `SessionSpec` directly. `collectContext` is **declared but not
+> invoked** from `step-execution.ts` today — the shipped `defaultCollectContext` is inlined
+> into `defaultBeforeSessionPrompt` instead. Treat `collectContext` as the documented extension
+> point for additional context providers; the engine does not yet fan it out independently.
 
 ### Worktree lifecycle
 
@@ -211,20 +225,7 @@ Legend for **Wired?**: ✓ = invoked from engine source; ⚠ = declared in `type
 | `onMergeConflict`          | fw   | `OnMergeConflictArgs`    | `ConflictResolution \| undefined`       | `{ strategy: 'agent' }` (`createDefaultOnMergeConflict`)                                      | ✓ worktree-manager | Decide how to resolve a task-branch merge conflict.                                   |
 | `onCommitFailure`          | fw   | `OnCommitFailureArgs`    | `CommitFailureResolution \| undefined`  | `{ strategy: 'agent' }` (`createDefaultOnCommitFailure`)                                      | ✓ worktree-manager | Decide how to handle a commit failure (lint errors, hook rejection).                  |
 
-### Scheduler / execution level
-
-| Name             | Type | Args                 | Returns               | Default                                                                              | Wired?                | When to use                                                                                   |
-| ---------------- | ---- | -------------------- | --------------------- | ------------------------------------------------------------------------------------ | --------------------- | --------------------------------------------------------------------------------------------- |
-| `claimPolicy`    | fw   | `ClaimPolicyArgs`    | `Task[] \| undefined` | _(none shipped — abstain = `claimTasks(1, laneId)`)_                                 | ✓ scheduler (limited) | Decide which/how many tasks to claim (priority, affinity, batch). **See limitation below.**   |
-| `concurrencyKey` | fw   | `ConcurrencyKeyArgs` | `string \| undefined` | _(none shipped — abstain = no concurrency limit)_                                    | ✓ scheduler           | Rate-limit task execution per resource/dimension (same key ⇒ serial within a lane).           |
-| `wakeStrategy`   | obs  | `WakeStrategyArgs`   | `void`                | _(none shipped — observe no-op)_                                                     | ✗³                    | Telemetry/adaptive scheduling when a lane wakes.                                              |
-| `onLaneIdle`     | obs  | `OnLaneIdleArgs`     | `void`                | _(none shipped — observe no-op)_                                                     | ⚠ not wired           | Scale down lane resources / diagnostics when a lane goes idle. **Declared, not yet invoked.** |
-| `onLaneStall`    | obs  | `OnLaneStallArgs`    | `void`                | _(none shipped — but the Scheduler falls back to `console.warn` when no subscriber)_ | ✓ scheduler           | Crash recovery / escalation when a lane stalls.                                               |
-
-> ³ `wakeStrategy` is **declared but not invoked** from `scheduler.ts` today. It is a
-> reserved telemetry seam; registering a subscriber is harmless but will not currently fire.
-
-### Lane / failure isolation (used by `fixLoop`)
+### Session / failure isolation (used by `fixLoop`)
 
 | Name            | Type | Args                | Returns                | Default                                               | Wired?     | When to use                                                           |
 | --------------- | ---- | ------------------- | ---------------------- | ----------------------------------------------------- | ---------- | --------------------------------------------------------------------- |
@@ -240,7 +241,7 @@ Legend for **Wired?**: ✓ = invoked from engine source; ⚠ = declared in `type
 
 > ⁴ `onDecision` is **fired from multiple engine runner sites** (`linear-steps-runner`,
 > `reflection-runner`, `phase-tasks`) rather than a single centralized seam, and is registered
-> by `LanePool` when an `auditLog` + `hookRegistry` are present. It is distinct from
+> by `RunnerPool` when an `auditLog` + `hookRegistry` are present. It is distinct from
 > `StatusCallbacks.onDecision`, which writes a `decision` event into the **event store** (a
 > separate sink). The audit-log hook and the event-store callback fire independently into
 > different consumers.
@@ -249,20 +250,19 @@ Legend for **Wired?**: ✓ = invoked from engine source; ⚠ = declared in `type
 
 | Hook                                    | Status                                                                                                                                                                                                                          |
 | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `onLaneIdle`                            | Declared in `types.ts`; **not invoked** anywhere in the engine. Reserved for future scheduler work.                                                                                                                             |
-| `wakeStrategy`                          | Declared in `types.ts`; **not invoked** from `scheduler.ts`. Reserved telemetry seam.                                                                                                                                           |
-| `collectContext`                        | Declared in `types.ts`; inlined into `defaultBeforeStepPrompt` rather than fanned out independently.                                                                                                                            |
+| `collectContext`                        | Declared in `types.ts`; inlined into `defaultBeforeSessionPrompt` rather than fanned out independently.                                                                                                                         |
+| `beforeSessionPrompt` (session path)    | Wired in `step-execution.ts` (legacy step path). NOT yet wired in the new `runSession` / `RunnerPool` session path.                                                                                                             |
 | `onPersist` / `onRestore`               | Defaults shipped; engine does not auto-register them (the tracker is workflow-owned).                                                                                                                                           |
 | `beforeRunMerge` / `onRunMergeConflict` | Defaults shipped + registered in `run-executor.ts`, but **not yet invoked** — `RunManager.handleWorktreeAction` calls `finalMergeToMain()` directly without consulting the hooks. The final-merge gate UX is still being built. |
 
-### `claimPolicy` limitation
-
-`claimPolicy` is a `first-wins` hook that returns a `Task[]` batch, and the `Scheduler`
-marks **every** returned task `active`. However, the lane loop in `scheduler.ts` currently
-consumes only **`claimed[0]`** per wake cycle (`const task = claimed[0];`), so a batch of
-_N_ is processed one-at-a-time across successive wakes rather than run concurrently in a
-single claim. Hook authors should treat the batch contract as "select the next task(s); the
-scheduler still owns the ready→active transition and currently drains one at a time."
+> **Removed hooks.** The following scheduler-era hooks have been **deleted** from
+> `WorkflowHooks` in `types.ts` as part of the session-first redesign:
+> `claimPolicy`, `concurrencyKey`, `wakeStrategy`, `onLaneIdle`, `onLaneStall`.
+> Their functionality is now handled internally by `RunnerPool` + `SessionGate`
+> (concurrency is enforced by the gate, not by hooks). Registering them is a no-op.
+> The legacy `LanePool` / `Scheduler` that once consumed `claimPolicy` has also
+> been removed; `RunnerPool` claims all ready tasks and gates them via
+> `SessionGate`.
 
 ---
 
@@ -285,9 +285,9 @@ status events). `invokeObserve` returns `void` (well, `Promise<void>`).
 
 ```ts
 registry.register({
-  beforeStepPrompt: [async (value) => value.toUpperCase(), async (value) => `${value}\n— signed, engin`],
+  beforeSessionPrompt: [async (value) => value.toUpperCase(), async (value) => `${value}\n— signed, engin`],
 });
-// invokePipeline seeds with task.prompt; subscriber 1 upper-cases it; subscriber 2
+// invokePipeline seeds with the session prompt; subscriber 1 upper-cases it; subscriber 2
 // appends the sign-off. The agent receives the final string. Sequential — order matters.
 ```
 
@@ -308,8 +308,8 @@ registry.register({
 ```
 
 When to reach for it: a single decision with optional abstention (veto a merge, decide a
-transition, isolate a failure). Remember: `false`, `0`, and `''` are **decisions**, not
-abstentions — only `undefined` abstains.
+transition, isolate a failure, provide a runner for a task). Remember: `false`, `0`, and
+`''` are **decisions**, not abstentions — only `undefined` abstains.
 
 ### all-run — everyone contributes, reducer folds
 
@@ -343,7 +343,7 @@ These are registered into the `composeHooks` registry by engine code, so every r
 
 | Default                                                               | Registered by        | Behaviour it reproduces                                                                                                                      |
 | --------------------------------------------------------------------- | -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| `createDefaultAuditor(auditLog)` → `onStructuredOutput`, `onDecision` | `LanePool.run()`     | Appends `structured_output` / `decision` AuditEvents to the durable AuditLog (registered only when `auditLog` + `hookRegistry` are present). |
+| `createDefaultAuditor(auditLog)` → `onStructuredOutput`, `onDecision` | `RunnerPool.run()`   | Appends `structured_output` / `decision` AuditEvents to the durable AuditLog (registered only when `auditLog` + `hookRegistry` are present). |
 | `defaultOnWorkflowResume`                                             | `run-executor`       | No-op (resume logic stays in the workflow).                                                                                                  |
 | `defaultOnWorkflowAbort`                                              | `run-executor`       | `console.warn(reason)` (the old `'Workflow cancelled'` string-match, now data-driven).                                                       |
 | `defaultBeforeRunMerge`                                               | `run-executor` (git) | `{ proceed: true, strategy: 'squash' }` (legacy run-end final merge).                                                                        |
@@ -363,8 +363,8 @@ subscriber fires:
 
 | Default                                    | Behaviour it reproduces                                                                                                                | Wiring                                                                                              |
 | ------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
-| `defaultBeforeStepPrompt`                  | Legacy `buildPrompt` assembly: task header, step header, inlined file context, prompt body, review-feedback history.                   | `step-execution` falls back to calling `buildPrompt` directly when no subscriber is registered.     |
-| `defaultCollectContext`                    | Reads `task.files`, skips binaries, inlines each as a fenced block (10 KB cap).                                                        | Inlined into `defaultBeforeStepPrompt`; not independently fanned out (see §3 note ²).               |
+| `defaultBeforeSessionPrompt`               | Legacy `buildPrompt` assembly: task header, step header, inlined file context, prompt body, review-feedback history.                   | `step-execution` falls back to calling `buildPrompt` directly when no subscriber is registered.     |
+| `defaultCollectContext`                    | Reads `task.files`, skips binaries, inlines each as a fenced block (10 KB cap).                                                        | Inlined into `defaultBeforeSessionPrompt`; not independently fanned out (see §3 note ²).            |
 | `defaultShouldRetryPhase`                  | `true` when result is `{ retry: true }` or legacy `'scouting'` AND `round < 3`; else abstains.                                         | `PhaseRunner` has an inline `this.defaultShouldRetry(result)` fallback used when the hook abstains. |
 | `defaultBeforePhaseTransition`             | `{ type: 'advance' }` (linear progression).                                                                                            | `PhaseRunner` falls back to `{ type: 'advance' }` when the hook abstains.                           |
 | `defaultOnPhaseSettled`                    | Contributes `{ [task.id]: task.result }` for `complete` tasks; folds via `PHASE_RESULTS_REDUCER`; writes `state[`${phaseId}Results`]`. | Reference implementation; the bundled `spir.ts` workflow registers its own per-phase variant.       |
@@ -390,8 +390,8 @@ The hook system is governed by a set of invariants that keep it safe to adopt in
 1. **Backward compatibility is absolute.** A workflow that exports no `hooks` field is
    byte-for-byte unchanged in behaviour. Every seam is gated on `hasSubscribers(name)`; an
    empty or no-subscriber registry short-circuits to the legacy path (direct `buildPrompt`
-   call, `claimTasks(1, …)`, `console.warn` stall warning, etc.) without a pointless
-   `invoke*` round-trip.
+   call, default runner from `getRunnerForTask`, `console.warn` lane error, etc.) without a
+   pointless `invoke*` round-trip.
 
 2. **`StatusCallbacks` stays the default/terminal sink.** Observe hooks are a _secondary_
    fan-out, never a replacement for the event store. Store callbacks ALWAYS fire; `onStatus`
@@ -425,11 +425,11 @@ projection`. Hooks must never touch it; the projection is derived solely from ap
 When worktrees are in use, every task runs inside its **own worktree** checkout — a
 different filesystem path from the run cwd. Hooks that resolve files must honour this:
 
-- `BeforeStepPromptArgs` and `CollectContextArgs` carry both `cwd` (the run cwd) and an
+- `BeforeSessionPromptArgs` and `CollectContextArgs` carry both `cwd` (the run cwd) and an
   optional `worktreeCwd` (the per-task worktree path).
 - The resolution rule is **`worktreeCwd ?? cwd`**: files are read from the per-task worktree
   when present, falling back to the run cwd otherwise.
-- `defaultCollectContext` and `defaultBeforeStepPrompt` (in `defaults/prompt-context.ts`)
+- `defaultCollectContext` and `defaultBeforeSessionPrompt` (in `defaults/prompt-context.ts`)
   implement this via the shared `resolveFileCwd(args)` helper, delegating per-file formatting
   to `pool/file-context.ts::collectFileSection` — the single source of truth shared with the
   legacy `buildPrompt`, guaranteeing byte-identical file sections when `value === task.prompt`
@@ -511,7 +511,7 @@ A migration of the final-review phase onto `fixLoop` was **evaluated and decline
 
 - **Multi-dimension fan-out.** Each reviewer dimension is an independent lane; findings from
   one dimension must never mix into another dimension's fixer. The final-review phase spawns
-  a **per-lane fixer `LanePool`** and uses `runStepTask` for per-finding work — a
+  a **per-lane fixer `RunnerPool`** and uses `runStepTask` for per-finding work — a
   parallel-fan-out model `fixLoop`'s single-task signature (`{ task, reviewStep,
 fixerSteps }`) cannot express.
 - **History-aware verify prompts.** Each lane maintains its **own per-dimension history**
@@ -524,6 +524,6 @@ fixerSteps }`) cannot express.
 
 This is a **deliberate design boundary**: `fixLoop` is the primitive for **single-task**
 review/fix loops (and the seam where `shouldIsolate` / `onLaneError` fire), while
-multi-dimensional, per-finding parallel review stays in workflow code built on `LanePool` +
+multi-dimensional, per-finding parallel review stays in workflow code built on `RunnerPool` +
 `runStepTask`. Documenting this boundary here is the required record of the skipped t-40
 migration.

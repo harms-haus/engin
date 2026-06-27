@@ -5,7 +5,7 @@
 //
 // Both stores duplicate four helper functions:
 //
-//   • capAgentLogs(agents)
+//   • capSessionLogs(sessions)
 //   • toProjection(state)              — reconstruct a WorkflowProjection
 //   • writeProjectionToState(state, p) — write projection fields into state
 //   • reconcileSelection(state)        — phase / task / step follow rules
@@ -21,20 +21,20 @@
 // The module is imported via the package subpath alias:
 //
 //   import {
-//     capAgentLogs,
+//     capSessionLogs,
 //     toProjection,
 //     writeProjectionToState,
 //     reconcileSelection,
 //   } from '@engin/shared/projection-helpers';
 //
 // All four helpers use the CANONICAL projection field names (`tasks`,
-// `agents`, …) — NOT the web store's `tasksById` / `agentsById`. The web
+// `sessions`, …) — NOT the web store's `tasksById` / `sessionsById`. The web
 // store (refactored separately in task-15) maps its fields onto the canonical
 // names before calling these helpers.
 //
-//   export function capAgentLogs(
-//     agents: Record<string, AgentEntity>,
-//   ): Record<string, AgentEntity>;
+//   export function capSessionLogs(
+//     sessions: Record<string, SessionEntity>,
+//   ): Record<string, SessionEntity>;
 //
 //   // Accepts an object carrying the projection fields (canonical names) and
 //   // returns a WorkflowProjection whose `runLog` is reset to a fresh empty
@@ -44,7 +44,7 @@
 //   // Writes every normalized projection field into `state` (defensive shallow
 //   // copies for collections). Does NOT write `seq` or `runLog`.
 //   // `fromSnapshot` (default false): when true, defensively caps agent logs
-//   // (untrusted external source); when false, passes agents through uncapped
+//   // (untrusted external source); when false, passes sessions through uncapped
 //   // (the event-folding path — evolve already enforces the cap).
 //   export function writeProjectionToState(
 //     state: WritableProjectionState,
@@ -64,7 +64,7 @@ import { describe, expect, it } from 'bun:test';
 
 // ── Unit under test ─────────────────────────────────────────────────────────
 import {
-  capAgentLogs,
+  capSessionLogs,
   isTerminalTaskStatus,
   pickMostRecentlyStartedActive,
   reconcileSelection,
@@ -73,9 +73,9 @@ import {
 } from '@engin/shared/projection-helpers';
 
 // ── Cross-check dependencies ────────────────────────────────────────────────
-import type { AgentEntity, PhaseEntity, TaskEntity, WorkflowProjection } from '@engin/shared/event-types';
+import type { PhaseEntity, SessionEntity, TaskEntity, WorkflowProjection } from '@engin/shared/event-types';
 import { createInitialProjection } from '@engin/shared/event-types';
-import { MAX_AGENT_LOG } from '@engin/shared/evolve';
+import { MAX_SESSION_LOG } from '@engin/shared/evolve';
 
 // ── Constants ───────────────────────────────────────────────────────────────
 const ISO_NOW = '2026-06-15T00:00:00.000Z';
@@ -92,7 +92,7 @@ function logEntry(content: string) {
 }
 
 /** Build an agent with sensible defaults; allow per-field overrides. */
-function agent(overrides: Partial<AgentEntity> = {}): AgentEntity {
+function agent(overrides: Partial<SessionEntity> = {}): SessionEntity {
   return {
     uid: 'a1',
     agentId: 'a1',
@@ -104,6 +104,8 @@ function agent(overrides: Partial<AgentEntity> = {}): AgentEntity {
     inputTokens: 0,
     outputTokens: 0,
     taskTitle: '',
+    runnerRole: 'executor',
+    attempt: 1,
     ...overrides,
   };
 }
@@ -115,7 +117,7 @@ function task(overrides: Partial<TaskEntity> = {}): TaskEntity {
     title: 'T1',
     status: 'ready',
     phaseId: 'exec',
-    steps: [],
+
     dependencies: [],
     ...overrides,
   };
@@ -136,38 +138,36 @@ function storeState(overrides: Record<string, unknown> = {}): Record<string, unk
     ...createInitialProjection(),
     selectedPhaseId: null as string | null,
     selectedTaskId: null as string | null,
-    selectedStepIndex: null as number | null,
     userPinnedPhase: false,
-    userPinnedStep: false,
     ...overrides,
   };
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// capAgentLogs
+// capSessionLogs
 // ────────────────────────────────────────────────────────────────────────────
 
-describe('projection-helpers – capAgentLogs', () => {
+describe('projection-helpers – capSessionLogs', () => {
   it('returns a new record object (never the input reference)', () => {
-    const agents: Record<string, AgentEntity> = { a1: agent() };
-    const out = capAgentLogs(agents);
-    expect(out).not.toBe(agents);
+    const sessions: Record<string, SessionEntity> = { a1: agent() };
+    const out = capSessionLogs(sessions);
+    expect(out).not.toBe(sessions);
   });
 
-  it('returns an empty object for an empty agents record', () => {
-    const out = capAgentLogs({});
+  it('returns an empty object for an empty sessions record', () => {
+    const out = capSessionLogs({});
     expect(out).toEqual({});
   });
 
-  it('preserves short-log agents by the SAME reference (no copy)', () => {
+  it('preserves short-log sessions by the SAME reference (no copy)', () => {
     const a = agent({ log: [logEntry('x')] });
-    const out = capAgentLogs({ a1: a });
+    const out = capSessionLogs({ a1: a });
     expect(out['a1']).toBe(a); // identical reference
     expect(out['a1'].log).toBe(a.log);
   });
 
-  it('preserves all non-log fields on capped agents', () => {
-    const oversized = Array.from({ length: MAX_AGENT_LOG + 5 }, (_, i) => logEntry(`e-${i}`));
+  it('preserves all non-log fields on capped sessions', () => {
+    const oversized = Array.from({ length: MAX_SESSION_LOG + 5 }, (_, i) => logEntry(`e-${i}`));
     const a = agent({
       uid: 'a1::t1',
       agentId: 'a1',
@@ -180,9 +180,11 @@ describe('projection-helpers – capAgentLogs', () => {
       inputTokens: 100,
       outputTokens: 50,
       taskTitle: 'Do thing',
+      runnerRole: 'executor',
+      attempt: 1,
     });
 
-    const out = capAgentLogs({ a1: a });
+    const out = capSessionLogs({ a1: a });
     const capped = out['a1'];
     expect(capped).not.toBe(a); // a NEW object (log was sliced)
     expect(capped.uid).toBe('a1::t1');
@@ -197,67 +199,67 @@ describe('projection-helpers – capAgentLogs', () => {
     expect(capped.taskTitle).toBe('Do thing');
   });
 
-  it('caps an oversized log at exactly MAX_AGENT_LOG, dropping the oldest', () => {
-    const oversized = Array.from({ length: MAX_AGENT_LOG + 10 }, (_, i) => logEntry(`e-${i}`));
+  it('caps an oversized log at exactly MAX_SESSION_LOG, dropping the oldest', () => {
+    const oversized = Array.from({ length: MAX_SESSION_LOG + 10 }, (_, i) => logEntry(`e-${i}`));
     const a = agent({ log: oversized });
 
-    const out = capAgentLogs({ a1: a });
-    expect(out['a1'].log).toHaveLength(MAX_AGENT_LOG);
-    // Keeps the LAST MAX_AGENT_LOG entries → first kept is e-10, last is e-(MAX+9).
+    const out = capSessionLogs({ a1: a });
+    expect(out['a1'].log).toHaveLength(MAX_SESSION_LOG);
+    // Keeps the LAST MAX_SESSION_LOG entries → first kept is e-10, last is e-(MAX+9).
     expect(out['a1'].log[0].content).toBe('e-10');
-    expect(out['a1'].log[MAX_AGENT_LOG - 1].content).toBe(`e-${MAX_AGENT_LOG + 9}`);
+    expect(out['a1'].log[MAX_SESSION_LOG - 1].content).toBe(`e-${MAX_SESSION_LOG + 9}`);
   });
 
-  it('does NOT cap a log whose length is exactly MAX_AGENT_LOG (strict >)', () => {
-    const exact = Array.from({ length: MAX_AGENT_LOG }, (_, i) => logEntry(`e-${i}`));
+  it('does NOT cap a log whose length is exactly MAX_SESSION_LOG (strict >)', () => {
+    const exact = Array.from({ length: MAX_SESSION_LOG }, (_, i) => logEntry(`e-${i}`));
     const a = agent({ log: exact });
 
-    const out = capAgentLogs({ a1: a });
-    // length === MAX_AGENT_LOG is NOT > MAX_AGENT_LOG → same reference, untouched.
+    const out = capSessionLogs({ a1: a });
+    // length === MAX_SESSION_LOG is NOT > MAX_SESSION_LOG → same reference, untouched.
     expect(out['a1']).toBe(a);
     expect(out['a1'].log).toBe(exact);
-    expect(out['a1'].log).toHaveLength(MAX_AGENT_LOG);
+    expect(out['a1'].log).toHaveLength(MAX_SESSION_LOG);
   });
 
-  it('caps a log of length MAX_AGENT_LOG + 1 down to MAX_AGENT_LOG', () => {
-    const overByOne = Array.from({ length: MAX_AGENT_LOG + 1 }, (_, i) => logEntry(`e-${i}`));
+  it('caps a log of length MAX_SESSION_LOG + 1 down to MAX_SESSION_LOG', () => {
+    const overByOne = Array.from({ length: MAX_SESSION_LOG + 1 }, (_, i) => logEntry(`e-${i}`));
     const a = agent({ log: overByOne });
 
-    const out = capAgentLogs({ a1: a });
-    expect(out['a1'].log).toHaveLength(MAX_AGENT_LOG);
+    const out = capSessionLogs({ a1: a });
+    expect(out['a1'].log).toHaveLength(MAX_SESSION_LOG);
     // Oldest (e-0) dropped; first kept is e-1.
     expect(out['a1'].log[0].content).toBe('e-1');
   });
 
-  it('handles a mix of capped and uncapped agents independently', () => {
+  it('handles a mix of capped and uncapped sessions independently', () => {
     const short = agent({ log: [logEntry('s1')] });
-    const long = agent({ log: Array.from({ length: MAX_AGENT_LOG + 3 }, (_, i) => logEntry(`l-${i}`)) });
+    const long = agent({ log: Array.from({ length: MAX_SESSION_LOG + 3 }, (_, i) => logEntry(`l-${i}`)) });
 
-    const out = capAgentLogs({ short, long });
+    const out = capSessionLogs({ short, long });
     expect(out['short']).toBe(short); // untouched, same ref
     expect(out['long']).not.toBe(long); // capped, new object
-    expect(out['long'].log).toHaveLength(MAX_AGENT_LOG);
+    expect(out['long'].log).toHaveLength(MAX_SESSION_LOG);
     expect(out['long'].log[0].content).toBe('l-3');
   });
 
-  it('does not mutate the input agents record or its agent objects', () => {
-    const oversized = Array.from({ length: MAX_AGENT_LOG + 2 }, (_, i) => logEntry(`e-${i}`));
+  it('does not mutate the input sessions record or its agent objects', () => {
+    const oversized = Array.from({ length: MAX_SESSION_LOG + 2 }, (_, i) => logEntry(`e-${i}`));
     const a = agent({ log: oversized });
-    const agents = { a1: a };
+    const sessions = { a1: a };
 
-    capAgentLogs(agents);
+    capSessionLogs(sessions);
 
     // Input agent object untouched.
-    expect(agents['a1'].log).toBe(oversized);
-    expect(agents['a1'].log).toHaveLength(MAX_AGENT_LOG + 2);
+    expect(sessions['a1'].log).toBe(oversized);
+    expect(sessions['a1'].log).toHaveLength(MAX_SESSION_LOG + 2);
     // Input record still holds the original agent reference.
-    expect(agents['a1']).toBe(a);
+    expect(sessions['a1']).toBe(a);
   });
 
   it('preserves insertion order of keys', () => {
-    const agents: Record<string, AgentEntity> = {};
-    for (const id of ['z', 'a', 'm', 'b']) agents[id] = agent();
-    const out = capAgentLogs(agents);
+    const sessions: Record<string, SessionEntity> = {};
+    for (const id of ['z', 'a', 'm', 'b']) sessions[id] = agent();
+    const out = capSessionLogs(sessions);
     expect(Object.keys(out)).toEqual(['z', 'a', 'm', 'b']);
   });
 });
@@ -292,7 +294,7 @@ describe('projection-helpers – toProjection', () => {
       tasks: {
         t1: task({ id: 't1', title: 'T1', status: 'active', phaseId: 'exec' }),
       },
-      agents: {
+      sessions: {
         'a1::t1': agent({
           uid: 'a1::t1',
           taskId: 't1',
@@ -304,7 +306,7 @@ describe('projection-helpers – toProjection', () => {
       status: 'running',
       error: undefined,
       failedPhase: undefined,
-      stats: { totalTokens: 999, agentCount: 1 },
+      stats: { totalTokens: 999, sessionCount: 1 },
     });
 
     const proj = toProjection(fields);
@@ -314,10 +316,10 @@ describe('projection-helpers – toProjection', () => {
     expect(proj.currentPhaseId).toBe('exec');
     expect(proj.completedPhaseIds).toEqual(['plan']);
     expect(proj.tasks['t1'].title).toBe('T1');
-    expect(proj.agents['a1::t1'].toolCallCount).toBe(3);
+    expect(proj.sessions['a1::t1'].toolCallCount).toBe(3);
     expect(proj.sidebar).toEqual({ title: 'App', indicator: 'green' });
     expect(proj.status).toBe('running');
-    expect(proj.stats).toEqual({ totalTokens: 999, agentCount: 1 });
+    expect(proj.stats).toEqual({ totalTokens: 999, sessionCount: 1 });
   });
 
   it('propagates error / failedPhase when present', () => {
@@ -342,7 +344,7 @@ describe('projection-helpers – toProjection', () => {
   });
 
   it('works when called with the canonical projection fields mapped from a *ById store', () => {
-    // Simulates the web workflow-store mapping tasksById/agentsById → canonical
+    // Simulates the web workflow-store mapping tasksById/sessionsById → canonical
     // names before calling the shared toProjection (task-15 will do this).
     const webLike = {
       seq: 8,
@@ -351,19 +353,19 @@ describe('projection-helpers – toProjection', () => {
       currentPhaseId: 'exec',
       completedPhaseIds: [] as string[],
       tasks: { t1: task() } as Record<string, TaskEntity>,
-      agents: { a1: agent() } as Record<string, AgentEntity>,
+      sessions: { a1: agent() } as Record<string, SessionEntity>,
       sidebar: { title: '', indicator: '' },
       status: 'running' as const,
       error: undefined,
       failedPhase: undefined,
-      stats: { totalTokens: 0, agentCount: 0 },
+      stats: { totalTokens: 0, sessionCount: 0 },
     };
 
     const proj = toProjection(webLike);
     expect(proj.seq).toBe(8);
     expect(proj.taskPrompt).toBe('web');
     expect(proj.tasks['t1']).toBeDefined();
-    expect(proj.agents['a1']).toBeDefined();
+    expect(proj.sessions['a1']).toBeDefined();
     expect(proj.runLog).toEqual([]);
   });
 
@@ -389,10 +391,10 @@ describe('projection-helpers – writeProjectionToState', () => {
       currentPhaseId: 'exec',
       completedPhaseIds: ['plan'],
       tasks: { t1: task({ id: 't1', status: 'active' }) },
-      agents: { a1: agent({ profile: 'coder' }) },
+      sessions: { a1: agent({ profile: 'coder' }) },
       sidebar: { title: 'App', indicator: 'green' },
       status: 'running',
-      stats: { totalTokens: 10, agentCount: 1 },
+      stats: { totalTokens: 10, sessionCount: 1 },
     });
 
     writeProjectionToState(state, p);
@@ -402,10 +404,10 @@ describe('projection-helpers – writeProjectionToState', () => {
     expect(state['currentPhaseId']).toBe('exec');
     expect(state['completedPhaseIds']).toEqual(['plan']);
     expect((state['tasks'] as Record<string, TaskEntity>)['t1'].status).toBe('active');
-    expect((state['agents'] as Record<string, AgentEntity>)['a1'].profile).toBe('coder');
+    expect((state['sessions'] as Record<string, SessionEntity>)['a1'].profile).toBe('coder');
     expect(state['sidebar']).toEqual({ title: 'App', indicator: 'green' });
     expect(state['status']).toBe('running');
-    expect(state['stats']).toEqual({ totalTokens: 10, agentCount: 1 });
+    expect(state['stats']).toEqual({ totalTokens: 10, sessionCount: 1 });
   });
 
   it('writes error / failedPhase when present on the projection', () => {
@@ -486,7 +488,7 @@ describe('projection-helpers – writeProjectionToState', () => {
     const state = storeState();
     const p = blankProjection({
       sidebar: { title: 'A', indicator: 'g' },
-      stats: { totalTokens: 5, agentCount: 1 },
+      stats: { totalTokens: 5, sessionCount: 1 },
     });
 
     writeProjectionToState(state, p);
@@ -494,72 +496,72 @@ describe('projection-helpers – writeProjectionToState', () => {
     expect(state['sidebar']).not.toBe(p.sidebar);
     expect(state['stats']).not.toBe(p.stats);
     expect(state['sidebar']).toEqual({ title: 'A', indicator: 'g' });
-    expect(state['stats']).toEqual({ totalTokens: 5, agentCount: 1 });
+    expect(state['stats']).toEqual({ totalTokens: 5, sessionCount: 1 });
   });
 
   // ── fromSnapshot gating (the unified boolean parameter) ─────────────────
 
   describe('fromSnapshot (default false)', () => {
-    it('passes agents through UNCAPPED and by reference when fromSnapshot is omitted', () => {
+    it('passes sessions through UNCAPPED and by reference when fromSnapshot is omitted', () => {
       const state = storeState();
-      const oversized = Array.from({ length: MAX_AGENT_LOG + 5 }, (_, i) => logEntry(`e-${i}`));
+      const oversized = Array.from({ length: MAX_SESSION_LOG + 5 }, (_, i) => logEntry(`e-${i}`));
       const p = blankProjection({
-        agents: { a1: agent({ log: oversized }) },
+        sessions: { a1: agent({ log: oversized }) },
       });
 
       writeProjectionToState(state, p); // fromSnapshot defaults to false
 
-      const stateAgents = state['agents'] as Record<string, AgentEntity>;
+      const stateAgents = state['sessions'] as Record<string, SessionEntity>;
       // Same reference (no cap, no copy) — the event-folding path relies on
       // evolve having already enforced the cap.
-      expect(stateAgents).toBe(p.agents);
-      expect(stateAgents['a1'].log).toHaveLength(MAX_AGENT_LOG + 5); // NOT capped
+      expect(stateAgents).toBe(p.sessions);
+      expect(stateAgents['a1'].log).toHaveLength(MAX_SESSION_LOG + 5); // NOT capped
     });
 
-    it('passes agents through UNCAPPED when fromSnapshot is explicitly false', () => {
+    it('passes sessions through UNCAPPED when fromSnapshot is explicitly false', () => {
       const state = storeState();
-      const oversized = Array.from({ length: MAX_AGENT_LOG + 5 }, (_, i) => logEntry(`e-${i}`));
-      const p = blankProjection({ agents: { a1: agent({ log: oversized }) } });
+      const oversized = Array.from({ length: MAX_SESSION_LOG + 5 }, (_, i) => logEntry(`e-${i}`));
+      const p = blankProjection({ sessions: { a1: agent({ log: oversized }) } });
 
       writeProjectionToState(state, p, false);
 
-      const stateAgents = state['agents'] as Record<string, AgentEntity>;
-      expect(stateAgents).toBe(p.agents);
-      expect(stateAgents['a1'].log).toHaveLength(MAX_AGENT_LOG + 5);
+      const stateAgents = state['sessions'] as Record<string, SessionEntity>;
+      expect(stateAgents).toBe(p.sessions);
+      expect(stateAgents['a1'].log).toHaveLength(MAX_SESSION_LOG + 5);
     });
   });
 
   describe('fromSnapshot = true (snapshot path)', () => {
     it('caps oversized agent logs defensively (untrusted external source)', () => {
       const state = storeState();
-      const oversized = Array.from({ length: MAX_AGENT_LOG + 10 }, (_, i) => logEntry(`e-${i}`));
-      const p = blankProjection({ agents: { a1: agent({ log: oversized }) } });
+      const oversized = Array.from({ length: MAX_SESSION_LOG + 10 }, (_, i) => logEntry(`e-${i}`));
+      const p = blankProjection({ sessions: { a1: agent({ log: oversized }) } });
 
       writeProjectionToState(state, p, true);
 
-      const stateAgents = state['agents'] as Record<string, AgentEntity>;
-      expect(stateAgents['a1'].log).toHaveLength(MAX_AGENT_LOG);
+      const stateAgents = state['sessions'] as Record<string, SessionEntity>;
+      expect(stateAgents['a1'].log).toHaveLength(MAX_SESSION_LOG);
       expect(stateAgents['a1'].log[0].content).toBe('e-10');
     });
 
-    it('replaces the agents record with a NEW object (capAgentLogs output)', () => {
+    it('replaces the sessions record with a NEW object (capSessionLogs output)', () => {
       const state = storeState();
-      const p = blankProjection({ agents: { a1: agent() } });
+      const p = blankProjection({ sessions: { a1: agent() } });
 
       writeProjectionToState(state, p, true);
 
-      expect(state['agents']).not.toBe(p.agents); // new record
+      expect(state['sessions']).not.toBe(p.sessions); // new record
     });
 
     it('leaves short agent logs intact when fromSnapshot is true', () => {
       const state = storeState();
       const p = blankProjection({
-        agents: { a1: agent({ log: [logEntry('only')] }) },
+        sessions: { a1: agent({ log: [logEntry('only')] }) },
       });
 
       writeProjectionToState(state, p, true);
 
-      const stateAgents = state['agents'] as Record<string, AgentEntity>;
+      const stateAgents = state['sessions'] as Record<string, SessionEntity>;
       expect(stateAgents['a1'].log).toHaveLength(1);
       expect(stateAgents['a1'].log[0].content).toBe('only');
     });
@@ -684,17 +686,17 @@ describe('projection-helpers – reconcileSelection', () => {
       state['selectedPhaseId'] = 'scouting';
       state['userPinnedPhase'] = false;
       state['selectedTaskId'] = 't-old';
-      state['selectedStepIndex'] = 3;
-      state['userPinnedStep'] = true;
+      state['selectedSessionId'] = 'session-old';
+      state['userPinnedSession'] = true;
 
       reconcileSelection(state as never);
 
       expect(state['selectedPhaseId']).toBe('exec');
       expect(state['userPinnedPhase']).toBe(false);
-      // Follow resets task/step selection for the new phase.
+      // Follow resets task/session selection for the new phase.
       expect(state['selectedTaskId']).toBeNull();
-      expect(state['selectedStepIndex']).toBeNull();
-      expect(state['userPinnedStep']).toBe(false);
+      expect(state['selectedSessionId']).toBe('session-old'); // not reset by phase follow
+      expect(state['userPinnedSession']).toBe(false);
     });
 
     it('does NOT follow when the user navigated to a phase that was not the current phase (req 6)', () => {
@@ -824,24 +826,23 @@ describe('projection-helpers – reconcileSelection', () => {
       expect(state['selectedTaskId']).toBe('t1');
     });
 
-    it('resets selectedStepIndex and userPinnedStep when the task is re-selected', () => {
+    it('resets userPinnedSession when the task is re-selected', () => {
       const state = storeState({
         currentPhaseId: 'exec',
         tasks: {
-          t1: task({ id: 't1', status: 'active', phaseId: 'exec', activeStepIndex: 2 }),
+          t1: task({ id: 't1', status: 'active', phaseId: 'exec' }),
         },
       });
       state['selectedPhaseId'] = 'exec';
       state['selectedTaskId'] = null; // triggers re-selection
-      state['selectedStepIndex'] = 9;
-      state['userPinnedStep'] = true;
+      state['selectedSessionId'] = 'session-old';
+      state['userPinnedSession'] = true;
 
       reconcileSelection(state as never);
 
-      // Task re-selected (t1) → step reset, then step-follow re-syncs to 2.
+      // Task re-selected (t1) → session pin reset.
       expect(state['selectedTaskId']).toBe('t1');
-      expect(state['userPinnedStep']).toBe(false);
-      expect(state['selectedStepIndex']).toBe(2);
+      expect(state['userPinnedSession']).toBe(false);
     });
 
     it('skips task follow when selectedPhaseId is null', () => {
@@ -881,15 +882,15 @@ describe('projection-helpers – reconcileSelection', () => {
       state['selectedPhaseId'] = 'exec';
       state['selectedTaskId'] = 't1';
       state['prevSelectedTaskStatus'] = 'active'; // t1 WAS active last call
-      state['selectedStepIndex'] = 4;
-      state['userPinnedStep'] = true;
+      state['selectedSessionId'] = 'session-old';
+      state['userPinnedSession'] = true;
 
       reconcileSelection(state as never);
 
       // t3 has the greatest startedAt (most recently started).
       expect(state['selectedTaskId']).toBe('t3');
-      expect(state['selectedStepIndex']).toBeNull(); // reset
-      expect(state['userPinnedStep']).toBe(false); // reset
+      expect(state['selectedSessionId']).toBeNull(); // reset
+      expect(state['userPinnedSession']).toBe(false); // reset
     });
 
     it('re-selects an active task on failed / cancelled transitions too', () => {
@@ -974,66 +975,10 @@ describe('projection-helpers – reconcileSelection', () => {
   // ── Step follow ───────────────────────────────────────────────────────────
 
   describe('step follow', () => {
-    it('syncs selectedStepIndex to the task activeStepIndex when not pinned', () => {
-      const state = storeState({
-        currentPhaseId: 'exec',
-        tasks: {
-          t1: task({
-            id: 't1',
-            status: 'active',
-            phaseId: 'exec',
-            activeStepIndex: 1,
-            steps: [
-              { name: 's0', index: 0 },
-              { name: 's1', index: 1 },
-            ],
-          }),
-        },
-      });
-      state['selectedPhaseId'] = 'exec';
-      state['selectedTaskId'] = 't1';
-      state['userPinnedStep'] = false;
+    // step follow (selectedStepIndex / activeStepIndex) removed in C2 —
+    // selection now uses session-level follow (selectedSessionId).
 
-      reconcileSelection(state as never);
-
-      expect(state['selectedStepIndex']).toBe(1);
-    });
-
-    it('does NOT sync selectedStepIndex when userPinnedStep is true', () => {
-      const state = storeState({
-        currentPhaseId: 'exec',
-        tasks: {
-          t1: task({ id: 't1', status: 'active', phaseId: 'exec', activeStepIndex: 2 }),
-        },
-      });
-      state['selectedPhaseId'] = 'exec';
-      state['selectedTaskId'] = 't1';
-      state['selectedStepIndex'] = 0;
-      state['userPinnedStep'] = true;
-
-      reconcileSelection(state as never);
-
-      expect(state['selectedStepIndex']).toBe(0); // pinned, not overridden
-    });
-
-    it('leaves selectedStepIndex unchanged when the task has no activeStepIndex', () => {
-      const state = storeState({
-        currentPhaseId: 'exec',
-        tasks: {
-          t1: task({ id: 't1', status: 'active', phaseId: 'exec' }), // no activeStepIndex
-        },
-      });
-      state['selectedPhaseId'] = 'exec';
-      state['selectedTaskId'] = 't1';
-      state['selectedStepIndex'] = 4;
-      state['userPinnedStep'] = false;
-
-      reconcileSelection(state as never);
-
-      expect(state['selectedStepIndex']).toBe(4); // unchanged
-    });
-
-    it('skips step follow when selectedTaskId is null', () => {
+    it('skips session follow when selectedTaskId is null', () => {
       const state = storeState({
         currentPhaseId: 'exec',
         tasks: {},
@@ -1049,9 +994,11 @@ describe('projection-helpers – reconcileSelection', () => {
     });
   });
 
+  // step follow removed in C2 — session follow uses selectedSessionId.
+
   // ── Holistic reconcile (phase → task → step in one pass) ─────────────────
 
-  it('reconciles phase → task → step holistically on a fresh connect', () => {
+  it('reconciles phase → task holistically on a fresh connect', () => {
     const state = storeState({
       currentPhaseId: 'exec',
       phases: [phase({ id: 'exec', taskIds: ['t1'] })],
@@ -1060,21 +1007,17 @@ describe('projection-helpers – reconcileSelection', () => {
           id: 't1',
           status: 'active',
           phaseId: 'exec',
-          activeStepIndex: 0,
-          steps: [{ name: 's0', index: 0 }],
         }),
       },
     });
     // Fresh state: nothing selected.
     state['selectedPhaseId'] = null;
     state['selectedTaskId'] = null;
-    state['selectedStepIndex'] = null;
 
     reconcileSelection(state as never);
 
     expect(state['selectedPhaseId']).toBe('exec');
     expect(state['selectedTaskId']).toBe('t1');
-    expect(state['selectedStepIndex']).toBe(0);
   });
 
   it('does not throw on an entirely empty/initial state', () => {
@@ -1082,7 +1025,6 @@ describe('projection-helpers – reconcileSelection', () => {
     expect(() => reconcileSelection(state as never)).not.toThrow();
     expect(state['selectedPhaseId']).toBeNull();
     expect(state['selectedTaskId']).toBeNull();
-    expect(state['selectedStepIndex']).toBeNull();
   });
 });
 
@@ -1162,7 +1104,7 @@ describe('projection-helpers – reconcileSelection prev-tracking write-back', (
     const state = storeState({
       currentPhaseId: 'exec',
       tasks: {
-        t1: task({ id: 't1', status: 'active', phaseId: 'exec', activeStepIndex: 2 }),
+        t1: task({ id: 't1', status: 'active', phaseId: 'exec' }),
       },
     });
     state['selectedPhaseId'] = 'exec';
@@ -1207,7 +1149,7 @@ describe('projection-helpers – reconcileSelection prev-tracking write-back', (
       currentPhaseId: 'exec',
       tasks: {
         t1: task({ id: 't1', status: 'ready', phaseId: 'exec' }),
-        t2: task({ id: 't2', status: 'active', phaseId: 'exec', activeStepIndex: 1 }),
+        t2: task({ id: 't2', status: 'active', phaseId: 'exec' }),
       },
     });
     state['selectedPhaseId'] = 'exec';
@@ -1223,7 +1165,7 @@ describe('projection-helpers – reconcileSelection prev-tracking write-back', (
     const state = storeState({
       currentPhaseId: 'exec',
       tasks: {
-        t1: task({ id: 't1', status: 'ready', phaseId: 'exec', activeStepIndex: 3 }),
+        t1: task({ id: 't1', status: 'ready', phaseId: 'exec' }),
       },
     });
     state['selectedPhaseId'] = 'exec';
@@ -1269,7 +1211,7 @@ describe('projection-helpers – reconcileSelection prev-tracking write-back', (
     const state = storeState({
       currentPhaseId: 'exec',
       tasks: {
-        t1: task({ id: 't1', status: 'active', phaseId: 'exec', activeStepIndex: 0 }),
+        t1: task({ id: 't1', status: 'active', phaseId: 'exec' }),
       },
     });
     state['selectedPhaseId'] = 'exec';

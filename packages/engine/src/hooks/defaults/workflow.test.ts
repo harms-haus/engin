@@ -282,6 +282,7 @@ describe('createDefaultOnRestore', () => {
       dependencies: [],
       status: 'ready',
       phaseId: 'planning',
+      worktree: 'none',
     });
     await seed.save();
     seed.dispose();

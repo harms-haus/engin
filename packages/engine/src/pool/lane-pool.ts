@@ -87,13 +87,13 @@ export class LanePool {
     const hookRegistry = this.scopedHookRegistry;
     const seed = this.options.getStepsForTask?.(task) ?? [];
 
-    // `beforeTask` first-wins hook seam: mirrors the `beforeStepPrompt` /
+    // `beforeTask` first-wins hook seam: mirrors the `beforeSessionPrompt` /
     // `onStructuredOutput` seams in step-execution.ts — gated on
     // `hasSubscribers` so an empty / no-subscriber registry falls through to
     // the seed (backward compat: identical to today when no hookRegistry).
     let steps = seed;
     if (hookRegistry && hookRegistry.hasSubscribers('beforeTask')) {
-      const result = (await hookRegistry.invokeFirstWins('beforeTask', { task, steps: seed }, {
+      const result = (await hookRegistry.invokeFirstWins('beforeTask', { task }, {
         registry: hookRegistry,
         cwd: this.options.cwd,
         workDir: this.options.cwd,
@@ -151,18 +151,13 @@ export class LanePool {
     // Fire onTaskRegister once per task so the TUI gets the initial task layout
     // with phaseId and step definitions before any profile loading or agent spawning.
     for (const task of taskTracker.getAllTasks()) {
-      const steps =
-        this.options.getStepsForTask?.(task)?.map((s) => ({
-          name: s.name,
-          profileId: s.profileId,
-          isReadOnly: s.isReadOnly,
-        })) ?? [];
+      // steps intentionally discarded — the onTaskRegister call only needs task metadata.
+      // The step definitions are passed back to the caller via getStepsForTask resolution.
       this.options.onStatus?.onTaskRegister?.({
         taskId: task.id,
         phaseId: this.options.phaseId,
         title: task.title,
         dependencies: task.dependencies,
-        steps,
       });
     }
 
@@ -579,7 +574,7 @@ export class LanePool {
           // runs inside the isolated branch.
           runnerCtx.cwd = taskWorktreePath;
           // Surface the per-task worktree path on the runner context so
-          // the `beforeStepPrompt` hook (and any file-resolution logic)
+          // the `beforeSessionPrompt` hook (and any file-resolution logic)
           // can resolve files against the isolated worktree rather than
           // the run/pool cwd.
           runnerCtx.worktreeCwd = taskWorktreePath;

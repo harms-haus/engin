@@ -202,6 +202,7 @@ function makeState(): WorkflowState {
     files: [],
     dependencies: [],
     status: 'ready' as TaskStatus,
+    worktree: 'none',
     phaseId: 'coding',
   };
   return {

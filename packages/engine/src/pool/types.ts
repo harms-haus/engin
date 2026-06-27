@@ -58,7 +58,7 @@ export interface LanePoolOptions {
   signal?: AbortSignal;
   /** Optional registry of custom output renderers keyed by profile name */
   rendererRegistry?: RendererRegistry;
-  /** Optional registry of workflow hooks (e.g. `beforeStepPrompt`). When
+  /** Optional registry of workflow hooks (e.g. `beforeSessionPrompt`). When
    *  absent, `runStep` calls `buildPrompt` directly — zero behavior change. */
   hookRegistry?: HookRegistry;
   /** Phase identifier set by the workflow orchestrator — required */
@@ -101,7 +101,7 @@ export interface TaskRunnerContext {
   /** Optional registry of custom output renderers keyed by profile name */
   rendererRegistry?: RendererRegistry;
   /** Optional registry of workflow hooks. Forwarded into the
-   *  {@link StepExecutionContext} so `runStep` can invoke `beforeStepPrompt`
+   *  {@link StepExecutionContext} so `runStep` can invoke `beforeSessionPrompt`
    *  (and the observe hooks `onStructuredOutput` / `onDecision`) when
    *  subscribers are present. */
   hookRegistry?: HookRegistry;
@@ -115,7 +115,7 @@ export interface TaskRunnerContext {
   auditLog?: AuditLog;
   /** Per-task worktree path (set by LanePool when a worktree is created for
    *  this task). Distinct from `cwd` (the run/pool cwd): forwarded into the
-   *  {@link StepExecutionContext} so the `beforeStepPrompt` hook can resolve
+   *  {@link StepExecutionContext} so the `beforeSessionPrompt` hook can resolve
    *  files against the isolated worktree. */
   worktreeCwd?: string;
   /** Abort signal for cooperative cancellation (e.g. SIGINT). Forwarded into the

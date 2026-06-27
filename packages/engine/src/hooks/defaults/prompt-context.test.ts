@@ -1,7 +1,7 @@
 // ─── Tests for hooks/defaults/prompt-context.ts ────────────────────────────
 //
 // `defaultCollectContext` and `defaultBeforeStepPrompt` are the DEFAULT
-// implementations of the `collectContext` (all-run) and `beforeStepPrompt`
+// implementations of the `collectContext` (all-run) and `beforeSessionPrompt`
 // (pipeline) hooks. They reproduce — EXACTLY — the file-inlining + prompt
 // assembly behavior currently in `pool/prompt-builder.ts::buildPrompt`, so
 // existing workflows are unchanged when the engine switches to invoking the
@@ -29,7 +29,7 @@ import type { Task } from '../../core/types.js';
 import { buildPrompt } from '../../pool/prompt-builder.js';
 import type { StepDefinition } from '../../pool/types.js';
 import { createHookRegistry } from '../registry.js';
-import type { BeforeStepPromptArgs, CollectContextArgs, HookContext } from '../types.js';
+import type { BeforeSessionPromptArgs, CollectContextArgs, HookContext } from '../types.js';
 import { defaultBeforeStepPrompt, defaultCollectContext } from './prompt-context.js';
 
 // ── Constants mirrored from prompt-builder.ts ──────────────────────────────
@@ -80,6 +80,7 @@ function makeTask(overrides?: Partial<Task>): Task {
     profile: 'default',
     files: [],
     dependencies: [],
+    worktree: 'none',
     status: 'active',
     phaseId: 'code',
     ...overrides,
@@ -130,9 +131,9 @@ function beforeArgs(
     worktreeCwd?: string;
     prompt?: string;
   } = {},
-): BeforeStepPromptArgs {
+): BeforeSessionPromptArgs {
   const task = makeTask(opts.task);
-  const args: BeforeStepPromptArgs = {
+  const args: BeforeSessionPromptArgs = {
     task,
     step: makeStep(opts.step),
     cwd: opts.cwd ?? '/repo',
@@ -531,30 +532,30 @@ describe('defaultBeforeStepPrompt', () => {
   });
 });
 
-// ── beforeStepPrompt pipeline composition (via registry.invokePipeline) ─────
+// ── beforeSessionPrompt pipeline composition (via registry.invokePipeline) ─────
 //
-// `beforeStepPrompt` is a PIPELINE hook: the engine declares it with
-// `defineHook('beforeStepPrompt', 'pipeline')` and invokes it via
-// `registry.invokePipeline('beforeStepPrompt', seed, args, ctx)`. Each
+// `beforeSessionPrompt` is a PIPELINE hook: the engine declares it with
+// `defineHook('beforeSessionPrompt', 'pipeline')` and invokes it via
+// `registry.invokePipeline('beforeSessionPrompt', seed, args, ctx)`. Each
 // subscriber receives the output of the previous one (or the seed for the
 // first) and returns the next — so a workflow's user hooks CHAIN with the
 // default file-inlining subscriber instead of replacing it.
 //
 // These tests exercise the registry-level pipeline contract for the concrete
-// `beforeStepPrompt` hook name (now declared on `WorkflowHooks`, so the
+// `beforeSessionPrompt` hook name (now declared on `WorkflowHooks`, so the
 // literal needs no cast): registration order === execution order, the output
 // of subscriber N is the input of subscriber N+1, and the default subscriber
 // is "just another stage" a user hook can wrap.
 
-describe('beforeStepPrompt pipeline composition (registry.invokePipeline)', () => {
+describe('beforeSessionPrompt pipeline composition (registry.invokePipeline)', () => {
   /**
-   * A registry with `beforeStepPrompt` declared as a pipeline, mirroring the
+   * A registry with `beforeSessionPrompt` declared as a pipeline, mirroring the
    * engine's setup (`defineHook` before any `register`). Returns the registry
    * so the test can register subscribers and invoke the pipeline.
    */
   function pipelineRegistry(): ReturnType<typeof createHookRegistry> {
     const registry = createHookRegistry();
-    registry.defineHook('beforeStepPrompt', 'pipeline');
+    registry.defineHook('beforeSessionPrompt', 'pipeline');
     return registry;
   }
 
@@ -565,10 +566,15 @@ describe('beforeStepPrompt pipeline composition (registry.invokePipeline)', () =
     // "[B][A]original". The later subscriber (B) sees A's output, NOT the seed.
     const registry = pipelineRegistry();
     registry.register({
-      beforeStepPrompt: [(value: string) => `[A]${value}`, (value: string) => `[B]${value}`],
+      beforeSessionPrompt: [(value: string) => `[A]${value}`, (value: string) => `[B]${value}`],
     });
 
-    const result = (await registry.invokePipeline('beforeStepPrompt', 'original', beforeArgs(), makeCtx())) as string;
+    const result = (await registry.invokePipeline(
+      'beforeSessionPrompt',
+      'original',
+      beforeArgs(),
+      makeCtx(),
+    )) as string;
 
     expect(result).toBe('[B][A]original');
   });
@@ -577,7 +583,7 @@ describe('beforeStepPrompt pipeline composition (registry.invokePipeline)', () =
     const registry = pipelineRegistry();
     const order: string[] = [];
     registry.register({
-      beforeStepPrompt: [
+      beforeSessionPrompt: [
         (v: string) => {
           order.push('A');
           return v;
@@ -593,7 +599,7 @@ describe('beforeStepPrompt pipeline composition (registry.invokePipeline)', () =
       ],
     });
 
-    await registry.invokePipeline('beforeStepPrompt', 'seed', beforeArgs(), makeCtx());
+    await registry.invokePipeline('beforeSessionPrompt', 'seed', beforeArgs(), makeCtx());
 
     expect(order).toEqual(['A', 'B', 'C']);
   });
@@ -603,10 +609,15 @@ describe('beforeStepPrompt pipeline composition (registry.invokePipeline)', () =
     // determined by registration order, not by the labels themselves.
     const registry = pipelineRegistry();
     registry.register({
-      beforeStepPrompt: [(value: string) => `[B]${value}`, (value: string) => `[A]${value}`],
+      beforeSessionPrompt: [(value: string) => `[B]${value}`, (value: string) => `[A]${value}`],
     });
 
-    const result = (await registry.invokePipeline('beforeStepPrompt', 'original', beforeArgs(), makeCtx())) as string;
+    const result = (await registry.invokePipeline(
+      'beforeSessionPrompt',
+      'original',
+      beforeArgs(),
+      makeCtx(),
+    )) as string;
 
     expect(result).toBe('[A][B]original');
   });
@@ -617,7 +628,7 @@ describe('beforeStepPrompt pipeline composition (registry.invokePipeline)', () =
     const registry = pipelineRegistry();
     const seen: string[] = [];
     registry.register({
-      beforeStepPrompt: [
+      beforeSessionPrompt: [
         (v: string) => {
           seen.push(v);
           return v + '1';
@@ -633,7 +644,7 @@ describe('beforeStepPrompt pipeline composition (registry.invokePipeline)', () =
       ],
     });
 
-    const result = (await registry.invokePipeline('beforeStepPrompt', 's', beforeArgs(), makeCtx())) as string;
+    const result = (await registry.invokePipeline('beforeSessionPrompt', 's', beforeArgs(), makeCtx())) as string;
 
     expect(seen).toEqual(['s', 's1', 's12']);
     expect(result).toBe('s123');
@@ -644,7 +655,7 @@ describe('beforeStepPrompt pipeline composition (registry.invokePipeline)', () =
     // default file-inlining (applied elsewhere, or as a default subscriber)
     // is what actually runs. This pins the "no subscribers" branch.
     const registry = pipelineRegistry();
-    const result = await registry.invokePipeline('beforeStepPrompt', 'untouched-seed', beforeArgs(), makeCtx());
+    const result = await registry.invokePipeline('beforeSessionPrompt', 'untouched-seed', beforeArgs(), makeCtx());
     expect(result).toBe('untouched-seed');
   });
 
@@ -661,15 +672,15 @@ describe('beforeStepPrompt pipeline composition (registry.invokePipeline)', () =
 
     const registry = pipelineRegistry();
     registry.register({
-      beforeStepPrompt: [
+      beforeSessionPrompt: [
         // Stage 1: the default (headers + inlined file + body).
-        (value: string, a: BeforeStepPromptArgs, ctx: HookContext) => defaultBeforeStepPrompt(value, a, ctx),
+        (value: string, a: BeforeSessionPromptArgs, ctx: HookContext) => defaultBeforeStepPrompt(value, a, ctx),
         // Stage 2: a user hook that prepends a custom preamble.
         (value: string) => `<!-- user preamble -->\n${value}`,
       ],
     });
 
-    const result = (await registry.invokePipeline('beforeStepPrompt', task.prompt, args, makeCtx())) as string;
+    const result = (await registry.invokePipeline('beforeSessionPrompt', task.prompt, args, makeCtx())) as string;
 
     // The user preamble is at the very front ...
     expect(result.startsWith('<!-- user preamble -->\n')).toBe(true);

@@ -29,10 +29,10 @@ describe('ServerMessage – retained variants', () => {
         currentPhaseId: 'coding',
         completedPhaseIds: ['scouting'],
         tasks: {},
-        agents: {},
+        sessions: {},
         sidebar: { title: 'Engin', indicator: '🟢' },
         status: 'running',
-        stats: { totalTokens: 0, agentCount: 0 },
+        stats: { totalTokens: 0, sessionCount: 0 },
         runLog: [],
       },
     };

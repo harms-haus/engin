@@ -489,6 +489,7 @@ export class WorktreeManager {
       dependencies: [],
       status: 'active',
       phaseId: '',
+      worktree: 'none',
     };
   }
 

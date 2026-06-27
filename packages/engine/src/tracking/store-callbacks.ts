@@ -44,15 +44,14 @@ export function createStoreCallbacks(store: StoreLike): StatusCallbacks {
           phaseId: info.phaseId,
           title: info.title,
           dependencies: info.dependencies,
-          steps: info.steps,
         },
         { taskId: info.taskId, phaseId: info.phaseId },
       );
     },
 
-    onAgentSpawn(info) {
+    onSessionStart(info) {
       store.append(
-        'agent_spawned',
+        'session_started',
         {
           agentId: info.agentId,
           profile: info.profile,
@@ -64,16 +63,15 @@ export function createStoreCallbacks(store: StoreLike): StatusCallbacks {
           agentId: info.agentId,
           taskId: info.taskId,
           phaseId: info.phaseId,
-          stepIndex: info.stepIndex,
         },
       );
     },
 
-    onAgentComplete(info) {
+    onSessionComplete(info) {
       store.append(
-        'agent_completed',
+        'session_completed',
         { agentId: info.agentId, profile: info.profile, sessionId: info.sessionId },
-        { agentId: info.agentId, taskId: info.taskId, phaseId: info.phaseId, stepIndex: info.stepIndex },
+        { agentId: info.agentId, taskId: info.taskId, phaseId: info.phaseId },
       );
     },
 
@@ -87,19 +85,6 @@ export function createStoreCallbacks(store: StoreLike): StatusCallbacks {
           startedAt: info.startedAt,
         },
         { agentId: info.agentId, taskId: info.taskId, phaseId: info.phaseId },
-      );
-    },
-
-    onStepStart(info) {
-      store.append(
-        'step_started',
-        {
-          taskId: info.taskId,
-          stepIndex: info.stepIndex,
-          stepName: info.stepName,
-          agentId: info.agentId,
-        },
-        { taskId: info.taskId, agentId: info.agentId, stepIndex: info.stepIndex },
       );
     },
 
@@ -145,7 +130,6 @@ export function createStoreCallbacks(store: StoreLike): StatusCallbacks {
       store.append('workflow_failed', {
         error: info.error.message,
         errorName: info.error.name,
-        errorStack: info.error.stack,
         phase: info.phaseId,
       });
     },

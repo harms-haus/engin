@@ -149,8 +149,8 @@ Respond with JSON matching this shape:
 ```
 
 Pair this profile with a step that has `schema` and `isReadOnly: true`; the
-[LanePool](../reference/task-pool.md) will run it, parse the JSON, and use `approved` to decide
-whether to advance or send feedback back to the implementer.
+[RunnerPool](../reference/task-pool.md) will run it via a `reviewRunner` or `singleSession`, parse the JSON,
+and use `approved` to decide whether to advance or send feedback back to the implementer.
 
 ### Codex agent
 
@@ -190,7 +190,7 @@ You are a Scout agent. Read the codebase and identify the work to be done.
 Respond with JSON: { "summary": string, "files": string[] }.
 ```
 
-Use this with [`runStepTask`](../reference/api.md#runsteptask) and a matching Zod schema.
+Use this with [`runSession`](../reference/api.md#runsession) and a matching Zod schema.
 
 ## Loading profiles programmatically
 
@@ -210,4 +210,4 @@ merged result from `loadProfilesFromDirs` is **not** cached.
 
 - [Building a new workflow](building-workflows.md) — use these profiles in a real workflow.
 - [Task pool & execution](../reference/task-pool.md) — how `isReadOnly` and `schema` interact
-  with step execution and retries.
+  with session execution, composable runners, and retries.

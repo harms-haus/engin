@@ -50,7 +50,7 @@ describe('evolve characterization – default branch & dispatch', () => {
     expect(next.status).toBe(state.status);
     expect(next.phases).toBe(state.phases);
     expect(next.tasks).toBe(state.tasks);
-    expect(next.agents).toBe(state.agents);
+    expect(next.sessions).toBe(state.sessions);
     expect(next.completedPhaseIds).toBe(state.completedPhaseIds);
     expect(next.runLog).toBe(state.runLog);
     expect(next.sidebar).toBe(state.sidebar);
@@ -183,11 +183,11 @@ describe('evolve characterization – agent resolution no-ops', () => {
     const state = baseline();
     const next = evolve(
       state,
-      makeEvent('agent_completed', {}, { timestamp: '2026-06-25T00:00:00Z', agentId: 'ghost' }),
+      makeEvent('session_completed', {}, { timestamp: '2026-06-25T00:00:00Z', agentId: 'ghost' }),
     );
-    expect(Object.keys(next.agents)).toHaveLength(0);
+    expect(Object.keys(next.sessions)).toHaveLength(0);
     expect(next.seq).toBe(state.seq + 1);
-    expect(next.agents).toBe(state.agents);
+    expect(next.sessions).toBe(state.sessions);
   });
 
   it('decision is a no-op when agent does not exist', () => {
@@ -197,7 +197,7 @@ describe('evolve characterization – agent resolution no-ops', () => {
       state,
       makeEvent('decision', { decision: 'x' }, { timestamp: '2026-06-25T00:00:00Z', agentId: 'ghost' }),
     );
-    expect(Object.keys(next.agents)).toHaveLength(0);
+    expect(Object.keys(next.sessions)).toHaveLength(0);
     expect(next.seq).toBe(state.seq + 1);
   });
 
@@ -208,7 +208,7 @@ describe('evolve characterization – agent resolution no-ops', () => {
       state,
       makeEvent('error', { error: 'boom' }, { timestamp: '2026-06-25T00:00:00Z', agentId: 'ghost' }),
     );
-    expect(Object.keys(next.agents)).toHaveLength(0);
+    expect(Object.keys(next.sessions)).toHaveLength(0);
     expect(next.seq).toBe(state.seq + 1);
   });
 
@@ -224,7 +224,7 @@ describe('evolve characterization – agent resolution no-ops', () => {
         { timestamp: '2026-06-25T00:00:00Z', agentId: 'ghost' },
       ),
     );
-    expect(Object.keys(next.agents)).toHaveLength(0);
+    expect(Object.keys(next.sessions)).toHaveLength(0);
     expect(next.stats.totalTokens).toBe(tokensBefore);
     expect(next.seq).toBe(state.seq + 1);
   });
@@ -240,7 +240,7 @@ describe('evolve characterization – agent resolution no-ops', () => {
         { timestamp: '2026-06-25T00:00:00Z', agentId: 'ghost' },
       ),
     );
-    expect(Object.keys(next.agents)).toHaveLength(0);
+    expect(Object.keys(next.sessions)).toHaveLength(0);
     expect(next.seq).toBe(state.seq + 1);
   });
 
@@ -255,7 +255,7 @@ describe('evolve characterization – agent resolution no-ops', () => {
         { timestamp: '2026-06-25T00:00:00Z', agentId: 'ghost' },
       ),
     );
-    expect(Object.keys(next.agents)).toHaveLength(0);
+    expect(Object.keys(next.sessions)).toHaveLength(0);
     expect(next.seq).toBe(state.seq + 1);
   });
 
@@ -270,7 +270,7 @@ describe('evolve characterization – agent resolution no-ops', () => {
         { timestamp: '2026-06-25T00:00:00Z', agentId: 'ghost' },
       ),
     );
-    expect(Object.keys(next.agents)).toHaveLength(0);
+    expect(Object.keys(next.sessions)).toHaveLength(0);
     expect(next.seq).toBe(state.seq + 1);
   });
 
@@ -285,7 +285,7 @@ describe('evolve characterization – agent resolution no-ops', () => {
         { timestamp: '2026-06-25T00:00:00Z', agentId: 'ghost' },
       ),
     );
-    expect(Object.keys(next.agents)).toHaveLength(0);
+    expect(Object.keys(next.sessions)).toHaveLength(0);
     expect(next.seq).toBe(state.seq + 1);
   });
 });
@@ -294,7 +294,7 @@ describe('evolve characterization – task edge cases', () => {
   it('task_registered is a no-op when taskId and id are both missing', () => {
     resetSeq();
     const state = baseline();
-    const next = evolve(state, makeEvent('task_registered', { title: 'Nope', phaseId: 'p1', steps: [] }));
+    const next = evolve(state, makeEvent('task_registered', { title: 'Nope', phaseId: 'p1' }));
     expect(next.tasks).toEqual({});
     expect(next.seq).toBe(state.seq + 1);
   });
@@ -304,7 +304,7 @@ describe('evolve characterization – task edge cases', () => {
     const state = baseline();
     const next = evolve(
       state,
-      makeEvent('task_registered', { id: 'via-id', title: 'T', phaseId: '', steps: [], dependencies: [] }),
+      makeEvent('task_registered', { id: 'via-id', title: 'T', phaseId: '', dependencies: [] }),
     );
     expect(next.tasks['via-id']).toBeDefined();
     expect(next.tasks['via-id'].title).toBe('T');
@@ -319,14 +319,11 @@ describe('evolve characterization – task edge cases', () => {
         taskId: 't1',
         title: 'T',
         phaseId: '',
-        steps: [{ name: 'analyze', isReadOnly: false }],
         dependencies: [],
       }),
     );
     // name falls back to profileId (also absent here) → 'analyze' comes from s.name directly.
-    expect(next.tasks['t1'].steps[0].name).toBe('analyze');
     // profile only falls back to s.profile — NOT s.name — so it is empty.
-    expect(next.tasks['t1'].steps[0].profile).toBe('');
   });
 
   it('task_registered step profile falls back to data.profile when profileId absent', () => {
@@ -338,11 +335,9 @@ describe('evolve characterization – task edge cases', () => {
         taskId: 't1',
         title: 'T',
         phaseId: '',
-        steps: [{ name: 'a', profile: 'alt-profile', isReadOnly: false }],
         dependencies: [],
       }),
     );
-    expect(next.tasks['t1'].steps[0].profile).toBe('alt-profile');
   });
 
   it('task_registered step name falls back to profileId when name absent', () => {
@@ -354,13 +349,9 @@ describe('evolve characterization – task edge cases', () => {
         taskId: 't1',
         title: 'T',
         phaseId: '',
-        steps: [{ profileId: 'coder', isReadOnly: true }],
         dependencies: [],
       }),
     );
-    expect(next.tasks['t1'].steps[0].name).toBe('coder');
-    expect(next.tasks['t1'].steps[0].profile).toBe('coder');
-    expect(next.tasks['t1'].steps[0].isReadOnly).toBe(true);
   });
 
   it('task_registered tolerates non-array steps and dependencies', () => {
@@ -370,17 +361,13 @@ describe('evolve characterization – task edge cases', () => {
       state,
       makeEvent('task_registered', { taskId: 't1', title: 'T', phaseId: '', steps: 'nope', dependencies: null }),
     );
-    expect(next.tasks['t1'].steps).toEqual([]);
     expect(next.tasks['t1'].dependencies).toEqual([]);
   });
 
   it('task_started preserves existing startedAt when data.startedAt is not a number', () => {
     resetSeq();
     let state = baseline();
-    state = evolve(
-      state,
-      makeEvent('task_registered', { taskId: 't1', title: 'T', phaseId: '', steps: [], dependencies: [] }),
-    );
+    state = evolve(state, makeEvent('task_registered', { taskId: 't1', title: 'T', phaseId: '', dependencies: [] }));
     state = evolve(
       state,
       makeEvent('task_started', { taskId: 't1', startedAt: 1000 }, { timestamp: '2026-06-25T00:00:00Z', taskId: 't1' }),
@@ -419,59 +406,6 @@ describe('evolve characterization – task edge cases', () => {
     );
     expect(next.tasks).toEqual({});
     expect(next.seq).toBe(state.seq + 1);
-  });
-
-  it('step_started is a no-op when task does not exist', () => {
-    resetSeq();
-    const state = baseline();
-    const next = evolve(
-      state,
-      makeEvent(
-        'step_started',
-        { taskId: 'ghost', stepIndex: 0 },
-        { timestamp: '2026-06-25T00:00:00Z', taskId: 'ghost' },
-      ),
-    );
-    expect(next.tasks).toEqual({});
-    expect(next.seq).toBe(state.seq + 1);
-  });
-
-  it('step_started is a no-op when stepIndex is not a number', () => {
-    resetSeq();
-    let state = baseline();
-    state = evolve(
-      state,
-      makeEvent('task_registered', {
-        taskId: 't1',
-        title: 'T',
-        phaseId: '',
-        steps: [{ name: 'a', profileId: 'p', isReadOnly: false }],
-        dependencies: [],
-      }),
-    );
-    const next = evolve(state, makeEvent('step_started', { taskId: 't1', stepIndex: 'nope' }));
-    expect(next.tasks['t1'].activeStepIndex).toBeUndefined();
-    expect(next.seq).toBe(state.seq + 1);
-  });
-
-  it('step_started reads taskId from metadata.taskId when data.taskId absent', () => {
-    resetSeq();
-    let state = baseline();
-    state = evolve(
-      state,
-      makeEvent('task_registered', {
-        taskId: 't1',
-        title: 'T',
-        phaseId: '',
-        steps: [{ name: 'a', profileId: 'p', isReadOnly: false }],
-        dependencies: [],
-      }),
-    );
-    const next = evolve(
-      state,
-      makeEvent('step_started', { stepIndex: 0 }, { timestamp: '2026-06-25T00:00:00Z', taskId: 't1' }),
-    );
-    expect(next.tasks['t1'].activeStepIndex).toBe(0);
   });
 });
 
@@ -528,8 +462,8 @@ describe('evolve characterization – log / sidebar / turn coercion', () => {
     );
     expect(next).not.toBe(state);
     expect(next.seq).toBe(state.seq + 1);
-    // No agents created, no state changes besides seq
-    expect(next.agents).toBe(state.agents);
+    // No sessions created, no state changes besides seq
+    expect(next.sessions).toBe(state.sessions);
     expect(next.tasks).toBe(state.tasks);
   });
 
@@ -539,7 +473,7 @@ describe('evolve characterization – log / sidebar / turn coercion', () => {
     state = evolve(
       state,
       makeEvent(
-        'agent_spawned',
+        'session_started',
         { agentId: 'a1', profile: 'coder' },
         { timestamp: '2026-06-25T00:00:00Z', agentId: 'a1' },
       ),
@@ -560,7 +494,7 @@ describe('evolve characterization – log / sidebar / turn coercion', () => {
         { timestamp: '2026-06-25T00:00:00Z', agentId: 'a1' },
       ),
     );
-    const agent = state.agents['a1'];
+    const agent = state.sessions['a1'];
     expect(agent.log).toHaveLength(1);
     expect(agent.log[0].type).toBe('text');
     expect(agent.log[0].content).toBe('kept');
@@ -572,7 +506,7 @@ describe('evolve characterization – log / sidebar / turn coercion', () => {
     state = evolve(
       state,
       makeEvent(
-        'agent_spawned',
+        'session_started',
         { agentId: 'a1', profile: 'coder' },
         { timestamp: '2026-06-25T00:00:00Z', agentId: 'a1' },
       ),
@@ -594,7 +528,7 @@ describe('evolve characterization – log / sidebar / turn coercion', () => {
         { timestamp: '2026-06-25T00:00:00Z', agentId: 'a1' },
       ),
     );
-    const agent = state.agents['a1'];
+    const agent = state.sessions['a1'];
     expect(agent.log.map((e) => `${e.type}:${e.content}`)).toEqual([
       'text:t1',
       'thinking:th1',
@@ -611,7 +545,7 @@ describe('evolve characterization – log / sidebar / turn coercion', () => {
     state = evolve(
       state,
       makeEvent(
-        'agent_spawned',
+        'session_started',
         { agentId: 'a1', profile: 'coder' },
         { timestamp: '2026-06-25T00:00:00Z', agentId: 'a1' },
       ),
@@ -629,7 +563,7 @@ describe('evolve characterization – log / sidebar / turn coercion', () => {
       { timestamp: '2026-06-25T00:00:00Z', agentId: 'a1' },
     );
     state = evolve(state, turnEvent);
-    const ids = state.agents['a1'].log.map((e) => e.id);
+    const ids = state.sessions['a1'].log.map((e) => e.id);
     expect(ids).toEqual([`log-${turnEvent.seq}-0`, `log-${turnEvent.seq}-1`]);
   });
 });
@@ -640,17 +574,17 @@ describe('evolve characterization – agent_spawned taskTitle & phaseId', () => 
     let state = baseline();
     state = evolve(
       state,
-      makeEvent('task_registered', { taskId: 't1', title: 'Build feature', phaseId: '', steps: [], dependencies: [] }),
+      makeEvent('task_registered', { taskId: 't1', title: 'Build feature', phaseId: '', dependencies: [] }),
     );
     state = evolve(
       state,
       makeEvent(
-        'agent_spawned',
+        'session_started',
         { agentId: 'a1', profile: 'coder' },
         { timestamp: '2026-06-25T00:00:00Z', agentId: 'a1', taskId: 't1' },
       ),
     );
-    expect(state.agents['a1::t1'].taskTitle).toBe('Build feature');
+    expect(state.sessions['a1::t1'].taskTitle).toBe('Build feature');
   });
 
   it('agent_spawned leaves taskTitle empty when task does not exist yet', () => {
@@ -658,12 +592,12 @@ describe('evolve characterization – agent_spawned taskTitle & phaseId', () => 
     const state = evolve(
       baseline(),
       makeEvent(
-        'agent_spawned',
+        'session_started',
         { agentId: 'a1', profile: 'coder' },
         { timestamp: '2026-06-25T00:00:00Z', agentId: 'a1', taskId: 'missing' },
       ),
     );
-    expect(state.agents['a1::missing'].taskTitle).toBe('');
+    expect(state.sessions['a1::missing'].taskTitle).toBe('');
   });
 
   it('agent_spawned reads phaseId from data.phaseId when metadata.phaseId absent', () => {
@@ -671,12 +605,12 @@ describe('evolve characterization – agent_spawned taskTitle & phaseId', () => 
     const state = evolve(
       baseline(),
       makeEvent(
-        'agent_spawned',
+        'session_started',
         { agentId: 'a1', profile: 'coder', phaseId: 'from-data' },
         { timestamp: '2026-06-25T00:00:00Z', agentId: 'a1' },
       ),
     );
-    expect(state.agents['a1'].phaseId).toBe('from-data');
+    expect(state.sessions['a1'].phaseId).toBe('from-data');
   });
 
   it('agent_spawned re-spawn preserves taskTitle from task when taskTitle not previously set', () => {
@@ -684,13 +618,13 @@ describe('evolve characterization – agent_spawned taskTitle & phaseId', () => 
     let state = baseline();
     state = evolve(
       state,
-      makeEvent('task_registered', { taskId: 't1', title: 'My Task', phaseId: '', steps: [], dependencies: [] }),
+      makeEvent('task_registered', { taskId: 't1', title: 'My Task', phaseId: '', dependencies: [] }),
     );
     // First spawn BEFORE task existed scenario is covered above; here spawn after task exists
     state = evolve(
       state,
       makeEvent(
-        'agent_spawned',
+        'session_started',
         { agentId: 'a1', profile: 'coder' },
         { timestamp: '2026-06-25T00:00:00Z', agentId: 'a1', taskId: 't1' },
       ),
@@ -699,13 +633,13 @@ describe('evolve characterization – agent_spawned taskTitle & phaseId', () => 
     state = evolve(
       state,
       makeEvent(
-        'agent_spawned',
+        'session_started',
         { agentId: 'a1', profile: 'coder-v2' },
         { timestamp: '2026-06-25T01:00:00Z', agentId: 'a1', taskId: 't1' },
       ),
     );
-    expect(state.agents['a1::t1'].taskTitle).toBe('My Task');
-    expect(state.agents['a1::t1'].profile).toBe('coder-v2');
+    expect(state.sessions['a1::t1'].taskTitle).toBe('My Task');
+    expect(state.sessions['a1::t1'].profile).toBe('coder-v2');
   });
 });
 
@@ -713,7 +647,7 @@ describe('evolve characterization – immutability on no-op paths', () => {
   it('every no-op handler still returns a NEW top-level object with bumped seq', () => {
     resetSeq();
     const noOpTriggers: Array<[EventType, EventRecord['metadata']]> = [
-      ['agent_completed', { timestamp: '2026-06-25T00:00:00Z', agentId: 'ghost' }],
+      ['session_completed', { timestamp: '2026-06-25T00:00:00Z', agentId: 'ghost' }],
       ['decision', { timestamp: '2026-06-25T00:00:00Z', agentId: 'ghost' }],
       ['error', { timestamp: '2026-06-25T00:00:00Z', agentId: 'ghost' }],
       ['turn_ended', { timestamp: '2026-06-25T00:00:00Z', agentId: 'ghost' }],
@@ -737,10 +671,10 @@ describe('evolve characterization – immutability on no-op paths', () => {
     resetSeq();
     const state = baseline();
     const snapshotSeq = state.seq;
-    const snapshotAgents = state.agents;
+    const snapshotAgents = state.sessions;
     evolve(state, makeEvent('decision', { decision: 'x' }, { timestamp: '2026-06-25T00:00:00Z', agentId: 'ghost' }));
     expect(state.seq).toBe(snapshotSeq);
-    expect(state.agents).toBe(snapshotAgents);
+    expect(state.sessions).toBe(snapshotAgents);
   });
 });
 
@@ -756,7 +690,7 @@ describe('evolve characterization – retry delay formatting boundaries', () => 
     state = evolve(
       state,
       makeEvent(
-        'agent_spawned',
+        'session_started',
         { agentId: 'a1', profile: 'coder' },
         { timestamp: '2026-06-25T00:00:00Z', agentId: 'a1' },
       ),
@@ -769,7 +703,7 @@ describe('evolve characterization – retry delay formatting boundaries', () => 
         { timestamp: '2026-06-25T00:00:00Z', agentId: 'a1' },
       ),
     );
-    expect(state.agents['a1'].log[0].content).toBe('Retrying (attempt 1/3)');
+    expect(state.sessions['a1'].log[0].content).toBe('Retrying (attempt 1/3)');
   });
 
   it('auto_retry_started with sub-second delayMs renders as ms', () => {
@@ -778,7 +712,7 @@ describe('evolve characterization – retry delay formatting boundaries', () => 
     state = evolve(
       state,
       makeEvent(
-        'agent_spawned',
+        'session_started',
         { agentId: 'a1', profile: 'coder' },
         { timestamp: '2026-06-25T00:00:00Z', agentId: 'a1' },
       ),
@@ -791,7 +725,7 @@ describe('evolve characterization – retry delay formatting boundaries', () => 
         { timestamp: '2026-06-25T00:00:00Z', agentId: 'a1' },
       ),
     );
-    expect(state.agents['a1'].log[0].content).toBe('Retrying (attempt 1/3) in 750ms');
+    expect(state.sessions['a1'].log[0].content).toBe('Retrying (attempt 1/3) in 750ms');
   });
 
   it('auto_retry_started with exactly 1000ms renders as 1s', () => {
@@ -800,7 +734,7 @@ describe('evolve characterization – retry delay formatting boundaries', () => 
     state = evolve(
       state,
       makeEvent(
-        'agent_spawned',
+        'session_started',
         { agentId: 'a1', profile: 'coder' },
         { timestamp: '2026-06-25T00:00:00Z', agentId: 'a1' },
       ),
@@ -813,7 +747,7 @@ describe('evolve characterization – retry delay formatting boundaries', () => 
         { timestamp: '2026-06-25T00:00:00Z', agentId: 'a1' },
       ),
     );
-    expect(state.agents['a1'].log[0].content).toBe('Retrying (attempt 1/3) in 1s');
+    expect(state.sessions['a1'].log[0].content).toBe('Retrying (attempt 1/3) in 1s');
   });
 
   it('auto_retry_started with multi-second delayMs renders as seconds (2500ms → 2.5s)', () => {
@@ -822,7 +756,7 @@ describe('evolve characterization – retry delay formatting boundaries', () => 
     state = evolve(
       state,
       makeEvent(
-        'agent_spawned',
+        'session_started',
         { agentId: 'a1', profile: 'coder' },
         { timestamp: '2026-06-25T00:00:00Z', agentId: 'a1' },
       ),
@@ -835,7 +769,7 @@ describe('evolve characterization – retry delay formatting boundaries', () => 
         { timestamp: '2026-06-25T00:00:00Z', agentId: 'a1' },
       ),
     );
-    expect(state.agents['a1'].log[0].content).toBe('Retrying (attempt 1/3) in 2.5s');
+    expect(state.sessions['a1'].log[0].content).toBe('Retrying (attempt 1/3) in 2.5s');
   });
 
   it('auto_retry_started defaults attempt/maxAttempts to 1 when missing', () => {
@@ -844,14 +778,14 @@ describe('evolve characterization – retry delay formatting boundaries', () => 
     state = evolve(
       state,
       makeEvent(
-        'agent_spawned',
+        'session_started',
         { agentId: 'a1', profile: 'coder' },
         { timestamp: '2026-06-25T00:00:00Z', agentId: 'a1' },
       ),
     );
     state = evolve(state, makeEvent('auto_retry_started', {}, { timestamp: '2026-06-25T00:00:00Z', agentId: 'a1' }));
-    expect(state.agents['a1'].log[0].content).toBe('Retrying (attempt 1/1)');
-    expect(state.agents['a1'].log[0].metadata).toEqual({ attempt: 1, maxAttempts: 1, delayMs: 0, errorMessage: '' });
+    expect(state.sessions['a1'].log[0].content).toBe('Retrying (attempt 1/1)');
+    expect(state.sessions['a1'].log[0].metadata).toEqual({ attempt: 1, maxAttempts: 1, delayMs: 0, errorMessage: '' });
   });
 
   it('auto_retry_started sanitizes errorMessage via sanitizeDisplayText (strips ANSI + newlines)', () => {
@@ -860,7 +794,7 @@ describe('evolve characterization – retry delay formatting boundaries', () => 
     state = evolve(
       state,
       makeEvent(
-        'agent_spawned',
+        'session_started',
         { agentId: 'a1', profile: 'coder' },
         { timestamp: '2026-06-25T00:00:00Z', agentId: 'a1' },
       ),
@@ -875,7 +809,7 @@ describe('evolve characterization – retry delay formatting boundaries', () => 
         { timestamp: '2026-06-25T00:00:00Z', agentId: 'a1' },
       ),
     );
-    const entry = state.agents['a1'].log[0];
+    const entry = state.sessions['a1'].log[0];
     // The ANSI codes are stripped and the newline becomes a space
     expect(entry.content).not.toContain('\u001b');
     expect(entry.content).not.toContain('\n');
@@ -893,13 +827,13 @@ describe('evolve characterization – agent_spawned session coercion', () => {
     const state = evolve(
       baseline(),
       makeEvent(
-        'agent_spawned',
+        'session_started',
         { agentId: 'a1', profile: 'coder', sessionId: 123, sessionPath: null } as Record<string, unknown>,
         { timestamp: '2026-06-25T00:00:00Z', agentId: 'a1', taskId: 't1' },
       ),
     );
-    expect(state.agents['a1::t1'].sessionId).toBeUndefined();
-    expect(state.agents['a1::t1'].sessionPath).toBeUndefined();
+    expect(state.sessions['a1::t1'].sessionId).toBeUndefined();
+    expect(state.sessions['a1::t1'].sessionPath).toBeUndefined();
   });
 
   it('re-spawn ignores non-string sessionId but preserves existing string value', () => {
@@ -908,7 +842,7 @@ describe('evolve characterization – agent_spawned session coercion', () => {
     state = evolve(
       state,
       makeEvent(
-        'agent_spawned',
+        'session_started',
         { agentId: 'a1', profile: 'coder', sessionId: 'keep-me' },
         { timestamp: '2026-06-25T00:00:00Z', agentId: 'a1', taskId: 't1' },
       ),
@@ -916,13 +850,13 @@ describe('evolve characterization – agent_spawned session coercion', () => {
     // Re-spawn with invalid sessionId type → must preserve existing
     state = evolve(
       state,
-      makeEvent('agent_spawned', { agentId: 'a1', profile: 'coder', sessionId: 999 } as Record<string, unknown>, {
+      makeEvent('session_started', { agentId: 'a1', profile: 'coder', sessionId: 999 } as Record<string, unknown>, {
         timestamp: '2026-06-25T01:00:00Z',
         agentId: 'a1',
         taskId: 't1',
       }),
     );
-    expect(state.agents['a1::t1'].sessionId).toBe('keep-me');
+    expect(state.sessions['a1::t1'].sessionId).toBe('keep-me');
   });
 
   it('re-spawn updates sessionId when a valid string is provided', () => {
@@ -931,7 +865,7 @@ describe('evolve characterization – agent_spawned session coercion', () => {
     state = evolve(
       state,
       makeEvent(
-        'agent_spawned',
+        'session_started',
         { agentId: 'a1', profile: 'coder', sessionId: 'old' },
         { timestamp: '2026-06-25T00:00:00Z', agentId: 'a1', taskId: 't1' },
       ),
@@ -939,21 +873,21 @@ describe('evolve characterization – agent_spawned session coercion', () => {
     state = evolve(
       state,
       makeEvent(
-        'agent_spawned',
+        'session_started',
         { agentId: 'a1', profile: 'coder', sessionId: 'new' },
         { timestamp: '2026-06-25T01:00:00Z', agentId: 'a1', taskId: 't1' },
       ),
     );
-    expect(state.agents['a1::t1'].sessionId).toBe('new');
+    expect(state.sessions['a1::t1'].sessionId).toBe('new');
   });
 
-  it('agents with same agentId but different taskIds are independent entities', () => {
+  it('sessions with same agentId but different taskIds are independent entities', () => {
     resetSeq();
     let state = baseline();
     state = evolve(
       state,
       makeEvent(
-        'agent_spawned',
+        'session_started',
         { agentId: 'a1', profile: 'coder' },
         { timestamp: '2026-06-25T00:00:00Z', agentId: 'a1', taskId: 't1' },
       ),
@@ -961,16 +895,16 @@ describe('evolve characterization – agent_spawned session coercion', () => {
     state = evolve(
       state,
       makeEvent(
-        'agent_spawned',
+        'session_started',
         { agentId: 'a1', profile: 'coder' },
         { timestamp: '2026-06-25T00:00:00Z', agentId: 'a1', taskId: 't2' },
       ),
     );
-    expect(state.agents['a1::t1']).toBeDefined();
-    expect(state.agents['a1::t2']).toBeDefined();
-    expect(state.agents['a1::t1']).not.toBe(state.agents['a1::t2']);
-    // Each is a separate agent → agentCount = 2
-    expect(state.stats.agentCount).toBe(2);
+    expect(state.sessions['a1::t1']).toBeDefined();
+    expect(state.sessions['a1::t2']).toBeDefined();
+    expect(state.sessions['a1::t1']).not.toBe(state.sessions['a1::t2']);
+    // Each is a separate agent → sessionCount = 2
+    expect(state.stats.sessionCount).toBe(2);
   });
 
   it('re-spawn clears completedAt (re-activates a previously completed agent)', () => {
@@ -979,31 +913,31 @@ describe('evolve characterization – agent_spawned session coercion', () => {
     state = evolve(
       state,
       makeEvent(
-        'agent_spawned',
+        'session_started',
         { agentId: 'a1', profile: 'coder' },
         { timestamp: '2026-06-25T00:00:00Z', agentId: 'a1', taskId: 't1' },
       ),
     );
     state = evolve(
       state,
-      makeEvent('agent_completed', {}, { timestamp: '2026-06-25T01:00:00Z', agentId: 'a1', taskId: 't1' }),
+      makeEvent('session_completed', {}, { timestamp: '2026-06-25T01:00:00Z', agentId: 'a1', taskId: 't1' }),
     );
-    expect(state.agents['a1::t1'].active).toBe(false);
-    expect(state.agents['a1::t1'].completedAt).toBe('2026-06-25T01:00:00Z');
+    expect(state.sessions['a1::t1'].active).toBe(false);
+    expect(state.sessions['a1::t1'].completedAt).toBe('2026-06-25T01:00:00Z');
 
     // Re-spawn → must re-activate and clear completedAt
     state = evolve(
       state,
       makeEvent(
-        'agent_spawned',
+        'session_started',
         { agentId: 'a1', profile: 'coder' },
         { timestamp: '2026-06-25T02:00:00Z', agentId: 'a1', taskId: 't1' },
       ),
     );
-    expect(state.agents['a1::t1'].active).toBe(true);
-    expect(state.agents['a1::t1'].completedAt).toBeUndefined();
-    // agentCount must NOT increment
-    expect(state.stats.agentCount).toBe(1);
+    expect(state.sessions['a1::t1'].active).toBe(true);
+    expect(state.sessions['a1::t1'].completedAt).toBeUndefined();
+    // sessionCount must NOT increment
+    expect(state.stats.sessionCount).toBe(1);
   });
 });
 
@@ -1014,15 +948,12 @@ describe('evolve characterization – phase taskIds deduplication', () => {
     resetSeq();
     let state = baseline();
     state = evolve(state, makeEvent('phase_registered', { id: 'p1', label: 'P1', icon: '' }));
-    state = evolve(
-      state,
-      makeEvent('task_registered', { taskId: 't1', title: 'T', phaseId: 'p1', steps: [], dependencies: [] }),
-    );
+    state = evolve(state, makeEvent('task_registered', { taskId: 't1', title: 'T', phaseId: 'p1', dependencies: [] }));
     expect(state.phases[0].taskIds).toEqual(['t1']);
     // Re-register the SAME task → no-op for task, and taskIds must NOT get a duplicate
     state = evolve(
       state,
-      makeEvent('task_registered', { taskId: 't1', title: 'Dup', phaseId: 'p1', steps: [], dependencies: [] }),
+      makeEvent('task_registered', { taskId: 't1', title: 'Dup', phaseId: 'p1', dependencies: [] }),
     );
     expect(state.phases[0].taskIds).toEqual(['t1']);
     expect(state.tasks['t1'].title).toBe('T');
@@ -1032,7 +963,7 @@ describe('evolve characterization – phase taskIds deduplication', () => {
     resetSeq();
     const state = evolve(
       baseline(),
-      makeEvent('task_registered', { taskId: 't1', title: 'T', phaseId: 'ghost-phase', steps: [], dependencies: [] }),
+      makeEvent('task_registered', { taskId: 't1', title: 'T', phaseId: 'ghost-phase', dependencies: [] }),
     );
     // Task is still created
     expect(state.tasks['t1']).toBeDefined();
@@ -1044,18 +975,9 @@ describe('evolve characterization – phase taskIds deduplication', () => {
     resetSeq();
     let state = baseline();
     state = evolve(state, makeEvent('phase_registered', { id: 'p1', label: 'P1', icon: '' }));
-    state = evolve(
-      state,
-      makeEvent('task_registered', { taskId: 't1', title: 'A', phaseId: 'p1', steps: [], dependencies: [] }),
-    );
-    state = evolve(
-      state,
-      makeEvent('task_registered', { taskId: 't2', title: 'B', phaseId: 'p1', steps: [], dependencies: [] }),
-    );
-    state = evolve(
-      state,
-      makeEvent('task_registered', { taskId: 't3', title: 'C', phaseId: 'p1', steps: [], dependencies: [] }),
-    );
+    state = evolve(state, makeEvent('task_registered', { taskId: 't1', title: 'A', phaseId: 'p1', dependencies: [] }));
+    state = evolve(state, makeEvent('task_registered', { taskId: 't2', title: 'B', phaseId: 'p1', dependencies: [] }));
+    state = evolve(state, makeEvent('task_registered', { taskId: 't3', title: 'C', phaseId: 'p1', dependencies: [] }));
     expect(state.phases[0].taskIds).toEqual(['t1', 't2', 't3']);
   });
 });
@@ -1070,36 +992,31 @@ describe('evolve characterization – agent_rendered & resolveAgent fallback', (
     state = evolve(
       state,
       makeEvent(
-        'agent_spawned',
+        'session_started',
         { agentId: 'a1', profile: 'scout' },
-        { timestamp: '2026-06-25T00:00:00Z', agentId: 'a1', taskId: 't1', stepIndex: 0 },
+        { timestamp: '2026-06-25T00:00:00Z', agentId: 'a1', taskId: 't1' },
       ),
     );
     state = evolve(
       state,
-      makeEvent(
-        'agent_completed',
-        {},
-        { timestamp: '2026-06-25T01:00:00Z', agentId: 'a1', taskId: 't1', stepIndex: 0 },
-      ),
+      makeEvent('session_completed', {}, { timestamp: '2026-06-25T01:00:00Z', agentId: 'a1', taskId: 't1' }),
     );
     // Spawn step-1 agent (active)
     state = evolve(
       state,
       makeEvent(
-        'agent_spawned',
+        'session_started',
         { agentId: 'a1', profile: 'coder' },
-        { timestamp: '2026-06-25T02:00:00Z', agentId: 'a1', taskId: 't1', stepIndex: 1 },
+        { timestamp: '2026-06-25T02:00:00Z', agentId: 'a1', taskId: 't1' },
       ),
     );
-    // Render with agentId only → resolveAgent must prefer the active step-1 agent
+    // Render with agentId only → resolveSession must prefer the active session
     state = evolve(
       state,
       makeEvent('agent_rendered', { rendered: 'active-output' }, { timestamp: '2026-06-25T03:00:00Z', agentId: 'a1' }),
     );
-    expect(state.agents['a1::t1::1'].log).toHaveLength(1);
-    expect(state.agents['a1::t1::1'].log[0].content).toBe('active-output');
-    expect(state.agents['a1::t1::0'].log).toHaveLength(0);
+    expect(state.sessions['a1::t1'].log).toHaveLength(1);
+    expect(state.sessions['a1::t1'].log[0].content).toBe('active-output');
   });
 });
 
@@ -1120,13 +1037,13 @@ describe('evolve characterization – all event types routed', () => {
     'phase_registered',
     'phase_started',
     'phase_completed',
-    'agent_spawned',
-    'agent_completed',
+    'session_started',
+    'session_completed',
     'auto_retry_started',
     'auto_retry_completed',
     'task_registered',
     'task_started',
-    'step_started',
+    // REMOVED: step_started
     'task_completed',
     'task_rejected',
     'decision',

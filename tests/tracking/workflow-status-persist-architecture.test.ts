@@ -284,7 +284,7 @@ describe('WorkflowStatusTracker – persist architecture (bounded promise chain)
       // Wait for debounced saves to settle
       await new Promise((r) => setTimeout(r, 100));
 
-      // All agents persisted
+      // All sessions persisted
       const raw = await fs.readFile(join(dir, '.engin-state.json'), 'utf-8');
       const data = JSON.parse(raw);
       expect(data.spawnedAgents).toHaveLength(50);

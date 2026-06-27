@@ -2,27 +2,26 @@
 //
 // Thin dispatcher that routes each `EventRecord` to its per-event-type handler.
 // Handler implementations live in domain-grouped modules (workflow-handlers.ts,
-// phase-handlers.ts, agent-handlers.ts, task-handlers.ts, log-handlers.ts,
+// phase-handlers.ts, session-handlers.ts, task-handlers.ts, log-handlers.ts,
 // tool-handlers.ts, retry-handlers.ts). Shared helpers (clone, capLog,
-// agentKey, resolveAgent) live in evolve-utils.ts.
+// sessionKey, resolveSession) live in evolve-utils.ts.
 
-import { handleAgentCompleted, handleAgentSpawned, handleTurnEnded, handleTurnStarted } from './agent-handlers.js';
 import type { EventRecord, WorkflowProjection } from './event-types.js';
-import { clone, type EventHandler, MAX_AGENT_LOG } from './evolve-utils.js';
+import { clone, type EventHandler, MAX_SESSION_LOG } from './evolve-utils.js';
 import { handleAgentRendered, handleDecision, handleError, handleLog, handleSidebarUpdated } from './log-handlers.js';
 import { handlePhaseCompleted, handlePhaseRegistered, handlePhaseStarted } from './phase-handlers.js';
 import { handleAutoRetryCompleted, handleAutoRetryStarted } from './retry-handlers.js';
 import {
-  handleStepStarted,
-  handleTaskCompleted,
-  handleTaskRegistered,
-  handleTaskRejected,
-  handleTaskStarted,
-} from './task-handlers.js';
+  handleSessionCompleted,
+  handleSessionStarted,
+  handleTurnEnded,
+  handleTurnStarted,
+} from './session-handlers.js';
+import { handleTaskCompleted, handleTaskRegistered, handleTaskRejected, handleTaskStarted } from './task-handlers.js';
 import { handleToolCallEnded, handleToolCallStarted } from './tool-handlers.js';
 import { handleWorkflowCompleted, handleWorkflowFailed, handleWorkflowStarted } from './workflow-handlers.js';
 
-export { MAX_AGENT_LOG };
+export { MAX_SESSION_LOG };
 
 const handlers: Record<string, EventHandler> = {
   // Workflow lifecycle
@@ -35,16 +34,15 @@ const handlers: Record<string, EventHandler> = {
   phase_started: handlePhaseStarted,
   phase_completed: handlePhaseCompleted,
 
-  // Agent lifecycle
-  agent_spawned: handleAgentSpawned,
-  agent_completed: handleAgentCompleted,
+  // Session lifecycle
+  session_started: handleSessionStarted,
+  session_completed: handleSessionCompleted,
   turn_started: handleTurnStarted,
   turn_ended: handleTurnEnded,
 
   // Task lifecycle
   task_registered: handleTaskRegistered,
   task_started: handleTaskStarted,
-  step_started: handleStepStarted,
   task_completed: handleTaskCompleted,
   task_rejected: handleTaskRejected,
 

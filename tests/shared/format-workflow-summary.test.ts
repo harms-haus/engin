@@ -1,22 +1,22 @@
 // ─── formatWorkflowSummary tests — @engin/shared/format-workflow-summary ────
 //
-// `formatWorkflowSummary(agents, totalDurationMs)` computes a two-line
+// `formatWorkflowSummary(sessions, totalDurationMs)` computes a two-line
 // workflow-completion summary for the TUI event-log pane:
 //
-//   Line 1 — aggregate token usage across ALL agents:
+//   Line 1 — aggregate token usage across ALL sessions:
 //     `📊 Tokens: ↑${formatTokenCount(totalInput)} in · ↓${formatTokenCount(totalOutput)} out`
 //
 //   Line 2 — wall-clock total vs. summed agent active time:
-//     `⏱ Time: ${(totalDurationMs/1000).toFixed(1)}s total · ${(agentTimeMs/1000).toFixed(1)}s agent (${agentTimePct}%)`
+//     `⏱ Time: ${(totalDurationMs/1000).toFixed(1)}s total · ${(agentTimeMs/1000).toFixed(1)}s session (${agentTimePct}%)`
 //
 // where:
 //   • totalInput / totalOutput  = Σ every agent.inputTokens / .outputTokens
 //   • agentTimeMs               = Σ (Date.parse(completedAt) − Date.parse(startedAt))
-//                                 over agents that have BOTH timestamps
+//                                 over sessions that have BOTH timestamps
 //   • agentTimePct              = totalDurationMs > 0
 //                                   ? Math.round((agentTimeMs / totalDurationMs) * 100)
 //                                   : 0
-//                                 (CAN exceed 100 — parallel agents)
+//                                 (CAN exceed 100 — parallel sessions)
 //
 // Guard: returns [] when `totalDurationMs` is not a positive number.
 //
@@ -28,7 +28,7 @@
 import { describe, expect, it } from 'bun:test';
 
 // ── Canonical home (subpath import) ─────────────────────────────────────────
-import type { AgentEntity } from '@engin/shared/event-types';
+import type { SessionEntity } from '@engin/shared/event-types';
 import { formatWorkflowSummary } from '@engin/shared/format-workflow-summary';
 
 // ── Cross-check dependencies ────────────────────────────────────────────────
@@ -45,8 +45,8 @@ function ts(seconds: number): string {
   return new Date(Date.parse(T0) + seconds * 1000).toISOString();
 }
 
-/** Build a minimal AgentEntity, overriding only the fields under test. */
-function makeAgent(overrides: Partial<AgentEntity> = {}): AgentEntity {
+/** Build a minimal SessionEntity, overriding only the fields under test. */
+function makeAgent(overrides: Partial<SessionEntity> = {}): SessionEntity {
   return {
     uid: 'a',
     agentId: 'a',
@@ -58,6 +58,8 @@ function makeAgent(overrides: Partial<AgentEntity> = {}): AgentEntity {
     inputTokens: 0,
     outputTokens: 0,
     taskTitle: '',
+    runnerRole: 'executor',
+    attempt: 1,
     ...overrides,
   };
 }
@@ -68,7 +70,7 @@ function makeAgent(overrides: Partial<AgentEntity> = {}): AgentEntity {
 // ────────────────────────────────────────────────────────────────────────────
 
 describe('formatWorkflowSummary — task-spec two-agent example (parallel → 125%)', () => {
-  const agents: Record<string, AgentEntity> = {
+  const sessions: Record<string, SessionEntity> = {
     'a1::t1': makeAgent({
       uid: 'a1::t1',
       agentId: 'a1',
@@ -87,20 +89,20 @@ describe('formatWorkflowSummary — task-spec two-agent example (parallel → 12
     }),
   };
 
-  const lines = formatWorkflowSummary(agents, 60000);
+  const lines = formatWorkflowSummary(sessions, 60000);
 
   it('returns exactly two lines', () => {
     expect(lines).toHaveLength(2);
   });
 
-  it('line 1 sums input/output tokens across both agents', () => {
+  it('line 1 sums input/output tokens across both sessions', () => {
     // 1500 + 2500 = 4000 → '4k'; 500 + 1000 = 1500 → '1.5k'
     expect(lines[0]).toBe('📊 Tokens: ↑4k in · ↓1.5k out');
   });
 
   it('line 2 reports total vs. summed agent time with pct exceeding 100', () => {
     // agentTimeMs = 30000 + 45000 = 75000 → 75.0s; pct = round(75000/60000*100) = 125
-    expect(lines[1]).toBe('⏱ Time: 60.0s total · 75.0s agent (125%)');
+    expect(lines[1]).toBe('⏱ Time: 60.0s total · 75.0s session (125%)');
   });
 });
 
@@ -109,115 +111,115 @@ describe('formatWorkflowSummary — task-spec two-agent example (parallel → 12
 // ────────────────────────────────────────────────────────────────────────────
 
 describe('formatWorkflowSummary — returns [] when totalDurationMs is not a positive number', () => {
-  const agents: Record<string, AgentEntity> = {
+  const sessions: Record<string, SessionEntity> = {
     a1: makeAgent({ inputTokens: 100, outputTokens: 50, startedAt: T0, completedAt: ts(10) }),
   };
 
   it('returns [] for zero', () => {
-    expect(formatWorkflowSummary(agents, 0)).toEqual([]);
+    expect(formatWorkflowSummary(sessions, 0)).toEqual([]);
   });
 
   it('returns [] for a negative duration', () => {
-    expect(formatWorkflowSummary(agents, -1000)).toEqual([]);
+    expect(formatWorkflowSummary(sessions, -1000)).toEqual([]);
   });
 
   it('returns [] for NaN', () => {
-    expect(formatWorkflowSummary(agents, Number.NaN)).toEqual([]);
+    expect(formatWorkflowSummary(sessions, Number.NaN)).toEqual([]);
   });
 
-  it('returns [] even when agents carry tokens/time (guard short-circuits before computing)', () => {
-    expect(formatWorkflowSummary(agents, 0)).toEqual([]);
-    expect(formatWorkflowSummary(agents, -1)).toEqual([]);
+  it('returns [] even when sessions carry tokens/time (guard short-circuits before computing)', () => {
+    expect(formatWorkflowSummary(sessions, 0)).toEqual([]);
+    expect(formatWorkflowSummary(sessions, -1)).toEqual([]);
   });
 });
 
 // ────────────────────────────────────────────────────────────────────────────
-// Token summation across all agents (uses formatTokenCount)
+// Token summation across all sessions (uses formatTokenCount)
 // ────────────────────────────────────────────────────────────────────────────
 
 describe('formatWorkflowSummary — token aggregation', () => {
   it('sums inputTokens and outputTokens across every agent', () => {
-    const agents: Record<string, AgentEntity> = {
+    const sessions: Record<string, SessionEntity> = {
       a1: makeAgent({ inputTokens: 100, outputTokens: 40, startedAt: T0, completedAt: ts(5) }),
       a2: makeAgent({ inputTokens: 200, outputTokens: 60, startedAt: T0, completedAt: ts(5) }),
       a3: makeAgent({ inputTokens: 300, outputTokens: 100, startedAt: T0, completedAt: ts(5) }),
     };
     // 600 in / 200 out — both below 1000, render as plain integers.
-    const [tokenLine] = formatWorkflowSummary(agents, 10000);
+    const [tokenLine] = formatWorkflowSummary(sessions, 10000);
     expect(tokenLine).toBe('📊 Tokens: ↑600 in · ↓200 out');
   });
 
   it('routes the totals through formatTokenCount (k / m thresholds)', () => {
-    const agents: Record<string, AgentEntity> = {
+    const sessions: Record<string, SessionEntity> = {
       a1: makeAgent({ inputTokens: 1_000_000, outputTokens: 250_000, startedAt: T0, completedAt: ts(5) }),
       a2: makeAgent({ inputTokens: 500_000, outputTokens: 250_000, startedAt: T0, completedAt: ts(5) }),
     };
     // 1_500_000 in → '1.5m'; 500_000 out → '500k'
-    const [tokenLine] = formatWorkflowSummary(agents, 10000);
+    const [tokenLine] = formatWorkflowSummary(sessions, 10000);
     expect(tokenLine).toBe('📊 Tokens: ↑1.5m in · ↓500k out');
     // Cross-check the embedded values against formatTokenCount directly.
     expect(tokenLine).toBe(`📊 Tokens: ↑${formatTokenCount(1_500_000)} in · ↓${formatTokenCount(500_000)} out`);
   });
 
-  it('counts tokens from agents that lack startedAt/completedAt (token sum is independent of time)', () => {
-    const agents: Record<string, AgentEntity> = {
+  it('counts tokens from sessions that lack startedAt/completedAt (token sum is independent of time)', () => {
+    const sessions: Record<string, SessionEntity> = {
       // No timestamps at all — still contributes its tokens.
       a1: makeAgent({ inputTokens: 1200, outputTokens: 300 }),
     };
-    const [tokenLine] = formatWorkflowSummary(agents, 10000);
+    const [tokenLine] = formatWorkflowSummary(sessions, 10000);
     expect(tokenLine).toBe('📊 Tokens: ↑1.2k in · ↓300 out');
   });
 
   it('renders zero tokens as "0" when no agent has any', () => {
-    const agents: Record<string, AgentEntity> = {
+    const sessions: Record<string, SessionEntity> = {
       a1: makeAgent({ startedAt: T0, completedAt: ts(5) }),
     };
-    const [tokenLine] = formatWorkflowSummary(agents, 10000);
+    const [tokenLine] = formatWorkflowSummary(sessions, 10000);
     expect(tokenLine).toBe('📊 Tokens: ↑0 in · ↓0 out');
   });
 });
 
 // ────────────────────────────────────────────────────────────────────────────
-// Agent active-time summation (only agents with BOTH startedAt & completedAt)
+// Agent active-time summation (only sessions with BOTH startedAt & completedAt)
 // ────────────────────────────────────────────────────────────────────────────
 
 describe('formatWorkflowSummary — agent active-time aggregation', () => {
-  it('sums Date.parse(completedAt) − Date.parse(startedAt) across eligible agents', () => {
-    const agents: Record<string, AgentEntity> = {
+  it('sums Date.parse(completedAt) − Date.parse(startedAt) across eligible sessions', () => {
+    const sessions: Record<string, SessionEntity> = {
       a1: makeAgent({ startedAt: T0, completedAt: ts(10) }), // 10s
       a2: makeAgent({ startedAt: T0, completedAt: ts(25) }), // 25s
       a3: makeAgent({ startedAt: T0, completedAt: ts(15) }), // 15s
     };
     // agentTimeMs = 50000; totalDurationMs = 50000 → 50.0s / 50.0s / 100%
-    const [, timeLine] = formatWorkflowSummary(agents, 50000);
-    expect(timeLine).toBe('⏱ Time: 50.0s total · 50.0s agent (100%)');
+    const [, timeLine] = formatWorkflowSummary(sessions, 50000);
+    expect(timeLine).toBe('⏱ Time: 50.0s total · 50.0s session (100%)');
   });
 
-  it('skips agents missing completedAt (startedAt only)', () => {
-    const agents: Record<string, AgentEntity> = {
+  it('skips sessions missing completedAt (startedAt only)', () => {
+    const sessions: Record<string, SessionEntity> = {
       a1: makeAgent({ startedAt: T0 }), // no completedAt → skip
       a2: makeAgent({ startedAt: T0, completedAt: ts(20) }), // 20s
     };
-    const [, timeLine] = formatWorkflowSummary(agents, 40000);
-    expect(timeLine).toBe('⏱ Time: 40.0s total · 20.0s agent (50%)');
+    const [, timeLine] = formatWorkflowSummary(sessions, 40000);
+    expect(timeLine).toBe('⏱ Time: 40.0s total · 20.0s session (50%)');
   });
 
-  it('skips agents missing startedAt (completedAt only)', () => {
-    const agents: Record<string, AgentEntity> = {
+  it('skips sessions missing startedAt (completedAt only)', () => {
+    const sessions: Record<string, SessionEntity> = {
       a1: makeAgent({ completedAt: ts(20) }), // no startedAt → skip
       a2: makeAgent({ startedAt: T0, completedAt: ts(20) }), // 20s
     };
-    const [, timeLine] = formatWorkflowSummary(agents, 40000);
-    expect(timeLine).toBe('⏱ Time: 40.0s total · 20.0s agent (50%)');
+    const [, timeLine] = formatWorkflowSummary(sessions, 40000);
+    expect(timeLine).toBe('⏱ Time: 40.0s total · 20.0s session (50%)');
   });
 
-  it('skips agents missing both timestamps', () => {
-    const agents: Record<string, AgentEntity> = {
+  it('skips sessions missing both timestamps', () => {
+    const sessions: Record<string, SessionEntity> = {
       a1: makeAgent({}), // neither → skip
       a2: makeAgent({ startedAt: T0, completedAt: ts(20) }), // 20s
     };
-    const [, timeLine] = formatWorkflowSummary(agents, 40000);
-    expect(timeLine).toBe('⏱ Time: 40.0s total · 20.0s agent (50%)');
+    const [, timeLine] = formatWorkflowSummary(sessions, 40000);
+    expect(timeLine).toBe('⏱ Time: 40.0s total · 20.0s session (50%)');
   });
 });
 
@@ -226,52 +228,52 @@ describe('formatWorkflowSummary — agent active-time aggregation', () => {
 // ────────────────────────────────────────────────────────────────────────────
 
 describe('formatWorkflowSummary — agentTimePct', () => {
-  it('can exceed 100 when agents run in parallel', () => {
-    const agents: Record<string, AgentEntity> = {
+  it('can exceed 100 when sessions run in parallel', () => {
+    const sessions: Record<string, SessionEntity> = {
       a1: makeAgent({ startedAt: T0, completedAt: ts(30) }),
       a2: makeAgent({ startedAt: T0, completedAt: ts(45) }),
     };
-    const [, timeLine] = formatWorkflowSummary(agents, 60000);
-    expect(timeLine).toBe('⏱ Time: 60.0s total · 75.0s agent (125%)');
+    const [, timeLine] = formatWorkflowSummary(sessions, 60000);
+    expect(timeLine).toBe('⏱ Time: 60.0s total · 75.0s session (125%)');
   });
 
   it('rounds to the nearest whole percent (Math.round)', () => {
     // agentTimeMs = 10000, totalDurationMs = 30000 → 33.33…% → 33
-    const agents: Record<string, AgentEntity> = {
+    const sessions: Record<string, SessionEntity> = {
       a1: makeAgent({ startedAt: T0, completedAt: ts(10) }),
     };
-    const [, timeLine] = formatWorkflowSummary(agents, 30000);
-    expect(timeLine).toBe('⏱ Time: 30.0s total · 10.0s agent (33%)');
+    const [, timeLine] = formatWorkflowSummary(sessions, 30000);
+    expect(timeLine).toBe('⏱ Time: 30.0s total · 10.0s session (33%)');
   });
 
   it('is 0 when no agent has both timestamps (but totalDurationMs > 0)', () => {
-    const agents: Record<string, AgentEntity> = {
+    const sessions: Record<string, SessionEntity> = {
       a1: makeAgent({ startedAt: T0 }), // no completedAt
       a2: makeAgent({ completedAt: ts(10) }), // no startedAt
     };
-    const [, timeLine] = formatWorkflowSummary(agents, 10000);
-    expect(timeLine).toBe('⏱ Time: 10.0s total · 0.0s agent (0%)');
+    const [, timeLine] = formatWorkflowSummary(sessions, 10000);
+    expect(timeLine).toBe('⏱ Time: 10.0s total · 0.0s session (0%)');
   });
 });
 
 // ────────────────────────────────────────────────────────────────────────────
-// Edge cases: empty agents and single agent
+// Edge cases: empty sessions and single agent
 // ────────────────────────────────────────────────────────────────────────────
 
 describe('formatWorkflowSummary — edge cases', () => {
-  it('handles an empty agents record (0 tokens, 0 agent time)', () => {
+  it('handles an empty sessions record (0 tokens, 0 agent time)', () => {
     const lines = formatWorkflowSummary({}, 10000);
     expect(lines).toHaveLength(2);
     expect(lines[0]).toBe('📊 Tokens: ↑0 in · ↓0 out');
-    expect(lines[1]).toBe('⏱ Time: 10.0s total · 0.0s agent (0%)');
+    expect(lines[1]).toBe('⏱ Time: 10.0s total · 0.0s session (0%)');
   });
 
   it('handles a single fully-populated agent (100%)', () => {
-    const agents: Record<string, AgentEntity> = {
+    const sessions: Record<string, SessionEntity> = {
       a1: makeAgent({ inputTokens: 500, outputTokens: 250, startedAt: T0, completedAt: ts(10) }),
     };
-    const lines = formatWorkflowSummary(agents, 10000);
-    expect(lines).toEqual(['📊 Tokens: ↑500 in · ↓250 out', '⏱ Time: 10.0s total · 10.0s agent (100%)']);
+    const lines = formatWorkflowSummary(sessions, 10000);
+    expect(lines).toEqual(['📊 Tokens: ↑500 in · ↓250 out', '⏱ Time: 10.0s total · 10.0s session (100%)']);
   });
 });
 
@@ -281,31 +283,31 @@ describe('formatWorkflowSummary — edge cases', () => {
 
 describe('formatWorkflowSummary — pure function sanity', () => {
   it('always returns a string array', () => {
-    const agents: Record<string, AgentEntity> = {
+    const sessions: Record<string, SessionEntity> = {
       a1: makeAgent({ startedAt: T0, completedAt: ts(5) }),
     };
-    const lines = formatWorkflowSummary(agents, 10000);
+    const lines = formatWorkflowSummary(sessions, 10000);
     expect(Array.isArray(lines)).toBe(true);
     expect(lines.every((l: string) => typeof l === 'string')).toBe(true);
   });
 
-  it('does not mutate the input agents record or its entities', () => {
-    const agents: Record<string, AgentEntity> = {
+  it('does not mutate the input sessions record or its entities', () => {
+    const sessions: Record<string, SessionEntity> = {
       a1: makeAgent({ inputTokens: 1234, outputTokens: 567, startedAt: T0, completedAt: ts(7) }),
     };
-    const snapshot = JSON.parse(JSON.stringify(agents));
+    const snapshot = JSON.parse(JSON.stringify(sessions));
 
-    formatWorkflowSummary(agents, 10000);
-    formatWorkflowSummary(agents, 10000);
+    formatWorkflowSummary(sessions, 10000);
+    formatWorkflowSummary(sessions, 10000);
 
-    expect(JSON.parse(JSON.stringify(agents))).toEqual(snapshot);
+    expect(JSON.parse(JSON.stringify(sessions))).toEqual(snapshot);
   });
 
   it('is deterministic: identical inputs yield identical outputs', () => {
-    const agents: Record<string, AgentEntity> = {
+    const sessions: Record<string, SessionEntity> = {
       a1: makeAgent({ inputTokens: 1234, outputTokens: 567, startedAt: T0, completedAt: ts(7) }),
     };
-    expect(formatWorkflowSummary(agents, 10000)).toEqual(formatWorkflowSummary(agents, 10000));
+    expect(formatWorkflowSummary(sessions, 10000)).toEqual(formatWorkflowSummary(sessions, 10000));
   });
 });
 
@@ -324,10 +326,10 @@ describe('@engin/shared barrel — re-exports formatWorkflowSummary', () => {
   });
 
   it('the barrel export produces identical output to the subpath export', () => {
-    const agents: Record<string, AgentEntity> = {
+    const sessions: Record<string, SessionEntity> = {
       a1: makeAgent({ inputTokens: 1500, outputTokens: 500, startedAt: T0, completedAt: ts(30) }),
       a2: makeAgent({ inputTokens: 2500, outputTokens: 1000, startedAt: T0, completedAt: ts(45) }),
     };
-    expect(formatWorkflowSummaryFromBarrel(agents, 60000)).toEqual(formatWorkflowSummary(agents, 60000));
+    expect(formatWorkflowSummaryFromBarrel(sessions, 60000)).toEqual(formatWorkflowSummary(sessions, 60000));
   });
 });

@@ -5,10 +5,10 @@
 //   - profile lookup + read-only adjustment (strip write/edit)
 //   - harness creation via createHarness
 //   - activeSessions tracking (before any status callback — TOCTOU safety)
-//   - onAgentSpawn firing (with sessionId + sessionPath)
+//   - onSessionStart firing (with sessionId + sessionPath)
 //   - onStepStart firing
 //   - returns a handle exposing session/dispose/sessionId/sessionPath + a
-//     `complete()` method that fires onAgentComplete and removes the session
+//     `complete()` method that fires onSessionComplete and removes the session
 //     from activeSessions.
 //
 // Renderer invocation is intentionally NOT part of spawnAgent — it stays in the
@@ -27,7 +27,7 @@ import type { AgentProfile, StatusCallbacks } from '../../packages/engine/src/co
 // agent-registry.js', ...)` to replace `requireAgentPlugin` with a stub.
 // bun's `mock.module` is PROCESS-GLOBAL and leaks across test files under the
 // full suite's parallel scheduling, breaking agent-registry.test.ts /
-// agents/index.test.ts / engine-index.test.ts which rely on the real registry.
+// sessions/index.test.ts / engine-index.test.ts which rely on the real registry.
 //
 // Instead we register a FAKE plugin into the REAL (module-level) registry and
 // have every test profile reference this plugin's id. Registry mutations are
@@ -118,8 +118,6 @@ function makeBaseOptions(overrides?: Partial<AgentLifecycleOptions>): AgentLifec
     cwd: '/tmp/project',
     phaseId: 'implementing',
     taskId: 'task-1',
-    stepIndex: 0,
-    stepName: 'implement',
     ...overrides,
   };
 }
@@ -148,9 +146,8 @@ function makeStatusSpy(): StatusCallbacks & { callOrder: string[] } {
   };
   return {
     callOrder,
-    onAgentSpawn: mock(track('onAgentSpawn')),
-    onStepStart: mock(track('onStepStart')),
-    onAgentComplete: mock(track('onAgentComplete')),
+    onSessionStart: mock(track('onSessionStart')),
+    onSessionComplete: mock(track('onSessionComplete')),
     onAgentRender: mock(track('onAgentRender')),
   } as unknown as StatusCallbacks & { callOrder: string[] };
 }
@@ -386,13 +383,13 @@ describe('spawnAgent', () => {
       expect(activeSessions.has(session as unknown as { abort(): Promise<void> })).toBe(true);
     });
 
-    it('adds the session BEFORE firing onAgentSpawn (TOCTOU)', async () => {
+    it('adds the session BEFORE firing onSessionStart (TOCTOU)', async () => {
       const { session } = setupHarness();
       const activeSessions = new Set<{ abort(): Promise<void> }>();
       let trackedAtSpawn = false;
 
       const onStatus = makeStatusSpy();
-      (onStatus.onAgentSpawn as ReturnType<typeof mock>).mockImplementation(() => {
+      (onStatus.onSessionStart as ReturnType<typeof mock>).mockImplementation(() => {
         trackedAtSpawn = activeSessions.has(session as unknown as { abort(): Promise<void> });
       });
 
@@ -401,27 +398,12 @@ describe('spawnAgent', () => {
       expect(trackedAtSpawn).toBe(true);
     });
 
-    it('adds the session BEFORE firing onStepStart (TOCTOU)', async () => {
-      const { session } = setupHarness();
-      const activeSessions = new Set<{ abort(): Promise<void> }>();
-      let trackedAtStepStart = false;
-
-      const onStatus = makeStatusSpy();
-      (onStatus.onStepStart as ReturnType<typeof mock>).mockImplementation(() => {
-        trackedAtStepStart = activeSessions.has(session as unknown as { abort(): Promise<void> });
-      });
-
-      await spawnAgent(makeBaseOptions({ activeSessions, onStatus }), profilesMap(defaultProfile));
-
-      expect(trackedAtStepStart).toBe(true);
-    });
-
-    it('an abort triggered from onAgentSpawn reaches the already-tracked session', async () => {
+    it('an abort triggered from onSessionStart reaches the already-tracked session', async () => {
       const { session } = setupHarness();
       const activeSessions = new Set<{ abort(): Promise<void> }>();
 
       const onStatus = makeStatusSpy();
-      (onStatus.onAgentSpawn as ReturnType<typeof mock>).mockImplementation(() => {
+      (onStatus.onSessionStart as ReturnType<typeof mock>).mockImplementation(() => {
         // Mirror the LanePool abort listener firing in the [tracked, prompt] window.
         for (const s of activeSessions) {
           s.abort().catch(() => {
@@ -505,10 +487,10 @@ describe('spawnAgent', () => {
     });
   });
 
-  // ─── onAgentSpawn firing ────────────────────────────────────────────
+  // ─── onSessionStart firing ────────────────────────────────────────────
 
-  describe('onAgentSpawn firing', () => {
-    it('fires onAgentSpawn with the correct fields including sessionId and sessionPath', async () => {
+  describe('onSessionStart firing', () => {
+    it('fires onSessionStart with the correct fields including sessionId and sessionPath', async () => {
       const sessionFile = '/base/abc.jsonl';
       setupHarness(makeMockSession({ sessionId: 'sess-99', sessionFile }));
 
@@ -519,19 +501,17 @@ describe('spawnAgent', () => {
           profileId: 'coder',
           phaseId: 'implementing',
           taskId: 'task-9',
-          stepIndex: 2,
           onStatus,
         }),
         profilesMap(defaultProfile),
       );
 
-      expect(onStatus.onAgentSpawn).toHaveBeenCalledTimes(1);
-      const call = (onStatus.onAgentSpawn as ReturnType<typeof mock>).mock.calls[0]![0] as Record<string, unknown>;
+      expect(onStatus.onSessionStart).toHaveBeenCalledTimes(1);
+      const call = (onStatus.onSessionStart as ReturnType<typeof mock>).mock.calls[0]![0] as Record<string, unknown>;
       expect(call.agentId).toBe('agent-7');
       expect(call.profile).toBe('coder');
       expect(call.phaseId).toBe('implementing');
       expect(call.taskId).toBe('task-9');
-      expect(call.stepIndex).toBe(2);
       expect(call.sessionId).toBe('sess-99');
       expect(call.sessionPath).toBe(sessionFile);
     });
@@ -541,39 +521,6 @@ describe('spawnAgent', () => {
       await expect(
         spawnAgent(makeBaseOptions({ onStatus: undefined }), profilesMap(defaultProfile)),
       ).resolves.toBeDefined();
-    });
-  });
-
-  // ─── onStepStart firing ─────────────────────────────────────────────
-
-  describe('onStepStart firing', () => {
-    it('fires onStepStart with the correct fields', async () => {
-      setupHarness();
-      const onStatus = makeStatusSpy();
-
-      await spawnAgent(
-        makeBaseOptions({ taskId: 'task-3', stepIndex: 4, stepName: 'review', agentId: 'agent-3', onStatus }),
-        profilesMap(defaultProfile),
-      );
-
-      expect(onStatus.onStepStart).toHaveBeenCalledTimes(1);
-      const call = (onStatus.onStepStart as ReturnType<typeof mock>).mock.calls[0]![0] as Record<string, unknown>;
-      expect(call.taskId).toBe('task-3');
-      expect(call.stepIndex).toBe(4);
-      expect(call.stepName).toBe('review');
-      expect(call.agentId).toBe('agent-3');
-    });
-
-    it('fires onAgentSpawn before onStepStart', async () => {
-      setupHarness();
-      const onStatus = makeStatusSpy();
-
-      await spawnAgent(makeBaseOptions({ onStatus }), profilesMap(defaultProfile));
-
-      const spawnIdx = onStatus.callOrder.indexOf('onAgentSpawn');
-      const stepStartIdx = onStatus.callOrder.indexOf('onStepStart');
-      expect(spawnIdx).toBeGreaterThanOrEqual(0);
-      expect(stepStartIdx).toBeGreaterThan(spawnIdx);
     });
   });
 
@@ -628,7 +575,7 @@ describe('spawnAgent', () => {
   // ─── complete() method ──────────────────────────────────────────────
 
   describe('handle.complete()', () => {
-    it('fires onAgentComplete with the correct fields', async () => {
+    it('fires onSessionComplete with the correct fields', async () => {
       setupHarness(makeMockSession({ sessionId: 'sess-1' }));
       const onStatus = makeStatusSpy();
 
@@ -638,7 +585,6 @@ describe('spawnAgent', () => {
           profileId: 'coder',
           phaseId: 'implementing',
           taskId: 'task-1',
-          stepIndex: 0,
           onStatus,
         }),
         profilesMap(defaultProfile),
@@ -646,13 +592,12 @@ describe('spawnAgent', () => {
 
       handle.complete();
 
-      expect(onStatus.onAgentComplete).toHaveBeenCalledTimes(1);
-      const call = (onStatus.onAgentComplete as ReturnType<typeof mock>).mock.calls[0]![0] as Record<string, unknown>;
+      expect(onStatus.onSessionComplete).toHaveBeenCalledTimes(1);
+      const call = (onStatus.onSessionComplete as ReturnType<typeof mock>).mock.calls[0]![0] as Record<string, unknown>;
       expect(call.agentId).toBe('agent-1');
       expect(call.profile).toBe('coder');
       expect(call.phaseId).toBe('implementing');
       expect(call.taskId).toBe('task-1');
-      expect(call.stepIndex).toBe(0);
       expect(call.sessionId).toBe('sess-1');
     });
 
@@ -669,18 +614,17 @@ describe('spawnAgent', () => {
       expect(activeSessions.has(session as unknown as { abort(): Promise<void> })).toBe(false);
     });
 
-    it('fires onAgentComplete after onStepStart (full spawn→complete order)', async () => {
+    it('fires onSessionComplete after onSessionStart (full spawn→complete order)', async () => {
       setupHarness();
       const onStatus = makeStatusSpy();
 
       const handle = await spawnAgent(makeBaseOptions({ onStatus }), profilesMap(defaultProfile));
       handle.complete();
 
-      const spawnIdx = onStatus.callOrder.indexOf('onAgentSpawn');
-      const stepStartIdx = onStatus.callOrder.indexOf('onStepStart');
-      const completeIdx = onStatus.callOrder.indexOf('onAgentComplete');
-      expect(stepStartIdx).toBeGreaterThan(spawnIdx);
-      expect(completeIdx).toBeGreaterThan(stepStartIdx);
+      const spawnIdx = onStatus.callOrder.indexOf('onSessionStart');
+      const completeIdx = onStatus.callOrder.indexOf('onSessionComplete');
+      expect(spawnIdx).toBe(0);
+      expect(completeIdx).toBeGreaterThan(spawnIdx);
     });
 
     it('does NOT dispose the harness (disposal is the caller’s responsibility)', async () => {
@@ -732,15 +676,14 @@ describe('spawnAgent', () => {
   // ─── Integration-style: mirrors runStep's TOCTOU-critical ordering ──
 
   describe('integration: spawn→complete lifecycle ordering', () => {
-    it('tracks the session before firing any callbacks, and completes after step start', async () => {
+    it('tracks the session before firing any callbacks, and completes after session start', async () => {
       const { session } = setupHarness();
       const events: string[] = [];
       const activeSessions = new Set<{ abort(): Promise<void> }>();
 
       const onStatus = {
-        onAgentSpawn: mock(() => events.push('spawn')),
-        onStepStart: mock(() => events.push('stepStart')),
-        onAgentComplete: mock(() => events.push('complete')),
+        onSessionStart: mock(() => events.push('spawn')),
+        onSessionComplete: mock(() => events.push('complete')),
       } as unknown as StatusCallbacks;
 
       // Observe tracking relative to the status callbacks.
@@ -759,18 +702,17 @@ describe('spawnAgent', () => {
       handle.complete();
 
       // Spec-mandated prefix ordering: the session is tracked BEFORE any
-      // observable callback (TOCTOU safety), and spawn precedes step start.
+      // observable callback (TOCTOU safety).
       expect(events.indexOf('track')).toBe(0);
       expect(events.indexOf('spawn')).toBeGreaterThan(events.indexOf('track'));
-      expect(events.indexOf('stepStart')).toBeGreaterThan(events.indexOf('spawn'));
 
-      // Both completion effects must occur after step start. Their relative
+      // Both completion effects must occur after spawn. Their relative
       // order is intentionally left unspecified (the spec only requires that
-      // complete() fires onAgentComplete AND removes from activeSessions).
+      // complete() fires onSessionComplete AND removes from activeSessions).
       expect(events).toContain('complete');
       expect(events).toContain('untrack');
-      expect(events.indexOf('complete')).toBeGreaterThan(events.indexOf('stepStart'));
-      expect(events.indexOf('untrack')).toBeGreaterThan(events.indexOf('stepStart'));
+      expect(events.indexOf('complete')).toBeGreaterThan(events.indexOf('spawn'));
+      expect(events.indexOf('untrack')).toBeGreaterThan(events.indexOf('spawn'));
 
       // Net effect: session is no longer tracked after complete().
       expect(activeSessions.has(session as unknown as { abort(): Promise<void> })).toBe(false);

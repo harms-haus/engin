@@ -26,32 +26,10 @@ export const mockCreateHarness = mock() as ReturnType<typeof mock> & ((...args: 
 export const mockLoadProfilesFromDirs = mock() as ReturnType<typeof mock> & ((...args: unknown[]) => unknown);
 export const mockPromptForStructured = mock() as ReturnType<typeof mock> & ((...args: unknown[]) => unknown);
 
-// Compatibility shim: production code resolves sessions via
-// requireAgentPlugin(profile.agent).createSession(opts). We mock the
-// registry so createSession delegates to mockCreateHarness, whose return
-// value { session, sessionId, dispose } is unwrapped to the inner session
-// (the AgentRuntime), matching the real createSession contract.
-export const mockRequireAgentPlugin = mock((..._args: unknown[]) => ({
-  id: 'pi-coding-agent',
-  createSession: async (opts: unknown) => {
-    const w = (await mockCreateHarness(opts)) as {
-      session: Record<string, unknown>;
-      sessionId?: string;
-      dispose?: () => void;
-      contextWindow?: number;
-    };
-    // Propagate wrapper-level fields onto the inner session IN-PLACE so the
-    // same object reference is tracked in activeSessions AND spawnAgent's
-    // session.dispose() / session.sessionId observe the wrapper's mock.
-    if (w.dispose) (w.session as { dispose: () => void }).dispose = w.dispose;
-    if (w.sessionId) (w.session as { sessionId: string }).sessionId = w.sessionId;
-    if (w.contextWindow !== undefined) (w.session as { contextWindow: number }).contextWindow = w.contextWindow;
-    return w.session;
-  },
-}));
-mock.module('../../packages/engine/src/core/agent-registry.js', () => ({
-  requireAgentPlugin: (...args: unknown[]) => mockRequireAgentPlugin(...args),
-}));
+// Agent-registry is NOT mocked via mock.module (process-global pollution).
+// Instead, a mock plugin is registered in the real registry at module load
+// time (see below after imports). Each test file that imports this module
+// resets the registry in its beforeEach via clearPoolMocks().
 
 mock.module('../../packages/engine/src/core/profile.js', () => ({
   loadProfilesFromDirs: (...args: unknown[]) => mockLoadProfilesFromDirs(...args),
@@ -63,6 +41,7 @@ mock.module('../../packages/engine/src/core/structured-output.js', () => ({
 
 // ─── Imports that resolve through the mocks above ─────────────────────────
 
+import type { AgentRuntime } from '../../packages/engine/src/core/agent-plugin.js';
 import type { AgentProfile, Task } from '../../packages/engine/src/core/types.js';
 import { LanePool } from '../../packages/engine/src/pool/lane-pool.js';
 import type {
@@ -74,6 +53,50 @@ import type {
 import { TaskTracker } from '../../packages/engine/src/tracking/task-status.js';
 import { makeMockSession } from '../helpers/make-session.js';
 import { makeTask as _makeTask } from '../helpers/make-task.js';
+
+// ─── Real agent-registry for mock plugin registration ────────────────────
+//
+// Instead of using process-global mock.module (which leaks across files),
+// we register a mock plugin in the real registry. The plugin's createSession
+// delegates to mockCreateHarness, which each test configures.
+//
+// clearPoolMocks() resets the registry before each test (see below) so the
+// mock plugin is always registered when test code runs, even if another test
+// file (e.g. session.test.ts) cleared the registry in its own beforeEach.
+
+import {
+  clearAgentPluginRegistry,
+  DEFAULT_AGENT_PLUGIN_ID,
+  registerAgentPlugin,
+} from '../../packages/engine/src/core/agent-registry.js';
+
+// ─── Register mock plugin at module load time ───────────────────────────
+//
+// Calling clearAgentPluginRegistry() here also clears any plugins that
+// sibling test files may have registered in earlier module evaluations.
+// The mock plugin is re-registered in clearPoolMocks() (called by every
+// test file's beforeEach) to restore the default after a sibling file
+// (e.g. session.test.ts) replaces it.
+
+clearAgentPluginRegistry();
+registerAgentPlugin({
+  id: DEFAULT_AGENT_PLUGIN_ID,
+  createSession: async (opts: unknown) => {
+    const w = (await mockCreateHarness(opts)) as {
+      session: Record<string, unknown>;
+      sessionId?: string;
+      dispose?: () => void;
+      contextWindow?: number;
+    };
+    // Propagate wrapper-level fields onto the inner session IN-PLACE so the
+    // same object reference is tracked in activeSessions AND the session's
+    // dispose() / sessionId observe the wrapper's mock.
+    if (w.dispose) (w.session as { dispose: () => void }).dispose = w.dispose;
+    if (w.sessionId) (w.session as { sessionId: string }).sessionId = w.sessionId;
+    if (w.contextWindow !== undefined) (w.session as { contextWindow: number }).contextWindow = w.contextWindow;
+    return w.session as unknown as AgentRuntime;
+  },
+});
 
 export { LanePool, _makeTask as makeTask, TaskTracker };
 export type { StepDefinition };
@@ -289,10 +312,31 @@ export function clearPoolMocks() {
   mockCreateHarness.mockClear();
   mockLoadProfilesFromDirs.mockClear();
   mockPromptForStructured.mockClear();
+  // Re-register the default mock plugin to restore state after a sibling test
+  // file (e.g. session.test.ts) may have cleared/replaced the registry in its
+  // own beforeEach. This ensures every test in a helpers.ts-importing file
+  // starts with the mock plugin registered under DEFAULT_AGENT_PLUGIN_ID.
+  clearAgentPluginRegistry();
+  registerAgentPlugin({
+    id: DEFAULT_AGENT_PLUGIN_ID,
+    createSession: async (opts: unknown) => {
+      const w = (await mockCreateHarness(opts)) as {
+        session: Record<string, unknown>;
+        sessionId?: string;
+        dispose?: () => void;
+        contextWindow?: number;
+      };
+      if (w.dispose) (w.session as { dispose: () => void }).dispose = w.dispose;
+      if (w.sessionId) (w.session as { sessionId: string }).sessionId = w.sessionId;
+      if (w.contextWindow !== undefined) (w.session as { contextWindow: number }).contextWindow = w.contextWindow;
+      return w.session as unknown as AgentRuntime;
+    },
+  });
 }
 
 export function restorePoolMocks() {
-  mock.module('../../packages/engine/src/core/agent-registry.js', () => realAgentRegistry);
+  // Agent-registry is not mocked via mock.module (uses real registry with
+  // registered mock plugin) so no restore is needed for it.
   mock.module('../../packages/engine/src/core/profile.js', () => realProfile);
   mock.module('../../packages/engine/src/core/structured-output.js', () => realStructuredOutput);
 }

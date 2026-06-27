@@ -132,7 +132,7 @@ function sentJson(ws: MockWebSocket): Record<string, unknown>[] {
 
 function resetStore(): void {
   useWorkflowStore.setState({
-    agentsById: {},
+    sessionsById: {},
     tasksById: {},
     phases: [],
     currentPhaseId: '',
@@ -143,13 +143,11 @@ function resetStore(): void {
     error: undefined,
     failedPhase: undefined,
     seq: 0,
-    stats: { totalTokens: 0, agentCount: 0 },
+    stats: { totalTokens: 0, sessionCount: 0 },
     workflowEventLog: [],
     selectedPhaseId: null,
     selectedTaskId: null,
-    selectedStepIndex: null,
     userPinnedPhase: false,
-    userPinnedStep: false,
     // Multi-run fields
     runs: [],
     selectedRunId: null,
@@ -498,10 +496,10 @@ describe('useWebSocket – snapshot → store.applySnapshot(runId, …)', () => 
           currentPhaseId: 'exec',
           completedPhaseIds: ['plan'],
           tasks: {},
-          agents: {},
+          sessions: {},
           sidebar: { title: 'App', indicator: 'green' },
           status: 'running',
-          stats: { totalTokens: 0, agentCount: 0 },
+          stats: { totalTokens: 0, sessionCount: 0 },
         },
       });
     });
@@ -531,10 +529,10 @@ describe('useWebSocket – snapshot → store.applySnapshot(runId, …)', () => 
           currentPhaseId: 'exec',
           completedPhaseIds: [],
           tasks: {},
-          agents: {},
+          sessions: {},
           sidebar: { title: '', indicator: '' },
           status: 'running',
-          stats: { totalTokens: 0, agentCount: 0 },
+          stats: { totalTokens: 0, sessionCount: 0 },
         },
       });
     });
@@ -563,7 +561,7 @@ describe('useWebSocket – events → store.applyEvents(runId, …)', () => {
           { seq: 2, type: 'phase_started', data: { phase: 'scouting' }, metadata: { timestamp: '' } },
           {
             seq: 3,
-            type: 'agent_spawned',
+            type: 'session_started',
             data: { profile: 'coder' },
             metadata: { timestamp: '', agentId: 'a1', taskId: 't1' },
           },
@@ -574,7 +572,7 @@ describe('useWebSocket – events → store.applyEvents(runId, …)', () => {
     const s = useWorkflowStore.getState();
     expect(s.taskPrompt).toBe('test');
     expect(s.currentPhaseId).toBe('scouting');
-    expect(s.agentsById['a1::t1']).toBeDefined();
+    expect(s.sessionsById['a1::t1']).toBeDefined();
     expect(s.seq).toBe(3);
   });
 

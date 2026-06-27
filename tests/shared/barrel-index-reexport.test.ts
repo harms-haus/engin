@@ -5,21 +5,19 @@
 // them. This suite verifies the behavioral contract, not exhaustive identity.
 
 import type {
-  AgentEntity,
   ClientMessage,
   EventRecord,
   EventType,
   LogEntry,
   PhaseEntity,
   ServerMessage,
-  StepDefinition,
-  StepEntity,
+  SessionEntity,
   TaskEntity,
   TaskStatus,
   WorkflowProjection,
 } from '@engin/shared';
 import {
-  MAX_AGENT_LOG,
+  MAX_SESSION_LOG,
   createInitialProjection,
   evolve,
   formatWorkflowEventLine,
@@ -38,7 +36,7 @@ describe('@engin/shared barrel', () => {
     expect(typeof createInitialProjection).toBe('function');
     expect(typeof formatWorkflowEventLine).toBe('function');
     expect(typeof isServerMessage).toBe('function');
-    expect(MAX_AGENT_LOG).toBe(500);
+    expect(MAX_SESSION_LOG).toBe(500);
   });
 
   it('drives exported functions end-to-end', () => {
@@ -65,12 +63,10 @@ describe('@engin/shared barrel', () => {
   it('keeps collision-prone type names reachable', () => {
     // Constructing values of each type proves the barrel import resolves.
     const status: TaskStatus = 'ready';
-    const step: StepEntity = { name: 's', index: 0 };
-    const def: StepDefinition = { name: 's', profileId: 'p', isReadOnly: true };
-    const task: TaskEntity = { id: 't1', title: 'T', phaseId: 'p1', status, steps: [step], dependencies: [] };
+    const task: TaskEntity = { id: 't1', title: 'T', phaseId: 'p1', status, dependencies: [] };
     const rec: EventRecord = { seq: 1, type: 'workflow_started', data: {}, metadata: { timestamp: 't' } };
     const projection: WorkflowProjection = createInitialProjection();
-    const agent: AgentEntity = {
+    const agent: SessionEntity = {
       uid: 'a1',
       agentId: 'a1',
       profile: 'coder',
@@ -81,12 +77,13 @@ describe('@engin/shared barrel', () => {
       inputTokens: 0,
       outputTokens: 0,
       taskTitle: '',
+      runnerRole: 'executor',
+      attempt: 1,
     };
     const phase: PhaseEntity = { id: 'p1', label: 'P', icon: '', taskIds: [] };
     const entry: LogEntry = { id: 'l1', timestamp: 't', type: 'text', content: 'hi' };
     const server: ServerMessage = { type: 'run_complete', runId: 'r1' };
     const client: ClientMessage = { type: 'resync', runId: 'r1' };
     // Touch each binding to suppress unused warnings.
-    void [status, step, def, task, rec, projection, agent, phase, entry, server, client];
   });
 });

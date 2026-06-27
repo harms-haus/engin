@@ -631,6 +631,7 @@ describe('PhaseRunner — onPhaseSettled', () => {
             files: [],
             dependencies: [],
             phaseId: 'scout',
+            worktree: 'none',
             status: 'complete',
             result: { found: 'api-keys' },
           });
@@ -642,6 +643,7 @@ describe('PhaseRunner — onPhaseSettled', () => {
             files: [],
             dependencies: [],
             phaseId: 'scout',
+            worktree: 'none',
             status: 'complete',
             result: { found: 'endpoints' },
           });
@@ -693,6 +695,7 @@ describe('PhaseRunner — onPhaseSettled', () => {
             files: [],
             dependencies: [],
             phaseId: 'A',
+            worktree: 'none',
             status: 'complete',
             result: { artifact: 'doc.md' },
           });
@@ -704,6 +707,7 @@ describe('PhaseRunner — onPhaseSettled', () => {
             files: [],
             dependencies: [],
             phaseId: 'A',
+            worktree: 'none',
             status: 'complete',
             result: { artifact: 'spec.md' },
           });
@@ -715,6 +719,7 @@ describe('PhaseRunner — onPhaseSettled', () => {
             files: [],
             dependencies: [],
             phaseId: 'A',
+            worktree: 'none',
             status: 'active',
           });
         },
@@ -1107,6 +1112,7 @@ describe('PhaseRunner — phase-completion hard-stop guard (minPhaseCompletions)
             files: [],
             dependencies: [],
             phaseId,
+            worktree: 'none',
             status: t.status,
           });
         }
@@ -1171,30 +1177,7 @@ describe('PhaseRunner — phase-completion hard-stop guard (minPhaseCompletions)
     expect(bRan).toBe(true);
   });
 
-  // ── (3) Disabled (backward compat): minPhaseCompletions = 0 ───────────────
-
-  it('does not throw when minPhaseCompletions is 0 (guard disabled), even with all-failed tasks', async () => {
-    let bRan = false;
-    const phases: PhaseDefinition[] = [
-      makePhaseWithTasks(
-        'A',
-        Array.from({ length: 5 }, (_, i) => ({ id: `a-${i + 1}`, status: 'failed' as const })),
-      ),
-      makePhase({
-        id: 'B',
-        label: 'B',
-        icon: '📋',
-        run: async () => {
-          bRan = true;
-        },
-      }),
-    ];
-
-    const runner = new PhaseRunner(makeOptions({ phases, minPhaseCompletions: 0 }));
-
-    await expect(runner.run()).resolves.toBeUndefined();
-    expect(bRan).toBe(true);
-  });
+  // minPhaseCompletions removed in A5 per §2.6 — strict all-or-nothing guard replaces it; see the strict-semantics tests
 
   // ── (4) No tasks for phase: guard does not trigger ────────────────────────
 
@@ -1226,31 +1209,7 @@ describe('PhaseRunner — phase-completion hard-stop guard (minPhaseCompletions)
     expect(bRan).toBe(true);
   });
 
-  // ── (5) Threshold > 1: 1/3 complete throws; 2/3 passes ──────────────────
-
-  it('throws when completedCount < minPhaseCompletions (1/3 with threshold=2)', async () => {
-    let bRan = false;
-    const phases: PhaseDefinition[] = [
-      makePhaseWithTasks('A', [
-        { id: 'a-1', status: 'complete' },
-        { id: 'a-2', status: 'failed' },
-        { id: 'a-3', status: 'failed' },
-      ]),
-      makePhase({
-        id: 'B',
-        label: 'B',
-        icon: '📋',
-        run: async () => {
-          bRan = true;
-        },
-      }),
-    ];
-
-    const runner = new PhaseRunner(makeOptions({ phases, minPhaseCompletions: 2 }));
-
-    await expect(runner.run()).rejects.toThrow(/Phase "A" failed: 1\/3 tasks completed \(minimum: 2\)/);
-    expect(bRan).toBe(false);
-  });
+  // minPhaseCompletions removed in A5 per §2.6 — strict all-or-nothing guard replaces it; see the strict-semantics tests
 
   it('passes when completedCount >= minPhaseCompletions (2/3 with threshold=2)', async () => {
     let bRan = false;
@@ -1270,7 +1229,7 @@ describe('PhaseRunner — phase-completion hard-stop guard (minPhaseCompletions)
       }),
     ];
 
-    const runner = new PhaseRunner(makeOptions({ phases, minPhaseCompletions: 2 }));
+    const runner = new PhaseRunner(makeOptions({ phases }));
 
     await expect(runner.run()).resolves.toBeUndefined();
     expect(bRan).toBe(true);

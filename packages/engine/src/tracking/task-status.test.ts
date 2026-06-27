@@ -28,6 +28,7 @@ function makeTask(id: string, overrides: Partial<Omit<Task, 'id' | 'status'>> = 
     files: [],
     dependencies: [],
     phaseId: 'test',
+    worktree: 'none',
     ...overrides,
   };
 }

@@ -75,7 +75,7 @@ keeps the last projection visible; on reconnect it sends
 | `Ctrl+D`              | Detach immediately.                                                                                                                                |
 | `←` / `→`             | Select phase (cycle through registered phases).                                                                                                    |
 | `↑` / `↓`             | Select task and edge-scroll the task list into view (when the agent log is collapsed) or scroll the agent log (when expanded).                     |
-| `Tab` / `Shift+Tab`   | Cycle steps/agents within the selected task (forward/backward).                                                                                    |
+| `Tab` / `Shift+Tab`   | Cycle sessions within the selected task (forward/backward).                                                                                        |
 | `Space`               | Expand/collapse the agent log widget.                                                                                                              |
 | `Shift+↑` / `Shift+↓` | Scroll the agent log by 10 lines (expanded only).                                                                                                  |
 | `PgUp` / `PgDn`       | Scroll the event log up / down.                                                                                                                    |
@@ -95,7 +95,7 @@ WorkflowTUI
 └── Dashboard
     ├── PhaseBar           (phase progress indicator)
     ├── TaskListWidget     (tasks in the selected phase)
-    └── AgentLogWidget     (log for the selected step's agent, with step tab bar)
+    └── AgentLogWidget     (log for the selected session's agent, with session tab bar)
 ```
 
 All widgets implement the `Component` interface from `@earendil-works/pi-tui`:
@@ -126,33 +126,33 @@ model** and the follow rules that keep the view focused on live activity.
 | ------------------- | ----------------------------------------------------------------- |
 | `selectedPhaseId`   | The phase whose tasks are displayed.                              |
 | `selectedTaskId`    | The task whose agent log is shown.                                |
-| `selectedStepIndex` | The step tab highlighted in AgentLog.                             |
+| `selectedSessionId` | The session tab highlighted in AgentLog.                          |
 | `userPinnedPhase`   | True when the user clicked a completed phase (reviewing history). |
-| `userPinnedStep`    | True when the user clicked a specific step.                       |
+| `userPinnedSession` | True when the user pinned a specific session via Tab.             |
 
 ### `syncFromProjection(projection)`
 
 Pushes projection state into all child widgets, then runs the follow rules:
 
 - **Phase follow** — if `selectedPhaseId` is set, not completed, and differs from
-  `currentPhaseId`, advance to `currentPhaseId` and reset task/step selection. If
+  `currentPhaseId`, advance to `currentPhaseId` and reset task/session selection. If
   `selectedPhaseId` is `null`, set it to `currentPhaseId`. If it is completed, leave
   it (reviewing history).
 - **Task follow** — if `selectedTaskId` is `null` or no longer in the selected
-  phase's tasks, auto-select the first `active` task (or the first task). Reset step
+  phase's tasks, auto-select the first `active` task (or the first task). Reset session
   selection.
-- **Step follow** — if not user-pinned, sync `selectedStepIndex` to the task's
-  `activeStepIndex`.
+- **Session follow** — if not user-pinned, sync `selectedSessionId` to the
+  most-recently-started session for the selected task.
 
 ### `handleInput(data)` routing
 
 - `←`/`→` → PhaseBar; recompute `selectedPhaseId` (wraps); set `userPinnedPhase`;
-  reset task/step selection.
-- `↑`/`↓` → if the agent log is expanded, scroll it; else TaskList (and reset step
+  reset task/session selection.
+- `↑`/`↓` → if the agent log is expanded, scroll it; else TaskList (and reset session
   selection if the task changed).
 - `Shift+↑`/`Shift+↓` → only when expanded, scroll the agent log.
-- `Tab`/`Shift+Tab` → AgentLog; set `userPinnedStep`; cycle `selectedStepIndex` over
-  steps that have an `agentKey`.
+- `Tab`/`Shift+Tab` → AgentLog; set `userPinnedSession`; cycle `selectedSessionId`
+  forward/backward over the task's sessions.
 
 `getComputedHeight()` = phase bar (1) + min(20, visible task count) + expanded
 agent log lines + 4 border lines. The task-count term is capped at 20 to match the
@@ -201,9 +201,8 @@ the width of the widest cell in its column:
 3. **Title** — `statusColor(status)(title)`, followed by a dash and the elapsed time
    (dimmed) for `active`/`complete`/`failed`/`cancelled` tasks that have a `startedAt`.
    Elapsed is frozen at `completedAt` when present, otherwise it is wall-clock.
-4. **Step** — the label `step <i+1>/<len>: <name>` (dimmed), shown **only** for `active`
-   tasks that have **more than one step** and a valid `activeStepIndex`. Single-step
-   active tasks show no step.
+4. **Sessions** — a compact session count badge, shown **only** for tasks that have
+   **more than one session**. Single-session tasks show no badge.
 5. **Dependencies** — the task dependency labels joined with comma-space, using the
    same `t-01` labels as the ID column so the two can be cross-referenced. Completed
    dependencies are dimmed; incomplete or unknown dependencies are plain text. A
@@ -227,12 +226,15 @@ the dashboard applies `min(20, count)` for layout.
 
 ### `AgentLogWidget`
 
-Detail view for the agent fulfilling the selected step of the selected task.
+Detail view for the agent fulfilling the selected session of the selected task.
 
-- Renders a step **tab bar** at the bottom — one tab per step, marked `✓` (done),
-  `▶` (active), or `○` (pending). Steps without an agent are dimmed.
+- Renders a **session tab bar** at the bottom — one tab per session. Each tab shows the
+  session's `runnerRole` (e.g. `write-tests`, `execute`, `review`) or falls back to the
+  profile name. The selected session is bold + underlined; the active (most-recently-started)
+  session is marked. When the bar overflows the terminal width, a contiguous window centered
+  on the selected session is shown with dimmed `…+N` / `+N…` indicators.
 - Header shows profile, tool-call count, and input/output token totals (formatted compactly via `formatTokenCount`, e.g. ↑4k · ↓1.2k). When the selected agent has a `contextWindow`, a cumulative-consumption multiple is appended: ` • ctx N×` where `N = round(((inputTokens + outputTokens) / contextWindow) * 100) / 100` (the ratio of cumulative in+out tokens to the per-request model context window, rounded to 2 decimals). This is a multiplicative ratio, NOT a bounded fill percentage — it can exceed 1× because token totals accumulate across turns while `contextWindow` is a per-request cap.
-- Right-side controls hint at the available keys (scroll/expand/cycle).
+- Right-side controls hint at the available keys (scroll/expand/cycle sessions).
 
 Entry type → icon/colour:
 

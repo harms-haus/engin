@@ -212,10 +212,10 @@ function makeMinimalProjection() {
     currentPhaseId: '',
     completedPhaseIds: [],
     tasks: {},
-    agents: {},
+    sessions: {},
     sidebar: { title: '', indicator: '' },
     status: 'running' as const,
-    stats: { totalTokens: 0, agentCount: 0 },
+    stats: { totalTokens: 0, sessionCount: 0 },
     runLog: [],
   };
 }
@@ -266,12 +266,12 @@ describe('ServerMessage – variant parity (sample objects)', () => {
             title: 'Implement API',
             phaseId: 'coding',
             status: 'active',
-            steps: [],
+
             dependencies: [],
             startedAt: Date.now(),
           },
         },
-        agents: {
+        sessions: {
           a1: {
             uid: 'uid-1',
             agentId: 'a1',
@@ -291,6 +291,8 @@ describe('ServerMessage – variant parity (sample objects)', () => {
             inputTokens: 500,
             outputTokens: 200,
             taskTitle: 'Implement API',
+            runnerRole: 'executor',
+            attempt: 1,
           },
         },
         sidebar: {
@@ -298,7 +300,7 @@ describe('ServerMessage – variant parity (sample objects)', () => {
           indicator: '🟢',
         },
         status: 'running',
-        stats: { totalTokens: 700, agentCount: 1 },
+        stats: { totalTokens: 700, sessionCount: 1 },
         runLog: [],
       },
     };
@@ -309,7 +311,7 @@ describe('ServerMessage – variant parity (sample objects)', () => {
     expect(sample.state.currentPhaseId).toBe('coding');
     expect(sample.state.status).toBe('running');
     expect(Object.keys(sample.state.tasks)).toHaveLength(1);
-    expect(Object.keys(sample.state.agents)).toHaveLength(1);
+    expect(Object.keys(sample.state.sessions)).toHaveLength(1);
   });
 
   it('snapshot variant – minimal (empty run)', () => {
@@ -323,7 +325,7 @@ describe('ServerMessage – variant parity (sample objects)', () => {
     expect(sample.type).toBe('snapshot');
     expect(sample.runId).toBe('run-1');
     expect(sample.state.tasks).toEqual({});
-    expect(sample.state.agents).toEqual({});
+    expect(sample.state.sessions).toEqual({});
     expect(sample.state.runLog).toEqual([]);
   });
 
@@ -344,7 +346,7 @@ describe('ServerMessage – variant parity (sample objects)', () => {
         },
         {
           seq: 5,
-          type: 'agent_spawned',
+          type: 'session_started',
           data: { agentId: 'a1', profile: 'coder' },
           metadata: {
             timestamp: new Date().toISOString(),
@@ -360,7 +362,7 @@ describe('ServerMessage – variant parity (sample objects)', () => {
     expect(sample.seq).toBe(5);
     expect(sample.events).toHaveLength(2);
     expect(sample.events[0].type).toBe('phase_started');
-    expect(sample.events[1].type).toBe('agent_spawned');
+    expect(sample.events[1].type).toBe('session_started');
   });
 
   it('events variant – empty batch', () => {
@@ -580,36 +582,33 @@ describe('ClientMessage – variant parity (sample objects)', () => {
 
 // ─── Shared value types structural check ───────────────────────────────────
 //
-// Ensure the supporting types are also in sync.  PhaseEntity, StepEntity,
-// LogEntry, EventType, EventRecord, AgentEntity, TaskEntity, and
+// Ensure the supporting types are also in sync.  PhaseEntity,
+// LogEntry, EventType, EventRecord, SessionEntity, TaskEntity, and
 // WorkflowProjection are the shared value/mirror types used by both sides.
 // PhaseDescriptor has been replaced by PhaseEntity.
 
 import type {
-  AgentEntity,
-  AgentEntity as ClientAgentEntity,
+  SessionEntity as ClientAgentEntity,
   EventRecord as ClientEventRecord,
   EventType as ClientEventType,
   LogEntry as ClientLogEntry,
   PhaseEntity as ClientPhaseEntity,
-  StepEntity as ClientStepEntity,
   TaskEntity as ClientTaskEntity,
   WorkflowProjection as ClientWorkflowProjection,
   EventRecord,
   EventType,
   LogEntry,
   PhaseEntity,
-  StepEntity,
+  SessionEntity,
   TaskEntity,
   WorkflowProjection,
 } from '@engin/shared/protocol-types';
 
 assertEqual<Equal<PhaseEntity, ClientPhaseEntity>>('PhaseEntity');
-assertEqual<Equal<StepEntity, ClientStepEntity>>('StepEntity');
 assertEqual<Equal<LogEntry, ClientLogEntry>>('LogEntry');
 assertEqual<Equal<EventType, ClientEventType>>('EventType');
 assertEqual<Equal<EventRecord, ClientEventRecord>>('EventRecord');
-assertEqual<Equal<AgentEntity, ClientAgentEntity>>('AgentEntity');
+assertEqual<Equal<SessionEntity, ClientAgentEntity>>('SessionEntity');
 assertEqual<Equal<TaskEntity, ClientTaskEntity>>('TaskEntity');
 assertEqual<Equal<WorkflowProjection, ClientWorkflowProjection>>('WorkflowProjection');
 
@@ -622,13 +621,6 @@ function phaseEntityAssignableFromServer(_p: PhaseEntity): ClientPhaseEntity {
 }
 function phaseEntityAssignableFromClient(_p: ClientPhaseEntity): PhaseEntity {
   return _p;
-}
-
-function stepEntityAssignableFromServer(_s: StepEntity): ClientStepEntity {
-  return _s;
-}
-function stepEntityAssignableFromClient(_s: ClientStepEntity): StepEntity {
-  return _s;
 }
 
 function logEntryAssignableFromServer(_e: LogEntry): ClientLogEntry {
@@ -645,10 +637,10 @@ function eventRecordAssignableFromClient(_e: ClientEventRecord): EventRecord {
   return _e;
 }
 
-function agentEntityAssignableFromServer(_a: AgentEntity): ClientAgentEntity {
+function agentEntityAssignableFromServer(_a: SessionEntity): ClientAgentEntity {
   return _a;
 }
-function agentEntityAssignableFromClient(_a: ClientAgentEntity): AgentEntity {
+function agentEntityAssignableFromClient(_a: ClientAgentEntity): SessionEntity {
   return _a;
 }
 
@@ -672,8 +664,6 @@ void serverAssignableToClient;
 void clientAssignableToServer;
 void phaseEntityAssignableFromServer;
 void phaseEntityAssignableFromClient;
-void stepEntityAssignableFromServer;
-void stepEntityAssignableFromClient;
 void logEntryAssignableFromServer;
 void logEntryAssignableFromClient;
 void eventRecordAssignableFromServer;
@@ -751,12 +741,12 @@ describe('ServerMessage – JSON round-trip per variant', () => {
             title: 'Implement API',
             phaseId: 'coding',
             status: 'active',
-            steps: [],
+
             dependencies: [],
             startedAt: 1700000000000,
           },
         },
-        agents: {
+        sessions: {
           a1: {
             uid: 'uid-1',
             agentId: 'a1',
@@ -777,11 +767,13 @@ describe('ServerMessage – JSON round-trip per variant', () => {
             inputTokens: 500,
             outputTokens: 200,
             taskTitle: 'Implement API',
+            runnerRole: 'executor',
+            attempt: 1,
           },
         },
         sidebar: { title: 'Engin', indicator: '🟢' },
         status: 'running',
-        stats: { totalTokens: 700, agentCount: 1 },
+        stats: { totalTokens: 700, sessionCount: 1 },
         runLog: [],
       },
     };

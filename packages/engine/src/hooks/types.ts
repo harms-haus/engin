@@ -2,7 +2,7 @@
 //
 // This module defines ONLY the hook MECHANISM — composition rules, the four
 // generic hook-function shapes, the `HookRegistry` interface, and the empty
-// `WorkflowHooks` interface. NO specific hook signatures (beforeStepPrompt,
+// `WorkflowHooks` interface. NO specific hook signatures (beforeSessionPrompt,
 // onPhaseSettled, …) live here yet; each is added incrementally by later
 // tasks via declaration merging on `WorkflowHooks`.
 //
@@ -12,6 +12,7 @@
 // runtime and stays free of circular runtime dependencies.
 
 import type { Task, WorkflowState, WorktreeInfo } from '../core/types.js';
+import type { Runner } from '../pool/runners/types.js';
 import type { StepDefinition } from '../pool/types.js';
 
 /**
@@ -122,7 +123,7 @@ export interface WorkflowHooks {}
 
 // ── Step-level argument types ──────────────────────────────────────────────
 
-export interface BeforeStepPromptArgs {
+export interface BeforeSessionPromptArgs {
   task: Task;
   step: StepDefinition;
   prompt: string;
@@ -212,13 +213,20 @@ export interface ConflictResolution {
  * This is an OBSERVE hook (fire-and-forget fan-out). It is independent of
  * the `StatusCallbacks.onDecision` event-store event — both fire separately
  * into different sinks (audit log vs. event store).
+ *
+ * @field runnerRole — Identifies the runner/profile that produced the output
+ *   (e.g. 'coder', 'reviewer', 'planner'). Matches the session model's role
+ *   concept.
+ * @field attempt — Which attempt number this output was produced on
+ *   (0-indexed). Matches the session model's attempt counter.
  */
 export interface OnStructuredOutputArgs {
   agentId: string;
   output: unknown;
   taskId?: string;
   phaseId?: string;
-  stepIndex?: number;
+  runnerRole?: string;
+  attempt?: number;
 }
 
 /**
@@ -292,6 +300,7 @@ export interface BeforeTaskArgs {
 
 export interface BeforeTaskResult {
   skip?: boolean;
+  runner?: Runner;
   steps?: StepDefinition[];
   files?: string[];
   reason?: string;
@@ -301,7 +310,7 @@ export interface BeforeTaskResult {
 
 export interface WorkflowHooks {
   /** Pipeline hook: transforms the step prompt before it is sent to the agent. Each subscriber receives the current prompt string and returns a transformed one. Default = collectContext (file inlining). */
-  beforeStepPrompt?: PipelineHook<string, BeforeStepPromptArgs> | PipelineHook<string, BeforeStepPromptArgs>[];
+  beforeSessionPrompt?: PipelineHook<string, BeforeSessionPromptArgs> | PipelineHook<string, BeforeSessionPromptArgs>[];
   /** All-run hook: collects context blocks (file contents, diffs) for a step. Results are concatenated by CONTEXT_BLOCK_REDUCER. Default = read task.files and inline their contents. */
   collectContext?: AllRunHook<ContextBlock, CollectContextArgs> | AllRunHook<ContextBlock, CollectContextArgs>[];
 }

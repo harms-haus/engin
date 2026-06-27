@@ -34,7 +34,7 @@ export interface StepExecutionContext {
   /** Optional registry of custom output renderers keyed by profile name. */
   rendererRegistry?: RendererRegistry;
   /** Optional registry of workflow hooks. When present AND has subscribers for
-   *  `beforeStepPrompt`, `runStep` invokes the pipeline hook (seeded with
+   *  `beforeSessionPrompt`, `runStep` invokes the pipeline hook (seeded with
    *  `task.prompt`) instead of calling `buildPrompt` directly. When absent,
    *  `buildPrompt` runs unchanged — zero behavior change. When present AND
    *  has subscribers for `onStructuredOutput` / `onDecision`, those observe
@@ -48,7 +48,7 @@ export interface StepExecutionContext {
    *  this field). */
   auditLog?: AuditLog;
   /** Per-task worktree path (distinct from `cwd`, the run/pool cwd). Set by
-   *  LanePool when a per-task worktree is created so the `beforeStepPrompt`
+   *  LanePool when a per-task worktree is created so the `beforeSessionPrompt`
    *  hook can resolve files against the isolated worktree. `undefined` when
    *  no worktree is in use. */
   worktreeCwd?: string;
@@ -146,7 +146,7 @@ export async function runStep(params: RunStepParams): Promise<{ result: StepResu
   }
 
   // Spawn the agent: profile lookup + read-only adjustment + harness creation +
-  // activeSessions tracking + onAgentSpawn + onStepStart. spawnAgent tracks the
+  // activeSessions tracking + onSessionStart + onStepStart. spawnAgent tracks the
   // session BEFORE firing any callback (TOCTOU safety) and computes the
   // resolved sessionPath (sessionFile ?? resumeSessionPath ?? sessionDir).
   const handle = await spawnAgent(
@@ -156,8 +156,6 @@ export async function runStep(params: RunStepParams): Promise<{ result: StepResu
       cwd: execCtx.cwd,
       phaseId: execCtx.phaseId,
       taskId: task.id,
-      stepIndex: ctx.stepIndex,
-      stepName: step.name,
       isReadOnly: step.isReadOnly,
       apiKeys: execCtx.apiKeys,
       sessionDir: sessionDirPath,
@@ -184,9 +182,9 @@ export async function runStep(params: RunStepParams): Promise<{ result: StepResu
   try {
     // Build prompt.
     //
-    // `beforeStepPrompt` hook seam: when a `hookRegistry` is threaded through
+    // `beforeSessionPrompt` hook seam: when a `hookRegistry` is threaded through
     // LanePoolOptions → TaskRunnerContext → StepExecutionContext AND it has at
-    // least one subscriber for `beforeStepPrompt`, the prompt is produced by
+    // least one subscriber for `beforeSessionPrompt`, the prompt is produced by
     // invoking the pipeline hook (seeded with `task.prompt`) instead of calling
     // `buildPrompt` directly. The pipeline's return value replaces the prompt
     // sent to the agent.
@@ -198,9 +196,9 @@ export async function runStep(params: RunStepParams): Promise<{ result: StepResu
     // behavior change. `hasSubscribers` is the gate so an empty/no-subscriber
     // registry still falls through to `buildPrompt` (avoiding a pointless
     // `invokePipeline` round-trip that would just return the seed unchanged).
-    const promptText = execCtx.hookRegistry?.hasSubscribers('beforeStepPrompt')
+    const promptText = execCtx.hookRegistry?.hasSubscribers('beforeSessionPrompt')
       ? ((await execCtx.hookRegistry.invokePipeline(
-          'beforeStepPrompt',
+          'beforeSessionPrompt',
           task.prompt,
           { task, step, prompt: task.prompt, cwd: execCtx.cwd, worktreeCwd: execCtx.worktreeCwd },
           {
@@ -237,11 +235,11 @@ export async function runStep(params: RunStepParams): Promise<{ result: StepResu
       // manual `auditLog.append` call in workflow code. Zero behavior change
       // when no `hookRegistry` or no subscribers: the `hasSubscribers` gate
       // skips the `invokeObserve` round-trip entirely. The hook context
-      // mirrors the `beforeStepPrompt` seam (same cwd / workDir / signal).
+      // mirrors the `beforeSessionPrompt` seam (same cwd / workDir / signal).
       if (execCtx.hookRegistry?.hasSubscribers('onStructuredOutput')) {
         await execCtx.hookRegistry.invokeObserve(
           'onStructuredOutput',
-          { agentId, output: structuredResult, taskId: task.id, phaseId: execCtx.phaseId, stepIndex: ctx.stepIndex },
+          { agentId, output: structuredResult, taskId: task.id, phaseId: execCtx.phaseId },
           {
             registry: execCtx.hookRegistry,
             cwd: execCtx.worktreeCwd ?? execCtx.cwd,
@@ -354,7 +352,7 @@ export async function runStep(params: RunStepParams): Promise<{ result: StepResu
     }
 
     // Fire completion callback + remove the session from activeSessions.
-    // handle.complete() fires onAgentComplete (always runs even if dispose
+    // handle.complete() fires onSessionComplete (always runs even if dispose
     // failed) and untracks the session so it can't be re-aborted. Disposal of
     // the underlying harness is separate (handled above on the error path, or
     // deferred to the caller via trackedSession.dispose on the success path).

@@ -404,7 +404,7 @@ describe('LanePool AbortSignal handling', () => {
   describe('abort fires before the session prompt starts (TOCTOU window)', () => {
     /**
      * runStep adds a freshly-created session to activeSessions before firing
-     * onAgentSpawn (and before awaiting buildPrompt). This guarantees that an
+     * onSessionStart (and before awaiting buildPrompt). This guarantees that an
      * abort signal firing in the [session created, prompt started] window —
      * the Time-of-Check-Time-of-Use gap — still reaches and cancels the
      * session instead of leaking it.
@@ -430,7 +430,7 @@ describe('LanePool AbortSignal handling', () => {
         onStatus: {
           // Fires inside runStep AFTER activeSessions.add but BEFORE the prompt
           // begins — i.e. squarely in the TOCTOU window.
-          onAgentSpawn: () => controller.abort(),
+          onSessionStart: () => controller.abort(),
         },
       }).pool.run();
 
@@ -456,7 +456,7 @@ describe('LanePool AbortSignal handling', () => {
         maxConcurrentLanes: 1,
         signal: controller.signal,
         onStatus: {
-          onAgentSpawn: () => controller.abort(),
+          onSessionStart: () => controller.abort(),
         },
       }).pool.run();
 

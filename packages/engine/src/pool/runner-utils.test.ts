@@ -69,6 +69,7 @@ function makeCtx(overrides?: Partial<TaskRunnerContext>): TaskRunnerContext {
     dependencies: [],
     status: 'active',
     phaseId: 'code',
+    worktree: 'none',
   };
   const profiles = new Map<string, AgentProfile>();
   const activeSessions = new Set<{ abort(): Promise<void> }>();

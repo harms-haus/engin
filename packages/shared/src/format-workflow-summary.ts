@@ -4,20 +4,20 @@
  * Computes a two-line aggregate summary for the TUI event-log pane, shown when
  * a workflow completes:
  *
- *   Line 1 — token usage across ALL agents:
+ *   Line 1 — token usage across ALL sessions:
  *     `📊 Tokens: ↑${formatTokenCount(totalInput)} in · ↓${formatTokenCount(totalOutput)} out`
  *
- *   Line 2 — wall-clock total vs. summed agent active time:
- *     `⏱ Time: ${(totalDurationMs/1000).toFixed(1)}s total · ${(agentTimeMs/1000).toFixed(1)}s agent (${agentTimePct}%)`
+ *   Line 2 — wall-clock total vs. summed session active time:
+ *     `⏱ Time: ${(totalDurationMs/1000).toFixed(1)}s total · ${(sessionTimeMs/1000).toFixed(1)}s session (${sessionTimePct}%)`
  *
  * where:
- *   • totalInput / totalOutput  = Σ every agent.inputTokens / .outputTokens
- *   • agentTimeMs               = Σ (Date.parse(completedAt) − Date.parse(startedAt))
- *                                 over agents that have BOTH timestamps
- *   • agentTimePct              = totalDurationMs > 0
- *                                   ? Math.round((agentTimeMs / totalDurationMs) * 100)
+ *   • totalInput / totalOutput  = Σ every session.inputTokens / .outputTokens
+ *   • sessionTimeMs             = Σ (Date.parse(completedAt) − Date.parse(startedAt))
+ *                                 over sessions that have BOTH timestamps
+ *   • sessionTimePct            = totalDurationMs > 0
+ *                                   ? Math.round((sessionTimeMs / totalDurationMs) * 100)
  *                                   : 0
- *                                 (CAN exceed 100 — parallel agents)
+ *                                 (CAN exceed 100 — parallel sessions)
  *
  * Guard: returns [] when `totalDurationMs` is not a positive number.
  *
@@ -26,47 +26,47 @@
  * human-readable rendering (e.g. 4000 → '4k').
  */
 
-import type { AgentEntity } from './event-types.js';
+import type { SessionEntity } from './event-types.js';
 import { formatTokenCount } from './format-token-count.js';
 
 /**
  * Compute the two-line workflow-completion summary.
  *
- * @param agents          The post-evolve projection's `agents` record.
+ * @param sessions        The post-evolve projection's `sessions` record.
  * @param totalDurationMs Wall-clock workflow duration in milliseconds.
  * @returns Two formatted lines, or `[]` when `totalDurationMs` is not a
  *          positive number.
  */
-export function formatWorkflowSummary(agents: Record<string, AgentEntity>, totalDurationMs: number): string[] {
+export function formatWorkflowSummary(sessions: Record<string, SessionEntity>, totalDurationMs: number): string[] {
   // Guard: totalDurationMs must be a positive finite number.
   if (!(typeof totalDurationMs === 'number' && totalDurationMs > 0)) {
     return [];
   }
 
-  // ── Tokens: sum every agent's input/output tokens. ──────────────────────
+  // ── Tokens: sum every session's input/output tokens. ────────────────────
   let totalInput = 0;
   let totalOutput = 0;
 
-  // ── Agent active time: only agents with BOTH startedAt & completedAt. ───
-  let agentTimeMs = 0;
+  // ── Session active time: only sessions with BOTH startedAt & completedAt. ─
+  let sessionTimeMs = 0;
 
-  for (const agent of Object.values(agents)) {
-    totalInput += agent.inputTokens;
-    totalOutput += agent.outputTokens;
+  for (const session of Object.values(sessions)) {
+    totalInput += session.inputTokens;
+    totalOutput += session.outputTokens;
 
-    const startedAt = agent.startedAt;
-    const completedAt = agent.completedAt;
+    const startedAt = session.startedAt;
+    const completedAt = session.completedAt;
     if (startedAt !== undefined && completedAt !== undefined) {
       const start = Date.parse(startedAt);
       const end = Date.parse(completedAt);
-      agentTimeMs += end - start;
+      sessionTimeMs += end - start;
     }
   }
 
-  const agentTimePct = totalDurationMs > 0 ? Math.round((agentTimeMs / totalDurationMs) * 100) : 0;
+  const sessionTimePct = totalDurationMs > 0 ? Math.round((sessionTimeMs / totalDurationMs) * 100) : 0;
 
   return [
     `📊 Tokens: ↑${formatTokenCount(totalInput)} in · ↓${formatTokenCount(totalOutput)} out`,
-    `⏱ Time: ${(totalDurationMs / 1000).toFixed(1)}s total · ${(agentTimeMs / 1000).toFixed(1)}s agent (${agentTimePct}%)`,
+    `⏱ Time: ${(totalDurationMs / 1000).toFixed(1)}s total · ${(sessionTimeMs / 1000).toFixed(1)}s session (${sessionTimePct}%)`,
   ];
 }

@@ -20,32 +20,14 @@ export interface StepDefinition<T = unknown> {
 }
 
 /**
- * Projection shape for a step within a task.
- * Steps have NO status — their rendered state (done / active / pending) is
- * DERIVED from their index vs the owning task's activeStepIndex:
- *   index <  activeStepIndex  → done
- *   index === activeStepIndex → active
- *   index >  activeStepIndex  → pending
- */
-export interface StepEntity {
-  name: string;
-  index: number; // 0-based position within the task
-  profile?: string; // profileId this step runs as
-  agentKey?: string; // key into projection.agents once an agent is spawned (undefined until spawned)
-  isReadOnly?: boolean;
-}
-
-/**
  * Projection shape for a task (read-model). Does NOT carry executor-only fields
- * (prompt, files, result, reviewFeedback, isCode, assignedAgent, profile).
+ * (prompt, files, result, reviewFeedback, worktree, assignedAgent, profile).
  */
 export interface TaskEntity {
   id: string;
   title: string;
   phaseId: string; // REQUIRED
   status: TaskStatus;
-  steps: StepEntity[]; // ordered; state derived from activeStepIndex
-  activeStepIndex?: number; // the single active step; undefined when none
   dependencies: string[]; // task ids
   startedAt?: number;
   completedAt?: string;

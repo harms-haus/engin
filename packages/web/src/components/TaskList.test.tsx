@@ -6,7 +6,7 @@
  * - Lists tasks in creation/registration order (NOT grouped by status)
  * - Status colors via CSS variables (active→current, complete→completed, ready→ready,
  *   blocked→blocked, failed→error, cancelled→muted)
- * - Active step display: "step X/Y: stepName"
+ * - Session count display: "N session(s)"
  * - Click handler calls selectTask(task.id)
  * - Selected task gets CSS class 'task-list__task--selected'
  * - Empty state when phase has no tasks
@@ -17,7 +17,7 @@ import '@testing-library/jest-dom/vitest';
 
 import { act, fireEvent, render } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { TaskEntity } from '../protocol-types';
+import type { SessionEntity, TaskEntity } from '../protocol-types';
 import { useWorkflowStore } from '../store/workflow-store';
 
 // ─── Constants ────────────────────────────────────────────────────────────
@@ -31,7 +31,6 @@ function makeTask(overrides: Partial<TaskEntity> & { id: string }): TaskEntity {
     title: overrides.id,
     phaseId: 'phase-1',
     status: 'ready',
-    steps: [],
     dependencies: [],
     startedAt: undefined,
     completedAt: undefined,
@@ -40,7 +39,11 @@ function makeTask(overrides: Partial<TaskEntity> & { id: string }): TaskEntity {
 }
 
 /** Seed the store with tasks and phases via applySnapshot. */
-function seedStore(tasks: Record<string, TaskEntity>, selectedPhaseId: string | null = 'phase-1'): void {
+function seedStore(
+  tasks: Record<string, TaskEntity>,
+  selectedPhaseId: string | null = 'phase-1',
+  sessions: Record<string, SessionEntity> = {},
+): void {
   useWorkflowStore.getState().applySnapshot(
     RUN_ID,
     {
@@ -51,10 +54,10 @@ function seedStore(tasks: Record<string, TaskEntity>, selectedPhaseId: string | 
       currentPhaseId: 'phase-1',
       completedPhaseIds: [],
       tasks,
-      agents: {},
+      sessions,
       sidebar: { title: '', indicator: '' },
       status: 'running',
-      stats: { totalTokens: 0, agentCount: 0 },
+      stats: { totalTokens: 0, sessionCount: 0 },
       runLog: [],
     },
     1,
@@ -64,16 +67,20 @@ function seedStore(tasks: Record<string, TaskEntity>, selectedPhaseId: string | 
 }
 
 /** Seed the store wrapped in act() so React flushes the re-render. */
-function seedStoreAct(tasks: Record<string, TaskEntity>, selectedPhaseId: string | null = 'phase-1'): void {
+function seedStoreAct(
+  tasks: Record<string, TaskEntity>,
+  selectedPhaseId: string | null = 'phase-1',
+  sessions: Record<string, SessionEntity> = {},
+): void {
   act(() => {
-    seedStore(tasks, selectedPhaseId);
+    seedStore(tasks, selectedPhaseId, sessions);
   });
 }
 
 /** Reset the store to initial state. */
 function resetStore(): void {
   useWorkflowStore.setState({
-    agentsById: {},
+    sessionsById: {},
     tasksById: {},
     phases: [],
     currentPhaseId: '',
@@ -84,13 +91,11 @@ function resetStore(): void {
     error: undefined,
     failedPhase: undefined,
     seq: 0,
-    stats: { totalTokens: 0, agentCount: 0 },
+    stats: { totalTokens: 0, sessionCount: 0 },
     workflowEventLog: [],
     selectedPhaseId: null,
     selectedTaskId: null,
-    selectedStepIndex: null,
     userPinnedPhase: false,
-    userPinnedStep: false,
     runs: [],
     selectedRunId: RUN_ID,
     runLogs: {},
@@ -134,10 +139,10 @@ describe('TaskList – empty / connecting states', () => {
           currentPhaseId: '',
           completedPhaseIds: [],
           tasks: {},
-          agents: {},
+          sessions: {},
           sidebar: { title: '', indicator: '' },
           status: 'running',
-          stats: { totalTokens: 0, agentCount: 0 },
+          stats: { totalTokens: 0, sessionCount: 0 },
           runLog: [],
         },
         1,
@@ -346,110 +351,141 @@ describe('TaskList – status colors via CSS', () => {
   });
 });
 
-describe('TaskList – active step display', () => {
+describe('TaskList – session count display', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     resetStore();
   });
 
-  it('shows step progress for an active task with activeStepIndex', () => {
+  it('shows session count for a task with sessions', () => {
     const tasks: Record<string, TaskEntity> = {
       't-1': makeTask({
         id: 't-1',
         title: 'Active Task',
         phaseId: 'phase-1',
         status: 'active',
-        steps: [
-          { name: 'plan', index: 0 },
-          { name: 'code', index: 1 },
-          { name: 'test', index: 2 },
-        ],
-        activeStepIndex: 1,
       }),
     };
+    const sessions: Record<string, SessionEntity> = {
+      s1: {
+        uid: 's1',
+        agentId: 'a1',
+        profile: 'coder',
+        phaseId: 'phase-1',
+        taskId: 't-1',
+        active: true,
+        log: [],
+        toolCallCount: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        taskTitle: '',
+        runnerRole: 'executor',
+        attempt: 1,
+      },
+      s2: {
+        uid: 's2',
+        agentId: 'a2',
+        profile: 'reviewer',
+        phaseId: 'phase-1',
+        taskId: 't-1',
+        active: true,
+        log: [],
+        toolCallCount: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        taskTitle: '',
+        runnerRole: 'reviewer',
+        attempt: 1,
+      },
+    };
 
-    seedStoreAct(tasks, 'phase-1');
+    seedStoreAct(tasks, 'phase-1', sessions);
 
     const { container } = render(<TaskList />);
-    expect(container.textContent).toContain('step 2/3: code');
+    expect(container.textContent).toContain('2 sessions');
   });
 
-  it('shows step 1/N when activeStepIndex is 0', () => {
+  it('shows "1 session" for a task with a single session', () => {
     const tasks: Record<string, TaskEntity> = {
       't-1': makeTask({
         id: 't-1',
-        title: 'First Step',
+        title: 'First Task',
         phaseId: 'phase-1',
         status: 'active',
-        steps: [
-          { name: 'init', index: 0 },
-          { name: 'finalize', index: 1 },
-        ],
-        activeStepIndex: 0,
       }),
     };
-
-    seedStoreAct(tasks, 'phase-1');
-
-    const { container } = render(<TaskList />);
-    expect(container.textContent).toContain('step 1/2: init');
-  });
-
-  it('shows step N/N when activeStepIndex is the last step', () => {
-    const tasks: Record<string, TaskEntity> = {
-      't-1': makeTask({
-        id: 't-1',
-        title: 'Last Step',
+    const sessions: Record<string, SessionEntity> = {
+      s1: {
+        uid: 's1',
+        agentId: 'a1',
+        profile: 'coder',
         phaseId: 'phase-1',
-        status: 'active',
-        steps: [
-          { name: 'a', index: 0 },
-          { name: 'b', index: 1 },
-          { name: 'c', index: 2 },
-        ],
-        activeStepIndex: 2,
-      }),
+        taskId: 't-1',
+        active: true,
+        log: [],
+        toolCallCount: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        taskTitle: '',
+        runnerRole: 'executor',
+        attempt: 1,
+      },
     };
 
-    seedStoreAct(tasks, 'phase-1');
+    seedStoreAct(tasks, 'phase-1', sessions);
 
     const { container } = render(<TaskList />);
-    expect(container.textContent).toContain('step 3/3: c');
+    expect(container.textContent).toContain('1 session');
   });
 
-  it('does not show step info when task is not active', () => {
+  it('does not show session count when task has no sessions', () => {
     const tasks: Record<string, TaskEntity> = {
       't-1': makeTask({
         id: 't-1',
         title: 'Ready Task',
         phaseId: 'phase-1',
         status: 'ready',
-        steps: [{ name: 'only', index: 0 }],
-        activeStepIndex: 0,
       }),
     };
 
     seedStoreAct(tasks, 'phase-1');
 
     const { container } = render(<TaskList />);
-    expect(container.textContent).not.toContain('step ');
+    expect(container.querySelector('.task-list__sessions')).not.toBeInTheDocument();
   });
 
-  it('does not show step info when activeStepIndex is undefined', () => {
+  it('shows session count only for the task it belongs to', () => {
     const tasks: Record<string, TaskEntity> = {
       't-1': makeTask({
         id: 't-1',
-        title: 'No Step',
+        title: 'Task 1',
         phaseId: 'phase-1',
         status: 'active',
-        steps: [{ name: 'only', index: 0 }],
       }),
     };
+    // Sessions with a different taskId
+    const sessions: Record<string, SessionEntity> = {
+      s1: {
+        uid: 's1',
+        agentId: 'a1',
+        profile: 'coder',
+        phaseId: 'phase-1',
+        taskId: 'other-task',
+        active: true,
+        log: [],
+        toolCallCount: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        taskTitle: '',
+        runnerRole: 'executor',
+        attempt: 1,
+      },
+    };
 
-    seedStoreAct(tasks, 'phase-1');
+    seedStoreAct(tasks, 'phase-1', sessions);
 
     const { container } = render(<TaskList />);
-    expect(container.textContent).not.toContain('step ');
+    expect(container.querySelector('.task-list__sessions')).not.toBeInTheDocument();
   });
 });
 
@@ -626,24 +662,39 @@ describe('TaskList – accessibility', () => {
     expect(items).toHaveLength(2);
   });
 
-  it('wraps step info in a span with class task-list__step', () => {
+  it('wraps session count in a span with class task-list__sessions', () => {
     const tasks: Record<string, TaskEntity> = {
       't-1': makeTask({
         id: 't-1',
         title: 'Active',
         phaseId: 'phase-1',
         status: 'active',
-        steps: [{ name: 'code', index: 0 }],
-        activeStepIndex: 0,
       }),
     };
+    const sessions: Record<string, SessionEntity> = {
+      s1: {
+        uid: 's1',
+        agentId: 'a1',
+        profile: 'coder',
+        phaseId: 'phase-1',
+        taskId: 't-1',
+        active: true,
+        log: [],
+        toolCallCount: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        taskTitle: '',
+        runnerRole: 'executor',
+        attempt: 1,
+      },
+    };
 
-    seedStoreAct(tasks, 'phase-1');
+    seedStoreAct(tasks, 'phase-1', sessions);
 
     const { container } = render(<TaskList />);
-    const stepSpan = container.querySelector('.task-list__step');
-    expect(stepSpan).toBeInTheDocument();
-    expect(stepSpan?.textContent).toContain('step 1/1: code');
+    const sessionsSpan = container.querySelector('.task-list__sessions');
+    expect(sessionsSpan).toBeInTheDocument();
+    expect(sessionsSpan?.textContent).toContain('1 session');
   });
 });
 
@@ -836,7 +887,7 @@ describe('TaskList – useElapsed live timer', () => {
     expect(container.querySelector('.task-list__elapsed')?.textContent).toBe('42s');
   });
 
-  it('renders title, step, elapsed, and deps together in a single body for an active task', () => {
+  it('renders title, sessions, elapsed, and deps together in a single body for an active task', () => {
     const tasks: Record<string, TaskEntity> = {
       'dep-a': makeTask({ id: 'dep-a', title: 'Dep A', phaseId: 'phase-2', status: 'complete' }),
       't-1': makeTask({
@@ -845,17 +896,32 @@ describe('TaskList – useElapsed live timer', () => {
         phaseId: 'phase-1',
         status: 'active',
         startedAt: 0,
-        steps: [{ name: 'code', index: 0 }],
-        activeStepIndex: 0,
         dependencies: ['dep-a'],
       }),
     };
-    seedStoreAct(tasks, 'phase-1');
+    const sessions: Record<string, SessionEntity> = {
+      s1: {
+        uid: 's1',
+        agentId: 'a1',
+        profile: 'coder',
+        phaseId: 'phase-1',
+        taskId: 't-1',
+        active: true,
+        log: [],
+        toolCallCount: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        taskTitle: '',
+        runnerRole: 'executor',
+        attempt: 1,
+      },
+    };
+    seedStoreAct(tasks, 'phase-1', sessions);
 
     const { container } = render(<TaskList />);
     const body = container.querySelector('.task-list__body');
     expect(body?.querySelector('.task-list__title')?.textContent).toBe('Active Task');
-    expect(body?.querySelector('.task-list__step')?.textContent).toContain('step 1/1: code');
+    expect(body?.querySelector('.task-list__sessions')?.textContent).toContain('1 session');
     expect(body?.querySelector('.task-list__elapsed')?.textContent).toBe('<1s');
     expect(body?.querySelector('.task-list__deps')).toBeInTheDocument();
   });

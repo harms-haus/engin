@@ -273,17 +273,117 @@ Same as `resolveApiKey` but throws with a helpful error listing expected env var
 
 ## Single-agent task primitive
 
-### `runStepTask<T>(opts: RunStepTaskOptions): Promise<T>`
+### `runStepTask<T>(opts: RunStepTaskOptions): Promise<T>` ⚠️ Deprecated
 
 Run one agent as a one-step task. See
 [Building a new workflow → `runStepTask`](../guides/building-workflows.md#primitive-1--single-agent-tasks-with-runsteptask)
 and [Types reference → `RunStepTaskOptions`](types.md#runsteptaskoptions) for the full
 lifecycle and options.
 
+> **Deprecated.** `runStepTask` remains exported but uses the old step-execution path
+> (`spawnAgent` / `buildPrompt`) that predates the session-first engine. New workflows
+> should prefer [`runSession`](#runsession) for single-session tasks, or
+> [`RunnerPool`](#runnerpool) with `singleSession` for tasks that participate in the
+> phase/task/session hierarchy.
+
+## Session primitive
+
+### `runSession(ctx: RunSessionContext): Promise<SessionResult>`
+
+The single-session primitive. Runs one agent session with full lifecycle management:
+idempotency check (`.complete` sentinel + `result.json`), agent session creation via the
+plugin registry, prompt delivery (text / structured / filesystem output mode), response
+parsing & atomic result persistence, activity-based watchdog timeout, and
+`onSessionStart` / `onSessionComplete` lifecycle callbacks. Throws `SessionError`
+(classified by the error classifier) on any failure.
+
+`RunSessionContext` carries: `spec` (`SessionSpec`), `sessionBaseDir`, `cwd`, optional
+`worktreeCwd`, `phaseId`, `agentId`, optional `apiKeys`, `onStatus`, `activeSessions`,
+`profiles`, `signal`, `watchdogTimeoutMs`, and `watchdogMaxResumes`.
+
+`SessionSpec` fields: `id` (deterministic session identifier), `profile` (profile id),
+`prompt`, optional `schema` (Zod), `outputMode` (`'text'` | `'structured'` | `'filesystem'`),
+optional `isReadOnly`, `runnerRole` (e.g. `'executor'`, `'reviewer'`), and `attempt`
+(1-based).
+
+`SessionResult` is a discriminated union: `{ mode: 'text'; text }`,
+`{ mode: 'structured'; data }`, or `{ mode: 'filesystem'; files }`.
+
+### `SessionError`
+
+Error class thrown by `runSession`. Carries a `classification: Classification` (from the
+error classifier) and a `transient: boolean` shortcut (`classification.retryable`).
+
+### `clearTaskSessions(sessionBaseDir, taskId): void`
+
+Recursively delete every persisted session for a task. No-op when the directory does not
+exist.
+
+## Runner pool
+
+### `RunnerPool`
+
+The concurrent task execution pool for the session-first engine. Replaces `LanePool` +
+`Scheduler`. Key differences: no `getStepsForTask` (only `getRunnerForTask`), no
+`maxConcurrentLanes` / `laneWaitTimeoutMs` (replaced by `maxConcurrentSessions` +
+`modelConcurrency` via `SessionGate`), and runners return `TaskOutcome` directly (no
+`completeTask`/`failTask` callbacks on the context).
+
+Constructor takes `RunnerPoolOptions`; `run()` returns
+`{ completedTasks: number; failedTasks: number }`. Uses a drain-loop model: all ready
+tasks are claimed and their runner coroutines started immediately; the `SessionGate` is
+the sole concurrency cap — runners gate themselves via `ctx.gate.run()` so at most
+`maxConcurrentSessions` sessions execute simultaneously.
+
+See [Types reference](types.md) for `RunnerPoolOptions` and [Building a new workflow →
+RunnerPool](../guides/building-workflows.md#primitive-2--concurrent-tasks-with-runnerpool)
+for the full lifecycle and authoring patterns.
+
+### `SessionGate`
+
+Two-level (total + per-model) FIFO concurrency gate for LLM sessions. Callers acquire via
+`gate.run(profile, fn)` — the gate holds the slot for the duration of `fn`, then releases
+automatically (RAII). There is no manual acquire/release API.
+
+Constructor takes `SessionGateOptions` (`{ total, perModel }`) and an optional `AbortSignal`.
+`gate.run(profile, fn)` resolves with `fn`'s result; the per-model key is
+`${provider}:${model}` (or `${provider}:${model}:${agent}` when an agent-specific cap
+exists).
+
+## Composable runners
+
+All runners are factory functions returning a `Runner` (defined in
+`packages/engine/src/pool/runners/`). Each runner receives a `RunnerContext` and returns
+a `Promise<TaskOutcome>` where `TaskOutcome = { status: 'completed' } | { status: 'failed';
+error?: string }`.
+
+| Runner              | Signature                                                                  | Behaviour                                                                                                                                                              |
+| ------------------- | -------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `singleSession`     | `(spec: Omit<SessionSpec, 'id'> & { role: string }) => Runner`             | Runs exactly one session via the session primitive. Session id: `${taskId}/${role}#${attempt}`. Returns `{ status: 'completed' }` on success; rethrows `SessionError`. |
+| `linearRunner`      | `(children: Runner[]) => Runner`                                           | Runs children in strict sequential order. Short-circuits on the first `{ status: 'failed' }` child.                                                                    |
+| `reviewRunner`      | `(executeSpec, reviewSpec, options?) => Runner`                            | Implements the execute→review loop: run execute, feed output into review prompt; on rejection, append feedback and re-run execute. Up to `maxRounds` (default 3).      |
+| `councilRunner`     | `(workers: SessionSpec[], synthesizer: SessionSpec) => Runner`             | Runs worker sessions in parallel via `Promise.allSettled`; feeds concatenated outputs into a synthesizer session. All workers failing → `{ status: 'failed' }`.        |
+| `parallelRunner`    | `(children: Runner[]) => Runner`                                           | Starts all children as concurrent coroutines (`Promise.allSettled`). Returns the first failed child's outcome (by array index); siblings are not cancelled.            |
+| `mapRunner`         | `(options: MapRunnerOptions) => Runner`                                    | Fans out over a static `items` array, running one session per item with an optional concurrency cap. Session id: `${taskId}/map[${index}].${role}#${attempt}`.         |
+| `branchRunner`      | `(options: BranchRunnerOptions) => Runner`                                 | Evaluates branch conditions in order (sync or async); runs the first matching child Runner. Falls back to `default` or fails if no match.                              |
+| `coordinatorRunner` | `(coordinatorSpec: SessionSpec, opts: CoordinatorRunnerOptions) => Runner` | Runs a coordinator session (must fully resolve first), then delegates to `opts.childRunner(coordinatorResult)` to build + run children.                                |
+| `coalescingRunner`  | `(coordinatorSpec: SessionSpec, opts: CoalescingRunnerOptions) => Runner`  | Coordinator → children → coordinator loop. Each round the coordinator returns `{ done, children?, feedback? }`; `done: true` → completed. Loops to `maxRounds`.        |
+
+### Deprecated runners
+
+The following runners from the old step-execution path (the removed `LanePool` /
+`Scheduler`) remain exported but are **deprecated** — new code should use the composable
+runners above with [`RunnerPool`](#runnerpool).
+
+| Runner              | Notes                                                                                                                                        |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `linearStepsRunner` | Wraps a `StepDefinition[]` into a `TaskRunner` with reviewer back-up retry. Used by the removed `LanePool`. Deprecated — use `linearRunner`. |
+| `reflectionRunner`  | Two-step draft→critic loop with session resume. Deprecated — prefer `reviewRunner`.                                                          |
+
 ## Tracking
 
 See [Event store & status](event-store.md) for `EventStore`, `createStoreCallbacks`, `evolve`,
-and the projection. See [Task pool & execution](task-pool.md) for `LanePool` and `TaskTracker`.
+and the projection. See [Task pool & execution](task-pool.md) for `RunnerPool` and `TaskTracker`.
 
 The persisted-workflow-state classes are also exported:
 
@@ -313,7 +413,8 @@ and [Worktrees reference](worktrees.md) for the full method table and semantics.
 
 ### `createLintValidationGate(worktreePath): () => Promise<{ error?: string } | undefined>`
 
-Returns a `validateOutput` callback for `runStepTask` / `runMultiStepTask`. Runs
+Returns a `validateOutput` callback for the deprecated `runStepTask` / `runMultiStepTask`
+primitives (the session-first engine validates output via runner specs instead). Runs
 `eslint --fix` + `prettier --write` (fire-and-forget), then a final `eslint` check;
 returns `{ error }` when lint errors remain, else `undefined`. The argument is the
 directory to lint — bind it to the directory the agent actually writes to (see the

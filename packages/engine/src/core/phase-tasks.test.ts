@@ -348,7 +348,7 @@ describe('runMultiStepTask — attempt context + session resume', () => {
       resumeSessionPath?: string;
       sessionDir?: string;
     }> = [];
-    // Capture onAgentSpawn calls so we can pin the sessionPath contract.
+    // Capture onSessionStart calls so we can pin the sessionPath contract.
     const spawnCalls: Array<{ agentId: string; sessionPath: unknown }> = [];
 
     mockPlugin.createSession.mockImplementation(
@@ -378,7 +378,7 @@ describe('runMultiStepTask — attempt context + session resume', () => {
       title: 'In-Memory Fallback',
       cwd: '/tmp/project',
       onStatus: {
-        onAgentSpawn: (e) => spawnCalls.push({ agentId: e.agentId, sessionPath: e.sessionPath }),
+        onSessionStart: (e) => spawnCalls.push({ agentId: e.agentId, sessionPath: e.sessionPath }),
       },
       steps: [
         { stepName: 'plan', profileId: 'planner', prompt: 'Write plan' },
@@ -409,7 +409,7 @@ describe('runMultiStepTask — attempt context + session resume', () => {
     expect(plannerCalls[1].resumeSessionPath).toBeUndefined();
 
     // Restored contract: even on the in-memory path (sessionBaseDir absent,
-    // sessionFile undefined), onAgentSpawn's sessionPath must NEVER be
+    // sessionFile undefined), onSessionStart's sessionPath must NEVER be
     // undefined — it falls back to the runtime's sessionId so consumers that
     // previously received a non-empty string still do. One spawn per session
     // creation (4 total: planner×2 + reviewer×2, since the reviewer rejects
@@ -437,7 +437,7 @@ describe('runMultiStepTask — attempt context + session resume', () => {
 
 describe('runMultiStepTask — onDecision observe hook (hookRegistry)', () => {
   /** Minimal fake HookRegistry. `hasSubscribers` returns true ONLY for
-   *  'onDecision' so other seams (onStructuredOutput, beforeStepPrompt)
+   *  'onDecision' so other seams (onStructuredOutput, beforeSessionPrompt)
    *  stay dormant. */
   function makeFakeRegistry(hasSubs: boolean) {
     return {

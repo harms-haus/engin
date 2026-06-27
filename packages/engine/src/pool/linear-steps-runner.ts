@@ -101,7 +101,7 @@ export function linearStepsRunner(steps: StepDefinition[]): TaskRunner {
         // (registered by LanePool.run() when an `auditLog` is available)
         // appends a `decision` event to the durable AuditLog. Zero behavior
         // change when no `hookRegistry` or no subscribers. The hook context
-        // mirrors the `beforeStepPrompt` seam (same cwd / workDir / signal).
+        // mirrors the `beforeSessionPrompt` seam (same cwd / workDir / signal).
         if (ctx.hookRegistry?.hasSubscribers('onDecision')) {
           await ctx.hookRegistry.invokeObserve(
             'onDecision',

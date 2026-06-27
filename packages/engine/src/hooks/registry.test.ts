@@ -752,16 +752,16 @@ describe('clone() — per-phase registry isolation', () => {
 
   it('registering on the clone does NOT affect the original', () => {
     const original = makeRegistry();
-    // Original has no subscribers for beforeStepPrompt.
-    expect(original.hasSubscribers('beforeStepPrompt')).toBe(false);
+    // Original has no subscribers for beforeSessionPrompt.
+    expect(original.hasSubscribers('beforeSessionPrompt')).toBe(false);
 
     const cloned = original.clone();
-    cloned.register(asHooks({ beforeStepPrompt: () => 'clone-only' }));
+    cloned.register(asHooks({ beforeSessionPrompt: () => 'clone-only' }));
 
     // Original still has no subscribers — the clone registration leaked nothing.
-    expect(original.hasSubscribers('beforeStepPrompt')).toBe(false);
+    expect(original.hasSubscribers('beforeSessionPrompt')).toBe(false);
     // Clone does have the subscriber.
-    expect(cloned.hasSubscribers('beforeStepPrompt')).toBe(true);
+    expect(cloned.hasSubscribers('beforeSessionPrompt')).toBe(true);
   });
 
   it('registering on the original after cloning does NOT affect the clone', () => {
@@ -816,16 +816,16 @@ describe('clone() — per-phase registry isolation', () => {
     const cloneA = original.clone();
     const cloneB = original.clone();
 
-    cloneA.register(asHooks({ beforeStepPrompt: () => 'A-only' }));
+    cloneA.register(asHooks({ beforeSessionPrompt: () => 'A-only' }));
 
     // A's registration is not visible to B or original.
-    expect(cloneA.hasSubscribers('beforeStepPrompt')).toBe(true);
-    expect(cloneB.hasSubscribers('beforeStepPrompt')).toBe(false);
-    expect(original.hasSubscribers('beforeStepPrompt')).toBe(false);
+    expect(cloneA.hasSubscribers('beforeSessionPrompt')).toBe(true);
+    expect(cloneB.hasSubscribers('beforeSessionPrompt')).toBe(false);
+    expect(original.hasSubscribers('beforeSessionPrompt')).toBe(false);
 
     // B's registration is not visible to A or original.
-    cloneB.register(asHooks({ beforeStepPrompt: () => 'B-only' }));
-    expect(cloneA.hasSubscribers('beforeStepPrompt')).toBe(true); // still just A's
-    expect(original.hasSubscribers('beforeStepPrompt')).toBe(false);
+    cloneB.register(asHooks({ beforeSessionPrompt: () => 'B-only' }));
+    expect(cloneA.hasSubscribers('beforeSessionPrompt')).toBe(true); // still just A's
+    expect(original.hasSubscribers('beforeSessionPrompt')).toBe(false);
   });
 });

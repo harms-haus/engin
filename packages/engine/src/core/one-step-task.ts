@@ -69,14 +69,14 @@ export interface RunStepTaskOptions {
   rendererRegistry?: RendererRegistry;
   /**
    * Optional registry of workflow hooks. When provided AND it has subscribers
-   * for `beforeStepPrompt`, the step prompt is passed through the pipeline
+   * for `beforeSessionPrompt`, the step prompt is passed through the pipeline
    * hook (seeded with the original prompt) and the pipeline's return value
    * replaces the prompt sent to the agent. Absent or no subscribers → zero
    * behavior change.
    */
   hookRegistry?: HookRegistry;
   /**
-   * Files to inline into the prompt via the engine's default `beforeStepPrompt` /
+   * Files to inline into the prompt via the engine's default `beforeSessionPrompt` /
    * `collectContext` hook (seeded onto the synthesized `task.files`). Absent or
    * empty → no file context (unless a subscriber contributes it another way).
    */
@@ -141,7 +141,6 @@ export async function runStepTask<T = unknown>(opts: RunStepTaskOptions): Promis
     phaseId,
     title,
     dependencies: [],
-    steps: [{ name: stepName, profileId, isReadOnly }],
   });
 
   // 3. Signal start
@@ -191,8 +190,6 @@ export async function runStepTask<T = unknown>(opts: RunStepTaskOptions): Promis
         cwd: effectiveCwd,
         phaseId,
         taskId,
-        stepIndex: 0,
-        stepName,
         isReadOnly,
         apiKeys,
         allowedWriteDirs: effectiveAllowedWriteDirs,
@@ -202,7 +199,7 @@ export async function runStepTask<T = unknown>(opts: RunStepTaskOptions): Promis
       profiles,
     );
 
-    // 7b. `beforeStepPrompt` hook seam: when a hookRegistry with subscribers
+    // 7b. `beforeSessionPrompt` hook seam: when a hookRegistry with subscribers
     //     is threaded in, the pipeline transforms the prompt (seeded with the
     //     original prompt) and its return value replaces the prompt sent to
     //     the agent. Mirrors step-execution.ts's hook seam. Zero behavior
@@ -219,15 +216,16 @@ export async function runStepTask<T = unknown>(opts: RunStepTaskOptions): Promis
       dependencies: [],
       status: 'ready',
       phaseId,
+      worktree: 'none',
     };
     const step: StepDefinition = {
       name: stepName,
       profileId,
       isReadOnly,
     };
-    const effectivePrompt = hookRegistry?.hasSubscribers('beforeStepPrompt')
+    const effectivePrompt = hookRegistry?.hasSubscribers('beforeSessionPrompt')
       ? ((await hookRegistry.invokePipeline(
-          'beforeStepPrompt',
+          'beforeSessionPrompt',
           prompt,
           { task, step, prompt, cwd: effectiveCwd, worktreeCwd: effectiveCwd },
           { registry: hookRegistry, cwd: effectiveCwd, workDir: cwd, signal },
@@ -248,7 +246,7 @@ export async function runStepTask<T = unknown>(opts: RunStepTaskOptions): Promis
       if (hookRegistry?.hasSubscribers('onStructuredOutput')) {
         await hookRegistry.invokeObserve(
           'onStructuredOutput',
-          { agentId: taskId, output: structuredResult.result, taskId, phaseId, stepIndex: 0 },
+          { agentId: taskId, output: structuredResult.result, taskId, phaseId, runnerRole: profileId, attempt: 0 },
           { registry: hookRegistry, cwd: effectiveCwd, workDir: cwd, signal },
         );
       }

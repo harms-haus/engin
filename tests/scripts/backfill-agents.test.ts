@@ -1,8 +1,8 @@
 /**
- * Tests for `reconstructAgents` from scripts/backfill-agents.ts
+ * Tests for `reconstructAgents` from scripts/backfill-sessions.ts
  *
  * TDD — these tests describe the desired behavior AFTER the fix:
- * - reconstructAgents should also infer non-implementing agents from
+ * - reconstructAgents should also infer non-implementing sessions from
  *   `structured_output` and `decision` audit events
  * - Known agentId → phase mapping:
  *     "scout-coordinator" / "scout-*" → "scouting"
@@ -24,6 +24,7 @@ import { describe, expect, it } from 'bun:test';
 // After the implementation, this import will resolve. For now it fails
 // because (a) reconstructAgents is not exported and (b) the script's
 // top-level main() runs on import — both are expected TDD failures.
+import type { PersistedAgentRecord } from '../../scripts/backfill-agents.js';
 import { reconstructAgents } from '../../scripts/backfill-agents.js';
 
 // ── Shared type helpers (mirrors script-internal types) ─────────────────
@@ -121,7 +122,7 @@ function decision(
 describe('reconstructAgents', () => {
   // ── 1. Basic existing behavior ──────────────────────────────────────
 
-  it('reconstructs agents from agent_start events', () => {
+  it('reconstructs sessions from agent_start events', () => {
     const events: AuditEvent[] = [
       agentStart('lane-0', { profile: 'coder', phase: 'implementing', taskId: 'task-1' }),
       agentEnd('lane-0', { taskId: 'task-1', timestamp: '2025-01-15T10:10:00.000Z' }),
@@ -153,11 +154,11 @@ describe('reconstructAgents', () => {
     expect(result[0].phase).toBe('implementing');
   });
 
-  // ── 3. Infer non-implementing agents from structured_output ────────
+  // ── 3. Infer non-implementing sessions from structured_output ────────
 
-  it('infers non-implementing agents from structured_output events', () => {
+  it('infers non-implementing sessions from structured_output events', () => {
     const events: AuditEvent[] = [
-      // No agent_start events — these agents were never recorded via agent_start
+      // No agent_start events — these sessions were never recorded via agent_start
       structuredOutput('scout-coordinator', { reports: [] }),
       structuredOutput('scouting-reviewer', { approved: true }),
       structuredOutput('planner', { tasks: [] }),
@@ -170,7 +171,7 @@ describe('reconstructAgents', () => {
 
     expect(result).toHaveLength(6);
 
-    const byId = Object.fromEntries(result.map((r) => [r.agentId, r]));
+    const byId = Object.fromEntries(result.map((r: PersistedAgentRecord) => [r.agentId, r]));
 
     expect(byId['scout-coordinator']).toBeDefined();
     expect(byId['scout-coordinator'].phase).toBe('scouting');
@@ -191,9 +192,9 @@ describe('reconstructAgents', () => {
     expect(byId['title-generator'].phase).toBe('initialization');
   });
 
-  // ── 4. Infer agents from decision events ────────────────────────────
+  // ── 4. Infer sessions from decision events ────────────────────────────
 
-  it('infers agents from decision events', () => {
+  it('infers sessions from decision events', () => {
     const events: AuditEvent[] = [
       decision('scout-coordinator', 'proceed', 'Found good candidates'),
       decision('planner', 'approved', 'Plan looks solid'),
@@ -203,7 +204,7 @@ describe('reconstructAgents', () => {
 
     expect(result).toHaveLength(2);
 
-    const byId = Object.fromEntries(result.map((r) => [r.agentId, r]));
+    const byId = Object.fromEntries(result.map((r: PersistedAgentRecord) => [r.agentId, r]));
 
     expect(byId['scout-coordinator']).toBeDefined();
     expect(byId['scout-coordinator'].phase).toBe('scouting');
@@ -225,7 +226,7 @@ describe('reconstructAgents', () => {
     const result = reconstructAgents(events);
 
     // Should have exactly one record for scout-coordinator
-    const scout = result.filter((r) => r.agentId === 'scout-coordinator');
+    const scout = result.filter((r: PersistedAgentRecord) => r.agentId === 'scout-coordinator');
     expect(scout).toHaveLength(1);
 
     // Phase must stay as 'custom-phase' from agent_start, NOT 'scouting' from inference
@@ -344,9 +345,9 @@ describe('reconstructAgents', () => {
     expect(result[0].completedAt).toBe('2025-01-15T10:10:00.000Z');
   });
 
-  // ── 11. isInferredScoutAgent path: scout-N agents ──────────────────
+  // ── 11. isInferredScoutAgent path: scout-N sessions ──────────────────
 
-  it('infers scout-N agents from structured_output events', () => {
+  it('infers scout-N sessions from structured_output events', () => {
     const events: AuditEvent[] = [
       structuredOutput('scout-1', { results: [] }),
       structuredOutput('scout-2', { results: [] }),
@@ -368,7 +369,7 @@ describe('reconstructAgents', () => {
     expect(scout2!.profile).toBe('');
   });
 
-  it('infers scout-N agents from decision events', () => {
+  it('infers scout-N sessions from decision events', () => {
     const events: AuditEvent[] = [decision('scout-1', 'proceed', 'Good candidates found')];
 
     const result = reconstructAgents(events);
@@ -394,9 +395,7 @@ describe('reconstructAgents', () => {
   });
 
   it('creates minimal record for agent_end with stepIndex when no matching start event exists', () => {
-    const events: AuditEvent[] = [
-      agentEnd('lane-0', { taskId: 'task-1', stepIndex: 2, timestamp: '2025-01-15T10:10:00.000Z' }),
-    ];
+    const events: AuditEvent[] = [agentEnd('lane-0', { taskId: 'task-1', timestamp: '2025-01-15T10:10:00.000Z' })];
 
     const result = reconstructAgents(events);
 

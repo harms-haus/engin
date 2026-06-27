@@ -75,33 +75,32 @@ describe('docs/guides/building-workflows.md — createHarness removal', () => {
       expect(lifecycle.toLowerCase()).toContain('agent plugin');
     });
 
-    it('still fires onAgentSpawn at stepIndex 0', () => {
-      expect(lifecycle).toContain('onAgentSpawn');
-      expect(lifecycle).toContain('stepIndex: 0');
+    it('still fires onSessionStart (session id derived from taskId)', () => {
+      expect(lifecycle).toContain('onSessionStart');
     });
   });
 
   // ── Lane-processing narrative (around line 273) ──────────────────────────
 
-  describe('lane-processing narrative wording', () => {
-    const section = extractBlock(guide, '### How a lane processes a task');
+  describe('pool-processing narrative wording', () => {
+    const section = extractBlock(guide, '### How `RunnerPool` processes a task');
 
-    it('contains the "How a lane processes a task" section', () => {
+    it('contains the "How RunnerPool processes a task" section', () => {
       expect(section).not.toBe('');
-      expect(section).toContain('How a lane processes a task');
+      expect(section).toContain('How `RunnerPool` processes a task');
     });
 
     it('does not reference createHarness', () => {
       expect(section).not.toContain('createHarness');
     });
 
-    it('says "agent session" not "harness session"', () => {
-      expect(section).toContain('agent session');
+    it('says "session" not "harness session"', () => {
+      expect(section).toContain('session');
       expect(section).not.toContain('harness session');
     });
 
-    it('references the agent plugin', () => {
-      expect(section.toLowerCase()).toContain('agent plugin');
+    it('references getRunnerForTask as the runner resolution', () => {
+      expect(section).toContain('getRunnerForTask');
     });
   });
 

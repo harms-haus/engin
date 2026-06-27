@@ -119,7 +119,7 @@ interface ManagerInstance {
 // The complete set of PRE-EXISTING core wildcard exports — none may be removed.
 // NOTE: `harness-factory.js` and `write-sandbox.js` were removed from the barrel
 // (harness-factory.js was deleted entirely; write-sandbox moved to the adapter
-// directory under agents/pi-coding-agent/), so they are excluded here.
+// directory under sessions/pi-coding-agent/), so they are excluded here.
 const ORIGINAL_CORE_SPECIFIERS = [
   'agent-loop.js',
   'config.js',

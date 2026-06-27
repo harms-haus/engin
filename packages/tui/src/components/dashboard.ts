@@ -1,18 +1,35 @@
-import { type Component, Key, matchesKey, truncateToWidth } from '@earendil-works/pi-tui';
-import { isTerminalTaskStatus, pickMostRecentlyStartedActive, type WorkflowProjection } from '@engin/shared';
+import { Key, matchesKey, truncateToWidth, type Component } from '@earendil-works/pi-tui';
+import {
+  isTerminalTaskStatus,
+  pickMostRecentlyStartedActive,
+  selectNextSession,
+  type SessionEntity,
+  type WorkflowProjection,
+} from '@engin/shared';
 import { borderLine } from '../theme.js';
-import { AgentLogWidget, computeNextAgentStepIndex } from './agent-log-widget.js';
+import { AgentLogWidget } from './agent-log-widget.js';
 import { PhaseBar } from './phase-bar.js';
 import { TaskListWidget } from './task-list-widget.js';
+
+// ─── Types ────────────────────────────────────────────────────────────────
+
+/**
+ * Pick the most-recently-started session (greatest `startedAt`).
+ * ISO-8601-Z timestamps are lexicographically sortable, so `>` gives the
+ * most-recently-started entry.
+ */
+function pickMostRecentlyStarted(sessions: SessionEntity[]): SessionEntity {
+  return sessions.reduce((best, a) => ((a.startedAt ?? '') > (best.startedAt ?? '') ? a : best));
+}
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface DashboardSelection {
   selectedPhaseId: string | null;
   selectedTaskId: string | null;
-  selectedStepIndex: number | null;
+  selectedSessionId: string | null;
   userPinnedPhase: boolean;
-  userPinnedStep: boolean;
+  userPinnedSession: boolean;
 }
 
 // ─── Dashboard Component ────────────────────────────────────────────────────
@@ -25,21 +42,21 @@ export class Dashboard implements Component {
   private _selection: DashboardSelection = {
     selectedPhaseId: null,
     selectedTaskId: null,
-    selectedStepIndex: null,
+    selectedSessionId: null,
     userPinnedPhase: false,
-    userPinnedStep: false,
+    userPinnedSession: false,
   };
 
   /** Cached ordered phase IDs used for keyboard navigation. */
   private _phaseIds: string[] = [];
 
-  /** Cached step entities for the currently selected task (needed for tab navigation). */
-  private _steps: { index: number; agentKey?: string }[] = [];
+  /** Cached session list (sessions for the selected task) for session tab cycling (B9). */
+  private _sessions: SessionEntity[] = [];
 
   /**
    * Last projection pushed via syncFromProjection. Retained so handleInput
    * can re-apply the current selection to the child widgets (filter tasks by
-   * phase, push the selected task's steps/agents) and invalidate them for an
+   * phase, push the selected task's sessions) and invalidate them for an
    * immediate re-render — without waiting for the next store event.
    */
   private _lastProjection: WorkflowProjection | null = null;
@@ -67,13 +84,13 @@ export class Dashboard implements Component {
   }
 
   /**
-   * Force-reset task/step selection so the next sync picks fresh defaults.
+   * Force-reset task/session selection so the next sync picks fresh defaults.
    * Phase selection is preserved.
    */
   forceReselect(): void {
     this._selection.selectedTaskId = null;
-    this._selection.selectedStepIndex = null;
-    this._selection.userPinnedStep = false;
+    this._selection.selectedSessionId = null;
+    this._selection.userPinnedSession = false;
   }
 
   getComputedHeight(): number {
@@ -99,12 +116,13 @@ export class Dashboard implements Component {
    *     When the selected task completes (or fails/cancels) and other active
    *     tasks remain, re-select the most-recently-started remaining active
    *     task; if no active task remains, keep the completed task selected.
-   *   - STEP FOLLOW: auto-advance to activeStepIndex unless user pinned.
+   *   - SESSION FOLLOW: auto-select the most-recently-started session for the
+   *     selected task unless the user pinned a session.
    */
   syncFromProjection(projection: WorkflowProjection): void {
     // Capture the previous projection BEFORE ingesting the new one so the
     // follow rules below can detect transitions (currentPhaseId advance,
-    // task status change, activeStepIndex advance).
+    // task status change).
     const oldProjection = this._lastProjection;
 
     // ── Phase bar ──
@@ -131,8 +149,8 @@ export class Dashboard implements Component {
         // User was synced with the active phase AND the active phase advanced → follow.
         this._selection.selectedPhaseId = projection.currentPhaseId;
         this._selection.selectedTaskId = null;
-        this._selection.selectedStepIndex = null;
-        this._selection.userPinnedStep = false;
+        this._selection.selectedSessionId = null;
+        this._selection.userPinnedSession = false;
       }
       // Else: user is reviewing a completed phase or has navigated to a
       // different phase — leave selectedPhaseId as-is (do not pull them back).
@@ -145,7 +163,7 @@ export class Dashboard implements Component {
 
   /**
    * Push the current selection state into the child widgets (task filter,
-   * task-follow, step-follow, agent-log steps/agents) and invalidate them so
+   * task-follow, session-follow, agent-log sessions) and invalidate them so
    * the next render reflects the selection. Does NOT run the phase-follow rule
    * (that mutates selection and only runs on store events).
    *
@@ -178,8 +196,8 @@ export class Dashboard implements Component {
         const next = pickMostRecentlyStartedActive(phaseTasks);
         if (next) {
           this._selection.selectedTaskId = next.id;
-          this._selection.selectedStepIndex = null;
-          this._selection.userPinnedStep = false;
+          this._selection.selectedSessionId = null;
+          this._selection.userPinnedSession = false;
         }
       }
     }
@@ -188,57 +206,67 @@ export class Dashboard implements Component {
       const activeTask = phaseTasks.find((t) => t.status === 'active');
       const newTaskId = activeTask?.id ?? phaseTasks[0]?.id ?? null;
       if (newTaskId !== this._selection.selectedTaskId) {
-        this._selection.selectedStepIndex = null;
-        this._selection.userPinnedStep = false;
+        this._selection.selectedSessionId = null;
+        this._selection.userPinnedSession = false;
       }
       this._selection.selectedTaskId = newTaskId;
     }
     // else keep selected task
 
-    // ── STEP FOLLOW (req 5) ──
+    // ── SESSION FOLLOW (B9) ──
     const selectedTask = phaseTasks.find((t) => t.id === this._selection.selectedTaskId);
     if (selectedTask) {
-      const activeStepIndex = selectedTask.activeStepIndex ?? 0;
-      const steps = selectedTask.steps ?? [];
-
-      // Cache steps for tab navigation
-      this._steps = steps;
-
-      if (this._selection.selectedStepIndex === null) {
-        this._selection.selectedStepIndex = activeStepIndex;
-      } else if (!this._selection.userPinnedStep && !this._agentLog.isExpanded()) {
-        // Not explicitly pinned (Tab) and not reviewing (expanded) → follow
-        // to the active step. userPinnedStep distinguishes explicit Tab
-        // navigation from being left behind while expanded.
-        this._selection.selectedStepIndex = activeStepIndex;
-      }
-      // Otherwise keep selectedStepIndex unchanged: the user pinned the step
-      // via Tab (userPinnedStep = true) OR the agent log is expanded (reviewing).
-
-      // IMPORTANT: ALWAYS push the selection to the agent log, regardless of
-      // expanded state, so the tab-bar highlight stays in sync for explicit
-      // navigation (e.g. Tab while expanded). AgentLogWidget.setSelectedStepIndex
-      // guards _scrollOffset so it will NOT reset while expanded.
-      this._agentLog.setSteps(steps);
-      this._agentLog.setActiveStepIndex(activeStepIndex);
-      if (this._selection.selectedStepIndex !== null) {
-        this._agentLog.setSelectedStepIndex(this._selection.selectedStepIndex);
-      }
-
-      // Filter agents by selected task and phase
-      const stepAgents = Object.values(projection.agents).filter(
+      // Filter sessions by selected task and phase
+      const taskSessions = Object.values(projection.sessions).filter(
         (a) => a.taskId === selectedTask.id && a.phaseId === effectivePhaseId,
       );
-      this._agentLog.setAgents(stepAgents);
+
+      this._agentLog.setAgents(taskSessions);
+
+      // Cache sessions for Tab cycling.
+      this._sessions = taskSessions;
+
+      if (taskSessions.length === 0) {
+        this._selection.selectedSessionId = null;
+      } else if (
+        this._selection.selectedSessionId === null ||
+        (!this._selection.userPinnedSession && !this._agentLog.isExpanded())
+      ) {
+        // Initial selection (null → pick most recent, even while expanded) OR
+        // follow update (not pinned, not reviewing). ISO-8601-Z timestamps are
+        // lexicographically sortable, so `>` gives the most-recently-started.
+        const mostRecent = pickMostRecentlyStarted(taskSessions);
+        this._selection.selectedSessionId = mostRecent.uid;
+      }
+      // Else: user pinned the session via Tab (userPinnedSession = true) OR
+      // the agent log is expanded with an existing selection (reviewing).
+
+      // Push sessions + selection to the agent log (B9).
+      this._agentLog.setSessions(taskSessions);
+      this._agentLog.setSelectedSessionId(this._selection.selectedSessionId);
+      // activeSessionId = the most-recently-started session (same as follow would pick).
+      if (taskSessions.length > 0) {
+        const activeSession = pickMostRecentlyStarted(taskSessions);
+        this._agentLog.setActiveSessionId(activeSession.uid);
+      }
     } else {
-      this._steps = [];
-      this._agentLog.setSteps([]);
+      this._sessions = [];
       this._agentLog.setAgents([]);
+      this._agentLog.setSessions([]);
     }
 
     // ── Sync selection state to widgets ──
     this._phaseBar.setSelectedPhase(this._selection.selectedPhaseId ?? projection.currentPhaseId);
     this._taskList.setSelectedTaskId(this._selection.selectedTaskId);
+
+    // ── Compute per-task session counts and push to task list (B9) ──
+    const sessionCounts: Record<string, number> = {};
+    for (const session of Object.values(projection.sessions)) {
+      if (session.phaseId === effectivePhaseId && session.taskId !== undefined) {
+        sessionCounts[session.taskId] = (sessionCounts[session.taskId] ?? 0) + 1;
+      }
+    }
+    this._taskList.setSessionCounts(sessionCounts);
 
     // ── Invalidate all ──
     this._phaseBar.invalidate();
@@ -312,13 +340,13 @@ export class Dashboard implements Component {
       // will override if the selected phase is NOT completed.
       this._selection.userPinnedPhase = true;
 
-      // On phase change reset task/step selection
+      // On phase change reset task/session selection
       this._selection.selectedTaskId = null;
-      this._selection.selectedStepIndex = null;
-      this._selection.userPinnedStep = false;
+      this._selection.selectedSessionId = null;
+      this._selection.userPinnedSession = false;
 
-      // Re-filter tasks for the new phase, push the auto-selected task's steps /
-      // agents to the agent log, and invalidate all widgets so the navigation
+      // Re-filter tasks for the new phase, push the auto-selected task's
+      // sessions to the agent log, and invalidate all widgets so the navigation
       // re-renders immediately.
       this._applySelectionToWidgets();
       return;
@@ -330,7 +358,7 @@ export class Dashboard implements Component {
         // Route to agent log for scrolling
         this._agentLog.handleInput(data);
         // Only invalidate the agent log — do NOT call _applySelectionToWidgets()
-        // which would reset the scroll offset via setSelectedStepIndex().
+        // which would reset the scroll offset via setSelectedSessionId().
         this._agentLog.invalidate();
       } else {
         // Route to task list for navigation
@@ -338,11 +366,11 @@ export class Dashboard implements Component {
         const newTaskId = this._taskList.getSelectedTaskId();
         if (newTaskId !== this._selection.selectedTaskId) {
           this._selection.selectedTaskId = newTaskId;
-          // On task change reset step selection
-          this._selection.selectedStepIndex = null;
-          this._selection.userPinnedStep = false;
+          // On task change reset session selection
+          this._selection.selectedSessionId = null;
+          this._selection.userPinnedSession = false;
         }
-        // Re-push the selected task's steps / agents to the agent log and
+        // Re-push the selected task's sessions to the agent log and
         // invalidate all widgets so task navigation re-renders immediately.
         this._applySelectionToWidgets();
       }
@@ -358,15 +386,19 @@ export class Dashboard implements Component {
       return;
     }
 
-    // ── Tab / Shift+Tab → AgentLog (step cycling) ──
+    // ── Tab / Shift+Tab → cycle sessions ──
+    //
+    // Sessions are the model for the tab bar. Tab cycles selectedSessionId.
     if (matchesKey(data, 'tab') || matchesKey(data, Key.shift('tab'))) {
-      this._selection.userPinnedStep = true;
-      const dir = matchesKey(data, 'tab') ? 'forward' : 'backward';
-      const currentIdx = this._selection.selectedStepIndex ?? -1;
-      const nextIndex = computeNextAgentStepIndex(this._steps, currentIdx, dir);
-      if (nextIndex !== currentIdx) {
-        this._selection.selectedStepIndex = nextIndex;
+      const isForward = matchesKey(data, 'tab');
+      const sessionDir = isForward ? 1 : -1;
+
+      this._selection.userPinnedSession = true;
+      const nextSessionId = selectNextSession(this._sessions, this._selection.selectedSessionId, sessionDir);
+      if (nextSessionId !== null) {
+        this._selection.selectedSessionId = nextSessionId;
       }
+
       // Push the updated selection to child widgets and invalidate for re-render
       this._applySelectionToWidgets();
       return;

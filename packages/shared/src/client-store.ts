@@ -5,8 +5,8 @@
  * framework-free class — no zustand, no React, no Immer. The TUI (and any
  * other non-React consumer) subscribes to this store and reads a
  * `ClientStoreState` projection that mirrors the web store's shape but uses
- * the shared `WorkflowProjection` field names directly (`agents`, `tasks`,
- * … rather than the web store's `agentsById` / `tasksById`).
+ * the shared `WorkflowProjection` field names directly (`sessions`, `tasks`,
+ * … rather than the web store's `sessionsById` / `tasksById`).
  *
  * Event folding is delegated to the shared `evolve` reducer and event-log
  * lines are produced via `formatWorkflowEventLine`.
@@ -43,23 +43,21 @@ export type ClientStoreState = Omit<WorkflowProjection, 'runLog'> & {
   workflowEventLog: WorkflowEventLogEntry[];
   selectedPhaseId: string | null;
   selectedTaskId: string | null;
-  selectedStepIndex: number | null;
+  selectedSessionId: string | null;
   userPinnedPhase: boolean;
-  userPinnedStep: boolean;
+  userPinnedSession: boolean;
   /**
    * Previous-state fields populated by the shared `reconcileSelection`
    * write-back on every call so the NEXT call can detect a phase / task-status
    * transition. Mirrors the web WorkflowStoreState's two prev-tracking
-   * fields. NOTE: there is intentionally NO prevActiveStepIndex — the shared
-   * step-follow stays the broad `userPinnedStep`-gated rule (the TUI's
-   * expanded-state exception lives in Dashboard, not the store).
+   * fields.
    */
   prevCurrentPhaseId: string | null;
   prevSelectedTaskStatus: TaskStatus | null;
 };
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
-// capAgentLogs / toProjection / writeProjectionToState / reconcileSelection
+// capSessionLogs / toProjection / writeProjectionToState / reconcileSelection
 // live in ./projection-helpers.js (shared with web workflow-store).
 
 // ─── Store ──────────────────────────────────────────────────────────────────
@@ -75,9 +73,9 @@ export class ClientStore {
       workflowEventLog: [],
       selectedPhaseId: null,
       selectedTaskId: null,
-      selectedStepIndex: null,
+      selectedSessionId: null,
       userPinnedPhase: false,
-      userPinnedStep: false,
+      userPinnedSession: false,
       prevCurrentPhaseId: null,
       prevSelectedTaskStatus: null,
     };
@@ -138,13 +136,13 @@ export class ClientStore {
     }
     // Workflow-completion summary: AFTER the per-event lines (so the '🎉
     // Complete …' line precedes the two summary lines), compute a two-line
-    // aggregate from the POST-evolve projection.agents (so agents / tokens
+    // aggregate from the POST-evolve projection.sessions (so sessions / tokens
     // stamped earlier in this same batch are visible). Every summary entry
     // shares the completed event's seq so they drain together in the TUI
     // event-log pane. Only emitted when totalDurationMs is a positive number.
     const completed = events.find((e) => e.type === 'workflow_completed');
     if (completed && Number(completed.data.totalDurationMs) > 0) {
-      for (const line of formatWorkflowSummary(projection.agents, Number(completed.data.totalDurationMs))) {
+      for (const line of formatWorkflowSummary(projection.sessions, Number(completed.data.totalDurationMs))) {
         collected.push({ seq: completed.seq, line });
       }
     }
@@ -194,27 +192,19 @@ export class ClientStore {
     this.state.selectedPhaseId = id;
     // Pinned if a completed phase is explicitly selected.
     this.state.userPinnedPhase = id !== null && this.state.completedPhaseIds.includes(id);
-    // Reset task/step when phase changes.
+    // Reset task when phase changes.
     this.state.selectedTaskId = null;
-    this.state.selectedStepIndex = null;
-    this.state.userPinnedStep = false;
-    // Run follow rules to settle on an initial task/step.
+    this.state.userPinnedSession = false;
+    // Run follow rules to settle on an initial task/session.
     reconcileSelection(this.state);
     this.notify();
   }
 
   selectTask(id: string | null): void {
     this.state.selectedTaskId = id;
-    this.state.selectedStepIndex = null;
-    this.state.userPinnedStep = false;
-    // Run follow rules to settle on an initial step.
+    this.state.userPinnedSession = false;
+    // Run follow rules to settle selection.
     reconcileSelection(this.state);
-    this.notify();
-  }
-
-  selectStep(index: number | null): void {
-    this.state.selectedStepIndex = index;
-    this.state.userPinnedStep = true;
     this.notify();
   }
 }

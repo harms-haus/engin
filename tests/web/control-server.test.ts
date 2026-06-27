@@ -78,10 +78,10 @@ function makeProjection(seq = 0, overrides: Partial<WorkflowProjection> = {}): W
     currentPhaseId: 'scouting',
     completedPhaseIds: [],
     tasks: {},
-    agents: {},
+    sessions: {},
     sidebar: { title: 'Test', indicator: '🟢' },
     status: 'running',
-    stats: { totalTokens: 0, agentCount: 0 },
+    stats: { totalTokens: 0, sessionCount: 0 },
     runLog: [],
     ...overrides,
   };

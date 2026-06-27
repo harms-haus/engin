@@ -6,7 +6,7 @@ import {
   visibleWidth,
   wrapTextWithAnsi,
 } from '@earendil-works/pi-tui';
-import type { AgentEntity, LogEntry, StepEntity } from '@engin/shared';
+import type { LogEntry, SessionEntity } from '@engin/shared';
 import { formatTokenCount } from '@engin/shared';
 import { formatToolCall } from '@engin/shared/format-tool-call';
 import { bold, cyan, dim, green, red, underline } from '../theme.js';
@@ -44,42 +44,15 @@ const padToWidth = (line: string, width: number): string => {
   return truncateToWidth(line, width, undefined, true);
 };
 
-// ─── Shared step-cycling helper ──────────────────────────────────────────────
-
-/**
- * Compute the next step index in the given direction, cycling only through
- * steps that have an `agentKey`.  Returns the *unchanged* `currentIndex` when
- * no agent steps exist (so callers can no-op).
- *
- * Used by both AgentLogWidget (collapsed tab bar) and Dashboard (top-level
- * keyboard routing) so the algorithm lives in exactly one place.
- */
-export function computeNextAgentStepIndex(
-  steps: { agentKey?: string }[],
-  currentIndex: number,
-  direction: 'forward' | 'backward',
-): number {
-  const agentStepIndices = steps.map((s, i) => (s.agentKey !== undefined ? i : -1)).filter((i) => i >= 0);
-
-  if (agentStepIndices.length === 0) return currentIndex;
-
-  const currentPos = agentStepIndices.indexOf(currentIndex);
-  if (direction === 'forward') {
-    const nextPos = (currentPos + 1) % agentStepIndices.length;
-    return agentStepIndices[nextPos];
-  } else {
-    const prevPos = (currentPos - 1 + agentStepIndices.length) % agentStepIndices.length;
-    return agentStepIndices[prevPos];
-  }
-}
-
 // ─── AgentLogWidget ──────────────────────────────────────────────────────────
 
 export class AgentLogWidget implements Component {
-  private _agents: AgentEntity[] = [];
-  private _steps: StepEntity[] = [];
-  private _selectedStepIndex = 0;
-  private _activeStepIndex = 0;
+  private _agents: SessionEntity[] = [];
+
+  // Session-based state (B9). The tab bar renders session labels.
+  private _sessions: SessionEntity[] = [];
+  private _selectedSessionId: string | null = null;
+  private _activeSessionId: string | null = null;
 
   private readonly _collapsedLines: number;
   private _expanded = false;
@@ -97,52 +70,45 @@ export class AgentLogWidget implements Component {
 
   // ─── Public API ──────────────────────────────────────────────────────
 
-  setAgents(agents: AgentEntity[]): void {
+  setAgents(agents: SessionEntity[]): void {
     this._agents = agents;
     this.dirty = true;
   }
 
-  setSteps(steps: StepEntity[]): void {
-    this._steps = [...steps];
-    if (this._steps.length > 0) {
-      // Clamp selectedStepIndex
-      if (this._selectedStepIndex >= this._steps.length) {
-        this._selectedStepIndex = this._steps.length - 1;
-      }
-    } else {
-      this._selectedStepIndex = 0;
-    }
-    this.dirty = true;
-  }
-
-  setSelectedStepIndex(index: number): void {
-    if (index >= -1 && index < this._steps.length) {
-      this._selectedStepIndex = index;
-      if (!this._expanded) {
-        this._scrollOffset = 0;
-      }
-      this.dirty = true;
-    }
-  }
-
   setSelectedAgentUid(uid: string | null): void {
-    if (uid === null) {
-      this._selectedStepIndex = -1;
-      this.dirty = true;
-      return;
-    }
-    // Find step whose agentKey matches this uid
-    const idx = this._steps.findIndex((s) => s.agentKey === uid);
-    if (idx >= 0) {
-      this._selectedStepIndex = idx;
+    this._selectedSessionId = uid;
+    if (!this._expanded) {
       this._scrollOffset = 0;
-      this.dirty = true;
     }
+    this.dirty = true;
   }
 
-  setActiveStepIndex(index: number): void {
-    this._activeStepIndex = index;
+  // ─── Session API (B9) ──────────────────────────────────────────────
+
+  /** Set the session list (sessions filtered by task) for rendering session tabs. */
+  setSessions(sessions: SessionEntity[]): void {
+    this._sessions = [...sessions];
     this.dirty = true;
+  }
+
+  /** Set the currently selected session by uid. */
+  setSelectedSessionId(uid: string | null): void {
+    this._selectedSessionId = uid;
+    if (!this._expanded) {
+      this._scrollOffset = 0;
+    }
+    this.dirty = true;
+  }
+
+  /** Set the active (in-progress) session by uid. */
+  setActiveSessionId(uid: string): void {
+    this._activeSessionId = uid;
+    this.dirty = true;
+  }
+
+  /** Get the currently selected session uid. */
+  getSelectedSessionId(): string | null {
+    return this._selectedSessionId;
   }
 
   toggleExpand(): void {
@@ -159,11 +125,12 @@ export class AgentLogWidget implements Component {
     return this._expanded ? this._expandedLineCount : this._collapsedLines;
   }
 
+  /**
+   * Returns the uid of the selected agent. When sessions are set (B9), this
+   * returns the selected session uid. Otherwise it falls back to null.
+   */
   getSelectedAgentUid(): string | null {
-    if (this._selectedStepIndex < 0 || this._selectedStepIndex >= this._steps.length) {
-      return null;
-    }
-    return this._steps[this._selectedStepIndex]?.agentKey ?? null;
+    return this._selectedSessionId;
   }
 
   invalidate(): void {
@@ -172,11 +139,11 @@ export class AgentLogWidget implements Component {
 
   // ─── Private helpers ─────────────────────────────────────────────────
 
-  /** Get the agent entity for the selected step, or null if none. */
-  private getSelectedAgent(): AgentEntity | null {
-    const agentKey = this.getSelectedAgentUid();
-    if (!agentKey) return null;
-    return this._agents.find((a) => a.uid === agentKey) ?? null;
+  /** Get the session entity for the selected session, or null if none. */
+  private getSelectedAgent(): SessionEntity | null {
+    const sessionId = this.getSelectedAgentUid();
+    if (!sessionId) return null;
+    return this._agents.find((a) => a.uid === sessionId) ?? null;
   }
 
   /** Number of entry render lines available (after reserving header + tab bar). */
@@ -198,12 +165,8 @@ export class AgentLogWidget implements Component {
     const selectedAgent = this.getSelectedAgent();
 
     if (!selectedAgent) {
-      // ─── No agent for selected step — show dimmed placeholder ─────
-      const stepName =
-        this._selectedStepIndex >= 0 && this._selectedStepIndex < this._steps.length
-          ? this._steps[this._selectedStepIndex].name
-          : 'unknown';
-      lines.push(padToWidth(dim(`  No agent for step "${stepName}"`), width));
+      // ─── No session selected — show dimmed placeholder ─────
+      lines.push(padToWidth(dim('  No session selected'), width));
       const entrySlots = this.getEntrySlots();
       for (let i = 0; i < entrySlots; i++) {
         lines.push(padToWidth('', width));
@@ -231,7 +194,7 @@ export class AgentLogWidget implements Component {
       if (this._expanded) {
         controlsRaw = '↑↓scroll x10⇧↑↓ space collapse';
       } else {
-        controlsRaw = 'Tab step space expand';
+        controlsRaw = 'Tab session space expand';
       }
 
       // Reserve tail width for controls so a very long title is truncated
@@ -318,45 +281,9 @@ export class AgentLogWidget implements Component {
     return lines;
   }
 
-  /** Render the step/agent tab bar (bottom line of the widget). */
+  /** Render the session tab bar (bottom line of the widget). */
   private renderTabBar(width: number): string {
-    if (this._steps.length === 0) {
-      return padToWidth(dim('  no steps'), width);
-    }
-
-    const parts: string[] = [];
-    for (let i = 0; i < this._steps.length; i++) {
-      const step = this._steps[i];
-      const isSelected = i === this._selectedStepIndex;
-      const hasAgent = step.agentKey !== undefined;
-
-      // Determine positional marker based on activeStepIndex
-      let marker: string;
-      if (i < this._activeStepIndex) {
-        marker = '✓'; // done
-      } else if (i === this._activeStepIndex) {
-        marker = '▶'; // active
-      } else {
-        marker = '○'; // pending
-      }
-
-      const label = `${i + 1} ${step.name} ${marker}`;
-
-      let styled: string;
-      if (!hasAgent) {
-        // Steps without an agentKey are dimmed
-        styled = dim(label);
-      } else if (isSelected) {
-        // Selected step: bold + underline
-        styled = bold(underline(label));
-      } else {
-        styled = label;
-      }
-      parts.push(styled);
-    }
-
-    const tabBar = '  ' + parts.join(' | ');
-    return padToWidth(tabBar, width);
+    return this.renderSessionTabBar(width);
   }
 
   // ─── Input handling ─────────────────────────────────────────────────
@@ -390,12 +317,13 @@ export class AgentLogWidget implements Component {
       }
     }
 
-    // ─── Tab/Shift+Tab cycle steps that have agentKey ─────────
+    // ─── Tab/Shift+Tab cycle sessions ───────────────
     if (matchesKey(data, 'tab') || matchesKey(data, Key.shift('tab'))) {
-      const dir = matchesKey(data, 'tab') ? 'forward' : 'backward';
-      const nextIndex = computeNextAgentStepIndex(this._steps, this._selectedStepIndex, dir);
-      if (nextIndex === this._selectedStepIndex) return; // no agent steps
-      this._selectedStepIndex = nextIndex;
+      if (this._sessions.length === 0) return;
+      const dir = matchesKey(data, 'tab') ? 1 : -1;
+      const idx = this._selectedSessionId ? this._sessions.findIndex((s) => s.uid === this._selectedSessionId) : -1;
+      const nextIdx = idx === -1 ? 0 : (idx + dir + this._sessions.length) % this._sessions.length;
+      this._selectedSessionId = this._sessions[nextIdx].uid;
       this._scrollOffset = 0;
       this.dirty = true;
       return;
@@ -403,5 +331,92 @@ export class AgentLogWidget implements Component {
 
     // NOTE: Up/Down when collapsed are NOT handled here (Dashboard routes to TaskListWidget)
     // NOTE: Left/Right are NOT handled here (they go to PhaseBar)
+  }
+
+  /** Render the session tab bar (bottom line of the widget) — B9. */
+  private renderSessionTabBar(width: number): string {
+    const lead = '  ';
+    const sep = ' | ';
+    const leadW = visibleWidth(lead);
+    const sepW = visibleWidth(sep);
+
+    if (this._sessions.length === 0) {
+      return padToWidth(`${lead}${dim('no sessions')}`, width);
+    }
+
+    // Build per-session data: visible label width + styled rendering.
+    const items = this._sessions.map((session) => {
+      const isSelected = session.uid === this._selectedSessionId;
+      const label = session.runnerRole ?? session.profile;
+      const styled = isSelected ? bold(underline(label)) : label;
+      return { styled, labelW: visibleWidth(label), selected: isSelected };
+    });
+
+    const n = items.length;
+    const fullWidth = leadW + items.reduce((sum, it) => sum + it.labelW, 0) + sepW * (n - 1);
+
+    // Fast path: everything fits, render the full bar.
+    if (fullWidth <= width) {
+      return padToWidth(lead + items.map((it) => it.styled).join(sep), width);
+    }
+
+    // ── Overflow: center the window on the SELECTED session ──────────
+    // Sessions are appended oldest→newest (left→right). When the bar
+    // overflows we keep a contiguous window centered on the selected
+    // session so its bold+underline highlight is ALWAYS visible, and emit
+    // dimmed `…+N` / `+N…` indicators showing how many sessions are hidden
+    // on each side. If nothing is selected, anchor on the newest (rightmost).
+    const selIdx = items.findIndex((it) => it.selected);
+    const anchor = selIdx >= 0 ? selIdx : n - 1;
+
+    // Indicator strings (empty when nothing is hidden on that side).
+    const leftInd = (lo: number): string => (lo > 0 ? `…+${lo}` : '');
+    const rightInd = (hi: number): string => (hi < n - 1 ? `+${n - 1 - hi}…` : '');
+    const indW = (ind: string): number => (ind === '' ? 0 : visibleWidth(ind) + sepW);
+
+    // Does the window [lo, hi] (plus indicators) fit within `width`?
+    const fits = (lo: number, hi: number): boolean => {
+      let w = leadW;
+      for (let i = lo; i <= hi; i++) w += items[i].labelW;
+      w += sepW * (hi - lo);
+      w += indW(leftInd(lo));
+      w += indW(rightInd(hi));
+      return w <= width;
+    };
+
+    // Greedily expand the window outward from the anchor, preferring the
+    // side with more hidden sessions so the view stays roughly balanced
+    // around the selection (and biases toward showing newer sessions).
+    let lo = anchor;
+    let hi = anchor;
+    for (;;) {
+      let expanded = false;
+      const leftHidden = lo;
+      const rightHidden = n - 1 - hi;
+      const tryRight = rightHidden >= leftHidden;
+      const expandRight = (): boolean => (hi + 1 < n && fits(lo, hi + 1) ? ((hi += 1), true) : false);
+      const expandLeft = (): boolean => (lo - 1 >= 0 && fits(lo - 1, hi) ? ((lo -= 1), true) : false);
+      const order: (() => boolean)[] = tryRight ? [expandRight, expandLeft] : [expandLeft, expandRight];
+      for (const attempt of order) {
+        if (attempt()) {
+          expanded = true;
+          break;
+        }
+      }
+      if (!expanded) break;
+    }
+
+    // Assemble the final bar from the computed window.
+    const segments: string[] = [];
+    const li = leftInd(lo);
+    const ri = rightInd(hi);
+    if (li !== '') segments.push(dim(li));
+    for (let i = lo; i <= hi; i++) segments.push(items[i].styled);
+    if (ri !== '') segments.push(dim(ri));
+
+    const tabBar = lead + segments.join(sep);
+    // Safety net: if even the anchored session alone is wider than `width`
+    // (extremely narrow terminal), truncate rather than overflow the column.
+    return padToWidth(truncateToWidth(tabBar, width, undefined, false), width);
   }
 }

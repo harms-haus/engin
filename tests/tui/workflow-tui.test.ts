@@ -1,5 +1,5 @@
 import { TUI } from '@earendil-works/pi-tui';
-import type { AgentEntity, TaskEntity, WorkflowProjection } from '@engin/shared';
+import type { SessionEntity, TaskEntity, WorkflowProjection } from '@engin/shared';
 import { ClientStore } from '@engin/shared/client-store';
 import type { EventRecord, EventType } from '@engin/shared/event-types';
 import { describe, expect, it, mock, spyOn } from 'bun:test';
@@ -24,7 +24,7 @@ function ev(
 
 // ─── Projection helpers ──────────────────────────────────────────────────────
 
-/** Create a minimal projection with agents in given phases. */
+/** Create a minimal projection with sessions in given phases. */
 function projectionWithAgents(phases: string[], agentIds: string[], taskId = 't1'): WorkflowProjection {
   const currentPhaseId = phases[0] ?? '';
   const p: WorkflowProjection = {
@@ -39,21 +39,20 @@ function projectionWithAgents(phases: string[], agentIds: string[], taskId = 't1
         title: 'Test Task',
         phaseId: currentPhaseId,
         status: 'active',
-        steps: agentIds.map((aid, i) => ({ name: `Step ${i + 1}`, index: i, agentKey: aid })),
         dependencies: [],
         startedAt: Date.now(),
       },
     },
-    agents: {},
+    sessions: {},
     sidebar: { title: '', indicator: '' },
     status: 'running',
-    stats: { totalTokens: 0, agentCount: 0 },
+    stats: { totalTokens: 0, sessionCount: 0 },
     runLog: [],
   };
   for (const phase of phases) {
     for (const agentId of agentIds) {
       const key = agentId + '-' + phase;
-      p.agents[key] = {
+      p.sessions[key] = {
         uid: key,
         agentId,
         profile: 'coder',
@@ -65,6 +64,8 @@ function projectionWithAgents(phases: string[], agentIds: string[], taskId = 't1
         inputTokens: 0,
         outputTokens: 0,
         taskTitle: '',
+        runnerRole: 'executor',
+        attempt: 1,
       };
     }
   }
@@ -77,7 +78,7 @@ function buildProjection(options: {
   currentPhaseId?: string;
   completedPhaseIds?: string[];
   tasks?: TaskEntity[];
-  agents?: AgentEntity[];
+  sessions?: SessionEntity[];
   indicator?: string;
 }): WorkflowProjection {
   const p = {
@@ -92,17 +93,17 @@ function buildProjection(options: {
     currentPhaseId: options.currentPhaseId ?? '',
     completedPhaseIds: options.completedPhaseIds ?? [],
     tasks: {} as Record<string, TaskEntity>,
-    agents: {} as Record<string, AgentEntity>,
+    sessions: {} as Record<string, SessionEntity>,
     sidebar: { title: '', indicator: options.indicator ?? '' },
     status: 'running' as const,
-    stats: { totalTokens: 0, agentCount: 0 },
+    stats: { totalTokens: 0, sessionCount: 0 },
     runLog: [] as WorkflowProjection['runLog'],
   };
   for (const t of options.tasks ?? []) {
     p.tasks[t.id] = t;
   }
-  for (const a of options.agents ?? []) {
-    p.agents[a.uid] = a;
+  for (const a of options.sessions ?? []) {
+    p.sessions[a.uid] = a;
   }
   return p;
 }
@@ -114,19 +115,19 @@ function makeTestTask(id: string, phaseId: string, overrides: Partial<TaskEntity
     title: 'Test Task',
     phaseId,
     status: 'ready',
-    steps: [],
+
     dependencies: [],
     ...overrides,
   };
 }
 
-/** Create a minimal AgentEntity for testing. */
+/** Create a minimal SessionEntity for testing. */
 function makeTestAgent(
   uid: string,
   taskId: string,
   phaseId: string,
-  overrides: Partial<AgentEntity> = {},
-): AgentEntity {
+  overrides: Partial<SessionEntity> = {},
+): SessionEntity {
   return {
     uid,
     agentId: uid,
@@ -139,6 +140,8 @@ function makeTestAgent(
     inputTokens: 0,
     outputTokens: 0,
     taskTitle: '',
+    runnerRole: 'executor',
+    attempt: 1,
     ...overrides,
   };
 }
@@ -248,10 +251,10 @@ describe('WorkflowTUI', () => {
           currentPhaseId: 'exec',
           completedPhaseIds: [],
           tasks: {},
-          agents: {},
+          sessions: {},
           sidebar: { title: '', indicator: '' },
           status: 'running',
-          stats: { totalTokens: 0, agentCount: 0 },
+          stats: { totalTokens: 0, sessionCount: 0 },
           runLog: [],
         },
         1,
@@ -338,21 +341,16 @@ describe('WorkflowTUI', () => {
       expect(dashboard.getSelection().selectedPhaseId).toBeNull();
     });
 
-    it('reflects spawned agents in the synced dashboard projection', () => {
+    it('reflects spawned sessions in the synced dashboard projection', () => {
       const clientStore = new ClientStore();
       const tui = new WorkflowTUI({ clientStore });
 
       clientStore.applyEvents([
         ev('phase_registered', { id: 'impl', label: 'Impl', icon: '🔧' }, {}, 1),
         ev('phase_started', { phase: 'impl', round: 1 }, {}, 2),
-        ev(
-          'task_registered',
-          { taskId: 't1', title: 'Task', phaseId: 'impl', stepCount: 1, steps: [], dependencies: [] },
-          {},
-          3,
-        ),
+        ev('task_registered', { taskId: 't1', title: 'Task', phaseId: 'impl', stepCount: 1, dependencies: [] }, {}, 3),
         ev('task_started', { taskId: 't1', title: 'Task' }, {}, 4),
-        ev('agent_spawned', { profile: 'coder' }, { agentId: 'a1', taskId: 't1' }, 5),
+        ev('session_started', { profile: 'coder' }, { agentId: 'a1', taskId: 't1' }, 5),
       ]);
 
       const dashboard = tui.getDashboard();
@@ -809,7 +807,7 @@ describe('WorkflowTUI', () => {
     const RIGHT_ARROW = '\x1b[C';
     const TAB = '\t';
 
-    /** Helper: set up dashboard with a projection that has phases and agents. */
+    /** Helper: set up dashboard with a projection that has phases and sessions. */
     function setupBasic(tui: WorkflowTUI) {
       const dashboard = tui.getDashboard();
       const p = projectionWithAgents(['phase-a', 'phase-b'], ['agent-1', 'agent-2']);
@@ -835,7 +833,7 @@ describe('WorkflowTUI', () => {
       phaseSpy.mockRestore();
     });
 
-    it('tab routes to agentLog and cycles steps (thus agents)', () => {
+    it('tab routes to agentLog and cycles steps (thus sessions)', () => {
       const tui = new WorkflowTUI();
       const dashboard = setupBasic(tui);
 
@@ -1259,19 +1257,18 @@ describe('WorkflowTUI', () => {
         dashboard.agentLog.toggleExpand();
         expect(dashboard.agentLog.isExpanded()).toBe(true);
 
-        // Build a projection with a task and agents that have taskId/phaseId
+        // Build a projection with a task and sessions that have taskId/phaseId
         const p = buildProjection({
           phases: [{ id: 'test' }],
           currentPhaseId: 'test',
           tasks: [
             makeTestTask('t1', 'test', {
               status: 'active',
-              activeStepIndex: 0,
-              steps: [{ name: 'Step 1', index: 0, agentKey: 'agent-1' }],
+
               startedAt: Date.now(),
             }),
           ],
-          agents: [
+          sessions: [
             makeTestAgent('agent-1', 't1', 'test', {
               log: Array.from({ length: 60 }, (_, i) => ({
                 id: `${i}`,
@@ -1306,19 +1303,18 @@ describe('WorkflowTUI', () => {
         dashboard.agentLog.toggleExpand();
         expect(dashboard.agentLog.isExpanded()).toBe(true);
 
-        // Build a projection with a task and agents
+        // Build a projection with a task and sessions
         const p = buildProjection({
           phases: [{ id: 'test' }],
           currentPhaseId: 'test',
           tasks: [
             makeTestTask('t1', 'test', {
               status: 'active',
-              activeStepIndex: 0,
-              steps: [{ name: 'Step 1', index: 0, agentKey: 'agent-1' }],
+
               startedAt: Date.now(),
             }),
           ],
-          agents: [
+          sessions: [
             makeTestAgent('agent-1', 't1', 'test', {
               log: Array.from({ length: 60 }, (_, i) => ({
                 id: `${i}`,
@@ -2148,7 +2144,7 @@ describe('WorkflowTUI', () => {
         });
         await Promise.resolve();
 
-        clientStore.applyEvents([ev('workflow_completed', { totalDurationMs: 1000, agentCount: 1 }, {}, 1)]);
+        clientStore.applyEvents([ev('workflow_completed', { totalDurationMs: 1000, sessionCount: 1 }, {}, 1)]);
         await new Promise((r) => setTimeout(r, 15));
         expect(resolved).toBe(false);
 

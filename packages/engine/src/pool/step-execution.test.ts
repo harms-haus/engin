@@ -102,6 +102,7 @@ function makeTask(overrides: Partial<Task> = {}): Task {
     profile: 'reviewer',
     files: [],
     dependencies: [],
+    worktree: 'none',
     status: 'active',
     phaseId: 'review',
     ...overrides,
@@ -163,7 +164,7 @@ function makeExecCtx(overrides: Partial<StepExecutionContext> = {}): StepExecuti
 /** Build a REAL HookRegistry with the engine's observe/pipeline hooks declared. */
 function makeRegistry(): HookRegistry {
   const reg = createHookRegistry();
-  reg.defineHook('beforeStepPrompt', 'pipeline');
+  reg.defineHook('beforeSessionPrompt', 'pipeline');
   reg.defineHook('onStructuredOutput', 'observe');
   reg.defineHook('onDecision', 'observe');
   return reg;
@@ -183,7 +184,7 @@ function makeSpyRegistry(structuredSubs: boolean): {
   const invokeObserve = mock(async (_name: unknown, _args: unknown, _ctx: unknown) => {});
   const hasSubscribers = mock((name: string) => {
     if (name === 'onStructuredOutput') return structuredSubs;
-    // beforeStepPrompt has no subscribers → runStep uses buildPrompt.
+    // beforeSessionPrompt has no subscribers → runStep uses buildPrompt.
     return false;
   });
   const registry = {
@@ -201,7 +202,7 @@ beforeEach(() => {
   mockSpawnAgent.mockReset();
   mockPromptForStructured.mockReset();
   mockBuildPrompt.mockReset();
-  // Default: buildPrompt resolves to a fixed prompt (no beforeStepPrompt subs).
+  // Default: buildPrompt resolves to a fixed prompt (no beforeSessionPrompt subs).
   mockBuildPrompt.mockImplementation(async () => 'prompt-text');
 });
 
@@ -222,7 +223,7 @@ describe('runStep — onStructuredOutput observe hook', () => {
       task: makeTask(),
       step: makeReviewStep(),
       agentId: 'reviewer-agent',
-      ctx: { stepIndex: 1, attempt: 0, execCount: 1 },
+      ctx: { stepIndex: 0, attempt: 0, execCount: 1 },
       profiles: new Map([['reviewer', reviewerProfile]]),
       execCtx: makeExecCtx({ hookRegistry: reg }),
     });
@@ -264,7 +265,7 @@ describe('runStep — onStructuredOutput observe hook', () => {
 
   // ── (c) documented args shape passed to invokeObserve ──────────────────
 
-  it('(c) passes { agentId, output, taskId, phaseId, stepIndex } to the observe hook', async () => {
+  it('(c) passes { agentId, output, taskId, phaseId } to the observe hook', async () => {
     mockSpawnAgent.mockResolvedValue(makeMockHandle());
     mockPromptForStructured.mockResolvedValue({ result: { approved: true, score: 9 }, attempts: 1 });
 
@@ -276,7 +277,7 @@ describe('runStep — onStructuredOutput observe hook', () => {
       task: makeTask({ id: 'task-shape' }),
       step: makeReviewStep(),
       agentId: 'reviewer-agent',
-      ctx: { stepIndex: 3, attempt: 0, execCount: 1 },
+      ctx: { stepIndex: 0, attempt: 0, execCount: 1 },
       profiles: new Map([['reviewer', reviewerProfile]]),
       execCtx: makeExecCtx({ hookRegistry: reg, phaseId: 'review-phase' }),
     });
@@ -287,7 +288,6 @@ describe('runStep — onStructuredOutput observe hook', () => {
       output: { approved: true, score: 9 },
       taskId: 'task-shape',
       phaseId: 'review-phase',
-      stepIndex: 3,
     });
   });
 
@@ -359,7 +359,7 @@ describe('runStep — onStructuredOutput observe hook', () => {
         task: makeTask({ id: 'task-e2e' }),
         step: makeReviewStep(),
         agentId: 'reviewer-agent',
-        ctx: { stepIndex: 2, attempt: 0, execCount: 1 },
+        ctx: { stepIndex: 0, attempt: 0, execCount: 1 },
         profiles: new Map([['reviewer', reviewerProfile]]),
         execCtx: makeExecCtx({ hookRegistry: reg, phaseId: 'review-phase' }),
       });

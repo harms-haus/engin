@@ -386,21 +386,21 @@ describe('LanePool', () => {
       expect(onTaskComplete).toHaveBeenCalledWith({ taskId: 'task-1', title: 'Test task' });
     });
 
-    it('fires onAgentSpawn and onAgentComplete for each step', async () => {
+    it('fires onSessionStart and onSessionComplete for each step', async () => {
       setupProfileMocks();
       setupHarnessMocks();
-      const onAgentSpawn = mock(() => {});
-      const onAgentComplete = mock(() => {});
+      const onSessionStart = mock(() => {});
+      const onSessionComplete = mock(() => {});
       const { pool } = createPoolAndTracker({
         getStepsForTask: () => [
           { name: 'implement', profileId: 'coder', isReadOnly: false },
           { name: 'review', profileId: 'reviewer', isReadOnly: true },
         ],
-        onStatus: { onAgentSpawn, onAgentComplete },
+        onStatus: { onSessionStart, onSessionComplete },
       });
       await pool.run();
-      expect(onAgentSpawn).toHaveBeenCalledTimes(2);
-      expect(onAgentComplete).toHaveBeenCalledTimes(2);
+      expect(onSessionStart).toHaveBeenCalledTimes(2);
+      expect(onSessionComplete).toHaveBeenCalledTimes(2);
     });
 
     it('fires onTaskRejected when a review step rejects and max retries is hit', async () => {
@@ -672,21 +672,21 @@ describe('LanePool', () => {
   });
 
   describe('audit log', () => {
-    it('fires onAgentSpawn and onAgentComplete for each step (audit events now via store callbacks)', async () => {
+    it('fires onSessionStart and onSessionComplete for each step (audit events now via store callbacks)', async () => {
       setupProfileMocks();
       setupHarnessMocks();
-      const onAgentSpawn = mock(() => {});
-      const onAgentComplete = mock(() => {});
+      const onSessionStart = mock(() => {});
+      const onSessionComplete = mock(() => {});
       const { pool } = createPoolAndTracker({
-        onStatus: { onAgentSpawn, onAgentComplete },
+        onStatus: { onSessionStart, onSessionComplete },
         getStepsForTask: () => [
           { name: 'implement', profileId: 'coder', isReadOnly: false },
           { name: 'review', profileId: 'reviewer', isReadOnly: true },
         ],
       });
       await pool.run();
-      expect(onAgentSpawn).toHaveBeenCalledTimes(2);
-      expect(onAgentComplete).toHaveBeenCalledTimes(2);
+      expect(onSessionStart).toHaveBeenCalledTimes(2);
+      expect(onSessionComplete).toHaveBeenCalledTimes(2);
     });
 
     it('fires onError when runLane catches a step error (error now via onError → store)', async () => {
@@ -709,7 +709,7 @@ describe('LanePool', () => {
       expect((await createPoolAndTracker().pool.run()).completedTasks).toBe(1);
     });
 
-    it('onAgentComplete fires even when step fails', async () => {
+    it('onSessionComplete fires even when step fails', async () => {
       setupProfileMocks();
       mockCreateHarness.mockResolvedValue({
         session: makeSession(() => {
@@ -718,12 +718,12 @@ describe('LanePool', () => {
         sessionId: 'test-session',
         dispose: mock(() => {}),
       });
-      const onAgentSpawn = mock(() => {});
-      const onAgentComplete = mock(() => {});
-      const { pool } = createPoolAndTracker({ onStatus: { onAgentSpawn, onAgentComplete } });
+      const onSessionStart = mock(() => {});
+      const onSessionComplete = mock(() => {});
+      const { pool } = createPoolAndTracker({ onStatus: { onSessionStart, onSessionComplete } });
       await pool.run();
-      expect(onAgentSpawn).toHaveBeenCalledTimes(1);
-      expect(onAgentComplete).toHaveBeenCalledTimes(1);
+      expect(onSessionStart).toHaveBeenCalledTimes(1);
+      expect(onSessionComplete).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -750,7 +750,7 @@ describe('LanePool', () => {
       expect(result.failedTasks + result.completedTasks).toBe(2);
     });
 
-    it('onAgentComplete still fires when dispose() throws', async () => {
+    it('onSessionComplete still fires when dispose() throws', async () => {
       setupProfileMocks();
       mockCreateHarness.mockResolvedValue({
         session: makeSession(() => 'ok'),
@@ -759,11 +759,11 @@ describe('LanePool', () => {
           throw new Error('dispose exploded');
         }),
       });
-      const onAgentComplete = mock(() => {});
+      const onSessionComplete = mock(() => {});
       const spy = spyOn(console, 'error').mockImplementation(() => {});
       try {
-        await createPoolAndTracker({ onStatus: { onAgentComplete } }).pool.run();
-        expect(onAgentComplete).toHaveBeenCalledTimes(1);
+        await createPoolAndTracker({ onStatus: { onSessionComplete } }).pool.run();
+        expect(onSessionComplete).toHaveBeenCalledTimes(1);
       } finally {
         spy.mockRestore();
       }
@@ -1010,7 +1010,6 @@ describe('LanePool', () => {
           phaseId: 'implementing',
           title: 'First',
           dependencies: [],
-          steps: [{ name: 'implement', profileId: 'coder', isReadOnly: false }],
         }),
       );
       expect(onTaskRegister).toHaveBeenNthCalledWith(
@@ -1020,7 +1019,6 @@ describe('LanePool', () => {
           phaseId: 'implementing',
           title: 'Second',
           dependencies: ['task-1'],
-          steps: [{ name: 'implement', profileId: 'coder', isReadOnly: false }],
         }),
       );
     });
@@ -1238,87 +1236,8 @@ describe('LanePool', () => {
     });
   });
 
-  describe('onStepStart callback', () => {
-    it('fires onStepStart with correct step info for each step', async () => {
-      setupProfileMocks();
-      setupHarnessMocks();
-      const onStepStart = mock(() => {});
-      const { pool } = createPoolAndTracker({
-        getStepsForTask: () => [
-          { name: 'implement', profileId: 'coder', isReadOnly: false },
-          { name: 'review', profileId: 'reviewer', isReadOnly: true },
-        ],
-        onStatus: { onStepStart },
-      });
-      await pool.run();
-      expect(onStepStart).toHaveBeenCalledTimes(2);
-      expect(onStepStart).toHaveBeenNthCalledWith(
-        1,
-        expect.objectContaining({
-          taskId: 'task-1',
-          stepName: 'implement',
-          stepIndex: 0,
-          agentId: 'lane-0',
-        }),
-      );
-      expect(onStepStart).toHaveBeenNthCalledWith(
-        2,
-        expect.objectContaining({
-          taskId: 'task-1',
-          stepName: 'review',
-          stepIndex: 1,
-          agentId: 'lane-0',
-        }),
-      );
-    });
-
-    it('fires onStepStart on retry (re-execution of same step)', async () => {
-      setupProfileMocks();
-      setupHarnessMocks();
-      let rc = 0;
-      mockPromptForStructured.mockImplementation(() =>
-        Promise.resolve(
-          ++rc <= 1
-            ? { result: { approved: false, feedback: 'Needs work', severity: 'critical' }, attempts: 1 }
-            : { result: { approved: true, feedback: undefined }, attempts: 1 },
-        ),
-      );
-      const onStepStart = mock(() => {});
-      const { pool } = createPoolAndTracker({
-        maxStepRetries: 3,
-        getStepsForTask: () => [
-          { name: 'implement', profileId: 'coder', isReadOnly: false },
-          {
-            name: 'review',
-            profileId: 'reviewer',
-            isReadOnly: true,
-            schema: z.object({ approved: z.boolean(), feedback: z.string().optional() }),
-          },
-        ],
-        onStatus: { onStepStart },
-      });
-      await pool.run();
-      // First pass: implement(0) + review(1). Review rejects, backing up to implement.
-      // Second pass: implement(0) + review(1). Both approved.
-      expect(onStepStart).toHaveBeenCalledTimes(4);
-      expect(onStepStart).toHaveBeenNthCalledWith(
-        1,
-        expect.objectContaining({ stepName: 'implement', stepIndex: 0, agentId: 'lane-0' }),
-      );
-      expect(onStepStart).toHaveBeenNthCalledWith(
-        2,
-        expect.objectContaining({ stepName: 'review', stepIndex: 1, agentId: 'lane-0' }),
-      );
-      expect(onStepStart).toHaveBeenNthCalledWith(
-        3,
-        expect.objectContaining({ stepName: 'implement', stepIndex: 0, agentId: 'lane-0' }),
-      );
-      expect(onStepStart).toHaveBeenNthCalledWith(
-        4,
-        expect.objectContaining({ stepName: 'review', stepIndex: 1, agentId: 'lane-0' }),
-      );
-    });
-  });
+  // onStepStart callback removed in C2 — step lifecycle no longer fires onStepStart.
+  // Session-level callbacks (onSessionStart/onSessionComplete) cover session lifecycle.
 
   describe('session reuse on retry', () => {
     const RS = z.object({

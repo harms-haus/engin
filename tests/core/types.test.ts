@@ -6,7 +6,7 @@
 //
 //   - TaskStatus      (string union)
 //   - StepDefinition  (generic interface)
-//   - StepEntity      (projection shape)
+//   -       (projection shape)
 //   - TaskEntity      (projection shape)
 //
 // Because src/core/types.ts re-exports these types, every downstream consumer
@@ -24,7 +24,6 @@
 //    identical (catches extra/missing fields, optionality, type changes).
 //
 // 2. assertEqual  — compile-time assertion that a type-level boolean is `true`.
-//    Produces TS2344 ("Type 'false' does not satisfy the constraint 'true'")
 //    when the two types diverge. Enforced by `tsc --noEmit` on this file and
 //    by IDEs; matches the pattern in tests/web/protocol-types-parity.test.ts.
 //
@@ -34,7 +33,7 @@
 import { describe, expect, it } from 'bun:test';
 import type { ZodType } from 'zod';
 import { z } from 'zod';
-import type { StepDefinition, StepEntity, TaskEntity, TaskStatus } from '../../packages/engine/src/core/types.js';
+import type { StepDefinition, TaskEntity, TaskStatus } from '../../packages/engine/src/core/types.js';
 import { STATUS_CALLBACK_METHODS } from '../../packages/engine/src/core/types.js';
 
 // ─── Type-level exact equality utility ─────────────────────────────────────
@@ -51,11 +50,11 @@ function assertEqual<T extends true>(_desc?: string): void {}
 
 type ExpectedTaskStatus = 'ready' | 'blocked' | 'active' | 'complete' | 'failed' | 'cancelled';
 
-interface ExpectedStepEntity {
+interface Expected {
   name: string;
   index: number; // 0-based position within the task
   profile?: string; // profileId this step runs as
-  agentKey?: string; // key into projection.agents once spawned
+  agentKey?: string; // key into projection.sessions once spawned
   isReadOnly?: boolean;
 }
 
@@ -64,8 +63,6 @@ interface ExpectedTaskEntity {
   title: string;
   phaseId: string; // REQUIRED
   status: ExpectedTaskStatus;
-  steps: ExpectedStepEntity[]; // ordered; state derived from activeStepIndex
-  activeStepIndex?: number; // the single active step; undefined when none
   dependencies: string[]; // task ids
   startedAt?: number;
   completedAt?: string;
@@ -83,7 +80,6 @@ interface ExpectedStepDefinition<T = unknown> {
 // ─── Compile-time structural equality assertions ───────────────────────────
 
 assertEqual<Equal<TaskStatus, ExpectedTaskStatus>>('TaskStatus union members are unchanged');
-assertEqual<Equal<StepEntity, ExpectedStepEntity>>('StepEntity shape is unchanged');
 assertEqual<Equal<TaskEntity, ExpectedTaskEntity>>('TaskEntity shape is unchanged');
 assertEqual<Equal<StepDefinition, ExpectedStepDefinition>>('StepDefinition<unknown> shape is unchanged');
 assertEqual<Equal<StepDefinition<string>, ExpectedStepDefinition<string>>>(
@@ -112,37 +108,6 @@ describe('TaskStatus', () => {
   });
 });
 
-// ─── StepEntity ─────────────────────────────────────────────────────────────
-
-describe('StepEntity', () => {
-  it('accepts a minimal object with only the required fields', () => {
-    const step: StepEntity = { name: 'write-tests', index: 0 };
-    expect(step.name).toBe('write-tests');
-    expect(step.index).toBe(0);
-    expect(step.profile).toBeUndefined();
-    expect(step.agentKey).toBeUndefined();
-    expect(step.isReadOnly).toBeUndefined();
-  });
-
-  it('accepts all optional fields populated', () => {
-    const step: StepEntity = {
-      name: 'review',
-      index: 1,
-      profile: 'reviewer',
-      agentKey: 'agent-1',
-      isReadOnly: true,
-    };
-    expect(step.profile).toBe('reviewer');
-    expect(step.agentKey).toBe('agent-1');
-    expect(step.isReadOnly).toBe(true);
-  });
-
-  it('survives a JSON round-trip', () => {
-    const step: StepEntity = { name: 'execute', index: 2, profile: 'coder', isReadOnly: false };
-    expect(JSON.parse(JSON.stringify(step))).toEqual(step);
-  });
-});
-
 // ─── TaskEntity ─────────────────────────────────────────────────────────────
 
 describe('TaskEntity', () => {
@@ -152,18 +117,12 @@ describe('TaskEntity', () => {
       title: 'Implement feature',
       phaseId: 'coding',
       status: 'active',
-      steps: [
-        { name: 'scout', index: 0, isReadOnly: true },
-        { name: 'implement', index: 1, isReadOnly: false },
-      ],
-      activeStepIndex: 1,
+
       dependencies: ['t0'],
       startedAt: 1700000000000,
     };
     expect(task.phaseId).toBe('coding');
     expect(task.status).toBe('active');
-    expect(task.steps).toHaveLength(2);
-    expect(task.activeStepIndex).toBe(1);
     expect(task.dependencies).toEqual(['t0']);
     expect(task.startedAt).toBe(1700000000000);
   });
@@ -174,12 +133,10 @@ describe('TaskEntity', () => {
       title: 'Tiny task',
       phaseId: 'planning',
       status: 'ready',
-      steps: [],
+
       dependencies: [],
     };
-    expect(task.steps).toEqual([]);
     expect(task.dependencies).toEqual([]);
-    expect(task.activeStepIndex).toBeUndefined();
     expect(task.startedAt).toBeUndefined();
     expect(task.completedAt).toBeUndefined();
   });
@@ -189,7 +146,6 @@ describe('TaskEntity', () => {
       id: 't3',
       title: 'T',
       phaseId: 'p',
-      steps: [] as StepEntity[],
       dependencies: [] as string[],
     };
     const ready: TaskEntity = { ...base, status: 'ready' };
@@ -214,8 +170,7 @@ describe('TaskEntity', () => {
       title: 'Round-trip',
       phaseId: 'phase-x',
       status: 'complete',
-      steps: [{ name: 's', index: 0, profile: 'coder', isReadOnly: false }],
-      activeStepIndex: 0,
+
       dependencies: [],
       startedAt: 1,
       completedAt: '2025-06-15T00:00:00.000Z',
@@ -274,23 +229,21 @@ describe('src/core/types.js re-export surface', () => {
   });
 
   it('still re-exports all four moved types (named imports resolve)', () => {
-    // The `import type { StepDefinition, StepEntity, TaskEntity, TaskStatus }`
+    // The `import type { StepDefinition, TaskEntity, TaskStatus }`
     // at the top of this file is itself the guard: if the refactor forgets to
     // re-export any of these, `tsc --noEmit` on this file fails with
     // "Module ... has no exported member". Constructing values annotated with
     // each type guarantees every imported name is referenced (not dead code).
     const status: TaskStatus = 'ready';
-    const stepEntity: StepEntity = { name: 'n', index: 0 };
     const taskEntity: TaskEntity = {
       id: 'x',
       title: 'T',
       phaseId: 'p',
       status,
-      steps: [stepEntity],
+
       dependencies: [],
     };
     const stepDef: StepDefinition = { name: 'n', profileId: 'p', isReadOnly: true };
-    expect(taskEntity.steps[0]).toBe(stepEntity);
     expect(stepDef.isReadOnly).toBe(true);
   });
 });

@@ -78,7 +78,7 @@ describe('StatusBridge', () => {
       expect(snapshot.state.currentPhaseId).toBe('');
       expect(snapshot.state.completedPhaseIds).toEqual([]);
       expect(snapshot.state.tasks).toEqual({});
-      expect(snapshot.state.agents).toEqual({});
+      expect(snapshot.state.sessions).toEqual({});
       expect(snapshot.state.sidebar).toEqual({ title: '', indicator: '' });
     });
 
@@ -112,21 +112,20 @@ describe('StatusBridge', () => {
         phaseId: 'p1',
         title: 'Task 1',
         dependencies: [],
-        steps: [],
       });
       const snapshot = bridge.getSnapshot();
       expect(Object.keys(snapshot.state.tasks)).toHaveLength(1);
       expect(snapshot.state.tasks['t1'].id).toBe('t1');
     });
 
-    it('reflects agents', () => {
+    it('reflects sessions', () => {
       const { store, bridge } = createSetup();
-      store.append('agent_spawned', { agentId: 'a1', profile: 'scout' }, { agentId: 'a1', phaseId: 'scouting' });
+      store.append('session_started', { agentId: 'a1', profile: 'scout' }, { agentId: 'a1', phaseId: 'scouting' });
       const snapshot = bridge.getSnapshot();
-      const agentKeys = Object.keys(snapshot.state.agents);
+      const agentKeys = Object.keys(snapshot.state.sessions);
       expect(agentKeys).toHaveLength(1);
-      expect(snapshot.state.agents[agentKeys[0]].agentId).toBe('a1');
-      expect(snapshot.state.agents[agentKeys[0]].active).toBe(true);
+      expect(snapshot.state.sessions[agentKeys[0]].agentId).toBe('a1');
+      expect(snapshot.state.sessions[agentKeys[0]].active).toBe(true);
     });
 
     it('reflects sidebar', () => {
@@ -322,7 +321,7 @@ describe('StatusBridge', () => {
       const { store, msgs, flushMicrotasks } = createSetup();
       store.append('workflow_started', { taskPrompt: 'x' });
       store.append('sidebar_updated', { title: 'T' });
-      store.append('agent_spawned', { agentId: 'a1', profile: 'scout' }, { agentId: 'a1' });
+      store.append('session_started', { agentId: 'a1', profile: 'scout' }, { agentId: 'a1' });
       await flushMicrotasks();
 
       const events = msgs('events');
@@ -330,7 +329,7 @@ describe('StatusBridge', () => {
       expect(events[0].events).toHaveLength(3);
       expect(events[0].events[0].type).toBe('workflow_started');
       expect(events[0].events[1].type).toBe('sidebar_updated');
-      expect(events[0].events[2].type).toBe('agent_spawned');
+      expect(events[0].events[2].type).toBe('session_started');
     });
 
     it('sets seq to the latest projection seq', async () => {
@@ -743,10 +742,9 @@ describe('StatusBridge', () => {
         phaseId: 'p1',
         title: 'Task 1',
         dependencies: [],
-        steps: [],
       });
       store.append('sidebar_updated', { title: 'T', indicator: '🟢' });
-      store.append('agent_spawned', { agentId: 'a1', profile: 'scout' }, { agentId: 'a1', phaseId: 'scouting' });
+      store.append('session_started', { agentId: 'a1', profile: 'scout' }, { agentId: 'a1', phaseId: 'scouting' });
       store.append(
         'turn_ended',
         {
@@ -758,7 +756,7 @@ describe('StatusBridge', () => {
       // Terminal event records are also batched as ordinary events — they do
       // NOT trigger a dedicated run_complete / run_failed broadcast.  That
       // signal is emitted SOLELY by the RunManager via broadcastTerminal().
-      store.append('workflow_completed', { totalDurationMs: 1000, agentCount: 1 });
+      store.append('workflow_completed', { totalDurationMs: 1000, sessionCount: 1 });
       store.append('workflow_failed', { error: 'broken', phase: 'test' });
 
       await flushMicrotasks();

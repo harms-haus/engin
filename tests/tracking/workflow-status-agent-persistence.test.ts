@@ -23,8 +23,8 @@ describe('WorkflowStatusTracker – agent persistence', () => {
     });
 
     it('spawnedAgents getter returns a copy', () => {
-      const agents = tracker.spawnedAgents;
-      agents.push({ agentId: 'fake', profile: 'p', phaseId: 'scouting' });
+      const sessions = tracker.spawnedAgents;
+      sessions.push({ agentId: 'fake', profile: 'p', phaseId: 'scouting' });
       expect(tracker.spawnedAgents).toEqual([]);
     });
   });
@@ -35,28 +35,26 @@ describe('WorkflowStatusTracker – agent persistence', () => {
     it('adds a record with all required fields', () => {
       tracker.recordAgentSpawn('agent-1', 'coder', 'scouting');
 
-      const agents = tracker.spawnedAgents;
-      expect(agents).toHaveLength(1);
-      expect(agents[0].agentId).toBe('agent-1');
-      expect(agents[0].profile).toBe('coder');
-      expect(agents[0].phaseId).toBe('scouting');
-      expect(agents[0].completedAt).toBeUndefined();
-      expect(agents[0].taskId).toBeUndefined();
-      expect(agents[0].stepIndex).toBeUndefined();
+      const sessions = tracker.spawnedAgents;
+      expect(sessions).toHaveLength(1);
+      expect(sessions[0].agentId).toBe('agent-1');
+      expect(sessions[0].profile).toBe('coder');
+      expect(sessions[0].phaseId).toBe('scouting');
+      expect(sessions[0].completedAt).toBeUndefined();
+      expect(sessions[0].taskId).toBeUndefined();
     });
 
     it('stores taskId when provided', () => {
       tracker.recordAgentSpawn('agent-1', 'coder', 'implementing', 'task-42');
 
-      const agents = tracker.spawnedAgents;
-      expect(agents[0].taskId).toBe('task-42');
+      const sessions = tracker.spawnedAgents;
+      expect(sessions[0].taskId).toBe('task-42');
     });
 
     it('stores stepIndex when provided', () => {
       tracker.recordAgentSpawn('agent-1', 'coder', 'implementing', 'task-42', 2);
 
-      const agents = tracker.spawnedAgents;
-      expect(agents[0].stepIndex).toBe(2);
+      const sessions = tracker.spawnedAgents;
     });
 
     it('stores stepIndex via object overload', () => {
@@ -65,11 +63,9 @@ describe('WorkflowStatusTracker – agent persistence', () => {
         profile: 'coder',
         phaseId: 'implementing',
         taskId: 'task-42',
-        stepIndex: 3,
       });
 
-      const agents = tracker.spawnedAgents;
-      expect(agents[0].stepIndex).toBe(3);
+      const sessions = tracker.spawnedAgents;
     });
 
     it('appends multiple records in order', () => {
@@ -77,11 +73,11 @@ describe('WorkflowStatusTracker – agent persistence', () => {
       tracker.recordAgentSpawn('agent-2', 'reviewer', 'scouting_review');
       tracker.recordAgentSpawn('agent-3', 'coder', 'implementing', 'task-1');
 
-      const agents = tracker.spawnedAgents;
-      expect(agents).toHaveLength(3);
-      expect(agents[0].agentId).toBe('agent-1');
-      expect(agents[1].agentId).toBe('agent-2');
-      expect(agents[2].agentId).toBe('agent-3');
+      const sessions = tracker.spawnedAgents;
+      expect(sessions).toHaveLength(3);
+      expect(sessions[0].agentId).toBe('agent-1');
+      expect(sessions[1].agentId).toBe('agent-2');
+      expect(sessions[2].agentId).toBe('agent-3');
     });
 
     it('triggers auto-persist', async () => {
@@ -106,12 +102,12 @@ describe('WorkflowStatusTracker – agent persistence', () => {
       tracker.recordAgentComplete('agent-1');
 
       const after = new Date().toISOString();
-      const agents = tracker.spawnedAgents;
-      expect(agents[0].completedAt).toBeDefined();
+      const sessions = tracker.spawnedAgents;
+      expect(sessions[0].completedAt).toBeDefined();
 
       // completedAt should be between before and after (inclusive of some margin)
-      expect(agents[0].completedAt!.localeCompare(before)).toBeGreaterThanOrEqual(0);
-      expect(agents[0].completedAt!.localeCompare(after)).toBeLessThanOrEqual(0);
+      expect(sessions[0].completedAt!.localeCompare(before)).toBeGreaterThanOrEqual(0);
+      expect(sessions[0].completedAt!.localeCompare(after)).toBeLessThanOrEqual(0);
     });
 
     it('only affects the matching agent', () => {
@@ -120,30 +116,30 @@ describe('WorkflowStatusTracker – agent persistence', () => {
 
       tracker.recordAgentComplete('agent-1');
 
-      const agents = tracker.spawnedAgents;
-      expect(agents[0].completedAt).toBeDefined();
-      expect(agents[1].completedAt).toBeUndefined();
+      const sessions = tracker.spawnedAgents;
+      expect(sessions[0].completedAt).toBeDefined();
+      expect(sessions[1].completedAt).toBeUndefined();
     });
 
-    it('handles completing multiple agents independently', () => {
+    it('handles completing multiple sessions independently', () => {
       tracker.recordAgentSpawn('agent-1', 'coder', 'scouting');
       tracker.recordAgentSpawn('agent-2', 'reviewer', 'scouting_review');
 
       tracker.recordAgentComplete('agent-1');
       tracker.recordAgentComplete('agent-2');
 
-      const agents = tracker.spawnedAgents;
-      expect(agents[0].completedAt).toBeDefined();
-      expect(agents[1].completedAt).toBeDefined();
+      const sessions = tracker.spawnedAgents;
+      expect(sessions[0].completedAt).toBeDefined();
+      expect(sessions[1].completedAt).toBeDefined();
     });
 
     it('is a no-op for unknown agentId', () => {
       tracker.recordAgentSpawn('agent-1', 'coder', 'scouting');
       tracker.recordAgentComplete('unknown-agent');
 
-      const agents = tracker.spawnedAgents;
-      expect(agents[0].completedAt).toBeUndefined();
-      expect(agents).toHaveLength(1);
+      const sessions = tracker.spawnedAgents;
+      expect(sessions[0].completedAt).toBeUndefined();
+      expect(sessions).toHaveLength(1);
     });
 
     it('triggers auto-persist', async () => {
@@ -204,20 +200,20 @@ describe('WorkflowStatusTracker – agent persistence', () => {
       await tracker.save();
 
       const restored = await WorkflowStatusTracker.load(dir);
-      const agents = restored.spawnedAgents;
+      const sessions = restored.spawnedAgents;
 
-      expect(agents).toHaveLength(2);
-      expect(agents[0].agentId).toBe('agent-1');
-      expect(agents[0].profile).toBe('coder');
-      expect(agents[0].phaseId).toBe('scouting');
-      expect(agents[0].taskId).toBeUndefined();
-      expect(agents[0].completedAt).toBeDefined();
+      expect(sessions).toHaveLength(2);
+      expect(sessions[0].agentId).toBe('agent-1');
+      expect(sessions[0].profile).toBe('coder');
+      expect(sessions[0].phaseId).toBe('scouting');
+      expect(sessions[0].taskId).toBeUndefined();
+      expect(sessions[0].completedAt).toBeDefined();
 
-      expect(agents[1].agentId).toBe('agent-2');
-      expect(agents[1].profile).toBe('reviewer');
-      expect(agents[1].phaseId).toBe('scouting_review');
-      expect(agents[1].taskId).toBe('task-5');
-      expect(agents[1].completedAt).toBeUndefined();
+      expect(sessions[1].agentId).toBe('agent-2');
+      expect(sessions[1].profile).toBe('reviewer');
+      expect(sessions[1].phaseId).toBe('scouting_review');
+      expect(sessions[1].taskId).toBe('task-5');
+      expect(sessions[1].completedAt).toBeUndefined();
     });
 
     it('backward compatibility: load() defaults spawnedAgents to [] when field is missing', async () => {
@@ -230,7 +226,7 @@ describe('WorkflowStatusTracker – agent persistence', () => {
         completedPhaseIds: [],
         tasks: [],
         workflowData: {},
-        stats: { totalTokens: 0, totalCost: 0, agentCount: 0 },
+        stats: { totalTokens: 0, totalCost: 0, sessionCount: 0 },
         // Note: no spawnedAgents field
       };
       await fs.writeFile(stateFile, JSON.stringify(legacyState, null, 2), 'utf-8');
@@ -239,7 +235,7 @@ describe('WorkflowStatusTracker – agent persistence', () => {
       expect(restored.spawnedAgents).toEqual([]);
     });
 
-    it('restored tracker can continue recording agents', async () => {
+    it('restored tracker can continue recording sessions', async () => {
       tracker.recordAgentSpawn('agent-1', 'coder', 'scouting');
       tracker.recordAgentComplete('agent-1');
       await tracker.save();
@@ -249,12 +245,12 @@ describe('WorkflowStatusTracker – agent persistence', () => {
       restored.recordAgentComplete('agent-2');
 
       // In-memory state is immediately available
-      const agents = restored.spawnedAgents;
-      expect(agents).toHaveLength(2);
-      expect(agents[0].agentId).toBe('agent-1');
-      expect(agents[0].completedAt).toBeDefined();
-      expect(agents[1].agentId).toBe('agent-2');
-      expect(agents[1].completedAt).toBeDefined();
+      const sessions = restored.spawnedAgents;
+      expect(sessions).toHaveLength(2);
+      expect(sessions[0].agentId).toBe('agent-1');
+      expect(sessions[0].completedAt).toBeDefined();
+      expect(sessions[1].agentId).toBe('agent-2');
+      expect(sessions[1].completedAt).toBeDefined();
 
       await restored.save();
 
@@ -360,21 +356,21 @@ describe('WorkflowStatusTracker – agent persistence', () => {
     it('accepts an object with all fields', () => {
       tracker.recordAgentSpawn({ agentId: 'agent-obj-1', profile: 'coder', phaseId: 'scouting', taskId: 'task-99' });
 
-      const agents = tracker.spawnedAgents;
-      expect(agents).toHaveLength(1);
-      expect(agents[0].agentId).toBe('agent-obj-1');
-      expect(agents[0].profile).toBe('coder');
-      expect(agents[0].phaseId).toBe('scouting');
-      expect(agents[0].taskId).toBe('task-99');
-      expect(agents[0].completedAt).toBeUndefined();
+      const sessions = tracker.spawnedAgents;
+      expect(sessions).toHaveLength(1);
+      expect(sessions[0].agentId).toBe('agent-obj-1');
+      expect(sessions[0].profile).toBe('coder');
+      expect(sessions[0].phaseId).toBe('scouting');
+      expect(sessions[0].taskId).toBe('task-99');
+      expect(sessions[0].completedAt).toBeUndefined();
     });
 
     it('accepts an object without optional taskId', () => {
       tracker.recordAgentSpawn({ agentId: 'agent-obj-2', profile: 'reviewer', phaseId: 'planning' });
 
-      const agents = tracker.spawnedAgents;
-      expect(agents).toHaveLength(1);
-      expect(agents[0].taskId).toBeUndefined();
+      const sessions = tracker.spawnedAgents;
+      expect(sessions).toHaveLength(1);
+      expect(sessions[0].taskId).toBeUndefined();
     });
 
     it('persists via debounced auto-persist', async () => {
@@ -420,7 +416,7 @@ describe('WorkflowStatusTracker – agent persistence', () => {
     });
 
     it('multiple rapid spawn calls are coalesced into fewer disk writes', async () => {
-      // Rapidly spawn multiple agents
+      // Rapidly spawn multiple sessions
       for (let i = 0; i < 5; i++) {
         tracker.recordAgentSpawn(`agent-${i}`, 'coder', 'implementing', `task-${i}`);
       }

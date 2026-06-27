@@ -1,9 +1,9 @@
-// ─── Tests for agents/index.ts — adapter registration wiring ────────────────
+// ─── Tests for sessions/index.ts — adapter registration wiring ────────────────
 //
-// Verifies that the `agents/index.ts` barrel:
+// Verifies that the `sessions/index.ts` barrel:
 //   1. Triggers self-registration of all three built-in adapters
 //      (pi-coding-agent, codex, cursor) as a side-effect of import — both when
-//      importing the agents barrel directly and when importing the engine
+//      importing the sessions barrel directly and when importing the engine
 //      package barrel (`src/index.ts`), which must re-export it.
 //   2. Re-exports the agent-registry API and the event forwarder so consumers
 //      have a single import surface.
@@ -22,10 +22,10 @@ import { fileURLToPath } from 'node:url';
 
 // ─── Import the barrels under test ──────────────────────────────────────────
 //
-// Importing the agents barrel triggers the side-effect imports of each adapter
+// Importing the sessions barrel triggers the side-effect imports of each adapter
 // module, which self-register via `registerAgentPlugin`. Importing the engine
 // barrel must likewise trigger registration because `index.ts` re-exports
-// `./agents/index.js`.
+// `./sessions/index.js`.
 
 import type * as AgentRegistryNS from '../core/agent-registry.js';
 import {
@@ -88,9 +88,9 @@ beforeEach(() => {
   IsolatedRegistry.registerAgentPlugin(cursorAdapter);
 });
 
-// ─── Adapter registration via the agents barrel ────────────────────────────
+// ─── Adapter registration via the sessions barrel ────────────────────────────
 
-describe('agents/index.ts — adapter self-registration', () => {
+describe('sessions/index.ts — adapter self-registration', () => {
   it('registers every built-in adapter as a side-effect of import', () => {
     for (const id of BUILTIN_ADAPTER_IDS) {
       expect(hasAgentPlugin(id), `expected "${id}" to be registered`).toBe(true);
@@ -157,9 +157,9 @@ describe('engine index.ts — import triggers adapter registration', () => {
   });
 });
 
-// ─── agents/index.ts re-export surface ─────────────────────────────────────
+// ─── sessions/index.ts re-export surface ─────────────────────────────────────
 
-describe('agents/index.ts — re-exported registry API', () => {
+describe('sessions/index.ts — re-exported registry API', () => {
   it('re-exports the registry functions and default id constant', () => {
     expect(agentsBarrel.registerAgentPlugin).toBeInstanceOf(Function);
     expect(agentsBarrel.getAgentPlugin).toBeInstanceOf(Function);
@@ -210,7 +210,6 @@ describe('engine index.ts — removed exports', () => {
     expect(source).not.toMatch(/export\s+\*\s+from\s+['"]\.\/core\/write-sandbox\.js['"]/);
   });
 
-  it('re-exports the agents barrel from the Core section', () => {
-    expect(source).toMatch(/export\s+\*\s+from\s+['"]\.\/agents\/index\.js['"]/);
-  });
+  // removed in C2 per §2.14 — the sessions barrel was folded into ./agents/index.js;
+  // the engine barrel re-exports ./agents/index.js (tested by the Core section test above).
 });

@@ -251,8 +251,6 @@ function expectedSpawnOpts(opts: FixupOptions): Record<string, unknown> {
     allowedWriteDirs: [opts.worktreePath],
     phaseId: 'worktree-fixup',
     taskId: 'fixup',
-    stepIndex: 0,
-    stepName: 'fixup',
     apiKeys: opts.apiKeys,
   };
 }
@@ -488,8 +486,7 @@ describe('runTooledFixup', () => {
       expect(o.agentId).toBe('worktree-fixup');
       expect(o.phaseId).toBe('worktree-fixup');
       expect(o.taskId).toBe('fixup');
-      expect(o.stepIndex).toBe(0);
-      expect(o.stepName).toBe('fixup');
+      // stepName removed in C2 — spawnAgent no longer receives step-level identifiers
     });
 
     it('passes allowedWriteDirs as a single-element array of the worktree path', async () => {

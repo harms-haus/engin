@@ -47,7 +47,7 @@ export const HOOK_DECLARATIONS = {
   collectContext: { rule: 'all-run', reducer: CONTEXT_BLOCK_REDUCER as (acc: unknown, next: unknown) => unknown },
 
   // ── pipeline (ordered transforms) ───────────────────────────────────────
-  beforeStepPrompt: { rule: 'pipeline' },
+  beforeSessionPrompt: { rule: 'pipeline' },
   onPersist: { rule: 'pipeline' },
   onRestore: { rule: 'pipeline' },
   populateWorktree: { rule: 'pipeline' },

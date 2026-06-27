@@ -31,7 +31,6 @@ import type {
   PersistedAgentRecord,
   StatusCallbacks,
   StepDefinition,
-  StepEntity,
   StructuredOutputOptions,
   Task,
   TaskEntity,
@@ -78,11 +77,10 @@ describe('STATUS_CALLBACK_METHODS', () => {
       'onPhaseStart',
       'onPhaseComplete',
       'onPhaseRegister',
-      'onAgentSpawn',
-      'onAgentComplete',
+      'onSessionStart',
+      'onSessionComplete',
       'onTaskStart',
       'onTaskRegister',
-      'onStepStart',
       'onTaskComplete',
       'onTaskRejected',
       'onDecision',
@@ -100,8 +98,8 @@ describe('STATUS_CALLBACK_METHODS', () => {
     ]);
   });
 
-  it('has 23 members', () => {
-    expect(STATUS_CALLBACK_METHODS).toHaveLength(23);
+  it('has 22 members', () => {
+    expect(STATUS_CALLBACK_METHODS).toHaveLength(22);
   });
 
   it('contains no duplicate entries', () => {
@@ -126,11 +124,10 @@ describe('STATUS_CALLBACK_METHODS', () => {
       'onPhaseRegister',
       'onPhaseStart',
       'onPhaseComplete',
-      'onAgentSpawn',
-      'onAgentComplete',
+      'onSessionStart',
+      'onSessionComplete',
       'onTaskStart',
       'onTaskRegister',
-      'onStepStart',
       'onTaskComplete',
       'onTaskRejected',
       'onDecision',
@@ -191,6 +188,7 @@ describe('core/types barrel — type resolution guards (compile-time)', () => {
       dependencies: [],
       status: 'ready',
       phaseId: 'phase-1',
+      worktree: 'none',
     };
     expect(task.phaseId).toBe('phase-1');
     // Optional fields
@@ -199,9 +197,7 @@ describe('core/types barrel — type resolution guards (compile-time)', () => {
       assignedAgent: 'a1',
       result: { ok: true },
       reviewFeedback: ['fix'],
-      isCode: true,
     };
-    expect(full.isCode).toBe(true);
   });
 
   it('WorkflowState has expected shape with nested stats', () => {
@@ -387,18 +383,13 @@ describe('core/types barrel — type resolution guards (compile-time)', () => {
     expect(step.isReadOnly).toBe(false);
   });
 
-  it('re-exports StepEntity from @engin/shared/types with required fields', () => {
-    const entity: StepEntity = { name: 'execute', index: 0 };
-    expect(entity.index).toBe(0);
-  });
-
   it('re-exports TaskEntity from @engin/shared/types with required fields', () => {
     const entity: TaskEntity = {
       id: 't1',
       title: 'A task',
       phaseId: 'p1',
       status: 'ready',
-      steps: [],
+
       dependencies: [],
     };
     expect(entity.phaseId).toBe('p1');

@@ -61,8 +61,9 @@ packages/
 │   the global WebSocket constructor (used by EngineClient).
 │   ├─ protocol-types.ts     ClientMessage / ServerMessage / RunSummary (multi-run)
 │   ├─ event-types.ts        EventType, EventRecord, entities, WorkflowProjection, LogEntry
-│   ├─ evolve.ts             the pure reducer (only `import type`)
-│   ├─ types.ts              StepDefinition, StepEntity, TaskEntity, TaskStatus
+│   ├─ evolve.ts             the pure reducer dispatcher (delegates to per-domain handlers)
+│   ├─ evolve-utils.ts       sessionKey, resolveSession, clone, capLog, MAX_SESSION_LOG
+│   ├─ *-handlers.ts         workflow/phase/session/task/tool/log/retry event handlers
 │   ├─ format-workflow-event.ts   EventRecord → human-readable line
 │   ├─ format-tool-call.ts   tool-call display formatting
 │   ├─ engine-client.ts      EngineClient: WS connect, reconnect/backoff, resync, run multiplex
@@ -79,9 +80,16 @@ packages/
 │   │   ├─ status-bridge.ts  per-run store→WS bridge (runId-tagged snapshot/events/run_complete/run_failed)
 │   │   ├─ auth.ts           authorize(msg) chokepoint — capability-token gen/validate (disabled now)
 │   │   └─ bind-guard.ts     isWildcardHost() — refuses 0.0.0.0/::/* binding until auth exists
-│   ├─ core/                 profiles, config, agent lifecycle (spawnAgent), agent plugin contract + registry, runStepTask, worktree lifecycle, git, network
-│   ├─ pool/                 LanePool + step execution + retry runners
-│   └─ tracking/             EventStore, evolve, store-callbacks, task-status, audit-log, persistence
+│   ├─ core/                 profiles, config, agent lifecycle (spawnAgent), agent plugin contract + registry, worktree lifecycle, git, network
+│   ├─ pool/                 RunnerPool + session primitive + SessionGate + composable runners
+│   │   ├─ runner-pool.ts    RunnerPool (replaces LanePool+Scheduler) — drain-loop model
+│   │   ├─ session-gate.ts   SessionGate — two-level (total + per-model) FIFO RAII concurrency gate
+│   │   ├─ session.ts        runSession — the single-step session primitive
+│   │   ├─ runners/          composable runner factories (singleSession, linear, parallel, review, council, map, branch, coordinator, coalescing)
+│   │   ├─ runner-utils.ts   runSessionViaGate — shared gate+session helper for runners
+│   │   ├─ constants.ts      DEFAULT_MAX_ROUNDS
+│   │   └─ validation.ts     assertSafeName, severity helpers
+│   └─ tracking/             EventStore, evolve re-export, store-callbacks, task-status (TaskTracker), audit-log, persistence
 │
 ├── tui/       @harms-haus/engin-tui  (PRIVATE — pi-tui CLIENT)
 │   Depends on shared + @earendil-works/pi-tui. Must NOT depend on engine.
@@ -169,7 +177,7 @@ The workflow's `options.onStatus` is not the raw `createStoreCallbacks` surface.
 `RunExecutor` first composes it through `composeHooks(storeCallbacks, workflow.hooks)`
 ([Hooks](../reference/hooks.md)). The composed `onStatus` forwards every callback **verbatim**
 to the store — the store is the terminal sink and **always** fires — while the returned
-`HookRegistry` is threaded into the engine primitives (`LanePool`, `PhaseRunner`, `Scheduler`,
+`HookRegistry` is threaded into the engine primitives (`RunnerPool`, `PhaseRunner`,
 `WorktreeManager`) so influence/observe hooks fire at their lifecycle seams. Hooks compose **on
 top of** `StatusCallbacks` without replacing it: a workflow with no `hooks` field gets an
 `onStatus` behaviorally identical to `storeCallbacks` and an empty registry. Observe hooks
@@ -246,44 +254,49 @@ probe finds nothing. See [CLI reference → server](../reference/cli.md#server) 
 
 Two parallel representations of tasks exist by design:
 
-| Aspect           | Write model (`Task` / `TaskTracker`)                          | Read model (`TaskEntity` / projection)         |
-| ---------------- | ------------------------------------------------------------- | ---------------------------------------------- |
-| Lives in         | `TaskTracker` (executor side, server)                         | `WorkflowProjection.tasks`                     |
-| Carries          | prompt, files, dependencies, review feedback, executor status | title, phaseId, status, steps, activeStepIndex |
-| Mutated by       | `LanePool`, lane workers, `claimTasks`/`completeTask`/...     | `evolve()` reducer (immutable)                 |
-| Kept in sync via | events fired by `runStepTask` / `LanePool` / `task-processor` | replaying those events                         |
+| Aspect           | Write model (`Task` / `TaskTracker`)                                         | Read model (`TaskEntity` / projection)       |
+| ---------------- | ---------------------------------------------------------------------------- | -------------------------------------------- |
+| Lives in         | `TaskTracker` (executor side, server)                                        | `WorkflowProjection.tasks`                   |
+| Carries          | prompt, files, dependencies, review feedback, worktree mode, executor status | title, phaseId, status, dependencies, timing |
+| Mutated by       | `RunnerPool`, retry valve, `claimTasks`/`completeTask`/...                   | `evolve()` reducer (immutable)               |
+| Kept in sync via | events fired by `runSession` / `RunnerPool` / task processing                | replaying those events                       |
 
 A subtle consequence: `rejectTask` on the write model keeps the task `active` (the
-lane still owns it and will retry the previous step), but the corresponding
-`task_rejected` event maps to status `failed` in the projection. Both are correct —
-the executor view supports retry, the projection view shows the latest outcome.
+pool still owns it and will retry), but the corresponding `task_rejected` event maps
+to status `failed` in the projection. Both are correct — the executor view supports
+retry, the projection view shows the latest outcome.
 
-## The agent lifecycle, end to end
+## The session lifecycle, end to end
 
-When a workflow runs an agent (via `runStepTask` or a `LanePool` step) — all
-server-side now — this happens:
+When a runner calls `ctx.runSession(...)` — all server-side — this happens:
 
-1. **Profile load.** The profile is loaded from the configured directories (local
-   overrides global). Read-only steps strip `write`/`edit` from the toolset.
-2. **Agent session creation.** The profile's configured agent plugin is resolved
-   (via `requireAgentPlugin`) and its `createSession` is called (orchestrated by
-   `spawnAgent` in `core/agent-lifecycle.ts`). This resolves the model, loads
-   credentials via `AuthStorage`, builds the tool allowlist from the profile,
-   constructs a `DefaultResourceLoader` with the profile's system prompt, and
-   creates the agent session — returning a neutral `AgentRuntime`.
-3. **Lifecycle callbacks.** `onTaskRegister` → `onTaskStart` → `onAgentSpawn` →
-   `onStepStart` fire (each becomes an event in the store, broadcast to clients).
-4. **Prompt.** The prompt is sent. If the step has a Zod `schema`, the response is
-   parsed and validated with up to 3 attempts; otherwise the raw assistant text is
-   returned. Turn-level and tool-level events (`onTurnStart`, `onToolCallStart`, …)
-   stream back through the store and out to subscribers.
-5. **Teardown.** `onAgentComplete` fires, the agent session (`AgentRuntime`) is
-   disposed, and (on success) `onTaskComplete` fires. On error, `onTaskRejected`
-   fires and the error re-throws.
+1. **Idempotency check.** The session primitive checks for a `.complete` sentinel +
+   valid `result.json` in the session directory. If present, returns the cached result
+   without spawning. If `.complete` exists but the result is corrupt (checksum/length
+   mismatch), throws a permanent `SessionError`.
+2. **Profile resolution.** The profile is looked up from `ctx.profiles` by
+   `spec.profile`. Read-only sessions add `write`/`edit` to the profile's `excludeTools`.
+3. **Agent session creation.** The profile's configured agent plugin is resolved
+   (via `requireAgentPlugin`) and its `createSession` is called directly (not via
+   `spawnAgent`). The session is registered on `activeSessions` immediately after
+   creation (before any `await`) so abort listeners reach it.
+4. **Lifecycle callback.** `onSessionStart` fires with `{ agentId, profile, phaseId,
+sessionId, sessionPath, contextWindow?, runnerRole, attempt }`.
+5. **Prompt.** Depending on `spec.outputMode`:
+   - `'text'` — `session.prompt(promptText)` then extract last assistant text; fail-fast
+     on empty/error.
+   - `'structured'` — `promptForStructured(session, promptText, schema, { maxRetries: 3 })`;
+     validated JSON returned as `{ mode: 'structured', data }`.
+   - `'filesystem'` — prompt the agent; files are written during the turn; returns
+     `{ mode: 'filesystem', files: [] }`.
+     A watchdog timer (when `watchdogTimeoutMs` is set) aborts the session on inactivity.
+6. **Persist + complete.** The result is atomically persisted (`result.json` +
+   `.complete` sentinel with SHA-256 checksum). `onSessionComplete` fires. The session
+   is disposed and removed from `activeSessions` in `finally`.
 
-For multi-step tasks in a `LanePool`, step 4 is wrapped in a retry loop: a rejected
-step backs up exactly one step, appends the reviewer feedback to the task, and
-re-runs (up to `maxStepRetries`, default 5). See
+For tasks in a `RunnerPool`, each claimed task gets a runner that composes one or more
+sessions. The pool's retry valve handles task-level failures: transient errors are
+retried (up to `maxTaskRetries`), permanent errors fail fast. See
 [Task pool & execution](../reference/task-pool.md).
 
 ## Where to go next
@@ -293,8 +306,9 @@ re-runs (up to `maxStepRetries`, default 5). See
 - [CLI reference](../reference/cli.md) — `run`, `resume`, `server up/down/status`,
   flags, and the detach/kill semantics.
 - [Event store & status](../reference/event-store.md) — the reducer, the projection,
-  durability, and the new `log` event type.
+  durability, and the `log` event type.
 - [Web reference](../reference/web.md) — the React client, the runs frame, and the
   shared `EngineClient`.
-- [Task pool & execution](../reference/task-pool.md) — lanes, steps, retries.
+- [Task pool & execution](../reference/task-pool.md) — `RunnerPool`, `SessionGate`,
+  runners, retries.
 - [Building a new workflow](../guides/building-workflows.md) — use all of this in anger.

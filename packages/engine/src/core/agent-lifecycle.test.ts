@@ -2,7 +2,7 @@
 //
 // Verifies that `spawnAgent` reads `contextWindow` from the
 // `AgentRuntime` returned by `plugin.createSession` and forwards it on the
-// `onAgentSpawn` info object, and — when wired through `createStoreCallbacks` —
+// `onSessionStart` info object, and — when wired through `createStoreCallbacks` —
 // that the appended `agent_spawned` event carries `data.contextWindow` equal to
 // the resolved model's value.
 //
@@ -73,7 +73,7 @@ beforeEach(() => {
 
 // ─── Tests ──────────────────────────────────────────────────────────────────
 
-describe('spawnAgent — forwards contextWindow to onAgentSpawn', () => {
+describe('spawnAgent — forwards contextWindow to onSessionStart', () => {
   it('forwards the model contextWindow from createSession to the spawn callback', async () => {
     const session = makeMockSession('s1', 131072);
     mockPlugin.createSession.mockResolvedValue(session);
@@ -87,8 +87,7 @@ describe('spawnAgent — forwards contextWindow to onAgentSpawn', () => {
         cwd: '/tmp',
         phaseId: 'p1',
         taskId: 't1',
-        stepIndex: 0,
-        onStatus: { onAgentSpawn: (info) => captured.push(info) },
+        onStatus: { onSessionStart: (info) => captured.push(info) },
       },
       new Map([['coder', profile]]),
     );
@@ -105,7 +104,7 @@ describe('spawnAgent — forwards contextWindow to onAgentSpawn', () => {
     mockPlugin.createSession.mockResolvedValue(session);
 
     // `agentId` is included so the element type shares a key with the
-    // onAgentSpawn info type (avoids TS2559 'no properties in common' before
+    // onSessionStart info type (avoids TS2559 'no properties in common' before
     // the info type is widened with contextWindow).
     const captured: Array<{ contextWindow?: number; agentId?: string }> = [];
 
@@ -116,8 +115,7 @@ describe('spawnAgent — forwards contextWindow to onAgentSpawn', () => {
         cwd: '/tmp',
         phaseId: 'p1',
         taskId: 't3',
-        stepIndex: 0,
-        onStatus: { onAgentSpawn: (info) => captured.push(info) },
+        onStatus: { onSessionStart: (info) => captured.push(info) },
       },
       new Map([['coder', profile]]),
     );
@@ -157,13 +155,12 @@ describe('spawnAgent — forwards contextWindow to onAgentSpawn', () => {
         cwd: '/tmp',
         phaseId: 'p1',
         taskId: 't2',
-        stepIndex: 1,
         onStatus,
       },
       new Map([['coder', profile]]),
     );
 
-    const spawn = calls.find((c) => c.type === 'agent_spawned');
+    const spawn = calls.find((c) => c.type === 'session_started');
     expect(spawn, 'agent_spawned event should be appended').toBeDefined();
     expect(spawn!.data.contextWindow).toBe(MODEL_CONTEXT_WINDOW);
   });
@@ -179,7 +176,6 @@ describe('spawnAgent — forwards contextWindow to onAgentSpawn', () => {
         cwd: '/tmp/work',
         phaseId: 'p1',
         taskId: 't4',
-        stepIndex: 0,
       },
       new Map([['coder', profile]]),
     );

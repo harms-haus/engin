@@ -1,7 +1,7 @@
 // ─── Default implementations of the prompt-context hooks ───────────────────
 //
 // `defaultCollectContext` and `defaultBeforeStepPrompt` are the DEFAULT
-// implementations of the `collectContext` (all-run) and `beforeStepPrompt`
+// implementations of the `collectContext` (all-run) and `beforeSessionPrompt`
 // (pipeline) hooks (see hooks/types.ts). They reproduce — EXACTLY — the
 // file-inlining + prompt-assembly behavior in
 // `pool/prompt-builder.ts::buildPrompt`, so existing workflows are unchanged
@@ -17,7 +17,7 @@
 // truth shared with `buildPrompt` — guaranteeing byte-identical file sections.
 
 import { collectFileSection } from '../../pool/file-context.js';
-import type { BeforeStepPromptArgs, CollectContextArgs, ContextBlock, HookContext, PipelineHook } from '../types.js';
+import type { BeforeSessionPromptArgs, CollectContextArgs, ContextBlock, HookContext, PipelineHook } from '../types.js';
 
 /**
  * Resolve the cwd used for file inlining: the per-task worktree cwd when
@@ -75,7 +75,7 @@ export async function defaultCollectContext(
 }
 
 /**
- * DEFAULT `beforeStepPrompt` (pipeline) hook.
+ * DEFAULT `beforeSessionPrompt` (pipeline) hook.
  *
  * Reproduces `buildPrompt`'s prompt assembly — task title header, step name
  * header, the inlined file context (via {@link defaultCollectContext}), the
@@ -86,7 +86,7 @@ export async function defaultCollectContext(
  * When `value === task.prompt` and `worktreeCwd` is absent, the output is
  * byte-identical to `buildPrompt(task, step, cwd)`.
  */
-export const defaultBeforeStepPrompt: PipelineHook<string, BeforeStepPromptArgs> = async (value, args, ctx) => {
+export const defaultBeforeStepPrompt: PipelineHook<string, BeforeSessionPromptArgs> = async (value, args, ctx) => {
   const parts: string[] = [];
 
   parts.push(`## Task: ${args.task.title}`);

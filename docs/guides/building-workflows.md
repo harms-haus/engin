@@ -1,8 +1,8 @@
 # Building a new workflow
 
 This is the primary authoring guide. By the end you will have built a complete, runnable
-workflow that uses every core primitive: phase registration, single-agent tasks, a concurrent
-multi-step task pool, structured output, and reviewer feedback loops.
+workflow that uses every core primitive: phase registration, single-agent sessions, a concurrent
+multi-session task pool, structured output, and reviewer feedback loops.
 
 The worked example is a brand-new workflow called **`apidoc`** that generates API reference
 documentation for a codebase. It is invented for this guide — there is no preexisting workflow
@@ -27,47 +27,48 @@ The default export (or the module itself) must have a `run` function. The option
 
 `WorkflowRunOptions` is what the engine passes in:
 
-| Field                 | Type                     | Meaning                                                                                                                                 |
-| --------------------- | ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------- |
-| `cwd`                 | `string`                 | Working directory. For git-repo runs this is the **main worktree path**, not the original cwd.                                          |
-| `workDir`             | `string`                 | Directory for workflow state persistence.                                                                                               |
-| `maxConcurrentTasks?` | `number`                 | Max parallel agents (default `5`).                                                                                                      |
-| `apiKeys?`            | `Record<string, string>` | Provider → API key overrides.                                                                                                           |
-| `onStatus?`           | `StatusCallbacks`        | The engine's wired-up status callbacks. **Use this.**                                                                                   |
-| `verbose?`            | `boolean`                | True when running with verbose console output.                                                                                          |
-| `signal?`             | `AbortSignal`            | Cooperative cancellation signal.                                                                                                        |
-| `tracker?`            | `unknown`                | A pre-created `WorkflowStatusTracker`, if any.                                                                                          |
-| `worktree?`           | `WorktreeInfo`           | Main worktree info (git-repo runs only).                                                                                                |
-| `worktreeManager?`    | `WorktreeManager`        | Per-run worktree manager. Forward to `runStepTask` / `runMultiStepTask` / `LanePool` for per-task worktrees.                            |
-| `rendererRegistry?`   | `RendererRegistry`       | Optional registry of per-profile output renderers.                                                                                      |
-| `hookRegistry?`       | `HookRegistry`           | The engine-assembled hook registry. Forward to `LanePool` / `runStepTask` to activate pool/step hooks (see [§11](#11-authoring-hooks)). |
+| Field                 | Type                     | Meaning                                                                                                                                      |
+| --------------------- | ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cwd`                 | `string`                 | Working directory. For git-repo runs this is the **main worktree path**, not the original cwd.                                               |
+| `workDir`             | `string`                 | Directory for workflow state persistence.                                                                                                    |
+| `maxConcurrentTasks?` | `number`                 | **Deprecated.** Map to `maxConcurrentSessions` on `RunnerPool`. Max parallel agents (default `5`).                                           |
+| `apiKeys?`            | `Record<string, string>` | Provider → API key overrides.                                                                                                                |
+| `onStatus?`           | `StatusCallbacks`        | The engine's wired-up status callbacks. **Use this.**                                                                                        |
+| `verbose?`            | `boolean`                | True when running with verbose console output.                                                                                               |
+| `signal?`             | `AbortSignal`            | Cooperative cancellation signal.                                                                                                             |
+| `tracker?`            | `unknown`                | A pre-created `WorkflowStatusTracker`, if any.                                                                                               |
+| `worktree?`           | `WorktreeInfo`           | Main worktree info (git-repo runs only).                                                                                                     |
+| `worktreeManager?`    | `WorktreeManager`        | Per-run worktree manager. Forward to `runStepTask` / `RunnerPool` for per-task worktrees.                                                    |
+| `rendererRegistry?`   | `RendererRegistry`       | Optional registry of per-profile output renderers.                                                                                           |
+| `hookRegistry?`       | `HookRegistry`           | The engine-assembled hook registry. Forward to `RunnerPool` / `runStepTask` to activate pool/session hooks (see [§11](#11-authoring-hooks)). |
 
 That's the whole contract. Everything else — phases, tasks, steps, agents — is your workflow's
 internal structure, communicated to the engine purely through `options.onStatus`.
 
 ---
 
-## 2. The mental model: phases → tasks → steps → agents
+## 2. The mental model: phases → tasks → sessions
 
 engin enforces a rigid hierarchy (see [Overview → The rigid hierarchy](../concepts/overview.md)):
 
 - A **workflow** owns ordered **phases**. Phases run one at a time; each must finish before the
   next starts.
 - A **phase** owns **tasks**. Within a phase, tasks can run one at a time or concurrently.
-- A **task** owns a linear sequence of **steps**. Steps run in order.
-- A **step** is fulfilled by exactly one **agent**. Every agent in the system is a
-  step-of-a-task.
+- A **task** is fulfilled by a **runner** — a composable function that orchestrates one or
+  more agent **sessions**.
+- A **session** is one agent prompt turn. Every session has a deterministic id, a profile, a
+  runner role (e.g. `execute`, `review`), and an attempt number.
 
 You orchestrate this hierarchy with two primitives:
 
-1. **`runStepTask`** — runs one agent as a single-step task. Best for phases that need a single
-   agent (a scout, a planner, a summariser).
-2. **`LanePool`** — runs many tasks concurrently, each through its own ordered list of steps
-   (e.g. implement → review). Best for phases that fan out across independent units of work.
+1. **`runSession`** (wrapped by `runStepTask`) — runs one agent session as a single-task.
+   Best for phases that need a single agent (a scout, a planner, a summariser).
+2. **`RunnerPool`** — runs many tasks concurrently, each through its own runner tree built
+   from composable runners (`singleSession`, `reviewRunner`, `linearRunner`, etc.). Best
+   for phases that fan out across independent units of work.
 
-Both fire the full lifecycle (`onTaskRegister` → `onTaskStart` → `onAgentSpawn` →
-`onStepStart` → run → `onAgentComplete` → `onTaskComplete`) for you. You never emit those
-events manually.
+Both fire the full lifecycle (`onTaskRegister` → `onTaskStart` → `onSessionStart` → run →
+`onSessionComplete` → `onTaskComplete`) for you. You never emit those events manually.
 
 ---
 
@@ -125,7 +126,7 @@ authoring are the phase lifecycle hooks:
 Registering phases up front lets the TUI and web client render the full phase bar before any
 agent has run. The other callbacks (`onTaskRegister`, `onTaskStart`, `onAgentSpawn`,
 `onStepStart`, `onAgentComplete`, `onTaskComplete`, `onTaskRejected`, …) are fired for you by
-`runStepTask` and the `LanePool`. You generally do not call them directly.
+`runStepTask` and the `RunnerPool`. You generally do not call them directly.
 
 > Always guard with `?.`: `options.onStatus?.onPhaseRegister?.(...)`. The field is optional and
 > individual methods are optional.
@@ -135,11 +136,16 @@ For the complete callback surface, see
 
 ---
 
-## 5. Primitive 1 — single-agent tasks with `runStepTask`
+## 5. Primitive 1 — single-session tasks with `runStepTask`
 
-`runStepTask` runs one agent as a one-step task. It is the simplest way to execute an agent
-that participates in the hierarchy. Pass a Zod `schema` and it returns validated structured
-output; omit it and it returns the raw assistant text.
+> **Legacy.** `runStepTask` remains supported but uses the old step-execution path
+> (`spawnAgent` / `buildPrompt`). For **new** single-session tasks, prefer `runSession`
+> directly, or `singleSession({ ... })` inside a `RunnerPool`. Both paths coexist;
+> `runStepTask` is best for standalone single-agent phases where you don't need a pool.
+
+`runStepTask` runs one agent session as a one-step task. It is the simplest way to execute
+an agent that participates in the hierarchy. Pass a Zod `schema` and it returns validated
+structured output; omit it and it returns the raw assistant text.
 
 Here is a complete, runnable workflow that scouts a codebase and prints the result:
 
@@ -189,50 +195,85 @@ export default module;
 
 ### `RunStepTaskOptions` reference
 
-| Field           | Required       | Description                                                                                                                                                                                                                                                                   |
-| --------------- | -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `profilesDirs`  | **Yes**        | Directories to load `.md` profiles from.                                                                                                                                                                                                                                      |
-| `phaseId`       | **Yes**        | Phase identifier for status callbacks.                                                                                                                                                                                                                                        |
-| `taskId`        | **Yes**        | Unique task identifier. Also used as the agent ID.                                                                                                                                                                                                                            |
-| `title`         | **Yes**        | Human-readable task title.                                                                                                                                                                                                                                                    |
-| `stepName`      | **Yes**        | Name of the step (shown in the UI).                                                                                                                                                                                                                                           |
-| `profileId`     | **Yes**        | Profile ID to load.                                                                                                                                                                                                                                                           |
-| `cwd`           | **Yes**        | Working directory for the agent.                                                                                                                                                                                                                                              |
-| `prompt`        | **Yes**        | Prompt to send to the agent.                                                                                                                                                                                                                                                  |
-| `onStatus?`     | No             | Status callbacks.                                                                                                                                                                                                                                                             |
-| `schema?`       | No             | Zod schema for structured output.                                                                                                                                                                                                                                             |
-| `isReadOnly?`   | No             | When true, `write`/`edit` are stripped (default `false`).                                                                                                                                                                                                                     |
-| `apiKeys?`      | No             | Provider → API key overrides.                                                                                                                                                                                                                                                 |
-| `signal?`       | No             | Abort signal. Checked once at the start.                                                                                                                                                                                                                                      |
-| `hookRegistry?` | `HookRegistry` | Optional registry of workflow hooks. When provided AND it has subscribers for `beforeStepPrompt`, the step prompt is passed through the pipeline hook and the pipeline's return value replaces the prompt sent to the agent. Absent or no subscribers → zero behavior change. |
+| Field           | Required       | Description                                                                                                                                                                                                                                                                 |
+| --------------- | -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `profilesDirs`  | **Yes**        | Directories to load `.md` profiles from.                                                                                                                                                                                                                                    |
+| `phaseId`       | **Yes**        | Phase identifier for status callbacks.                                                                                                                                                                                                                                      |
+| `taskId`        | **Yes**        | Unique task identifier. Also used as the agent ID.                                                                                                                                                                                                                          |
+| `title`         | **Yes**        | Human-readable task title.                                                                                                                                                                                                                                                  |
+| `stepName`      | **Yes**        | Name of the step (shown in the UI).                                                                                                                                                                                                                                         |
+| `profileId`     | **Yes**        | Profile ID to load.                                                                                                                                                                                                                                                         |
+| `cwd`           | **Yes**        | Working directory for the agent.                                                                                                                                                                                                                                            |
+| `prompt`        | **Yes**        | Prompt to send to the agent.                                                                                                                                                                                                                                                |
+| `onStatus?`     | No             | Status callbacks.                                                                                                                                                                                                                                                           |
+| `schema?`       | No             | Zod schema for structured output.                                                                                                                                                                                                                                           |
+| `isReadOnly?`   | No             | When true, `write`/`edit` are stripped (default `false`).                                                                                                                                                                                                                   |
+| `apiKeys?`      | No             | Provider → API key overrides.                                                                                                                                                                                                                                               |
+| `signal?`       | No             | Abort signal. Checked once at the start.                                                                                                                                                                                                                                    |
+| `hookRegistry?` | `HookRegistry` | Optional registry of workflow hooks. When provided AND it has subscribers for `beforeSessionPrompt`, the prompt is passed through the pipeline hook and the pipeline's return value replaces the prompt sent to the agent. Absent or no subscribers → zero behavior change. |
 
 Lifecycle: abort check → `onTaskRegister` (single-step definition) → `onTaskStart` → load and
 adjust profile → resolve the profile agent plugin and call `createSession` (via
-`spawnAgent`) → `onAgentSpawn` (`stepIndex: 0`) → `onStepStart` → run prompt →
-`onAgentComplete` (always, in `finally`) → on success `onTaskComplete`, on error
+`spawnAgent`) → `onSessionStart` (session id derived from `taskId`) → run prompt →
+`onSessionComplete` (always, in `finally`) → on success `onTaskComplete`, on error
 `onTaskRejected` then re-throw.
 
 > **Abort semantics.** `runStepTask` checks `signal.aborted` exactly once, before any callbacks
 > fire. It does not register an abort listener or forward the signal downstream. Use it for
 > "should we even start?" checks; for mid-run cancellation rely on the surrounding
-> `LanePool`/CLI flow.
+> `RunnerPool`/CLI flow.
 
 ---
 
-## 6. Primitive 2 — concurrent multi-step tasks with `LanePool`
+## 6. Primitive 2 — concurrent tasks with `RunnerPool`
 
-A `LanePool` runs N independent workers ("lanes") that each claim tasks from a shared
-`TaskTracker` and process them through a configurable sequence of steps. Every step is one
-agent. This is what you reach for when a phase fans out across many independent units of work.
+A `RunnerPool` runs N independent workers that claim tasks from a shared `TaskTracker` and
+process each through a **runner** — a composable function that orchestrates one or more
+agent sessions. Concurrency is governed by a `SessionGate` (two-level: total + per-model
+caps) rather than a fixed lane count. This is what you reach for when a phase fans out
+across many independent units of work.
 
-Each task carries a `phaseId` and a list of `dependencies` (other task IDs that must complete
-first). The tracker serves ready tasks in a deterministic order (fewest dependencies first,
-then by ID), and rejects cycles at insert time.
+Each task carries a `phaseId` and a list of `dependencies` (other task IDs that must
+complete first). The tracker serves ready tasks (fewest dependencies first, then by ID),
+and rejects cycles at insert time. All ready tasks are claimed and their runner coroutines
+started immediately; the `SessionGate` is the sole concurrency cap — runners gate
+themselves via `ctx.gate.run()`.
 
-Here is the shape you will use. We will fill it in as we build the `apidoc` writing phase.
+### Composable runners
+
+Runners are built by composing factory functions from
+`@harms-haus/engin-engine`. Each returns a `Runner` (a function that takes a
+`RunnerContext` and returns `Promise<TaskOutcome>`):
+
+| Runner              | Purpose                                                             |
+| ------------------- | ------------------------------------------------------------------- |
+| `singleSession`     | Run exactly one session. The basic building block.                  |
+| `linearRunner`      | Run children sequentially; short-circuit on first failure.          |
+| `reviewRunner`      | Execute→review loop with approve/reject feedback (up to N rounds).  |
+| `councilRunner`     | Run workers in parallel, then synthesise their outputs.             |
+| `parallelRunner`    | Run arbitrary child runners in parallel.                            |
+| `mapRunner`         | Fan out over a collection, one session per item.                    |
+| `branchRunner`      | Select one child runner based on task conditions.                   |
+| `coordinatorRunner` | Run a coordinator session, then delegate to children via a factory. |
+| `coalescingRunner`  | Coordinator → children → coordinator loop (dynamic rounds).         |
+
+A **session spec** (`SessionSpec`) defines one session: `profile`, `prompt`, optional
+`schema` (Zod), `outputMode` (`'text'` | `'structured'` | `'filesystem'`), `isReadOnly`,
+`runnerRole`, and `attempt`. The session `id` is assigned deterministically at run time
+from the task id and role (e.g. `${taskId}/execute#${round}`).
+
+Here is the shape you will use for the `apidoc` writing phase:
 
 ```typescript
-import { LanePool, TaskTracker, resolveProfilesDirs } from '@harms-haus/engin-engine';
+import {
+  RunnerPool,
+  resolveProfilesDirs,
+  TaskTracker,
+  singleSession,
+  reviewRunner,
+  type Runner,
+  type SessionSpec,
+} from '@harms-haus/engin-engine';
 import { z } from 'zod';
 
 const ReviewSchema = z.object({
@@ -241,25 +282,50 @@ const ReviewSchema = z.object({
   severity: z.enum(['critical', 'high', 'medium', 'low']).optional(),
 });
 
+// A SessionRoleSpec is a SessionSpec minus the deterministic `id`, plus a `role` label.
+type SessionRoleSpec = Omit<SessionSpec, 'id'> & { role: string };
+
 // ...inside run(), for the 'writing' phase:
 onStatus?.onPhaseStart?.({ phase: 'writing', round: 0 });
 
 const tracker = new TaskTracker();
 // addTask() for each documentation unit, with dependencies as needed
 
-const pool = new LanePool({
-  maxConcurrentLanes: options.maxConcurrentTasks ?? 5,
+// Build the runner tree: execute → review loop per task.
+function getRunnerForTask(task: Task): Runner {
+  const writeSpec: SessionRoleSpec = {
+    role: 'draft',
+    runnerRole: 'draft',
+    profile: 'writer',
+    prompt: task.prompt,
+    outputMode: 'filesystem',
+    isReadOnly: false,
+    attempt: 1,
+  };
+  const reviewSpec: SessionRoleSpec = {
+    role: 'review',
+    runnerRole: 'review',
+    profile: 'reviewer',
+    prompt: 'Review the drafted documentation page for accuracy and clarity.',
+    schema: ReviewSchema,
+    outputMode: 'structured',
+    isReadOnly: true,
+    attempt: 1,
+  };
+  return reviewRunner(writeSpec, reviewSpec, { maxRounds: 5 });
+}
+
+const pool = new RunnerPool({
+  maxConcurrentSessions: options.maxConcurrentSessions ?? 5,
+  modelConcurrency: {},
   profilesDirs,
   sessionBaseDir: `${options.workDir}/sessions`,
   cwd: options.cwd,
-  phaseId: 'writing', // REQUIRED — the phase this pool serves
+  phaseId: 'writing',
   taskTracker: tracker,
   onStatus: options.onStatus,
-  maxStepRetries: 5,
-  getStepsForTask: (task) => [
-    { name: 'draft', profileId: 'writer', isReadOnly: false },
-    { name: 'review', profileId: 'reviewer', isReadOnly: true, schema: ReviewSchema },
-  ],
+  hookRegistry: options.hookRegistry,
+  getRunnerForTask,
 });
 
 const result = await pool.run();
@@ -267,65 +333,94 @@ onStatus?.onPhaseComplete?.({ phase: 'writing', durationMs: 0 });
 console.log(`Drafted ${result.completedTasks} pages; ${result.failedTasks} failed.`);
 ```
 
-### How a lane processes a task
+### Runner trees
 
-For each claimed task, the lane walks the steps returned by `getStepsForTask` in order:
+Runners compose into trees. A task's runner is typically built from multiple factories
+chained together. For example, the bundled `spir` implementation phase builds this tree for
+code tasks:
 
-1. Load the profile (read-only steps strip `write`/`edit`). Create a persisted agent session
-   (via the agent plugin) at
-   `{sessionBaseDir}/{taskId}/{execCount}-{stepIndex}-{stepName}/`.
-2. Inside `runStep`, fire `onAgentSpawn` and then `onStepStart` (in that order, so the step's
-   `agentKey` is populated before `step_started` is recorded).
-3. Build the prompt — including any pre-loaded file contents from `task.files` and the task's
-   accumulated `reviewFeedback`.
-4. Run the prompt. If the step has a `schema`, the response is parsed and validated (3 attempts
-   on the first try, 1 attempt on retries); otherwise the raw text is used.
-5. Decide approval. If the step has no `schema`, it is always "approved" and the lane advances.
-   With a `schema`, `isApproved(result)` (default: `result.approved === true`) decides.
-6. On **approval**, advance to the next step. When the last step is approved, the task is
-   marked complete and the lane claims the next one.
-7. On **rejection**, append `getFeedback(result)` (default: `result.feedback ?? 'No feedback
-provided'`) to the task's `reviewFeedback`, fire an `onDecision` event, and **back up exactly
-   one step** (clamped at 0) so the previous step re-runs with the feedback in its prompt.
-8. After `maxStepRetries` (default `5`) rejections on a step, the task is finished. If the
-   reviewer's `severity` is `critical` or `high`, the task fails; otherwise (medium/low/missing)
-   the pool submits it as complete with the feedback attached.
+```typescript
+import { linearRunner, reviewRunner, singleSession } from '@harms-haus/engin-engine';
 
-> There is **no exponential backoff** in the pool. Lanes that find no work poll again after a
-> fixed `laneWaitTimeoutMs` (default `60000` ms). A lane warns once if it stalls for many
-> consecutive timeouts.
+// Code task: write tests first, then run implement→review loop.
+const runner = linearRunner([
+  singleSession(testSpec), // write tests
+  reviewRunner(implSpec, reviewSpec), // implement → review loop
+]);
+```
 
-### `LanePoolOptions` reference
+For non-code tasks, the test-writer step is omitted:
 
-| Field                | Required          | Description                                                                                                                                                                                                                      |
-| -------------------- | ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `maxConcurrentLanes` | **Yes**           | Number of concurrent lanes (workers).                                                                                                                                                                                            |
-| `profilesDirs`       | **Yes**           | Directories to load profiles from.                                                                                                                                                                                               |
-| `sessionBaseDir`     | **Yes**           | Base directory for persisted sessions.                                                                                                                                                                                           |
-| `cwd`                | **Yes**           | Working directory for agent operations.                                                                                                                                                                                          |
-| `taskTracker`        | **Yes**           | Shared `TaskTracker` lanes claim from.                                                                                                                                                                                           |
-| `getStepsForTask`    | No                | `(task) => StepDefinition[]` returning the ordered steps. The pool wraps these in linearStepsRunner.                                                                                                                             |
-| `getRunnerForTask`   | No                | `(task) => TaskRunner`. Custom runner; takes precedence over `getStepsForTask`.                                                                                                                                                  |
-| `phaseId`            | **Yes**           | The phase this pool serves. Propagated to every callback.                                                                                                                                                                        |
-| `onStatus?`          | No                | Status callbacks.                                                                                                                                                                                                                |
-| `apiKeys?`           | No                | Provider → API key overrides.                                                                                                                                                                                                    |
-| `auditLog?`          | No                | Audit log for events.                                                                                                                                                                                                            |
-| `maxStepRetries?`    | No                | Max retries per step on rejection (default `5`).                                                                                                                                                                                 |
-| `laneWaitTimeoutMs?` | No                | Lane idle poll interval (default `60000`).                                                                                                                                                                                       |
-| `signal?`            | No                | Abort signal.                                                                                                                                                                                                                    |
-| `hookRegistry?`      | `HookRegistry`    | Optional registry of workflow hooks. Forward `options.hookRegistry` (engine-assembled via `composeHooks`) to activate the pool/step/scheduler hooks. When absent, `runStep` calls `buildPrompt` directly — zero behavior change. |
-| `worktreeManager?`   | `WorktreeManager` | Per-run worktree manager. When set, each claimed task gets its own worktree (branched off the main worktree) that is squash-merged on success and culled on failure/retry.                                                       |
+```typescript
+const runner = reviewRunner(implSpec, reviewSpec);
+```
+
+The `getRunnerForTask` callback returns the appropriate tree for each task. You can also
+use the `beforeTask` hook to provide a runner dynamically at claim time (see
+[§11](#11-authoring-hooks)).
+
+### How `RunnerPool` processes a task
+
+For each claimed task, the pool:
+
+1. Fires `onTaskStart`.
+2. Resolves the runner via `getRunnerForTask` (or the `beforeTask` hook if it returns
+   `{ runner }`).
+3. Optionally creates a per-task worktree (when `worktreeManager` is forwarded).
+4. Invokes the runner, which calls `ctx.runSession(...)` — each session acquires a
+   concurrency slot from `ctx.gate.run()` before prompting the agent.
+5. On `{ status: 'completed' }` (and worktree mode): squash-merges the task branch into the
+   main worktree branch, then fires `onTaskComplete`.
+6. On `{ status: 'failed' }`: fires `onTaskRejected`, then the retry valve classifies the
+   error — permanent/abort errors are not retried; transient errors are retried up to
+   `maxTaskRetries` (with exponential backoff).
+
+> **SessionGate.** The pool internally constructs `new SessionGate({ total:
+maxConcurrentSessions, perModel: modelConcurrency })`. Runners call
+> `ctx.gate.run(profile, fn)` — the gate holds a total + per-model slot for the duration of
+> `fn`, then releases automatically (RAII). This replaces the old lane model — there are no
+> fixed lanes; sessions from different tasks interleave through the shared gate.
+
+### `RunnerPoolOptions` reference
+
+| Field                   | Required | Description                                                                                                                      |
+| ----------------------- | -------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `maxConcurrentSessions` | **Yes**  | Hard cap on concurrent in-flight sessions across all models.                                                                     |
+| `modelConcurrency`      | **Yes**  | Per-model concurrency caps keyed by `${provider}:${model}`. Pass `{}` for unbounded per-model.                                   |
+| `profilesDirs`          | **Yes**  | Directories to load profiles from.                                                                                               |
+| `sessionBaseDir`        | **Yes**  | Base directory for persisted sessions.                                                                                           |
+| `cwd`                   | **Yes**  | Working directory for agent operations.                                                                                          |
+| `taskTracker`           | **Yes**  | Shared `TaskTracker` the pool claims from.                                                                                       |
+| `phaseId`               | **Yes**  | The phase this pool serves. Propagated to every callback.                                                                        |
+| `getRunnerForTask?`     | No       | `(task) => Runner` returning the runner tree.                                                                                    |
+| `onStatus?`             | No       | Status callbacks.                                                                                                                |
+| `apiKeys?`              | No       | Provider → API key overrides.                                                                                                    |
+| `auditLog?`             | No       | Audit log for events.                                                                                                            |
+| `maxTaskRetries?`       | No       | Max same-run retries for failed tasks (default `0`). Total attempts = `1 + maxTaskRetries`.                                      |
+| `stepTimeoutMs?`        | No       | Per-prompt watchdog timeout (ms).                                                                                                |
+| `signal?`               | No       | Abort signal.                                                                                                                    |
+| `rendererRegistry?`     | No       | Optional per-profile output renderers.                                                                                           |
+| `hookRegistry?`         | No       | Registry of workflow hooks. Forward `options.hookRegistry` to activate `beforeTask` / `beforeSessionPrompt` / observe hooks.     |
+| `worktreeManager?`      | No       | Per-run worktree manager. When set, each claimed task gets its own worktree (squash-merged on success, culled on failure/retry). |
+| `gate?`                 | No       | Pre-created `SessionGate` (defaults to a new gate from `maxConcurrentSessions` + `modelConcurrency`).                            |
 
 `pool.run()` returns `{ completedTasks: number; failedTasks: number }`.
 
 > **When there is nothing to do.** If the tracker has no tasks, `pool.run()` returns
-> `{ completedTasks: 0, failedTasks: 0 }` **without loading profiles or spawning lanes**.
+> `{ completedTasks: 0, failedTasks: 0 }` **without loading profiles or starting coroutines**.
+
+> **`WorkflowRunOptions.maxConcurrentTasks` is deprecated.** The new config field is
+> `maxConcurrentSessions` (on `WorkflowConfig` or passed directly to `RunnerPool`).
+> Workflows like `spir.ts` map `options.maxConcurrentTasks ?? config.defaultMaxConcurrentSessions`
+> into the pool's `maxConcurrentSessions`. Use `defaultMaxConcurrentSessions` in your
+> workflow config and `modelConcurrency` for per-model caps.
 
 ---
 
 ## 7. Structured output with Zod
 
-Both `runStepTask` and `LanePool` steps accept a `schema`. When provided:
+Both `runStepTask` and the session primitive accept a `schema` (on `SessionSpec` or
+`RunStepTaskOptions`). When provided:
 
 - The schema is turned into a human-readable description and appended to the prompt
   (`schemaToString`), so the model knows the exact shape to produce.
@@ -333,7 +428,7 @@ Both `runStepTask` and `LanePool` steps accept a `schema`. When provided:
 counting with string/escape awareness), repaired with `parseJsonWithRepair`, and validated
 with `schema.safeParse`.
 - On failure, the prompt is rebuilt from scratch with the latest error and retried. The default
-  is **3 attempts** for `runStepTask` and for a step's first try, **1 attempt** for retries.
+  is **3 attempts** for `runStepTask` and for a session's first try.
 
 Define your schemas with `.describe()` on each field — those descriptions become part of the
 prompt and materially improve output quality:
@@ -351,9 +446,9 @@ const PlanSchema = z.object({
 });
 ```
 
-For reviewer steps, include an `approved: boolean` and a `feedback: string` field — these are
-the defaults the pool looks for. You can override the approval/feedback extraction per step with
-`isApproved` and `getFeedback`.
+For reviewer sessions, include an `approved: boolean` and a `feedback: string` field —
+these are the defaults `reviewRunner` looks for when deciding whether to re-run the execute
+session. The runner feeds `feedback` back into the execute prompt on the next round.
 
 ---
 
@@ -364,7 +459,7 @@ documentation in four phases:
 
 1. **Scout** (single agent) — read the codebase, produce a summary and a list of public files.
 2. **Outline** (single agent) — turn the scout result into a list of doc pages to write.
-3. **Write** (`LanePool`, multi-step) — for each page, draft it then have a reviewer approve it.
+3. **Write** (`RunnerPool`, multi-session) — for each page, draft it then have a reviewer approve it.
 4. **Summarise** (single agent) — produce a top-level index from the drafted pages.
 
 ### 8.1 The profiles
@@ -449,10 +544,13 @@ Set approved=true only if the page is ready to ship.
 ```typescript
 // ~/.config/engin/workflows/apidoc/main.ts
 import {
-  LanePool,
+  RunnerPool,
   resolveProfilesDirs,
   runStepTask,
   TaskTracker,
+  reviewRunner,
+  type Runner,
+  type SessionSpec,
   type Task,
   type WorkflowModule,
   type WorkflowRunOptions,
@@ -546,7 +644,7 @@ export async function run(taskPrompt: string, options: WorkflowRunOptions) {
     return;
   }
 
-  // ── Phase 3: Write (LanePool, draft → review per page) ──────────────────
+  // ── Phase 3: Write (RunnerPool, draft → review per page) ───────────────
   onStatus?.onPhaseStart?.({ phase: 'writing', round: 0 });
 
   const tracker = new TaskTracker();
@@ -570,19 +668,50 @@ export async function run(taskPrompt: string, options: WorkflowRunOptions) {
     tracker.addTask(task);
   }
 
-  const pool = new LanePool({
-    maxConcurrentLanes: options.maxConcurrentTasks ?? 5,
+  // A SessionRoleSpec is a SessionSpec minus the deterministic `id`, plus a `role` label.
+  type SessionRoleSpec = Omit<SessionSpec, 'id'> & { role: string };
+
+  // Build the runner tree for each page: draft → review loop.
+  const draftSpec: SessionRoleSpec = {
+    role: 'draft',
+    runnerRole: 'draft',
+    profile: 'writer',
+    prompt: '', // set per-task below
+    outputMode: 'filesystem',
+    isReadOnly: false,
+    attempt: 1,
+  };
+  const reviewSpec: SessionRoleSpec = {
+    role: 'review',
+    runnerRole: 'review',
+    profile: 'reviewer',
+    prompt: 'Review the drafted documentation page for accuracy and clarity.',
+    schema: ReviewSchema,
+    outputMode: 'structured',
+    isReadOnly: true,
+    attempt: 1,
+  };
+
+  function getRunnerForTask(task: Task): Runner {
+    // Each page uses a draft → review loop (up to 5 rounds).
+    return reviewRunner(
+      { ...draftSpec, prompt: task.prompt },
+      reviewSpec,
+      { maxRounds: 5 },
+    );
+  }
+
+  const pool = new RunnerPool({
+    maxConcurrentSessions: options.maxConcurrentTasks ?? 5,
+    modelConcurrency: {},
     profilesDirs,
     sessionBaseDir: `${workDir}/sessions`,
     cwd,
     phaseId: 'writing',
     taskTracker: tracker,
     onStatus,
-    maxStepRetries: 5,
-    getStepsForTask: (task) => [
-      { name: 'draft', profileId: 'writer', isReadOnly: false },
-      { name: 'review', profileId: 'reviewer', isReadOnly: true, schema: ReviewSchema },
-    ],
+    hookRegistry: options.hookRegistry,
+    getRunnerForTask,
   });
 
   const result = await pool.run();
@@ -626,20 +755,20 @@ engin apidoc "Document the public API of this library"
 ```
 
 In a TTY you will get the live dashboard: a phase bar (Scout → Outline → Write → Index), a task
-list for the current phase, and an agent log with a step tab bar. Open the printed URL on your
+list for the current phase, and an agent log with a session tab bar. Open the printed URL on your
 phone to watch the same view in a browser.
 
 ### 8.4 What you can observe
 
-- During **Scout** and **Outline**, a single task appears with one step. The agent log shows
+- During **Scout** and **Outline**, a single task appears with one session. The agent log shows
   its turns, tool calls (reads of source files), and token usage.
-- During **Write**, a task appears per page (up to `maxConcurrent` at once, sorted fewest
-  dependencies first). Each task has two steps — `draft` and `review`. When a reviewer rejects,
-  you will see an `onDecision` line in the log and the `draft` step re-run with the feedback
-  appended. The tab bar at the bottom of the agent log lets you switch between the draft and
-  review agents.
-- After `maxStepRetries` rejections, a page either fails (severity critical/high) or is
-  submitted as complete with feedback attached (medium/low/missing).
+- During **Write**, a task appears per page (up to `maxConcurrentSessions` at once, sorted fewest
+  dependencies first). Each task runs a draft → review loop. When a reviewer rejects,
+  you will see an `onDecision` line in the log and the `draft` session re-run with the feedback
+  appended. The session tab bar at the bottom of the agent log lets you cycle between the draft
+  and review sessions (Tab / Shift+Tab in the TUI).
+- After `maxRounds` rejections, the page fails and (when retriable) is retried up to
+  `maxTaskRetries` times.
 
 ---
 
@@ -666,7 +795,7 @@ For non-git runs, `options.cwd` is the original cwd and no worktrees are created
 The main worktree hosts the accumulated result; each task gets its **own** worktree on
 `engin/{mainSlug}--{taskId}` so concurrent tasks never trip over each other. To opt a task
 into per-task isolation, forward `options.worktreeManager` to `runStepTask`,
-`runMultiStepTask`, or `LanePool`:
+`runMultiStepTask`, or `RunnerPool`:
 
 ```typescript
 await runStepTask({
@@ -675,6 +804,11 @@ await runStepTask({
   worktreeManager: options.worktreeManager, // ← enables per-task worktree
 });
 ```
+
+> **Note on `RunnerPool`.** When you forward `options.worktreeManager` to `RunnerPool`,
+> each claimed task whose `task.worktree === 'code'` gets its own worktree (created via
+> `worktreeManager.createTaskWorktree`, squash-merged on success, culled on failure/retry).
+> Tasks that are read-only or non-code run against the main worktree `cwd` directly.
 
 When `worktreeManager` is present, the primitive:
 
@@ -729,6 +863,12 @@ When a task writes code that will be committed inside a worktree, wire
 `createLintValidationGate(worktreePath)` into the step's `validateOutput` option so the
 implementing agent fixes its own lint errors _before_ commit time:
 
+> **Note on `RunnerPool`.** `createLintValidationGate` is designed for the `runStepTask` /
+> `runMultiStepTask` `validateOutput` option. `RunnerPool` tasks use composable runners that
+> manage their own session lifecycle; for lint validation in a runner pool, use
+> `singleSession` with a dedicated validation step, or wire `createLintValidationGate` into
+> a `runStepTask` called from within your runner.
+
 ```typescript
 import {
   createLintValidationGate,
@@ -770,10 +910,15 @@ net (a tooled, self-verifying fix-up agent) catches anything the gate misses.
 
 ### Use the `files` field to pre-load context
 
-Every task in a `LanePool` accepts a `files: string[]`. Paths are resolved relative to `cwd`;
+Every task in a `RunnerPool` accepts a `files: string[]`. Paths are resolved relative to `cwd`;
 their contents are injected into the prompt as fenced code blocks (with language detection)
 before the prompt body. Binary files are skipped; files over 10 KB are truncated. This is far
 cheaper and more reliable than asking the agent to find and read the right files itself.
+
+> **Session-first note.** `files` are inlined by the `beforeSessionPrompt` / `collectContext`
+> default when running through the legacy `runStepTask` path. In a `RunnerPool`, the file
+> context is injected via `buildPrompt`-equivalent logic in the session primitive — include
+> the file contents directly in your session `prompt` if you need deterministic control.
 
 ### Thread intermediate results through prompts
 
@@ -789,20 +934,20 @@ tasks first, and throws on cycles at `addTask` time. Use this when some units mu
 before others (for example, a "shared types" page that other pages reference). For independent
 units, use an empty array.
 
-### Choose read-only steps deliberately
+### Choose read-only sessions deliberately
 
-A step with `isReadOnly: true` cannot modify files. Use it for reviewers and for any analysis
-step. The pool enforces it by adding `write` and `edit` to the profile's exclude list.
+A session with `isReadOnly: true` cannot modify files. Use it for reviewers and for any analysis
+session. The pool enforces it by adding `write` and `edit` to the profile's exclude list.
 
-### Keep task IDs and step names filesystem-safe
+### Keep task IDs and session roles filesystem-safe
 
-Session directories are built from `{taskId}/{execCount}-{stepIndex}-{stepName}`. Both are
-validated against `^[a-zA-Z0-9_-]+$`. Use kebab-case IDs.
+Session directories are built from `{taskId}/{role}#{attempt}`. Task IDs are validated
+against `^[a-zA-Z0-9_-]+$`. Use kebab-case IDs and simple role names (e.g. `execute`, `review`).
 
 ### Respect the abort signal at phase boundaries
 
 `runStepTask` checks `signal.aborted` once at the start. Between phases, check
-`options.signal?.aborted` yourself and return early if the user cancelled. Inside a `LanePool`,
+`options.signal?.aborted` yourself and return early if the user cancelled. Inside a `RunnerPool`,
 abort is handled by the pool (it aborts in-flight sessions).
 
 ### Don't create your own status tracker
@@ -841,40 +986,47 @@ export default module;
 ```
 
 **Forward the registry to your primitives.** The engine assembles `options.hookRegistry` for
-you, but pool/step hooks only fire if you forward it into the `LanePool` / `runStepTask` you
+you, but pool/session hooks only fire if you forward it into the `RunnerPool` / `runStepTask` you
 construct. A workflow with no `hooks` field (or an empty registry) is byte-for-byte unchanged —
 every seam is gated on `hasSubscribers(name)` and falls back to the legacy path.
 
-> **NOTE — Step definitions shown at task registration** (`onTaskRegister`, used by the TUI/web AgentLog + step-progress) come from `getStepsForTask`. A `beforeTask` hook resolves steps at CLAIM time (later) and its result does **NOT** retroactively populate the registration-time step list — so for visible step/agent layout, also provide `getStepsForTask` as the synchronous seed.
+> **NOTE.** In the session-first engine, `RunnerPool` has no `getStepsForTask` — tasks are
+> resolved via `getRunnerForTask` (or the `beforeTask` hook returning `{ runner }`). The task
+> registration event (`onTaskRegister`) carries no step definitions. The TUI/web agent log
+> shows sessions (with their `runnerRole`) dynamically as they start.
 
-### Example (a) — `beforeStepPrompt` (pipeline): inject custom context
+### Example (a) — `beforeSessionPrompt` (pipeline): inject custom context
 
-`beforeStepPrompt` is a **pipeline** hook: each subscriber receives the current prompt string
-and returns the next (seeded with `task.prompt`). It fires inside `runStep` and fully replaces
-`buildPrompt` when it has a subscriber. Add it to the `apidoc` writer pool so every drafted
-page follows the repo's style:
+`beforeSessionPrompt` is a **pipeline** hook: each subscriber receives the current prompt string
+and returns the next (seeded with `task.prompt`). It fires inside `runStep` (the legacy
+step-execution path used by `runStepTask`) and fully replaces `buildPrompt` when it has a
+subscriber. Add it to the `apidoc` writer pool so every drafted page follows the repo's style:
+
+> **Session-first note.** `beforeSessionPrompt` is currently wired in the legacy
+> step-execution path (`runStepTask`, `linearStepsRunner`, `reflectionRunner`, `fixLoop`).
+> The new session primitive (`runSession` / `RunnerPool`) does **not** yet consult
+> `beforeSessionPrompt` — it builds the prompt from the `SessionSpec` directly. For runner-pool
+> prompt customization, append to the `prompt` field of your `SessionSpec`.
 
 ```typescript
-const pool = new LanePool({
-  maxConcurrentLanes: options.maxConcurrentTasks ?? 5,
+const pool = new RunnerPool({
+  maxConcurrentSessions: options.maxConcurrentTasks ?? 5,
+  modelConcurrency: {},
   profilesDirs,
   sessionBaseDir: `${workDir}/sessions`,
   cwd,
   phaseId: 'writing',
   taskTracker: tracker,
   onStatus,
-  hookRegistry: options.hookRegistry, // ← activates beforeStepPrompt for this pool
-  getStepsForTask: (task) => [
-    { name: 'draft', profileId: 'writer', isReadOnly: false },
-    { name: 'review', profileId: 'reviewer', isReadOnly: true, schema: ReviewSchema },
-  ],
+  hookRegistry: options.hookRegistry, // ← activates beforeSessionPrompt for legacy paths
+  getRunnerForTask,
 });
 
 const module: WorkflowModule = {
   run,
   name: 'apidoc',
   hooks: {
-    beforeStepPrompt: async (value, args) => {
+    beforeSessionPrompt: async (value, args) => {
       // `args` carries { task, step, prompt, cwd, worktreeCwd? }. Files resolve
       // against worktreeCwd ?? cwd (the per-task worktree when one is in use).
       return `${value}\n\nNote: this repo uses tabs, not spaces. Match the surrounding style exactly.`;
@@ -889,7 +1041,7 @@ const module: WorkflowModule = {
 reached a terminal state, and subscribers typically collect results into the shared
 workflow-state bag. It fires from `PhaseRunner`, the engine's phase-orchestration primitive
 (used by bundled workflows like `spir`) — if your workflow drives phases through `PhaseRunner`,
-forward `options.hookRegistry` there too (same as the `LanePool` example above):
+forward `options.hookRegistry` there too (same as the `RunnerPool` example above):
 
 ```typescript
 hooks: {
@@ -935,27 +1087,29 @@ You have a few options:
 The `apidoc` workflow uses every primitive. Other natural shapes, all built from the same
 pieces:
 
-- **`migrate`** — Scout the migration surface → plan migration units → `LanePool` where each
+- **`migrate`** — Scout the migration surface → plan migration units → `RunnerPool` where each
   task is `migrate → review` → final verification pass. Tasks can declare dependencies when
   some modules must migrate before others.
 - **`triage`** — A single-agent scout over a backlog → a single-agent planner producing
-  prioritised tasks → a `LanePool` of `investigate → summarise` (read-only) steps that never
+  prioritised tasks → a `RunnerPool` of `investigate → summarise` (read-only) steps that never
   reject, only annotate.
 - **`release-notes`** — Scout recent commits (single agent) → draft notes per area
-  (`LanePool`, `draft → review`) → assemble the final changelog (single agent).
-- **`audit-deps`** — Scout dependencies → plan per-package audits → `LanePool` of
+  (`RunnerPool`, `draft → review`) → assemble the final changelog (single agent).
+- **`audit-deps`** — Scout dependencies → plan per-package audits → `RunnerPool` of
   `investigate (read-only) → recommend` where the recommend step writes a report file.
 
-Each is just a different arrangement of `runStepTask` and `LanePool` with different schemas and
-profiles. Once you internalise the two primitives and the phase/task/step hierarchy, you can
-model almost any multi-agent pipeline.
+Each is just a different arrangement of `runSession`/`runStepTask` and `RunnerPool` with
+composable runner trees, different schemas, and profiles. Once you internalise the two
+primitives and the phase/task/session hierarchy, you can model almost any multi-agent
+pipeline.
 
 ---
 
 ## Reference
 
 - [Programmatic API](../reference/api.md) — every function and class.
-- [Task pool & execution](../reference/task-pool.md) — the `LanePool` and `TaskTracker` in full.
+- [Task pool & execution](../reference/task-pool.md) — the `RunnerPool`, `TaskTracker`, and
+  composable runners in full.
 - [Worktrees reference](../reference/worktrees.md) — the per-task worktree system, `.worktreecopy`,
   branch naming, merge serialization, and the final-merge UX.
 - [Event store & status](../reference/event-store.md) — what every callback becomes.

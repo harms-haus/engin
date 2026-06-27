@@ -13,15 +13,15 @@ beforeEach(() => {
 });
 
 describe('LanePool status callback phase field', () => {
-  describe('onAgentSpawn includes phaseId: implementing', () => {
-    it('onAgentSpawn from runStep includes phaseId: implementing', async () => {
+  describe('onSessionStart includes phaseId: implementing', () => {
+    it('onSessionStart from runStep includes phaseId: implementing', async () => {
       setupProfileMocks();
       setupHarnessMocks();
-      const onAgentSpawn = mock(() => {});
-      const { pool } = createPoolAndTracker({ onStatus: { onAgentSpawn } });
+      const onSessionStart = mock(() => {});
+      const { pool } = createPoolAndTracker({ onStatus: { onSessionStart } });
       await pool.run();
-      expect(onAgentSpawn).toHaveBeenCalledTimes(1);
-      expect(onAgentSpawn).toHaveBeenCalledWith(
+      expect(onSessionStart).toHaveBeenCalledTimes(1);
+      expect(onSessionStart).toHaveBeenCalledWith(
         expect.objectContaining({
           agentId: 'lane-0',
           profile: 'coder',
@@ -31,34 +31,34 @@ describe('LanePool status callback phase field', () => {
       );
     });
 
-    it('onAgentSpawn includes phaseId for every step in a multi-step flow', async () => {
+    it('onSessionStart includes phaseId for every step in a multi-step flow', async () => {
       setupProfileMocks();
       setupHarnessMocks();
-      const onAgentSpawn = mock((_info: Record<string, unknown>) => {});
+      const onSessionStart = mock((_info: Record<string, unknown>) => {});
       const { pool } = createPoolAndTracker({
-        onStatus: { onAgentSpawn },
+        onStatus: { onSessionStart },
         getStepsForTask: () => [
           { name: 'implement', profileId: 'coder', isReadOnly: false },
           { name: 'review', profileId: 'reviewer', isReadOnly: true },
         ],
       });
       await pool.run();
-      expect(onAgentSpawn).toHaveBeenCalledTimes(2);
-      onAgentSpawn.mock.calls.forEach((call) => {
+      expect(onSessionStart).toHaveBeenCalledTimes(2);
+      onSessionStart.mock.calls.forEach((call) => {
         expect(call[0]).toMatchObject({ phaseId: 'implementing' });
       });
     });
   });
 
-  describe('onAgentComplete includes phaseId: implementing', () => {
-    it('onAgentComplete from runStep includes phaseId: implementing', async () => {
+  describe('onSessionComplete includes phaseId: implementing', () => {
+    it('onSessionComplete from runStep includes phaseId: implementing', async () => {
       setupProfileMocks();
       setupHarnessMocks();
-      const onAgentComplete = mock(() => {});
-      const { pool } = createPoolAndTracker({ onStatus: { onAgentComplete } });
+      const onSessionComplete = mock(() => {});
+      const { pool } = createPoolAndTracker({ onStatus: { onSessionComplete } });
       await pool.run();
-      expect(onAgentComplete).toHaveBeenCalledTimes(1);
-      expect(onAgentComplete).toHaveBeenCalledWith(
+      expect(onSessionComplete).toHaveBeenCalledTimes(1);
+      expect(onSessionComplete).toHaveBeenCalledWith(
         expect.objectContaining({
           agentId: 'lane-0',
           profile: 'coder',
@@ -68,29 +68,29 @@ describe('LanePool status callback phase field', () => {
       );
     });
 
-    it('onAgentComplete includes phaseId for every step in a multi-step flow', async () => {
+    it('onSessionComplete includes phaseId for every step in a multi-step flow', async () => {
       setupProfileMocks();
       setupHarnessMocks();
-      const onAgentComplete = mock((_info: Record<string, unknown>) => {});
+      const onSessionComplete = mock((_info: Record<string, unknown>) => {});
       const { pool } = createPoolAndTracker({
-        onStatus: { onAgentComplete },
+        onStatus: { onSessionComplete },
         getStepsForTask: () => [
           { name: 'implement', profileId: 'coder', isReadOnly: false },
           { name: 'review', profileId: 'reviewer', isReadOnly: true },
         ],
       });
       await pool.run();
-      expect(onAgentComplete).toHaveBeenCalledTimes(2);
-      onAgentComplete.mock.calls.forEach((call) => {
+      expect(onSessionComplete).toHaveBeenCalledTimes(2);
+      onSessionComplete.mock.calls.forEach((call) => {
         expect(call[0]).toMatchObject({ phaseId: 'implementing' });
       });
     });
   });
 
   describe('phaseId is present even on failure paths', () => {
-    it('onAgentComplete includes phaseId: implementing when prompt throws', async () => {
+    it('onSessionComplete includes phaseId: implementing when prompt throws', async () => {
       setupProfileMocks();
-      const onAgentComplete = mock(() => {});
+      const onSessionComplete = mock(() => {});
       mockCreateHarness.mockResolvedValue({
         session: makeSession(() => {
           throw new Error('Prompt failed');
@@ -98,15 +98,15 @@ describe('LanePool status callback phase field', () => {
         sessionId: 'test-session',
         dispose: mock(() => {}),
       });
-      const { pool } = createPoolAndTracker({ onStatus: { onAgentComplete } });
+      const { pool } = createPoolAndTracker({ onStatus: { onSessionComplete } });
       await pool.run();
-      expect(onAgentComplete).toHaveBeenCalledTimes(1);
-      expect(onAgentComplete).toHaveBeenCalledWith(expect.objectContaining({ phaseId: 'implementing' }));
+      expect(onSessionComplete).toHaveBeenCalledTimes(1);
+      expect(onSessionComplete).toHaveBeenCalledWith(expect.objectContaining({ phaseId: 'implementing' }));
     });
 
-    it('onAgentComplete includes phaseId: implementing when dispose throws', async () => {
+    it('onSessionComplete includes phaseId: implementing when dispose throws', async () => {
       setupProfileMocks();
-      const onAgentComplete = mock(() => {});
+      const onSessionComplete = mock(() => {});
       const orig = console.error;
       console.error = () => {};
       try {
@@ -117,10 +117,10 @@ describe('LanePool status callback phase field', () => {
             throw new Error('dispose exploded');
           }),
         });
-        const { pool } = createPoolAndTracker({ onStatus: { onAgentComplete } });
+        const { pool } = createPoolAndTracker({ onStatus: { onSessionComplete } });
         await pool.run();
-        expect(onAgentComplete).toHaveBeenCalledTimes(1);
-        expect(onAgentComplete).toHaveBeenCalledWith(expect.objectContaining({ phaseId: 'implementing' }));
+        expect(onSessionComplete).toHaveBeenCalledTimes(1);
+        expect(onSessionComplete).toHaveBeenCalledWith(expect.objectContaining({ phaseId: 'implementing' }));
       } finally {
         console.error = orig;
       }
@@ -128,24 +128,24 @@ describe('LanePool status callback phase field', () => {
   });
 
   describe('combined callback order and phaseId consistency', () => {
-    it('onAgentSpawn and onAgentComplete pairs both carry phaseId: implementing', async () => {
+    it('onSessionStart and onSessionComplete pairs both carry phaseId: implementing', async () => {
       setupProfileMocks();
       setupHarnessMocks();
-      const onAgentSpawn = mock((_info: Record<string, unknown>) => {});
-      const onAgentComplete = mock((_info: Record<string, unknown>) => {});
+      const onSessionStart = mock((_info: Record<string, unknown>) => {});
+      const onSessionComplete = mock((_info: Record<string, unknown>) => {});
       const { pool } = createPoolAndTracker({
-        onStatus: { onAgentSpawn, onAgentComplete },
+        onStatus: { onSessionStart, onSessionComplete },
         getStepsForTask: () => [
           { name: 'implement', profileId: 'coder', isReadOnly: false },
           { name: 'review', profileId: 'reviewer', isReadOnly: true },
         ],
       });
       await pool.run();
-      expect(onAgentSpawn).toHaveBeenCalledTimes(2);
-      expect(onAgentComplete).toHaveBeenCalledTimes(2);
+      expect(onSessionStart).toHaveBeenCalledTimes(2);
+      expect(onSessionComplete).toHaveBeenCalledTimes(2);
       // Interleave: spawn, complete, spawn, complete
-      const spawnPhases = onAgentSpawn.mock.calls.map((c) => c[0].phaseId);
-      const completePhases = onAgentComplete.mock.calls.map((c) => c[0].phaseId);
+      const spawnPhases = onSessionStart.mock.calls.map((c) => c[0].phaseId);
+      const completePhases = onSessionComplete.mock.calls.map((c) => c[0].phaseId);
       expect(spawnPhases).toEqual(['implementing', 'implementing']);
       expect(completePhases).toEqual(['implementing', 'implementing']);
     });

@@ -61,12 +61,6 @@ export function councilRunner(options: CouncilRunnerOptions): TaskRunner {
 
       // ── Step 2: Run all workers in parallel ─────────────────────────────
       const workerPromises = workers.map((worker, i) => {
-        ctx.onStatus?.onStepStart?.({
-          taskId: ctx.task.id,
-          stepIndex: i,
-          stepName: worker.name,
-          agentId: ctx.agentId,
-        });
         return runStep({
           task: ctx.task,
           step: worker,
@@ -111,12 +105,6 @@ export function councilRunner(options: CouncilRunnerOptions): TaskRunner {
       }
 
       // ── Step 5: Run synthesizer ────────────────────────────────────────
-      ctx.onStatus?.onStepStart?.({
-        taskId: ctx.task.id,
-        stepIndex: workers.length,
-        stepName: synthesizer.name,
-        agentId: ctx.agentId,
-      });
 
       // Compose the synthesizer task from the worker outputs. The composer is
       // configurable from the call site; the default preserves the legacy

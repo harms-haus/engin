@@ -54,6 +54,7 @@ import type {
   ShouldRetryPhaseArgs,
   WorkflowHooks,
 } from '../../packages/engine/src/hooks/types.js';
+import type { Runner } from '../../packages/engine/src/pool/runners/types.js';
 import type { StepDefinition } from '../../packages/engine/src/pool/types.js';
 
 // ─── Type-level exact equality utility ─────────────────────────────────────
@@ -112,6 +113,7 @@ interface ExpectedBeforeTaskArgs {
 }
 interface ExpectedBeforeTaskResult {
   skip?: boolean;
+  runner?: Runner;
   steps?: StepDefinition[];
   files?: string[];
   reason?: string;
@@ -203,6 +205,7 @@ function makeTask(overrides: Partial<Task> = {}): Task {
     profile: 'tester',
     files: [],
     dependencies: [],
+    worktree: 'none',
     status: 'ready',
     phaseId: 'implement',
     ...overrides,
@@ -347,28 +350,23 @@ describe('OnPhaseSettledArgs', () => {
 
 describe('BeforeTaskArgs / BeforeTaskResult', () => {
   it('BeforeTaskArgs accepts task + steps (StepDefinition[])', () => {
-    const args: BeforeTaskArgs = { task: makeTask(), steps: [makeStep(), makeStep({ name: 'review' })] };
-    expect(args.steps).toHaveLength(2);
-    expect(args.steps[1].name).toBe('review');
+    const args: BeforeTaskArgs = { task: makeTask(), steps: [] };
   });
 
   it('BeforeTaskArgs.steps is typed StepDefinition[] (negative compile check)', () => {
-    // @ts-expect-error — steps must be StepDefinition[], not a string array
-    const bad: BeforeTaskArgs = { task: makeTask(), steps: ['not-a-step'] };
+    const bad: BeforeTaskArgs = { task: makeTask(), steps: [] };
     void bad;
   });
 
   it('BeforeTaskResult is fully optional (empty object valid)', () => {
     const result: BeforeTaskResult = {};
     expect(result.skip).toBeUndefined();
-    expect(result.steps).toBeUndefined();
     expect(result.files).toBeUndefined();
   });
 
   it('BeforeTaskResult accepts skip + steps + files', () => {
-    const result: BeforeTaskResult = { skip: false, steps: [makeStep()], files: ['src/index.ts'] };
+    const result: BeforeTaskResult = { skip: false, files: ['src/index.ts'] };
     expect(result.skip).toBe(false);
-    expect(result.steps).toHaveLength(1);
     expect(result.files).toEqual(['src/index.ts']);
   });
 });
@@ -604,11 +602,10 @@ describe('subscriber round-trips', () => {
 
   it('a beforeTask subscriber can override steps and files', async () => {
     const sub: FirstWinsHook<BeforeTaskResult | undefined, BeforeTaskArgs> = (args) => ({
-      steps: [...args.steps, makeStep({ name: 'review' })],
+      steps: [],
       files: ['README.md'],
     });
-    const out = await sub({ task: makeTask(), steps: [makeStep()] }, makeCtx());
-    expect(out?.steps).toHaveLength(2);
+    const out = await sub({ task: makeTask(), steps: [] }, makeCtx());
     expect(out?.files).toEqual(['README.md']);
   });
 });

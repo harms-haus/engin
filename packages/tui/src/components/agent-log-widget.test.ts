@@ -14,7 +14,7 @@
 // verify the target behaviour described in the task spec.
 
 import { visibleWidth } from '@earendil-works/pi-tui';
-import type { AgentEntity, StepEntity } from '@engin/shared';
+import type { SessionEntity } from '@engin/shared';
 import { describe, expect, it } from 'bun:test';
 import { AgentLogWidget } from './agent-log-widget.js';
 
@@ -25,10 +25,10 @@ import { AgentLogWidget } from './agent-log-widget.js';
 const stripAnsi = (s: string): string => s.replace(/\x1b\[[0-9;]*m/g, '');
 
 /**
- * Build an AgentEntity fixture. `contextWindow` is intentionally OMITTED by
+ * Build an SessionEntity fixture. `contextWindow` is intentionally OMITTED by
  * default so that tests which need it must opt in (mirrors the optional field).
  */
-function makeAgent(overrides: Partial<AgentEntity> = {}): AgentEntity {
+function makeAgent(overrides: Partial<SessionEntity> = {}): SessionEntity {
   return {
     uid: 'agent-1',
     agentId: 'agent-1',
@@ -40,23 +40,17 @@ function makeAgent(overrides: Partial<AgentEntity> = {}): AgentEntity {
     inputTokens: 84000,
     outputTokens: 56000,
     taskTitle: 'Write tests',
+    runnerRole: 'executor',
+    attempt: 1,
     ...overrides,
   };
 }
 
-/** A single step wired to the fixture agent. */
-const stepFor = (agent: AgentEntity): StepEntity => ({
-  name: 'write-tests',
-  index: 0,
-  profile: agent.profile,
-  agentKey: agent.uid,
-});
-
 /** Render the widget (collapsed) and return the resulting lines. */
-function renderCollapsed(agent: AgentEntity, width = 120): string[] {
+function renderCollapsed(agent: SessionEntity, width = 120): string[] {
   const widget = new AgentLogWidget(20);
   widget.setAgents([agent]);
-  widget.setSteps([stepFor(agent)]);
+  widget.setSelectedAgentUid(agent.uid);
   return widget.render(width);
 }
 
@@ -178,14 +172,14 @@ describe('AgentLogWidget header — layout & controls', () => {
   it('keeps the collapsed controls visible on the right side', () => {
     const agent = makeAgent({ contextWindow: 200000 });
     const header = headerOf(renderCollapsed(agent, 120));
-    expect(header).toContain('Tab step space expand');
+    expect(header).toContain('Tab session space expand');
   });
 
   it('shows expanded controls when the widget is expanded', () => {
     const agent = makeAgent({ contextWindow: 200000 });
     const widget = new AgentLogWidget(20);
     widget.setAgents([agent]);
-    widget.setSteps([stepFor(agent)]);
+    widget.setSelectedAgentUid(agent.uid);
     widget.toggleExpand();
 
     const header = stripAnsi(widget.render(120)[0]!);
@@ -210,6 +204,6 @@ describe('AgentLogWidget header — layout & controls', () => {
     const header = headerOf(renderCollapsed(agent, 80));
 
     expect(header).toContain('…');
-    expect(header).toContain('Tab step space expand');
+    expect(header).toContain('Tab session space expand');
   });
 });

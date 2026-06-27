@@ -10,8 +10,9 @@
 // one — the appended record always ends up with a real timestamp regardless.
 //
 // The `structured_output` AuditEvent variant carries ONLY { type, agentId,
-// output, taskId?, timestamp } (no phaseId/stepIndex — those exist on the hook
-// args but are intentionally not persisted to the audit event). The `decision`
+// output, taskId?, timestamp } (no phaseId/runnerRole/attempt — those exist on
+// the hook args but are intentionally not persisted to the audit event). The
+// `decision`
 // variant carries { type, agentId, decision, reasoning, taskId?, timestamp }.
 
 import type { AuditLog } from '../../tracking/audit-log.js';

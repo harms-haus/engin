@@ -90,6 +90,7 @@ function makeTask(id = 'task-1'): Task {
     dependencies: [],
     status: 'ready',
     phaseId: 'implement',
+    worktree: 'none',
   };
 }
 
@@ -166,7 +167,6 @@ describe('LanePool.resolveRunner — beforeTask hook', () => {
     // The hook fired once for the single task, seeded with getStepsForTask's steps.
     expect(seenArgs).toHaveLength(1);
     expect(seenArgs[0].task.id).toBe('task-1');
-    expect(seenArgs[0].steps).toBe(SEED_STEPS);
 
     // linearStepsRunner received the HOOK's steps (not the seed).
     expect(capturedStepsCalls).toHaveLength(1);

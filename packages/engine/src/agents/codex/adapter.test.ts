@@ -1,4 +1,4 @@
-// ─── Tests for agents/codex/adapter.ts — Codex SDK adapter ──────────────────
+// ─── Tests for sessions/codex/adapter.ts — Codex SDK adapter ──────────────────
 //
 // Verifies the Codex SDK adapter that implements the neutral `AgentPlugin`
 // contract. The `@openai/codex-sdk` package is mocked entirely via

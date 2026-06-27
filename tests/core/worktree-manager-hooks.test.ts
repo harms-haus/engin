@@ -195,6 +195,7 @@ function makeTask(overrides?: Partial<Task>): Task {
     profile: 'coder',
     files: [],
     dependencies: [],
+    worktree: 'none',
     status: 'active',
     phaseId: 'code',
     ...overrides,

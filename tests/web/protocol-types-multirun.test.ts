@@ -63,10 +63,10 @@ function makeMinimalProjection() {
     currentPhaseId: '',
     completedPhaseIds: [],
     tasks: {},
-    agents: {},
+    sessions: {},
     sidebar: { title: '', indicator: '' },
     status: 'running' as const,
-    stats: { totalTokens: 0, agentCount: 0 },
+    stats: { totalTokens: 0, sessionCount: 0 },
     runLog: [],
   };
 }

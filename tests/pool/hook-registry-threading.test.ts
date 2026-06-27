@@ -1,6 +1,6 @@
 /**
  * @fileoverview Tests for threading the optional `hookRegistry` field through
- * the pool layer, plus the `beforeStepPrompt` seam in runStep.
+ * the pool layer, plus the `beforeSessionPrompt` seam in runStep.
  *
  * Threading chain (task-10):
  *
@@ -12,13 +12,13 @@
  * Parallel `worktreeCwd` chain: when a LanePool creates a per-task worktree it
  * sets `worktreeCwd` on the TaskRunnerContext; `buildExecCtx` forwards it to
  * `StepExecutionContext.worktreeCwd`; the seam passes it to the
- * `beforeStepPrompt` hook args so subscribers can resolve files inside the
+ * `beforeSessionPrompt` hook args so subscribers can resolve files inside the
  * isolated worktree.
  *
- * The `beforeStepPrompt` seam in `runStep`:
- *   - When `execCtx.hookRegistry?.hasSubscribers('beforeStepPrompt')` is true,
+ * The `beforeSessionPrompt` seam in `runStep`:
+ *   - When `execCtx.hookRegistry?.hasSubscribers('beforeSessionPrompt')` is true,
  *     the prompt is built via
- *     `registry.invokePipeline('beforeStepPrompt', task.prompt, args, ctx)`
+ *     `registry.invokePipeline('beforeSessionPrompt', task.prompt, args, ctx)`
  *     instead of `buildPrompt(...)`. The pipeline return value becomes the
  *     prompt text handed to `session.prompt()` / `promptForStructured()`.
  *   - Otherwise (no registry, or no subscribers) `buildPrompt(...)` is called
@@ -38,7 +38,7 @@
  * unchanged (hookRegistry === undefined → buildPrompt path).
  */
 
-import { afterAll, beforeEach, describe, expect, it, mock } from 'bun:test';
+import { afterAll, afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { z } from 'zod';
@@ -59,29 +59,38 @@ const realProfile = Object.assign({}, await import('../../packages/engine/src/co
 
 const mockCreateHarness = mock() as ReturnType<typeof mock> & ((...args: unknown[]) => unknown);
 
+// Track whether this test file has activated the mock path. When false (e.g.
+// when another test file is running in the same bun process), fall through to
+// the REAL requireAgentPlugin so those files get their own registered plugins.
+let useMockPluginPath = false;
+
 // Compatibility shim: runStep calls spawnAgent which resolves sessions via
 // requireAgentPlugin(profile.agent).createSession(opts). We mock the
 // registry so createSession delegates to mockCreateHarness, unwrapping the
 // return value to the inner session (AgentRuntime).
-const mockRequireAgentPlugin = mock((..._args: unknown[]) => ({
-  id: 'pi-coding-agent',
-  createSession: async (opts: unknown) => {
-    const w = (await mockCreateHarness(opts)) as {
-      session: Record<string, unknown>;
-      sessionId?: string;
-      dispose?: () => void;
-      contextWindow?: number;
-    };
-    // Propagate wrapper-level fields onto the inner session IN-PLACE so the
-    // same object reference is tracked in activeSessions AND spawnAgent's
-    // session.dispose() / session.sessionId observe the wrapper's mock.
-    if (w.dispose) (w.session as { dispose: () => void }).dispose = w.dispose;
-    if (w.sessionId) (w.session as { sessionId: string }).sessionId = w.sessionId;
-    if (w.contextWindow !== undefined) (w.session as { contextWindow: number }).contextWindow = w.contextWindow;
-    return w.session;
-  },
-}));
+const mockRequireAgentPlugin = mock((...args: unknown[]) => {
+  if (!useMockPluginPath) return realAgentRegistry.requireAgentPlugin(...(args as [string]));
+  return {
+    id: 'pi-coding-agent',
+    createSession: async (opts: unknown) => {
+      const w = (await mockCreateHarness(opts)) as {
+        session: Record<string, unknown>;
+        sessionId?: string;
+        dispose?: () => void;
+        contextWindow?: number;
+      };
+      // Propagate wrapper-level fields onto the inner session IN-PLACE so the
+      // same object reference is tracked in activeSessions AND spawnAgent's
+      // session.dispose() / session.sessionId observe the wrapper's mock.
+      if (w.dispose) (w.session as { dispose: () => void }).dispose = w.dispose;
+      if (w.sessionId) (w.session as { sessionId: string }).sessionId = w.sessionId;
+      if (w.contextWindow !== undefined) (w.session as { contextWindow: number }).contextWindow = w.contextWindow;
+      return w.session;
+    },
+  };
+});
 mock.module('../../packages/engine/src/core/agent-registry.js', () => ({
+  ...realAgentRegistry,
   requireAgentPlugin: (...args: unknown[]) => mockRequireAgentPlugin(...args),
 }));
 
@@ -197,6 +206,7 @@ function makeSession(textFn: (promptText: string) => string | undefined = () => 
 }
 
 function setupHarnessMocks(session?: ReturnType<typeof makeSession>) {
+  useMockPluginPath = true;
   const sess = session ?? makeSession(() => 'done');
   mockCreateHarness.mockResolvedValue({
     session: sess,
@@ -282,12 +292,18 @@ function createPoolOptions(overrides: {
 // ─── Setup / teardown ───────────────────────────────────────────────────────
 
 beforeEach(() => {
+  useMockPluginPath = false;
   mockCreateHarness.mockClear();
   mockPromptForStructured.mockClear();
   mockBuildPrompt.mockReset();
   mockLoadProfilesFromDirs.mockReset();
   // Sensible defaults so individual tests can opt out.
   mockBuildPrompt.mockResolvedValue('FALLBACK-BUILT-PROMPT');
+});
+
+afterEach(() => {
+  // Reset so the mock path doesn't leak into other test files in the process.
+  useMockPluginPath = false;
 });
 
 afterAll(() => {
@@ -333,17 +349,17 @@ describe('source: step-execution.ts — StepExecutionContext fields + seam', () 
     expect(src).toMatch(/worktreeCwd\s*\?:\s*string/);
   });
 
-  it('gates the seam on execCtx.hookRegistry?.hasSubscribers("beforeStepPrompt")', () => {
-    expect(src).toMatch(/execCtx\.hookRegistry\s*\?\.\s*hasSubscribers\(['"]beforeStepPrompt['"]\)/);
+  it('gates the seam on execCtx.hookRegistry?.hasSubscribers("beforeSessionPrompt")', () => {
+    expect(src).toMatch(/execCtx\.hookRegistry\s*\?\.\s*hasSubscribers\(['"]beforeSessionPrompt['"]\)/);
   });
 
-  it('invokes the pipeline via invokePipeline("beforeStepPrompt", task.prompt, …)', () => {
-    expect(src).toMatch(/invokePipeline\(\s*['"]beforeStepPrompt['"]\s*,\s*task\.prompt\b/);
+  it('invokes the pipeline via invokePipeline("beforeSessionPrompt", task.prompt, …)', () => {
+    expect(src).toMatch(/invokePipeline\(\s*['"]beforeSessionPrompt['"]\s*,\s*task\.prompt\b/);
   });
 
   it('seeds the pipeline with task.prompt as the initial value', () => {
     // The pipeline's initial value is the task prompt string.
-    expect(src).toMatch(/invokePipeline\(\s*['"]beforeStepPrompt['"]\s*,\s*task\.prompt\s*,/);
+    expect(src).toMatch(/invokePipeline\(\s*['"]beforeSessionPrompt['"]\s*,\s*task\.prompt\s*,/);
   });
 
   it('passes worktreeCwd: execCtx.worktreeCwd into the hook args', () => {
@@ -378,7 +394,7 @@ describe('source: lane-pool.ts — forwards hookRegistry + sets worktreeCwd', ()
 
   it('sets worktreeCwd on the runner context to the created worktree path', () => {
     // Point 4: when a per-task worktree is created, set worktreeCwd on the
-    // runner context so beforeStepPrompt can resolve files correctly.
+    // runner context so beforeSessionPrompt can resolve files correctly.
     expect(src).toMatch(/runnerCtx\.worktreeCwd\s*=\s*taskWorktreePath/);
   });
 });
@@ -426,15 +442,15 @@ describe('buildExecCtx forwards hookRegistry + worktreeCwd', () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
-// BEHAVIORAL: runStep beforeStepPrompt seam
+// BEHAVIORAL: runStep beforeSessionPrompt seam
 // ═══════════════════════════════════════════════════════════════════════════
 
-describe('runStep beforeStepPrompt seam', () => {
+describe('runStep beforeSessionPrompt seam', () => {
   /**
    * The seam (step-execution.ts):
    *
-   *   const promptText = execCtx.hookRegistry?.hasSubscribers('beforeStepPrompt')
-   *     ? await execCtx.hookRegistry.invokePipeline('beforeStepPrompt', task.prompt, { task, step, prompt: task.prompt, cwd: execCtx.cwd, worktreeCwd: execCtx.worktreeCwd }, ctx)
+   *   const promptText = execCtx.hookRegistry?.hasSubscribers('beforeSessionPrompt')
+   *     ? await execCtx.hookRegistry.invokePipeline('beforeSessionPrompt', task.prompt, { task, step, prompt: task.prompt, cwd: execCtx.cwd, worktreeCwd: execCtx.worktreeCwd }, ctx)
    *     : await buildPrompt(task, step, execCtx.cwd, { skipFiles: !!existingSessionPath });
    *
    * Behavior matrix:
@@ -551,7 +567,7 @@ describe('runStep beforeStepPrompt seam', () => {
     });
 
     const name = (registry.invokePipeline.mock.calls[0] as unknown[])[0];
-    expect(name).toBe('beforeStepPrompt');
+    expect(name).toBe('beforeSessionPrompt');
   });
 
   it('passes task, step, prompt, cwd, and worktreeCwd in the hook args', async () => {
@@ -806,7 +822,7 @@ describe('LanePoolOptions.hookRegistry -> TaskRunnerContext', () => {
 
 describe('end-to-end: hookRegistry prompt transformation reaches session.prompt', () => {
   /**
-   * Full chain: LanePoolOptions.hookRegistry (with a real beforeStepPrompt
+   * Full chain: LanePoolOptions.hookRegistry (with a real beforeSessionPrompt
    * subscriber) → TaskRunnerContext → linearStepsRunner → buildExecCtx →
    * StepExecutionContext → runStep seam → session.prompt receives the
    * transformed prompt.
@@ -820,11 +836,11 @@ describe('end-to-end: hookRegistry prompt transformation reaches session.prompt'
     mockLoadProfilesFromDirs.mockResolvedValue(createProfilesMap(defaultProfile));
   });
 
-  it('delivers a beforeStepPrompt-subscriber-transformed prompt to the agent', async () => {
+  it('delivers a beforeSessionPrompt-subscriber-transformed prompt to the agent', async () => {
     const registry = createHookRegistry();
-    registry.defineHook('beforeStepPrompt', 'pipeline');
+    registry.defineHook('beforeSessionPrompt', 'pipeline');
     registry.register({
-      beforeStepPrompt: (value: string) => `${value} [HOOKED]`,
+      beforeSessionPrompt: (value: string) => `[HOOKED] ${value}`,
     });
 
     const session = makeSession(() => 'done');
@@ -877,11 +893,11 @@ describe('end-to-end: hookRegistry prompt transformation reaches session.prompt'
     expect(session.prompt.mock.calls[0][0]).toBe('FALLBACK-BUILT-PROMPT');
   });
 
-  it('a registry with NO beforeStepPrompt subscribers falls back to buildPrompt', async () => {
-    // A hookRegistry is threaded, but no one subscribes to beforeStepPrompt →
-    // hasSubscribers('beforeStepPrompt') is false → buildPrompt path.
+  it('a registry with NO beforeSessionPrompt subscribers falls back to buildPrompt', async () => {
+    // A hookRegistry is threaded, but no one subscribes to beforeSessionPrompt →
+    // hasSubscribers('beforeSessionPrompt') is false → buildPrompt path.
     const registry = createHookRegistry();
-    registry.defineHook('beforeStepPrompt', 'pipeline');
+    registry.defineHook('beforeSessionPrompt', 'pipeline');
     // No register() call → zero subscribers.
 
     const session = makeSession(() => 'done');

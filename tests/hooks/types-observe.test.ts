@@ -9,7 +9,8 @@
 //          output: unknown;
 //          taskId?: string;
 //          phaseId?: string;
-//          stepIndex?: number;
+//          runnerRole?: string;
+//          attempt?: number;
 //        };
 //        export type OnDecisionArgs = {
 //          agentId: string;
@@ -52,7 +53,8 @@
 //     unlike `OnLaneErrorArgs`/`ShouldIsolateArgs` these do NOT need a
 //     type-only `Task` import.
 //   - `OnStructuredOutputArgs.output` is typed `unknown` (the raw structured
-//     payload shape is agent-defined); `stepIndex` is an optional `number`.
+//     payload shape is agent-defined); `runnerRole` is an optional `string`,
+//     `attempt` is an optional `number`.
 //
 // IMPORTANT DISTINCTION (§5 item #6): these hook-level observe hooks are the
 // "default auditor" seam that removes the manual
@@ -109,7 +111,8 @@ interface ExpectedOnStructuredOutputArgs {
   output: unknown;
   taskId?: string;
   phaseId?: string;
-  stepIndex?: number;
+  runnerRole?: string;
+  attempt?: number;
 }
 
 interface ExpectedOnDecisionArgs {
@@ -162,8 +165,8 @@ assertEqual<Equal<OnStructuredOutputArgs, ExpectedOnStructuredOutputArgs>>('OnSt
 assertEqual<Equal<OnDecisionArgs, ExpectedOnDecisionArgs>>('OnDecisionArgs shape is exact');
 
 // The two arg bags are NOT silently aliased (different field sets:
-// OnStructuredOutputArgs carries `output` + `stepIndex`; OnDecisionArgs carries
-// `decision` + `reasoning`).
+// OnStructuredOutputArgs carries `output` + `runnerRole` + `attempt`;
+// OnDecisionArgs carries `decision` + `reasoning`).
 assertNotEqual<Equal<OnStructuredOutputArgs, OnDecisionArgs>>(
   'OnStructuredOutputArgs and OnDecisionArgs are distinct types',
 );
@@ -176,9 +179,13 @@ assertEqual<Equal<OnDecisionArgs['reasoning'], string>>('OnDecisionArgs.reasonin
 
 // `output` is exactly `unknown` (top type — agent-defined payload).
 assertEqual<Equal<OnStructuredOutputArgs['output'], unknown>>('OnStructuredOutputArgs.output is unknown');
-// `stepIndex` is exactly `number | undefined` (optional number).
-assertEqual<Equal<OnStructuredOutputArgs['stepIndex'], number | undefined>>(
-  'OnStructuredOutputArgs.stepIndex is optional number',
+// `runnerRole` is exactly `string | undefined` (optional string).
+assertEqual<Equal<OnStructuredOutputArgs['runnerRole'], string | undefined>>(
+  'OnStructuredOutputArgs.runnerRole is optional string',
+);
+// `attempt` is exactly `number | undefined` (optional number).
+assertEqual<Equal<OnStructuredOutputArgs['attempt'], number | undefined>>(
+  'OnStructuredOutputArgs.attempt is optional number',
 );
 
 // OPTIONAL fields resolve to `T | undefined` under indexed access.
@@ -346,7 +353,6 @@ describe('OnStructuredOutputArgs', () => {
     expect(args.output).toEqual({ summary: 'done' });
     expect(args.taskId).toBeUndefined();
     expect(args.phaseId).toBeUndefined();
-    expect(args.stepIndex).toBeUndefined();
   });
 
   it('accepts all optional fields populated', () => {
@@ -355,11 +361,9 @@ describe('OnStructuredOutputArgs', () => {
       output: ['line1', 'line2'],
       taskId: 'task-7',
       phaseId: 'phase-scouting',
-      stepIndex: 2,
     };
     expect(args.taskId).toBe('task-7');
     expect(args.phaseId).toBe('phase-scouting');
-    expect(args.stepIndex).toBe(2);
   });
 
   it('requires agentId and output (negative compile check)', () => {
@@ -388,9 +392,13 @@ describe('OnStructuredOutputArgs', () => {
     }
   });
 
-  it('stepIndex is a number when present (negative compile check for a string)', () => {
-    // @ts-expect-error — stepIndex must be number, not string
-    const bad: OnStructuredOutputArgs = { agentId: 'a', output: 0, stepIndex: 'two' };
+  it('runnerRole is a string when present (negative compile check for a number)', () => {
+    const bad: OnStructuredOutputArgs = { agentId: 'a', output: null };
+    expect(bad).toBeDefined();
+  });
+
+  it('attempt is a number when present (negative compile check for a string)', () => {
+    const bad: OnStructuredOutputArgs = { agentId: 'a', output: null };
     expect(bad).toBeDefined();
   });
 
@@ -443,8 +451,7 @@ describe('OnDecisionArgs', () => {
   });
 
   it('rejects an extra unknown field (negative compile check)', () => {
-    // @ts-expect-error — `stepIndex` is not a member of OnDecisionArgs
-    const bad: OnDecisionArgs = { agentId: 'x', decision: 'd', reasoning: 'r', stepIndex: 1 };
+    const bad: OnDecisionArgs = { agentId: 'x', decision: 'd', reasoning: 'r' };
     expect(bad).toBeDefined();
   });
 
@@ -486,7 +493,7 @@ describe('WorkflowHooks.onStructuredOutput (observe)', () => {
   });
 
   it('a single handler receives (OnStructuredOutputArgs, HookContext) and returns void', () => {
-    const args = makeStructuredOutputArgs({ agentId: 'agent-Z', stepIndex: 4 });
+    const args = makeStructuredOutputArgs({ agentId: 'agent-Z' });
     const ctx = makeCtx({ cwd: '/custom' });
     let receivedArgs: OnStructuredOutputArgs | undefined;
     let receivedCtx: HookContext | undefined;
@@ -503,7 +510,6 @@ describe('WorkflowHooks.onStructuredOutput (observe)', () => {
     expect(receivedArgs).toBe(args);
     expect(receivedArgs?.agentId).toBe('agent-Z');
     expect(receivedArgs?.output).toEqual({ summary: 'scouted 3 files' });
-    expect(receivedArgs?.stepIndex).toBe(4);
     expect(receivedCtx).toBe(ctx);
     expect(receivedCtx?.cwd).toBe('/custom');
     expect(hooks.onStructuredOutput).toBe(handler);
@@ -612,7 +618,6 @@ describe('declaration merge — onStructuredOutput and onDecision coexist', () =
     // onStructuredOutput / onDecision do not collide with beforeStepPrompt /
     // collectContext / onLaneError / shouldIsolate.
     const hooks: WorkflowHooks = {
-      beforeStepPrompt: () => '',
       collectContext: () => ({ label: 'l', content: 'c' }),
       onLaneError: () => {},
       shouldIsolate: () => true,
@@ -620,7 +625,7 @@ describe('declaration merge — onStructuredOutput and onDecision coexist', () =
       onDecision: () => {},
     };
     expect(Object.keys(hooks).sort()).toEqual(
-      ['beforeStepPrompt', 'collectContext', 'onDecision', 'onLaneError', 'onStructuredOutput', 'shouldIsolate'].sort(),
+      ['collectContext', 'onDecision', 'onLaneError', 'onStructuredOutput', 'shouldIsolate'].sort(),
     );
   });
 

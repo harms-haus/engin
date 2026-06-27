@@ -15,6 +15,8 @@ export class TaskListWidget implements Component {
   private idLabelCache: Map<string, string> | null = null;
   private _scrollOffset = 0;
   private readonly _maxVisibleLines = 20;
+  /** Per-task session counts (B9). Set via setSessionCounts. */
+  private _sessionCounts = new Map<string, number>();
 
   /**
    * Lazily computes and caches the task list in creation/registration order
@@ -188,6 +190,15 @@ export class TaskListWidget implements Component {
     }
   }
 
+  /**
+   * Set per-task session counts (B9). Replaces the old step-progress column
+   * with a session count column.
+   */
+  setSessionCounts(counts: Record<string, number>): void {
+    this._sessionCounts = new Map(Object.entries(counts));
+    this.invalidateCache();
+  }
+
   setSelectedTaskId(id: string | null): void {
     if (id === null || this.tasks.some((t) => t.id === id)) {
       this.selectedTaskId = id;
@@ -287,15 +298,11 @@ export class TaskListWidget implements Component {
       }
       titleCells.push(maybeBold(title));
 
-      // 4. Step-progress column (only for active multi-step tasks)
+      // 4. Session-count column (B9, only for active tasks with sessions)
       let step = '';
-      if (
-        task.status === 'active' &&
-        task.steps.length > 1 &&
-        task.activeStepIndex !== undefined &&
-        task.steps[task.activeStepIndex] !== undefined
-      ) {
-        step = dim(`${task.activeStepIndex + 1}/${task.steps.length} ${task.steps[task.activeStepIndex].name}`);
+      const sessionCount = this._sessionCounts.get(task.id) ?? 0;
+      if (task.status === 'active' && sessionCount > 0) {
+        step = dim(`${sessionCount} session${sessionCount !== 1 ? 's' : ''}`);
       }
       stepCells.push(maybeBold(step));
 

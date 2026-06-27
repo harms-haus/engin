@@ -1,13 +1,13 @@
 // ─── Tests for threading hookRegistry through runStepTask / runMultiStepTask ─
 //
-// Verifies the `beforeStepPrompt` pipeline hook integration:
+// Verifies the `beforeSessionPrompt` pipeline hook integration:
 //   - When `hookRegistry` is provided AND has subscribers for
-//     `beforeStepPrompt`, `invokePipeline` is called with the step's prompt
+//     `beforeSessionPrompt`, `invokePipeline` is called with the step's prompt
 //     (initial value), a `{ task, step, prompt, cwd, worktreeCwd }` args
 //     object, and a context; the pipeline's RETURN value replaces the prompt
 //     sent to the agent.
 //   - When `hookRegistry` is absent, or has no subscribers for
-//     `beforeStepPrompt`, the prompt is sent unchanged (zero behavior change).
+//     `beforeSessionPrompt`, the prompt is sent unchanged (zero behavior change).
 //   - The hook args carry the worktree-resolved cwd (`effectiveCwd`) when a
 //     worktree is in use.
 //
@@ -124,10 +124,10 @@ function makeMockRegistry(opts: { hasSubs?: boolean; transformedPrompt?: string 
   return { registry, invokePipeline, hasSubscribers };
 }
 
-/** Build a fresh registry with `beforeStepPrompt` declared as a pipeline hook. */
+/** Build a fresh registry with `beforeSessionPrompt` declared as a pipeline hook. */
 function makeRealRegistry() {
   const reg = createHookRegistry();
-  reg.defineHook('beforeStepPrompt', 'pipeline');
+  reg.defineHook('beforeSessionPrompt', 'pipeline');
   return reg;
 }
 
@@ -144,8 +144,8 @@ beforeEach(() => {
 
 // ─── runStepTask ─────────────────────────────────────────────────────────
 
-describe('runStepTask — beforeStepPrompt hook', () => {
-  it('transforms the prompt via a registered beforeStepPrompt subscriber', async () => {
+describe('runStepTask — beforeSessionPrompt hook', () => {
+  it('transforms the prompt via a registered beforeSessionPrompt subscriber', async () => {
     setupProfiles([coderProfile]);
 
     const prompts: string[] = [];
@@ -156,7 +156,7 @@ describe('runStepTask — beforeStepPrompt hook', () => {
     const reg = makeRealRegistry();
     // Subscriber prepends a marker to the incoming prompt value.
     reg.register({
-      beforeStepPrompt: (value: string) => `[HOOKED] ${value}`,
+      beforeSessionPrompt: (value: string) => `[HOOKED] ${value}`,
     });
 
     const opts = {
@@ -204,7 +204,7 @@ describe('runStepTask — beforeStepPrompt hook', () => {
     expect(prompts).toEqual(['explore the codebase']);
   });
 
-  it('sends the prompt unchanged when hookRegistry has no beforeStepPrompt subscribers', async () => {
+  it('sends the prompt unchanged when hookRegistry has no beforeSessionPrompt subscribers', async () => {
     setupProfiles([coderProfile]);
 
     const prompts: string[] = [];
@@ -213,7 +213,7 @@ describe('runStepTask — beforeStepPrompt hook', () => {
     );
 
     const reg = makeRealRegistry();
-    // Register a DIFFERENT hook, not beforeStepPrompt → hasSubscribers is false.
+    // Register a DIFFERENT hook, not beforeSessionPrompt → hasSubscribers is false.
     reg.defineHook('collectContext', 'all-run');
     reg.register({ collectContext: () => ({ label: 'x', content: 'y' }) });
 
@@ -263,7 +263,7 @@ describe('runStepTask — beforeStepPrompt hook', () => {
 
     // hasSubscribers checked for the step-prompt hook.
     expect(hasSubscribers).toHaveBeenCalledTimes(1);
-    expect(hasSubscribers.mock.calls[0][0]).toBe('beforeStepPrompt');
+    expect(hasSubscribers.mock.calls[0][0]).toBe('beforeSessionPrompt');
 
     // invokePipeline called exactly once.
     expect(invokePipeline).toHaveBeenCalledTimes(1);
@@ -273,7 +273,7 @@ describe('runStepTask — beforeStepPrompt hook', () => {
     const args = pipelineCall[2] as Record<string, unknown>;
     const ctx = pipelineCall[3];
 
-    expect(name).toBe('beforeStepPrompt');
+    expect(name).toBe('beforeSessionPrompt');
     // Initial value seeded with the original prompt.
     expect(initialValue).toBe('write a plan');
 
@@ -396,7 +396,7 @@ describe('runStepTask — beforeStepPrompt hook', () => {
     });
 
     const reg = makeRealRegistry();
-    reg.register({ beforeStepPrompt: (value: string) => `[R] ${value}` });
+    reg.register({ beforeSessionPrompt: (value: string) => `[R] ${value}` });
 
     const opts = {
       profilesDirs: ['/tmp/profiles'],
@@ -420,8 +420,8 @@ describe('runStepTask — beforeStepPrompt hook', () => {
 
 // ─── runMultiStepTask ────────────────────────────────────────────────────
 
-describe('runMultiStepTask — beforeStepPrompt hook', () => {
-  it('transforms each step prompt through beforeStepPrompt', async () => {
+describe('runMultiStepTask — beforeSessionPrompt hook', () => {
+  it('transforms each step prompt through beforeSessionPrompt', async () => {
     setupProfiles([plannerProfile, reviewerProfile]);
 
     const prompts: string[] = [];
@@ -430,7 +430,7 @@ describe('runMultiStepTask — beforeStepPrompt hook', () => {
     );
 
     const reg = makeRealRegistry();
-    reg.register({ beforeStepPrompt: (value: string) => `[S] ${value}` });
+    reg.register({ beforeSessionPrompt: (value: string) => `[S] ${value}` });
 
     const opts = {
       profilesDirs: ['/tmp/profiles'],
@@ -509,7 +509,7 @@ describe('runMultiStepTask — beforeStepPrompt hook', () => {
     // One pipeline invocation per step.
     expect(invokePipeline).toHaveBeenCalledTimes(2);
     expect(hasSubscribers).toHaveBeenCalledTimes(2);
-    expect(hasSubscribers.mock.calls[0][0]).toBe('beforeStepPrompt');
+    expect(hasSubscribers.mock.calls[0][0]).toBe('beforeSessionPrompt');
 
     // Step 0 args.
     const args0 = invokePipeline.mock.calls[0][2] as Record<string, unknown>;

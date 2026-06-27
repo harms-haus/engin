@@ -1,8 +1,8 @@
-// ─── Tests for agents/pi-coding-agent/adapter.ts — AgentPlugin extraction ────
+// ─── Tests for sessions/pi-coding-agent/adapter.ts — AgentPlugin extraction ────
 //
 // Validates the pi-coding-agent adapter that implements `AgentPlugin`. This is
 // a pure extraction of `createHarness` (core/harness-factory.ts) into the
-// `agents/pi-coding-agent/` directory. Every behavior must be byte-for-byte
+// `sessions/pi-coding-agent/` directory. Every behavior must be byte-for-byte
 // identical to the current `createHarness`.
 //
 // The adapter wires together heavy pi-specific internals (AuthStorage,

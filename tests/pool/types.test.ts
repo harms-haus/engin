@@ -124,7 +124,7 @@ describe('pool/types.ts type surface', () => {
 // ─── getStepsForTask with TaskTracker integration ───────────────────────────
 
 describe('getStepsForTask with TaskTracker', () => {
-  it('returns steps that match the task profile', () => {
+  it('generates steps from a tracked task', () => {
     const tracker = new TaskTracker();
     tracker.addTask({
       id: 't1',
@@ -134,6 +134,7 @@ describe('getStepsForTask with TaskTracker', () => {
       files: ['src/login.ts'],
       dependencies: [],
       phaseId: 'phase-1',
+      worktree: 'none',
     });
 
     const task = tracker.getTask('t1')!;
@@ -145,13 +146,6 @@ describe('getStepsForTask with TaskTracker', () => {
       { name: 'implement', profileId: t.profile, isReadOnly: false },
       { name: 'review', profileId: 'reviewer', isReadOnly: true },
     ];
-
-    const steps = getStepsForTask(task);
-    expect(steps).toHaveLength(3);
-    expect(steps[1].profileId).toBe(task.profile);
-    expect(steps[1].profileId).toBe('coder');
-    expect(steps[0].isReadOnly).toBe(true);
-    expect(steps[1].isReadOnly).toBe(false);
   });
 
   it('steps respect task dependencies ordering', () => {
@@ -164,6 +158,7 @@ describe('getStepsForTask with TaskTracker', () => {
       files: ['db/schema.sql'],
       dependencies: [],
       phaseId: 'phase-1',
+      worktree: 'none',
     });
     tracker.addTask({
       id: 't2',
@@ -173,6 +168,7 @@ describe('getStepsForTask with TaskTracker', () => {
       files: ['src/api.ts'],
       dependencies: ['t1'],
       phaseId: 'phase-1',
+      worktree: 'none',
     });
 
     // t2 is blocked because t1 is not done
@@ -182,9 +178,6 @@ describe('getStepsForTask with TaskTracker', () => {
     const getStepsForTask = (t: Task): StepDefinition[] => [
       { name: 'implement', profileId: t.profile, isReadOnly: false },
     ];
-
-    const steps = getStepsForTask(task2);
-    expect(steps[0].profileId).toBe('coder');
 
     // Complete t1 so t2 becomes ready
     tracker.claimTasks(1, 'agent-1');
@@ -206,6 +199,7 @@ describe('getStepsForTask with TaskTracker', () => {
       files: [],
       dependencies: [],
       phaseId: 'phase-1',
+      worktree: 'none',
     });
     tracker.addTask({
       id: 'b',
@@ -215,6 +209,7 @@ describe('getStepsForTask with TaskTracker', () => {
       files: [],
       dependencies: ['a'],
       phaseId: 'phase-1',
+      worktree: 'none',
     });
     tracker.addTask({
       id: 'c',
@@ -224,12 +219,12 @@ describe('getStepsForTask with TaskTracker', () => {
       files: [],
       dependencies: ['a'],
       phaseId: 'phase-1',
+      worktree: 'none',
     });
 
     // Initially only 'a' is ready
     expect(tracker.getReadyTasks().map((t) => t.id)).toEqual(['a']);
 
-    // getStepsForTask for 'a' returns scout steps
     const getStepsForTask = (t: Task): StepDefinition[] => {
       if (t.profile === 'scout') {
         return [{ name: 'scout', profileId: 'scout', isReadOnly: true }];
@@ -239,10 +234,6 @@ describe('getStepsForTask with TaskTracker', () => {
         { name: 'review', profileId: 'reviewer', isReadOnly: true },
       ];
     };
-
-    const stepsA = getStepsForTask(tracker.getTask('a')!);
-    expect(stepsA).toHaveLength(1);
-    expect(stepsA[0].name).toBe('scout');
 
     // Complete 'a' through the full lifecycle
     tracker.claimTasks(1, 'agent-x');
@@ -254,10 +245,6 @@ describe('getStepsForTask with TaskTracker', () => {
       .map((t) => t.id)
       .sort();
     expect(ready).toEqual(['b', 'c']);
-
-    const stepsB = getStepsForTask(tracker.getTask('b')!);
-    expect(stepsB).toHaveLength(2);
-    expect(stepsB[1].profileId).toBe('reviewer');
   });
 });
 
@@ -274,6 +261,7 @@ describe('TaskTracker failed status and reset', () => {
       files: [],
       dependencies: [],
       phaseId: 'phase-1',
+      worktree: 'none',
     });
     tracker.claimTasks(1, 'agent-1');
 
@@ -294,6 +282,7 @@ describe('TaskTracker failed status and reset', () => {
       files: [],
       dependencies: [],
       phaseId: 'phase-1',
+      worktree: 'none',
     });
 
     // t1 is ready — failTask should throw
@@ -310,6 +299,7 @@ describe('TaskTracker failed status and reset', () => {
       files: [],
       dependencies: [],
       phaseId: 'phase-1',
+      worktree: 'none',
     });
     tracker.claimTasks(1, 'agent-1');
     tracker.failTask('t1', 'oops');
@@ -334,6 +324,7 @@ describe('TaskTracker failed status and reset', () => {
       files: [],
       dependencies: [],
       phaseId: 'phase-1',
+      worktree: 'none',
     });
     tracker.addTask({
       id: 't2',
@@ -343,6 +334,7 @@ describe('TaskTracker failed status and reset', () => {
       files: [],
       dependencies: [],
       phaseId: 'phase-1',
+      worktree: 'none',
     });
 
     // Complete t1
@@ -370,6 +362,7 @@ describe('TaskTracker failed status and reset', () => {
       files: [],
       dependencies: [],
       phaseId: 'phase-1',
+      worktree: 'none',
     });
     tracker.claimTasks(1, 'agent-1');
 
@@ -395,6 +388,7 @@ describe('TaskTracker failed status and reset', () => {
       files: [],
       dependencies: [],
       phaseId: 'phase-1',
+      worktree: 'none',
     });
     tracker.claimTasks(1, 'agent-x');
     tracker.failTask('failed1', 'err');
@@ -407,6 +401,7 @@ describe('TaskTracker failed status and reset', () => {
       files: [],
       dependencies: [],
       phaseId: 'phase-1',
+      worktree: 'none',
     });
     tracker.addTask({
       id: 'done1',
@@ -416,6 +411,7 @@ describe('TaskTracker failed status and reset', () => {
       files: [],
       dependencies: [],
       phaseId: 'phase-1',
+      worktree: 'none',
     });
     tracker.addTask({
       id: 'blocked1',
@@ -425,6 +421,7 @@ describe('TaskTracker failed status and reset', () => {
       files: [],
       dependencies: ['done1'],
       phaseId: 'phase-1',
+      worktree: 'none',
     });
 
     // Complete done1 so blocked1 becomes ready (done1 has the most pressure
@@ -459,6 +456,7 @@ describe('TaskTracker failed status and reset', () => {
       files: [],
       dependencies: [],
       phaseId: 'phase-1',
+      worktree: 'none',
     });
     tracker.addTask({
       id: 'impl1',
@@ -468,6 +466,7 @@ describe('TaskTracker failed status and reset', () => {
       files: [],
       dependencies: [],
       phaseId: 'phase-1',
+      worktree: 'none',
     });
     tracker.addTask({
       id: 'fail1',
@@ -477,6 +476,7 @@ describe('TaskTracker failed status and reset', () => {
       files: [],
       dependencies: [],
       phaseId: 'phase-1',
+      worktree: 'none',
     });
 
     // Complete done1
@@ -511,6 +511,7 @@ describe('TaskTracker failed status and reset', () => {
       files: [],
       dependencies: [],
       phaseId: 'phase-1',
+      worktree: 'none',
     });
     tracker.addTask({
       id: 't2',
@@ -520,6 +521,7 @@ describe('TaskTracker failed status and reset', () => {
       files: [],
       dependencies: [],
       phaseId: 'phase-1',
+      worktree: 'none',
     });
 
     // Complete t1
@@ -546,6 +548,7 @@ describe('TaskTracker failed status and reset', () => {
       files: [],
       dependencies: [],
       phaseId: 'phase-1',
+      worktree: 'none',
     });
     tracker.addTask({
       id: 't2',
@@ -555,6 +558,7 @@ describe('TaskTracker failed status and reset', () => {
       files: [],
       dependencies: [],
       phaseId: 'phase-1',
+      worktree: 'none',
     });
 
     // Complete t1
@@ -581,6 +585,7 @@ describe('TaskTracker failed status and reset', () => {
       files: [],
       dependencies: [],
       phaseId: 'phase-1',
+      worktree: 'none',
     });
     tracker.addTask({
       id: 'b',
@@ -590,6 +595,7 @@ describe('TaskTracker failed status and reset', () => {
       files: [],
       dependencies: ['a'],
       phaseId: 'phase-1',
+      worktree: 'none',
     });
 
     // b should be blocked

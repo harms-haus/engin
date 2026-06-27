@@ -141,6 +141,7 @@ function makeTask(id = 'task-1'): Task {
     files: [],
     dependencies: [],
     status: 'ready',
+    worktree: 'none',
     phaseId: 'review',
   };
 }
@@ -176,7 +177,7 @@ function makeMockHandle() {
 /** Build a REAL HookRegistry with the engine's observe/pipeline hooks declared. */
 function makeRegistry(): HookRegistry {
   const reg = createHookRegistry();
-  reg.defineHook('beforeStepPrompt', 'pipeline');
+  reg.defineHook('beforeSessionPrompt', 'pipeline');
   reg.defineHook('onStructuredOutput', 'observe');
   reg.defineHook('onDecision', 'observe');
   return reg;

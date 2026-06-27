@@ -205,7 +205,7 @@ export async function fixLoop(options: FixLoopOptions): Promise<TaskOutcome> {
   // session-teardown failure never masks the actual step outcome.
 
   /** Run a single step via `runStep` and dispose its session. */
-  const runOnce = async (step: StepDefinition, stepIndex: number): Promise<StepResult> => {
+  const runOnce = async (step: StepDefinition): Promise<StepResult> => {
     const { result, trackedSession } = await runStep({
       task,
       step,
@@ -214,7 +214,7 @@ export async function fixLoop(options: FixLoopOptions): Promise<TaskOutcome> {
       // surrounding LanePool / TaskRunner handles retries via maxStepRetries).
       // `execCount` mirrors the stepIndex so the persisted session directory
       // is unique per step position; the value is opaque to the loop logic.
-      ctx: { stepIndex, attempt: 0, execCount: stepIndex },
+      ctx: { stepIndex: 0, attempt: 0, execCount: 0 },
       profiles,
       execCtx,
     });
@@ -234,7 +234,7 @@ export async function fixLoop(options: FixLoopOptions): Promise<TaskOutcome> {
   // short-circuits to { status: 'completed' } with no fixer work and no
   // worktree culling (the worktree is preserved for the merge step).
 
-  let reviewResult = await runOnce(reviewStep, 0);
+  let reviewResult = await runOnce(reviewStep);
   if (reviewResult.type === 'approved') {
     return { status: 'completed', output: reviewResult.output };
   }
@@ -261,10 +261,9 @@ export async function fixLoop(options: FixLoopOptions): Promise<TaskOutcome> {
     //    still run, and the re-review still runs. This matches the contract
     //    ("Run each fixer step via runStep (in order). If a fixer step is
     //    rejected or throws → fire onLaneError (observe) with the error.").
-    for (let i = 0; i < fixerSteps.length; i++) {
-      const fixerStep = fixerSteps[i];
+    for (const fixerStep of fixerSteps) {
       try {
-        const fixerResult = await runOnce(fixerStep, i + 1);
+        const fixerResult = await runOnce(fixerStep);
         if (fixerResult.type === 'rejected') {
           await fireOnLaneError(fixerResult.feedback);
         }
@@ -276,7 +275,7 @@ export async function fixLoop(options: FixLoopOptions): Promise<TaskOutcome> {
     // c. Re-run the review. An approval short-circuits to { status:
     //    'completed' } — the worktree is preserved for the merge step (cull
     //    only happens on exhaustion).
-    reviewResult = await runOnce(reviewStep, 0);
+    reviewResult = await runOnce(reviewStep);
     if (reviewResult.type === 'approved') {
       return { status: 'completed', output: reviewResult.output };
     }

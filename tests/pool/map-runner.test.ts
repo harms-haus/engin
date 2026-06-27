@@ -1242,7 +1242,7 @@ describe('mapRunner', () => {
         }),
       );
 
-      const onStatus = { onStepStart: mock(() => {}) };
+      const onStatus = {};
       const apiKeys = { openai: 'sk-xxx' };
       const ctx = createRunnerContext({
         sessionBaseDir: '/tmp/sb',

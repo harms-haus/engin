@@ -564,15 +564,15 @@ describe('TaskTracker', () => {
   describe('preserve isCode through lifecycle', () => {
     it('preserves isCode through the lifecycle', () => {
       const tracker = new TaskTracker();
-      tracker.addTask(makeTask({ id: 't1', isCode: false }));
+      tracker.addTask(makeTask({ id: 't1' }));
 
-      expect(tracker.getTask('t1')!.isCode).toBe(false);
+      expect(tracker.getTask('t1')!.worktree).toBe('none');
 
       tracker.claimTasks(1, 'agent-1');
-      expect(tracker.getTask('t1')!.isCode).toBe(false);
+      expect(tracker.getTask('t1')!.worktree).toBe('none');
 
       tracker.completeTask('t1');
-      expect(tracker.getTask('t1')!.isCode).toBe(false);
+      expect(tracker.getTask('t1')!.worktree).toBe('none');
     });
   });
 
@@ -581,12 +581,12 @@ describe('TaskTracker', () => {
   describe('preserve isCode through serialization', () => {
     it('preserves isCode through toJSON/fromJSON round-trip', () => {
       const tracker = new TaskTracker();
-      tracker.addTask(makeTask({ id: 't1', isCode: false }));
+      tracker.addTask(makeTask({ id: 't1' }));
 
       const json = tracker.toJSON();
       const restored = TaskTracker.fromJSON(json);
 
-      expect(restored.getTask('t1')!.isCode).toBe(false);
+      expect(restored.getTask('t1')!.worktree).toBe('none');
     });
   });
 

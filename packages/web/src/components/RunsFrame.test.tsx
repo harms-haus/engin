@@ -65,7 +65,7 @@ function seedRuns(runs: RunSummary[]): void {
 
 function resetStore(): void {
   useWorkflowStore.setState({
-    agentsById: {},
+    sessionsById: {},
     tasksById: {},
     phases: [],
     currentPhaseId: '',
@@ -76,13 +76,11 @@ function resetStore(): void {
     error: undefined,
     failedPhase: undefined,
     seq: 0,
-    stats: { totalTokens: 0, agentCount: 0 },
+    stats: { totalTokens: 0, sessionCount: 0 },
     workflowEventLog: [],
     selectedPhaseId: null,
     selectedTaskId: null,
-    selectedStepIndex: null,
     userPinnedPhase: false,
-    userPinnedStep: false,
     runs: [],
     selectedRunId: null,
     runLogs: {},
@@ -525,7 +523,6 @@ describe('workflow-store – runs list updates from ServerMessage', () => {
     expect(s.selectedRunId).toBe('run-2');
     expect(s.selectedPhaseId).toBeNull();
     expect(s.selectedTaskId).toBeNull();
-    expect(s.selectedStepIndex).toBeNull();
   });
 });
 
@@ -567,11 +564,11 @@ describe('RunsFrame – App integration', () => {
           phases: [{ id: 'p1', label: 'Plan', icon: '📋', taskIds: ['t1'] }],
           currentPhaseId: 'p1',
           completedPhaseIds: [],
-          tasks: { t1: { id: 't1', title: 'Task 1', status: 'active', phaseId: 'p1', steps: [], dependencies: [] } },
-          agents: {},
+          tasks: { t1: { id: 't1', title: 'Task 1', status: 'active', phaseId: 'p1', dependencies: [] } },
+          sessions: {},
           sidebar: { title: 'build', indicator: 'green' },
           status: 'running',
-          stats: { totalTokens: 0, agentCount: 0 },
+          stats: { totalTokens: 0, sessionCount: 0 },
           runLog: [],
         },
         1,

@@ -53,7 +53,7 @@ export function reflectionRunner(options: ReflectionRunnerOptions): TaskRunner {
     try {
       for (let round = 0; round < maxRounds; round++) {
         // ── Step 4a: Run draftStep (stepIndex 0) ────────────────────────
-        // onStepStart is fired by runStep() after onAgentSpawn for correct
+        // onStepStart is fired by runStep() after onSessionStart for correct
         // event ordering (agent_spawned → step_started).
         draftExecCount++;
 
@@ -81,7 +81,7 @@ export function reflectionRunner(options: ReflectionRunnerOptions): TaskRunner {
         }
 
         // ── Step 4b: Run criticStep (stepIndex 1) ───────────────────────
-        // onStepStart is fired by runStep() after onAgentSpawn for correct
+        // onStepStart is fired by runStep() after onSessionStart for correct
         // event ordering (agent_spawned → step_started).
         criticExecCount++;
 
@@ -125,7 +125,7 @@ export function reflectionRunner(options: ReflectionRunnerOptions): TaskRunner {
         // (registered by LanePool.run() when an `auditLog` is available)
         // appends a `decision` event to the durable AuditLog. Zero behavior
         // change when no `hookRegistry` or no subscribers. The hook context
-        // mirrors the `beforeStepPrompt` seam (same cwd / workDir / signal).
+        // mirrors the `beforeSessionPrompt` seam (same cwd / workDir / signal).
         if (ctx.hookRegistry?.hasSubscribers('onDecision')) {
           await ctx.hookRegistry.invokeObserve(
             'onDecision',

@@ -311,59 +311,11 @@ describe('review feedback appended to task', () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
-// onStepStart
+//
 // ═══════════════════════════════════════════════════════════════════════════
 
-describe('onStepStart fires correctly', () => {
-  it('fires onStepStart for draftStep at stepIndex 0 and criticStep at stepIndex 1', async () => {
-    setupProfileMocks();
-    setupHarnessMocks();
-    setupCriticMock(true, 'Good');
-
-    const onStepStart = mock(() => {});
-    const ctx = createRunnerContext({
-      onStatus: { onStepStart },
-    });
-    const runner = reflectionRunner({ draftStep, criticStep, maxRounds: 3 });
-
-    await runner(ctx);
-
-    expect(onStepStart).toHaveBeenCalledTimes(2);
-    expect(onStepStart).toHaveBeenNthCalledWith(
-      1,
-      expect.objectContaining({ stepIndex: 0, stepName: 'implement', taskId: ctx.task.id, agentId: ctx.agentId }),
-    );
-    expect(onStepStart).toHaveBeenNthCalledWith(
-      2,
-      expect.objectContaining({ stepIndex: 1, stepName: 'review', taskId: ctx.task.id, agentId: ctx.agentId }),
-    );
-  });
-
-  it('fires onStepStart for each round when retrying', async () => {
-    setupProfileMocks();
-    setupHarnessMocks();
-    setupCriticSequence([
-      { approved: false, feedback: 'Needs work', severity: 'medium' },
-      { approved: true, feedback: 'Good', severity: 'low' },
-    ]);
-
-    const onStepStart = mock(() => {});
-    const ctx = createRunnerContext({
-      onStatus: { onStepStart },
-    });
-    const runner = reflectionRunner({ draftStep, criticStep, maxRounds: 3 });
-
-    await runner(ctx);
-
-    // Round 1: stepIndex 0 (draft), stepIndex 1 (critic)
-    // Round 2: stepIndex 0 (draft), stepIndex 1 (critic)
-    expect(onStepStart).toHaveBeenCalledTimes(4);
-    expect(onStepStart).toHaveBeenNthCalledWith(1, expect.objectContaining({ stepIndex: 0, stepName: 'implement' }));
-    expect(onStepStart).toHaveBeenNthCalledWith(2, expect.objectContaining({ stepIndex: 1, stepName: 'review' }));
-    expect(onStepStart).toHaveBeenNthCalledWith(3, expect.objectContaining({ stepIndex: 0, stepName: 'implement' }));
-    expect(onStepStart).toHaveBeenNthCalledWith(4, expect.objectContaining({ stepIndex: 1, stepName: 'review' }));
-  });
-});
+// onStepStart removed in C2 — step lifecycle no longer fires onStepStart.
+// Session-level callbacks (onSessionStart/onSessionComplete) cover session lifecycle.
 
 // ═══════════════════════════════════════════════════════════════════════════
 // onDecision

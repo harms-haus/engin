@@ -16,5 +16,5 @@ export interface Task {
   assignedAgent?: string;
   result?: unknown;
   reviewFeedback?: string[];
-  isCode?: boolean;
+  worktree: 'none' | 'code';
 }

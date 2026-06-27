@@ -1,13 +1,13 @@
 // ─── Tests for createStoreCallbacks — agent_spawned contextWindow ───────────
 //
-// Verifies that the `onAgentSpawn` store-callback fans `contextWindow` from the
+// Verifies that the `onSessionStart` store-callback fans `contextWindow` from the
 // spawn info into the `data` object of the appended `agent_spawned` event, so
 // the projection / TUI can render context-window utilization.
 //
 // These tests are the task's mandated verification: "a test that spawns via
 // store-callbacks and asserts the appended agent_spawned event has
 // data.contextWindow set to the model's value." They construct a capturing/fake
-// store, invoke createStoreCallbacks(store).onAgentSpawn({...contextWindow}),
+// store, invoke createStoreCallbacks(store).onSessionStart({...contextWindow}),
 // and assert the captured `agent_spawned` append received
 // data.contextWindow === <that number>.
 
@@ -35,27 +35,26 @@ function makeRecordingStore() {
 
 // ─── Tests ──────────────────────────────────────────────────────────────────
 
-describe('createStoreCallbacks — onAgentSpawn contextWindow', () => {
+describe('createStoreCallbacks — onSessionStart contextWindow', () => {
   it('appends agent_spawned with data.contextWindow taken from the spawn info', () => {
     const { store, calls } = makeRecordingStore();
     const cbs = createStoreCallbacks(store);
 
     // Built as a plain object (not an inline literal at the call site) so the
     // optional `contextWindow` field is accepted structurally regardless of
-    // whether the onAgentSpawn info type has been widened yet.
+    // whether the onSessionStart info type has been widened yet.
     const info = {
       agentId: 'agent-1',
       profile: 'coder',
       phaseId: 'phase-1',
       taskId: 'task-1',
-      stepIndex: 0,
       sessionId: 'sess-1',
       sessionPath: '/tmp/sess-1.jsonl',
       contextWindow: 200000,
     };
-    cbs.onAgentSpawn?.(info);
+    cbs.onSessionStart?.(info);
 
-    const spawn = calls.find((c) => c.type === 'agent_spawned');
+    const spawn = calls.find((c) => c.type === 'session_started');
     expect(spawn, 'an agent_spawned event should have been appended').toBeDefined();
     // The exact event-data key the task requires.
     expect(spawn!.data.contextWindow).toBe(200000);
@@ -67,7 +66,6 @@ describe('createStoreCallbacks — onAgentSpawn contextWindow', () => {
     // Metadata still routed correctly.
     expect(spawn!.metadata?.agentId).toBe('agent-1');
     expect(spawn!.metadata?.phaseId).toBe('phase-1');
-    expect(spawn!.metadata?.stepIndex).toBe(0);
   });
 
   it('uses a single agent_spawned append (no duplication)', () => {
@@ -76,16 +74,16 @@ describe('createStoreCallbacks — onAgentSpawn contextWindow', () => {
 
     // Plain object variable (not an inline literal) so the optional
     // `contextWindow` field is accepted structurally regardless of whether
-    // the onAgentSpawn info type has been widened yet.
+    // the onSessionStart info type has been widened yet.
     const info = {
       agentId: 'agent-x',
       profile: 'planner',
       phaseId: 'p',
       contextWindow: 8000,
     };
-    cbs.onAgentSpawn?.(info);
+    cbs.onSessionStart?.(info);
 
-    const spawns = calls.filter((c) => c.type === 'agent_spawned');
+    const spawns = calls.filter((c) => c.type === 'session_started');
     expect(spawns).toHaveLength(1);
   });
 
@@ -95,9 +93,9 @@ describe('createStoreCallbacks — onAgentSpawn contextWindow', () => {
 
     // No contextWindow on the info — must not throw and data.contextWindow is
     // simply absent/undefined.
-    cbs.onAgentSpawn?.({ agentId: 'agent-2', profile: 'planner', phaseId: 'phase-1' });
+    cbs.onSessionStart?.({ agentId: 'agent-2', profile: 'planner', phaseId: 'phase-1' });
 
-    const spawn = calls.find((c) => c.type === 'agent_spawned');
+    const spawn = calls.find((c) => c.type === 'session_started');
     expect(spawn).toBeDefined();
     expect(spawn!.data.contextWindow).toBeUndefined();
   });

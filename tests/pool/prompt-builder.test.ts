@@ -40,6 +40,7 @@ describe('buildPrompt (prompt-builder module)', () => {
     files: ['src/login.ts', 'src/auth.ts'],
     dependencies: [],
     status: 'ready',
+    worktree: 'none',
     phaseId: 'phase-1',
   };
 
@@ -148,6 +149,7 @@ describe('buildPrompt (prompt-builder module)', () => {
       files: [],
       dependencies: [],
       status: 'ready',
+      worktree: 'none',
       phaseId: 'phase-1',
     };
     const result = await buildPrompt(minimalTask, baseStep, tempDir);
@@ -166,6 +168,7 @@ describe('buildPrompt (prompt-builder module)', () => {
       files: ['a.ts', 'b.ts'],
       dependencies: [],
       status: 'ready',
+      worktree: 'none',
       phaseId: 'phase-1',
       reviewFeedback: ['First issue', 'Second issue'],
     };

@@ -1,67 +1,53 @@
-// ─── Agent lifecycle handlers ───────────────────────────────────────────────
+// ─── Session lifecycle handlers ─────────────────────────────────────────────
 //
-// Handlers for agent spawning, completion, and turn-level events:
-// agent_spawned, agent_completed, turn_started, turn_ended.
+// Handlers for session spawning, completion, and turn-level events:
+// session_started, session_completed, turn_started, turn_ended.
 
-import type { AgentEntity, EventRecord, WorkflowProjection } from './event-types.js';
-import { agentKey, capLog, clone, resolveAgent } from './evolve-utils.js';
+import type { EventRecord, SessionEntity, WorkflowProjection } from './event-types.js';
+import { capLog, clone, extractSessionIdentity, resolveSession, sessionKey } from './evolve-utils.js';
 
-export function handleAgentSpawned(state: WorkflowProjection, event: EventRecord): WorkflowProjection {
-  const agentId = String(event.metadata.agentId ?? event.data.agentId ?? '');
-  const taskId = event.metadata.taskId;
-  const stepIndex = event.metadata.stepIndex;
-  const key = agentKey(agentId, taskId, stepIndex);
-  const existing = state.agents[key];
-  // If this agent is associated with a task, copy the task's title.
+export function handleSessionStarted(state: WorkflowProjection, event: EventRecord): WorkflowProjection {
+  const { agentId, taskId, runnerRole, attempt } = extractSessionIdentity(event);
+  const key = sessionKey(agentId, taskId, runnerRole, attempt);
+  const existing = state.sessions[key];
+  // If this session is associated with a task, copy the task's title.
   const existingTask = taskId ? state.tasks[taskId] : undefined;
 
   if (existing) {
     // UPSERT: preserve accumulated log/tokens/toolCallCount, update metadata.
-    const entity: AgentEntity = {
+    const entity: SessionEntity = {
       ...existing,
       profile: String(event.data.profile ?? existing.profile),
       phaseId: String(event.metadata.phaseId ?? event.data.phaseId ?? existing.phaseId ?? ''),
-      stepIndex: stepIndex ?? existing.stepIndex,
       sessionId: typeof event.data.sessionId === 'string' ? event.data.sessionId : existing.sessionId,
       sessionPath: typeof event.data.sessionPath === 'string' ? event.data.sessionPath : existing.sessionPath,
       contextWindow: typeof event.data.contextWindow === 'number' ? event.data.contextWindow : existing.contextWindow,
+      runnerRole: runnerRole ?? existing.runnerRole,
+      attempt: attempt ?? existing.attempt,
       startedAt: existing.startedAt ?? event.metadata.timestamp,
       active: true,
       completedAt: undefined,
       taskTitle: existingTask?.title ?? existing.taskTitle,
     };
-    const newAgents = { ...state.agents, [key]: entity };
-
-    // Link agent to task step if applicable
-    let newTasks = state.tasks;
-    if (taskId !== undefined && stepIndex !== undefined && newTasks[taskId]) {
-      const task = newTasks[taskId];
-      if (task.steps[stepIndex]) {
-        const newSteps = [...task.steps];
-        newSteps[stepIndex] = { ...newSteps[stepIndex], agentKey: key };
-        newTasks = { ...newTasks, [taskId]: { ...task, steps: newSteps } };
-      }
-    }
-
     return clone(state, {
-      agents: newAgents,
-      tasks: newTasks,
-      // Do NOT increment agentCount — this agent was already counted.
+      sessions: { ...state.sessions, [key]: entity },
+      // Do NOT increment sessionCount — this session was already counted.
       seq: event.seq,
     });
   }
 
-  // First spawn — create fresh entity and increment agentCount.
-  const entity: AgentEntity = {
+  // First spawn — create fresh entity and increment sessionCount.
+  const entity: SessionEntity = {
     uid: key,
     agentId,
     profile: String(event.data.profile ?? ''),
     phaseId: String(event.metadata.phaseId ?? event.data.phaseId ?? ''),
-    stepIndex,
     taskId,
     sessionId: typeof event.data.sessionId === 'string' ? event.data.sessionId : undefined,
     sessionPath: typeof event.data.sessionPath === 'string' ? event.data.sessionPath : undefined,
     contextWindow: typeof event.data.contextWindow === 'number' ? event.data.contextWindow : undefined,
+    runnerRole: runnerRole ?? 'executor',
+    attempt: attempt ?? 1,
     startedAt: event.metadata.timestamp,
     active: true,
     log: [],
@@ -70,36 +56,21 @@ export function handleAgentSpawned(state: WorkflowProjection, event: EventRecord
     outputTokens: 0,
     taskTitle: existingTask?.title ?? '',
   };
-  const newAgents = { ...state.agents, [key]: entity };
-
-  // Link agent to task step if applicable
-  let newTasks = state.tasks;
-  if (taskId !== undefined && stepIndex !== undefined && newTasks[taskId]) {
-    const task = newTasks[taskId];
-    if (task.steps[stepIndex]) {
-      const newSteps = [...task.steps];
-      newSteps[stepIndex] = { ...newSteps[stepIndex], agentKey: key };
-      newTasks = { ...newTasks, [taskId]: { ...task, steps: newSteps } };
-    }
-  }
-
   return clone(state, {
-    agents: newAgents,
-    tasks: newTasks,
-    stats: { ...state.stats, agentCount: state.stats.agentCount + 1 },
+    sessions: { ...state.sessions, [key]: entity },
+    stats: { ...state.stats, sessionCount: state.stats.sessionCount + 1 },
     seq: event.seq,
   });
 }
 
-export function handleAgentCompleted(state: WorkflowProjection, event: EventRecord): WorkflowProjection {
-  const agentId = String(event.metadata.agentId ?? event.data.agentId ?? '');
-  const taskId = event.metadata.taskId;
-  const resolved = resolveAgent(state.agents, agentId, taskId, event.metadata.stepIndex as number | undefined);
+export function handleSessionCompleted(state: WorkflowProjection, event: EventRecord): WorkflowProjection {
+  const { agentId, taskId, runnerRole, attempt } = extractSessionIdentity(event);
+  const resolved = resolveSession(state.sessions, agentId, taskId, runnerRole, attempt);
   if (!resolved) return clone(state, { seq: event.seq });
   const { key, entity: existing } = resolved;
   return clone(state, {
-    agents: {
-      ...state.agents,
+    sessions: {
+      ...state.sessions,
       [key]: clone(existing, { active: false, completedAt: event.metadata.timestamp }),
     },
     seq: event.seq,
@@ -112,9 +83,8 @@ export function handleTurnStarted(state: WorkflowProjection, event: EventRecord)
 }
 
 export function handleTurnEnded(state: WorkflowProjection, event: EventRecord): WorkflowProjection {
-  const agentId = String(event.metadata.agentId ?? '');
-  const taskId = event.metadata.taskId;
-  const resolved = resolveAgent(state.agents, agentId, taskId);
+  const { agentId, taskId } = extractSessionIdentity(event);
+  const resolved = resolveSession(state.sessions, agentId, taskId);
   if (!resolved) return clone(state, { seq: event.seq });
   const { key, entity: existing } = resolved;
 
@@ -145,8 +115,8 @@ export function handleTurnEnded(state: WorkflowProjection, event: EventRecord): 
   const outputTokens = existing.outputTokens + (tokens?.output ?? 0);
 
   return clone(state, {
-    agents: {
-      ...state.agents,
+    sessions: {
+      ...state.sessions,
       [key]: clone(existing, { log: capLog(newLog), inputTokens, outputTokens }),
     },
     stats: {

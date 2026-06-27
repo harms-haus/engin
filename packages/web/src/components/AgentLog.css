@@ -58,7 +58,7 @@
   color: var(--text-muted);
 }
 
-.agent-log__step-bar {
+.agent-log__session-bar {
   display: flex;
   gap: 0;
   background: var(--bg-surface);
@@ -68,7 +68,7 @@
   padding: 0;
 }
 
-.agent-log__step-tab {
+.agent-log__session-tab {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -85,47 +85,47 @@
   flex-shrink: 0;
 }
 
-.agent-log__step-tab:hover:not(:disabled) {
+.agent-log__session-tab:hover:not(:disabled) {
   color: var(--text-primary);
   background: var(--bg-secondary);
 }
 
-.agent-log__step-tab:focus-visible {
+.agent-log__session-tab:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
 }
 
-.agent-log__step-tab--selected {
+.agent-log__session-tab--selected {
   background: var(--bg-primary);
   color: var(--text-primary);
   border-bottom: 2px solid var(--accent);
 }
 
-.agent-log__step-tab--dimmed {
+.agent-log__session-tab--dimmed {
   opacity: 0.4;
   cursor: not-allowed;
 }
 
-.agent-log__step-tab--done .agent-log__step-marker {
+.agent-log__session-tab--done .agent-log__session-marker {
   color: var(--success);
 }
 
-.agent-log__step-tab--active .agent-log__step-marker {
+.agent-log__session-tab--active .agent-log__session-marker {
   color: var(--accent);
 }
 
-.agent-log__step-tab--pending .agent-log__step-marker {
+.agent-log__session-tab--pending .agent-log__session-marker {
   color: var(--text-muted);
 }
 
-.agent-log__step-marker {
+.agent-log__session-marker {
   font-size: 12px;
   width: 14px;
   text-align: center;
   flex-shrink: 0;
 }
 
-.agent-log__step-name {
+.agent-log__session-name {
   overflow: hidden;
   text-overflow: ellipsis;
 }

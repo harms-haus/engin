@@ -29,7 +29,7 @@
 // executable spec for fix-loop.ts.
 //
 // The review/fixer steps are MOCKED via `mock.module('./step-execution.js')`
-// so the loop logic is exercised without spawning real agents — mirroring the
+// so the loop logic is exercised without spawning real sessions — mirroring the
 // mock.module pattern in core/phase-tasks-hooks.test.ts.
 
 import { afterAll, afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
@@ -124,6 +124,7 @@ const task: Task = {
   dependencies: [],
   status: 'active',
   phaseId: 'review',
+  worktree: 'none',
 };
 
 const reviewStep: StepDefinition = {
@@ -951,10 +952,11 @@ describe('fixLoop — (f) fixer step composition (runStep contract for tooled fi
     await fixLoop(makeOptions({ fixerSteps: [tooledFixStep, secondFixerStep] }));
 
     const ctxs = mockRunStep.mock.calls.map((c) => (c[0] as RunStepParams).ctx);
-    // review always at position 0; fixer steps at 1..N; review re-run at 0 again.
+    // After C1/C2, the session primitive manages its own identity (runnerRole/attempt);
+    // fixLoop passes a constant ctx { stepIndex: 0, attempt: 0, execCount: 0 }.
     expect(ctxs[0]).toEqual({ stepIndex: 0, attempt: 0, execCount: 0 });
-    expect(ctxs[1]).toEqual({ stepIndex: 1, attempt: 0, execCount: 1 });
-    expect(ctxs[2]).toEqual({ stepIndex: 2, attempt: 0, execCount: 2 });
+    expect(ctxs[1]).toEqual({ stepIndex: 0, attempt: 0, execCount: 0 });
+    expect(ctxs[2]).toEqual({ stepIndex: 0, attempt: 0, execCount: 0 });
     expect(ctxs[3]).toEqual({ stepIndex: 0, attempt: 0, execCount: 0 });
   });
 

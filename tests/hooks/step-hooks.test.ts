@@ -9,16 +9,16 @@
 //   // types.ts (declaration merge onto WorkflowHooks)
 //   export interface WorkflowHooks {
 //     /** pipeline: transforms the step prompt before it reaches the agent */
-//     beforeStepPrompt?:
-//       | PipelineHook<string, BeforeStepPromptArgs>
-//       | PipelineHook<string, BeforeStepPromptArgs>[];
+//     beforeSessionPrompt?:
+//       | PipelineHook<string, BeforeSessionPromptArgs>
+//       | PipelineHook<string, BeforeSessionPromptArgs>[];
 //     /** all-run: collects labeled context blocks; folded by CONTEXT_BLOCK_REDUCER */
 //     collectContext?:
 //       | AllRunHook<ContextBlock, CollectContextArgs>
 //       | AllRunHook<ContextBlock, CollectContextArgs>[];
 //   }
 //
-//   export type BeforeStepPromptArgs = {
+//   export type BeforeSessionPromptArgs = {
 //     task: Task; step: StepDefinition; prompt: string;
 //     cwd: string; worktreeCwd?: string;
 //   };
@@ -101,28 +101,28 @@ async function loadReducers(): Promise<{ CONTEXT_BLOCK_REDUCER: ContextBlockRedu
   return (await import(specifier)) as { CONTEXT_BLOCK_REDUCER: ContextBlockReducer };
 }
 
-// ─── types.ts — beforeStepPrompt field on WorkflowHooks ────────────────────
+// ─── types.ts — beforeSessionPrompt field on WorkflowHooks ─────────────────
 
-describe('types.ts — WorkflowHooks.beforeStepPrompt', () => {
+describe('types.ts — WorkflowHooks.beforeSessionPrompt', () => {
   const src = tryReadSource(TYPES_TS);
 
-  it('declares an optional `beforeStepPrompt` field on WorkflowHooks', () => {
+  it('declares an optional `beforeSessionPrompt` field on WorkflowHooks', () => {
     // Declaration merging appends an OPTIONAL field (the `?`), so an empty
     // hooks object stays valid. The field name must appear on WorkflowHooks.
-    expect(src).toMatch(/beforeStepPrompt\s*\?:/);
+    expect(src).toMatch(/beforeSessionPrompt\s*\?:/);
   });
 
-  it('types beforeStepPrompt as PipelineHook<string, BeforeStepPromptArgs>', () => {
+  it('types beforeSessionPrompt as PipelineHook<string, BeforeSessionPromptArgs>', () => {
     // The single-subscriber form: a pipeline over the prompt STRING whose
-    // args are BeforeStepPromptArgs. The Value generic is pinned to `string`
+    // args are BeforeSessionPromptArgs. The Value generic is pinned to `string`
     // (the prompt) — not `unknown`.
-    expect(src).toContain('PipelineHook<string, BeforeStepPromptArgs>');
+    expect(src).toContain('PipelineHook<string, BeforeSessionPromptArgs>');
   });
 
-  it('accepts an ARRAY of beforeStepPrompt subscribers (single fn OR fn[])', () => {
-    // The union with `PipelineHook<string, BeforeStepPromptArgs>[]` lets a
+  it('accepts an ARRAY of beforeSessionPrompt subscribers (single fn OR fn[])', () => {
+    // The union with `PipelineHook<string, BeforeSessionPromptArgs>[]` lets a
     // workflow register multiple pipeline subscribers in one shot.
-    expect(src).toContain('PipelineHook<string, BeforeStepPromptArgs>[]');
+    expect(src).toContain('PipelineHook<string, BeforeSessionPromptArgs>[]');
   });
 });
 
@@ -146,15 +146,15 @@ describe('types.ts — WorkflowHooks.collectContext', () => {
   });
 });
 
-// ─── types.ts — BeforeStepPromptArgs ───────────────────────────────────────
+// ─── types.ts — BeforeSessionPromptArgs ────────────────────────────────────
 
-describe('types.ts — BeforeStepPromptArgs', () => {
+describe('types.ts — BeforeSessionPromptArgs', () => {
   const src = tryReadSource(TYPES_TS);
 
   it('is exported from types.ts (so reducers/consumers can name it)', () => {
     // Accept either `export type …` or `export interface …`; the task uses the
     // object-literal type form. Must be a top-level EXPORT (not just a local).
-    expect(src).toMatch(/export\s+(?:type|interface)\s+BeforeStepPromptArgs\b/);
+    expect(src).toMatch(/export\s+(?:type|interface)\s+BeforeSessionPromptArgs\b/);
   });
 
   it('carries task, step, prompt, cwd, and optional worktreeCwd', () => {

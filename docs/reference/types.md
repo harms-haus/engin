@@ -26,7 +26,7 @@ Settled statuses (`complete`, `failed`, `cancelled`) are terminal on the executo
 
 ### `EventType`
 
-The 21 event types recorded by `EventStore`:
+The event types recorded by `EventStore`:
 
 ```typescript
 type EventType =
@@ -34,11 +34,12 @@ type EventType =
   | 'phase_registered'
   | 'phase_started'
   | 'phase_completed'
-  | 'agent_spawned'
-  | 'agent_completed'
+  | 'session_started'
+  | 'session_completed'
+  | 'auto_retry_started'
+  | 'auto_retry_completed'
   | 'task_registered'
   | 'task_started'
-  | 'step_started'
   | 'task_completed'
   | 'task_rejected'
   | 'decision'
@@ -50,7 +51,8 @@ type EventType =
   | 'turn_ended'
   | 'tool_call_started'
   | 'tool_call_ended'
-  | 'log';
+  | 'log'
+  | 'agent_rendered';
 ```
 
 See [Event store & status → The reducer](event-store.md#the-evolve-reducer).
@@ -59,12 +61,15 @@ See [Event store & status → The reducer](event-store.md#the-evolve-reducer).
 
 ### `AgentProfile`
 
+Source: `packages/engine/src/core/types/profiles.ts`.
+
 | Field           | Type            | Description                                               |
 | --------------- | --------------- | --------------------------------------------------------- |
 | `id`            | `string`        | Profile identifier — derived from filename without `.md`. |
-| `name`          | `string`        | Human-readable display name. Defaults to `id`.            |
+| `name`          | `string`        | Human-readable display name.                              |
 | `provider`      | `string`        | AI provider identifier.                                   |
 | `model`         | `string`        | Model identifier within the provider.                     |
+| `agent?`        | `string`        | Agent runtime plugin ID. Defaults to `'pi-coding-agent'`. |
 | `thinkingLevel` | `ThinkingLevel` | Model thinking depth. Defaults to `'medium'`.             |
 | `systemPrompt`  | `string`        | The full system prompt (Markdown body after frontmatter). |
 | `excludeTools`  | `string[]`      | Tool names to remove from the default set.                |
@@ -72,56 +77,65 @@ See [Event store & status → The reducer](event-store.md#the-evolve-reducer).
 
 ### `Task`
 
-The executor-side (write-model) task. Source: `packages/engine/src/core/types.ts`.
+The executor-side (write-model) task. Source: `packages/engine/src/core/types/tasks.ts`.
 
-| Field             | Type         | Description                                                                                    |
-| ----------------- | ------------ | ---------------------------------------------------------------------------------------------- |
-| `id`              | `string`     | Unique task identifier.                                                                        |
-| `title`           | `string`     | Short description.                                                                             |
-| `prompt`          | `string`     | Detailed prompt for the implementing agent.                                                    |
-| `profile`         | `string`     | Agent profile ID to use.                                                                       |
-| `files`           | `string[]`   | File paths pre-loaded into the prompt (relative to `cwd`; binary skipped; truncated at 10 KB). |
-| `dependencies`    | `string[]`   | Task IDs that must complete before this task.                                                  |
-| `status`          | `TaskStatus` | Current lifecycle state.                                                                       |
-| `phaseId`         | `string`     | **Required.** Phase the task belongs to.                                                       |
-| `assignedAgent?`  | `string`     | ID of the agent currently working on this task.                                                |
-| `result?`         | `unknown`    | Implementation result submitted for review.                                                    |
-| `reviewFeedback?` | `string[]`   | Accumulated feedback from reviewer rejections.                                                 |
-| `isCode?`         | `boolean`    | Whether this task writes/modifies code (vs. docs/config).                                      |
+| Field             | Type               | Description                                                                                    |
+| ----------------- | ------------------ | ---------------------------------------------------------------------------------------------- |
+| `id`              | `string`           | Unique task identifier.                                                                        |
+| `title`           | `string`           | Short description.                                                                             |
+| `prompt`          | `string`           | Detailed prompt for the implementing agent.                                                    |
+| `profile`         | `string`           | Agent profile ID to use.                                                                       |
+| `files`           | `string[]`         | File paths pre-loaded into the prompt (relative to `cwd`; binary skipped; truncated at 10 KB). |
+| `dependencies`    | `string[]`         | Task IDs that must complete before this task.                                                  |
+| `status`          | `TaskStatus`       | Current lifecycle state.                                                                       |
+| `phaseId`         | `string`           | **Required.** Phase the task belongs to.                                                       |
+| `worktree`        | `'none' \| 'code'` | **Required.** Worktree mode: `'code'` creates a per-task git worktree; `'none'` runs in `cwd`. |
+| `assignedAgent?`  | `string`           | ID of the agent currently working on this task.                                                |
+| `result?`         | `unknown`          | Implementation result submitted for review.                                                    |
+| `reviewFeedback?` | `string[]`         | Accumulated feedback from reviewer rejections.                                                 |
 
 ### `TaskEntity`
 
-The read-model (projection) shape. Source: `packages/engine/src/core/types.ts`. Does **not** carry
-executor-only fields. Steps have no `status`; their rendered state is derived from `index` vs
-the task's `activeStepIndex`.
+The read-model (projection) shape. Source: `packages/shared/src/types.ts`. Does **not** carry
+executor-only fields. Has no `steps` or `activeStepIndex` — task-level progress is derived
+from status, and per-session detail lives in `SessionEntity`.
 
-| Field              | Type           | Description                                    |
-| ------------------ | -------------- | ---------------------------------------------- |
-| `id`               | `string`       | Unique task identifier.                        |
-| `title`            | `string`       | Short description.                             |
-| `phaseId`          | `string`       | **Required.** Phase the task belongs to.       |
-| `status`           | `TaskStatus`   | Current lifecycle state.                       |
-| `steps`            | `StepEntity[]` | Ordered list of steps.                         |
-| `activeStepIndex?` | `number`       | The single active step; `undefined` when none. |
-| `dependencies`     | `string[]`     | Task IDs that must complete before this task.  |
-| `startedAt?`       | `number`       | Epoch milliseconds when the task started.      |
-| `completedAt?`     | `string`       | ISO timestamp when the task completed.         |
+| Field          | Type         | Description                                   |
+| -------------- | ------------ | --------------------------------------------- |
+| `id`           | `string`     | Unique task identifier.                       |
+| `title`        | `string`     | Short description.                            |
+| `phaseId`      | `string`     | **Required.** Phase the task belongs to.      |
+| `status`       | `TaskStatus` | Current lifecycle state.                      |
+| `dependencies` | `string[]`   | Task IDs that must complete before this task. |
+| `startedAt?`   | `number`     | Epoch milliseconds when the task started.     |
+| `completedAt?` | `string`     | ISO timestamp when the task completed.        |
 
-### `StepEntity`
+### `SessionEntity`
 
-Source: `packages/engine/src/core/types.ts`. Steps have **no status** — state is derived:
+Source: `packages/shared/src/event-types.ts` (canonical; re-exported by the engine). The
+projection shape for a single agent session. Keyed by `sessionKey(agentId, taskId,
+runnerRole, attempt)` in `WorkflowProjection.sessions`.
 
-- `index < activeStepIndex` → done
-- `index === activeStepIndex` → active
-- `index > activeStepIndex` → pending
-
-| Field         | Type      | Description                                            |
-| ------------- | --------- | ------------------------------------------------------ |
-| `name`        | `string`  | Human-readable step name.                              |
-| `index`       | `number`  | 0-based position within the task.                      |
-| `profile?`    | `string`  | Profile ID this step runs as.                          |
-| `agentKey?`   | `string`  | Key into `projection.agents` once an agent is spawned. |
-| `isReadOnly?` | `boolean` | When true, write/edit tools are stripped.              |
+| Field            | Type         | Description                                                                                                                                                                                                                                         |
+| ---------------- | ------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `uid`            | `string`     | Stable key. Format is `agentId::taskId::runnerRole::attempt` when associated with a task role/attempt, `agentId::taskId::runnerRole` or `agentId::taskId` when some components are absent, or just `agentId` for non-task agents (scouts/planners). |
+| `agentId`        | `string`     | Agent identifier.                                                                                                                                                                                                                                   |
+| `profile`        | `string`     | Profile ID used to create the session.                                                                                                                                                                                                              |
+| `phaseId`        | `string`     | Phase the session belongs to.                                                                                                                                                                                                                       |
+| `taskId?`        | `string`     | Associated task, if any.                                                                                                                                                                                                                            |
+| `sessionId?`     | `string`     | Session identifier.                                                                                                                                                                                                                                 |
+| `sessionPath?`   | `string`     | Session storage path.                                                                                                                                                                                                                               |
+| `active`         | `boolean`    | Whether the session is currently running.                                                                                                                                                                                                           |
+| `log`            | `LogEntry[]` | Session log entries (capped at 500).                                                                                                                                                                                                                |
+| `toolCallCount`  | `number`     | Total tool calls made.                                                                                                                                                                                                                              |
+| `inputTokens`    | `number`     | Accumulated input tokens.                                                                                                                                                                                                                           |
+| `outputTokens`   | `number`     | Accumulated output tokens.                                                                                                                                                                                                                          |
+| `contextWindow?` | `number`     | Resolved model context window (from pi-ai `Model.contextWindow`), surfaced on `session_started`. Optional; used by the TUI to show a cumulative-consumption multiple.                                                                               |
+| `taskTitle`      | `string`     | Title of the associated task (empty if none).                                                                                                                                                                                                       |
+| `startedAt?`     | `string`     | ISO timestamp stamped once at first spawn (from the session-start event's `metadata.timestamp`); preserved across re-spawns. Used to compute per-session active time.                                                                               |
+| `completedAt?`   | `string`     | ISO timestamp when the session completed.                                                                                                                                                                                                           |
+| `runnerRole`     | `string`     | Role label for the runner that spawned this session (e.g. `'executor'`, `'reviewer'`, `'worker'`). Defaults to `'executor'` when not provided.                                                                                                      |
+| `attempt`        | `number`     | 1-based attempt/retry number. Defaults to `1` when not provided.                                                                                                                                                                                    |
 
 ### `PhaseEntity`
 
@@ -134,41 +148,17 @@ Source: `packages/shared/src/event-types.ts` (canonical; re-exported by the engi
 | `icon`    | `string`   | Emoji or icon.                                    |
 | `taskIds` | `string[]` | Ordered list of task IDs belonging to this phase. |
 
-### `AgentEntity`
+### `LogEntry`
 
 Source: `packages/shared/src/event-types.ts` (canonical; re-exported by the engine).
 
-| Field            | Type         | Description                                                                                                                                                                                                               |
-| ---------------- | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `uid`            | `string`     | Stable key. Format is `agentId::taskId::stepIndex` when the agent is associated with a task step, `agentId::taskId` for legacy task agents without a step index, or just `agentId` for non-task agents (scouts/planners). |
-| `agentId`        | `string`     | Agent identifier.                                                                                                                                                                                                         |
-| `profile`        | `string`     | Profile ID used to create the agent.                                                                                                                                                                                      |
-| `phaseId`        | `string`     | Phase the agent belongs to.                                                                                                                                                                                               |
-| `stepIndex?`     | `number`     | Step index within the task, when associated.                                                                                                                                                                              |
-| `taskId?`        | `string`     | Associated task, if any.                                                                                                                                                                                                  |
-| `sessionId?`     | `string`     | Session identifier.                                                                                                                                                                                                       |
-| `sessionPath?`   | `string`     | Session storage path.                                                                                                                                                                                                     |
-| `active`         | `boolean`    | Whether the agent is currently running.                                                                                                                                                                                   |
-| `log`            | `LogEntry[]` | Agent log entries (capped at 500).                                                                                                                                                                                        |
-| `toolCallCount`  | `number`     | Total tool calls made.                                                                                                                                                                                                    |
-| `inputTokens`    | `number`     | Accumulated input tokens.                                                                                                                                                                                                 |
-| `outputTokens`   | `number`     | Accumulated output tokens.                                                                                                                                                                                                |
-| `contextWindow?` | `number`     | Resolved model context window (from pi-ai `Model.contextWindow`), surfaced on `agent_spawned`. Optional; used by the TUI to show a cumulative-consumption multiple.                                                       |
-| `taskTitle`      | `string`     | Title of the associated task (empty if none).                                                                                                                                                                             |
-| `startedAt?`     | `string`     | ISO timestamp stamped once at first spawn (from the spawn event's `metadata.timestamp`); preserved across re-spawns. Used to compute per-agent active time in the workflow-completion summary.                            |
-| `completedAt?`   | `string`     | ISO timestamp when the agent completed.                                                                                                                                                                                   |
-
-### `LogEntry`
-
-Source: `packages/shared/src/event-types.ts` (canonical; re-exported by the engine). Re-exported by the TUI as `AgentLogEntry`.
-
-| Field       | Type                                                                                                   | Description                   |
-| ----------- | ------------------------------------------------------------------------------------------------------ | ----------------------------- |
-| `id`        | `string`                                                                                               | Stable entry identifier.      |
-| `timestamp` | `string`                                                                                               | ISO timestamp.                |
-| `type`      | `'text' \| 'thinking' \| 'tool_call' \| 'tool_call_start' \| 'tool_call_end' \| 'error' \| 'decision'` | Entry discriminant.           |
-| `content`   | `string`                                                                                               | Entry text content.           |
-| `metadata?` | `Record<string, unknown>`                                                                              | Optional structured metadata. |
+| Field       | Type                                                                                                               | Description                   |
+| ----------- | ------------------------------------------------------------------------------------------------------------------ | ----------------------------- |
+| `id`        | `string`                                                                                                           | Stable entry identifier.      |
+| `timestamp` | `string`                                                                                                           | ISO timestamp.                |
+| `type`      | `'text' \| 'thinking' \| 'tool_call' \| 'tool_call_start' \| 'tool_call_end' \| 'error' \| 'decision' \| 'render'` | Entry discriminant.           |
+| `content`   | `string`                                                                                                           | Entry text content.           |
+| `metadata?` | `Record<string, unknown>`                                                                                          | Optional structured metadata. |
 
 ### `WorkflowProjection`
 
@@ -182,12 +172,12 @@ interface WorkflowProjection {
   currentPhaseId: string;
   completedPhaseIds: string[];
   tasks: Record<string, TaskEntity>; // keyed by taskId
-  agents: Record<string, AgentEntity>; // keyed by agentKey (agentId::taskId::stepIndex when step-scoped; see AgentEntity.uid)
+  sessions: Record<string, SessionEntity>; // keyed by sessionKey (agentId::taskId::runnerRole::attempt)
   sidebar: { title: string; indicator: string };
   status: 'running' | 'complete' | 'failed';
   error?: string;
   failedPhase?: string;
-  stats: { totalTokens: number; agentCount: number };
+  stats: { totalTokens: number; sessionCount: number };
   /** Server-captured console output (capped at MAX_RUN_LOG entries). */
   runLog: LogEntry[];
 }
@@ -202,7 +192,14 @@ interface EventRecord {
   seq: number;
   type: EventType;
   data: Record<string, unknown>;
-  metadata: { timestamp: string; agentId?: string; taskId?: string; phaseId?: string; stepIndex?: number };
+  metadata: {
+    timestamp: string;
+    agentId?: string;
+    taskId?: string;
+    phaseId?: string;
+    runnerRole?: string;
+    attempt?: number;
+  };
 }
 ```
 
@@ -225,31 +222,35 @@ Serialized form of `WorkflowStatusTracker`. Written to `.engin-state.json`.
 
 ### `WorkflowRunOptions`
 
-Options passed to a workflow's `run()`.
+Options passed to a workflow's `run()`. Source: `packages/engine/src/core/types/workflow.ts`.
 
-| Field                 | Type                     | Description                                                                                                                                                                                                           |
-| --------------------- | ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `cwd`                 | `string`                 | Working directory. For git-repo runs this is the **main worktree path** (`{run-id}/worktree`), not the original cwd.                                                                                                  |
-| `workDir`             | `string`                 | Directory for workflow state persistence.                                                                                                                                                                             |
-| `maxConcurrentTasks?` | `number`                 | Maximum parallel agents (default 5).                                                                                                                                                                                  |
-| `apiKeys?`            | `Record<string, string>` | Provider → API key overrides.                                                                                                                                                                                         |
-| `onStatus?`           | `StatusCallbacks`        | Callbacks for workflow/agent events.                                                                                                                                                                                  |
-| `verbose?`            | `boolean`                | Verbose console output instead of TUI dashboard.                                                                                                                                                                      |
-| `signal?`             | `AbortSignal`            | Abort signal for cooperative cancellation.                                                                                                                                                                            |
-| `tracker?`            | `unknown`                | Pre-created `WorkflowStatusTracker`, if any.                                                                                                                                                                          |
-| `worktree?`           | `WorktreeInfo`           | Main worktree information (set alongside `worktreeManager` for git-repo runs).                                                                                                                                        |
-| `worktreeManager?`    | `WorktreeManager`        | Per-run worktree manager. Forward to `runStepTask` / `runMultiStepTask` / `LanePool` to enable per-task worktrees. Absent for the non-git fallback path.                                                              |
-| `rendererRegistry?`   | `RendererRegistry`       | Registry of per-profile renderers that transform agent JSON output into human-readable markdown.                                                                                                                      |
-| `hookRegistry?`       | `HookRegistry`           | The engine-assembled hook registry (built by `composeHooks` from `WorkflowModule.hooks`). Forward to `LanePool` / `runStepTask` / `PhaseRunner` to activate their hooks. Absent when the workflow exports no `hooks`. |
+| Field                 | Type                     | Description                                                                                                                                                                                             |
+| --------------------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cwd`                 | `string`                 | Working directory. For git-repo runs this is the **main worktree path** (`{run-id}/worktree`), not the original cwd.                                                                                    |
+| `workDir`             | `string`                 | Directory for workflow state persistence.                                                                                                                                                               |
+| `maxConcurrentTasks?` | `number`                 | Maximum parallel agents (default 5).                                                                                                                                                                    |
+| `apiKeys?`            | `Record<string, string>` | Provider → API key overrides.                                                                                                                                                                           |
+| `onStatus?`           | `StatusCallbacks`        | Callbacks for workflow/agent/session events.                                                                                                                                                            |
+| `verbose?`            | `boolean`                | Verbose console output instead of TUI dashboard.                                                                                                                                                        |
+| `signal?`             | `AbortSignal`            | Abort signal for cooperative cancellation.                                                                                                                                                              |
+| `tracker?`            | `unknown`                | Pre-created `WorkflowStatusTracker`, if any.                                                                                                                                                            |
+| `worktree?`           | `WorktreeInfo`           | Main worktree information (set alongside `worktreeManager` for git-repo runs).                                                                                                                          |
+| `worktreeManager?`    | `WorktreeManager`        | Per-run worktree manager. Forward to `RunnerPool` to enable per-task worktrees. Absent for the non-git fallback path.                                                                                   |
+| `rendererRegistry?`   | `RendererRegistry`       | Registry of per-profile renderers that transform agent JSON output into human-readable markdown.                                                                                                        |
+| `hookRegistry?`       | `HookRegistry`           | The engine-assembled hook registry (built by `composeHooks` from `WorkflowModule.hooks`). Forward to `RunnerPool` / `PhaseRunner` to activate their hooks. Absent when the workflow exports no `hooks`. |
+| `stepTimeoutMs?`      | `number`                 | Optional per-prompt timeout in milliseconds. Forwarded to the pool so each `session.prompt()` call is raced against a watchdog. Unset/0/NaN → no timeout.                                               |
 
 ### `WorkflowModule`
 
-| Field          | Type                                                                 | Description                                                                                                                                                                         |
-| -------------- | -------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `run`          | `(taskPrompt: string, options: WorkflowRunOptions) => Promise<void>` | The workflow entry point (**required**).                                                                                                                                            |
-| `name?`        | `string`                                                             | Human-readable workflow name.                                                                                                                                                       |
-| `description?` | `string`                                                             | Workflow description.                                                                                                                                                               |
-| `hooks?`       | `HookProvider`                                                       | Optional workflow-provided hooks. The engine composes these with the store callbacks via `composeHooks`; a single `WorkflowHooks` object or an array of them (registered in order). |
+Source: `packages/engine/src/core/types/workflow.ts`.
+
+| Field                | Type                                                                 | Description                                                                                                                                                                         |
+| -------------------- | -------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `run`                | `(taskPrompt: string, options: WorkflowRunOptions) => Promise<void>` | The workflow entry point (**required**).                                                                                                                                            |
+| `registerRenderers?` | `(registry: RendererRegistry) => void`                               | Optional hook for workflows to register output renderers for agent profiles. Called by the engine after module load.                                                                |
+| `hooks?`             | `HookProvider`                                                       | Optional workflow-provided hooks. The engine composes these with the store callbacks via `composeHooks`; a single `WorkflowHooks` object or an array of them (registered in order). |
+| `name?`              | `string`                                                             | Human-readable workflow name.                                                                                                                                                       |
+| `description?`       | `string`                                                             | Workflow description.                                                                                                                                                               |
 
 ### `WorkflowEntry`
 
@@ -261,19 +262,20 @@ Options passed to a workflow's `run()`.
 
 ### `HarnessCreationOptions`
 
-| Field                | Type                     | Description                                              |
-| -------------------- | ------------------------ | -------------------------------------------------------- |
-| `profile`            | `AgentProfile`           | The agent configuration.                                 |
-| `cwd`                | `string`                 | Working directory.                                       |
-| `apiKeys?`           | `Record<string, string>` | Provider → API key overrides.                            |
-| `onAgentStatus?`     | `AgentStatusCallbacks`   | Turn-level and tool-level callbacks.                     |
-| `sessionDir?`        | `string`                 | Directory for persisted session storage.                 |
-| `resumeSessionPath?` | `string`                 | Path to an existing session for resumption.              |
-| `agentId?`           | `string`                 | Agent ID for status callbacks (defaults to `sessionId`). |
+| Field                | Type                     | Description                                                                                       |
+| -------------------- | ------------------------ | ------------------------------------------------------------------------------------------------- |
+| `profile`            | `AgentProfile`           | The agent configuration.                                                                          |
+| `cwd`                | `string`                 | Working directory.                                                                                |
+| `apiKeys?`           | `Record<string, string>` | Provider → API key overrides.                                                                     |
+| `onAgentStatus?`     | `AgentStatusCallbacks`   | Turn-level and tool-level callbacks.                                                              |
+| `sessionDir?`        | `string`                 | Directory for persisted session storage.                                                          |
+| `resumeSessionPath?` | `string`                 | Path to an existing session for resumption.                                                       |
+| `agentId?`           | `string`                 | Agent ID for status callbacks (defaults to `sessionId`).                                          |
+| `allowedWriteDirs?`  | `string[]`               | Optional write sandbox: blocks `write`/`edit` outside these directories (resolved against `cwd`). |
 
 ## Worktree types
 
-Source: `packages/engine/src/core/types.ts` (`WorktreeInfo`),
+Source: `packages/engine/src/core/types/workflow.ts` (`WorktreeInfo`),
 `packages/engine/src/core/worktree-manager.ts` (`WorktreeManager`,
 `WorktreeManagerOptions`, `TaskWorktreeInfo`),
 `packages/engine/src/core/git.ts` (`WorktreeCopyEntry`).
@@ -325,7 +327,7 @@ per-task worktree feature. Owns:
 
 - The **main worktree** (the `engin/{mainSlug}` branch checked out at
   `{workDir}/worktree`, populated from `.worktreecopy`).
-- The **per-task worktree lifecycle** (one worktree per concurrent task, branched
+- The **per-task worktree lifecycle** (one worktree per concurrent task with `worktree === 'code'`, branched
   off the main-wt branch so each task inherits already-merged sibling work).
 - **Merge serialization** — concurrent task merges are chained onto a single
   `mergeChain` promise so the squash-merges into the main-wt branch never
@@ -339,7 +341,7 @@ through `WorktreeManager.setupMainWorktree()`.
 | Method                                              | Behaviour                                                                                                                                                                                                                                                                           |
 | --------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `setupMainWorktree()`                               | Prune orphans; create the main worktree at `mainWorktreePath` on `mainBranch`; populate from `.worktreecopy`. The branch name is NOT generated here — the caller provides `mainBranch` (from `generateTitleAndBranch`).                                                             |
-| `createTaskWorktree(taskId, taskPrompt?)`           | Create a per-task worktree at `{workDir}/task-worktrees/{taskId}/` on `engin/{mainSlug}--{taskId}`, branched off the **main worktree**. Populate from `.worktreecopy`. Store the `taskPrompt` for later use by `mergeTaskBranch`. Returns the absolute worktree path.               |
+| `createTaskWorktree(taskId, taskPrompt?, task?)`    | Create a per-task worktree at `{workDir}/task-worktrees/{taskId}/` on `engin/{mainSlug}--{taskId}`, branched off the **main worktree**. Populate from `.worktreecopy`. Store the `taskPrompt`/`task` for later use by `mergeTaskBranch`. Returns the absolute worktree path.        |
 | `mergeTaskBranch(taskId)`                           | Commit pending changes in the task worktree (outside the serialized section), then **serialized** squash-merge into the main-wt branch. On conflict, `resolveConflictsWithAgent` attempts resolution. On success, cull the task worktree. Returns `{ success, conflictsResolved }`. |
 | `cullTaskWorktree(taskId)`                          | Force-remove the task worktree + force-delete its branch. Idempotent no-op for unknown/culled taskIds. Best-effort — errors are swallowed and logged. Used on success after a merge, and on failure before a retry.                                                                 |
 | `prune()`                                           | `git worktree prune` to sweep orphaned worktree metadata from crashed runs.                                                                                                                                                                                                         |
@@ -362,72 +364,126 @@ file.
 
 ## Pool types
 
-### `RunStepTaskOptions`
+### `RunnerPoolOptions`
 
-| Field              | Required           | Description                                                                                                                                                                                                                                                                   |
-| ------------------ | ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `profilesDirs`     | **Yes**            | Directories containing `.md` profiles.                                                                                                                                                                                                                                        |
-| `phaseId`          | **Yes**            | Phase identifier for status callbacks.                                                                                                                                                                                                                                        |
-| `taskId`           | **Yes**            | Unique task identifier.                                                                                                                                                                                                                                                       |
-| `title`            | **Yes**            | Human-readable task title.                                                                                                                                                                                                                                                    |
-| `stepName`         | **Yes**            | Step name (displayed in the UI).                                                                                                                                                                                                                                              |
-| `profileId`        | **Yes**            | Profile ID to load.                                                                                                                                                                                                                                                           |
-| `cwd`              | **Yes**            | Working directory for the agent.                                                                                                                                                                                                                                              |
-| `prompt`           | **Yes**            | Prompt to send.                                                                                                                                                                                                                                                               |
-| `apiKeys?`         | No                 | Provider → API key overrides.                                                                                                                                                                                                                                                 |
-| `onStatus?`        | No                 | Status callbacks.                                                                                                                                                                                                                                                             |
-| `isReadOnly?`      | No                 | Strip write/edit (default `false`).                                                                                                                                                                                                                                           |
-| `schema?`          | `ZodType<unknown>` | Zod schema for structured output.                                                                                                                                                                                                                                             |
-| `signal?`          | No                 | Abort signal (checked once at start).                                                                                                                                                                                                                                         |
-| `worktreeManager?` | `WorktreeManager`  | Per-run worktree manager. When set, `runStepTask` creates a per-task worktree, runs the agent inside it, squash-merges the task branch on success, and culls it on failure. Forward `options.worktreeManager` to enable per-task isolation.                                   |
-| `hookRegistry?`    | `HookRegistry`     | Optional registry of workflow hooks. When provided AND it has subscribers for `beforeStepPrompt`, the step prompt is passed through the pipeline hook and the pipeline's return value replaces the prompt sent to the agent. Absent or no subscribers → zero behavior change. |
+Source: `packages/engine/src/pool/runner-pool.ts`.
 
-### `StepDefinition<T = unknown>`
+| Field                   | Required          | Description                                                                                                                                                                                                      |
+| ----------------------- | ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `maxConcurrentSessions` | **Yes**           | Hard cap on concurrent in-flight sessions across ALL models. Passed to `SessionGate` as `total`.                                                                                                                 |
+| `modelConcurrency`      | **Yes**           | Per-model concurrency caps keyed by `${provider}:${model}` (or `${provider}:${model}:${agent}`). Passed to `SessionGate` as `perModel`.                                                                          |
+| `profilesDirs`          | **Yes**           | Directories containing `.md` profiles.                                                                                                                                                                           |
+| `sessionBaseDir`        | **Yes**           | Base directory for persisted session storage (`{base}/{sessionId}/`).                                                                                                                                            |
+| `cwd`                   | **Yes**           | Working directory.                                                                                                                                                                                               |
+| `taskTracker`           | **Yes**           | Shared `TaskTracker` the pool claims from.                                                                                                                                                                       |
+| `phaseId`               | **Yes**           | The phase this pool serves.                                                                                                                                                                                      |
+| `getRunnerForTask`      | No                | `(task: Task) => Runner`. The sole runner resolution path. If absent or returns `undefined`, the task fails.                                                                                                     |
+| `apiKeys?`              | No                | Provider → API key overrides.                                                                                                                                                                                    |
+| `onStatus?`             | No                | Status callbacks.                                                                                                                                                                                                |
+| `auditLog?`             | No                | Audit log. When present alongside `hookRegistry`, `RunnerPool.run()` auto-registers the default auditor so structured-output and decision events land in the durable log without manual `auditLog.append` calls. |
+| `maxTaskRetries?`       | No                | Max times a failed task is retried within one pool run. Total attempts = `1 + maxTaskRetries`. Default `0` (no retries).                                                                                         |
+| `stepTimeoutMs?`        | No                | Per-prompt watchdog timeout in milliseconds. Forwarded as `watchdogTimeoutMs` to sessions.                                                                                                                       |
+| `signal?`               | No                | Abort signal.                                                                                                                                                                                                    |
+| `rendererRegistry?`     | No                | Optional registry of custom output renderers keyed by profile name.                                                                                                                                              |
+| `hookRegistry?`         | No                | Optional registry of workflow hooks. Forwarded to runners via `RunnerContext.hookRegistry`.                                                                                                                      |
+| `worktreeManager?`      | `WorktreeManager` | Per-run worktree manager. When set, tasks with `worktree === 'code'` get their own worktree (branched off the main worktree) that is squash-merged on success and culled on failure/retry.                       |
+| `gate?`                 | `SessionGate`     | Pre-constructed gate. Defaults to `new SessionGate({ total: maxConcurrentSessions, perModel: modelConcurrency }, signal)`.                                                                                       |
 
-| Field          | Required                 | Description                                                               |
-| -------------- | ------------------------ | ------------------------------------------------------------------------- |
-| `name`         | **Yes**                  | Human-readable step name.                                                 |
-| `profileId`    | **Yes**                  | Profile ID to load.                                                       |
-| `isReadOnly`   | **Yes**                  | When true, write/edit are stripped.                                       |
-| `schema?`      | `ZodType<T>`             | Zod schema for structured-output steps.                                   |
-| `isApproved?`  | `(result: T) => boolean` | Approval check. Default: `result.approved === true`.                      |
-| `getFeedback?` | `(result: T) => string`  | Rejection feedback. Default: `result.feedback ?? 'No feedback provided'`. |
+### `SessionGateOptions`
 
-### `StepResult`
+Source: `packages/engine/src/pool/session-gate.ts`.
+
+| Field      | Type                     | Description                                                                        |
+| ---------- | ------------------------ | ---------------------------------------------------------------------------------- |
+| `total`    | `number`                 | Hard cap on concurrent in-flight callbacks across ALL models.                      |
+| `perModel` | `Record<string, number>` | Per-model caps keyed by `${provider}:${model}` or `${provider}:${model}:${agent}`. |
+
+### `SessionSpec`
+
+Source: `packages/engine/src/pool/session.ts`.
+
+| Field         | Type         | Description                                                                           |
+| ------------- | ------------ | ------------------------------------------------------------------------------------- |
+| `id`          | `string`     | Unique session identifier (used for persistence path).                                |
+| `profile`     | `string`     | Agent profile ID (resolved against `ctx.profiles`).                                   |
+| `prompt`      | `string`     | The prompt text sent to the agent.                                                    |
+| `schema?`     | `ZodType`    | Optional Zod schema for structured output mode.                                       |
+| `outputMode`  | `OutputMode` | `'text' \| 'structured' \| 'filesystem'` — how the response is interpreted.           |
+| `isReadOnly?` | `boolean`    | When true, write/edit tools are stripped.                                             |
+| `runnerRole`  | `string`     | Role label for the runner (e.g. `'executor'`, `'reviewer'`). Propagated to callbacks. |
+| `attempt`     | `number`     | 1-based attempt number. Propagated to callbacks.                                      |
+
+### `SessionResult`
+
+Source: `packages/engine/src/pool/session.ts`.
 
 ```typescript
-type StepResult = { type: 'approved'; output: unknown } | { type: 'rejected'; feedback: string; output?: unknown };
+type SessionResult =
+  | { mode: 'text'; text: string }
+  | { mode: 'structured'; data: unknown }
+  | { mode: 'filesystem'; files: string[] };
 ```
 
-### `LanePoolOptions`
+### `TaskOutcome`
 
-| Field                | Required          | Description                                                                                                                                                                                                                                          |
-| -------------------- | ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `maxConcurrentLanes` | **Yes**           | Maximum concurrent lanes (workers).                                                                                                                                                                                                                  |
-| `profilesDirs`       | **Yes**           | Directories containing `.md` profiles.                                                                                                                                                                                                               |
-| `sessionBaseDir`     | **Yes**           | Base directory for persisted sessions (`{base}/{taskId}/{execCount}-{stepIndex}-{stepName}/`).                                                                                                                                                       |
-| `cwd`                | **Yes**           | Working directory.                                                                                                                                                                                                                                   |
-| `taskTracker`        | **Yes**           | Shared `TaskTracker` lanes claim from.                                                                                                                                                                                                               |
-| `getStepsForTask`    | No                | `(task) => StepDefinition[]`.                                                                                                                                                                                                                        |
-| `getRunnerForTask`   | No                | `(task) => TaskRunner`. Takes precedence over `getStepsForTask`.                                                                                                                                                                                     |
-| `phaseId`            | **Yes**           | The phase this pool serves.                                                                                                                                                                                                                          |
-| `apiKeys?`           | No                | Provider → API key overrides.                                                                                                                                                                                                                        |
-| `onStatus?`          | No                | Status callbacks.                                                                                                                                                                                                                                    |
-| `auditLog?`          | No                | Audit log. When present alongside `hookRegistry`, `LanePool.run()` auto-registers the default auditor (`onStructuredOutput` / `onDecision`) so structured-output and decision events land in the durable log without manual `auditLog.append` calls. |
-| `maxStepRetries?`    | No                | Max retries per step on rejection (default `5`).                                                                                                                                                                                                     |
-| `maxTaskRetries?`    | No                | Max times a failed task is reset and re-run from step 1 within one pool run (default `0`). Total attempts = `1 + maxTaskRetries`. Persisted sessions are cleared on retry.                                                                           |
-| `rendererRegistry?`  | No                | Optional registry of custom output renderers keyed by profile name.                                                                                                                                                                                  |
-| `laneWaitTimeoutMs?` | No                | Lane idle poll interval (default `60000`).                                                                                                                                                                                                           |
-| `signal?`            | No                | Abort signal.                                                                                                                                                                                                                                        |
-| `worktreeManager?`   | `WorktreeManager` | Per-run worktree manager. When set, each claimed task gets its own worktree (branched off the main worktree) that is squash-merged on success and culled on failure/retry.                                                                           |
-| `hookRegistry?`      | `HookRegistry`    | Optional registry of workflow hooks. Forward `options.hookRegistry` (engine-assembled via `composeHooks`) to activate the pool/step/scheduler hooks. When absent, `runStep` calls `buildPrompt` directly — zero behavior change.                     |
+Source: `packages/engine/src/pool/runners/types.ts`.
 
-### `LanePoolResult`
+```typescript
+type TaskOutcome = { status: 'completed' } | { status: 'failed'; error?: string };
+```
 
-| Field            | Type     | Description                               |
-| ---------------- | -------- | ----------------------------------------- |
-| `completedTasks` | `number` | Tasks that passed all steps successfully. |
-| `failedTasks`    | `number` | Tasks that exhausted retries or errored.  |
+### `RunnerContext`
+
+Source: `packages/engine/src/pool/runners/types.ts`.
+
+| Field               | Type                                                 | Description                                                                                           |
+| ------------------- | ---------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `task`              | `Task`                                               | The task being executed.                                                                              |
+| `gate`              | `SessionGate`                                        | The concurrency gate. Runners call `ctx.gate.run(profile, fn)` for each session.                      |
+| `runSession`        | `(ctx: RunSessionContext) => Promise<SessionResult>` | Passthrough to the session primitive. NOT re-gated — runners gate internally via `runSessionViaGate`. |
+| `profiles`          | `Map<string, AgentProfile>`                          | Resolved agent profiles.                                                                              |
+| `sessionBaseDir`    | `string`                                             | Base directory for persisted session storage.                                                         |
+| `cwd`               | `string`                                             | Working directory.                                                                                    |
+| `worktreeCwd?`      | `string`                                             | Per-task worktree path (when worktree isolation is active).                                           |
+| `apiKeys?`          | `Record<string, string>`                             | Provider → API key overrides.                                                                         |
+| `activeSessions`    | `Set<{ abort(): Promise<void> }>`                    | Mutable set of active sessions for cooperative abort.                                                 |
+| `onStatus?`         | `StatusCallbacks`                                    | Status callbacks.                                                                                     |
+| `hookRegistry?`     | `HookRegistry`                                       | Optional registry of workflow hooks.                                                                  |
+| `rendererRegistry?` | `RendererRegistry`                                   | Optional registry of custom output renderers.                                                         |
+| `auditLog?`         | `AuditLog`                                           | Audit log.                                                                                            |
+| `signal?`           | `AbortSignal`                                        | Cooperative cancellation signal.                                                                      |
+| `stepTimeoutMs?`    | `number`                                             | Per-prompt watchdog timeout.                                                                          |
+| `phaseId`           | `string`                                             | Phase identifier.                                                                                     |
+| `agentId`           | `string`                                             | Agent identifier.                                                                                     |
+| `maxTaskRetries?`   | `number`                                             | Max same-run retries budget.                                                                          |
+
+### `Runner`
+
+Source: `packages/engine/src/pool/runners/types.ts`.
+
+```typescript
+type Runner = (ctx: RunnerContext) => Promise<TaskOutcome>;
+```
+
+### `RunSessionContext`
+
+Source: `packages/engine/src/pool/session.ts`.
+
+| Field                 | Type                              | Description                                                                   |
+| --------------------- | --------------------------------- | ----------------------------------------------------------------------------- |
+| `spec`                | `SessionSpec`                     | The session specification to execute.                                         |
+| `sessionBaseDir`      | `string`                          | Base directory for persisted session storage.                                 |
+| `cwd`                 | `string`                          | Working directory for agent operations.                                       |
+| `worktreeCwd?`        | `string`                          | Per-task worktree path. When set, the agent runs inside the worktree.         |
+| `phaseId`             | `string`                          | Phase identifier for callbacks.                                               |
+| `agentId`             | `string`                          | Agent identifier for callbacks.                                               |
+| `apiKeys?`            | `Record<string, string>`          | API key overrides.                                                            |
+| `onStatus?`           | `StatusCallbacks`                 | Callbacks (`onSessionStart` / `onSessionComplete` + agent-status forwarding). |
+| `activeSessions`      | `Set<{ abort(): Promise<void> }>` | Mutable set for cooperative abort.                                            |
+| `profiles`            | `Map<string, AgentProfile>`       | Resolved profiles.                                                            |
+| `signal?`             | `AbortSignal`                     | Cooperative cancellation.                                                     |
+| `watchdogTimeoutMs?`  | `number`                          | Activity-based idle timeout.                                                  |
+| `watchdogMaxResumes?` | `number`                          | Max internal retries on watchdog timeout before permanent error.              |
 
 ## Structured-output and loop option types
 
@@ -474,36 +530,41 @@ interface PromptableHarness {
 ### `StatusCallbacks`
 
 `StatusCallbacks = WorkflowStatusCallbacks & AgentStatusCallbacks`. All methods are optional.
+Source: `packages/engine/src/core/types/callbacks.ts`.
 
 #### `WorkflowStatusCallbacks`
 
-| Method               | Parameter shape                                                                      | Fired when                                 |
-| -------------------- | ------------------------------------------------------------------------------------ | ------------------------------------------ |
-| `onWorkflowStart`    | `{ taskPrompt, resumed, workDir }`                                                   | The `run()` orchestrator starts.           |
-| `onPhaseRegister`    | `{ id, label, icon }`                                                                | A phase is registered at startup.          |
-| `onPhaseStart`       | `{ phase, round }`                                                                   | A phase begins execution.                  |
-| `onPhaseComplete`    | `{ phase, durationMs }`                                                              | A phase finishes.                          |
-| `onAgentSpawn`       | `{ agentId, profile, phaseId, taskId?, stepIndex?, sessionId?, sessionPath? }`       | An agent session is created.               |
-| `onAgentComplete`    | `{ agentId, profile, phaseId, taskId?, stepIndex?, sessionId? }`                     | An agent finishes its prompt.              |
-| `onTaskStart`        | `{ taskId, title, agentId, phaseId?, startedAt? }`                                   | A task is claimed and dispatched.          |
-| `onTaskRegister`     | `{ taskId, phaseId, title, dependencies, steps: { name, profileId, isReadOnly }[] }` | A task is registered with its step layout. |
-| `onStepStart`        | `{ taskId, stepIndex, stepName, agentId }`                                           | A step begins execution.                   |
-| `onTaskComplete`     | `{ taskId, title }`                                                                  | A task passes review.                      |
-| `onTaskRejected`     | `{ taskId, title, reason }`                                                          | A task fails review.                       |
-| `onDecision`         | `{ agentId, decision, reasoning, taskId? }`                                          | A reviewer makes a decision.               |
-| `onError`            | `{ agentId, error, phaseId, taskId? }`                                               | An agent encounters an error.              |
-| `onWorkflowComplete` | `{ totalDurationMs, agentCount }`                                                    | The workflow finishes successfully.        |
-| `onWorkflowFailed`   | `{ error: Error, phaseId }`                                                          | The workflow throws an unhandled error.    |
-| `onSidebarUpdate`    | `{ title?, indicator? }`                                                             | Sidebar UI metadata is updated.            |
+| Method                 | Parameter shape                                                                                           | Fired when                                |
+| ---------------------- | --------------------------------------------------------------------------------------------------------- | ----------------------------------------- |
+| `onWorkflowStart`      | `{ taskPrompt, resumed, workDir }`                                                                        | The `run()` orchestrator starts.          |
+| `onPhaseRegister`      | `{ id, label, icon }`                                                                                     | A phase is registered at startup.         |
+| `onPhaseStart`         | `{ phase, round }`                                                                                        | A phase begins execution.                 |
+| `onPhaseComplete`      | `{ phase, durationMs }`                                                                                   | A phase finishes.                         |
+| `onSessionStart`       | `{ agentId, profile, phaseId, taskId?, sessionId?, sessionPath?, contextWindow?, runnerRole?, attempt? }` | A session is created (agent spawned).     |
+| `onSessionComplete`    | `{ agentId, profile, phaseId, taskId?, sessionId?, runnerRole?, attempt? }`                               | A session finishes its prompt.            |
+| `onTaskStart`          | `{ taskId, title, agentId, phaseId?, startedAt? }`                                                        | A task is claimed and dispatched.         |
+| `onTaskRegister`       | `{ taskId, phaseId, title, dependencies }`                                                                | A task is registered.                     |
+| `onTaskComplete`       | `{ taskId, title }`                                                                                       | A task passes review.                     |
+| `onTaskRejected`       | `{ taskId, title, reason }`                                                                               | A task fails review.                      |
+| `onDecision`           | `{ agentId, decision, reasoning, taskId? }`                                                               | A reviewer makes a decision.              |
+| `onAgentRender`        | `{ agentId, profile, taskId?, rendered }`                                                                 | A renderer produces markdown from output. |
+| `onError`              | `{ agentId, error, phaseId, taskId? }`                                                                    | A session encounters an error.            |
+| `onWorkflowComplete`   | `{ totalDurationMs, agentCount }`                                                                         | The workflow finishes successfully.       |
+| `onWorkflowFailed`     | `{ error: Error, phaseId }`                                                                               | The workflow throws an unhandled error.   |
+| `onSidebarUpdate`      | `{ title?, indicator? }`                                                                                  | Sidebar UI metadata is updated.           |
+| `onAutoRetryStart`     | `{ agentId, attempt, maxAttempts, delayMs, errorMessage? }`                                               | An auto-retry cycle begins.               |
+| `onAutoRetryCompleted` | `{ agentId, success, attempt, finalError? }`                                                              | An auto-retry cycle ends.                 |
 
 #### `AgentStatusCallbacks`
 
-| Method            | Parameter shape                                | Fired when                 |
-| ----------------- | ---------------------------------------------- | -------------------------- |
-| `onTurnStart`     | `{ agentId, turn }`                            | An agent turn begins.      |
-| `onTurnEnd`       | `{ agentId, turn, tokens?, contentBlocks? }`   | An agent turn completes.   |
-| `onToolCallStart` | `{ agentId, toolName, toolCallId, arguments }` | A tool execution starts.   |
-| `onToolCallEnd`   | `{ agentId, toolName, toolCallId, isError }`   | A tool execution finishes. |
+| Method                 | Parameter shape                                             | Fired when                  |
+| ---------------------- | ----------------------------------------------------------- | --------------------------- |
+| `onTurnStart`          | `{ agentId, turn }`                                         | An agent turn begins.       |
+| `onTurnEnd`            | `{ agentId, turn, tokens?, contentBlocks? }`                | An agent turn completes.    |
+| `onToolCallStart`      | `{ agentId, toolName, toolCallId, arguments }`              | A tool execution starts.    |
+| `onToolCallEnd`        | `{ agentId, toolName, toolCallId, isError }`                | A tool execution finishes.  |
+| `onAutoRetryStart`     | `{ agentId, attempt, maxAttempts, delayMs, errorMessage? }` | An auto-retry cycle begins. |
+| `onAutoRetryCompleted` | `{ agentId, success, attempt, finalError? }`                | An auto-retry cycle ends.   |
 
 ### `TurnContentBlock`
 
@@ -527,34 +588,34 @@ ever disagrees with `types.ts`, the code wins.
 
 ### Mechanism types
 
-| Type / field             | Shape                                                                                                                                                                                                                                                               |
-| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `CompositionRule`        | `'observe' \| 'pipeline' \| 'first-wins' \| 'all-run'` — how multiple subscribers to one hook name are combined.                                                                                                                                                    |
-| `HookContext`            | `{ registry: HookRegistry; cwd: string; workDir: string; signal?: AbortSignal }`. Built by the engine (NOT the workflow) and passed to every hook invocation. `cwd` is the original repo cwd, not the per-task worktree path.                                       |
-| `ObserveHook<Args>`      | `(args, ctx) => void \| Promise<void>` — fire-and-forget fan-out (rule: `'observe'`).                                                                                                                                                                               |
-| `PipelineHook<V, Args>`  | `(value, args, ctx) => V \| Promise<V>` — ordered value transform (rule: `'pipeline'`).                                                                                                                                                                             |
-| `FirstWinsHook<R, Args>` | `(args, ctx) => R \| undefined \| Promise<R \| undefined>` — first non-`undefined` wins (rule: `'first-wins'`). Only `undefined` abstains (`false`/`0`/`''` are decisions).                                                                                         |
-| `AllRunHook<C, Args>`    | `(args, ctx) => C \| Promise<C>` — every subscriber contributes, folded by the hook's reducer (rule: `'all-run'`).                                                                                                                                                  |
-| `HookDefinition`         | `{ name: string; rule: CompositionRule; reducer?: (acc, next) => unknown }`. The reducer is required for `'all-run'` hooks.                                                                                                                                         |
-| `HookRegistry`           | Interface: `register(hooks)`, `invokeObserve(name, args, ctx)`, `invokePipeline(name, initialValue, args, ctx)`, `invokeFirstWins(name, args, ctx)`, `invokeAllRun(name, args, ctx)`, `hasSubscribers(name)`. Each `invoke*` is generic over `keyof WorkflowHooks`. |
-| `WorkflowHooks`          | The hook catalog interface — **29 hook fields**, grown by declaration merging across `types.ts`. Each field is `SomeHook<Args> \| SomeHook<Args>[]`. See [Hooks §3](hooks.md#3-hook-catalog) for every field's signature, rule, and wiring status.                  |
-| `HookProvider`           | `WorkflowHooks \| WorkflowHooks[]` — what `WorkflowModule.hooks` accepts (a single object or an array registered in order).                                                                                                                                         |
+| Type / field             | Shape                                                                                                                                                                                                                                                                          |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `CompositionRule`        | `'observe' \| 'pipeline' \| 'first-wins' \| 'all-run'` — how multiple subscribers to one hook name are combined.                                                                                                                                                               |
+| `HookContext`            | `{ registry: HookRegistry; cwd: string; workDir: string; signal?: AbortSignal }`. Built by the engine (NOT the workflow) and passed to every hook invocation. `cwd` is the original repo cwd, not the per-task worktree path.                                                  |
+| `ObserveHook<Args>`      | `(args, ctx) => void \| Promise<void>` — fire-and-forget fan-out (rule: `'observe'`).                                                                                                                                                                                          |
+| `PipelineHook<V, Args>`  | `(value, args, ctx) => V \| Promise<V>` — ordered value transform (rule: `'pipeline'`).                                                                                                                                                                                        |
+| `FirstWinsHook<R, Args>` | `(args, ctx) => R \| undefined \| Promise<R \| undefined>` — first non-`undefined` wins (rule: `'first-wins'`). Only `undefined` abstains (`false`/`0`/`''` are decisions).                                                                                                    |
+| `AllRunHook<C, Args>`    | `(args, ctx) => C \| Promise<C>` — every subscriber contributes, folded by the hook's reducer (rule: `'all-run'`).                                                                                                                                                             |
+| `HookDefinition`         | `{ name: string; rule: CompositionRule; reducer?: (acc, next) => unknown }`. The reducer is required for `'all-run'` hooks.                                                                                                                                                    |
+| `HookRegistry`           | Interface: `register(hooks)`, `invokeObserve(name, args, ctx)`, `invokePipeline(name, initialValue, args, ctx)`, `invokeFirstWins(name, args, ctx)`, `invokeAllRun(name, args, ctx)`, `hasSubscribers(name)`, `clone()`. Each `invoke*` is generic over `keyof WorkflowHooks`. |
+| `WorkflowHooks`          | The hook catalog interface — grown by declaration merging across `types.ts`. Each field is `SomeHook<Args> \| SomeHook<Args>[]`. See [Hooks §3](hooks.md#3-hook-catalog) for every field's signature, rule, and wiring status.                                                 |
+| `HookProvider`           | `WorkflowHooks \| WorkflowHooks[]` — what `WorkflowModule.hooks` accepts (a single object or an array registered in order).                                                                                                                                                    |
 
 ### Per-hook argument / result types
 
 These are the `Args`/`Result` shapes the hook functions receive/return, grouped by lifecycle
-level (matching [Hooks §3](hooks.md#3-hook-catalog)). `Task` and `StepDefinition` are defined
-in `core/types.ts`; `WorktreeInfo` in `core/types.ts`.
+level (matching [Hooks §3](hooks.md#3-hook-catalog)). `Task` is defined in `core/types.ts`;
+`StepDefinition` in `shared/src/types.ts`; `WorktreeInfo` in `core/types/workflow.ts`.
 
-#### Step level
+#### Session level
 
-| Type                   | Fields                                                                                    |
-| ---------------------- | ----------------------------------------------------------------------------------------- |
-| `BeforeStepPromptArgs` | `{ task: Task; step: StepDefinition; prompt: string; cwd: string; worktreeCwd?: string }` |
-| `CollectContextArgs`   | `{ task: Task; step: StepDefinition; cwd: string; worktreeCwd?: string }`                 |
-| `ContextBlock`         | `{ label: string; content: string }`                                                      |
+| Type                      | Fields                                                                                    |
+| ------------------------- | ----------------------------------------------------------------------------------------- |
+| `BeforeSessionPromptArgs` | `{ task: Task; step: StepDefinition; prompt: string; cwd: string; worktreeCwd?: string }` |
+| `CollectContextArgs`      | `{ task: Task; step: StepDefinition; cwd: string; worktreeCwd?: string }`                 |
+| `ContextBlock`            | `{ label: string; content: string }`                                                      |
 
-#### Lane / failure isolation (used by `fixLoop`)
+#### Lane / failure isolation
 
 | Type                | Fields                                                           |
 | ------------------- | ---------------------------------------------------------------- |
@@ -593,7 +654,7 @@ in `core/types.ts`; `WorktreeInfo` in `core/types.ts`.
 | `ShouldRetryPhaseArgs`      | `{ phaseId: string; result: unknown; round: number; state: Record<string, unknown> }` |
 | `OnPhaseSettledArgs`        | `{ phaseId: string; tasks: Task[]; state: Record<string, unknown> }`                  |
 | `BeforeTaskArgs`            | `{ task: Task; steps: StepDefinition[] }`                                             |
-| `BeforeTaskResult`          | `{ skip?: boolean; steps?: StepDefinition[]; files?: string[] }`                      |
+| `BeforeTaskResult`          | `{ skip?: boolean; steps?: StepDefinition[]; files?: string[]; reason?: string }`     |
 
 #### Scheduler / execution level
 
@@ -636,13 +697,13 @@ Source: `packages/tui/src/workflow-tui.ts`. The TUI is a WebSocket client — it
 
 ### `DashboardSelection`
 
-| Field               | Type             | Description                                   |
-| ------------------- | ---------------- | --------------------------------------------- |
-| `selectedPhaseId`   | `string \| null` | The phase whose tasks are displayed.          |
-| `selectedTaskId`    | `string \| null` | The task whose agent log is shown.            |
-| `selectedStepIndex` | `number \| null` | The step tab highlighted.                     |
-| `userPinnedPhase`   | `boolean`        | True when the user clicked a completed phase. |
-| `userPinnedStep`    | `boolean`        | True when the user clicked a specific step.   |
+| Field               | Type             | Description                                    |
+| ------------------- | ---------------- | ---------------------------------------------- |
+| `selectedPhaseId`   | `string \| null` | The phase whose tasks are displayed.           |
+| `selectedTaskId`    | `string \| null` | The task whose session log is shown.           |
+| `selectedSessionId` | `string \| null` | The session tab highlighted.                   |
+| `userPinnedPhase`   | `boolean`        | True when the user clicked a completed phase.  |
+| `userPinnedSession` | `boolean`        | True when the user clicked a specific session. |
 
 ## Web protocol types
 

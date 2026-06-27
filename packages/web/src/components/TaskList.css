@@ -56,11 +56,9 @@
   min-width: 0;
 }
 
-.task-list__step {
+.task-list__sessions {
   font-size: 11px;
   color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
   flex-shrink: 0;
 }
 

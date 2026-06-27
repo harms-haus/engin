@@ -1,6 +1,7 @@
 import { formatElapsed } from '@engin/shared/text-utils';
 import React, { useEffect, useMemo, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
+import type { SessionEntity } from '../protocol-types';
 import {
   useHasSnapshot,
   useSelectedPhaseId,
@@ -30,13 +31,10 @@ function getStatusColor(status: string): string {
   }
 }
 
-function stepLabel(task: { steps: { name: string; index: number }[]; activeStepIndex?: number }): string | null {
-  if (task.activeStepIndex === undefined) return null;
-  const total = task.steps.length;
-  const current = task.activeStepIndex;
-  const step = task.steps[current];
-  if (!step) return null;
-  return `step ${current + 1}/${total}: ${step.name}`;
+function sessionCountLabel(taskId: string, sessionsById: Record<string, SessionEntity>): string | null {
+  const count = Object.values(sessionsById).filter((a) => a.taskId === taskId).length;
+  if (count === 0) return null;
+  return `${count} ${count === 1 ? 'session' : 'sessions'}`;
 }
 
 function useElapsed(startedAt?: number, completedAt?: string): string | null {
@@ -57,12 +55,13 @@ const Task = React.memo(function Task({ taskId }: { taskId: string }) {
   const selectedTaskId = useSelectedTaskId();
   const selectTask = useWorkflowStore((s) => s.selectTask);
   const tasksById = useWorkflowStore((s) => s.tasksById);
+  const sessionsById = useWorkflowStore((s) => s.sessionsById);
   const elapsed = useElapsed(task?.startedAt, task?.completedAt);
 
   if (!task) return null;
 
   const isSelected = taskId === selectedTaskId;
-  const label = stepLabel(task);
+  const sessionLabel = sessionCountLabel(task.id, sessionsById);
 
   return (
     <button
@@ -74,7 +73,7 @@ const Task = React.memo(function Task({ taskId }: { taskId: string }) {
     >
       <div className="task-list__body">
         <span className="task-list__title">{task.title}</span>
-        {task.status === 'active' && label && <span className="task-list__step">{label}</span>}
+        {sessionLabel && <span className="task-list__sessions">{sessionLabel}</span>}
         {elapsed !== null && <span className="task-list__elapsed">{elapsed}</span>}
         {task.dependencies.length > 0 && (
           <span className="task-list__deps">
