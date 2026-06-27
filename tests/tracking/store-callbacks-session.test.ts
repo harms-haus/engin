@@ -87,12 +87,15 @@ describe('createStoreCallbacks – onSessionStart', () => {
     expect(calls[0].data.sessionId).toBe('sess-1');
     expect(calls[0].data.sessionPath).toBe('/tmp/s');
     expect(calls[0].data.contextWindow).toBe(200000);
-    // runnerRole/attempt are propagated to the callback info (C1) but are NOT
-    // forwarded into the event-store data/metadata by store-callbacks.ts.
+    // runnerRole/attempt ARE forwarded into event metadata so the session
+    // projection can disambiguate sessions sharing an agent+task (e.g. a
+    // reviewRunner's execute vs review sessions).
     expect(calls[0].metadata).toEqual({
       agentId: 'a1',
       taskId: 't1',
       phaseId: 'impl',
+      runnerRole: 'executor',
+      attempt: 2,
     });
   });
 
@@ -123,16 +126,18 @@ describe('createStoreCallbacks – onSessionComplete', () => {
     expect(calls[0].data.agentId).toBe('a1');
     expect(calls[0].data.profile).toBe('coder');
     expect(calls[0].data.sessionId).toBe('sess-1');
-    // store-callbacks.ts does not forward runnerRole/attempt into the event
-    // metadata for session_completed (C1 cutover).
+    // runnerRole/attempt ARE forwarded into event metadata for session_completed
+    // so the projection can resolve the correct session entity on completion.
     expect(calls[0].metadata).toEqual({
       agentId: 'a1',
       taskId: 't1',
       phaseId: 'impl',
+      runnerRole: 'executor',
+      attempt: 3,
     });
   });
 
-  it('onSessionComplete metadata does not include runnerRole/attempt (store-callbacks does not forward them)', () => {
+  it('onSessionComplete metadata forwards runnerRole/attempt (disambiguates sessions)', () => {
     const { store, calls } = createMockStore();
     const cb = createStoreCallbacks(store as never);
     cb.onSessionComplete!({
@@ -143,9 +148,10 @@ describe('createStoreCallbacks – onSessionComplete', () => {
       attempt: 1,
     } as never);
     expect(calls).toHaveLength(1);
-    // store-callbacks.ts does not forward runnerRole/attempt into metadata.
-    expect(calls[0].metadata?.runnerRole).toBeUndefined();
-    expect(calls[0].metadata?.attempt).toBeUndefined();
+    // store-callbacks.ts forwards runnerRole/attempt into metadata so the
+    // projection resolves the right session entity.
+    expect(calls[0].metadata?.runnerRole).toBe('reviewer');
+    expect(calls[0].metadata?.attempt).toBe(1);
   });
 
   it('onSessionComplete is defined on the callbacks object', () => {
