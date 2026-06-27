@@ -3,10 +3,11 @@
 // Implements the execute→review loop:
 //
 //   for round = 1..maxRounds:
-//     1. Run execute session (id `${taskId}/execute`, attempt = round).
+//     1. Run execute session (id `${taskId}/execute`, attempt = 1).
 //        On round 2+ the execute session RESUMES the prior one (resume:true)
 //        so the agent sees its earlier work + the appended review feedback,
-//        instead of starting a fresh session.
+//        instead of starting a fresh session. attempt stays 1 (a resume is a
+//        continuation, not a retry) so the projection keeps one SessionEntity.
 //     2. Feed the execute result into the review prompt
 //     3. Run review session (id `${taskId}/review`, structured output).
 //        On round 2+ the review session RESUMES the prior one too.
@@ -88,7 +89,11 @@ export function reviewRunner(
         outputMode: executeSpec.outputMode,
         ...(executeSpec.isReadOnly !== undefined ? { isReadOnly: executeSpec.isReadOnly } : {}),
         runnerRole: executeSpec.role,
-        attempt: round,
+        // attempt stays at 1 across rounds: a resume is a CONTINUATION of the
+        // same session, not a new retry attempt. This keeps the projection's
+        // session key stable (agentId::taskId::role::1) so round 2+ UPDATES
+        // the existing SessionEntity instead of creating a new one.
+        attempt: 1,
         // On round 2+ (a prior review rejected), RESUME the prior execute
         // session so the agent sees its earlier work + the appended feedback,
         // instead of starting a fresh session. Round 1 creates the session.
@@ -133,7 +138,9 @@ export function reviewRunner(
         outputMode: reviewSpec.outputMode,
         ...(reviewSpec.isReadOnly !== undefined ? { isReadOnly: reviewSpec.isReadOnly } : {}),
         runnerRole: reviewSpec.role,
-        attempt: round,
+        // attempt stays at 1: a resume continues the same session, keeping the
+        // projection key stable so round 2+ updates the existing entity.
+        attempt: 1,
         ...(round > 1 ? { resume: true } : {}),
       };
 
