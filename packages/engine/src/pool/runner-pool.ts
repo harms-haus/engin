@@ -86,6 +86,15 @@ export class RunnerPool {
   private readonly taskRetries = new Map<string, number>();
   /** Scoped clone of `options.hookRegistry` created at the start of `run()`. */
   private scopedHookRegistry?: HookRegistry;
+  /** Per-run cache of resolved runners (+ declared session plan), so the drain
+   *  loop can peek a ready task's first-session model WITHOUT re-invoking the
+   *  beforeTask hook each iteration, and processTask reuses the same resolve.
+   *  Cleared at the end of `run()`. */
+  private runnerResolveCache?: Map<
+    string,
+    | { kind: 'runner'; runner: Runner | undefined; sessionPlan?: { role: string; profile: string }[] }
+    | { kind: 'skip'; reason: string }
+  >;
 
   constructor(options: RunnerPoolOptions) {
     this.options = options;
@@ -179,6 +188,9 @@ export class RunnerPool {
 
     const inflight = new Set<Promise<void>>();
 
+    // Per-run resolved-runner cache (see resolveRunnerCached).
+    this.runnerResolveCache = new Map();
+
     // ── Wake-on-release ─────────────────────────────────────────────────
     // The drain loop must re-evaluate ready tasks not only when a task fully
     // settles, but also when a SESSION slot frees (a task moved between its
@@ -192,27 +204,45 @@ export class RunnerPool {
       while (true) {
         if (this.options.signal?.aborted) break;
 
-        // ── Claim + start ready tasks (up to available session slots) ──
-        // Claim only as many tasks as the SessionGate can run concurrently.
-        // This prevents marking tasks 'active' (▶ in the TUI) when they're
-        // actually queued behind the concurrency limit — tasks stay 'ready'
-        // until a session slot is available for them.
+        // ── Claim + start ready tasks (model-aware, greedy) ──────────────
+        // A task is claimed (→ active) ONLY when its FIRST session can run
+        // right now: there must be capacity for that session's model. This
+        // keeps tasks 'ready' (not 'active') until their first session
+        // actually has a slot, so the TUI never shows a wall of 'active'
+        // tasks that are really parked. On every wake (session released) the
+        // loop re-evaluates and greedily fills freed capacity.
+        //
+        // Parked (active, between-sessions) tasks are admitted by the
+        // SessionGate's own FIFO dispatch on release — no claim needed here.
         const ready = taskTracker.getReadyTasks();
-        if (ready.length > 0) {
-          const avail = this.gate.availableTotal();
-          const toClaim = Math.min(ready.length, avail);
-          if (toClaim > 0) {
-            const claimed = taskTracker.claimTasks(toClaim, 'runner-pool');
-            for (const t of claimed) {
-              const agentId = `runner-${t.id}`;
-              const p = this.processTask(t, agentId, profiles);
-              inflight.add(p);
-              p.then(
-                () => inflight.delete(p),
-                () => inflight.delete(p),
-              );
+        for (const task of ready) {
+          if (this.gate.availableTotal() <= 0) break; // no total capacity at all
+
+          // Peek the task's first-session profile (via the declared plan).
+          const resolved = await this.resolveRunnerCached(task, this.scopedHookRegistry);
+          let firstFits = true;
+          if (resolved.kind === 'runner' && resolved.sessionPlan && resolved.sessionPlan.length > 0) {
+            const firstEntry = resolved.sessionPlan[0];
+            const firstProfile = firstEntry ? profiles.get(firstEntry.profile) : undefined;
+            if (firstProfile) {
+              // canAcquireFor mirrors the gate's real admission: requires BOTH
+              // a total slot AND per-model capacity for this profile's model.
+              firstFits = this.gate.canAcquireFor(firstProfile);
             }
           }
+          if (!firstFits) continue; // first-session model saturated — leave ready
+
+          // Claim THIS specific task (by id) so skipping a non-fitting task
+          // doesn't block later fitting ones.
+          const claimed = taskTracker.claimTask(task.id, 'runner-pool');
+          if (!claimed) continue;
+          const agentId = `runner-${claimed.id}`;
+          const p = this.processTask(claimed, agentId, profiles);
+          inflight.add(p);
+          p.then(
+            () => inflight.delete(p),
+            () => inflight.delete(p),
+          );
         }
 
         if (inflight.size === 0) {
@@ -242,6 +272,7 @@ export class RunnerPool {
       this.options.signal?.removeEventListener('abort', abortActiveSessions);
       this.gate.onRelease = undefined;
       this.scopedHookRegistry = undefined;
+      this.runnerResolveCache = undefined;
     }
 
     // Count results.
@@ -269,7 +300,7 @@ export class RunnerPool {
 
     try {
       // ── Resolve runner FIRST so we can declare its session plan ────────
-      const resolved = await this.resolveRunner(task, hookRegistry);
+      const resolved = await this.resolveRunnerCached(task, hookRegistry);
 
       if (resolved.kind === 'skip') {
         try {
@@ -481,6 +512,27 @@ export class RunnerPool {
       runner = undefined;
     }
     return { kind: 'runner', runner };
+  }
+
+  /** Cached wrapper around {@link resolveRunner}. The drain loop peeks a ready
+   *  task's resolved runner to check its first-session model capacity BEFORE
+   *  claiming; processTask reuses the cached resolve so beforeTask fires once
+   *  per task per run, not once per drain iteration. */
+  private async resolveRunnerCached(
+    task: Task,
+    hookRegistry: HookRegistry | undefined,
+  ): Promise<
+    | { kind: 'runner'; runner: Runner | undefined; sessionPlan?: { role: string; profile: string }[] }
+    | { kind: 'skip'; reason: string }
+  > {
+    const cache = this.runnerResolveCache;
+    if (cache) {
+      const hit = cache.get(task.id);
+      if (hit) return hit;
+    }
+    const resolved = await this.resolveRunner(task, hookRegistry);
+    this.runnerResolveCache?.set(task.id, resolved);
+    return resolved;
   }
 
   // ── Retry Valve ──────────────────────────────────────────────────────────

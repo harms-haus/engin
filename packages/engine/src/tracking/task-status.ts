@@ -252,6 +252,20 @@ export class TaskTracker extends EventEmitter {
     return toClaim;
   }
 
+  /** Claim a single ready task by id. Returns the claimed task, or undefined
+   *  when the task isn't ready (not found, or already claimed/settled). Used
+   *  by the RunnerPool to claim a SPECIFIC ready task whose first session has
+   *  model capacity, without disturbing the ordering of other ready tasks. */
+  claimTask(id: string, agentId: string): Task | undefined {
+    const task = this.tasks.get(id);
+    if (!task || task.status !== 'ready') return undefined;
+    task.status = 'active';
+    task.assignedAgent = agentId;
+    this.warnedDeadlocked.delete(id);
+    queueMicrotask(() => this.emit(TaskTracker.Events.TaskClaimed));
+    return task;
+  }
+
   /**
    * Mark a task as complete. The optional `result` (e.g. the agent's final
    * output) is stored on `task.result` so downstream phases can read it back —

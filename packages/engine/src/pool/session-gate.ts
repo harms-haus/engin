@@ -91,6 +91,20 @@ export class SessionGate {
     return this.totalAvailable;
   }
 
+  /** Non-mutating peek: could a session for this profile's model be admitted
+   *  right now? True iff a total slot is free AND the per-model bucket has
+   *  capacity (uncapped models are only gated by the total). Used by the
+   *  RunnerPool to decide whether a ready task's FIRST session can run, so the
+   *  task stays 'ready' until its first session actually has capacity. */
+  canAcquireFor(profile: { provider: string; model: string; agent?: string }): boolean {
+    if (this.totalAvailable <= 0) return false;
+    const key = this.modelKey(profile);
+    const cap = this.perModel[key];
+    if (cap === undefined) return true; // uncapped model — only total gates it
+    const b = this.models.get(key);
+    return b === undefined ? cap > 0 : b.available > 0;
+  }
+
   /** Compute the per-model key for a profile. Prefers the 3-part
    *  `${provider}:${model}:${agent}` key when an agent is set AND a cap
    *  exists for it; otherwise falls back to the 2-part key. */

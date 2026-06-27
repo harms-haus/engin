@@ -388,18 +388,31 @@ describe('RunnerPool', () => {
     expect(peak).toBeLessThanOrEqual(2);
   });
 
-  // ── 6b. per-model cap: all ready tasks claimed, per-model gate parks the rest ──
+  // ── 6b. model-aware claim: tasks stay 'ready' until their first session's model has capacity ──
 
-  it('6b. total=20, per-model=5, 13 ready tasks → all 13 claimed (active), only 5 run concurrently, release admits a parked task', async () => {
+  it('6b. total=20, per-model glm=5, 13 ready tasks (first session glm) → only 5 claimed active, 8 stay ready; release admits one more', async () => {
     // Mirrors the real implementation phase: many ready is_code tasks whose
-    // first session all hit the SAME model (write-tests = glm-5.1, capped at 5).
-    // The pool must claim ALL ready tasks (they become active, parking in the
-    // gate), and the per-model SessionGate must cap CONCURRENT execution at 5,
-    // admitting a parked task when a running one releases its slot.
+    // FIRST session all hit the SAME model (write-tests = glm-5.1, capped 5).
+    // The pool must claim a task ONLY when its first session has model
+    // capacity — so 5 are claimed/active, 8 stay READY (not parked-active).
+    // On release, the wake re-evaluates and claims one more ready task.
     const tracker = new TaskTracker();
     for (let i = 1; i <= 13; i++) {
       tracker.addTask(makeTask(`t-${String(i).padStart(2, '0')}`, { dependencies: [] }));
     }
+
+    // Profile whose provider/model matches the per-model cap key.
+    const glmProfile = {
+      id: 'test-writer',
+      name: 'test-writer',
+      provider: 'zai',
+      model: 'glm-5.1',
+      thinkingLevel: 'low' as const,
+      systemPrompt: '',
+      excludeTools: [],
+      includeTools: [],
+    };
+    mockLoadProfilesFromDirs.mockResolvedValue(new Map([['test-writer', glmProfile]]));
 
     let inFlight = 0;
     let peak = 0;
@@ -419,31 +432,45 @@ describe('RunnerPool', () => {
       return { status: 'completed' };
     };
 
+    // beforeTask declares the session plan so the pool can peek the first
+    // session's profile (test-writer → glm-5.1) and claim model-aware.
+    const registry = makeRegistry();
+    registry.register({
+      beforeTask: () => ({
+        runner,
+        sessionPlan: [{ role: 'write-tests', profile: 'test-writer' }],
+      }),
+    } as never);
+
     const pool = new RunnerPool(
       makeOptions({
         taskTracker: tracker,
         maxConcurrentSessions: 20,
         modelConcurrency: { 'zai:glm-5.1': 5 },
-        getRunnerForTask: () => runner,
+        hookRegistry: registry,
       }),
     );
 
     const runP = pool.run();
     await sleep(50);
 
-    // All 13 tasks were claimed (active); only 5 run concurrently (per-model cap).
+    // Only 5 claimed (the per-model cap); 5 run concurrently; 8 still READY.
     expect(peak).toBe(5);
     expect(inFlight).toBe(5);
-    // The other 8 are active but parked in the gate (claimed, not settled).
-    const activeCount = tracker.getAllTasks().filter((t) => t.status === 'active').length;
-    expect(activeCount).toBe(13);
+    const active = tracker.getAllTasks().filter((t) => t.status === 'active').length;
+    const ready = tracker.getAllTasks().filter((t) => t.status === 'ready').length;
+    expect(active).toBe(5);
+    expect(ready).toBe(8);
 
-    // Release ONE running task → a parked task should be admitted (wake + gate dispatch).
+    // Release ONE running task → its slot frees → wake → one READY task is
+    // claimed and starts. t-01 settles (complete), so active stays 5
+    // (4 remaining + 1 newly claimed); the proof is READY drops 8 → 7.
     holds.get('t-01')!.resolve();
     await sleep(50);
-    // Still 5 concurrent (one left, one admitted), 13 still active.
     expect(inFlight).toBe(5);
     expect(peak).toBe(5);
+    expect(tracker.getAllTasks().filter((t) => t.status === 'ready').length).toBe(7);
+    expect(tracker.getAllTasks().filter((t) => t.status === 'active').length).toBe(5);
 
     // Release the rest.
     for (let i = 2; i <= 13; i++) holds.get(`t-${String(i).padStart(2, '0')}`)!.resolve();
