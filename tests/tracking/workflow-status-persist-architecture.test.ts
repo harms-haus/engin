@@ -5,6 +5,35 @@ import { WorkflowStatusTracker } from '../../packages/engine/src/tracking/workfl
 import { makeTask } from '../helpers/make-task.js';
 import { useTempDir } from '../helpers/use-temp-dir.js';
 
+/**
+ * Poll the persisted `.engin-state.json` until `predicate(parsedData)` is true
+ * (or `timeoutMs` elapses). The tracker's persist is an async coalescing chain
+ * (each save awaits file I/O), so a rapid burst of mutations can leave saves
+ * queued behind one another. Fixed `setTimeout` waits race that chain and flake
+ * on slow CI runners; polling makes the wait exactly as long as needed.
+ */
+async function waitForPersisted(
+  dir: string,
+  predicate: (data: Record<string, unknown>) => boolean,
+  timeoutMs = 2000,
+): Promise<void> {
+  const file = join(dir, '.engin-state.json');
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const raw = await fs.readFile(file, 'utf-8');
+      if (predicate(JSON.parse(raw))) return;
+    } catch {
+      // file may not exist yet on the very first save — keep polling
+    }
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  // Final read for a clear failure message
+  const raw = await fs.readFile(file, 'utf-8');
+  const final = JSON.parse(raw);
+  expect(predicate(final)).toBe(true);
+}
+
 describe('WorkflowStatusTracker – persist architecture (bounded promise chain)', () => {
   const { getDir } = useTempDir();
   let dir: string;
@@ -252,7 +281,7 @@ describe('WorkflowStatusTracker – persist architecture (bounded promise chain)
       }
 
       // Wait for all debounced saves to complete
-      await new Promise((r) => setTimeout(r, 100));
+      await waitForPersisted(dir, (d) => d.taskPrompt === 'chain-test-99' && d.workflowData?.indicator === 'step-99');
 
       // Final state should be correct
       const raw = await fs.readFile(join(dir, '.engin-state.json'), 'utf-8');
@@ -264,7 +293,10 @@ describe('WorkflowStatusTracker – persist architecture (bounded promise chain)
       // We verify by checking that another save works fresh
       tracker.setTaskPrompt('fresh-after-chain');
       tracker.setWorkflowData({ wfTitle: 'fresh-after-chain' });
-      await new Promise((r) => setTimeout(r, 30));
+      await waitForPersisted(
+        dir,
+        (d) => d.taskPrompt === 'fresh-after-chain' && d.workflowData?.wfTitle === 'fresh-after-chain',
+      );
 
       const raw2 = await fs.readFile(join(dir, '.engin-state.json'), 'utf-8');
       const data2 = JSON.parse(raw2);
