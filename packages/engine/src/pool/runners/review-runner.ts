@@ -64,9 +64,18 @@ function buildReviewPrompt(reviewPrompt: string, executeResult: SessionResult): 
 export function reviewRunner(
   executeSpec: Omit<SessionSpec, 'id'> & { role: string },
   reviewSpec: Omit<SessionSpec, 'id'> & { role: string },
-  options?: { maxRounds?: number },
+  options?: {
+    maxRounds?: number;
+    /** Fires when a review REJECTS (round `round` just completed with
+     *  approved=false), BEFORE the next execute round resumes. Lets callers
+     *  preserve artifacts produced during the rejected round (e.g. snapshot
+     *  a plan file to plan-rev{round}.json before the planner overwrites it).
+     *  Not called on approval or after the final round. */
+    onReviewReject?: (round: number) => void | Promise<void>;
+  },
 ): Runner {
   const maxRounds = options?.maxRounds ?? DEFAULT_MAX_ROUNDS;
+  const onReviewReject = options?.onReviewReject;
 
   return async (ctx: RunnerContext): Promise<TaskOutcome> => {
     const taskId = ctx.task.id;
@@ -167,10 +176,21 @@ export function reviewRunner(
         return { status: 'completed' };
       }
 
-      // Rejected — collect feedback for the next round
+      // Rejected — collect feedback for the next round.
       const feedback = typeof reviewData.feedback === 'string' ? reviewData.feedback : '';
       if (feedback) {
         collectedFeedback.push(feedback);
+      }
+
+      // Give callers a chance to snapshot artifacts produced this round
+      // (e.g. copy plan-final.json → plan-rev{round}.json) BEFORE the next
+      // execute round resumes and overwrites the live artifact.
+      if (onReviewReject) {
+        try {
+          await onReviewReject(round);
+        } catch {
+          /* non-fatal: snapshot failures must not abort the review loop */
+        }
       }
     }
 
