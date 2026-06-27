@@ -14,7 +14,10 @@ import { useTempDir } from '../helpers/use-temp-dir.js';
  */
 async function waitForPersisted(
   dir: string,
-  predicate: (data: Record<string, unknown>) => boolean,
+  // `any` matches the semantics of JSON.parse used throughout this test —
+  // the parsed state file is structurally dynamic.
+
+  predicate: (data: any) => boolean,
   timeoutMs = 2000,
 ): Promise<void> {
   const file = join(dir, '.engin-state.json');
@@ -30,7 +33,8 @@ async function waitForPersisted(
   }
   // Final read for a clear failure message
   const raw = await fs.readFile(file, 'utf-8');
-  const final = JSON.parse(raw);
+
+  const final: any = JSON.parse(raw);
   expect(predicate(final)).toBe(true);
 }
 
