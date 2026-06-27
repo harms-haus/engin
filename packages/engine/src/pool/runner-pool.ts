@@ -378,7 +378,7 @@ export class RunnerPool {
           }
 
           if (mergeSucceeded) {
-            this.safeComplete(task.id);
+            this.safeComplete(task.id, outcome.result);
           } else {
             const reason = mergeError ?? 'Merge failed';
             this.safeFail(task.id, { completed: false, error: reason });
@@ -387,7 +387,7 @@ export class RunnerPool {
             return;
           }
         } else {
-          this.safeComplete(task.id);
+          this.safeComplete(task.id, outcome.result);
         }
         this.options.onStatus?.onTaskComplete?.({ taskId: task.id, title: task.title });
         return;
@@ -588,10 +588,10 @@ export class RunnerPool {
 
   // ── Helpers ──────────────────────────────────────────────────────────────
 
-  /** Safely mark a task as complete. */
-  private safeComplete(taskId: string): void {
+  /** Safely mark a task as complete, optionally storing the runner's result. */
+  private safeComplete(taskId: string, result?: unknown): void {
     try {
-      this.options.taskTracker.completeTask(taskId);
+      this.options.taskTracker.completeTask(taskId, result);
     } catch (err) {
       this.reportError('pool', `safeComplete failed for ${taskId}: ${safeErrorMessage(err)}`, taskId);
     }

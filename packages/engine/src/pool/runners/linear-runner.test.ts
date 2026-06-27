@@ -101,7 +101,7 @@ describe('linearRunner', () => {
 
     const outcome: TaskOutcome = await runner(ctx);
 
-    expect(outcome).toEqual({ status: 'completed' });
+    expect(outcome.status).toBe('completed');
     expect(order).toEqual([0, 1]);
   });
 
@@ -233,7 +233,7 @@ describe('linearRunner', () => {
     const runner = linearRunner([child0Runner, child1Runner]);
     const outcome = await runner(ctx);
 
-    expect(outcome).toEqual({ status: 'completed' });
+    expect(outcome.status).toBe('completed');
     // Both children went through gate.run
     expect(gateRunCalls).toHaveLength(2);
     // Both children called runSession (cached + fresh)

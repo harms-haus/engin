@@ -20,12 +20,16 @@ import type { Runner, RunnerContext, TaskOutcome } from './types.js';
  */
 export function linearRunner(children: Runner[]): Runner {
   return async (ctx: RunnerContext): Promise<TaskOutcome> => {
+    let lastOutcome: TaskOutcome = { status: 'completed' };
     for (const child of children) {
       const outcome = await child(ctx);
       if (outcome.status === 'failed') {
         return outcome;
       }
+      lastOutcome = outcome;
     }
-    return { status: 'completed' };
+    // Forward the last child's result (if any) so composed pipelines surface
+    // their final session output on the task.
+    return lastOutcome;
   };
 }

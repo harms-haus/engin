@@ -38,8 +38,8 @@ export function singleSession(spec: Omit<SessionSpec, 'id'> & { role: string }):
       attempt,
     };
 
-    await runSessionViaGate(ctx, fullSpec);
+    const result = await runSessionViaGate(ctx, fullSpec);
 
-    return { status: 'completed' };
+    return { status: 'completed', result };
   };
 }

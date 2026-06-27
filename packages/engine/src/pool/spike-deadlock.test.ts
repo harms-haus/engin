@@ -186,7 +186,7 @@ describe('spike-deadlock', () => {
 
     expect(raceResult.type).toBe('completed');
     if (raceResult.type === 'completed') {
-      expect(raceResult.outcome).toEqual({ status: 'completed' });
+      expect(raceResult.outcome.status).toBe('completed');
     }
   }, 10_000);
 
@@ -246,7 +246,7 @@ describe('spike-deadlock', () => {
 
     expect(raceResult.type).toBe('completed');
     if (raceResult.type === 'completed') {
-      expect(raceResult.outcome).toEqual({ status: 'completed' });
+      expect(raceResult.outcome.status).toBe('completed');
     }
   }, 10_000);
 

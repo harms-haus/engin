@@ -18,7 +18,7 @@ import type { SessionGate } from '../session-gate.js';
 import type { RunSessionContext, SessionResult } from '../session.js';
 
 /** Simplified task outcome — the new runner contract. */
-export type TaskOutcome = { status: 'completed' } | { status: 'failed'; error?: string };
+export type TaskOutcome = { status: 'completed'; result?: unknown } | { status: 'failed'; error?: string };
 
 /** RunnerContext — the context passed to every Runner function.
  *

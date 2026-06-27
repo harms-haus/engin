@@ -97,7 +97,7 @@ describe('singleSession', () => {
     const ctx = makeCtx();
     const runner = singleSession(makeSpec());
     const outcome: TaskOutcome = await runner(ctx);
-    expect(outcome).toEqual({ status: 'completed' });
+    expect(outcome.status).toBe('completed');
   });
 
   it('1b. SessionError → propagates (rethrows)', async () => {

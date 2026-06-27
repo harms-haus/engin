@@ -257,7 +257,7 @@ describe('spike-replay', () => {
 
       const outcome = await runnerB(ctxB);
 
-      expect(outcome).toEqual({ status: 'completed' });
+      expect(outcome.status).toBe('completed');
 
       // child0 was cached → 0 createSession calls for it.
       // child1 ran fresh → 1 createSession call.
@@ -359,7 +359,7 @@ describe('spike-replay', () => {
 
       const outcome = await runner(ctxB);
 
-      expect(outcome).toEqual({ status: 'completed' });
+      expect(outcome.status).toBe('completed');
 
       // Coordinator was cached → 0 createSession calls for coordinator.
       // Two workers ran → 2 createSession calls.
