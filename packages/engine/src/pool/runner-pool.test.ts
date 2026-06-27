@@ -388,6 +388,70 @@ describe('RunnerPool', () => {
     expect(peak).toBeLessThanOrEqual(2);
   });
 
+  // ── 6b. per-model cap: all ready tasks claimed, per-model gate parks the rest ──
+
+  it('6b. total=20, per-model=5, 13 ready tasks → all 13 claimed (active), only 5 run concurrently, release admits a parked task', async () => {
+    // Mirrors the real implementation phase: many ready is_code tasks whose
+    // first session all hit the SAME model (write-tests = glm-5.1, capped at 5).
+    // The pool must claim ALL ready tasks (they become active, parking in the
+    // gate), and the per-model SessionGate must cap CONCURRENT execution at 5,
+    // admitting a parked task when a running one releases its slot.
+    const tracker = new TaskTracker();
+    for (let i = 1; i <= 13; i++) {
+      tracker.addTask(makeTask(`t-${String(i).padStart(2, '0')}`, { dependencies: [] }));
+    }
+
+    let inFlight = 0;
+    let peak = 0;
+    const holds = new Map<string, { promise: Promise<void>; resolve: () => void }>();
+    for (let i = 1; i <= 13; i++) {
+      holds.set(`t-${String(i).padStart(2, '0')}`, deferred());
+    }
+
+    const runner: Runner = async (ctx) => {
+      await ctx.gate.run({ provider: 'zai', model: 'glm-5.1' }, async () => {
+        inFlight++;
+        peak = Math.max(peak, inFlight);
+        const hold = holds.get(ctx.task.id);
+        if (hold) await hold.promise;
+        inFlight--;
+      });
+      return { status: 'completed' };
+    };
+
+    const pool = new RunnerPool(
+      makeOptions({
+        taskTracker: tracker,
+        maxConcurrentSessions: 20,
+        modelConcurrency: { 'zai:glm-5.1': 5 },
+        getRunnerForTask: () => runner,
+      }),
+    );
+
+    const runP = pool.run();
+    await sleep(50);
+
+    // All 13 tasks were claimed (active); only 5 run concurrently (per-model cap).
+    expect(peak).toBe(5);
+    expect(inFlight).toBe(5);
+    // The other 8 are active but parked in the gate (claimed, not settled).
+    const activeCount = tracker.getAllTasks().filter((t) => t.status === 'active').length;
+    expect(activeCount).toBe(13);
+
+    // Release ONE running task → a parked task should be admitted (wake + gate dispatch).
+    holds.get('t-01')!.resolve();
+    await sleep(50);
+    // Still 5 concurrent (one left, one admitted), 13 still active.
+    expect(inFlight).toBe(5);
+    expect(peak).toBe(5);
+
+    // Release the rest.
+    for (let i = 2; i <= 13; i++) holds.get(`t-${String(i).padStart(2, '0')}`)!.resolve();
+    const result = await runP;
+    expect(result.completedTasks).toBe(13);
+    expect(peak).toBeLessThanOrEqual(5);
+  });
+
   // ── 7. Abort mid-run ───────────────────────────────────────────────────
 
   it('7. abort mid-run: signal aborts while runner in-flight → task fails, pool resolves', async () => {
