@@ -179,6 +179,15 @@ export class RunnerPool {
 
     const inflight = new Set<Promise<void>>();
 
+    // ── Wake-on-release ─────────────────────────────────────────────────
+    // The drain loop must re-evaluate ready tasks not only when a task fully
+    // settles, but also when a SESSION slot frees (a task moved between its
+    // sequential sessions — e.g. write-tests done → review-tests — freeing a
+    // per-model slot). Without this, freed capacity sits idle until the next
+    // task settles. The gate pokes `wake.resolve()` on every slot release.
+    let wake: { promise: Promise<void>; resolve: () => void } = newDeferred();
+    this.gate.onRelease = () => wake.resolve();
+
     try {
       while (true) {
         if (this.options.signal?.aborted) break;
@@ -217,9 +226,11 @@ export class RunnerPool {
           break;
         }
 
-        // Wait for at least one coroutine to settle, then loop to start
-        // newly-ready tasks (dependents unblocked, or retried tasks reset).
-        await Promise.race(inflight);
+        // Wait for a coroutine to settle OR a session slot to free, then loop
+        // to claim newly-ready / newly-admittable tasks.
+        await Promise.race([...inflight, wake.promise]);
+        // Re-arm the wake signal so subsequent releases wake the next iteration.
+        wake = newDeferred();
       }
 
       // Drain any remaining inflight coroutines (e.g. after abort).
@@ -229,6 +240,7 @@ export class RunnerPool {
     } finally {
       taskTracker.removeListener(TaskTracker.Events.TaskSettled, onTaskSettled);
       this.options.signal?.removeEventListener('abort', abortActiveSessions);
+      this.gate.onRelease = undefined;
       this.scopedHookRegistry = undefined;
     }
 
@@ -626,4 +638,13 @@ export class RunnerPool {
       console.error(`[${agentId}] ${error}`);
     }
   }
+}
+
+/** Minimal deferred promise helper for the drain-loop wake-on-release signal. */
+function newDeferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
 }

@@ -68,6 +68,12 @@ export class SessionGate {
 
   private readonly signal?: AbortSignal;
 
+  /** Optional callback fired after a slot is released (a session ended and a
+   *  concurrency slot freed). Used by the RunnerPool to wake its drain loop
+   *  so newly-freed capacity can claim waiting ready tasks WITHOUT waiting
+   *  for an in-flight task to fully settle. */
+  onRelease?: () => void;
+
   /** True during the synchronous portion of a callback invocation — used to
    *  detect guaranteed-deadlock re-entrant run() calls. */
   private inSyncCallback = false;
@@ -248,5 +254,9 @@ export class SessionGate {
     b.available += 1;
     this.totalAvailable += 1;
     this.dispatch();
+    // Notify the pool that capacity freed so it can claim waiting ready tasks.
+    // dispatch() may have immediately re-consumed the slot (admitting a queued
+    // waiter); that's fine — the pool's re-iteration is a cheap no-op then.
+    this.onRelease?.();
   }
 }
