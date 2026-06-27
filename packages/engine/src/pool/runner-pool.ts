@@ -250,23 +250,8 @@ export class RunnerPool {
     const { taskTracker } = this.options;
     const hookRegistry = this.scopedHookRegistry;
 
-    // ── Fire onTaskStart ───────────────────────────────────────────────
     try {
-      this.options.onStatus?.onTaskStart?.({
-        taskId: task.id,
-        title: task.title,
-        agentId,
-        phaseId: this.options.phaseId,
-        startedAt: Date.now(),
-      });
-    } catch (err) {
-      // Deterministic callback crash — permanent failure (will crash again on retry).
-      this.safeFail(task.id, { completed: false, error: safeErrorMessage(err) });
-      return;
-    }
-
-    try {
-      // ── Resolve runner ──────────────────────────────────────────────
+      // ── Resolve runner FIRST so we can declare its session plan ────────
       const resolved = await this.resolveRunner(task, hookRegistry);
 
       if (resolved.kind === 'skip') {
@@ -292,6 +277,22 @@ export class RunnerPool {
           title: task.title,
           reason: error,
         });
+        return;
+      }
+
+      // ── Fire onTaskStart (with the declared session plan) ────────────
+      try {
+        this.options.onStatus?.onTaskStart?.({
+          taskId: task.id,
+          title: task.title,
+          agentId,
+          phaseId: this.options.phaseId,
+          startedAt: Date.now(),
+          ...(resolved.sessionPlan !== undefined ? { sessionPlan: resolved.sessionPlan } : {}),
+        });
+      } catch (err) {
+        // Deterministic callback crash — permanent failure (will crash again on retry).
+        this.safeFail(task.id, { completed: false, error: safeErrorMessage(err) });
         return;
       }
 
@@ -426,7 +427,10 @@ export class RunnerPool {
   private async resolveRunner(
     task: Task,
     hookRegistry: HookRegistry | undefined,
-  ): Promise<{ kind: 'runner'; runner: Runner | undefined } | { kind: 'skip'; reason: string }> {
+  ): Promise<
+    | { kind: 'runner'; runner: Runner | undefined; sessionPlan?: { role: string; profile: string }[] }
+    | { kind: 'skip'; reason: string }
+  > {
     if (hookRegistry && hookRegistry.hasSubscribers('beforeTask')) {
       let result: Record<string, unknown> | undefined;
       try {
@@ -446,7 +450,10 @@ export class RunnerPool {
         return { kind: 'skip', reason };
       }
       if (result && typeof result.runner === 'function') {
-        return { kind: 'runner', runner: result.runner as Runner };
+        const sessionPlan = Array.isArray((result as Record<string, unknown>).sessionPlan)
+          ? ((result as Record<string, unknown>).sessionPlan as { role: string; profile: string }[])
+          : undefined;
+        return { kind: 'runner', runner: result.runner as Runner, sessionPlan };
       }
     }
 

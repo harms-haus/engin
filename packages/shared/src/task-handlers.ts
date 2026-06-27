@@ -52,6 +52,11 @@ export function handleTaskStarted(state: WorkflowProjection, event: EventRecord)
       [taskId]: clone(existing, {
         status: 'active' as const,
         startedAt: typeof event.data.startedAt === 'number' ? event.data.startedAt : existing.startedAt,
+        // Store the declared session plan (ordered roles/profiles) so consumers
+        // can render all planned sessions + a ●N/M progress counter.
+        ...(Array.isArray(event.data.sessionPlan)
+          ? { sessionPlan: event.data.sessionPlan as { role: string; profile: string }[] }
+          : {}),
       }),
     },
     seq: event.seq,

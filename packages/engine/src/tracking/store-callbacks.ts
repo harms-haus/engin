@@ -97,6 +97,9 @@ export function createStoreCallbacks(store: StoreLike): StatusCallbacks {
           title: info.title,
           agentId: info.agentId,
           startedAt: info.startedAt,
+          // Declared session plan (ordered roles/profiles) so the projection / TUI
+          // can render all planned sessions + a ●N/M progress counter.
+          ...(info.sessionPlan !== undefined ? { sessionPlan: info.sessionPlan } : {}),
         },
         { agentId: info.agentId, taskId: info.taskId, phaseId: info.phaseId },
       );

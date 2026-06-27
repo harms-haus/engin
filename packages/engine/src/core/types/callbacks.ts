@@ -30,6 +30,9 @@ export interface WorkflowStatusCallbacks {
     agentId: string;
     phaseId?: string;
     startedAt?: number;
+    /** Ordered session plan the task's runner will produce, declared upfront
+     *  so consumers (TUI/web) can show all planned sessions + progress. */
+    sessionPlan?: { role: string; profile: string }[];
   }) => void;
   onTaskRegister?: (info: { taskId: string; phaseId: string; title: string; dependencies: string[] }) => void;
   onTaskComplete?: (info: { taskId: string; title: string }) => void;

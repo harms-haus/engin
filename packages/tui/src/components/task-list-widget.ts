@@ -298,11 +298,21 @@ export class TaskListWidget implements Component {
       }
       titleCells.push(maybeBold(title));
 
-      // 4. Session-count column (B9, only for active tasks with sessions)
+      // 4. Session progress column. When a task declares a sessionPlan,
+      //  show ●{started}/{plan.length} progress through the planned sessions;
+      //  otherwise fall back to the raw started-session count.
       let step = '';
       const sessionCount = this._sessionCounts.get(task.id) ?? 0;
-      if (task.status === 'active' && sessionCount > 0) {
-        step = dim(`${sessionCount} session${sessionCount !== 1 ? 's' : ''}`);
+      if (task.status === 'active') {
+        if (task.sessionPlan && task.sessionPlan.length > 0) {
+          const total = task.sessionPlan.length;
+          // started is bounded by the plan length (a looping reviewRunner may
+          // exceed it; cap the numerator so the counter never shows >total).
+          const done = Math.min(sessionCount, total);
+          step = dim(`●${done}/${total}`);
+        } else if (sessionCount > 0) {
+          step = dim(`${sessionCount} session${sessionCount !== 1 ? 's' : ''}`);
+        }
       }
       stepCells.push(maybeBold(step));
 

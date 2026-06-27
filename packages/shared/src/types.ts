@@ -31,4 +31,8 @@ export interface TaskEntity {
   dependencies: string[]; // task ids
   startedAt?: number;
   completedAt?: string;
+  /** Ordered session plan declared when the task started (roles/profiles),
+   *  so consumers can render all planned sessions + a ●N/M progress counter.
+   *  Absent for tasks that don't declare a plan. */
+  sessionPlan?: { role: string; profile: string }[];
 }

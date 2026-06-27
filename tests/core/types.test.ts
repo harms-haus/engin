@@ -66,6 +66,7 @@ interface ExpectedTaskEntity {
   dependencies: string[]; // task ids
   startedAt?: number;
   completedAt?: string;
+  sessionPlan?: { role: string; profile: string }[];
 }
 
 interface ExpectedStepDefinition<T = unknown> {
