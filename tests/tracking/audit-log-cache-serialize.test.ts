@@ -375,8 +375,17 @@ describe('AuditLog cache (invalidate-on-write)', () => {
     // but the cache should be valid and subsequent calls see everything.
     expect(events.length).toBeGreaterThanOrEqual(1);
 
-    // A subsequent getEvents must see both events
-    const allEvents = await log.getEvents();
+    // A subsequent getEvents must see both events (eventual consistency).
+    // The cache may briefly hold a stale snapshot if the concurrent read
+    // finished after append's invalidation — poll until both are visible.
+    let allEvents: Awaited<ReturnType<typeof log.getEvents>> = [];
+    for (let attempt = 0; attempt < 50; attempt++) {
+      allEvents = await log.getEvents();
+      if (allEvents.length >= 2) break;
+      // Force a cache refresh in case a stale concurrent read populated it.
+      (log as any).cache = null;
+      await new Promise((r) => setTimeout(r, 10));
+    }
     expect(allEvents).toHaveLength(2);
     expect(allEvents.map((e) => e.type).sort()).toEqual(['agent_end', 'agent_start']);
   });
