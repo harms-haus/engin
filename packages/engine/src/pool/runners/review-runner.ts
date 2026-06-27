@@ -3,17 +3,21 @@
 // Implements the execute→review loop:
 //
 //   for round = 1..maxRounds:
-//     1. Run execute session (id `${taskId}/execute`, attempt = 1).
+//     1. Run execute session (id `${taskId}/${executeSpec.role}`, attempt = 1).
 //        On round 2+ the execute session RESUMES the prior one (resume:true)
 //        so the agent sees its earlier work + the appended review feedback,
 //        instead of starting a fresh session. attempt stays 1 (a resume is a
 //        continuation, not a retry) so the projection keeps one SessionEntity.
 //     2. Feed the execute result into the review prompt
-//     3. Run review session (id `${taskId}/review`, structured output).
+//     3. Run review session (id `${taskId}/${reviewSpec.role}`, structured output).
 //        On round 2+ the review session RESUMES the prior one too.
 //     4. If review approves → return completed
 //     5. If review rejects → append feedback to execute prompt, continue
 //   maxRounds exhausted → return failed
+//
+// Session ids are derived from each spec's `role` (NOT hardcoded), so multiple
+// reviewRunners composed in a linearRunner get DISTINCT session dirs — without
+// this, a second reviewRunner would hit the first one's cached .complete.
 //
 // Transient SessionError in execute → retry-in-place (same round, re-run
 // execute). Permanent SessionError → return failed immediately.
@@ -56,7 +60,7 @@ function buildReviewPrompt(reviewPrompt: string, executeResult: SessionResult): 
 /**
  * Create a Runner that implements the execute→review loop.
  *
- * IDs: `execute` and `review` (stable across rounds; round 2+ resumes).
+ * IDs: derived from each spec's `role` — stable across rounds; round 2+ resumes.
  * approved → completed; rejected → increment round, re-run execute,
  * append feedback; maxRounds exhausted → failed.
  * Catch transient SessionError in execute, retry-in-place; permanent rethrow.
@@ -88,7 +92,7 @@ export function reviewRunner(
         executePrompt = `${executeSpec.prompt}${FEEDBACK_SUFFIX}${collectedFeedback.join('\n')}`;
       }
 
-      const executeId = `${taskId}/execute`;
+      const executeId = `${taskId}/${executeSpec.role}`;
 
       const executeSessionSpec: SessionSpec = {
         id: executeId,
@@ -137,7 +141,7 @@ export function reviewRunner(
       // Stable review id across rounds; on round 2+ RESUME the prior review
       // session so the reviewer sees its earlier verdict + the updated execute
       // output, instead of starting a fresh session each round.
-      const reviewId = `${taskId}/review`;
+      const reviewId = `${taskId}/${reviewSpec.role}`;
 
       const reviewSessionSpec: SessionSpec = {
         id: reviewId,

@@ -111,7 +111,7 @@ describe('reviewRunner', () => {
 
   it('7. review approves on round 1 → returns completed', async () => {
     const runSession = mock(async (rsctx: RunSessionContext) => {
-      if (rsctx.spec.id.includes('execute')) {
+      if (rsctx.spec.id.includes('execut')) {
         return { mode: 'text', text: 'implementation' } satisfies SessionResult;
       }
       return { mode: 'structured', data: { approved: true } } satisfies SessionResult;
@@ -131,7 +131,7 @@ describe('reviewRunner', () => {
     let reviewCallCount = 0;
 
     const runSession = mock(async (rsctx: RunSessionContext) => {
-      if (rsctx.spec.id.includes('execute')) {
+      if (rsctx.spec.id.includes('execut')) {
         return { mode: 'text', text: 'implementation' } satisfies SessionResult;
       }
       // review
@@ -160,7 +160,7 @@ describe('reviewRunner', () => {
     let reviewCallCount = 0;
 
     const runSession = mock(async (rsctx: RunSessionContext) => {
-      if (rsctx.spec.id.includes('execute')) {
+      if (rsctx.spec.id.includes('execut')) {
         executeIds.push(rsctx.spec.id);
         executeResumes.push(rsctx.spec.resume === true);
         return { mode: 'text', text: 'implementation' } satisfies SessionResult;
@@ -180,7 +180,7 @@ describe('reviewRunner', () => {
     await reviewRunner(makeExecSpec(), makeReviewSpec())(ctx);
 
     // Stable execute id (no #round suffix) so round 2 resumes session 1.
-    expect(executeIds).toEqual(['task-xyz/execute', 'task-xyz/execute']);
+    expect(executeIds).toEqual(['task-xyz/executor', 'task-xyz/executor']);
     // Round 1 creates; round 2 resumes.
     expect(executeResumes).toEqual([false, true]);
     // The review session resumes on round 2 too.
@@ -191,7 +191,7 @@ describe('reviewRunner', () => {
     let reviewCallCount = 0;
 
     const runSession = mock(async (rsctx: RunSessionContext) => {
-      if (rsctx.spec.id.includes('execute')) {
+      if (rsctx.spec.id.includes('execut')) {
         return { mode: 'text', text: 'impl' } satisfies SessionResult;
       }
       reviewCallCount++;
@@ -215,7 +215,7 @@ describe('reviewRunner', () => {
     let reviewCallCount = 0;
 
     const runSession = mock(async (rsctx: RunSessionContext) => {
-      if (rsctx.spec.id.includes('execute')) {
+      if (rsctx.spec.id.includes('execut')) {
         executePrompts.push(rsctx.spec.prompt);
         return { mode: 'text', text: 'impl' } satisfies SessionResult;
       }
@@ -243,7 +243,7 @@ describe('reviewRunner', () => {
 
   it('9. maxRounds=2, always reject → {status:"failed", error matches /rejected after .* rounds/i}', async () => {
     const runSession = mock(async (rsctx: RunSessionContext) => {
-      if (rsctx.spec.id.includes('execute')) {
+      if (rsctx.spec.id.includes('execut')) {
         return { mode: 'text', text: 'impl' } satisfies SessionResult;
       }
       return { mode: 'structured', data: { approved: false, feedback: 'nope' } } satisfies SessionResult;
@@ -264,7 +264,7 @@ describe('reviewRunner', () => {
     const executeIds: string[] = [];
 
     const runSession = mock(async (rsctx: RunSessionContext) => {
-      if (rsctx.spec.id.includes('execute')) {
+      if (rsctx.spec.id.includes('execut')) {
         executeIds.push(rsctx.spec.id);
         return { mode: 'text', text: 'impl' } satisfies SessionResult;
       }
@@ -281,8 +281,8 @@ describe('reviewRunner', () => {
     // Should have run exactly DEFAULT_MAX_ROUNDS execute calls
     expect(executeIds).toHaveLength(DEFAULT_MAX_ROUNDS);
     // Stable id across all rounds (resume on round 2+).
-    expect(executeIds[executeIds.length - 1]).toBe(`task-xyz/execute`);
-    expect(executeIds.every((id) => id === 'task-xyz/execute')).toBe(true);
+    expect(executeIds[executeIds.length - 1]).toBe(`task-xyz/executor`);
+    expect(executeIds.every((id) => id === 'task-xyz/executor')).toBe(true);
   });
 
   // ── 11. transient retry-in-place ────────────────────────────────────────
@@ -291,7 +291,7 @@ describe('reviewRunner', () => {
     let executeCallCount = 0;
 
     const runSession = mock(async (rsctx: RunSessionContext) => {
-      if (rsctx.spec.id.includes('execute')) {
+      if (rsctx.spec.id.includes('execut')) {
         executeCallCount++;
         if (executeCallCount === 1) {
           throw makeSessionError('transient crash', true);
@@ -318,7 +318,7 @@ describe('reviewRunner', () => {
     let executeCallCount = 0;
 
     const runSession = mock(async (rsctx: RunSessionContext) => {
-      if (rsctx.spec.id.includes('execute')) {
+      if (rsctx.spec.id.includes('execut')) {
         executeCallCount++;
         throw makeSessionError('permanent failure', false);
       }
@@ -347,7 +347,7 @@ describe('reviewRunner', () => {
 
     const runSession = mock(async (rsctx: RunSessionContext) => {
       runSessionCalls.push({ id: rsctx.spec.id, resume: rsctx.spec.resume === true });
-      if (rsctx.spec.id.includes('execute')) {
+      if (rsctx.spec.id.includes('execut')) {
         return { mode: 'text', text: 'impl' } satisfies SessionResult;
       }
       reviewCallCount++;
@@ -365,10 +365,10 @@ describe('reviewRunner', () => {
     expect(outcome).toEqual({ status: 'completed' });
     // Stable ids across both rounds.
     expect(runSessionCalls.map((c) => c.id)).toEqual([
-      'task-xyz/execute',
-      'task-xyz/review',
-      'task-xyz/execute',
-      'task-xyz/review',
+      'task-xyz/executor',
+      'task-xyz/reviewer',
+      'task-xyz/executor',
+      'task-xyz/reviewer',
     ]);
     // Round 1 creates both; round 2 resumes both.
     expect(runSessionCalls.map((c) => c.resume)).toEqual([false, false, true, true]);
@@ -396,7 +396,7 @@ describe('reviewRunner', () => {
     let reviewPrompt: string | undefined;
 
     const runSession = mock(async (rsctx: RunSessionContext) => {
-      if (rsctx.spec.id.includes('execute')) {
+      if (rsctx.spec.id.includes('execut')) {
         return { mode: 'text', text: 'THE EXECUTE OUTPUT' } satisfies SessionResult;
       }
       // review — capture the prompt to assert on
@@ -420,7 +420,7 @@ describe('reviewRunner', () => {
     let reviewPrompt: string | undefined;
 
     const runSession = mock(async (rsctx: RunSessionContext) => {
-      if (rsctx.spec.id.includes('execute')) {
+      if (rsctx.spec.id.includes('execut')) {
         return { mode: 'structured', data: { status: 'done', summary: 'Implemented X' } } satisfies SessionResult;
       }
       reviewPrompt = rsctx.spec.prompt;
