@@ -153,16 +153,20 @@ describe('reviewRunner', () => {
     expect(outcome).toEqual({ status: 'completed' });
   });
 
-  it('8b. execute IDs are different across rounds (`execute#1`, `execute#2`)', async () => {
+  it('8b. execute id is STABLE across rounds and round 2+ resumes the prior session', async () => {
     const executeIds: string[] = [];
+    const executeResumes: boolean[] = [];
+    const reviewResumes: boolean[] = [];
     let reviewCallCount = 0;
 
     const runSession = mock(async (rsctx: RunSessionContext) => {
       if (rsctx.spec.id.includes('execute')) {
         executeIds.push(rsctx.spec.id);
+        executeResumes.push(rsctx.spec.resume === true);
         return { mode: 'text', text: 'implementation' } satisfies SessionResult;
       }
       reviewCallCount++;
+      reviewResumes.push(rsctx.spec.resume === true);
       if (reviewCallCount === 1) {
         return {
           mode: 'structured',
@@ -175,7 +179,12 @@ describe('reviewRunner', () => {
     const ctx = makeCtx({ runSession });
     await reviewRunner(makeExecSpec(), makeReviewSpec())(ctx);
 
-    expect(executeIds).toEqual(['task-xyz/execute#1', 'task-xyz/execute#2']);
+    // Stable execute id (no #round suffix) so round 2 resumes session 1.
+    expect(executeIds).toEqual(['task-xyz/execute', 'task-xyz/execute']);
+    // Round 1 creates; round 2 resumes.
+    expect(executeResumes).toEqual([false, true]);
+    // The review session resumes on round 2 too.
+    expect(reviewResumes).toEqual([false, true]);
   });
 
   it('8c. review ran twice (once per round)', async () => {
@@ -271,7 +280,9 @@ describe('reviewRunner', () => {
     expect(outcome.status).toBe('failed');
     // Should have run exactly DEFAULT_MAX_ROUNDS execute calls
     expect(executeIds).toHaveLength(DEFAULT_MAX_ROUNDS);
-    expect(executeIds[executeIds.length - 1]).toBe(`task-xyz/execute#${DEFAULT_MAX_ROUNDS}`);
+    // Stable id across all rounds (resume on round 2+).
+    expect(executeIds[executeIds.length - 1]).toBe(`task-xyz/execute`);
+    expect(executeIds.every((id) => id === 'task-xyz/execute')).toBe(true);
   });
 
   // ── 11. transient retry-in-place ────────────────────────────────────────
@@ -327,27 +338,22 @@ describe('reviewRunner', () => {
 
   // ── 13. REPLAY: round-1 cached, round-2 fresh ──────────────────────────
 
-  it('13. round-1 execute+review cached, round-2 runs fresh', async () => {
-    const cachedIds = new Set(['task-xyz/execute#1', 'task-xyz/review#1']);
-    const runSessionCalls: string[] = [];
+  it('13. stable execute/review ids: round 2 resumes round-1 sessions', async () => {
+    // With the resume design, the execute + review ids are STABLE across
+    // rounds (no #round suffix). Round 1 creates both sessions; round 2
+    // re-prompts them with resume:true (the agent/ reviewer see prior work).
+    const runSessionCalls: { id: string; resume: boolean }[] = [];
+    let reviewCallCount = 0;
 
     const runSession = mock(async (rsctx: RunSessionContext) => {
-      runSessionCalls.push(rsctx.spec.id);
-      if (cachedIds.has(rsctx.spec.id)) {
-        // Cached: return the round-1 result (review rejected)
-        if (rsctx.spec.id.includes('review')) {
-          return {
-            mode: 'structured',
-            data: { approved: false, feedback: 'revise' },
-          } satisfies SessionResult;
-        }
-        return { mode: 'text', text: 'cached impl' } satisfies SessionResult;
-      }
-      // Fresh: round-2 execute → success
+      runSessionCalls.push({ id: rsctx.spec.id, resume: rsctx.spec.resume === true });
       if (rsctx.spec.id.includes('execute')) {
-        return { mode: 'text', text: 'fresh impl' } satisfies SessionResult;
+        return { mode: 'text', text: 'impl' } satisfies SessionResult;
       }
-      // Fresh: round-2 review → approve
+      reviewCallCount++;
+      if (reviewCallCount === 1) {
+        return { mode: 'structured', data: { approved: false, feedback: 'revise' } } satisfies SessionResult;
+      }
       return { mode: 'structured', data: { approved: true } } satisfies SessionResult;
     });
 
@@ -357,12 +363,15 @@ describe('reviewRunner', () => {
     const outcome = await runner(ctx);
 
     expect(outcome).toEqual({ status: 'completed' });
-    // Both round-1 sessions were called (cached path)
-    expect(runSessionCalls).toContain('task-xyz/execute#1');
-    expect(runSessionCalls).toContain('task-xyz/review#1');
-    // Round-2 sessions were also called (fresh path)
-    expect(runSessionCalls).toContain('task-xyz/execute#2');
-    expect(runSessionCalls).toContain('task-xyz/review#2');
+    // Stable ids across both rounds.
+    expect(runSessionCalls.map((c) => c.id)).toEqual([
+      'task-xyz/execute',
+      'task-xyz/review',
+      'task-xyz/execute',
+      'task-xyz/review',
+    ]);
+    // Round 1 creates both; round 2 resumes both.
+    expect(runSessionCalls.map((c) => c.resume)).toEqual([false, false, true, true]);
   });
 
   // ── REGRESSION: review prompt must contain execute result ──────────────────

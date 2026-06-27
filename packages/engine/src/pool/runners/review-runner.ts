@@ -3,9 +3,13 @@
 // Implements the execute→review loop:
 //
 //   for round = 1..maxRounds:
-//     1. Run execute session (id `${taskId}/execute#${round}`, attempt = round)
+//     1. Run execute session (id `${taskId}/execute`, attempt = round).
+//        On round 2+ the execute session RESUMES the prior one (resume:true)
+//        so the agent sees its earlier work + the appended review feedback,
+//        instead of starting a fresh session.
 //     2. Feed the execute result into the review prompt
-//     3. Run review session (id `${taskId}/review#${round}`, structured output)
+//     3. Run review session (id `${taskId}/review`, structured output).
+//        On round 2+ the review session RESUMES the prior one too.
 //     4. If review approves → return completed
 //     5. If review rejects → append feedback to execute prompt, continue
 //   maxRounds exhausted → return failed
@@ -51,7 +55,7 @@ function buildReviewPrompt(reviewPrompt: string, executeResult: SessionResult): 
 /**
  * Create a Runner that implements the execute→review loop.
  *
- * IDs: `execute#${round}`, `review#${round}`.
+ * IDs: `execute` and `review` (stable across rounds; round 2+ resumes).
  * approved → completed; rejected → increment round, re-run execute,
  * append feedback; maxRounds exhausted → failed.
  * Catch transient SessionError in execute, retry-in-place; permanent rethrow.
@@ -74,7 +78,7 @@ export function reviewRunner(
         executePrompt = `${executeSpec.prompt}${FEEDBACK_SUFFIX}${collectedFeedback.join('\n')}`;
       }
 
-      const executeId = `${taskId}/execute#${round}`;
+      const executeId = `${taskId}/execute`;
 
       const executeSessionSpec: SessionSpec = {
         id: executeId,
@@ -85,6 +89,10 @@ export function reviewRunner(
         ...(executeSpec.isReadOnly !== undefined ? { isReadOnly: executeSpec.isReadOnly } : {}),
         runnerRole: executeSpec.role,
         attempt: round,
+        // On round 2+ (a prior review rejected), RESUME the prior execute
+        // session so the agent sees its earlier work + the appended feedback,
+        // instead of starting a fresh session. Round 1 creates the session.
+        ...(round > 1 ? { resume: true } : {}),
       };
 
       let executeResult: SessionResult | undefined;
@@ -112,7 +120,10 @@ export function reviewRunner(
       const reviewPrompt = buildReviewPrompt(reviewSpec.prompt, executeResult);
 
       // ── 3. Run review session ─────────────────────────────────────────────
-      const reviewId = `${taskId}/review#${round}`;
+      // Stable review id across rounds; on round 2+ RESUME the prior review
+      // session so the reviewer sees its earlier verdict + the updated execute
+      // output, instead of starting a fresh session each round.
+      const reviewId = `${taskId}/review`;
 
       const reviewSessionSpec: SessionSpec = {
         id: reviewId,
@@ -123,6 +134,7 @@ export function reviewRunner(
         ...(reviewSpec.isReadOnly !== undefined ? { isReadOnly: reviewSpec.isReadOnly } : {}),
         runnerRole: reviewSpec.role,
         attempt: round,
+        ...(round > 1 ? { resume: true } : {}),
       };
 
       let reviewResult;

@@ -33,9 +33,11 @@ import {
   fsyncSync,
   mkdirSync,
   openSync,
+  readdirSync,
   readFileSync,
   renameSync,
   rmSync,
+  statSync,
   writeSync,
 } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -74,6 +76,13 @@ export interface SessionSpec {
   runnerRole: string;
   /** 1-based attempt number (for multi-retry workflows). Propagated to callbacks. */
   attempt: number;
+  /** When true, RESUME an existing session at this id (continue its conversation
+   *  with `prompt`) instead of creating a fresh one. Used by review loops so a
+   *  rejected execute step is re-prompted in the SAME session (the agent sees
+   *  its prior work + the new feedback) rather than starting over. The session
+   *  must already have run at least once at this id. Bypasses the idempotency
+   *  cache check and does NOT wipe the session directory. */
+  resume?: boolean;
 }
 
 /** Discriminated union of session results keyed on `mode`. */
@@ -364,8 +373,32 @@ async function executeAttempt(
   watchdogTimeoutMs: number | undefined,
 ): Promise<SessionResult> {
   // Clear any partial state from a previous (failed or incomplete) attempt.
-  rmSync(sessionDir, { recursive: true, force: true });
-  mkdirSync(sessionDir, { recursive: true });
+  // For resume requests: PRESERVE the session directory (the conversation file
+  // lives there) and instead locate the existing .jsonl to resume from, then
+  // drop the stale `.complete` sentinel so the new result overwrites cleanly.
+  let resumeSessionPath: string | undefined;
+  if (ctx.spec.resume === true) {
+    mkdirSync(sessionDir, { recursive: true });
+    // Locate the prior conversation file (*.jsonl) written by SessionManager.
+    const files = readdirSync(sessionDir)
+      .filter((f) => f.endsWith('.jsonl'))
+      .map((f) => join(sessionDir, f))
+      .filter((f) => existsSync(f));
+    if (files.length > 0) {
+      // Most recent by mtime (a dir should hold one session file, but be safe).
+      const sorted = files.map((f) => ({ f, m: statSync(f).mtimeMs })).sort((a, b) => b.m - a.m);
+      if (sorted[0] !== undefined) resumeSessionPath = sorted[0].f;
+    }
+    // Drop the stale completion marker so this re-run persists a fresh result.
+    try {
+      rmSync(join(sessionDir, '.complete'), { force: true });
+    } catch {
+      /* best-effort */
+    }
+  } else {
+    rmSync(sessionDir, { recursive: true, force: true });
+    mkdirSync(sessionDir, { recursive: true });
+  }
 
   // ── Resolve profile + create session directly via the plugin registry ──
   const adjustedProfile = resolveProfile(ctx.spec, ctx.profiles);
@@ -375,7 +408,7 @@ async function executeAttempt(
     cwd: ctx.worktreeCwd ?? ctx.cwd,
     apiKeys: ctx.apiKeys,
     agentId: ctx.agentId,
-    sessionDir,
+    ...(resumeSessionPath !== undefined ? { resumeSessionPath: resumeSessionPath } : { sessionDir }),
     // Always provide an onAgentStatus sink so the runtime has a callback
     // target for activity events. When ctx.onStatus is set, events are
     // forwarded to it; otherwise a no-op object is passed.
@@ -566,9 +599,13 @@ export async function runSession(ctx: RunSessionContext): Promise<SessionResult>
   // If `.complete` + valid result.json exist → return cached result (no spawn).
   // If `.complete` exists but result.json is corrupt → throw permanent error.
   // If no `.complete` → proceed to create a session.
-  const cached = tryReadCachedResult(sessionDir);
-  if (cached !== null) {
-    return cached;
+  // (A `resume` request always proceeds past this cache — it must re-prompt
+  // the existing session even though a prior result is cached.)
+  if (ctx.spec.resume !== true) {
+    const cached = tryReadCachedResult(sessionDir);
+    if (cached !== null) {
+      return cached;
+    }
   }
 
   // ── 4. Determine watchdog settings ─────────────────────────────────────
