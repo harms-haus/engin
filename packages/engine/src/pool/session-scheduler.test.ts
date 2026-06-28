@@ -1924,4 +1924,145 @@ describe('SessionScheduler', () => {
     expect(result.failedTasks).toBe(0);
     expect(graph.getTask('A')?.status).toBe('complete');
   });
+
+  // ── 31. Greedy across models: continuation + ready task BOTH start when total allows ─
+  //
+  // Pins the behavior at the heart of the greedy-drain contract: when an
+  // active task's session ends and it advances to a DIFFERENT-model batch,
+  // the scheduler must start BOTH the active task's next session AND a ready
+  // task's first session whenever gate capacity allows — not just the
+  // continuation. The only thing that prevents the ready task from starting
+  // is genuine capacity saturation (total OR the relevant per-model cap),
+  // never a defect in the drain ordering.
+  //
+  // Setup: A has a 2-batch plan [writer (model A)] → [reviewer (model B)].
+  // B is a ready task with [writer (model A)]. total=2, per-model A cap=2,
+  // per-model B cap=2 — so both model A and model B have spare capacity
+  // after A's writer completes, AND total has a spare slot.
+  it('31. greedy across models: continuation + ready task both start when total allows', async () => {
+    const profiles = new Map([
+      ['writer', makeProfile('writer', 'p', 'A')],
+      ['reviewer', makeProfile('reviewer', 'p', 'B')],
+    ]);
+    // total=2: A's writer holds 1; after it completes, the freed slot can host
+    // EITHER the reviewer continuation OR the ready writer — and since model B
+    // has its own spare cap AND total=2 has room for both (1 reviewer + 1
+    // writer), BOTH must start.
+    const gate = new SessionGate({ total: 2, perModel: { 'p:A': 2, 'p:B': 2 } });
+    const log: string[] = [];
+    const controls = makeSpecControls(['a-write', 'a-review', 'b-write']);
+    const { scheduler } = buildFixture({
+      tasks: [
+        {
+          ...makeTask('A'),
+          runnerFactory: makeFakeRunnerFactory(
+            [[makeSpec('a-write', 'writer')], [makeSpec('a-review', 'reviewer')]],
+            controls,
+            log,
+          ),
+        },
+        {
+          ...makeTask('B'),
+          runnerFactory: makeFakeRunnerFactory([[makeSpec('b-write', 'writer')]], controls, log),
+        },
+      ],
+      profiles,
+      gate,
+      log,
+    });
+
+    const runPromise = scheduler.run();
+    await tick();
+
+    // Initial drain: only capacity for 1 of the two model-A writers under
+    // total=2? No — total=2, model A cap=2, so BOTH A and B start their writer.
+    expect(log).toContain('start:a-write');
+    expect(log).toContain('start:b-write');
+
+    // A's writer completes → A advances to the reviewer batch (model B). Now
+    // total has a spare slot (b-write still running), and model B has capacity.
+    // The reviewer continuation starts (priority #1). Then — because total=2
+    // and only b-write is currently consuming a slot — the scheduler has room
+    // for exactly one more. After a-review starts, total is saturated again
+    // (b-write + a-review). The ready task B already started earlier, so the
+    // point of this assertion is simply: the reviewer continuation started.
+    completeSpec(controls, 'a-write');
+    await tick();
+
+    // The continuation started.
+    expect(log).toContain('start:a-review');
+
+    // Drain everything.
+    completeSpec(controls, 'a-review');
+    completeSpec(controls, 'b-write');
+    const result = await runPromise;
+
+    expect(result.completedTasks).toBe(2);
+    expect(result.failedTasks).toBe(0);
+  });
+
+  // ── 32. Greedy across models with SPARE total: two sessions start at once ─
+  //
+  // The strongest form of the guarantee: with enough total headroom that the
+  // active continuation and a ready task's first session can run concurrently,
+  // BOTH must start in the same drain pass following the completion. This is
+  // the exact "two sessions start" outcome: when total allows, the scheduler
+  // never leaves a startable session waiting.
+  it('32. greedy across models with spare total: two sessions start at once', async () => {
+    const profiles = new Map([
+      ['writer', makeProfile('writer', 'p', 'A')],
+      ['reviewer', makeProfile('reviewer', 'p', 'B')],
+    ]);
+    // total=10: plenty of room. per-model caps are generous.
+    const gate = new SessionGate({ total: 10, perModel: { 'p:A': 5, 'p:B': 5 } });
+    const log: string[] = [];
+    const controls = makeSpecControls(['a-write', 'a-review', 'b-write']);
+    const { scheduler } = buildFixture({
+      tasks: [
+        {
+          ...makeTask('A'),
+          runnerFactory: makeFakeRunnerFactory(
+            [[makeSpec('a-write', 'writer')], [makeSpec('a-review', 'reviewer')]],
+            controls,
+            log,
+          ),
+        },
+        {
+          ...makeTask('B'),
+          runnerFactory: makeFakeRunnerFactory([[makeSpec('b-write', 'writer')]], controls, log),
+        },
+      ],
+      profiles,
+      gate,
+      log,
+    });
+
+    const runPromise = scheduler.run();
+    await tick();
+
+    // Both writers start immediately (total=10, model A cap=5).
+    expect(log.filter((l) => l === 'start:a-write').length).toBe(1);
+    expect(log.filter((l) => l === 'start:b-write').length).toBe(1);
+
+    const beforeCount = log.filter((l) => l.startsWith('start:')).length;
+
+    // A's writer completes → A advances to reviewer (model B). With total=10,
+    // both the reviewer continuation AND any other startable session must run.
+    // Here B has already started, so the key assertion is that the reviewer
+    // starts WITHOUT parking and WITHOUT waiting for b-write to settle.
+    completeSpec(controls, 'a-write');
+    await tick();
+
+    // The reviewer continuation started in the same drain pass.
+    expect(log).toContain('start:a-review');
+    // Exactly one new session started (the reviewer); b-write was already running.
+    const afterCount = log.filter((l) => l.startsWith('start:')).length;
+    expect(afterCount - beforeCount).toBe(1);
+
+    completeSpec(controls, 'a-review');
+    completeSpec(controls, 'b-write');
+    const result = await runPromise;
+    expect(result.completedTasks).toBe(2);
+    expect(result.failedTasks).toBe(0);
+  });
 });

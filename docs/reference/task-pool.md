@@ -411,6 +411,17 @@ gate capacity is exhausted:
 Within a tier, `tryStartBatchSpecs(entry)` iterates the held batch in order and starts every
 spec the gate can admit. Already-started specs are skipped.
 
+> **How many sessions start when one ends?** As many as capacity allows. When a session
+> settles, its gate slot is released and a drain pass runs. That pass starts the active
+> continuation (T1), then resumes parked tasks (T2), then initializes + starts ready tasks
+> (T3) — **greedily, until either capacity is exhausted or no more specs can start.** So if a
+> writer session on model A completes and the active task advances to a reviewer session on
+> model B, and a ready writer task is waiting, **both** start — _provided the gate's `total`
+> cap and the relevant per-model caps have room_. If only one starts, it is because the freed
+> `total` slot was consumed by the (higher-priority) continuation, leaving no room for the
+> ready task. Raising the gate's `total` cap (set by the workflow that constructs the
+> scheduler) is what lets more sessions run concurrently.
+
 - **T1 / T2** work on existing held batches. A spec that can't start (profile missing / gate
   saturated) is skipped — the loop tries subsequent specs (mixed-profile batches may use a
   different model that still has capacity).
