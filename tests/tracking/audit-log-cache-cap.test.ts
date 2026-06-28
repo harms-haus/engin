@@ -61,8 +61,8 @@ describe('AuditLog cache event cap (MAX_CACHED_EVENTS = 5000)', () => {
 
     // The most recent 5000 events should be indices 1000..5999
     expect(events).toHaveLength(5000);
-    expect(events[0].agentId).toBe('a1000');
-    expect(events[events.length - 1].agentId).toBe('a5999');
+    expect((events[0] as { agentId?: string }).agentId).toBe('a1000');
+    expect((events[events.length - 1] as { agentId?: string }).agentId).toBe('a5999');
 
     // Verify no old events leaked into cache
     const oldEvents = events.filter((e) => {
@@ -178,10 +178,10 @@ describe('AuditLog cache event cap (MAX_CACHED_EVENTS = 5000)', () => {
     // task-2: indices 3000..5999 (3000 events)
     const task1 = await log.getEvents({ taskId: 'task-1' });
     expect(task1).toHaveLength(2000);
-    expect(task1.every((e) => (e as any).taskId === 'task-1')).toBe(true);
+    expect(task1.every((e) => (e as { taskId?: string }).taskId === 'task-1')).toBe(true);
     // All task-1 events should be from the capped window (agentId >= a1000)
-    expect(task1[0].agentId).toBe('a1000');
-    expect(task1[task1.length - 1].agentId).toBe('a2999');
+    expect((task1[0] as { agentId?: string }).agentId).toBe('a1000');
+    expect((task1[task1.length - 1] as { agentId?: string }).agentId).toBe('a2999');
 
     const task2 = await log.getEvents({ taskId: 'task-2' });
     expect(task2).toHaveLength(3000);
@@ -259,7 +259,7 @@ describe('AuditLog cache event cap (MAX_CACHED_EVENTS = 5000)', () => {
     expect(events).toHaveLength(5000);
 
     // The most recent event should be the one we just appended
-    expect(events[events.length - 1].agentId).toBe('new');
+    expect((events[events.length - 1] as { agentId?: string }).agentId).toBe('new');
   });
 
   // ── Clear resets cache ─────────────────────────────────────────────
@@ -294,8 +294,8 @@ describe('AuditLog cache event cap (MAX_CACHED_EVENTS = 5000)', () => {
     expect(result3).toHaveLength(5000);
 
     // All should have same content (most recent 5000)
-    expect(result1[0].agentId).toBe(result2[0].agentId);
-    expect(result1[0].agentId).toBe(result3[0].agentId);
+    expect((result1[0] as { agentId?: string }).agentId).toBe((result2[0] as { agentId?: string }).agentId);
+    expect((result1[0] as { agentId?: string }).agentId).toBe((result3[0] as { agentId?: string }).agentId);
   });
 
   // ── getEventsByTask with cap ────────────────────────────────────────

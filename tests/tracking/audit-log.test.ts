@@ -84,7 +84,7 @@ describe('AuditLog', () => {
 
     const task1 = await log.getEvents({ taskId: 'task-1' });
     expect(task1).toHaveLength(2);
-    expect(task1.every((e) => e.taskId === 'task-1')).toBe(true);
+    expect(task1.every((e) => 'taskId' in e && e.taskId === 'task-1')).toBe(true);
   });
 
   it("getEvents returns [] when file doesn't exist", async () => {

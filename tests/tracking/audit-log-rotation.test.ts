@@ -216,8 +216,8 @@ describe('AuditLog file rotation', () => {
     await log.append({ type: 'agent_start', agentId: 'CURRENT', profile: {} as never });
 
     const events = await log.getEvents();
-    expect(events.some((e) => e.agentId === 'ARCHIVED')).toBe(false);
-    expect(events.some((e) => e.agentId === 'CURRENT')).toBe(true);
+    expect(events.some((e) => 'agentId' in e && e.agentId === 'ARCHIVED')).toBe(false);
+    expect(events.some((e) => 'agentId' in e && e.agentId === 'CURRENT')).toBe(true);
   });
 
   it('getStats only reflects the current file (ignores archived cost/tokens)', async () => {
@@ -269,7 +269,7 @@ describe('AuditLog file rotation', () => {
 
     // The rebuilt cache must NOT serve the archived event.
     const events = await log.getEvents();
-    expect(events.some((e) => e.agentId === 'STALE')).toBe(false);
+    expect(events.some((e) => 'agentId' in e && e.agentId === 'STALE')).toBe(false);
   });
 
   // ── maxArchivedFiles cleanup ─────────────────────────────────────────

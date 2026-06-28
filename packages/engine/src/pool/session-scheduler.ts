@@ -40,7 +40,7 @@ import type { AuditLog } from '../tracking/audit-log.js';
 import type { SessionPlanContext, SessionPlanRunner } from './runners/session-plan-types.js';
 import type { SessionGate } from './session-gate.js';
 import type { SessionResult, SessionSpec } from './session.js';
-import { isSessionCached } from './session.js';
+import { isSessionCached, SessionError } from './session.js';
 import type { TaskGraph, TaskGraphEntry } from './task-graph.js';
 
 // ─── Internal constants ───────────────────────────────────────────────────
@@ -89,6 +89,18 @@ export interface SessionSchedulerOptions {
 
 type ResolveResult = { kind: 'runner'; runner: SessionPlanRunner } | { kind: 'skip'; reason: string };
 
+/** Structured outcome of a single candidate within a drain pass, captured by
+ *  tryStartBatchSpecs for the scheduler_drain audit event. */
+interface CandidateTrace {
+  taskId: string;
+  status: string;
+  dependents: number;
+  started: { specId: string; profile: string }[];
+  parkedSpecs: { specId: string; profile: string; reason: string }[];
+  skipped: boolean;
+  skipReason?: string;
+}
+
 // ─── SessionScheduler ──────────────────────────────────────────────────────
 
 export class SessionScheduler {
@@ -105,6 +117,14 @@ export class SessionScheduler {
 
   /** Per-task: accumulated error messages from failed sessions. */
   private readonly taskErrors = new Map<string, string[]>();
+
+  /** Per-task: PERMANENT (non-transient) error messages from failed sessions.
+   *  Transient/retryable errors (e.g. watchdog timeouts that the runner's
+   *  review/retry loop overcame) are NOT recorded here — only {@link taskErrors}
+   *  keeps them for diagnostics. {@link finalizeTask} consults THIS map (not
+   *  taskErrors) so a task that ultimately succeeded isn't vetoed by stale
+   *  transient errors it already recovered from. */
+  private readonly taskPermanentErrors = new Map<string, string[]>();
 
   /** Per-task: worktree was created (for merge/cull lifecycle). */
   private readonly worktreeCreated = new Set<string>();
@@ -134,6 +154,11 @@ export class SessionScheduler {
 
   /** Scoped clone of options.hookRegistry (created at start of run()). */
   private scopedHookRegistry?: HookRegistry;
+
+  /** Why the next drain pass was triggered, for audit logging. Set at each
+   *  trigger origin (gate release, session completion, abort) and reset after
+   *  the drain pass consumes it. Coalescing keeps the most informative value. */
+  private pendingDrainTrigger: 'init' | 'release' | 'completion' | 'abort' = 'init';
 
   // ── Convenience accessors ─────────────────────────────────────────────
 
@@ -200,7 +225,10 @@ export class SessionScheduler {
     this.graph.failDeadlockedTasks();
 
     // Wire gate.onRelease → coalesced drain trigger.
-    this.gate.onRelease = () => this.scheduleDrain();
+    this.gate.onRelease = () => {
+      this.pendingDrainTrigger = 'release';
+      this.scheduleDrain();
+    };
 
     // Abort listener: abort active sessions + cancel remaining tasks.
     const abortActiveSessions = () => {
@@ -219,6 +247,7 @@ export class SessionScheduler {
         }
       }
       // Wake the main loop so it exits.
+      this.pendingDrainTrigger = 'abort';
       this.scheduleDrain();
     };
     this.options.signal?.addEventListener('abort', abortActiveSessions, { once: true });
@@ -282,6 +311,15 @@ export class SessionScheduler {
       else if (entry.status === 'failed' || entry.status === 'cancelled') failedTasks++;
     }
     return { completedTasks, failedTasks };
+  }
+
+  /** Best-effort audit append: never throws, never produces an unhandled
+   *  rejection. Scheduler traces are diagnostic — a logging failure must not
+   *  affect scheduling. */
+  private trace(event: Parameters<NonNullable<SessionSchedulerOptions['auditLog']>['append']>[0]): void {
+    this.options.auditLog?.append(event).catch(() => {
+      /* best-effort — swallow audit write failures */
+    });
   }
 
   // ─── Coalesced drain scheduling ──────────────────────────────────────────
@@ -377,28 +415,55 @@ export class SessionScheduler {
    * active when its first spec actually acquires a slot (lazy activation).
    */
   private async drainPass(): Promise<void> {
+    const trigger = this.pendingDrainTrigger;
+    this.pendingDrainTrigger = 'completion'; // default if re-armed mid-pass
+    const candidates: CandidateTrace[] = [];
+
     // T1: Active tasks — continue their held batch specs.
     for (const entry of this.graph.getActiveTasks()) {
-      this.tryStartBatchSpecs(entry);
+      const trace = this.tryStartBatchSpecs(entry);
+      if (trace) candidates.push(trace);
     }
 
     // T2: Parked tasks — resume specs that now fit.
     for (const entry of this.graph.getParkedTasks()) {
-      this.tryStartBatchSpecs(entry);
+      const trace = this.tryStartBatchSpecs(entry);
+      if (trace) candidates.push(trace);
     }
 
     // T3: Ready tasks — initialize + start first specs (lazy activation).
     for (const entry of this.graph.getReadyTasks()) {
       if (!entry.heldBatch) {
         const ok = await this.initializeReadyTask(entry);
-        if (!ok) continue; // task was skipped or finalized
+        if (!ok) {
+          candidates.push({
+            taskId: entry.task.id,
+            status: entry.status,
+            dependents: this.graph.transitiveDependentCount(entry.task.id),
+            started: [],
+            parkedSpecs: [],
+            skipped: true,
+            skipReason: 'initialize failed / finalized',
+          });
+          continue;
+        }
       }
       // After init the task may no longer be ready (it became active, parked,
       // or terminal). Only start specs if still non-terminal with a held batch.
       if (!isTerminalTaskStatus(entry.status) && entry.heldBatch) {
-        this.tryStartBatchSpecs(entry);
+        const trace = this.tryStartBatchSpecs(entry);
+        if (trace) candidates.push(trace);
       }
     }
+
+    // ── Audit: record why each candidate was started / parked / skipped. ──
+    this.trace({
+      type: 'scheduler_drain',
+      phaseId: this.options.phaseId,
+      trigger,
+      gate: this.gate.snapshot(),
+      candidates,
+    });
   }
 
   // ─── Tier helper: start pending specs from a held batch ───────────────────
@@ -422,14 +487,30 @@ export class SessionScheduler {
    * their heldBatch is the old settled batch and must not be re-processed.
    * A task whose heldBatch is already fully settled is also never parked.
    */
-  private tryStartBatchSpecs(entry: TaskGraphEntry): void {
+  private tryStartBatchSpecs(entry: TaskGraphEntry): CandidateTrace | undefined {
+    const trace: CandidateTrace = {
+      taskId: entry.task.id,
+      status: entry.status,
+      dependents: this.graph.transitiveDependentCount(entry.task.id),
+      started: [],
+      parkedSpecs: [],
+      skipped: true,
+    };
+
     // H1: skip tasks mid-advance — their heldBatch is the old settled batch.
-    if (this.advancing.has(entry.task.id)) return;
+    if (this.advancing.has(entry.task.id)) {
+      trace.skipReason = 'advancing (batch mid-advance)';
+      return trace;
+    }
 
     const batch = entry.heldBatch;
-    if (!batch || batch.length === 0) return;
+    if (!batch || batch.length === 0) {
+      trace.skipReason = 'no held batch';
+      return trace;
+    }
 
     let startedAny = false;
+    trace.skipped = false;
 
     for (let i = 0; i < batch.length; i++) {
       // Skip already-started specs. Only count toward startedAny if the spec
@@ -446,9 +527,20 @@ export class SessionScheduler {
       const spec = batch[i]!;
       const profile = this.options.profiles.get(spec.profile);
 
-      if (!profile || !this.gate.canStart(profile)) {
-        // Can't start this spec — try subsequent specs (mixed-profile batches
-        // may have a different model that still has capacity).
+      if (!profile) {
+        trace.parkedSpecs.push({
+          specId: spec.id,
+          profile: spec.profile,
+          reason: `profile '${spec.profile}' not found`,
+        });
+        continue;
+      }
+      if (!this.gate.canStart(profile)) {
+        trace.parkedSpecs.push({
+          specId: spec.id,
+          profile: spec.profile,
+          reason: this.describeCapacityFailure(profile),
+        });
         continue;
       }
 
@@ -461,6 +553,7 @@ export class SessionScheduler {
 
       this.startSession(entry, i, profile);
       startedAny = true;
+      trace.started.push({ specId: spec.id, profile: spec.profile });
     }
 
     // If the task is active and NONE of its un-started specs could start
@@ -470,6 +563,24 @@ export class SessionScheduler {
     if (!startedAny && entry.status === 'active' && !this.isBatchComplete(entry)) {
       this.graph.setTaskStatus(entry.task.id, 'parked');
     }
+    return trace;
+  }
+
+  /** Explain WHY `gate.canStart(profile)` returned false, for the audit trace.
+   *  Distinguishes total-capacity saturation from per-model saturation and
+   *  names the offending model key + cap. */
+  private describeCapacityFailure(profile: AgentProfile): string {
+    const snap = this.gate.snapshot();
+    if (snap.totalAvailable <= 0) {
+      return `total saturated (0 of ${snap.totalCap} slots free)`;
+    }
+    // Total has room → must be the per-model bucket.
+    const key = `${profile.provider}:${profile.model}`;
+    const bucket = snap.models.find((m) => m.key === key || m.key === `${key}:${profile.agent}`);
+    if (bucket) {
+      return `model '${bucket.key}' saturated (0 of ${bucket.cap ?? '∞'} free; total has ${snap.totalAvailable})`;
+    }
+    return `model '${key}' has no capacity`;
   }
 
   // ─── T3 initialization: resolve runner, create worktree, get first batch ─
@@ -598,6 +709,7 @@ export class SessionScheduler {
 
     const sessionPromise = (async (): Promise<void> => {
       let result: SessionResult;
+      let executeError: string | undefined;
       try {
         // The in-session inactivity watchdog (runSession, fed by stepTimeoutMs)
         // is the SINGLE authority for model-freeze detection: it RESETS on every
@@ -608,10 +720,22 @@ export class SessionScheduler {
         // thrown WatchdogTimeoutError from runner.execute() — handled below.
         result = await runner.execute(executeCtx, spec);
       } catch (err) {
-        const errorMsg = safeErrorMessage(err);
+        executeError = safeErrorMessage(err);
         const errs = this.taskErrors.get(taskId) ?? [];
-        errs.push(errorMsg);
+        errs.push(executeError);
         this.taskErrors.set(taskId, errs);
+        // A transient/retryable error (e.g. a watchdog timeout that the runner's
+        // review/retry loop will overcome) is NOT a permanent failure — record
+        // it for diagnostics only, so a task that ultimately succeeds isn't
+        // vetoed by a stale transient error it recovered from. Permanent errors
+        // (and unclassified ones, treated conservatively as permanent) ARE
+        // recorded for finalizeTask to act on.
+        const isTransient = err instanceof SessionError && err.transient === true;
+        if (!isTransient) {
+          const perm = this.taskPermanentErrors.get(taskId) ?? [];
+          perm.push(executeError);
+          this.taskPermanentErrors.set(taskId, perm);
+        }
         result = { mode: 'text', text: '' };
       }
 
@@ -624,10 +748,13 @@ export class SessionScheduler {
       entry.batchResults[specIndex] = result;
       entry.completedSessions++;
 
+      const batchComplete = this.isBatchComplete(entry);
+      let advanced = false;
       try {
         // If the entire batch has settled, advance the generator.
-        if (this.isBatchComplete(entry)) {
+        if (batchComplete) {
           await this.advanceBatch(entry);
+          advanced = true;
         }
       } catch (err) {
         // advanceBatch (gen.next) threw — convert to task failure.
@@ -652,7 +779,21 @@ export class SessionScheduler {
         if (acquired) this.gate.release(profile);
       }
 
+      // ── Audit: record this session's settle outcome + batch effect. ──────
+      this.trace({
+        type: 'scheduler_session_settle',
+        phaseId: this.options.phaseId,
+        taskId,
+        specId: spec.id,
+        profile: spec.profile,
+        success: executeError === undefined,
+        ...(executeError !== undefined ? { error: executeError } : {}),
+        batchComplete,
+        advanced,
+      });
+
       // Schedule a drain — capacity freed and/or batch advanced.
+      this.pendingDrainTrigger = 'completion';
       this.scheduleDrain();
     })();
 
@@ -774,9 +915,29 @@ export class SessionScheduler {
   }
 
   /**
-   * Finalize a task: handle worktree merge/cull, then set terminal status
-   * ('complete' or 'failed') based on accumulated session errors. Triggers
-   * recalculateReady so blocked dependents can promote.
+   * Finalize a task on NORMAL plan completion: handle the worktree merge, then
+   * mark the task 'complete'. Reached only when the runner's plan generator
+   * returns normally (advanceBatch's `next.done` / initializeReadyTask's
+   * `batchResult.done`). A runner that exhausts its retries THROWS, routing
+   * through {@link failTask} instead — so reaching here means the plan
+   * genuinely succeeded.
+   *
+   * Accumulated {@link taskErrors} are NOT consulted here. Those entries come
+   * from sessions whose transient failures (e.g. watchdog timeouts) were
+   * captured as fallback results and fed back to the runner, which then drove
+   * its plan to completion via its own review/retry loop. Vetoing a successful
+   * task on those stale errors caused false failures — e.g. a review session
+   * that timed out on rounds 1–2 but APPROVED on round 3 (proven by the
+   * persisted result) still failed the task because the two timeouts lingered
+   * in taskErrors. {@link taskPermanentErrors} (PERMANENT, non-transient errors
+   * only) IS consulted: a genuinely unrecoverable spec failure still fails the
+   * task even if the runner's generator returned. Per-session errors remain
+   * visible in the audit trail via `scheduler_session_settle` events, so they
+   * are diagnosable, not lost.
+   *
+   * The only other failure path from here is a worktree merge failure
+   * (delegated to {@link failTask}). Triggers recalculateReady so blocked
+   * dependents promote.
    */
   private async finalizeTask(entry: TaskGraphEntry): Promise<void> {
     const taskId = entry.task.id;
@@ -785,13 +946,13 @@ export class SessionScheduler {
     // by abort), don't overwrite it.
     if (isTerminalTaskStatus(entry.status)) return;
 
-    const errors = this.taskErrors.get(taskId);
-    const hasErrors = errors !== undefined && errors.length > 0;
+    const permanentErrors = this.taskPermanentErrors.get(taskId);
+    const hasPermanentErrors = permanentErrors !== undefined && permanentErrors.length > 0;
 
     // Worktree lifecycle. failTask is the single cull owner, so we only
     // handle the merge-on-success path here; failure culling is delegated to
     // failTask.
-    if (!hasErrors && this.worktreeCreated.has(taskId) && this.options.worktreeManager) {
+    if (!hasPermanentErrors && this.worktreeCreated.has(taskId) && this.options.worktreeManager) {
       // Merge on success.
       let mergeFailed = false;
       let mergeErrMsg = '';
@@ -811,17 +972,22 @@ export class SessionScheduler {
       }
     }
 
-    if (hasErrors) {
-      await this.failTask(entry, errors.join('; '));
-      // failTask handles generator cleanup.
-    } else {
-      entry.task.result = { completed: true };
-      this.graph.setTaskStatus(taskId, 'complete');
-      // Promote blocked dependents whose deps are now all settled.
-      this.graph.recalculateReady(taskId);
-      // Clean up the plan generator so any finally blocks run.
-      await this.cleanupGenerator(taskId);
+    if (hasPermanentErrors) {
+      // A PERMANENT spec failure occurred during the plan. Even though the
+      // runner's generator returned (rather than throwing), an unrecoverable
+      // error must still fail the task. (Transient errors that were retried
+      // and overcome are excluded — they're not in taskPermanentErrors.)
+      await this.failTask(entry, permanentErrors.join('; '));
+      return;
     }
+
+    entry.task.result = { completed: true };
+    this.graph.setTaskStatus(taskId, 'complete');
+    // Promote blocked dependents whose deps are now all settled.
+    this.graph.recalculateReady(taskId);
+
+    // Clean up the plan generator so any finally blocks run.
+    await this.cleanupGenerator(taskId);
   }
 
   // ─── Worktree cull helper ────────────────────────────────────────────────
@@ -879,6 +1045,7 @@ export class SessionScheduler {
     this.worktreeCwds.delete(taskId);
     // taskErrors is left for result aggregation but can be cleared after terminal.
     this.taskErrors.delete(taskId);
+    this.taskPermanentErrors.delete(taskId);
   }
 
   // ─── Runner resolution (beforeTask hook + factory fallback) ──────────────

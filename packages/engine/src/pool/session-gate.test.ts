@@ -685,3 +685,37 @@ describe('SessionGate', () => {
     expect(fnRan).toBe(true);
   });
 });
+
+// ─── snapshot() diagnostics ───────────────────────────────────────────────
+
+describe('SessionGate snapshot()', () => {
+  it('reports total cap + available, and per-model buckets with caps', () => {
+    const gate = new SessionGate({ total: 4, perModel: { 'a:m': 2 } });
+    // Nothing acquired yet.
+    let snap = gate.snapshot();
+    expect(snap.totalCap).toBe(4);
+    expect(snap.totalAvailable).toBe(4);
+    // No buckets created until a profile touches them.
+    expect(snap.models).toEqual([]);
+
+    // Acquire a model 'a:m' slot — bucket springs into existence.
+    expect(gate.acquire({ provider: 'a', model: 'm' })).toBe(true);
+    snap = gate.snapshot();
+    expect(snap.totalAvailable).toBe(3);
+    const am = snap.models.find((m) => m.key === 'a:m');
+    expect(am).toBeDefined();
+    expect(am?.available).toBe(1);
+    expect(am?.cap).toBe(2);
+
+    // Acquire an uncapped model 'c:m' — cap reports as null.
+    expect(gate.acquire({ provider: 'c', model: 'm' })).toBe(true);
+    snap = gate.snapshot();
+    expect(snap.totalAvailable).toBe(2);
+    const cm = snap.models.find((m) => m.key === 'c:m');
+    expect(cm?.cap).toBeNull();
+
+    // Release restores counters.
+    gate.release({ provider: 'a', model: 'm' });
+    expect(gate.snapshot().totalAvailable).toBe(3);
+  });
+});

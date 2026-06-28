@@ -63,6 +63,7 @@ interface ModelBucket {
 
 export class SessionGate {
   private totalAvailable: number;
+  private readonly totalCap: number;
   private readonly perModel: Record<string, number>;
   private readonly models = new Map<string, ModelBucket>();
 
@@ -80,6 +81,7 @@ export class SessionGate {
 
   constructor(options: SessionGateOptions, signal?: AbortSignal) {
     this.totalAvailable = options.total;
+    this.totalCap = options.total;
     this.perModel = options.perModel;
     this.signal = signal;
   }
@@ -89,6 +91,28 @@ export class SessionGate {
    *  aren't marked active before a session slot is actually available. */
   availableTotal(): number {
     return this.totalAvailable;
+  }
+
+  /** Snapshot the gate's current capacity state for diagnostics/audit. Returns
+   *  the configured total cap, the currently-available total slots, and every
+   *  known model bucket with its cap (null = uncapped) and available slots.
+   *  Read-only — does not mutate any counter. Used by the scheduler to record
+   *  WHY sessions were started / skipped / parked in each drain pass. */
+  snapshot(): {
+    totalAvailable: number;
+    totalCap: number;
+    models: { key: string; available: number; cap: number | null }[];
+  } {
+    const models: { key: string; available: number; cap: number | null }[] = [];
+    for (const [key, bucket] of this.models) {
+      const configured = this.perModel[key];
+      models.push({
+        key,
+        available: bucket.available,
+        cap: configured === undefined ? null : configured,
+      });
+    }
+    return { totalAvailable: this.totalAvailable, totalCap: this.totalCap, models };
   }
 
   /** Non-mutating peek: could a session for this profile's model be admitted

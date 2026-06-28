@@ -186,7 +186,7 @@ export class AuditLog {
     }
 
     if (filter?.taskId) {
-      filtered = filtered.filter((e) => e.taskId === filter.taskId);
+      filtered = filtered.filter((e): boolean => 'taskId' in e && e.taskId === filter.taskId);
     }
 
     return filtered;

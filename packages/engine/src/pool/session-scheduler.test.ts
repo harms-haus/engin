@@ -84,6 +84,7 @@ import type { SessionPlanContext, SessionPlanRunner } from './runners/session-pl
 import { SessionGate } from './session-gate.js';
 import { SessionScheduler } from './session-scheduler.js';
 import type { SessionResult, SessionSpec } from './session.js';
+import { SessionError } from './session.js';
 import { TaskGraph } from './task-graph.js';
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -2064,5 +2065,174 @@ describe('SessionScheduler', () => {
     const result = await runPromise;
     expect(result.completedTasks).toBe(2);
     expect(result.failedTasks).toBe(0);
+  });
+
+  // ── 33. Transient error overcome by retry does NOT fail the task (t-04 regression) ─
+  //
+  // Reproduces the t-04 false-failure: a review-style runner whose execute
+  // session throws a TRANSIENT error (watchdog timeout) on round 1, then
+  // SUCCEEDS on round 2. The task must COMPLETE — the transient error was
+  // overcome by the runner's own retry loop and must not veto success.
+  it('33. transient error overcome by retry does not fail the task', async () => {
+    const profiles = new Map([['default', makeProfile('default')]]);
+    const gate = new SessionGate({ total: 2, perModel: {} });
+    const log: string[] = [];
+    let attempt = 0;
+    // Fake runner: yields the same spec twice (two rounds), execute throws a
+    // transient SessionError on the first call and succeeds on the second.
+    const factory = (): SessionPlanRunner => ({
+      async *plan(): AsyncGenerator<SessionSpec[], SessionResult[] | undefined, SessionResult[]> {
+        yield [makeSpec('s1', 'default')];
+        yield [makeSpec('s1', 'default')];
+        return;
+      },
+      async execute(_ctx, spec): Promise<SessionResult> {
+        attempt += 1;
+        log.push(`attempt:${attempt}`);
+        if (attempt === 1) {
+          throw new SessionError('watchdog timeout (transient)', { kind: 'transient', retryable: true });
+        }
+        return { mode: 'structured', data: { approved: true } };
+      },
+    });
+    const graph = new TaskGraph();
+    graph.addTask({ ...makeTask('A') }, factory);
+    const scheduler = new SessionScheduler({
+      graph,
+      gate,
+      profiles,
+      sessionBaseDir: '/tmp/test-sessions',
+      cwd: '/tmp/test',
+      activeSessions: new Set(),
+      phaseId: 'test',
+    });
+    const result = await scheduler.run();
+    expect(result.completedTasks).toBe(1);
+    expect(result.failedTasks).toBe(0);
+    expect(graph.getTask('A')?.status).toBe('complete');
+    expect(attempt).toBe(2);
+  });
+
+  // ── 34. Permanent error still fails even when the runner's generator returns ─
+  //
+  // Counterpart to test 33: a spec that fails with a PERMANENT (non-transient)
+  // error must still fail the task, even though the runner's generator returns
+  // normally (the runner ignored the failure). Ensures the transient-relaxation
+  // doesn't mask real failures.
+  it('34. permanent error fails the task even when the generator returns', async () => {
+    const profiles = new Map([['default', makeProfile('default')]]);
+    const gate = new SessionGate({ total: 2, perModel: {} });
+    const factory = (): SessionPlanRunner => ({
+      async *plan(): AsyncGenerator<SessionSpec[], SessionResult[] | undefined, SessionResult[]> {
+        yield [makeSpec('s1', 'default')];
+        return;
+      },
+      async execute(): Promise<SessionResult> {
+        // Permanent (non-transient) error.
+        throw new SessionError('schema missing — permanent', { kind: 'permanent', retryable: false });
+      },
+    });
+    const graph = new TaskGraph();
+    graph.addTask({ ...makeTask('A') }, factory);
+    const scheduler = new SessionScheduler({
+      graph,
+      gate,
+      profiles,
+      sessionBaseDir: '/tmp/test-sessions',
+      cwd: '/tmp/test',
+      activeSessions: new Set(),
+      phaseId: 'test',
+    });
+    const result = await scheduler.run();
+    expect(result.failedTasks).toBe(1);
+    expect(result.completedTasks).toBe(0);
+    expect(graph.getTask('A')?.status).toBe('failed');
+  });
+
+  // ── 35. Scheduler emits drain + settle audit events ──────────────────────
+  //
+  // Verifies the new observability: the scheduler appends scheduler_drain and
+  // scheduler_session_settle events to the auditLog, and the drain event
+  // records per-candidate outcomes with REASONS (why a session started / was
+  // parked / skipped). This is the trace that makes orchestration debuggable.
+  it('35. scheduler emits drain + settle audit events with reasons', async () => {
+    const profiles = new Map([
+      ['writer', makeProfile('writer', 'p', 'A')],
+      ['reviewer', makeProfile('reviewer', 'p', 'B')],
+    ]);
+    // total=1: forces parking so the drain trace records a capacity-saturation
+    // reason.
+    const gate = new SessionGate({ total: 1, perModel: {} });
+    const appended: {
+      type: string;
+      trigger?: string;
+      candidates?: unknown[];
+      specId?: string;
+      success?: boolean;
+      [k: string]: unknown;
+    }[] = [];
+    const fakeAuditLog = {
+      async append(event: { type: string; [k: string]: unknown }): Promise<void> {
+        appended.push(event);
+      },
+    };
+    const controls = makeSpecControls(['a1', 'a2', 'b1']);
+    const log: string[] = [];
+    const graph = new TaskGraph();
+    // A: two-batch plan [writer A] → [reviewer B]. B: ready [writer A].
+    graph.addTask(
+      { ...makeTask('A') },
+      makeFakeRunnerFactory([[makeSpec('a1', 'writer')], [makeSpec('a2', 'reviewer')]], controls, log),
+    );
+    graph.addTask({ ...makeTask('B') }, makeFakeRunnerFactory([[makeSpec('b1', 'writer')]], controls, log));
+    type SchedOpts = ConstructorParameters<typeof SessionScheduler>[0];
+    const opts: SchedOpts = {
+      graph,
+      gate,
+      profiles,
+      sessionBaseDir: '/tmp/test-sessions',
+      cwd: '/tmp/test',
+      activeSessions: new Set(),
+      phaseId: 'test',
+      // The fake auditLog only implements append(); cast satisfies the option.
+      auditLog: fakeAuditLog as unknown as ConstructorParameters<typeof SessionScheduler>[0]['auditLog'],
+    };
+    const scheduler = new SessionScheduler(opts);
+    const runP = scheduler.run();
+    await tick();
+    // A's writer starts (only slot). B's writer can't start (total saturated).
+    const drains = appended.filter((e) => e.type === 'scheduler_drain');
+    expect(drains.length).toBeGreaterThanOrEqual(1);
+    // Some drain event records B as a candidate that couldn't start due to
+    // total saturation, with a human-readable reason.
+    const drainWithSkippedB = drains.some((e) => {
+      const cands = (e.candidates ?? []) as Array<{
+        taskId: string;
+        parkedSpecs: { reason: string }[];
+        started: unknown[];
+      }>;
+      return cands.some(
+        (c) => c.taskId === 'B' && c.started.length === 0 && c.parkedSpecs.some((p) => /saturat/i.test(p.reason)),
+      );
+    });
+    expect(drainWithSkippedB).toBe(true);
+    // Drain triggers are recorded.
+    const triggers = new Set(drains.map((e) => e.trigger));
+    expect(triggers.has('init')).toBe(true);
+    // Complete A's writer → a settle event is appended for a1.
+    completeSpec(controls, 'a1');
+    await tick();
+    const settles = appended.filter((e) => e.type === 'scheduler_session_settle');
+    expect(settles.length).toBeGreaterThanOrEqual(1);
+    const a1Settle = settles.find((e) => e.specId === 'a1');
+    expect(a1Settle).toBeDefined();
+    expect(a1Settle?.success).toBe(true);
+    // Recompute drains — the post-completion pass appends new events.
+    const drainsAfter = appended.filter((e) => e.type === 'scheduler_drain');
+    expect(new Set(drainsAfter.map((e) => e.trigger)).has('completion')).toBe(true);
+    // Finish.
+    completeSpec(controls, 'a2');
+    completeSpec(controls, 'b1');
+    await runP;
   });
 });
