@@ -625,9 +625,6 @@ export class SessionScheduler {
         errs.push(errorMsg);
         this.taskErrors.set(taskId, errs);
         result = { mode: 'text', text: '' };
-      } finally {
-        // S1: ALWAYS release the gate slot (even on throw/timeout).
-        if (acquired) this.gate.release(profile);
       }
 
       // Store the result at the spec's position (spec order preserved).
@@ -652,6 +649,19 @@ export class SessionScheduler {
         this.taskErrors.set(taskId, errs);
         // Force terminal: finalize the task as failed.
         await this.failTask(entry, errorMsg);
+      } finally {
+        // S1: ALWAYS release the gate slot (even on throw/timeout).
+        //
+        // The release is deferred until AFTER batch advancement (not in the
+        // execute-finally) so the completing task retains first claim on its
+        // own freed slot for the next session. Releasing before advance let a
+        // ready (T3) task steal the slot during the advancing window, parking
+        // an active task that had capacity for its continuation. With the
+        // release here, the post-advance drain processes the active task (T1)
+        // before ready tasks (T3), letting it reclaim the slot it just freed.
+        // (Slot accounting is unaffected: every successful acquire is still
+        // matched by exactly one release on this path.)
+        if (acquired) this.gate.release(profile);
       }
 
       // Schedule a drain — capacity freed and/or batch advanced.

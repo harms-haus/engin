@@ -752,6 +752,69 @@ describe('SessionScheduler', () => {
     expect(log.filter((l) => l.startsWith('start:')).length).toBe(2);
   });
 
+  // ── 11b. Active-affinity across batch boundaries ───────────────────────
+  //
+  // An active task that completes a session and advances to its next batch
+  // must retain first claim on the freed slot for its OWN continuation. With
+  // tight total capacity (total=1), a ready task B must NOT steal the slot
+  // during A's advancing window, forcing A to park. A's next session (s2)
+  // should start before B's session (b1).
+  it('11b. active task reclaims its slot across a batch advance (no preemption by ready tasks)', async () => {
+    const profiles = new Map([['default', makeProfile('default')]]);
+    // total=1 — only one session at a time. The freed slot is contested.
+    const gate = new SessionGate({ total: 1, perModel: {} });
+    const log: string[] = [];
+    const controls = makeSpecControls(['s1', 's2', 'b1']);
+    const { scheduler, graph, events } = buildFixture({
+      tasks: [
+        {
+          ...makeTask('A'),
+          runnerFactory: makeFakeRunnerFactory(
+            [[makeSpec('s1', 'default')], [makeSpec('s2', 'default')]],
+            controls,
+            log,
+          ),
+        },
+        {
+          ...makeTask('B'),
+          runnerFactory: makeFakeRunnerFactory([[makeSpec('b1', 'default')]], controls, log),
+        },
+      ],
+      profiles,
+      gate,
+      log,
+    });
+
+    const runPromise = scheduler.run();
+    await tick();
+
+    // Only capacity for one session → A (first registered, T3) starts s1.
+    expect(log).toContain('start:s1');
+    // B stays ready (no slot).
+    expect(graph.getTask('B')?.status).toBe('ready');
+
+    // s1 completes → A advances to batch2=[s2]. The freed slot must go to A's
+    // s2, NOT to B's b1.
+    completeSpec(controls, 's1');
+    await tick();
+
+    // A's continuation started; A was NOT parked.
+    expect(log).toContain('start:s2');
+    expect(events.some((e) => e.taskId === 'A' && e.status === 'parked')).toBe(false);
+    // B has not stolen the slot.
+    expect(log).not.toContain('start:b1');
+
+    completeSpec(controls, 's2');
+    await tick();
+
+    // Now A is done; B gets the slot.
+    expect(log).toContain('start:b1');
+    completeSpec(controls, 'b1');
+
+    const result = await runPromise;
+    expect(result.completedTasks).toBe(2);
+  });
+
   // ── 12. Spec failure within a batch ─────────────────────────────────────
   //
   // A batch with 2 specs. First completes successfully, second throws.
