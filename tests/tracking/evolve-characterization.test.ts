@@ -364,7 +364,7 @@ describe('evolve characterization – task edge cases', () => {
     expect(next.tasks['t1'].dependencies).toEqual([]);
   });
 
-  it('task_started preserves existing startedAt when data.startedAt is not a number', () => {
+  it('task_started (re)starts the timer: startedAt from data.startedAt or the event timestamp', () => {
     resetSeq();
     let state = baseline();
     state = evolve(state, makeEvent('task_registered', { taskId: 't1', title: 'T', phaseId: '', dependencies: [] }));
@@ -372,17 +372,23 @@ describe('evolve characterization – task edge cases', () => {
       state,
       makeEvent('task_started', { taskId: 't1', startedAt: 1000 }, { timestamp: '2026-06-25T00:00:00Z', taskId: 't1' }),
     );
+    // An explicit numeric data.startedAt wins.
     expect(state.tasks['t1'].startedAt).toBe(1000);
-    // Re-fire with non-number startedAt → must preserve 1000
+    expect(state.tasks['t1'].activeStartedAt).toBe(1000);
+    expect(state.tasks['t1'].elapsedMs).toBe(0);
+    // Re-fire with non-number startedAt → fall back to the event timestamp and
+    // RESET the timer (task_started always restarts the active interval).
     state = evolve(
       state,
       makeEvent(
         'task_started',
         { taskId: 't1', startedAt: 'later' },
-        { timestamp: '2026-06-25T00:00:00Z', taskId: 't1' },
+        { timestamp: '2026-06-25T00:00:10Z', taskId: 't1' },
       ),
     );
-    expect(state.tasks['t1'].startedAt).toBe(1000);
+    expect(state.tasks['t1'].startedAt).toBe(Date.parse('2026-06-25T00:00:10Z'));
+    expect(state.tasks['t1'].activeStartedAt).toBe(Date.parse('2026-06-25T00:00:10Z'));
+    expect(state.tasks['t1'].elapsedMs).toBe(0);
     expect(state.tasks['t1'].status).toBe('active');
   });
 

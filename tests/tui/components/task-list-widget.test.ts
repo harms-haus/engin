@@ -16,11 +16,20 @@ const DOWN = '\x1b[B';
 
 const WIDTH = 40;
 
-/** Build a minimal TaskEntity with defaults. */
+/** Build a minimal TaskEntity with defaults.
+ *
+ *  Derives the new timing fields (`elapsedMs`, `activeStartedAt`) from legacy
+ *  `startedAt`/`completedAt` when the test doesn't set them explicitly —
+ *  mirroring what the evolve layer produces so legacy fixtures render the
+ *  expected elapsed values under the active-only timer model:
+ *    • active   → activeStartedAt = startedAt, elapsedMs = 0 (ticks live)
+ *    • parked   → elapsedMs = now - startedAt (frozen at construction)
+ *    • terminal → elapsedMs = completedAt - startedAt (or now if no completedAt)
+ */
 function makeTask(
   overrides: Partial<TaskEntity> & { id: string; title: string; status: TaskEntity['status'] },
 ): TaskEntity {
-  return {
+  const task: TaskEntity = {
     phaseId: 'p1',
 
     dependencies: [],
@@ -28,6 +37,22 @@ function makeTask(
     completedAt: undefined,
     ...overrides,
   };
+  if (task.activeStartedAt === undefined && task.status === 'active' && typeof task.startedAt === 'number') {
+    task.activeStartedAt = task.startedAt;
+  }
+  if (task.elapsedMs === undefined && typeof task.startedAt === 'number') {
+    if (task.status === 'active') {
+      task.elapsedMs = 0;
+    } else if (task.completedAt !== undefined) {
+      // parked (with a completedAt) or terminal: use the explicit end time.
+      task.elapsedMs = Math.max(0, Date.parse(task.completedAt) - task.startedAt);
+    } else if (task.status === 'parked') {
+      task.elapsedMs = Date.now() - task.startedAt;
+    } else {
+      task.elapsedMs = Date.now() - task.startedAt;
+    }
+  }
+  return task;
 }
 
 /**

@@ -66,6 +66,9 @@ interface ExpectedTaskEntity {
   dependencies: string[]; // task ids
   startedAt?: number;
   completedAt?: string;
+  elapsedMs?: number;
+  activeStartedAt?: number;
+  parkedAt?: number;
   sessionPlan?: { role: string; profile: string }[];
 }
 
