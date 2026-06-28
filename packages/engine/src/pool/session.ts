@@ -163,6 +163,13 @@ function isPositiveFinite(n: number | undefined): n is number {
   return n != null && Number.isFinite(n) && n > 0;
 }
 
+/** Default inactivity watchdog window (5 minutes) used when no explicit
+ *  `watchdogTimeoutMs` is configured. The watchdog RESETS on every session
+ *  activity event (turn_start, tool_execution_start, turn_end) and only fires
+ *  when the model goes silent for this whole window — it is NOT a wall-clock
+ *  cap on the session. */
+export const DEFAULT_WATCHDOG_TIMEOUT_MS = 300_000;
+
 /** Sentinel error thrown internally when the watchdog timer fires. */
 class WatchdogTimeoutError extends Error {
   constructor(timeoutMs: number) {

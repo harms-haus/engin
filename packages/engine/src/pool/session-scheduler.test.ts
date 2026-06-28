@@ -1873,4 +1873,55 @@ describe('SessionScheduler', () => {
     expect(graph.getTask('A')?.totalSessions).toBe(4);
     expect(graph.getTask('A')?.completedSessions).toBe(4);
   });
+
+  // ── 30. No scheduler wall-clock timeout on execute (regression) ───────
+  //
+  // The scheduler must NOT impose a wall-clock cap on runner.execute().
+  // Model-freeze detection is the in-session inactivity watchdog's job
+  // (runSession, fed by stepTimeoutMs → watchdogTimeoutMs), which RESETS on
+  // every activity event. A wall-clock race here previously fired mid-
+  // progress on legitimately long (but active) sessions, leaked the still-
+  // running session, poisoned taskErrors, and caused tasks whose reviews
+  // approved to be marked failed.
+  //
+  // Invariant: a session whose execute() resolves successfully — no matter
+  // how long it takes — completes the task. Only a THROWN execute (e.g. a
+  // genuine WatchdogTimeoutError from a real freeze) fails it (see test 12).
+  it('30. long-running execute (success) → task completes; no scheduler timeout', async () => {
+    const profiles = new Map([['default', makeProfile('default')]]);
+    const gate = new SessionGate({ total: 2, perModel: {} });
+    const log: string[] = [];
+    const controls = makeSpecControls(['s1']);
+    const { scheduler, graph } = buildFixture({
+      tasks: [
+        {
+          ...makeTask('A'),
+          runnerFactory: makeFakeRunnerFactory([[makeSpec('s1', 'default')]], controls, log),
+        },
+      ],
+      profiles,
+      gate,
+      log,
+    });
+
+    const runPromise = scheduler.run();
+    await tick();
+
+    // execute() is in-flight (deferred held). The scheduler must NOT fail the
+    // task on its own — it must wait for the runner to settle.
+    expect(log).toContain('start:s1');
+    expect(graph.getTask('A')?.status).not.toBe('failed');
+
+    // Resolve the deferred much later (simulating a long-but-active session).
+    // No scheduler-side cutoff fires; the task completes.
+    await new Promise((r) => setTimeout(r, 20));
+    expect(graph.getTask('A')?.status).not.toBe('failed'); // still not failed while in-flight
+
+    completeSpec(controls, 's1');
+    const result = await runPromise;
+
+    expect(result.completedTasks).toBe(1);
+    expect(result.failedTasks).toBe(0);
+    expect(graph.getTask('A')?.status).toBe('complete');
+  });
 });

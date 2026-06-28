@@ -13,7 +13,7 @@
 
 import type { SessionPlanContext } from './runners/session-plan-types.js';
 import type { RunSessionContext, SessionResult, SessionSpec } from './session.js';
-import { runSession } from './session.js';
+import { DEFAULT_WATCHDOG_TIMEOUT_MS, runSession } from './session.js';
 
 // ─── Public API ───────────────────────────────────────────────────────────
 
@@ -46,7 +46,13 @@ export async function runScheduledSession(spec: SessionSpec, ctx: SessionPlanCon
     activeSessions: ctx.activeSessions,
     profiles: ctx.profiles,
     ...(ctx.signal !== undefined ? { signal: ctx.signal } : {}),
-    ...(ctx.stepTimeoutMs !== undefined ? { watchdogTimeoutMs: ctx.stepTimeoutMs } : {}),
+    // Inactivity watchdog: RESETS on every session activity event, only fires
+    // on a genuine model freeze. stepTimeoutMs overrides the default; absent
+    // that, fall back to DEFAULT_WATCHDOG_TIMEOUT_MS so sessions are never left
+    // without freeze protection.
+    ...(ctx.stepTimeoutMs !== undefined
+      ? { watchdogTimeoutMs: ctx.stepTimeoutMs }
+      : { watchdogTimeoutMs: DEFAULT_WATCHDOG_TIMEOUT_MS }),
   };
 
   return runSession(sessionCtx);

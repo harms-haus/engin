@@ -50,10 +50,6 @@ import type { TaskGraph, TaskGraphEntry } from './task-graph.js';
  *  generator is preferred over blocking the scheduler indefinitely. */
 const GENERATOR_TIMEOUT_MS = 5_000;
 
-/** Default per-session execute timeout when `stepTimeoutMs` is not configured
- *  (5 minutes). Prevents a hanging runner from leaking a gate slot. */
-const DEFAULT_EXECUTE_TIMEOUT_MS = 300_000;
-
 // ─── Options ───────────────────────────────────────────────────────────────
 
 export interface SessionSchedulerOptions {
@@ -149,11 +145,6 @@ export class SessionScheduler {
   /** The session gate (from options). */
   private get gate(): SessionGate {
     return this.options.gate;
-  }
-
-  /** Execute timeout: stepTimeoutMs from options, or the default 300s. */
-  private get executeTimeoutMs(): number {
-    return this.options.stepTimeoutMs ?? DEFAULT_EXECUTE_TIMEOUT_MS;
   }
 
   // ── Coalesced drain + wake ──────────────────────────────────────────────
@@ -608,17 +599,14 @@ export class SessionScheduler {
     const sessionPromise = (async (): Promise<void> => {
       let result: SessionResult;
       try {
-        if (cached) {
-          result = await runner.execute(executeCtx, spec);
-        } else {
-          // S1: wrap execute in a timeout race so a hanging runner can't
-          // leak a gate slot / deadlock the scheduler.
-          result = await this.withTimeout(
-            runner.execute(executeCtx, spec),
-            this.executeTimeoutMs,
-            `Session "${spec.id}" execute`,
-          );
-        }
+        // The in-session inactivity watchdog (runSession, fed by stepTimeoutMs)
+        // is the SINGLE authority for model-freeze detection: it RESETS on every
+        // activity event and only fires when the model goes silent. A wall-clock
+        // race here would fire mid-progress on legitimately long (but active)
+        // sessions, leak the still-running session, poison taskErrors, and cause
+        // approved tasks to be marked failed. A genuine freeze surfaces as a
+        // thrown WatchdogTimeoutError from runner.execute() — handled below.
+        result = await runner.execute(executeCtx, spec);
       } catch (err) {
         const errorMsg = safeErrorMessage(err);
         const errs = this.taskErrors.get(taskId) ?? [];

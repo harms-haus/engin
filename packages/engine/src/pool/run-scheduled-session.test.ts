@@ -14,6 +14,7 @@ import { beforeEach, describe, expect, it, mock } from 'bun:test';
 import type { AgentProfile, StatusCallbacks, Task } from '../core/types.js';
 import type { SessionPlanContext } from './runners/session-plan-types.js';
 import type { SessionResult, SessionSpec } from './session.js';
+import { DEFAULT_WATCHDOG_TIMEOUT_MS } from './session.js';
 
 // ─── Mock runSession ──────────────────────────────────────────────────────
 
@@ -148,8 +149,11 @@ describe('runScheduledSession', () => {
 
   // ── 3. Optional fields omitted when undefined ──────────────────────────
   //
-  // worktreeCwd, apiKeys, onStatus, signal, and stepTimeoutMs must not be
-  // present in RunSessionContext when they are undefined in SessionPlanContext.
+  // worktreeCwd, apiKeys, onStatus, and signal must not be present in
+  // RunSessionContext when they are undefined in SessionPlanContext.
+  // watchdogTimeoutMs is the EXCEPTION: it ALWAYS carries a value — the
+  // explicit stepTimeoutMs when provided, otherwise DEFAULT_WATCHDOG_TIMEOUT_MS
+  // — so a session is never left without inactivity-freeze protection.
 
   it('3. omits optional fields when undefined in SessionPlanContext', async () => {
     mockRunSession.mockResolvedValue(CANNED_RESULT);
@@ -173,7 +177,9 @@ describe('runScheduledSession', () => {
     expect(callArgs).not.toHaveProperty('apiKeys');
     expect(callArgs).not.toHaveProperty('onStatus');
     expect(callArgs).not.toHaveProperty('signal');
-    expect(callArgs).not.toHaveProperty('watchdogTimeoutMs');
+    // watchdogTimeoutMs defaults to the inactivity-watchdog default so sessions
+    // are never without freeze protection.
+    expect(callArgs.watchdogTimeoutMs).toBe(DEFAULT_WATCHDOG_TIMEOUT_MS);
   });
 
   // ── 4. Optional fields present when defined ────────────────────────────
