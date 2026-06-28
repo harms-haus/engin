@@ -46,6 +46,7 @@ export function singleSession(
           ...(spec.schema !== undefined ? { schema: spec.schema } : {}),
           outputMode: spec.outputMode,
           ...(spec.isReadOnly !== undefined ? { isReadOnly: spec.isReadOnly } : {}),
+          ...(spec.allowedWriteDirs !== undefined ? { allowedWriteDirs: spec.allowedWriteDirs } : {}),
           runnerRole: role,
           attempt,
         };

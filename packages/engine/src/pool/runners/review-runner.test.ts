@@ -452,4 +452,26 @@ describe('reviewRunner (SessionPlan)', () => {
     expect(runnerB.plan).toBeInstanceOf(Function);
     expect(runnerB.execute).toBeInstanceOf(Function);
   });
+
+  // ── 12. allowedWriteDirs propagated into yielded specs ─────────────────
+  //
+  // The write sandbox is workflow-owned per spec. reviewRunner must forward
+  // allowedWriteDirs from the execute/review specs into the yielded
+  // SessionSpecs so runSession can confine writes (defaults to cwd when the
+  // workflow omits it).
+  it('12. allowedWriteDirs propagated into yielded execute + review specs', async () => {
+    const factory = reviewRunner(
+      { ...makeExecSpec(), allowedWriteDirs: ['/tmp/work/src'] },
+      { ...makeReviewSpec(), allowedWriteDirs: ['/tmp/work/review'] },
+    );
+    const runner = factory();
+    const ctx = makePlanContext();
+    const gen = runner.plan(ctx);
+
+    const execBatch = (await gen.next()).value as SessionSpec[];
+    expect(execBatch[0]?.allowedWriteDirs).toEqual(['/tmp/work/src']);
+
+    const reviewBatch = (await gen.next([execResult()])).value as SessionSpec[];
+    expect(reviewBatch[0]?.allowedWriteDirs).toEqual(['/tmp/work/review']);
+  });
 });

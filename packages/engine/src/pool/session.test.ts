@@ -791,4 +791,64 @@ describe('runSession', () => {
     // createSession should have been called (id is valid).
     expect(mockCreateSession).toHaveBeenCalled();
   });
+
+  // ── Write sandbox: allowedWriteDirs wired into createSession ───────────
+  //
+  // runSession must confine writes to the session cwd by default so a task
+  // can never leak edits into the main working directory. The workflow may
+  // override the full set via spec.allowedWriteDirs; read-only sessions skip
+  // the sandbox (their write tools are already stripped).
+
+  it('write sandbox: defaults to cwd when spec.allowedWriteDirs is omitted', async () => {
+    const session = makeMockRuntime();
+    mockCreateSession.mockResolvedValue(session);
+
+    const ctx = makeCtx({ cwd: '/tmp/project' });
+    await runSession(ctx).catch(() => {});
+
+    const opts = mockCreateSession.mock.calls[0][0] as AgentSessionOptions;
+    expect(opts.allowedWriteDirs).toEqual(['/tmp/project']);
+  });
+
+  it('write sandbox: prefers worktreeCwd over cwd for the default', async () => {
+    const session = makeMockRuntime();
+    mockCreateSession.mockResolvedValue(session);
+
+    const ctx = makeCtx({ cwd: '/tmp/project', worktreeCwd: '/tmp/worktree-A' });
+    await runSession(ctx).catch(() => {});
+
+    const opts = mockCreateSession.mock.calls[0][0] as AgentSessionOptions;
+    expect(opts.allowedWriteDirs).toEqual(['/tmp/worktree-A']);
+  });
+
+  it('write sandbox: spec.allowedWriteDirs replaces the default', async () => {
+    const session = makeMockRuntime();
+    mockCreateSession.mockResolvedValue(session);
+
+    const ctx = makeCtx({
+      cwd: '/tmp/project',
+      worktreeCwd: '/tmp/worktree-A',
+      spec: makeSpec({ allowedWriteDirs: ['/tmp/project', '/tmp/artifacts'] }),
+    });
+    await runSession(ctx).catch(() => {});
+
+    const opts = mockCreateSession.mock.calls[0][0] as AgentSessionOptions;
+    // The workflow-owned list REPLACES the default — cwd/worktreeCwd are not
+    // implicitly merged in.
+    expect(opts.allowedWriteDirs).toEqual(['/tmp/project', '/tmp/artifacts']);
+  });
+
+  it('write sandbox: omitted for read-only sessions', async () => {
+    const session = makeMockRuntime();
+    mockCreateSession.mockResolvedValue(session);
+
+    const ctx = makeCtx({
+      cwd: '/tmp/project',
+      spec: makeSpec({ isReadOnly: true, allowedWriteDirs: ['/tmp/should-be-ignored'] }),
+    });
+    await runSession(ctx).catch(() => {});
+
+    const opts = mockCreateSession.mock.calls[0][0] as AgentSessionOptions;
+    expect(opts).not.toHaveProperty('allowedWriteDirs');
+  });
 });

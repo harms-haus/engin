@@ -71,6 +71,14 @@ export interface SessionSpec {
   outputMode: OutputMode;
   /** When true, write/edit tools are stripped from the agent's toolset. */
   isReadOnly?: boolean;
+  /** Directories the agent may write to (the write sandbox). When omitted,
+   *  the engine defaults to confining writes to the resolved session cwd
+   *  (`worktreeCwd` if set, else `cwd`) so a task can never leak edits into
+   *  the main working directory. When set, this list REPLACES the default —
+   *  the workflow owns the full set of writable dirs, so include the cwd
+   *  explicitly if the agent must write there. Ignored when `isReadOnly`
+   *  is true. */
+  allowedWriteDirs?: string[];
   /** Role label for the runner (e.g. 'executor', 'reviewer'). Propagated to
    *  onSessionStart / onSessionComplete callbacks. */
   runnerRole: string;
@@ -415,6 +423,14 @@ async function executeAttempt(
     cwd: ctx.worktreeCwd ?? ctx.cwd,
     apiKeys: ctx.apiKeys,
     agentId: ctx.agentId,
+    // Write sandbox: confine edits to the session cwd by default so a task
+    // can't leak changes into the main working directory. The workflow may
+    // override the full set via spec.allowedWriteDirs (e.g. to add a shared
+    // artifacts dir). Skipped entirely for read-only sessions (their write
+    // tools are already stripped by resolveProfile, so no sandbox is needed).
+    ...(ctx.spec.isReadOnly !== true
+      ? { allowedWriteDirs: ctx.spec.allowedWriteDirs ?? [ctx.worktreeCwd ?? ctx.cwd] }
+      : {}),
     ...(resumeSessionPath !== undefined ? { resumeSessionPath: resumeSessionPath } : { sessionDir }),
     // Always provide an onAgentStatus sink so the runtime has a callback
     // target for activity events. When ctx.onStatus is set, events are

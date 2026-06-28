@@ -118,6 +118,7 @@ export function reviewRunner(
             ...(executeSpec.schema !== undefined ? { schema: executeSpec.schema } : {}),
             outputMode: executeSpec.outputMode,
             ...(executeSpec.isReadOnly !== undefined ? { isReadOnly: executeSpec.isReadOnly } : {}),
+            ...(executeSpec.allowedWriteDirs !== undefined ? { allowedWriteDirs: executeSpec.allowedWriteDirs } : {}),
             runnerRole: executeRole,
             // attempt stays at 1 across rounds: a resume is a CONTINUATION of the
             // same session, not a new retry attempt. This keeps the projection's
@@ -146,6 +147,7 @@ export function reviewRunner(
             ...(reviewSpec.schema !== undefined ? { schema: reviewSpec.schema } : {}),
             outputMode: reviewSpec.outputMode,
             ...(reviewSpec.isReadOnly !== undefined ? { isReadOnly: reviewSpec.isReadOnly } : {}),
+            ...(reviewSpec.allowedWriteDirs !== undefined ? { allowedWriteDirs: reviewSpec.allowedWriteDirs } : {}),
             runnerRole: reviewRole,
             attempt: 1,
             ...(round > 1 ? { resume: true } : {}),
