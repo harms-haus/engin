@@ -508,6 +508,39 @@ describe('AgentLog – empty / edge cases', () => {
     expect(tabs).toHaveLength(1);
   });
 
+  it("renders a parked task's session in the session bar", () => {
+    const task = makeTaskEntity('task-1', { status: 'parked' });
+    const agent = makeAgentEntity('agent-1', [makeLogEntry('paused work')], {
+      taskId: 'task-1',
+      profile: 'executor',
+    });
+
+    seedStoreAct(
+      { 'task-1': task },
+      { 'agent-1::task-1': agent },
+      { selectedTaskId: 'task-1', selectedSessionId: 'agent-1::task-1' },
+    );
+
+    const { container } = render(<AgentLog />);
+
+    // Header should show taskId
+    const header = container.querySelector('.agent-log__header');
+    expect(header).toBeInTheDocument();
+    expect(header?.textContent).toContain('task-1');
+
+    // Session bar should render the session
+    const sessionBar = container.querySelector('.agent-log__session-bar');
+    expect(sessionBar).toBeInTheDocument();
+
+    const tabs = container.querySelectorAll('.agent-log__session-tab');
+    expect(tabs).toHaveLength(1);
+    expect(tabs[0].querySelector('.agent-log__session-name')).toHaveTextContent('executor');
+
+    // Log entries should display
+    const entriesContainer = container.querySelector('.agent-log__entries');
+    expect(entriesContainer?.textContent).toContain('paused work');
+  });
+
   it('handles new agent being added (agent log changes)', () => {
     const task = makeTaskEntity('task-1', {});
 

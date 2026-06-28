@@ -29,6 +29,7 @@ export {
   capSessionLogs,
   isTerminalTaskStatus,
   pickMostRecentlyStartedActive,
+  pickMostRecentlyStartedParked,
   reconcileSelection,
   selectNextSession,
   toProjection,

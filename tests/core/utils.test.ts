@@ -174,6 +174,8 @@ describe('STATUS_CALLBACK_METHODS', () => {
       'onTaskRegister',
       'onTaskComplete',
       'onTaskRejected',
+      'onTaskParked',
+      'onTaskUnparked',
       'onDecision',
       'onAgentRender',
       'onError',
@@ -186,6 +188,7 @@ describe('STATUS_CALLBACK_METHODS', () => {
       'onAutoRetryStart',
       'onAutoRetryCompleted',
       'onSidebarUpdate',
+      'onWorkflowData',
     ];
     expect([...STATUS_CALLBACK_METHODS].sort()).toEqual([...expectedMethods].sort());
   });
@@ -306,12 +309,15 @@ describe('composeStatusCallbacks', () => {
       onTaskRegister: { taskId: '', phaseId: '', title: '', dependencies: [] },
       onTaskComplete: { taskId: '', title: '' },
       onTaskRejected: { taskId: '', title: '', reason: '' },
+      onTaskParked: { taskId: '', title: '', agentId: '', phaseId: '' },
+      onTaskUnparked: { taskId: '', title: '', agentId: '', phaseId: '' },
       onDecision: { agentId: '', decision: '', reasoning: '' },
       onAgentRender: { agentId: '', profile: '', rendered: '' },
       onError: { agentId: '', error: '', phaseId: '' },
       onWorkflowComplete: { totalDurationMs: 0, sessionCount: 0 },
       onWorkflowFailed: { error: new Error(), phaseId: '' },
       onSidebarUpdate: {},
+      onWorkflowData: { data: {} },
       onTurnStart: { agentId: '', turn: 0 },
       onTurnEnd: { agentId: '', turn: 0 },
       onToolCallStart: { agentId: '', toolName: '', toolCallId: '', arguments: {} },

@@ -11,9 +11,10 @@ frontmatter, so you can customise agent behaviour without touching engin's sourc
 
 > engin is a **pure library**. It ships no built-in workflows and no built-in profiles. It
 > provides the building blocks — harness creation, profile loading, structured output, the
-> session primitive, the task pool (`RunnerPool`), the `SessionGate` concurrency authority,
-> composable runners, the event-sourced status store, a TUI dashboard, and a WebSocket
-> server — that your workflow scripts compose into pipelines.
+> session primitive, the `SessionScheduler` (task-DAG-driven scheduling), the `TaskGraph`
+> (task DAG with dependency ranking), the `SessionGate` concurrency authority,
+> composable `SessionPlanRunner`s, the event-sourced status store, a TUI dashboard, and a
+> WebSocket server — that your workflow scripts compose into pipelines.
 
 ## The rigid hierarchy: workflow → phases → tasks → sessions
 
@@ -24,8 +25,9 @@ read-model, the TUI dashboard, and the web client all navigate the same tree.
 - A **Workflow** owns an ordered list of **Phases**. Phases execute one at a time; each phase
   must complete before the next begins.
 - A **Phase** owns an ordered list of **Tasks** (its `taskIds`). Within a phase, tasks run
-  concurrently through a `RunnerPool`, gated by a `SessionGate`.
-- A **Task** is fulfilled by a **Runner** — a function that composes one or more agent
+  concurrently through a `SessionScheduler`, gated by a `SessionGate`.
+- A **Task** is fulfilled by a **SessionPlanRunner** — an async generator that yields
+  batches of `SessionSpec`s, each resolved by the scheduler into one or more agent
   **Sessions** in any topology (linear, parallel, review-loop, council, …). The runner
   returns a `TaskOutcome`.
 - A **Session** is a single agent prompt turn with a lifecycle: the session primitive
@@ -39,22 +41,23 @@ and timing. Each session is a `SessionEntity` keyed by
 
 ### Run / Phase / Task / Session / Runner
 
-| Concept     | What it is                                                                                                                                                                         |
-| ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Run**     | One invocation of a workflow — from `workflow_started` to `workflow_completed` / `workflow_failed`. Owns the work directory, the `EventStore`, and the `AbortController`.          |
-| **Phase**   | A named stage in the workflow. Phases execute sequentially. A phase typically instantiates a `RunnerPool` to process its tasks concurrently.                                       |
-| **Task**    | A unit of work with a prompt, files, dependencies, and a `worktree` mode (`'none'` or `'code'`). Resolved by a Runner. Tracked on the write model by the `TaskTracker`.            |
-| **Session** | One agent prompt turn. Created by the session primitive (`runSession`) from a `SessionSpec`. Identified by `(agentId, taskId, runnerRole, attempt)`. Projected as `SessionEntity`. |
-| **Runner**  | A `(ctx: RunnerContext) => Promise<TaskOutcome>` function. Composes sessions via `ctx.runSession` and gates concurrency via `ctx.gate`. Built from composable runner factories.    |
+| Concept     | What it is                                                                                                                                                                                                                                      |
+| ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Run**     | One invocation of a workflow — from `workflow_started` to `workflow_completed` / `workflow_failed`. Owns the work directory, the `EventStore`, and the `AbortController`.                                                                       |
+| **Phase**   | A named stage in the workflow. Phases execute sequentially. A phase typically instantiates a `SessionScheduler` to process its tasks concurrently.                                                                                              |
+| **Task**    | A unit of work with a prompt, files, dependencies, and a `worktree` mode (`'none'` or `'code'`). Resolved by a `SessionPlanRunner`. Tracked on the write model by the `TaskGraph`.                                                              |
+| **Session** | One agent prompt turn. Created by the session primitive (`runSession`) from a `SessionSpec`. Identified by `(agentId, taskId, runnerRole, attempt)`. Projected as `SessionEntity`.                                                              |
+| **Runner**  | A `SessionPlanRunner` with a `plan(ctx)` async generator (yields `SessionSpec[]` batches) and an `execute(ctx, spec)` method. The scheduler owns the gate; runners never acquire or release gate slots. Built from composable runner factories. |
 
 ## Two views of the same lifecycle
 
 engin keeps two views of the task lifecycle, and it is worth understanding the difference
 upfront:
 
-- **Write model (executor side).** The `TaskTracker` holds `Task` objects — the full records
+- **Write model (executor side).** The `TaskGraph` holds `Task` objects — the full records
   including prompts, files, dependencies, review feedback, and the executor-only `status`
-  field. The `RunnerPool` claims and mutates these. This is what the pool operates on.
+  field. The `SessionScheduler` drives these through the gate and mutates their status.
+  This is what the scheduler operates on.
 - **Read model (projection side).** The `WorkflowProjection` holds `TaskEntity` objects — a
   slimmed-down view derived purely by replaying events through the `evolve` reducer. This is
   what the TUI and web render.
@@ -80,14 +83,15 @@ See [Event store & status](../reference/event-store.md) and
   Add or modify agents without touching code.
 - **Structured output enforced by Zod** — request typed, validated JSON from any session,
   with automatic repair-and-retry.
-- **DAG task dependencies** — tasks declare dependencies; the `TaskTracker` detects cycles and
+- **DAG task dependencies** — tasks declare dependencies; the `TaskGraph` detects cycles and
   serves ready tasks in a deterministic order (sorted by transitive blocking pressure).
 - **Session-first execution** — the session primitive (`runSession`) is the sole building
-  block for agent prompt turns. Runners compose sessions freely; the `SessionGate` is the
-  sole concurrency authority (two-level: total + per-model, FIFO, RAII).
-- **Composable runners** — `singleSession`, `linearRunner`, `parallelRunner`, `reviewRunner`,
-  `councilRunner`, `mapRunner`, `branchRunner`, `coordinatorRunner`, `coalescingRunner` —
-  each returns a `Runner` function that can be nested inside other runners.
+  block for agent prompt turns. `SessionPlanRunner`s compose sessions freely; the
+  `SessionGate` is the sole concurrency authority (two-level: total + per-model, FIFO, RAII).
+- **Composable `SessionPlanRunner`s** — `singleSession`, `linearRunner`, `parallelRunner`,
+  `reviewRunner`, `councilRunner`, `mapRunner`, `branchRunner`, `coordinatorRunner`,
+  `coalescingRunner` — each yields batches of `SessionSpec`s that the `SessionScheduler`
+  executes through the gate and nests inside other runners.
 - **Event-sourced status** — every status change is an append-only `EventRecord`; the
   in-memory `WorkflowProjection` is derived by a pure reducer. The TUI and the web client
   each rebuild the projection from the event stream over WebSocket.
@@ -103,4 +107,5 @@ See [Event store & status](../reference/event-store.md) and
 - [Architecture](architecture.md) — the client/server process model, the package layout, and how status flows.
 - [Getting started](../guides/getting-started.md) — install and run.
 - [Building a new workflow](../guides/building-workflows.md) — author your first workflow.
-- [Task pool & execution](../reference/task-pool.md) — `RunnerPool`, `SessionGate`, runners, retries.
+- [Task pool & execution](../reference/task-pool.md) — `SessionScheduler`, `TaskGraph`,
+  `SessionGate`, runners.

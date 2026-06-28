@@ -47,11 +47,9 @@
 //     `ObserveHook<…>`. The return value is discarded (void | Promise<void>).
 //   - Each field accepts EITHER a single hook function OR an array of them
 //     (mirrors `HookRegistry.register`, which collects multiple subscribers
-//     per field — same shape as `onLaneError`).
+//     per field).
 //   - Both fields are OPTIONAL (an empty `WorkflowHooks` object stays valid).
-//   - The arg bags carry ONLY primitive fields — NO `Task` reference, so
-//     unlike `OnLaneErrorArgs`/`ShouldIsolateArgs` these do NOT need a
-//     type-only `Task` import.
+//   - The arg bags carry ONLY primitive fields — NO `Task` reference.
 //   - `OnStructuredOutputArgs.output` is typed `unknown` (the raw structured
 //     payload shape is agent-defined); `runnerRole` is an optional `string`,
 //     `attempt` is an optional `number`.
@@ -272,7 +270,7 @@ describe('types.ts source structure (new exports + field declarations)', () => {
   const src = tryReadSource(TYPES_PATH);
 
   it('does NOT need a Task import for these arg bags (primitive-only shapes)', () => {
-    // Unlike OnLaneErrorArgs / ShouldIsolateArgs, these observe-hook arg bags
+    // Unlike worktree/task observe-hook arg bags, these observe-hook arg bags
     // carry only primitive fields (strings / unknown / number), so they must
     // NOT introduce a NEW Task dependency. (Task may already be imported for
     // the step-level / lane hooks — this just asserts nothing about Task is
@@ -613,20 +611,16 @@ describe('declaration merge — onStructuredOutput and onDecision coexist', () =
     expect(Array.isArray(hooks.onDecision)).toBe(true);
   });
 
-  it('coexists with the previously-added step / lane hooks (no field-name collisions)', () => {
+  it('coexists with the previously-added step hooks (no field-name collisions)', () => {
     // Declaration merging requires unique field names; this pins that
     // onStructuredOutput / onDecision do not collide with beforeStepPrompt /
-    // collectContext / onLaneError / shouldIsolate.
+    // collectContext.
     const hooks: WorkflowHooks = {
       collectContext: () => ({ label: 'l', content: 'c' }),
-      onLaneError: () => {},
-      shouldIsolate: () => true,
       onStructuredOutput: () => {},
       onDecision: () => {},
     };
-    expect(Object.keys(hooks).sort()).toEqual(
-      ['collectContext', 'onDecision', 'onLaneError', 'onStructuredOutput', 'shouldIsolate'].sort(),
-    );
+    expect(Object.keys(hooks).sort()).toEqual(['collectContext', 'onDecision', 'onStructuredOutput'].sort());
   });
 
   it('an empty hooks object is still valid (all fields optional)', () => {

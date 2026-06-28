@@ -81,15 +81,17 @@ packages/
 │   │   ├─ auth.ts           authorize(msg) chokepoint — capability-token gen/validate (disabled now)
 │   │   └─ bind-guard.ts     isWildcardHost() — refuses 0.0.0.0/::/* binding until auth exists
 │   ├─ core/                 profiles, config, agent lifecycle (spawnAgent), agent plugin contract + registry, worktree lifecycle, git, network
-│   ├─ pool/                 RunnerPool + session primitive + SessionGate + composable runners
-│   │   ├─ runner-pool.ts    RunnerPool (replaces LanePool+Scheduler) — drain-loop model
+│   ├─ pool/                 SessionScheduler + TaskGraph + session primitive + SessionGate + composable runners
+│   │   ├─ session-scheduler.ts  SessionScheduler — task-DAG-driven greedy tiered drain loop (T1 active affinity → T2 parked → T3 ready/lazy-activate)
+│   │   ├─ task-graph.ts     TaskGraph — task DAG with status tracking, blocking-pressure ranking, cycle detection
 │   │   ├─ session-gate.ts   SessionGate — two-level (total + per-model) FIFO RAII concurrency gate
 │   │   ├─ session.ts        runSession — the single-step session primitive
 │   │   ├─ runners/          composable runner factories (singleSession, linear, parallel, review, council, map, branch, coordinator, coalescing)
-│   │   ├─ runner-utils.ts   runSessionViaGate — shared gate+session helper for runners
+│   │   ├─ runners/runner-utils.ts   defaultExecute + delegateToChild — shared gate-free helpers for runners
 │   │   ├─ constants.ts      DEFAULT_MAX_ROUNDS
 │   │   └─ validation.ts     assertSafeName, severity helpers
-│   └─ tracking/             EventStore, evolve re-export, store-callbacks, task-status (TaskTracker), audit-log, persistence
+│   └─ tracking/             EventStore, evolve re-export, store-callbacks, audit-log, persistence
+│      └─ task-status (TaskTracker) — now a thin read-only shim; scheduling lives in pool/task-graph.ts
 │
 ├── tui/       @harms-haus/engin-tui  (PRIVATE — pi-tui CLIENT)
 │   Depends on shared + @earendil-works/pi-tui. Must NOT depend on engine.
@@ -177,7 +179,7 @@ The workflow's `options.onStatus` is not the raw `createStoreCallbacks` surface.
 `RunExecutor` first composes it through `composeHooks(storeCallbacks, workflow.hooks)`
 ([Hooks](../reference/hooks.md)). The composed `onStatus` forwards every callback **verbatim**
 to the store — the store is the terminal sink and **always** fires — while the returned
-`HookRegistry` is threaded into the engine primitives (`RunnerPool`, `PhaseRunner`,
+`HookRegistry` is threaded into the engine primitives (`SessionScheduler`, `PhaseRunner`,
 `WorktreeManager`) so influence/observe hooks fire at their lifecycle seams. Hooks compose **on
 top of** `StatusCallbacks` without replacing it: a workflow with no `hooks` field gets an
 `onStatus` behaviorally identical to `storeCallbacks` and an empty registry. Observe hooks
@@ -254,12 +256,12 @@ probe finds nothing. See [CLI reference → server](../reference/cli.md#server) 
 
 Two parallel representations of tasks exist by design:
 
-| Aspect           | Write model (`Task` / `TaskTracker`)                                         | Read model (`TaskEntity` / projection)       |
+| Aspect           | Write model (`Task` / `TaskGraph`)                                           | Read model (`TaskEntity` / projection)       |
 | ---------------- | ---------------------------------------------------------------------------- | -------------------------------------------- |
-| Lives in         | `TaskTracker` (executor side, server)                                        | `WorkflowProjection.tasks`                   |
+| Lives in         | `TaskGraph` (executor side, server)                                          | `WorkflowProjection.tasks`                   |
 | Carries          | prompt, files, dependencies, review feedback, worktree mode, executor status | title, phaseId, status, dependencies, timing |
-| Mutated by       | `RunnerPool`, retry valve, `claimTasks`/`completeTask`/...                   | `evolve()` reducer (immutable)               |
-| Kept in sync via | events fired by `runSession` / `RunnerPool` / task processing                | replaying those events                       |
+| Mutated by       | `SessionScheduler` (drives `TaskGraph` status transitions via the gate)      | `evolve()` reducer (immutable)               |
+| Kept in sync via | events fired by `runSession` / `SessionScheduler` / task processing          | replaying those events                       |
 
 A subtle consequence: `rejectTask` on the write model keeps the task `active` (the
 pool still owns it and will retry), but the corresponding `task_rejected` event maps
@@ -294,10 +296,13 @@ sessionId, sessionPath, contextWindow?, runnerRole, attempt }`.
    `.complete` sentinel with SHA-256 checksum). `onSessionComplete` fires. The session
    is disposed and removed from `activeSessions` in `finally`.
 
-For tasks in a `RunnerPool`, each claimed task gets a runner that composes one or more
-sessions. The pool's retry valve handles task-level failures: transient errors are
-retried (up to `maxTaskRetries`), permanent errors fail fast. See
-[Task pool & execution](../reference/task-pool.md).
+For tasks in a `SessionScheduler`, each task is fulfilled by a `SessionPlanRunner` —
+an async generator that yields batches of `SessionSpec`s. The scheduler acquires gate
+slots, executes the specs (one or more sessions per spec), and advances the generator
+with the batch results once every spec settles. Per-task failures (generator errors,
+worktree merge failures) route the task through `failTask`; resource deadlocks
+(remaining non-terminal tasks with nothing in-flight) are escalated to task failures.
+See [Task pool & execution](../reference/task-pool.md).
 
 ## Where to go next
 
@@ -309,6 +314,6 @@ retried (up to `maxTaskRetries`), permanent errors fail fast. See
   durability, and the `log` event type.
 - [Web reference](../reference/web.md) — the React client, the runs frame, and the
   shared `EngineClient`.
-- [Task pool & execution](../reference/task-pool.md) — `RunnerPool`, `SessionGate`,
-  runners, retries.
+- [Task pool & execution](../reference/task-pool.md) — `SessionScheduler`, `TaskGraph`,
+  `SessionGate`, runners.
 - [Building a new workflow](../guides/building-workflows.md) — use all of this in anger.

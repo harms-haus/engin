@@ -1,7 +1,7 @@
 import type { ZodType } from 'zod';
 
 // ─── Task Tracking ──────────────────────────────────────────────────────────
-export type TaskStatus = 'ready' | 'blocked' | 'active' | 'complete' | 'failed' | 'cancelled';
+export type TaskStatus = 'ready' | 'blocked' | 'active' | 'complete' | 'failed' | 'cancelled' | 'parked';
 
 /** A single step in the task processing pipeline. Each step maps to an agent profile. */
 export interface StepDefinition<T = unknown> {

@@ -88,11 +88,12 @@ describe('appendReviewFeedback re-export from core/utils.ts', () => {
 
 // ─── Layering invariant (Part A motivation) ────────────────────────────────
 //
-// `tracking/task-status.ts` consumes `appendReviewFeedback`. If that function
-// lived in `pool/`, tracking would gain a `tracking → pool` dependency —
-// violating the layering where pool is a consumer of tracking, not the
-// reverse. Extracting to `core/` avoids this. This test guards the invariant
-// by scanning every tracking source file for a `from '../pool/` import.
+// `appendReviewFeedback` was extracted to `core/` so that cross-layer
+// consumers (pool/* and tracking/*) can depend on it without creating a
+// `tracking → pool` dependency (pool depends on tracking, never the
+// reverse). D1 removed the last tracking consumer of this helper
+// (task-status.ts no longer imports it), but the invariant that no tracking
+// file imports from `../pool/` is still enforced generally below.
 
 describe('tracking layer does not depend on pool layer', () => {
   const trackingDir = join(process.cwd(), 'packages', 'engine', 'src', 'tracking');
@@ -110,17 +111,5 @@ describe('tracking layer does not depend on pool layer', () => {
       for (const line of lines) offenders.push(`${file}: ${line}`);
     }
     expect(offenders).toEqual([]);
-  });
-
-  it('tracking/task-status.ts imports appendReviewFeedback from core (not pool)', () => {
-    const contents = readFileSync(join(trackingDir, 'task-status.ts'), 'utf-8');
-    expect(contents).toContain('appendReviewFeedback');
-    // Must come from the core layer, never the pool layer.
-    const appendImportLine = contents
-      .split('\n')
-      .find((l) => l.includes('appendReviewFeedback') && l.includes('import'));
-    expect(appendImportLine).toBeDefined();
-    expect(appendImportLine).toContain('task-feedback');
-    expect(appendImportLine).not.toContain('../pool/');
   });
 });

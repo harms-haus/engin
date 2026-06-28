@@ -1,33 +1,30 @@
-// ─── Review Runner ─────────────────────────────────────────────────────────
+// ─── Review Runner (SessionPlan contract) ──────────────────────────────────
 //
 // Implements the execute→review loop:
 //
 //   for round = 1..maxRounds:
-//     1. Run execute session (id `${taskId}/${executeSpec.role}`, attempt = 1).
-//        On round 2+ the execute session RESUMES the prior one (resume:true)
-//        so the agent sees its earlier work + the appended review feedback,
-//        instead of starting a fresh session. attempt stays 1 (a resume is a
-//        continuation, not a retry) so the projection keeps one SessionEntity.
-//     2. Feed the execute result into the review prompt
-//     3. Run review session (id `${taskId}/${reviewSpec.role}`, structured output).
-//        On round 2+ the review session RESUMES the prior one too.
-//     4. If review approves → return completed
-//     5. If review rejects → append feedback to execute prompt, continue
-//   maxRounds exhausted → return failed
+//     1. Yield execute session batch
+//     2. Receive execute result via gen.next return
+//     3. Build review prompt with execute output
+//     4. Yield review session batch
+//     5. Receive review result via gen.next return
+//     6. If review approves → generator returns (task completes)
+//     7. If review rejects → accumulate feedback, continue
+//   maxRounds exhausted → throw (task fails)
 //
-// Session ids are derived from each spec's `role` (NOT hardcoded), so multiple
-// reviewRunners composed in a linearRunner get DISTINCT session dirs — without
-// this, a second reviewRunner would hit the first one's cached .complete.
+// ID convention: `${taskId}/${role}` — stable across rounds.
+// Round 2+ sets resume:true so the agent sees its prior work + feedback.
+// attempt is always 1 (a resume continues the same session entity,
+// keeping the projection key stable).
 //
-// Transient SessionError in execute → retry-in-place (same round, re-run
-// execute). Permanent SessionError → return failed immediately.
+// The scheduler owns gate acquisition and feeds results back via
+// gen.next(results). This runner never calls execute() from inside plan() —
+// it only yields specs and reads results from the yield return value.
 
-import { safeErrorMessage } from '../../core/utils.js';
 import { DEFAULT_MAX_ROUNDS } from '../constants.js';
 import type { SessionResult, SessionSpec } from '../session.js';
-import { SessionError } from '../session.js';
-import type { Runner, RunnerContext, TaskOutcome } from './types.js';
-import { runSessionViaGate } from './utils.js';
+import { defaultExecute } from './runner-utils.js';
+import type { SessionPlanContext, SessionPlanFactory, SessionPlanRunner } from './session-plan-types.js';
 
 /** Suffix appended to the execute prompt when a review rejects. */
 const FEEDBACK_SUFFIX = '\n\nReview feedback:\n';
@@ -58,16 +55,28 @@ function buildReviewPrompt(reviewPrompt: string, executeResult: SessionResult): 
 }
 
 /**
- * Create a Runner that implements the execute→review loop.
+ * Create a SessionPlanFactory that implements the execute→review loop.
  *
- * IDs: derived from each spec's `role` — stable across rounds; round 2+ resumes.
- * approved → completed; rejected → increment round, re-run execute,
- * append feedback; maxRounds exhausted → failed.
- * Catch transient SessionError in execute, retry-in-place; permanent rethrow.
+ * Each call to the factory creates a fresh runner instance. The runner's
+ * `plan()` is an async generator that yields execute/review pairs until
+ * the review approves or maxRounds is exhausted.
+ *
+ * IDs are derived from each spec's `role` — stable across rounds; round 2+
+ * sets resume:true. attempt is always 1 (a resume is a continuation of the
+ * same session, not a retry) so the projection keeps one SessionEntity.
+ *
+ * @param executeSpec - Spec for the execute session (id and attempt are
+ *   auto-generated). The `role` field determines the session id segment.
+ * @param reviewSpec - Spec for the review session (id and attempt are
+ *   auto-generated). The `role` field determines the session id segment.
+ * @param options - Optional config: maxRounds (defaults to DEFAULT_MAX_ROUNDS),
+ *   onReviewReject callback.
+ * @returns A factory that constructs a fresh {@link SessionPlanRunner} for
+ *   each call.
  */
 export function reviewRunner(
-  executeSpec: Omit<SessionSpec, 'id'> & { role: string },
-  reviewSpec: Omit<SessionSpec, 'id'> & { role: string },
+  executeSpec: Omit<SessionSpec, 'id' | 'attempt' | 'runnerRole'> & { role: string },
+  reviewSpec: Omit<SessionSpec, 'id' | 'attempt' | 'runnerRole'> & { role: string },
   options?: {
     maxRounds?: number;
     /** Fires when a review REJECTS (round `round` just completed with
@@ -77,127 +86,104 @@ export function reviewRunner(
      *  Not called on approval or after the final round. */
     onReviewReject?: (round: number) => void | Promise<void>;
   },
-): Runner {
+): SessionPlanFactory {
   const maxRounds = options?.maxRounds ?? DEFAULT_MAX_ROUNDS;
   const onReviewReject = options?.onReviewReject;
 
-  return async (ctx: RunnerContext): Promise<TaskOutcome> => {
-    const taskId = ctx.task.id;
-    const collectedFeedback: string[] = [];
+  return (): SessionPlanRunner => {
+    return {
+      plan: async function* (
+        ctx: SessionPlanContext,
+      ): AsyncGenerator<SessionSpec[], SessionResult[] | undefined, SessionResult[]> {
+        const taskId = ctx.task.id;
+        const collectedFeedback: string[] = [];
+        const executeRole = executeSpec.role;
+        const reviewRole = reviewSpec.role;
 
-    for (let round = 1; round <= maxRounds; round++) {
-      // ── 1. Run execute session (with feedback appended from prior rounds) ──
-      let executePrompt = executeSpec.prompt;
-      if (collectedFeedback.length > 0) {
-        executePrompt = `${executeSpec.prompt}${FEEDBACK_SUFFIX}${collectedFeedback.join('\n')}`;
-      }
+        // Stable IDs across rounds — round 2+ uses resume:true
+        const executeId = `${taskId}/${executeRole}`;
+        const reviewId = `${taskId}/${reviewRole}`;
 
-      const executeId = `${taskId}/${executeSpec.role}`;
-
-      const executeSessionSpec: SessionSpec = {
-        id: executeId,
-        profile: executeSpec.profile,
-        prompt: executePrompt,
-        ...(executeSpec.schema !== undefined ? { schema: executeSpec.schema } : {}),
-        outputMode: executeSpec.outputMode,
-        ...(executeSpec.isReadOnly !== undefined ? { isReadOnly: executeSpec.isReadOnly } : {}),
-        runnerRole: executeSpec.role,
-        // attempt stays at 1 across rounds: a resume is a CONTINUATION of the
-        // same session, not a new retry attempt. This keeps the projection's
-        // session key stable (agentId::taskId::role::1) so round 2+ UPDATES
-        // the existing SessionEntity instead of creating a new one.
-        attempt: 1,
-        // On round 2+ (a prior review rejected), RESUME the prior execute
-        // session so the agent sees its earlier work + the appended feedback,
-        // instead of starting a fresh session. Round 1 creates the session.
-        ...(round > 1 ? { resume: true } : {}),
-      };
-
-      let executeResult: SessionResult | undefined;
-      try {
-        executeResult = await runSessionViaGate(ctx, executeSessionSpec);
-      } catch (err) {
-        if (err instanceof SessionError && err.transient) {
-          // Transient error — retry-in-place (same round, re-run execute)
-          try {
-            executeResult = await runSessionViaGate(ctx, executeSessionSpec);
-          } catch (err2) {
-            const msg = safeErrorMessage(err2);
-            return { status: 'failed', error: msg };
+        for (let round = 1; round <= maxRounds; round++) {
+          // ── 1. Build execute spec (with feedback appended from prior rounds) ──
+          let executePrompt = executeSpec.prompt;
+          if (collectedFeedback.length > 0) {
+            executePrompt = `${executeSpec.prompt}${FEEDBACK_SUFFIX}${collectedFeedback.join('\n')}`;
           }
-        } else {
-          const msg = safeErrorMessage(err);
-          return { status: 'failed', error: msg };
-        }
-      }
 
-      // ── 2. Build review prompt (feed in execute result) ──────────────────
-      if (!executeResult) {
-        return { status: 'failed', error: 'Execute session produced no result' };
-      }
-      const reviewPrompt = buildReviewPrompt(reviewSpec.prompt, executeResult);
+          const execSessionSpec: SessionSpec = {
+            id: executeId,
+            profile: executeSpec.profile,
+            prompt: executePrompt,
+            ...(executeSpec.schema !== undefined ? { schema: executeSpec.schema } : {}),
+            outputMode: executeSpec.outputMode,
+            ...(executeSpec.isReadOnly !== undefined ? { isReadOnly: executeSpec.isReadOnly } : {}),
+            runnerRole: executeRole,
+            // attempt stays at 1 across rounds: a resume is a CONTINUATION of the
+            // same session, not a new retry attempt. This keeps the projection's
+            // session key stable (agentId::taskId::role::1) so round 2+ UPDATES
+            // the existing SessionEntity instead of creating a new one.
+            attempt: 1,
+            // On round 2+ (a prior review rejected), RESUME the prior execute
+            // session so the agent sees its earlier work + the appended feedback,
+            // instead of starting a fresh session. Round 1 creates the session.
+            ...(round > 1 ? { resume: true } : {}),
+          };
 
-      // ── 3. Run review session ─────────────────────────────────────────────
-      // Stable review id across rounds; on round 2+ RESUME the prior review
-      // session so the reviewer sees its earlier verdict + the updated execute
-      // output, instead of starting a fresh session each round.
-      const reviewId = `${taskId}/${reviewSpec.role}`;
+          // Yield execute batch. The scheduler runs the session via
+          // runner.execute() and feeds back one result per spec (in order)
+          // via gen.next(results).
+          const execResults: SessionResult[] = yield [execSessionSpec];
+          const execResult = execResults[0];
 
-      const reviewSessionSpec: SessionSpec = {
-        id: reviewId,
-        profile: reviewSpec.profile,
-        prompt: reviewPrompt,
-        ...(reviewSpec.schema !== undefined ? { schema: reviewSpec.schema } : {}),
-        outputMode: reviewSpec.outputMode,
-        ...(reviewSpec.isReadOnly !== undefined ? { isReadOnly: reviewSpec.isReadOnly } : {}),
-        runnerRole: reviewSpec.role,
-        // attempt stays at 1: a resume continues the same session, keeping the
-        // projection key stable so round 2+ updates the existing entity.
-        attempt: 1,
-        ...(round > 1 ? { resume: true } : {}),
-      };
+          // ── 2. Build review prompt with execute result ─────────────────────
+          const reviewPrompt = buildReviewPrompt(reviewSpec.prompt, execResult);
 
-      let reviewResult;
-      try {
-        reviewResult = await runSessionViaGate(ctx, reviewSessionSpec);
-      } catch (err) {
-        if (err instanceof SessionError && err.transient) {
-          try {
-            reviewResult = await runSessionViaGate(ctx, reviewSessionSpec);
-          } catch (err2) {
-            const msg = safeErrorMessage(err2);
-            return { status: 'failed', error: msg };
+          const reviewSessionSpec: SessionSpec = {
+            id: reviewId,
+            profile: reviewSpec.profile,
+            prompt: reviewPrompt,
+            ...(reviewSpec.schema !== undefined ? { schema: reviewSpec.schema } : {}),
+            outputMode: reviewSpec.outputMode,
+            ...(reviewSpec.isReadOnly !== undefined ? { isReadOnly: reviewSpec.isReadOnly } : {}),
+            runnerRole: reviewRole,
+            attempt: 1,
+            ...(round > 1 ? { resume: true } : {}),
+          };
+
+          // Yield review batch
+          const reviewResults: SessionResult[] = yield [reviewSessionSpec];
+          const reviewResult = reviewResults[0];
+
+          // ── 3. Check approval ─────────────────────────────────────────────
+          const reviewData = reviewResult.mode === 'structured' ? (reviewResult.data as Record<string, unknown>) : {};
+          if (reviewData.approved === true) {
+            // Approved — generator returns, task completes
+            return;
           }
-        } else {
-          const msg = safeErrorMessage(err);
-          return { status: 'failed', error: msg };
+
+          // Rejected — collect feedback for the next round
+          const feedback = typeof reviewData.feedback === 'string' ? reviewData.feedback : '';
+          if (feedback) {
+            collectedFeedback.push(feedback);
+          }
+
+          // Fire onReviewReject callback (non-fatal)
+          if (onReviewReject) {
+            try {
+              await onReviewReject(round);
+            } catch {
+              /* non-fatal: snapshot failures must not abort the review loop */
+            }
+          }
         }
-      }
 
-      // ── 4. Check review result ────────────────────────────────────────────
-      const reviewData = reviewResult.mode === 'structured' ? (reviewResult.data as Record<string, unknown>) : {};
-      if (reviewData.approved === true) {
-        return { status: 'completed' };
-      }
+        // Max rounds exhausted without approval — signal failure by throwing.
+        // The scheduler treats a thrown generator error as task failure.
+        throw new Error(`Review rejected after ${maxRounds} rounds`);
+      },
 
-      // Rejected — collect feedback for the next round.
-      const feedback = typeof reviewData.feedback === 'string' ? reviewData.feedback : '';
-      if (feedback) {
-        collectedFeedback.push(feedback);
-      }
-
-      // Give callers a chance to snapshot artifacts produced this round
-      // (e.g. copy plan-final.json → plan-rev{round}.json) BEFORE the next
-      // execute round resumes and overwrites the live artifact.
-      if (onReviewReject) {
-        try {
-          await onReviewReject(round);
-        } catch {
-          /* non-fatal: snapshot failures must not abort the review loop */
-        }
-      }
-    }
-
-    return { status: 'failed', error: `Review rejected after ${maxRounds} rounds` };
+      execute: defaultExecute,
+    };
   };
 }

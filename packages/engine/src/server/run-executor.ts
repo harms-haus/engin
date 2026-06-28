@@ -32,7 +32,7 @@
 //     path (the run-end final-merge pair). The engine does NOT fire them
 //     here — `RunManager.handleWorktreeAction` invokes them once the run is
 //     terminal and the user requests the merge. The defaults reproduce the
-//     legacy squash-merge / agent-resolution UX.
+//     default squash-merge / agent-resolution UX.
 //
 // DESIGN SPLIT: the `onPersist` / `onRestore` defaults are NOT registered by
 // the engine — the WorkflowStatusTracker they capture is created by the
@@ -44,11 +44,10 @@
 // defaults reproduce the prior behavior EXACTLY (existing workflows are
 // unaffected).
 //
-// CRITICAL INVARIANT (called out by the decomposition task):
+// CRITICAL INVARIANT:
 //   `execute` MUST call `bridge.broadcastTerminal(...)` to emit the terminal
-//   `run_complete` / `run_failed` messages. After task-29 removes the
-//   projection-change-based terminal detection from StatusBridge,
-//   `broadcastTerminal` is the ONLY path for terminal messages — so if the
+//   `run_complete` / `run_failed` messages. `broadcastTerminal` is the ONLY
+//   path for terminal messages — so if the
 //   call is dropped, clients never learn a run finished.
 //
 // RunExecutor does NOT load workflows (the facade does) — it only consumes the
@@ -246,7 +245,7 @@ export class RunExecutor {
       // They compose WITH any workflow-provided subscriber registered earlier
       // by `composeHooks` (observe fan-out fires both; pipeline runs both in
       // order; first-wins lets the workflow's earlier-registered hook
-      // decide). The defaults reproduce the legacy `.worktreecopy` /
+      // decide). The defaults reproduce the default `.worktreecopy` /
       // squash-merge / agent-resolution UX when the workflow opts out.
       hookRegistry.register({
         beforeTaskWorktreeCreate: createDefaultBeforeTaskWorktreeCreate(),
@@ -307,7 +306,7 @@ export class RunExecutor {
     //  - the engine-fired observe hooks (onWorkflowResume, onWorkflowAbort)
     //    have a well-defined (identity / log) behavior even when the
     //    workflow registers no subscriber; AND
-    //  - the git-path merge hooks reproduce the legacy squash-merge /
+    //  - the git-path merge hooks reproduce the default squash-merge /
     //    agent-resolution UX when the workflow opts out.
     //
     // DESIGN SPLIT (called out by the task and pinned by suite 7 of
@@ -449,8 +448,7 @@ export class RunExecutor {
 
         handle.status = 'complete';
         handle.summary.status = 'complete';
-        // CRITICAL: broadcastTerminal is the ONLY path for terminal messages
-        // once task-29 removes projection-change detection from StatusBridge.
+        // CRITICAL: broadcastTerminal is the ONLY path for terminal messages.
         //
         // Carry `handle.summary.worktree` on the terminal broadcast so clients
         // can drive the post-run final-merge prompt. The main worktree is set

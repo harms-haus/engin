@@ -26,6 +26,7 @@ export function handleSessionStarted(state: WorkflowProjection, event: EventReco
       attempt: attempt ?? existing.attempt,
       startedAt: existing.startedAt ?? event.metadata.timestamp,
       active: true,
+      status: 'running',
       completedAt: undefined,
       taskTitle: existingTask?.title ?? existing.taskTitle,
     };
@@ -50,6 +51,7 @@ export function handleSessionStarted(state: WorkflowProjection, event: EventReco
     attempt: attempt ?? 1,
     startedAt: event.metadata.timestamp,
     active: true,
+    status: 'running',
     log: [],
     toolCallCount: 0,
     inputTokens: 0,
@@ -71,7 +73,21 @@ export function handleSessionCompleted(state: WorkflowProjection, event: EventRe
   return clone(state, {
     sessions: {
       ...state.sessions,
-      [key]: clone(existing, { active: false, completedAt: event.metadata.timestamp }),
+      [key]: clone(existing, { active: false, status: 'completed', completedAt: event.metadata.timestamp }),
+    },
+    seq: event.seq,
+  });
+}
+
+export function handleSessionFailed(state: WorkflowProjection, event: EventRecord): WorkflowProjection {
+  const { agentId, taskId, runnerRole, attempt } = extractSessionIdentity(event);
+  const resolved = resolveSession(state.sessions, agentId, taskId, runnerRole, attempt);
+  if (!resolved) return clone(state, { seq: event.seq });
+  const { key, entity: existing } = resolved;
+  return clone(state, {
+    sessions: {
+      ...state.sessions,
+      [key]: clone(existing, { active: false, status: 'failed' }),
     },
     seq: event.seq,
   });

@@ -1,130 +1,89 @@
-// ─── Map Runner ────────────────────────────────────────────────────────────
+// ─── Map Runner (SessionPlan contract) ────────────────────────────────────
 //
-// Fans out over a collection of items, running one session per item with an
-// optional concurrency cap. Session IDs follow the convention:
+// Fans out over a collection of items, yielding one batch with one
+// SessionSpec per item. The per-item prompt is composed as:
+//
+//   spec.prompt + "\n\nItem: " + JSON.stringify(item)
+//
+// Session IDs follow the convention:
 //
 //   `${taskId}/map[${index}].${role}#${attempt}`
 //
-// The per-item prompt is composed as:
+// Concurrency is NOT managed here — the scheduler/gate is the sole
+// concurrency authority. All specs in the batch are available to the
+// scheduler simultaneously; the gate decides how many run at once.
 //
-//   sessionSpec.prompt + "\n\nItem: " + JSON.stringify(item)
-//
-// Uses Promise.allSettled to avoid session leaks on partial failure.
-// Returns { status: 'completed' } if all items succeed;
-// { status: 'failed' } if any item fails (all items still settle — no leak).
-//
-// Concurrency: when `concurrency` is omitted or >= items.length, all items run
-// in parallel through the gate. Otherwise a worker-pool of size `concurrency`
-// serializes items. The gate additionally throttles per-provider/model.
-// This dual-layer approach is deadlock-free: the local pool never holds a gate
-// slot while waiting for another, and the gate is FIFO with RAII release.
+// `execute()` delegates to {@link defaultExecute} (gate-free).
 
-import { safeErrorMessage } from '../../core/utils.js';
-import type { SessionSpec } from '../session.js';
-import type { Runner, RunnerContext, TaskOutcome } from './types.js';
-import { runSessionViaGate } from './utils.js';
+import type { SessionResult, SessionSpec } from '../session.js';
+import { defaultExecute } from './runner-utils.js';
+import type { SessionPlanContext, SessionPlanFactory, SessionPlanRunner } from './session-plan-types.js';
 
-/** Options for creating a map runner. */
+/** Options for creating a map runner (SessionPlan contract). */
 export interface MapRunnerOptions {
   /** Static array of items to fan out over. */
   items: unknown[];
   /**
-   * Base session spec shared across all items. The `id` is computed
-   * automatically as `map[${index}].${role}`. The per-item prompt is
-   * composed as `sessionSpec.prompt + "\n\nItem: " + JSON.stringify(item)`.
+   * Base session spec. The `id` is computed automatically per item as
+   * `map[${index}].<role>`. The per-item prompt is composed as
+   * `spec.prompt + "\n\nItem: " + JSON.stringify(item)`.
    */
-  sessionSpec: Omit<SessionSpec, 'id'> & { role: string };
-  /** Maximum concurrent items. When omitted, all items run in parallel. */
-  concurrency?: number;
+  spec: SessionSpec;
+  /** Role segment for session IDs (default: "worker"). */
+  role?: string;
 }
 
 /**
- * Create a Runner that fans out over a collection of items, running one
- * session per item with an optional concurrency cap.
+ * Create a SessionPlanRunner that fans out over a collection of items,
+ * yielding one batch with one spec per item.
  *
  * IDs: `map[${index}].<role>` for each item.
- * Concurrency: enforced by a local worker pool (delegating through the gate).
- * AllSettled: ensures all sessions settle even on partial failure.
+ * Concurrency: the gate is the sole concurrency authority.
+ *
+ * @param options - Items, base spec, and optional role.
+ * @returns A factory that constructs a fresh {@link SessionPlanRunner} for
+ *   each call.
  */
-export function mapRunner(options: MapRunnerOptions): Runner {
-  const { items, sessionSpec, concurrency: concurrencyOpt } = options;
+export function mapRunner(options: MapRunnerOptions): SessionPlanFactory {
+  const { items, spec, role = 'worker' } = options;
 
-  return async (ctx: RunnerContext): Promise<TaskOutcome> => {
-    // ── Edge: empty items → fail immediately ──────────────────────────────
-    if (items.length === 0) {
-      return { status: 'failed', error: 'No items to process' };
-    }
-
-    // ── Resolve profile once (early-return if missing) ────────────────────
-    const resolvedProfile = ctx.profiles.get(sessionSpec.profile);
-    if (!resolvedProfile) {
-      return { status: 'failed', error: `Profile "${sessionSpec.profile}" not found in profiles map` };
-    }
-
-    const role = sessionSpec.role;
-    const attempt = sessionSpec.attempt;
-
-    // ── Per-item session execution ────────────────────────────────────────
-    const processItem = async (item: unknown, index: number): Promise<void> => {
-      const id = `${ctx.task.id}/map[${index}].${role}#${attempt}`;
-      const prompt = `${sessionSpec.prompt}\n\nItem: ${JSON.stringify(item)}`;
-
-      const perItemSpec: SessionSpec = {
-        id,
-        profile: sessionSpec.profile,
-        prompt,
-        ...(sessionSpec.schema !== undefined ? { schema: sessionSpec.schema } : {}),
-        outputMode: sessionSpec.outputMode,
-        ...(sessionSpec.isReadOnly !== undefined ? { isReadOnly: sessionSpec.isReadOnly } : {}),
-        runnerRole: sessionSpec.runnerRole,
-        attempt,
-      };
-
-      await runSessionViaGate(ctx, perItemSpec);
-    };
-
-    // ── Execute with concurrency control ──────────────────────────────────
-    const concurrency = concurrencyOpt !== undefined ? Math.max(1, concurrencyOpt) : undefined;
-
-    let results: PromiseSettledResult<void>[];
-
-    if (concurrency === undefined || concurrency >= items.length) {
-      // Run all items in parallel — allSettled ensures all sessions are tracked.
-      results = await Promise.allSettled(items.map((item, i) => processItem(item, i)));
-    } else {
-      // Worker-pool pattern with concurrency cap.
-      // Each worker pulls the next index and processes it; no gate slot is
-      // held while waiting for another, so this is deadlock-free.
-      results = new Array<PromiseSettledResult<void>>(items.length);
-      let nextIndex = 0;
-
-      const poolWorker = async (): Promise<void> => {
-        while (nextIndex < items.length) {
-          const i = nextIndex++;
-          try {
-            await processItem(items[i], i);
-            results[i] = { status: 'fulfilled', value: undefined };
-          } catch (err) {
-            results[i] = { status: 'rejected', reason: err };
-          }
-        }
-      };
-
-      await Promise.all(Array.from({ length: concurrency }, () => poolWorker()));
-    }
-
-    // ── Settle: all succeed → completed; any fail → failed ────────────────
-    const failures = results.filter((r) => r.status === 'rejected');
-
-    if (failures.length === 0) {
-      return { status: 'completed' };
-    }
-
-    const errorMessages = failures.map((r) => (r.status === 'rejected' ? safeErrorMessage(r.reason) : ''));
-
+  return (): SessionPlanRunner => {
     return {
-      status: 'failed',
-      error: `${failures.length} of ${items.length} items failed: ${errorMessages.join('; ')}`,
+      plan: async function* (
+        ctx: SessionPlanContext,
+      ): AsyncGenerator<SessionSpec[], SessionResult[] | undefined, SessionResult[]> {
+        // ── Edge: empty items → done immediately ──────────────────────────
+        if (items.length === 0) {
+          return;
+        }
+
+        const attempt = spec.attempt ?? 1;
+
+        // ── Build per-item specs ─────────────────────────────────────────
+        const batch: SessionSpec[] = items.map((item, index) => {
+          const id = `${ctx.task.id}/map[${index}].${role}#${attempt}`;
+          const prompt = `${spec.prompt}\n\nItem: ${JSON.stringify(item)}`;
+
+          return {
+            id,
+            profile: spec.profile,
+            prompt,
+            outputMode: spec.outputMode,
+            runnerRole: role,
+            attempt,
+            ...(spec.schema !== undefined ? { schema: spec.schema } : {}),
+            ...(spec.isReadOnly !== undefined ? { isReadOnly: spec.isReadOnly } : {}),
+          };
+        });
+
+        // ── Yield the single batch ───────────────────────────────────────
+        const _results: SessionResult[] = yield batch;
+
+        // ── Done ─────────────────────────────────────────────────────────
+        return;
+      },
+
+      execute: defaultExecute,
     };
   };
 }

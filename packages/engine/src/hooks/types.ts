@@ -12,7 +12,7 @@
 // runtime and stays free of circular runtime dependencies.
 
 import type { Task, WorkflowState, WorktreeInfo } from '../core/types.js';
-import type { Runner } from '../pool/runners/types.js';
+import type { SessionPlanRunner } from '../pool/runners/session-plan-types.js';
 import type { StepDefinition } from '../pool/types.js';
 
 /**
@@ -145,19 +145,9 @@ export interface ContextBlock {
 }
 
 // ── Lane / failure isolation argument types ────────────────────────────────
-
-export interface OnLaneErrorArgs {
-  laneId: string;
-  task: Task;
-  error: string;
-  phaseId: string;
-}
-
-export interface ShouldIsolateArgs {
-  task: Task;
-  error: string;
-  laneId: string;
-}
+// (Removed in D5: the lane-isolation hooks were declared but never wired in
+//  the RunnerPool era — they're dead hooks. The lane-isolation seam is now
+//  driven by SessionScheduler in E2.)
 
 // ── Workflow-level argument types ──────────────────────────────────────────
 
@@ -300,10 +290,11 @@ export interface BeforeTaskArgs {
 
 export interface BeforeTaskResult {
   skip?: boolean;
-  runner?: Runner;
+  runner?: SessionPlanRunner;
   steps?: StepDefinition[];
   files?: string[];
   reason?: string;
+  sessionPlan?: { role: string; profile: string }[];
 }
 
 // ── Step level (pipeline + all-run) ────────────────────────────────────────
@@ -313,15 +304,6 @@ export interface WorkflowHooks {
   beforeSessionPrompt?: PipelineHook<string, BeforeSessionPromptArgs> | PipelineHook<string, BeforeSessionPromptArgs>[];
   /** All-run hook: collects context blocks (file contents, diffs) for a step. Results are concatenated by CONTEXT_BLOCK_REDUCER. Default = read task.files and inline their contents. */
   collectContext?: AllRunHook<ContextBlock, CollectContextArgs> | AllRunHook<ContextBlock, CollectContextArgs>[];
-}
-
-// ── Lane / failure isolation hooks ─────────────────────────────────────────
-
-export interface WorkflowHooks {
-  onLaneError?: ObserveHook<OnLaneErrorArgs> | ObserveHook<OnLaneErrorArgs>[];
-  shouldIsolate?:
-    | FirstWinsHook<boolean | undefined, ShouldIsolateArgs>
-    | FirstWinsHook<boolean | undefined, ShouldIsolateArgs>[];
 }
 
 // ── Workflow level (observe + pipeline + first-wins) ───────────────────────
@@ -401,36 +383,6 @@ export interface WorkflowHooks {
   beforeTask?:
     | FirstWinsHook<BeforeTaskResult | undefined, BeforeTaskArgs>
     | FirstWinsHook<BeforeTaskResult | undefined, BeforeTaskArgs>[];
-}
-
-// ── Scheduler / execution level argument types ─────────────────────────────
-
-export interface WakeStrategyArgs {
-  laneId: string;
-  reason: 'task-ready' | 'task-settled' | 'timeout' | 'abort';
-}
-
-export interface OnLaneIdleArgs {
-  laneId: string;
-  consecutiveTimeouts: number;
-}
-
-// ── Scheduler / execution level hooks ──────────────────────────────────────
-
-export interface WorkflowHooks {
-  /**
-   * Observe hook: fired when the pool decides to wake a lane (i.e.,
-   * begin processing tasks). The `reason` indicates what triggered the wake.
-   * Useful for telemetry and adaptive scheduling strategies.
-   */
-  wakeStrategy?: ObserveHook<WakeStrategyArgs> | ObserveHook<WakeStrategyArgs>[];
-
-  /**
-   * Observe hook: fired when a lane enters an idle state (no tasks to claim
-   * and the consecutive timeout count exceeds a threshold). Useful for
-   * scaling down lane resources or triggering diagnostics.
-   */
-  onLaneIdle?: ObserveHook<OnLaneIdleArgs> | ObserveHook<OnLaneIdleArgs>[];
 }
 
 // ── Worktree lifecycle argument types ─────────────────────────────────────

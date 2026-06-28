@@ -662,6 +662,22 @@ export async function runSession(ctx: RunSessionContext): Promise<SessionResult>
 }
 
 /**
+ * Lightweight idempotency pre-check: does a cached result exist for the
+ * given session id?
+ *
+ * Returns `true` when `{sessionBaseDir}/{specId}/.complete` exists. Does NOT
+ * validate the cached result — callers that need the actual value should use
+ * {@link runSession} (which calls {@link tryReadCachedResult} internally and
+ * validates checksum/length). This function is intended for fast pre-checks
+ * (e.g. the scheduler skipping a gate slot for cached sessions).
+ *
+ * No-op (returns `false`) when the directory or sentinel does not exist.
+ */
+export function isSessionCached(sessionBaseDir: string, specId: string): boolean {
+  return existsSync(join(sessionBaseDir, specId, '.complete'));
+}
+
+/**
  * Recursively delete every persisted session for a task.
  *
  * A task's sessions live at `{sessionBaseDir}/{taskId}/`. Clearing the whole

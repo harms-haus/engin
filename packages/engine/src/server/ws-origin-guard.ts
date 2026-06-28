@@ -20,8 +20,7 @@ export function validateWebSocketOrigin(req: Request): boolean {
   const host = req.headers.get('host') || '';
 
   // This is a CSRF defense for BROWSER WebSocket upgrades — NOT an
-  // authentication layer (see server-refactor.prompt.md §13 for the auth
-  // attach-point). Browsers always send an Origin header on ws upgrades, so a
+  // authentication layer. Browsers always send an Origin header on ws upgrades, so a
   // blanket `if (origin) return false` here would reject every browser client
   // and the web UI could never connect. Instead we ALLOW same-origin browser
   // upgrades (localhost bypass + hostname/port matching) and only reject

@@ -142,13 +142,13 @@ tests/
 - **Helpers** in `tests/helpers/` (`make-profile`, `make-session`, `make-task`, `use-temp-dir`,
   `env-sandbox`) keep tests terse and deterministic.
 - **Pure units** (`evolve`, `parseProfile`, `extractJsonFromText`) are tested in isolation.
-- **`RunnerPool`** is tested with mock agent-plugin sessions to avoid real model calls; tests
-  cover the drain-loop, `SessionGate` concurrency capping, runner resolution (`getRunnerForTask`
+- **`SessionScheduler`** is tested with mock agent-plugin sessions to avoid real model calls; tests
+  cover the drain-loop, `SessionGate` concurrency capping, runner resolution (`SessionScheduler.resolveRunner()`
   - `beforeTask` hook), and the retry valve.
 - **`runSession`** (the session primitive) is tested for idempotency (`.complete` sentinel +
   `result.json` checksum), watchdog timeout/escalation, and structured/text/filesystem output modes.
 - **Composable runners** (`singleSession`, `linearRunner`, `reviewRunner`, `coalescingRunner`,
-  `coordinatorRunner`) are tested in isolation against synthetic `RunnerContext` values.
+  `coordinatorRunner`) are tested in isolation against synthetic `SessionPlanContext` values.
 - **Concurrency** tests (e.g. `session-gate`, `workflow-status-atomic-save`) cover the
   tricky timing/serialisation paths.
 

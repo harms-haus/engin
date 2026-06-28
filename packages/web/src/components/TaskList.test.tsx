@@ -248,6 +248,7 @@ describe('TaskList – creation/registration order', () => {
       't-complete': makeTask({ id: 't-complete', title: 'Complete', phaseId: 'phase-1', status: 'complete' }),
       't-failed': makeTask({ id: 't-failed', title: 'Failed', phaseId: 'phase-1', status: 'failed' }),
       't-cancelled': makeTask({ id: 't-cancelled', title: 'Cancelled', phaseId: 'phase-1', status: 'cancelled' }),
+      't-parked': makeTask({ id: 't-parked', title: 'Parked', phaseId: 'phase-1', status: 'parked' }),
     };
 
     seedStoreAct(tasks, 'phase-1');
@@ -257,7 +258,7 @@ describe('TaskList – creation/registration order', () => {
     const titles = Array.from(taskRows).map((row) => row.querySelector('.task-list__title')?.textContent);
 
     // Expected order: the registration/insertion order of the tasks map
-    expect(titles).toEqual(['Blocked', 'Active', 'Ready', 'Complete', 'Failed', 'Cancelled']);
+    expect(titles).toEqual(['Blocked', 'Active', 'Ready', 'Complete', 'Failed', 'Cancelled', 'Parked']);
   });
 
   it('renders a single task correctly', () => {
@@ -348,6 +349,16 @@ describe('TaskList – status colors via CSS', () => {
     const { container } = render(<TaskList />);
     const taskRow = container.querySelector('.task-list__task') as HTMLElement;
     expect(taskRow?.style.borderLeftColor).toBe('var(--text-muted)');
+  });
+
+  it('uses "var(--task-parked)" for parked tasks', () => {
+    const tasks: Record<string, TaskEntity> = {
+      't-1': makeTask({ id: 't-1', title: 'Parked', phaseId: 'phase-1', status: 'parked' }),
+    };
+    seedStoreAct(tasks, 'phase-1');
+    const { container } = render(<TaskList />);
+    const taskRow = container.querySelector('.task-list__task') as HTMLElement;
+    expect(taskRow?.style.borderLeftColor).toBe('var(--task-parked)');
   });
 });
 
@@ -1189,5 +1200,268 @@ describe('TaskList – dependency display', () => {
     const body = container.querySelector('.task-list__body');
     expect(body?.querySelector('.task-list__title')).toBeInTheDocument();
     expect(body?.querySelector('.task-list__deps')).toBeInTheDocument();
+  });
+});
+
+// ─── Session plan progress (M) ────────────────────────────────────────────
+// When a task declares a sessionPlan and is active/parked, the session label
+// renders ●{done}/{total} progress instead of the raw count.
+
+describe('TaskList – session plan progress', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    resetStore();
+  });
+
+  it('renders ●{done}/{total} for an active task with a sessionPlan', () => {
+    const tasks: Record<string, TaskEntity> = {
+      't-1': makeTask({
+        id: 't-1',
+        title: 'Active',
+        phaseId: 'phase-1',
+        status: 'active',
+        sessionPlan: [
+          { role: 'executor', profile: 'coder' },
+          { role: 'reviewer', profile: 'reviewer' },
+          { role: 'executor', profile: 'coder' },
+        ],
+      }),
+    };
+    const sessions: Record<string, SessionEntity> = {
+      s1: {
+        uid: 's1',
+        agentId: 'a1',
+        profile: 'coder',
+        phaseId: 'phase-1',
+        taskId: 't-1',
+        active: true,
+        log: [],
+        toolCallCount: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        taskTitle: '',
+        runnerRole: 'executor',
+        attempt: 1,
+      },
+    };
+
+    seedStoreAct(tasks, 'phase-1', sessions);
+
+    const { container } = render(<TaskList />);
+    const sessionsSpan = container.querySelector('.task-list__sessions');
+    expect(sessionsSpan?.textContent).toContain('\u25CF1/3');
+  });
+
+  it('renders ●{done}/{total} for a parked task with a sessionPlan', () => {
+    const tasks: Record<string, TaskEntity> = {
+      't-1': makeTask({
+        id: 't-1',
+        title: 'Parked',
+        phaseId: 'phase-1',
+        status: 'parked',
+        sessionPlan: [
+          { role: 'executor', profile: 'coder' },
+          { role: 'reviewer', profile: 'reviewer' },
+        ],
+      }),
+    };
+    const sessions: Record<string, SessionEntity> = {
+      s1: {
+        uid: 's1',
+        agentId: 'a1',
+        profile: 'coder',
+        phaseId: 'phase-1',
+        taskId: 't-1',
+        active: true,
+        log: [],
+        toolCallCount: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        taskTitle: '',
+        runnerRole: 'executor',
+        attempt: 1,
+      },
+      s2: {
+        uid: 's2',
+        agentId: 'a2',
+        profile: 'reviewer',
+        phaseId: 'phase-1',
+        taskId: 't-1',
+        active: false,
+        log: [],
+        toolCallCount: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        taskTitle: '',
+        runnerRole: 'reviewer',
+        attempt: 1,
+      },
+    };
+
+    seedStoreAct(tasks, 'phase-1', sessions);
+
+    const { container } = render(<TaskList />);
+    const sessionsSpan = container.querySelector('.task-list__sessions');
+    expect(sessionsSpan?.textContent).toContain('\u25CF2/2');
+  });
+
+  it('falls back to raw session count for an active task without a sessionPlan', () => {
+    const tasks: Record<string, TaskEntity> = {
+      't-1': makeTask({
+        id: 't-1',
+        title: 'Active',
+        phaseId: 'phase-1',
+        status: 'active',
+      }),
+    };
+    const sessions: Record<string, SessionEntity> = {
+      s1: {
+        uid: 's1',
+        agentId: 'a1',
+        profile: 'coder',
+        phaseId: 'phase-1',
+        taskId: 't-1',
+        active: true,
+        log: [],
+        toolCallCount: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        taskTitle: '',
+        runnerRole: 'executor',
+        attempt: 1,
+      },
+    };
+
+    seedStoreAct(tasks, 'phase-1', sessions);
+
+    const { container } = render(<TaskList />);
+    const sessionsSpan = container.querySelector('.task-list__sessions');
+    expect(sessionsSpan?.textContent).toContain('1 session');
+    expect(sessionsSpan?.textContent).not.toContain('\u25CF');
+  });
+
+  it('falls back to raw session count for a completed task with a sessionPlan', () => {
+    const tasks: Record<string, TaskEntity> = {
+      't-1': makeTask({
+        id: 't-1',
+        title: 'Done',
+        phaseId: 'phase-1',
+        status: 'complete',
+        startedAt: 0,
+        completedAt: '1970-01-01T00:00:01.000Z',
+        sessionPlan: [
+          { role: 'executor', profile: 'coder' },
+          { role: 'reviewer', profile: 'reviewer' },
+        ],
+      }),
+    };
+    const sessions: Record<string, SessionEntity> = {
+      s1: {
+        uid: 's1',
+        agentId: 'a1',
+        profile: 'coder',
+        phaseId: 'phase-1',
+        taskId: 't-1',
+        active: false,
+        log: [],
+        toolCallCount: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        taskTitle: '',
+        runnerRole: 'executor',
+        attempt: 1,
+      },
+    };
+
+    seedStoreAct(tasks, 'phase-1', sessions);
+
+    const { container } = render(<TaskList />);
+    const sessionsSpan = container.querySelector('.task-list__sessions');
+    expect(sessionsSpan?.textContent).toContain('1 session');
+    expect(sessionsSpan?.textContent).not.toContain('\u25CF');
+  });
+});
+
+// ─── Parked elapsed timer freeze (F4 Web) ─────────────────────────────────
+// Parked tasks should not start a 1s interval and should display a paused
+// indicator with a de-emphasis CSS class.
+
+describe('TaskList – parked elapsed freeze', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    resetStore();
+  });
+
+  it('does not set up an interval for a parked task', () => {
+    const setIntervalSpy = vi.spyOn(globalThis, 'setInterval');
+
+    const tasks: Record<string, TaskEntity> = {
+      't-1': makeTask({
+        id: 't-1',
+        title: 'Parked',
+        phaseId: 'phase-1',
+        status: 'parked',
+        startedAt: 0,
+      }),
+    };
+    seedStoreAct(tasks, 'phase-1');
+
+    render(<TaskList />);
+
+    expect(setIntervalSpy).not.toHaveBeenCalled();
+  });
+
+  it('applies task-list__elapsed--paused class for a parked task', () => {
+    const tasks: Record<string, TaskEntity> = {
+      't-1': makeTask({
+        id: 't-1',
+        title: 'Parked',
+        phaseId: 'phase-1',
+        status: 'parked',
+        startedAt: 0,
+      }),
+    };
+    seedStoreAct(tasks, 'phase-1');
+
+    const { container } = render(<TaskList />);
+    const elapsed = container.querySelector('.task-list__elapsed');
+    expect(elapsed).toBeInTheDocument();
+    expect(elapsed).toHaveClass('task-list__elapsed--paused');
+  });
+
+  it('shows a pause indicator prefix for a parked task', () => {
+    const tasks: Record<string, TaskEntity> = {
+      't-1': makeTask({
+        id: 't-1',
+        title: 'Parked',
+        phaseId: 'phase-1',
+        status: 'parked',
+        startedAt: 0,
+      }),
+    };
+    seedStoreAct(tasks, 'phase-1');
+
+    const { container } = render(<TaskList />);
+    const elapsed = container.querySelector('.task-list__elapsed');
+    // The pause indicator (⏸ U+23F8) should be present
+    expect(elapsed?.textContent).toContain('\u23F8');
+  });
+
+  it('does NOT apply paused class for an active task', () => {
+    const tasks: Record<string, TaskEntity> = {
+      't-1': makeTask({
+        id: 't-1',
+        title: 'Active',
+        phaseId: 'phase-1',
+        status: 'active',
+        startedAt: 0,
+      }),
+    };
+    seedStoreAct(tasks, 'phase-1');
+
+    const { container } = render(<TaskList />);
+    const elapsed = container.querySelector('.task-list__elapsed');
+    expect(elapsed).toBeInTheDocument();
+    expect(elapsed).not.toHaveClass('task-list__elapsed--paused');
   });
 });

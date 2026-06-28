@@ -7005,5 +7005,208 @@
         }
       }
     }
+  },
+  {
+    "name": "task_parked sets status to parked",
+    "events": [
+      {
+        "seq": 1,
+        "type": "workflow_started",
+        "data": {
+          "taskPrompt": "x"
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z"
+        }
+      },
+      {
+        "seq": 2,
+        "type": "phase_registered",
+        "data": {
+          "id": "p1",
+          "label": "Phase 1",
+          "icon": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z"
+        }
+      },
+      {
+        "seq": 3,
+        "type": "task_registered",
+        "data": {
+          "taskId": "t1",
+          "title": "Do thing",
+          "phaseId": "p1",
+          "dependencies": []
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z"
+        }
+      },
+      {
+        "seq": 4,
+        "type": "task_started",
+        "data": {
+          "taskId": "t1",
+          "title": "Do thing",
+          "agentId": "a1"
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "taskId": "t1"
+        }
+      },
+      {
+        "seq": 5,
+        "type": "task_parked",
+        "data": {
+          "taskId": "t1",
+          "reason": "Waiting for upstream"
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "taskId": "t1"
+        }
+      }
+    ],
+    "expect": {
+      "seq": 5,
+      "tasks": {
+        "t1": {
+          "status": "parked"
+        }
+      }
+    }
+  },
+  {
+    "name": "task_unparked sets status to active",
+    "events": [
+      {
+        "seq": 1,
+        "type": "workflow_started",
+        "data": {
+          "taskPrompt": "x"
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z"
+        }
+      },
+      {
+        "seq": 2,
+        "type": "phase_registered",
+        "data": {
+          "id": "p1",
+          "label": "Phase 1",
+          "icon": ""
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z"
+        }
+      },
+      {
+        "seq": 3,
+        "type": "task_registered",
+        "data": {
+          "taskId": "t1",
+          "title": "Do thing",
+          "phaseId": "p1",
+          "dependencies": []
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z"
+        }
+      },
+      {
+        "seq": 4,
+        "type": "task_started",
+        "data": {
+          "taskId": "t1",
+          "title": "Do thing",
+          "agentId": "a1"
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "taskId": "t1"
+        }
+      },
+      {
+        "seq": 5,
+        "type": "task_parked",
+        "data": {
+          "taskId": "t1",
+          "reason": "Blocked"
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "taskId": "t1"
+        }
+      },
+      {
+        "seq": 6,
+        "type": "task_unparked",
+        "data": {
+          "taskId": "t1",
+          "reason": "Dependency resolved"
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z",
+          "taskId": "t1"
+        }
+      }
+    ],
+    "expect": {
+      "seq": 6,
+      "tasks": {
+        "t1": {
+          "status": "active"
+        }
+      }
+    }
+  },
+  {
+    "name": "workflow_data_set merges and clobbers keys",
+    "events": [
+      {
+        "seq": 1,
+        "type": "workflow_started",
+        "data": {
+          "taskPrompt": "x"
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z"
+        }
+      },
+      {
+        "seq": 2,
+        "type": "workflow_data_set",
+        "data": {
+          "key": "value",
+          "other": "keep"
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z"
+        }
+      },
+      {
+        "seq": 3,
+        "type": "workflow_data_set",
+        "data": {
+          "key": "clobbered",
+          "num": 42
+        },
+        "metadata": {
+          "timestamp": "2025-01-01T00:00:00.000Z"
+        }
+      }
+    ],
+    "expect": {
+      "seq": 3,
+      "workflowData": {
+        "key": "clobbered",
+        "other": "keep",
+        "num": 42
+      }
+    }
   }
 ]

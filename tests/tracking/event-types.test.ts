@@ -29,12 +29,15 @@ const EXPECTED_EVENT_TYPES: EventType[] = [
   'phase_completed',
   'session_started',
   'session_completed',
+  'session_failed',
   'auto_retry_started',
   'auto_retry_completed',
   'task_registered',
   'task_started',
   'task_completed',
   'task_rejected',
+  'task_parked',
+  'task_unparked',
   'decision',
   'error',
   'workflow_completed',
@@ -46,6 +49,7 @@ const EXPECTED_EVENT_TYPES: EventType[] = [
   'tool_call_ended',
   'log',
   'agent_rendered',
+  'workflow_data_set',
 ];
 
 // Compile-time exhaustiveness guard: if EventType gains or loses a member,
@@ -58,12 +62,15 @@ const _EventTypeExhaustive: Record<EventType, true> = {
   phase_completed: true,
   session_started: true,
   session_completed: true,
+  session_failed: true,
   auto_retry_started: true,
   auto_retry_completed: true,
   task_registered: true,
   task_started: true,
   task_completed: true,
   task_rejected: true,
+  task_parked: true,
+  task_unparked: true,
   decision: true,
   error: true,
   workflow_completed: true,
@@ -75,6 +82,7 @@ const _EventTypeExhaustive: Record<EventType, true> = {
   tool_call_ended: true,
   log: true,
   agent_rendered: true,
+  workflow_data_set: true,
 };
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -175,12 +183,12 @@ it('includes agent_rendered as a member (appended after log)', () => {
   expect(t).toBe('agent_rendered');
 });
 
-it('agent_rendered is the last member of EXPECTED_EVENT_TYPES (after log)', () => {
-  // Guards the required ordering: 'agent_rendered' appended after 'log'.
+it('workflow_data_set is the last member of EXPECTED_EVENT_TYPES (after agent_rendered)', () => {
+  // Guards the required ordering: 'workflow_data_set' appended after 'agent_rendered'.
   const lastIndex = EXPECTED_EVENT_TYPES.length - 1;
-  const logIndex = EXPECTED_EVENT_TYPES.indexOf('log');
-  expect(EXPECTED_EVENT_TYPES[lastIndex]).toBe('agent_rendered');
-  expect(logIndex).toBe(lastIndex - 1);
+  const renderIndex = EXPECTED_EVENT_TYPES.indexOf('agent_rendered');
+  expect(EXPECTED_EVENT_TYPES[lastIndex]).toBe('workflow_data_set');
+  expect(renderIndex).toBe(lastIndex - 1);
 });
 const validEvents: readonly string[] = EXPECTED_EVENT_TYPES;
 
@@ -215,12 +223,12 @@ it('includes all legacy events that were kept', () => {
   }
 });
 
-it('has exactly 23 members (including log and agent_rendered)', () => {
+it('has exactly 27 members (including session_failed and workflow_data_set)', () => {
   // EXPECTED_EVENT_TYPES is typed as EventType[], so the array itself is a
   // compile-time guard: any literal here that is not a valid union member is
   // a type error. The length assertion catches a missing/extra member, and
   // the duplicate check guards against accidental repetition.
-  expect(EXPECTED_EVENT_TYPES).toHaveLength(23);
+  expect(EXPECTED_EVENT_TYPES).toHaveLength(27);
   expect(new Set(EXPECTED_EVENT_TYPES).size).toBe(EXPECTED_EVENT_TYPES.length);
 });
 
@@ -622,7 +630,7 @@ describe('Re-exports from core/types.ts', () => {
   });
 
   it('TaskStatus is re-exported', () => {
-    const statuses: TaskStatus[] = ['ready', 'blocked', 'active', 'complete', 'failed', 'cancelled'];
+    const statuses: TaskStatus[] = ['ready', 'blocked', 'active', 'complete', 'failed', 'cancelled', 'parked'];
     for (const s of statuses) {
       const check: TaskStatus = s;
       expect(check).toBe(s);

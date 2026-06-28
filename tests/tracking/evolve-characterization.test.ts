@@ -407,6 +407,112 @@ describe('evolve characterization – task edge cases', () => {
     expect(next.tasks).toEqual({});
     expect(next.seq).toBe(state.seq + 1);
   });
+
+  it('task_parked is a no-op when task does not exist (seq bumped only)', () => {
+    resetSeq();
+    const state = baseline();
+    const next = evolve(
+      state,
+      makeEvent('task_parked', { taskId: 'ghost' }, { timestamp: '2026-06-25T00:00:00Z', taskId: 'ghost' }),
+    );
+    expect(next.tasks).toEqual({});
+    expect(next.seq).toBe(state.seq + 1);
+  });
+
+  it('task_parked sets status to parked and preserves all other fields', () => {
+    resetSeq();
+    let state = baseline();
+    state = evolve(
+      state,
+      makeEvent('task_registered', { taskId: 't1', title: 'Build it', phaseId: '', dependencies: [] }),
+    );
+    const next = evolve(
+      state,
+      makeEvent('task_parked', { taskId: 't1' }, { timestamp: '2026-06-25T00:00:00Z', taskId: 't1' }),
+    );
+    expect(next.tasks['t1'].status).toBe('parked');
+    expect(next.tasks['t1'].title).toBe('Build it');
+    expect(next.tasks['t1'].id).toBe('t1');
+  });
+
+  it('task_unparked is a no-op when task does not exist (seq bumped only)', () => {
+    resetSeq();
+    const state = baseline();
+    const next = evolve(
+      state,
+      makeEvent('task_unparked', { taskId: 'ghost' }, { timestamp: '2026-06-25T00:00:00Z', taskId: 'ghost' }),
+    );
+    expect(next.tasks).toEqual({});
+    expect(next.seq).toBe(state.seq + 1);
+  });
+
+  it('task_unparked transitions status to active (NOT ready)', () => {
+    resetSeq();
+    let state = baseline();
+    state = evolve(state, makeEvent('task_registered', { taskId: 't1', title: 'T', phaseId: '', dependencies: [] }));
+    state = evolve(
+      state,
+      makeEvent('task_parked', { taskId: 't1' }, { timestamp: '2026-06-25T00:00:00Z', taskId: 't1' }),
+    );
+    expect(state.tasks['t1'].status).toBe('parked');
+    const next = evolve(
+      state,
+      makeEvent('task_unparked', { taskId: 't1' }, { timestamp: '2026-06-25T00:00:00Z', taskId: 't1' }),
+    );
+    expect(next.tasks['t1'].status).toBe('active');
+    expect(next.tasks['t1'].title).toBe('T');
+  });
+
+  it('task_parked/task_unparked fall back to metadata.taskId when data.taskId absent', () => {
+    resetSeq();
+    let state = baseline();
+    state = evolve(state, makeEvent('task_registered', { taskId: 't1', title: 'T', phaseId: '', dependencies: [] }));
+    // Park via metadata.taskId only
+    state = evolve(state, makeEvent('task_parked', {}, { timestamp: '2026-06-25T00:00:00Z', taskId: 't1' }));
+    expect(state.tasks['t1'].status).toBe('parked');
+    // Unpark via metadata.taskId only
+    state = evolve(state, makeEvent('task_unparked', {}, { timestamp: '2026-06-25T00:00:00Z', taskId: 't1' }));
+    expect(state.tasks['t1'].status).toBe('active');
+  });
+});
+
+describe('evolve characterization – workflow_data_set merge semantics', () => {
+  it('shallow-merges event.data into workflowData (top-level keys overwritten)', () => {
+    resetSeq();
+    let state = baseline();
+    state = evolve(
+      state,
+      makeEvent('workflow_data_set', { nested: { a: 1, b: 2 } }, { timestamp: '2026-06-25T00:00:00Z' }),
+    );
+    // Shallow merge: a subsequent event overwrites `nested` entirely, not deep-merged
+    state = evolve(state, makeEvent('workflow_data_set', { nested: { c: 3 } }, { timestamp: '2026-06-25T00:00:00Z' }));
+    expect(state.workflowData).toEqual({ nested: { c: 3 } });
+  });
+
+  it('preserves unrelated keys when merging a new key', () => {
+    resetSeq();
+    let state = baseline();
+    state = evolve(state, makeEvent('workflow_data_set', { a: 1 }, { timestamp: '2026-06-25T00:00:00Z' }));
+    state = evolve(state, makeEvent('workflow_data_set', { b: 2 }, { timestamp: '2026-06-25T00:00:00Z' }));
+    expect(state.workflowData).toEqual({ a: 1, b: 2 });
+  });
+
+  it('handles empty data object (no-op merge, seq bumped)', () => {
+    resetSeq();
+    let state = baseline();
+    state = evolve(state, makeEvent('workflow_data_set', { x: 1 }, { timestamp: '2026-06-25T00:00:00Z' }));
+    const next = evolve(state, makeEvent('workflow_data_set', {}, { timestamp: '2026-06-25T00:00:00Z' }));
+    expect(next.workflowData).toEqual({ x: 1 });
+    expect(next.seq).toBe(state.seq + 1);
+  });
+
+  it('initializes workflowData from undefined on first event', () => {
+    resetSeq();
+    const state = baseline();
+    expect(state.workflowData).toBeUndefined();
+    const next = evolve(state, makeEvent('workflow_data_set', { first: true }, { timestamp: '2026-06-25T00:00:00Z' }));
+    expect(next.workflowData).toEqual({ first: true });
+  });
 });
 
 describe('evolve characterization – log / sidebar / turn coercion', () => {
@@ -1039,6 +1145,7 @@ describe('evolve characterization – all event types routed', () => {
     'phase_completed',
     'session_started',
     'session_completed',
+    'session_failed',
     'auto_retry_started',
     'auto_retry_completed',
     'task_registered',
@@ -1046,6 +1153,8 @@ describe('evolve characterization – all event types routed', () => {
     // REMOVED: step_started
     'task_completed',
     'task_rejected',
+    'task_parked',
+    'task_unparked',
     'decision',
     'error',
     'sidebar_updated',
@@ -1055,6 +1164,7 @@ describe('evolve characterization – all event types routed', () => {
     'tool_call_ended',
     'log',
     'agent_rendered',
+    'workflow_data_set',
   ];
 
   for (const type of knownTypes) {

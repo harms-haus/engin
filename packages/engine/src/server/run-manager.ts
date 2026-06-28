@@ -19,7 +19,7 @@ import { SubscriptionManager } from './subscription-manager.js';
 // AsyncLocalStorage (see console-capture.ts). Idempotent and inert outside any
 // run context, so it is safe to call at import time. Replacing the per-run
 // save/restore of the process-global `console` with async-context routing
-// fixes the concurrent-run capture corruption (deferred item CQ-H3).
+// fixes the concurrent-run capture corruption.
 installConsoleCapture();
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -60,7 +60,7 @@ export interface RunHandle {
   startedAt: string;
   /** WebSockets currently subscribed to this run's broadcasts. */
   subscribers: Set<ServerWebSocket>;
-  /** T33: Worktree info when the run uses a git worktree. */
+  /** Worktree info when the run uses a git worktree. */
   worktree?: WorktreeInfo;
   /**
    * Per-run {@link WorktreeManager} owning the main + per-task worktrees.
@@ -75,7 +75,7 @@ export interface RunHandle {
    * can forward them to `WorktreeManager.resolveFinalMergeConflicts`.
    */
   pendingMergeConflicts?: string[];
-  /** T33: API keys for agent-based git operations (merge/PR). */
+  /** API keys for agent-based git operations (merge/PR). */
   apiKeys?: Record<string, string>;
 }
 
@@ -102,8 +102,7 @@ export interface StartRunResult {
  *
  * It registers a {@link RunHandle}, launches the workflow as a
  * **fire-and-forget** async operation (via the executor), and reaps the handle
- * ~60 s after the run reaches a terminal state. The public API is unchanged
- * from the pre-decomposition RunManager.
+ * ~60 s after the run reaches a terminal state. The public API is unchanged.
  */
 export class RunManager {
   private readonly registry = new RunRegistry();

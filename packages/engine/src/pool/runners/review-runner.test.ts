@@ -1,441 +1,455 @@
-// ─── Tests for runners/review-runner.ts ─────────────────────────────────────
-//
-// Tests 7–13 from the kb-4 contract spec.
+// ─── Tests for runners/review-runner.ts (SessionPlan contract) ────────────
 //
 // Tests verify:
-//   7. approve on round 1 → completed
-//   8. reject round 1, approve round 2 → completed; IDs, feedback appended
-//   9. maxRounds exhausted → {status:'failed', error matches /rejected after .* rounds/i}
-//  10. DEFAULT maxRounds (3) used when omitted
-//  11. transient SessionError in execute → retry-in-place, then succeed
-//  12. permanent SessionError in execute → rethrow, no retry
-//  13. REPLAY: round-1 execute+review cached, round-2 runs fresh
+//   1. plan: execute→review→approved→generator returns (done)
+//   2. plan: reject round 1, approve round 2 → done; stable IDs, resume,
+//      feedback appended
+//   3. plan: maxRounds exhausted → throws (task failure)
+//   4. plan: stable IDs across rounds (round 2+ resumes)
+//   5. plan: review prompt includes execute output (all modes: text,
+//      structured, filesystem)
+//   6. plan: execute prompt includes accumulated feedback on round 2+
+//   7. plan: DEFAULT_MAX_ROUNDS (3) used when maxRounds omitted
+//   8. plan: onReviewReject callback fires on rejection
+//   9. plan: onReviewReject errors are non-fatal (swallowed)
+//  10. execute: delegates to runScheduledSession
+//  11. execute: propagates errors from runScheduledSession
+//  12. Factory creates fresh runner instances each call
 //
-// The module under test is imported from './review-runner.js'.
+// Mock strategy:
+//   - Shared mock via `test-fixtures.ts` → `mockRunScheduledSession`
+//   - plan() is tested by driving the generator manually (simulating the
+//     scheduler's feed/results loop).
+//   - execute() is tested via the shared mock.
 
-import { describe, expect, it, mock } from 'bun:test';
+import { describe, expect, it } from 'bun:test';
+import type { SessionResult, SessionSpec } from '../session.js';
+import {
+  CANNED_RESULT,
+  makePlanContext,
+  mockRunScheduledSession,
+  setupRunScheduledSessionMock,
+} from './test-fixtures.js';
 
-import type { AgentProfile, Task } from '../../core/types.js';
-import { DEFAULT_MAX_ROUNDS } from '../constants.js';
-import type { RunSessionContext, SessionResult } from '../session.js';
-import { SessionError } from '../session.js';
+// ─── Import module under test ────────────────────────────────────────────
+
 import { reviewRunner } from './review-runner.js';
-import type { RunnerContext, TaskOutcome } from './types.js';
 
-// ── Fixture helpers ─────────────────────────────────────────────────────────
+// ─── Mock wiring ─────────────────────────────────────────────────────────
 
-function makeTask(overrides?: Partial<Task>): Task {
-  return {
-    id: 'task-xyz',
-    title: 'Build feature',
-    prompt: 'Implement X',
-    profile: 'executor',
-    files: [],
-    dependencies: [],
-    status: 'active',
-    phaseId: 'code',
-    worktree: 'none',
-    ...overrides,
-  };
-}
+setupRunScheduledSessionMock();
 
-function makeProfile(id: string, overrides?: Partial<AgentProfile>): AgentProfile {
-  return {
-    id,
-    name: id,
-    provider: 'openai',
-    model: 'gpt-4o',
-    thinkingLevel: 'low',
-    systemPrompt: `You are ${id}.`,
-    excludeTools: [],
-    includeTools: [],
-    ...overrides,
-  };
-}
+// ─── Helper factories (matching reviewRunner's parameter type) ──────────
 
-function makeCtx(overrides?: Partial<RunnerContext>): RunnerContext {
-  const task = makeTask();
-  const profiles = new Map<string, AgentProfile>();
-  profiles.set('executor', makeProfile('executor'));
-  profiles.set('reviewer', makeProfile('reviewer'));
-  return {
-    task,
-    gate: {
-      run: mock(async (_p: unknown, fn: (h: { signal: AbortSignal }) => Promise<unknown>) =>
-        fn({ signal: new AbortController().signal }),
-      ),
-    } as unknown as RunnerContext['gate'],
-    runSession: mock(async () => ({ mode: 'text', text: 'ok' }) satisfies SessionResult),
-    profiles,
-    sessionBaseDir: '/tmp/sessions',
-    cwd: '/tmp/project',
-    activeSessions: new Set(),
-    phaseId: 'code',
-    agentId: 'agent-1',
-    ...overrides,
-  };
-}
-
-/** Build an execute spec — uses `role` (the public API name). */
 function makeExecSpec() {
   return {
     profile: 'executor',
     prompt: 'Build the feature',
     outputMode: 'text' as const,
     role: 'executor',
-    runnerRole: 'executor',
-    attempt: 1,
   };
 }
 
-/** Build a review spec — uses `role` (the public API name). */
 function makeReviewSpec() {
   return {
     profile: 'reviewer',
     prompt: 'Review the work',
     outputMode: 'structured' as const,
     role: 'reviewer',
-    runnerRole: 'reviewer',
-    attempt: 1,
   };
 }
 
-function makeSessionError(msg: string, retryable = false): SessionError {
-  return new SessionError(msg, { kind: retryable ? 'transient' : 'permanent', retryable });
+// ─── Canned session results ─────────────────────────────────────────────
+
+function execResult(text = 'implementation'): SessionResult {
+  return { mode: 'text', text };
 }
 
-// ── Tests ───────────────────────────────────────────────────────────────────
+function approvedReview(): SessionResult {
+  return { mode: 'structured', data: { approved: true } };
+}
 
-describe('reviewRunner', () => {
-  // ── 7. approve on round 1 → completed ────────────────────────────────────
+function rejectedReview(feedback = 'Needs error handling'): SessionResult {
+  return { mode: 'structured', data: { approved: false, feedback } };
+}
 
-  it('7. review approves on round 1 → returns completed', async () => {
-    const runSession = mock(async (rsctx: RunSessionContext) => {
-      if (rsctx.spec.id.includes('execut')) {
-        return { mode: 'text', text: 'implementation' } satisfies SessionResult;
-      }
-      return { mode: 'structured', data: { approved: true } } satisfies SessionResult;
-    });
+// ─── Tests ────────────────────────────────────────────────────────────────
 
-    const ctx = makeCtx({ runSession });
-    const runner = reviewRunner(makeExecSpec(), makeReviewSpec());
+describe('reviewRunner (SessionPlan)', () => {
+  // ── 1. Execute→review→approved→done ────────────────────────────────────
 
-    const outcome: TaskOutcome = await runner(ctx);
+  it('1. plan: execute→review→approved→generator returns (done)', async () => {
+    const factory = reviewRunner(makeExecSpec(), makeReviewSpec());
+    const runner = factory();
+    const ctx = makePlanContext();
+    const gen = runner.plan(ctx);
 
-    expect(outcome).toEqual({ status: 'completed' });
+    // Round 1: execute batch
+    const batch1 = await gen.next();
+    expect(batch1.done).toBeFalse();
+    expect(batch1.value).toHaveLength(1);
+    const execSpec = (batch1.value as SessionSpec[])[0];
+    expect(execSpec.id).toBe('task-abc/executor');
+    expect(execSpec.attempt).toBe(1);
+    expect(execSpec.resume).toBeUndefined();
+
+    // Feed back execute result → expect review batch
+    const batch2 = await gen.next([execResult()]);
+    expect(batch2.done).toBeFalse();
+    expect(batch2.value).toHaveLength(1);
+    const reviewSpec = (batch2.value as SessionSpec[])[0];
+    expect(reviewSpec.id).toBe('task-abc/reviewer');
+    expect(reviewSpec.attempt).toBe(1);
+    expect(reviewSpec.resume).toBeUndefined();
+
+    // Feed back approved review → expect generator done
+    const done = await gen.next([approvedReview()]);
+    expect(done.done).toBeTrue();
+    expect(done.value).toBeUndefined();
   });
 
-  // ── 8. reject round 1, approve round 2 → completed; IDs and feedback ────
+  // ── 2. Reject round 1, approve round 2 → done ─────────────────────────
 
-  it('8a. reject round 1, approve round 2 → completed', async () => {
-    let reviewCallCount = 0;
+  it('2a. plan: reject round 1, approve round 2 → done', async () => {
+    const factory = reviewRunner(makeExecSpec(), makeReviewSpec());
+    const runner = factory();
+    const ctx = makePlanContext();
+    const gen = runner.plan(ctx);
 
-    const runSession = mock(async (rsctx: RunSessionContext) => {
-      if (rsctx.spec.id.includes('execut')) {
-        return { mode: 'text', text: 'implementation' } satisfies SessionResult;
-      }
-      // review
-      reviewCallCount++;
-      if (reviewCallCount === 1) {
-        return {
-          mode: 'structured',
-          data: { approved: false, feedback: 'Needs error handling' },
-        } satisfies SessionResult;
-      }
-      return { mode: 'structured', data: { approved: true } } satisfies SessionResult;
-    });
+    // Round 1: execute → review (rejected)
+    await gen.next(); // execute batch
+    await gen.next([execResult()]); // review batch
+    await gen.next([rejectedReview('Needs error handling')]); // → round 2 execute (resume)
 
-    const ctx = makeCtx({ runSession });
-    const runner = reviewRunner(makeExecSpec(), makeReviewSpec());
-
-    const outcome = await runner(ctx);
-
-    expect(outcome).toEqual({ status: 'completed' });
+    // Round 2: execute → review (approved)
+    await gen.next([execResult()]); // review batch (resume)
+    const done = await gen.next([approvedReview()]);
+    expect(done.done).toBeTrue();
+    expect(done.value).toBeUndefined();
   });
 
-  it('8b. execute id is STABLE across rounds and round 2+ resumes the prior session', async () => {
-    const executeIds: string[] = [];
-    const executeResumes: boolean[] = [];
-    const reviewResumes: boolean[] = [];
-    let reviewCallCount = 0;
+  it('2b. plan: stable IDs with resume:true on round 2+', async () => {
+    const factory = reviewRunner(makeExecSpec(), makeReviewSpec());
+    const runner = factory();
+    const ctx = makePlanContext();
+    const gen = runner.plan(ctx);
 
-    const runSession = mock(async (rsctx: RunSessionContext) => {
-      if (rsctx.spec.id.includes('execut')) {
-        executeIds.push(rsctx.spec.id);
-        executeResumes.push(rsctx.spec.resume === true);
-        return { mode: 'text', text: 'implementation' } satisfies SessionResult;
-      }
-      reviewCallCount++;
-      reviewResumes.push(rsctx.spec.resume === true);
-      if (reviewCallCount === 1) {
-        return {
-          mode: 'structured',
-          data: { approved: false, feedback: 'revise' },
-        } satisfies SessionResult;
-      }
-      return { mode: 'structured', data: { approved: true } } satisfies SessionResult;
-    });
+    // Round 1
+    const r1e = await gen.next(); // execute
+    const r1eSpec = (r1e.value as SessionSpec[])[0];
+    expect(r1eSpec.id).toBe('task-abc/executor');
+    expect(r1eSpec.resume).toBeUndefined();
 
-    const ctx = makeCtx({ runSession });
-    await reviewRunner(makeExecSpec(), makeReviewSpec())(ctx);
+    const r1r = await gen.next([execResult()]); // review
+    const r1rSpec = (r1r.value as SessionSpec[])[0];
+    expect(r1rSpec.id).toBe('task-abc/reviewer');
+    expect(r1rSpec.resume).toBeUndefined();
 
-    // Stable execute id (no #round suffix) so round 2 resumes session 1.
-    expect(executeIds).toEqual(['task-xyz/executor', 'task-xyz/executor']);
-    // Round 1 creates; round 2 resumes.
-    expect(executeResumes).toEqual([false, true]);
-    // The review session resumes on round 2 too.
-    expect(reviewResumes).toEqual([false, true]);
+    // Round 2: rejected → resume:true
+    const r2e = await gen.next([rejectedReview('fix')]); // execute (resume)
+    const r2eSpec = (r2e.value as SessionSpec[])[0];
+    expect(r2eSpec.id).toBe('task-abc/executor');
+    expect(r2eSpec.resume).toBeTrue();
+
+    const r2r = await gen.next([execResult()]); // review (resume)
+    const r2rSpec = (r2r.value as SessionSpec[])[0];
+    expect(r2rSpec.id).toBe('task-abc/reviewer');
+    expect(r2rSpec.resume).toBeTrue();
+
+    // Approve
+    await gen.next([approvedReview()]);
   });
 
-  it('8c. review ran twice (once per round)', async () => {
-    let reviewCallCount = 0;
+  it('2c. plan: feedback appended to execute prompt on round 2', async () => {
+    const factory = reviewRunner(makeExecSpec(), makeReviewSpec());
+    const runner = factory();
+    const ctx = makePlanContext();
+    const gen = runner.plan(ctx);
 
-    const runSession = mock(async (rsctx: RunSessionContext) => {
-      if (rsctx.spec.id.includes('execut')) {
-        return { mode: 'text', text: 'impl' } satisfies SessionResult;
-      }
-      reviewCallCount++;
-      if (reviewCallCount === 1) {
-        return {
-          mode: 'structured',
-          data: { approved: false, feedback: 'revise' },
-        } satisfies SessionResult;
-      }
-      return { mode: 'structured', data: { approved: true } } satisfies SessionResult;
-    });
-
-    const ctx = makeCtx({ runSession });
-    await reviewRunner(makeExecSpec(), makeReviewSpec())(ctx);
-
-    expect(reviewCallCount).toBe(2);
+    // Round 1: execute → review (rejected with feedback)
+    await gen.next(); // execute batch (round 1)
+    await gen.next([execResult()]); // review batch (round 1)
+    // The rejected review causes the generator to yield the round-2 execute batch.
+    // We capture THAT batch to check the prompt.
+    const r2ExecBatch = await gen.next([rejectedReview('Add error handling')]); // execute batch (round 2)
+    const r2Spec = (r2ExecBatch.value as SessionSpec[])[0];
+    expect(r2Spec.prompt).toContain('Add error handling');
+    expect(r2Spec.prompt).toContain('Review feedback:\n');
+    // Original prompt still present
+    expect(r2Spec.prompt).toContain('Build the feature');
   });
 
-  it('8d. feedback is appended to the execute prompt on round 2', async () => {
-    const executePrompts: string[] = [];
-    let reviewCallCount = 0;
+  // ── 3. Max rounds exhausted → throws ──────────────────────────────────
 
-    const runSession = mock(async (rsctx: RunSessionContext) => {
-      if (rsctx.spec.id.includes('execut')) {
-        executePrompts.push(rsctx.spec.prompt);
-        return { mode: 'text', text: 'impl' } satisfies SessionResult;
-      }
-      reviewCallCount++;
-      if (reviewCallCount === 1) {
-        return {
-          mode: 'structured',
-          data: { approved: false, feedback: 'Needs error handling' },
-        } satisfies SessionResult;
-      }
-      return { mode: 'structured', data: { approved: true } } satisfies SessionResult;
-    });
+  it('3. plan: maxRounds=2, always reject → throws with rejection message', async () => {
+    const factory = reviewRunner(makeExecSpec(), makeReviewSpec(), { maxRounds: 2 });
+    const runner = factory();
+    const ctx = makePlanContext();
+    const gen = runner.plan(ctx);
 
-    const ctx = makeCtx({ runSession });
-    await reviewRunner(makeExecSpec(), makeReviewSpec())(ctx);
+    // Round 1
+    await gen.next(); // execute
+    await gen.next([execResult()]); // review
+    await gen.next([rejectedReview('nope')]); // → round 2 execute
 
-    expect(executePrompts).toHaveLength(2);
-    // Round 1: original prompt
-    expect(executePrompts[0]).toBe('Build the feature');
-    // Round 2: prompt contains the feedback from round 1
-    expect(executePrompts[1]).toContain('Needs error handling');
+    // Round 2
+    await gen.next([execResult()]); // review
+    // Last rejection → generator throws
+    await expect(gen.next([rejectedReview('nope')])).rejects.toThrow(/rejected after .* rounds/i);
   });
 
-  // ── 9. maxRounds exhausted → failed ─────────────────────────────────────
+  // ── 4. Stable IDs across rounds ────────────────────────────────────────
 
-  it('9. maxRounds=2, always reject → {status:"failed", error matches /rejected after .* rounds/i}', async () => {
-    const runSession = mock(async (rsctx: RunSessionContext) => {
-      if (rsctx.spec.id.includes('execut')) {
-        return { mode: 'text', text: 'impl' } satisfies SessionResult;
-      }
-      return { mode: 'structured', data: { approved: false, feedback: 'nope' } } satisfies SessionResult;
-    });
+  it('4. plan: stable execute/review ids across rounds (no #round suffix)', async () => {
+    const factory = reviewRunner(makeExecSpec(), makeReviewSpec());
+    const runner = factory();
+    const ctx = makePlanContext();
+    const gen = runner.plan(ctx);
 
-    const ctx = makeCtx({ runSession });
-    const runner = reviewRunner(makeExecSpec(), makeReviewSpec(), { maxRounds: 2 });
+    // Collect all spec ids as the loop progresses
+    const specs: Array<{ id: string; resume: boolean | undefined; round: number }> = [];
 
-    const outcome = await runner(ctx);
+    // Round 1 execute
+    const r1e = await gen.next();
+    specs.push({ id: (r1e.value as SessionSpec[])[0].id, resume: (r1e.value as SessionSpec[])[0].resume, round: 1 });
 
-    expect(outcome.status).toBe('failed');
-    expect((outcome as { error?: string }).error).toMatch(/rejected after .* rounds/i);
+    // Round 1 review
+    const r1r = await gen.next([execResult()]);
+    specs.push({ id: (r1r.value as SessionSpec[])[0].id, resume: (r1r.value as SessionSpec[])[0].resume, round: 1 });
+
+    // Round 2 execute (rejected → resume)
+    const r2e = await gen.next([rejectedReview('fix')]);
+    specs.push({ id: (r2e.value as SessionSpec[])[0].id, resume: (r2e.value as SessionSpec[])[0].resume, round: 2 });
+
+    // Round 2 review (resume)
+    const r2r = await gen.next([execResult()]);
+    specs.push({ id: (r2r.value as SessionSpec[])[0].id, resume: (r2r.value as SessionSpec[])[0].resume, round: 2 });
+
+    // Approve
+    await gen.next([approvedReview()]);
+
+    // Verify stable ids: every execute spec has the same id, every review too
+    const executeIds = specs.filter((s) => s.id.includes('execut')).map((s) => s.id);
+    const reviewIds = specs.filter((s) => s.id.includes('review')).map((s) => s.id);
+    expect(new Set(executeIds).size).toBe(1);
+    expect(executeIds[0]).toBe('task-abc/executor');
+    expect(new Set(reviewIds).size).toBe(1);
+    expect(reviewIds[0]).toBe('task-abc/reviewer');
+
+    // Round 1: no resume; Round 2: resume
+    expect(specs[0].resume).toBeUndefined(); // execute round 1
+    expect(specs[1].resume).toBeUndefined(); // review round 1
+    expect(specs[2].resume).toBeTrue(); // execute round 2
+    expect(specs[3].resume).toBeTrue(); // review round 2
   });
 
-  // ── 10. DEFAULT maxRounds (3) when omitted ──────────────────────────────
+  // ── 5. Review prompt includes execute output ──────────────────────────
 
-  it('10. default maxRounds=DEFAULT_MAX_ROUNDS: always reject → stops at round 3', async () => {
-    const executeIds: string[] = [];
+  it('5a. plan: review prompt contains text-mode execute output', async () => {
+    const factory = reviewRunner(makeExecSpec(), makeReviewSpec());
+    const runner = factory();
+    const ctx = makePlanContext();
+    const gen = runner.plan(ctx);
 
-    const runSession = mock(async (rsctx: RunSessionContext) => {
-      if (rsctx.spec.id.includes('execut')) {
-        executeIds.push(rsctx.spec.id);
-        return { mode: 'text', text: 'impl' } satisfies SessionResult;
-      }
-      return { mode: 'structured', data: { approved: false, feedback: 'nope' } } satisfies SessionResult;
-    });
-
-    const ctx = makeCtx({ runSession });
-    // maxRounds omitted → uses DEFAULT_MAX_ROUNDS
-    const runner = reviewRunner(makeExecSpec(), makeReviewSpec());
-
-    const outcome = await runner(ctx);
-
-    expect(outcome.status).toBe('failed');
-    // Should have run exactly DEFAULT_MAX_ROUNDS execute calls
-    expect(executeIds).toHaveLength(DEFAULT_MAX_ROUNDS);
-    // Stable id across all rounds (resume on round 2+).
-    expect(executeIds[executeIds.length - 1]).toBe(`task-xyz/executor`);
-    expect(executeIds.every((id) => id === 'task-xyz/executor')).toBe(true);
+    await gen.next(); // execute batch
+    const reviewBatch = await gen.next([execResult('EXECUTION RESULT TEXT')]);
+    expect((reviewBatch.value as SessionSpec[])[0].prompt).toContain('EXECUTION RESULT TEXT');
+    expect((reviewBatch.value as SessionSpec[])[0].prompt).toContain('---\nExecute output:\n');
   });
 
-  // ── 11. transient retry-in-place ────────────────────────────────────────
+  it('5b. plan: review prompt contains structured-mode execute output', async () => {
+    const factory = reviewRunner(makeExecSpec(), makeReviewSpec());
+    const runner = factory();
+    const ctx = makePlanContext();
+    const gen = runner.plan(ctx);
 
-  it('11. transient SessionError in execute → retry-in-place, then succeed', async () => {
-    let executeCallCount = 0;
-
-    const runSession = mock(async (rsctx: RunSessionContext) => {
-      if (rsctx.spec.id.includes('execut')) {
-        executeCallCount++;
-        if (executeCallCount === 1) {
-          throw makeSessionError('transient crash', true);
-        }
-        return { mode: 'text', text: 'recovered impl' } satisfies SessionResult;
-      }
-      // review → approve
-      return { mode: 'structured', data: { approved: true } } satisfies SessionResult;
-    });
-
-    const ctx = makeCtx({ runSession });
-    const runner = reviewRunner(makeExecSpec(), makeReviewSpec());
-
-    const outcome = await runner(ctx);
-
-    expect(outcome).toEqual({ status: 'completed' });
-    // Execute was called twice: first (crashed), then retry (succeeded)
-    expect(executeCallCount).toBe(2);
+    await gen.next(); // execute batch
+    const structuredResult: SessionResult = {
+      mode: 'structured',
+      data: { status: 'done', summary: 'Implemented X' },
+    };
+    const reviewBatch = await gen.next([structuredResult]);
+    expect((reviewBatch.value as SessionSpec[])[0].prompt).toContain('{"status":"done","summary":"Implemented X"}');
+    expect((reviewBatch.value as SessionSpec[])[0].prompt).toContain('---\nExecute output:\n');
   });
 
-  // ── 12. permanent error → rethrow/no-retry ──────────────────────────────
+  it('5c. plan: review prompt handles filesystem-mode execute output', async () => {
+    const factory = reviewRunner(makeExecSpec(), makeReviewSpec());
+    const runner = factory();
+    const ctx = makePlanContext();
+    const gen = runner.plan(ctx);
 
-  it('12. permanent SessionError in execute → returns failed, no retry', async () => {
-    let executeCallCount = 0;
-
-    const runSession = mock(async (rsctx: RunSessionContext) => {
-      if (rsctx.spec.id.includes('execut')) {
-        executeCallCount++;
-        throw makeSessionError('permanent failure', false);
-      }
-      return { mode: 'structured', data: { approved: true } } satisfies SessionResult;
-    });
-
-    const ctx = makeCtx({ runSession });
-    const runner = reviewRunner(makeExecSpec(), makeReviewSpec());
-
-    const outcome = await runner(ctx);
-
-    expect(outcome.status).toBe('failed');
-    expect((outcome as { error?: string }).error).toBe('permanent failure');
-    // Execute called only once — no retry
-    expect(executeCallCount).toBe(1);
+    await gen.next(); // execute batch
+    const fsResult: SessionResult = { mode: 'filesystem', files: ['output.txt'] };
+    const reviewBatch = await gen.next([fsResult]);
+    expect((reviewBatch.value as SessionSpec[])[0].prompt).toContain('(filesystem session — see files)');
   });
 
-  // ── 13. REPLAY: round-1 cached, round-2 fresh ──────────────────────────
+  // ── 6. Execute prompt includes accumulated feedback on round 2+ ──────
 
-  it('13. stable execute/review ids: round 2 resumes round-1 sessions', async () => {
-    // With the resume design, the execute + review ids are STABLE across
-    // rounds (no #round suffix). Round 1 creates both sessions; round 2
-    // re-prompts them with resume:true (the agent/ reviewer see prior work).
-    const runSessionCalls: { id: string; resume: boolean }[] = [];
-    let reviewCallCount = 0;
+  it('6. plan: execute prompt includes accumulated feedback on round 2+', async () => {
+    const factory = reviewRunner(makeExecSpec(), makeReviewSpec());
+    const runner = factory();
+    const ctx = makePlanContext();
+    const gen = runner.plan(ctx);
 
-    const runSession = mock(async (rsctx: RunSessionContext) => {
-      runSessionCalls.push({ id: rsctx.spec.id, resume: rsctx.spec.resume === true });
-      if (rsctx.spec.id.includes('execut')) {
-        return { mode: 'text', text: 'impl' } satisfies SessionResult;
-      }
-      reviewCallCount++;
-      if (reviewCallCount === 1) {
-        return { mode: 'structured', data: { approved: false, feedback: 'revise' } } satisfies SessionResult;
-      }
-      return { mode: 'structured', data: { approved: true } } satisfies SessionResult;
-    });
-
-    const ctx = makeCtx({ runSession });
-    const runner = reviewRunner(makeExecSpec(), makeReviewSpec());
-
-    const outcome = await runner(ctx);
-
-    expect(outcome).toEqual({ status: 'completed' });
-    // Stable ids across both rounds.
-    expect(runSessionCalls.map((c) => c.id)).toEqual([
-      'task-xyz/executor',
-      'task-xyz/reviewer',
-      'task-xyz/executor',
-      'task-xyz/reviewer',
-    ]);
-    // Round 1 creates both; round 2 resumes both.
-    expect(runSessionCalls.map((c) => c.resume)).toEqual([false, false, true, true]);
+    // Round 1: execute → review (rejected with feedback)
+    await gen.next(); // execute (round 1)
+    await gen.next([execResult()]); // review (round 1)
+    // The rejected review causes the generator to yield the round-2 execute
+    // batch. That batch's prompt should contain the accumulated feedback.
+    const r2Exec = await gen.next([rejectedReview('Fix the tests')]); // → round 2 execute
+    expect((r2Exec.value as SessionSpec[])[0].prompt).toContain('Fix the tests');
   });
 
-  // ── REGRESSION: review prompt must contain execute result ──────────────────
-  //
-  // Bug: reviewRunner passes reviewSpec.prompt verbatim — the execute session
-  // result is never interpolated into the review prompt, so the reviewer
-  // cannot see what it's reviewing.
-  //
-  // Expected fix: after the execute session completes, modify the review prompt
-  // to include the execute result. The format the implement worker should match:
-  //
-  //   Text-mode execute result:
-  //     reviewPrompt = reviewSpec.prompt + "\n\n---\nExecute output:\n" + executeResult.text
-  //
-  //   Structured-mode execute result:
-  //     reviewPrompt = reviewSpec.prompt + "\n\n---\nExecute output:\n" + JSON.stringify(executeResult.data)
-  //
-  // These tests will FAIL until the implement worker implements step 2 of the
-  // review loop algorithm: "Feed the execute result into the review prompt."
+  // ── 7. DEFAULT_MAX_ROUNDS ─────────────────────────────────────────────
 
-  it('REGRESSION: text-mode execute result appears in review prompt', async () => {
-    let reviewPrompt: string | undefined;
+  it('7. plan: default maxRounds=DEFAULT_MAX_ROUNDS: always reject → throws after 3 rounds', async () => {
+    const factory = reviewRunner(makeExecSpec(), makeReviewSpec()); // no maxRounds option
+    const runner = factory();
+    const ctx = makePlanContext();
+    const gen = runner.plan(ctx);
 
-    const runSession = mock(async (rsctx: RunSessionContext) => {
-      if (rsctx.spec.id.includes('execut')) {
-        return { mode: 'text', text: 'THE EXECUTE OUTPUT' } satisfies SessionResult;
-      }
-      // review — capture the prompt to assert on
-      reviewPrompt = rsctx.spec.prompt;
-      return { mode: 'structured', data: { approved: true } } satisfies SessionResult;
-    });
+    // Round 1
+    await gen.next(); // execute
+    await gen.next([execResult()]); // review
+    await gen.next([rejectedReview('nope')]); // → round 2 execute
 
-    const ctx = makeCtx({ runSession });
-    const runner = reviewRunner(makeExecSpec(), makeReviewSpec());
+    // Round 2
+    await gen.next([execResult()]); // review
+    await gen.next([rejectedReview('nope')]); // → round 3 execute
 
-    const outcome = await runner(ctx);
-
-    expect(outcome).toEqual({ status: 'completed' });
-    // FAILS because reviewPrompt is just reviewSpec.prompt ("Review the work") verbatim.
-    expect(reviewPrompt).toContain('THE EXECUTE OUTPUT');
-    // Should include the standard separator prefix
-    expect(reviewPrompt).toContain('---\nExecute output:\n');
+    // Round 3
+    await gen.next([execResult()]); // review
+    // Last rejection → throws
+    await expect(gen.next([rejectedReview('nope')])).rejects.toThrow(/rejected after .* rounds/i);
   });
 
-  it('REGRESSION: structured-mode execute result appears in review prompt', async () => {
-    let reviewPrompt: string | undefined;
+  // ── 8. onReviewReject callback ────────────────────────────────────────
 
-    const runSession = mock(async (rsctx: RunSessionContext) => {
-      if (rsctx.spec.id.includes('execut')) {
-        return { mode: 'structured', data: { status: 'done', summary: 'Implemented X' } } satisfies SessionResult;
-      }
-      reviewPrompt = rsctx.spec.prompt;
-      return { mode: 'structured', data: { approved: true } } satisfies SessionResult;
+  it('8a. plan: onReviewReject fires when review rejects', async () => {
+    const rejectedRounds: number[] = [];
+    const factory = reviewRunner(makeExecSpec(), makeReviewSpec(), {
+      maxRounds: 2,
+      onReviewReject: (round: number) => {
+        rejectedRounds.push(round);
+      },
     });
+    const runner = factory();
+    const ctx = makePlanContext();
+    const gen = runner.plan(ctx);
 
-    const ctx = makeCtx({ runSession });
-    const runner = reviewRunner(makeExecSpec(), makeReviewSpec());
+    // Round 1: rejected
+    await gen.next(); // execute
+    await gen.next([execResult()]); // review
+    await gen.next([rejectedReview('fix')]); // → round 2 execute
+    expect(rejectedRounds).toEqual([1]);
 
-    const outcome = await runner(ctx);
+    // Round 2: rejected
+    await gen.next([execResult()]); // review
+    await expect(gen.next([rejectedReview('fix')])).rejects.toThrow();
+    expect(rejectedRounds).toEqual([1, 2]);
+  });
 
-    expect(outcome).toEqual({ status: 'completed' });
-    // FAILS because reviewPrompt is just reviewSpec.prompt ("Review the work") verbatim.
-    // The review prompt should contain the JSON of the structured execute data.
-    expect(reviewPrompt).toContain('{"status":"done","summary":"Implemented X"}');
-    expect(reviewPrompt).toContain('---\nExecute output:\n');
+  it('8b. plan: onReviewReject errors are non-fatal (swallowed)', async () => {
+    const factory = reviewRunner(makeExecSpec(), makeReviewSpec(), {
+      maxRounds: 2,
+      onReviewReject: () => {
+        throw new Error('callback error');
+      },
+    });
+    const runner = factory();
+    const ctx = makePlanContext();
+    const gen = runner.plan(ctx);
+
+    // Round 1: rejected (callback throws but is swallowed)
+    await gen.next(); // execute
+    await gen.next([execResult()]); // review
+    // This would fail if the callback error propagated
+    await gen.next([rejectedReview('fix')]); // → round 2 execute
+
+    // Round 2: rejected (callback throws again)
+    await gen.next([execResult()]); // review
+    await expect(gen.next([rejectedReview('fix')])).rejects.toThrow();
+  });
+
+  // ── 9. onReviewReject NOT called on approval ──────────────────────────
+
+  it('9. plan: onReviewReject is NOT called when review approves', async () => {
+    let callbackCalls = 0;
+    const factory = reviewRunner(makeExecSpec(), makeReviewSpec(), {
+      onReviewReject: () => {
+        callbackCalls++;
+      },
+    });
+    const runner = factory();
+    const ctx = makePlanContext();
+    const gen = runner.plan(ctx);
+
+    await gen.next(); // execute
+    await gen.next([execResult()]); // review
+    await gen.next([approvedReview()]); // approve → done
+
+    expect(callbackCalls).toBe(0);
+  });
+
+  // ── 10. execute delegates to runScheduledSession ───────────────────────
+
+  it('10a. execute calls runScheduledSession with spec and ctx', async () => {
+    mockRunScheduledSession.mockResolvedValue(CANNED_RESULT);
+
+    const factory = reviewRunner(makeExecSpec(), makeReviewSpec());
+    const runner = factory();
+    const ctx = makePlanContext();
+
+    const spec: SessionSpec = {
+      id: 'task-abc/executor',
+      profile: 'executor',
+      prompt: 'Do the work',
+      outputMode: 'text',
+      runnerRole: 'executor',
+      attempt: 1,
+    };
+
+    const result = await runner.execute(ctx, spec);
+
+    expect(result).toBe(CANNED_RESULT);
+    expect(mockRunScheduledSession).toHaveBeenCalledTimes(1);
+    expect(mockRunScheduledSession).toHaveBeenCalledWith(spec, ctx);
+  });
+
+  it('10b. execute propagates errors from runScheduledSession', async () => {
+    const error = new Error('session failed');
+    mockRunScheduledSession.mockRejectedValue(error);
+
+    const factory = reviewRunner(makeExecSpec(), makeReviewSpec());
+    const runner = factory();
+    const ctx = makePlanContext();
+
+    const spec: SessionSpec = {
+      id: 'task-abc/executor',
+      profile: 'executor',
+      prompt: 'Do the work',
+      outputMode: 'text',
+      runnerRole: 'executor',
+      attempt: 1,
+    };
+
+    await expect(runner.execute(ctx, spec)).rejects.toThrow(error);
+  });
+
+  // ── 11. Factory creates fresh instances ────────────────────────────────
+
+  it('11. factory returns a new runner instance each call', () => {
+    const factory = reviewRunner(makeExecSpec(), makeReviewSpec());
+
+    const runnerA = factory();
+    const runnerB = factory();
+
+    expect(runnerA).not.toBe(runnerB);
+    expect(runnerA.plan).toBeInstanceOf(Function);
+    expect(runnerA.execute).toBeInstanceOf(Function);
+    expect(runnerB.plan).toBeInstanceOf(Function);
+    expect(runnerB.execute).toBeInstanceOf(Function);
   });
 });

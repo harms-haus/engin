@@ -13,13 +13,26 @@ import { handlePhaseCompleted, handlePhaseRegistered, handlePhaseStarted } from 
 import { handleAutoRetryCompleted, handleAutoRetryStarted } from './retry-handlers.js';
 import {
   handleSessionCompleted,
+  handleSessionFailed,
   handleSessionStarted,
   handleTurnEnded,
   handleTurnStarted,
 } from './session-handlers.js';
-import { handleTaskCompleted, handleTaskRegistered, handleTaskRejected, handleTaskStarted } from './task-handlers.js';
+import {
+  handleTaskCompleted,
+  handleTaskParked,
+  handleTaskRegistered,
+  handleTaskRejected,
+  handleTaskStarted,
+  handleTaskUnparked,
+} from './task-handlers.js';
 import { handleToolCallEnded, handleToolCallStarted } from './tool-handlers.js';
-import { handleWorkflowCompleted, handleWorkflowFailed, handleWorkflowStarted } from './workflow-handlers.js';
+import {
+  handleWorkflowCompleted,
+  handleWorkflowDataSet,
+  handleWorkflowFailed,
+  handleWorkflowStarted,
+} from './workflow-handlers.js';
 
 export { MAX_SESSION_LOG };
 
@@ -37,6 +50,7 @@ const handlers: Record<string, EventHandler> = {
   // Session lifecycle
   session_started: handleSessionStarted,
   session_completed: handleSessionCompleted,
+  session_failed: handleSessionFailed,
   turn_started: handleTurnStarted,
   turn_ended: handleTurnEnded,
 
@@ -45,6 +59,8 @@ const handlers: Record<string, EventHandler> = {
   task_started: handleTaskStarted,
   task_completed: handleTaskCompleted,
   task_rejected: handleTaskRejected,
+  task_parked: handleTaskParked,
+  task_unparked: handleTaskUnparked,
 
   // Log / decision / render / sidebar
   decision: handleDecision,
@@ -56,6 +72,9 @@ const handlers: Record<string, EventHandler> = {
   // Tool calls
   tool_call_started: handleToolCallStarted,
   tool_call_ended: handleToolCallEnded,
+
+  // Workflow data
+  workflow_data_set: handleWorkflowDataSet,
 
   // Auto-retry
   auto_retry_started: handleAutoRetryStarted,

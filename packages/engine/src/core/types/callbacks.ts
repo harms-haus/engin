@@ -37,11 +37,14 @@ export interface WorkflowStatusCallbacks {
   onTaskRegister?: (info: { taskId: string; phaseId: string; title: string; dependencies: string[] }) => void;
   onTaskComplete?: (info: { taskId: string; title: string }) => void;
   onTaskRejected?: (info: { taskId: string; title: string; reason: string }) => void;
+  onTaskParked?: (info: { taskId: string; title: string; agentId: string; phaseId?: string }) => void;
+  onTaskUnparked?: (info: { taskId: string; title: string; agentId: string; phaseId?: string }) => void;
   onDecision?: (info: { agentId: string; decision: string; reasoning: string; taskId?: string }) => void;
   onAgentRender?: (info: { agentId: string; profile: string; taskId?: string; rendered: string }) => void;
   onError?: (info: { agentId: string; error: string; phaseId: string; taskId?: string }) => void;
   onWorkflowComplete?: (info: { totalDurationMs: number; agentCount: number }) => void;
   onWorkflowFailed?: (info: { error: Error; phaseId: string }) => void;
+  onWorkflowData?: (info: { data: Record<string, unknown> }) => void;
   onSidebarUpdate?: (info: { title?: string; indicator?: string }) => void;
   onAutoRetryStart?: (info: {
     agentId: string;
@@ -100,6 +103,8 @@ export const STATUS_CALLBACK_METHODS: readonly string[] = Object.freeze([
   'onTaskRegister',
   'onTaskComplete',
   'onTaskRejected',
+  'onTaskParked',
+  'onTaskUnparked',
   'onDecision',
   'onAgentRender',
   'onError',
@@ -112,4 +117,5 @@ export const STATUS_CALLBACK_METHODS: readonly string[] = Object.freeze([
   'onAutoRetryStart',
   'onAutoRetryCompleted',
   'onSidebarUpdate',
+  'onWorkflowData',
 ]);

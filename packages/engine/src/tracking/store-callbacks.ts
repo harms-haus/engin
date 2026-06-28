@@ -117,6 +117,38 @@ export function createStoreCallbacks(store: StoreLike): StatusCallbacks {
       );
     },
 
+    onTaskParked(info) {
+      store.append(
+        'task_parked',
+        { taskId: info.taskId, title: info.title, agentId: info.agentId },
+        {
+          taskId: info.taskId,
+          agentId: info.agentId,
+          ...(info.phaseId !== undefined ? { phaseId: info.phaseId } : {}),
+        },
+      );
+    },
+
+    onTaskUnparked(info) {
+      store.append(
+        'task_unparked',
+        { taskId: info.taskId, title: info.title, agentId: info.agentId },
+        {
+          taskId: info.taskId,
+          agentId: info.agentId,
+          ...(info.phaseId !== undefined ? { phaseId: info.phaseId } : {}),
+        },
+      );
+    },
+
+    onAgentRender(info) {
+      store.append(
+        'agent_rendered',
+        { agentId: info.agentId, profile: info.profile, rendered: info.rendered },
+        { agentId: info.agentId, taskId: info.taskId },
+      );
+    },
+
     onDecision(info) {
       store.append(
         'decision',
@@ -149,6 +181,10 @@ export function createStoreCallbacks(store: StoreLike): StatusCallbacks {
         errorName: info.error.name,
         phase: info.phaseId,
       });
+    },
+
+    onWorkflowData(info) {
+      store.append('workflow_data_set', info.data);
     },
 
     onSidebarUpdate(info) {

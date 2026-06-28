@@ -27,8 +27,7 @@ Source:
 - Merge / PR / commit operations + lint gate: `packages/engine/src/core/worktree-operations.ts`.
 - Hardened conflict resolver: `packages/engine/src/core/worktree-lifecycle.ts`.
 - Tooled, self-verifying fix-up primitive: `packages/engine/src/core/worktree-fixup.ts`.
-- Per-task hook points: `packages/engine/src/core/phase-tasks.ts`,
-  `packages/engine/src/pool/lane-pool.ts`.
+- Per-task hook points: `packages/engine/src/core/phase-tasks.ts`.
 - Run wiring: `packages/engine/src/server/run-manager.ts`,
   `packages/engine/src/server/run-executor.ts`.
 - Client UX: `packages/cli/src/cli/post-worktree.ts`, `packages/cli/src/cli/commands.ts`.
@@ -189,7 +188,7 @@ The `--worktree` gate is gone. The executor probes `isGitRepo(handle.cwd)`:
 - **Non-git cwd** — `console.warn` and run in-place (`options.cwd = handle.cwd`, no manager,
   no worktrees). The client's non-git confirm prompt (see below) runs before this point.
 
-### Per task (`RunnerPool` session path)
+### Per task (`SessionScheduler` session path)
 
 Before `spawnAgent`, when a `WorktreeManager` is present:
 
@@ -222,7 +221,7 @@ absolute worktree paths inside it to repo-relative tails. A task that ran in its
 per-task worktree may emit absolute worktree paths in its structured output (e.g. an
 `issues[].file` from a code review); once that worktree is culled after the merge, those
 paths would be dead for any downstream task. The engine strips them at its result-capture
-seams — `RunnerPool` task processing and the `runSession` session primitive — via
+seams — `SessionScheduler` task processing and the `runSession` session primitive — via
 `relativizePathsIn(result, [taskWorktreePath, mainWorktreePath])` (source:
 `core/path-relativizer.ts`). The transform recurses over strings/objects/arrays
 (longest-root-first, start-of-string boundary match, exact-root → `.`), is idempotent and
@@ -231,7 +230,7 @@ non-mutating, and leaves non-string leaves untouched. The consume side
 downstream task's worktree cwd, so a relativized path resolves correctly there. This is
 purely internal — not part of the public engine API.
 
-### Task fails / retries (`RunnerPool` retry valve)
+### Task fails / retries (`SessionScheduler` session path)
 
 `cullTaskWorktree(taskId)` (force) runs before `resetTaskForRetry`, so the next attempt
 creates a fresh worktree. Cull is idempotent and best-effort — removal errors are swallowed
@@ -406,7 +405,7 @@ worktree is transparent. When git is available:
 - `options.cwd` is the **main worktree path** (not the original cwd).
 - `options.worktree` carries the main worktree info.
 - `options.worktreeManager` is available for workflows that opt into per-task worktree
-  support (forward it to `RunnerPool` / composable runners).
+  support (forward it to `SessionScheduler` / composable runners).
 
 See [Building a new workflow → Worktrees](../guides/building-workflows.md#worktrees) for
 the authoring surface and the `.worktreecopy` convention.
@@ -423,4 +422,4 @@ the authoring surface and the `.worktreecopy` convention.
   `TaskWorktreeInfo`, `WorktreeCopyEntry`, and the `worktree_merge_result` ServerMessage.
 - [Building a new workflow](../guides/building-workflows.md) — `.worktreecopy` for authors,
   the `worktreeManager` option, and `createLintValidationGate`.
-- [Task pool & execution](task-pool.md) — the per-task worktree hook points in `RunnerPool`.
+- [Task pool & execution](task-pool.md) — the per-task worktree hook points in `SessionScheduler`.

@@ -2,13 +2,9 @@
 //
 // Captures per-run `console.warn` / `console.error` / `console.info` output
 // into the CURRENT run's EventStore WITHOUT mutating the process-global
-// `console` object per run. The previous approach saved/restored the global
-// console methods around each run, which corrupted under concurrent runs:
-// run B's override clobbered run A's, so A's console output could be appended
-// to B's store (or lost), and the save/restore was racy (deferred item
-// CQ-H3).
-//
-// The fix routes capture purely through AsyncLocalStorage:
+// `console` object per run. Capture routes through AsyncLocalStorage, so
+// concurrent runs each capture their own output with no per-run save/restore
+// and no cross-contamination.
 //
 //   - `installConsoleCapture()` replaces the global `console.warn/error/info`
 //     ONCE (idempotent). The wrappers look up the active run's store via the

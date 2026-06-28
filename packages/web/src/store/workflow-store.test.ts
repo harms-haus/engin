@@ -1006,6 +1006,207 @@ describe('store – follow rules', () => {
 
       expect(useWorkflowStore.getState().selectedTaskId).toBe('t1');
     });
+
+    // ── Parked task handling (kb-35) ───────────────────────────────────────
+    // Parked tasks have active sessions but are paused (not 'active').
+    // reconcileSelection must treat 'parked' as non-terminal — it must NOT
+    // auto-replace a parked selected task with an active one, and must NOT
+    // auto-select a parked task when no active task exists.
+
+    it('keeps a parked task selected through reconcileSelection (parked is non-terminal)', () => {
+      useWorkflowStore.getState().applySnapshot(
+        SELECTED_RUN,
+        blankProjection({
+          currentPhaseId: 'exec',
+          phases: [{ id: 'exec', label: 'Exec', icon: '⚡', taskIds: ['t1'] }],
+          tasks: {
+            t1: {
+              id: 't1',
+              title: 'T1',
+              status: 'parked',
+              phaseId: 'exec',
+              dependencies: [],
+              startedAt: 10,
+            },
+          },
+        }),
+        1,
+      );
+
+      // Select the parked task explicitly
+      useWorkflowStore.getState().selectTask('t1');
+      expect(useWorkflowStore.getState().selectedTaskId).toBe('t1');
+
+      // applyEvents (which calls reconcileSelection) must NOT replace the
+      // parked task with some other task because parked is NOT terminal
+      // (isTerminalTaskStatus returns false).
+      useWorkflowStore.getState().applyEvents(SELECTED_RUN, [evt('workflow_started', { taskPrompt: 'build' }, {}, 2)]);
+
+      expect(useWorkflowStore.getState().selectedTaskId).toBe('t1');
+    });
+
+    it('auto-selects a parked task when no active task exists (parked is in-progress)', () => {
+      useWorkflowStore.getState().applySnapshot(
+        SELECTED_RUN,
+        blankProjection({
+          currentPhaseId: 'exec',
+          phases: [{ id: 'exec', label: 'Exec', icon: '⚡', taskIds: ['t1', 't2'] }],
+          tasks: {
+            t1: {
+              id: 't1',
+              title: 'T1',
+              status: 'ready',
+              phaseId: 'exec',
+              dependencies: [],
+            },
+            t2: {
+              id: 't2',
+              title: 'T2',
+              status: 'parked',
+              phaseId: 'exec',
+              dependencies: [],
+              startedAt: 10,
+            },
+          },
+        }),
+        1,
+      );
+
+      // selectPhase triggers reconcileSelection, which should auto-select
+      // the parked task (t2) as an in-progress task, NOT the first task (t1).
+      useWorkflowStore.getState().selectPhase('exec');
+      expect(useWorkflowStore.getState().selectedTaskId).toBe('t2');
+    });
+
+    // ── Parked task completion-reselection (U2) ────────────────────────────
+    // A parked task that goes terminal should trigger reselection to another
+    // in-progress task, mirroring the TUI dashboard logic.
+
+    it('re-selects an active task when a parked task goes terminal (U2)', () => {
+      useWorkflowStore.getState().applySnapshot(
+        SELECTED_RUN,
+        blankProjection({
+          currentPhaseId: 'exec',
+          phases: [{ id: 'exec', label: 'Exec', icon: '⚡', taskIds: ['t1', 't2'] }],
+          tasks: {
+            t1: {
+              id: 't1',
+              title: 'T1',
+              status: 'parked',
+              phaseId: 'exec',
+              dependencies: [],
+              startedAt: 10,
+            },
+            t2: {
+              id: 't2',
+              title: 'T2',
+              status: 'active',
+              phaseId: 'exec',
+              dependencies: [],
+              startedAt: 20,
+            },
+          },
+        }),
+        1,
+      );
+
+      // t1 (parked) is auto-selected — it's first in array order.
+      expect(useWorkflowStore.getState().selectedTaskId).toBe('t1');
+
+      // t1 (parked) transitions to complete → should re-select t2 (active)
+      useWorkflowStore.getState().applySnapshot(
+        SELECTED_RUN,
+        blankProjection({
+          currentPhaseId: 'exec',
+          phases: [{ id: 'exec', label: 'Exec', icon: '⚡', taskIds: ['t1', 't2'] }],
+          tasks: {
+            t1: {
+              id: 't1',
+              title: 'T1',
+              status: 'complete',
+              phaseId: 'exec',
+              dependencies: [],
+              startedAt: 10,
+              completedAt: '2026-06-17T00:00:00.000Z',
+            },
+            t2: {
+              id: 't2',
+              title: 'T2',
+              status: 'active',
+              phaseId: 'exec',
+              dependencies: [],
+              startedAt: 20,
+            },
+          },
+        }),
+        2,
+      );
+
+      expect(useWorkflowStore.getState().selectedTaskId).toBe('t2');
+    });
+
+    it('re-selects a parked task as fallback when a parked task goes terminal and no active remains (U2)', () => {
+      useWorkflowStore.getState().applySnapshot(
+        SELECTED_RUN,
+        blankProjection({
+          currentPhaseId: 'exec',
+          phases: [{ id: 'exec', label: 'Exec', icon: '⚡', taskIds: ['t1', 't2'] }],
+          tasks: {
+            t1: {
+              id: 't1',
+              title: 'T1',
+              status: 'parked',
+              phaseId: 'exec',
+              dependencies: [],
+              startedAt: 10,
+            },
+            t2: {
+              id: 't2',
+              title: 'T2',
+              status: 'parked',
+              phaseId: 'exec',
+              dependencies: [],
+              startedAt: 20,
+            },
+          },
+        }),
+        1,
+      );
+
+      // t1 (parked) is auto-selected — first in array order.
+      expect(useWorkflowStore.getState().selectedTaskId).toBe('t1');
+
+      // t1 (parked) transitions to failed → should re-select t2 (parked fallback)
+      useWorkflowStore.getState().applySnapshot(
+        SELECTED_RUN,
+        blankProjection({
+          currentPhaseId: 'exec',
+          phases: [{ id: 'exec', label: 'Exec', icon: '⚡', taskIds: ['t1', 't2'] }],
+          tasks: {
+            t1: {
+              id: 't1',
+              title: 'T1',
+              status: 'failed',
+              phaseId: 'exec',
+              dependencies: [],
+              startedAt: 10,
+              completedAt: '2026-06-17T00:00:00.000Z',
+            },
+            t2: {
+              id: 't2',
+              title: 'T2',
+              status: 'parked',
+              phaseId: 'exec',
+              dependencies: [],
+              startedAt: 20,
+            },
+          },
+        }),
+        2,
+      );
+
+      expect(useWorkflowStore.getState().selectedTaskId).toBe('t2');
+    });
   });
 
   describe('step follow', () => {

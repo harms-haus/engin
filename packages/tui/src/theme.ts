@@ -30,6 +30,7 @@ const statusColorMap: Record<TaskStatus, (s: string) => string> = {
   cancelled: dim,
   ready: cyan,
   blocked: darkRed,
+  parked: magenta,
 };
 
 export const statusColor = (status: TaskStatus): ((s: string) => string) => statusColorMap[status];
@@ -41,6 +42,7 @@ const statusIconMap: Record<TaskStatus, string> = {
   cancelled: '⊘',
   ready: '○',
   blocked: '·',
+  parked: '⏸',
 };
 
 export const statusIcon = (status: TaskStatus): string => statusIconMap[status];

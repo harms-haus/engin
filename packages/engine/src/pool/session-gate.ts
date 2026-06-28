@@ -1,9 +1,9 @@
 // ─── SessionGate — RAII concurrency authority ────────────────────────────────
 //
 // Two-level (total + per-model) FIFO gate for LLM session concurrency.
-// Callers acquire via `gate.run(profile, fn)` — the gate holds the slot for
-// the duration of `fn`, then releases automatically (RAII). There is NO
-// manual acquire/release API.
+// Callers acquire via `gate.run(profile, fn)` (RAII) OR via manual
+// `gate.acquire(profile)` / `gate.release(profile)` for scheduler-owned
+// lifecycle.
 //
 // Design (informed by async-mutex `runExclusive` and p-queue):
 //
@@ -94,15 +94,23 @@ export class SessionGate {
   /** Non-mutating peek: could a session for this profile's model be admitted
    *  right now? True iff a total slot is free AND the per-model bucket has
    *  capacity (uncapped models are only gated by the total). Used by the
+   *  scheduler to check whether a session can start for this profile before
+   *  attempting acquire (canonical/spec-required name). Also used by the
    *  RunnerPool to decide whether a ready task's FIRST session can run, so the
    *  task stays 'ready' until its first session actually has capacity. */
-  canAcquireFor(profile: { provider: string; model: string; agent?: string }): boolean {
+  canStart(profile: { provider: string; model: string; agent?: string }): boolean {
     if (this.totalAvailable <= 0) return false;
     const key = this.modelKey(profile);
     const cap = this.perModel[key];
     if (cap === undefined) return true; // uncapped model — only total gates it
     const b = this.models.get(key);
     return b === undefined ? cap > 0 : b.available > 0;
+  }
+
+  /** Backward-compatible alias of {@link canStart}. Delegates to canStart.
+   *  Used by legacy `run()`-based callers (e.g. RunnerPool). */
+  canAcquireFor(profile: { provider: string; model: string; agent?: string }): boolean {
+    return this.canStart(profile);
   }
 
   /** Compute the per-model key for a profile. Prefers the 3-part
@@ -260,9 +268,58 @@ export class SessionGate {
     }
   }
 
-  /** Release a per-model + total slot (per-model first, then total), then
-   *  dispatch any waiters that may now be admissible. Idempotency is handled
-   *  by the caller's `called` flag; this method always increments. */
+  /** Synchronously attempt to claim a concurrency slot for the given
+   *  profile, for use by the scheduler when it owns the session lifecycle
+   *  (acquire before execute, release on settle). This is the manual-pairing
+   *  alternative to the RAII `run()` — callers that need to bracket a session
+   *  whose start and end are in different stack frames (e.g. the RunnerPool
+   *  draining loop) use acquire()/release(); callers that can express the
+   *  session as a single async function prefer `run()`.
+   *
+   *  This is a pure try-acquire: it decrements the total counter FIRST and the
+   *  per-model counter SECOND (preserving the gate's lock-ordering invariant —
+   *  see the file header), and returns `false` (never throws) when EITHER the
+   *  total OR the per-model capacity is exhausted. It does NOT enqueue a FIFO
+   *  waiter; the caller decides whether to retry, queue externally, or skip.
+   *
+   *  Pairing contract: each `true` return MUST be matched by exactly one later
+   *  `release(profile)` for the SAME profile (same model key). A `false`
+   *  return MUST NOT be released. Unbalanced calls inflate the available
+   *  counters and break the cap.
+   *
+   *  @returns `true` if both total and per-model slots were available and
+   *           decremented; `false` if either is saturated. */
+  acquire(profile: { provider: string; model: string; agent?: string }): boolean {
+    return this.tryAcquire(this.modelKey(profile));
+  }
+
+  /** Release a previously-acquired slot for the given profile, restoring one
+   *  unit of per-model capacity AND one unit of total capacity, then admit any
+   *  FIFO `run()` waiters that may now be admissible and fire `onRelease()` so
+   *  the pool can claim newly-freed capacity. This is the manual-pairing
+   *  counterpart to `acquire()` for scheduler-owned session lifecycles; the
+   *  RAII `run()` path releases internally via the same mechanism.
+   *
+   *  Lock ordering: per-model counter is incremented FIRST and the total
+   *  counter SECOND — the exact reverse of `acquire()` / `tryAcquire()` — to
+   *  preserve the gate's lock-ordering invariant (see file header) and prevent
+   *  circular-wait.
+   *
+   *  Pairing contract: call this exactly once for each prior successful
+   *  `acquire()` with the SAME profile. Releasing without a matching acquire,
+   *  or releasing more than once per acquire, will inflate the available
+   *  counters beyond their configured caps — there is no internal bookkeeping
+   *  to detect unbalanced releases, so callers own this invariant. */
+  release(profile: { provider: string; model: string; agent?: string }): void {
+    this.releaseSlot(this.modelKey(profile));
+  }
+
+  /** Release a per-model + total slot (per-model FIRST, then total — reverse
+   *  of tryAcquire's lock ordering), then dispatch any waiters that may now be
+   *  admissible, then fire `onRelease()`. Always increments both counters;
+   *  idempotency / pairing is owned by the caller (RAII `called` flag for the
+   *  `run()` path, or the scheduler's acquire/release bookkeeping for the
+   *  manual path). */
   private releaseSlot(modelKey: string): void {
     const b = this.bucket(modelKey);
     b.available += 1;

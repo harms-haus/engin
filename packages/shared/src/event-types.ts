@@ -2,7 +2,9 @@
 // Superset of the StatusCallbacks defined in core/types.ts (callbacks +
 // derived / server-only events such as 'log'). auto_retry_started and
 // auto_retry_completed are added ahead of their engine emitter, which will
-// be wired in a later task.
+// be wired in a later task. task_parked and task_unparked are similarly
+// forward-declared ahead of the parking scheduler, which will be wired in a
+// later task.
 
 // ─── Re-exports from core/types.ts ──────────────────────────────────────────
 import type { StepDefinition, TaskEntity, TaskStatus } from './types.js';
@@ -27,12 +29,15 @@ export type EventType =
   | 'phase_completed'
   | 'session_started'
   | 'session_completed'
+  | 'session_failed'
   | 'auto_retry_started'
   | 'auto_retry_completed'
   | 'task_registered'
   | 'task_started'
   | 'task_completed'
   | 'task_rejected'
+  | 'task_parked'
+  | 'task_unparked'
   | 'decision'
   | 'error'
   | 'workflow_completed'
@@ -43,7 +48,8 @@ export type EventType =
   | 'tool_call_started'
   | 'tool_call_ended'
   | 'log'
-  | 'agent_rendered';
+  | 'agent_rendered'
+  | 'workflow_data_set';
 
 // ─── Event Record ────────────────────────────────────────────────────────────
 
@@ -79,6 +85,7 @@ export interface SessionEntity {
   sessionId?: string;
   sessionPath?: string;
   active: boolean;
+  status?: 'pending' | 'running' | 'completed' | 'failed';
   log: LogEntry[];
   toolCallCount: number;
   inputTokens: number;
@@ -126,6 +133,9 @@ export interface WorkflowProjection {
   };
   /** Server-captured console output (capped at MAX_RUN_LOG entries). */
   runLog: LogEntry[];
+
+  /** Arbitrary data attached via workflow_data_set events (shallow-merged). */
+  workflowData?: Record<string, unknown>;
 }
 
 // ─── Factory ─────────────────────────────────────────────────────────────────
@@ -143,5 +153,6 @@ export function createInitialProjection(): WorkflowProjection {
     status: 'running',
     stats: { totalTokens: 0, sessionCount: 0 },
     runLog: [],
+    workflowData: undefined,
   };
 }

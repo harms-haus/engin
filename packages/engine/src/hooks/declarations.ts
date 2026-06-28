@@ -55,7 +55,6 @@ export const HOOK_DECLARATIONS = {
   // ── first-wins (first non-undefined wins) ───────────────────────────────
   beforeRunMerge: { rule: 'first-wins' },
   onRunMergeConflict: { rule: 'first-wins' },
-  shouldIsolate: { rule: 'first-wins' },
   beforePhase: { rule: 'first-wins' },
   beforePhaseTransition: { rule: 'first-wins' },
   shouldRetryPhase: { rule: 'first-wins' },
@@ -69,12 +68,9 @@ export const HOOK_DECLARATIONS = {
   // ── observe (fan-out, no return) ────────────────────────────────────────
   onWorkflowResume: { rule: 'observe' },
   onWorkflowAbort: { rule: 'observe' },
-  onLaneError: { rule: 'observe' },
   onStructuredOutput: { rule: 'observe' },
   onDecision: { rule: 'observe' },
   afterPhase: { rule: 'observe' },
-  wakeStrategy: { rule: 'observe' },
-  onLaneIdle: { rule: 'observe' },
 
   afterTaskWorktreeCreate: { rule: 'observe' },
 } as const satisfies Record<keyof WorkflowHooks, HookDeclaration>;

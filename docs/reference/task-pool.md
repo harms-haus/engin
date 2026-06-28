@@ -1,286 +1,673 @@
-# Task pool & execution
+# Task pool & scheduling architecture
 
-The pool layer (`packages/engine/src/pool/`) executes tasks concurrently. A `RunnerPool`
-claims tasks from a shared `TaskTracker` and dispatches each to a **Runner** function. The
-runner composes one or more agent **sessions** via the session primitive (`runSession`),
-gating concurrency through a **`SessionGate`**. Every session is one agent prompt turn.
+The pool layer (`packages/engine/src/pool/`) executes tasks concurrently. It is built around
+three cooperating components:
 
-This document covers the `TaskTracker` (write model), the `RunnerPool` executor, the
-`SessionGate` concurrency authority, the session primitive, the runner contract, the
-built-in composable runners, and the retry valve.
+- **`TaskGraph`** — a task dependency DAG (directed acyclic graph) with status tracking and
+  dependency-pressure ranking.
+- **`SessionScheduler`** — the centerpiece executor. It drives a `TaskGraph` through a
+  `SessionGate` using a greedy, tiered drain loop.
+- **`SessionPlanRunner`** — the runner contract that decouples _planning_ (what sessions to
+  run, in what order) from _scheduling_ (when to start them, subject to gate capacity).
 
-## `TaskTracker` — the write model
+A **runner** is an async generator (`plan()`) that yields **batches** of `SessionSpec[]`. The
+scheduler holds each batch, starts as many sessions as the gate allows, and feeds the settled
+`SessionResult[]` back into the generator (via `gen.next(results)`) to advance it — but only
+once the **entire batch has settled**. A batch is atomic.
 
-Source: `packages/engine/src/tracking/task-status.ts`. Manages a collection of `Task` objects with a DAG of
-dependencies. Enforces state transitions and detects cycles. Extends `EventEmitter`.
+This document covers the `TaskGraph` (write model), the `SessionScheduler` executor, the
+`SessionGate` concurrency authority, the `SessionPlanRunner` contract, the built-in composable
+runners, and the task lifecycle. For the single-step session primitive itself (`runSession`,
+`SessionSpec`, `SessionResult`, `SessionError`, idempotency), see
+[Session primitive](#the-session-primitive-runsession) below.
+
+## Architecture at a glance
+
+```
+                       ┌──────────────────────────────────────────────┐
+                       │                 SessionScheduler              │
+                       │                                              │
+   TaskGraph  ──────►  │  greedy tiered drain loop                    │
+   (DAG + status)      │    T1 active → T2 parked → T3 ready          │
+                       │  coalesced drain (queueMicrotask)            │
+                       │  parking / lazy activation / deadlock detect │
+                       └───────────────┬──────────────┬───────────────┘
+                                       │              │
+                                       ▼              ▼
+                                SessionGate     runner.plan(ctx)
+                                (concurrency)   (AsyncGenerator<
+                                                 SessionSpec[], SessionResult[]>)
+                                       │              │
+                                       │ acquire/     │ gen.next(results)
+                                       │ release      ▼
+                                       │       runner.execute(ctx, spec)
+                                       │              │
+                                       │              ▼
+                                       └──────► runScheduledSession ──► runSession
+```
+
+Key invariant the diagram encodes: **the scheduler owns the gate lifecycle directly**
+(acquire before `execute`, release on settle). Runners are pure async generators that **never
+touch the gate**. This is the central difference from the deleted `RunnerPool`, which started
+unbounded coroutines that self-gated.
+
+## `TaskGraph` — the DAG + status write model
+
+Source: `packages/engine/src/pool/task-graph.ts`. A task dependency graph (DAG) with status
+tracking and blocking-pressure ranking. It supersedes the status/dependency portions of the
+deleted `TaskTracker`. It does **not** emit Node `EventEmitter` events — status transitions are
+surfaced exclusively through an optional `onStatusTransition` callback that the scheduler
+sets.
 
 ```typescript
-class TaskTracker extends EventEmitter {
-  static readonly Events: {
-    TaskReady: 'taskReady';
-    TaskSettled: 'taskSettled';
-    TaskClaimed: 'taskClaimed';
-  };
+type TaskStatus = 'ready' | 'blocked' | 'active' | 'complete' | 'failed' | 'cancelled' | 'parked';
 
-  addTask(task: Omit<Task, 'status'> & { status?: TaskStatus }): void;
-  getTask(id: string): Task | undefined;
-  getAllTasks(): Task[];
-  getReadyTasks(): Task[];
-  getFailedTasks(): Task[];
-  getTasksByPhase(phaseId: string): Task[];
-  getPhases(): string[];
-  claimTasks(count: number, agentId: string): Task[];
-  completeTask(id: string, result?: unknown): void;
-  failTask(id: string, result?: unknown): void;
-  rejectTask(id: string, reason: string): void;
-  cancelTask(id: string): void;
-  resetFailedTasks(): void;
-  resetStuckTasks(): void;
-  resetTaskForRetry(id: string): void;
-  resetForRetry(): void;
-  recalculateStatuses(hintTaskId?: string): void;
-  isPoolDone(): boolean;
-  validateAllDependencies(): void;
-  getTransitiveDependentCount(id: string): number;
-  toJSON(): { tasks: Task[] };
-  static fromJSON(data: { tasks: Task[] }, options?: { preserveState?: boolean }): TaskTracker;
+class TaskGraph {
+  onStatusTransition?: (taskId: string, status: TaskStatus) => void;
+
+  addTask(task: Task, runnerFactory: () => SessionPlanRunner): void;
+  addTasks(...tasks: (Task & { runnerFactory?: () => SessionPlanRunner })[]): void;
+
+  getTask(id: string): TaskGraphEntry | undefined;
+  getAllTasks(): TaskGraphEntry[];
+
+  getReadyTasks(): TaskGraphEntry[]; // sorted DESC by blocking pressure
+  getParkedTasks(): TaskGraphEntry[]; // sorted DESC by blocking pressure
+  getActiveTasks(): TaskGraphEntry[]; // insertion order
+
+  setTaskStatus(id: string, status: TaskStatus): void;
+  recalculateReady(depsHint?: string): void;
+
+  transitiveDependentCount(id: string): number;
+  failDeadlockedTasks(): void;
 }
 ```
 
-### Task lifecycle
+### `TaskGraphEntry`
 
-```
-blocked → ready → active → complete
-                    │
-                    ├─→ failed
-                    └─→ (rejectTask: stays active, appends feedback, retries)
-```
-
-Any non-settled task can be cancelled (`→ cancelled`). **Settled** = `complete | failed |
-cancelled`.
-
-### Methods
-
-- **`addTask(task)`** — Throws on duplicate IDs. Auto-derives status: `ready` if all
-  dependencies are present and settled, otherwise `blocked`. Performs a temporary insertion to
-  check for cycles, rolling back and throwing if one is detected. Then `recalculateStatuses`.
-- **`getReadyTasks()`** — Filters `status === 'ready'`, sorted by **transitive blocking
-  pressure** (descending) — tasks that unblock more downstream work are claimed first. Ties
-  preserve insertion order (first-added first-served, via stable sort).
-- **`getFailedTasks()`** — Returns only `failed` tasks via a maintained index (O(failed), not
-  O(N)).
-- **`claimTasks(count, agentId)`** — Returns up to `count` ready tasks, mutating each in place
-  to `status='active'`, `assignedAgent=agentId`. Returns **live references** (so runners can
-  append `reviewFeedback` across retries — the only safe external mutation). Emits `TaskClaimed`
-  on the next microtask if anything was claimed.
-- **`completeTask(id, result?)`** — Throws if not found or not `active`. Sets `complete`,
-  stores `result`, recalculates, emits `TaskSettled`.
-- **`failTask(id, result?)`** — Throws if not found or not `active`. Sets `failed`, stores
-  `result`, clears `assignedAgent`, adds to the failed index, recalculates, emits `TaskSettled`.
-- **`rejectTask(id, reason)`** — Throws if not found or not `active`. Appends the reason to
-  `reviewFeedback`. **The task stays `active`** (the pool still owns it). Emits `TaskReady`.
-- **`cancelTask(id)`** — Throws if not found or already settled. Sets `cancelled`, emits
-  `TaskSettled`.
-- **`resetTaskForRetry(id)`** — Throws unless task is `failed`. Resets to `ready`, clears
-  `assignedAgent`/`result`/`reviewFeedback`, removes from failed index, emits `TaskReady`. Used
-  by the `RunnerPool` retry valve.
-- **`resetFailedTasks()` / `resetStuckTasks()` / `resetForRetry()`** — Re-arm `failed` tasks,
-  `active` tasks, or both, back to `ready`.
-- **`isPoolDone()`** — `true` when empty, or when every task is settled **or** deadlocked
-  (`blocked` with at least one missing dependency). **Side effect:** mutates deadlocked tasks to
-  `failed` with `result.error` starting with `'deadlocked:'` (idempotent via `warnedDeadlocked`).
-  Returns `false` if any task is `ready`/`active`, or `blocked` with all deps present.
-- **`validateAllDependencies()`** — Throws listing each task with missing dependency IDs.
-  Cycles are caught at insert time.
-- **`fromJSON(data, options?)`** — Rebuild reverse-deps + failed index, run cycle detection on
-  every id, then (unless `preserveState`) `resetForRetry()`. Always `recalculateStatuses()`.
-
-### Two views of rejection
-
-`rejectTask` keeps the task `active` on the write model — the pool still owns it and will
-retry. The corresponding `task_rejected` event maps to status `failed` in the projection (read
-model). Both are correct for their audience. See
-[Architecture → Write model vs read model](../concepts/architecture.md#write-model-vs-read-model).
-
-## `RunnerPool` — the executor
-
-Source: `packages/engine/src/pool/runner-pool.ts`. Replaces the old `LanePool` + `Scheduler`
-with a simpler drain-loop model. There are no lanes, no lane workers, no scheduler hooks.
+Each task is wrapped in a `TaskGraphEntry`. `TaskGraph` owns the `task`/`status` fields; the
+runner / session-plan fields are mutated externally by the scheduler:
 
 ```typescript
-class RunnerPool {
-  constructor(options: RunnerPoolOptions);
+interface TaskGraphEntry {
+  task: Task; // underlying task definition (live ref)
+  runnerFactory: () => SessionPlanRunner;
+  status: TaskStatus; // mirrored on task.status — kept in sync
+  planGen?: AsyncGenerator<SessionSpec[], SessionResult[] | undefined>;
+  heldBatch?: SessionSpec[]; // current batch the scheduler is executing
+  batchResults: SessionResult[]; // results for held batch, in spec order
+  completedSessions: number; // scheduler-maintained
+  totalSessions: number; // scheduler-maintained
+}
+```
+
+### Status assignments on insert (`addTask`)
+
+- A **pre-settled** task (`complete` / `failed` / `cancelled`) keeps its status — used when
+  resuming a run where tasks already reached a terminal state.
+- Otherwise **`ready`** when all dependencies are present and settled, else **`blocked`**.
+
+`addTask` runs Kahn's-algorithm-style cycle detection after inserting; on a cycle it rolls
+back the insert and **throws**. The reverse-dependency index and the memoized
+transitive-dependents map are updated, then `recalculateReady` promotes any blocked
+dependents whose deps are now all settled.
+
+`addTasks(...)` is a convenience batch inserter. Tasks without an explicit `runnerFactory`
+get a no-op factory (suitable for tests / status-only graphs).
+
+### Blocking-pressure ranking
+
+`getReadyTasks()` and `getParkedTasks()` return entries sorted **DESC by
+`transitiveDependentCount(id)`** — the number of tasks that transitively depend on `id`
+(computed by a reverse-topology DFS over the reverse-dependency index). Tasks that unblock
+more downstream work are started first. Ties keep insertion order (first-added first-served),
+relying on the stability of `Array.prototype.sort` (ES2019+) — no secondary sort key is
+applied. `getActiveTasks()` returns entries in insertion order.
+
+The transitive-dependents map is memoized and invalidated lazily on any topology change
+(`addTask`). It is a pure function of the dependency topology, so it is safe to cache across
+status changes.
+
+### Status transitions (`setTaskStatus`)
+
+```typescript
+graph.setTaskStatus(id, status);
+```
+
+Updates both `entry.status` and `entry.task.status` (kept in sync). Invokes
+`onStatusTransition` **only when the status actually changes** (no callback for no-op
+transitions). This is the **single writer** through which all status changes flow — the
+scheduler never mutates `entry.status` directly.
+
+### `recalculateReady(depsHint?)`
+
+When a dependency settles, transitions blocked tasks whose dependencies are now **all**
+settled from `blocked` → `ready`. With `depsHint`, only dependents of that task id are
+checked; without it, all blocked tasks are scanned.
+
+### `failDeadlockedTasks()`
+
+Fails blocked tasks whose dependency ids **don't exist in the graph** (the dependency will
+never settle because it was never added). Marks each such task `failed` via `setTaskStatus`
+with `result.error` starting with `deadlocked:`. Idempotent. The scheduler calls this at the
+start of every `run()`.
+
+## `SessionPlanRunner` — the runner contract
+
+Source: `packages/engine/src/pool/runners/session-plan-types.ts`. Decouples planning from
+scheduling. A runner is a stateful object with two methods. Runners are constructed via
+factories ([`SessionPlanFactory`](#sessionplanfactory)) so each task gets a fresh instance.
+
+```typescript
+interface SessionPlanRunner {
+  plan(ctx: SessionPlanContext): AsyncGenerator<
+    SessionSpec[], // yielded batches
+    SessionResult[] | undefined, // optional terminal aggregation
+    SessionResult[] // results fed back via gen.next(results)
+  >;
+  execute(ctx: SessionPlanContext, spec: SessionSpec): Promise<SessionResult>;
+}
+
+type SessionPlanFactory = () => SessionPlanRunner;
+```
+
+### The batch protocol
+
+The scheduler drives a runner's `plan()` generator according to this protocol:
+
+1. **Start.** The scheduler calls `gen.next()` (no argument) to start the generator and
+   receive the **first batch** (`SessionSpec[]`). It **holds** that batch — it does not
+   immediately call `gen.next()` again.
+2. **Execute greedily.** The scheduler starts as many sessions in the held batch as gate
+   capacity allows (`gate.canStart()` → `gate.acquire()` → `runner.execute()`). Sessions that
+   cannot start immediately cause the task to be **parked** (status `'parked'`); already-
+   started siblings continue running — they are not paused or cancelled.
+3. **Advance.** Once **the entire batch has settled** (every spec completed or failed), the
+   scheduler calls `gen.next(results)` to advance the generator and receive the next batch.
+   `results` is `SessionResult[]` — one per spec, **in spec order**. The generator uses these
+   to decide what (if anything) to yield next.
+4. **Return.** When the generator returns, it MAY provide a terminal `SessionResult[]`
+   (aggregated). A return value of `undefined` means the runner does not aggregate — the
+   scheduler tracks terminal results itself.
+
+> **Batch atomicity:** the generator cannot advance until ALL specs in the current batch have
+> settled. A spec blocked on gate capacity **parks the task**, not the batch.
+
+### `execute(ctx, spec)` — run one session
+
+Runs a single `SessionSpec` and returns its `SessionResult`. **`execute()` must NOT acquire
+the gate itself** — the scheduler acquires the slot before calling `execute()` and releases it
+after the returned promise settles. This centralizes capacity enforcement in the scheduler
+rather than duplicating it in every runner.
+
+All built-in runners delegate `execute()` to `defaultExecute` (see
+[Shared runner utilities](#shared-runner-utilities)).
+
+### `SessionPlanContext`
+
+Passed to `plan()` and `execute()`. Notably, it contains **no `gate`, no `runSession`, and no
+`maxTaskRetries`** — the scheduler owns all of those:
+
+```typescript
+interface SessionPlanContext {
+  task: Task;
+  profiles: Map<string, AgentProfile>;
+  sessionBaseDir: string;
+  cwd: string;
+  worktreeCwd?: string; // set when a worktree was created
+  apiKeys?: Record<string, string>; // only in the execute context (S4 — see below)
+  activeSessions: Set<{ abort(): Promise<void> }>;
+  onStatus?: StatusCallbacks;
+  hookRegistry?: HookRegistry;
+  rendererRegistry?: RendererRegistry;
+  auditLog?: AuditLog;
+  signal?: AbortSignal;
+  stepTimeoutMs?: number;
+  phaseId: string;
+  agentId: string;
+}
+```
+
+> **S4 — security boundary:** the scheduler builds **two** contexts per task — a **plan
+> context** (no `apiKeys`) and an **execute context** (with `apiKeys`). `plan()` never needs
+> credentials; `execute()` does.
+
+### Scheduler-side concepts (NOT runner members)
+
+The runner contract documentation references several concepts that live on the **scheduler**,
+not the runner:
+
+- **`sessionPeek`** — "the currently-held batch": the `SessionSpec[]` most recently yielded by
+  `gen.next()` that the scheduler is actively executing. The scheduler holds this reference as
+  its own state (`entry.heldBatch`); the runner has no `sessionPeek` member and the scheduler
+  never calls `gen.next()` just to peek.
+- **`totalSessions`** — count of `SessionSpec`s yielded so far across all batches (may grow
+  for coordinators that yield additional batches). Tracked as `entry.totalSessions`.
+- **`completedSessions`** — count of settled (completed or failed) `execute()` calls. Tracked
+  as `entry.completedSessions`.
+
+### `SessionPlanFactory`
+
+```typescript
+type SessionPlanFactory = () => SessionPlanRunner;
+```
+
+Because runners are stateful (they track plan progress across batches), each task gets its own
+instance via the factory. This prevents cross-task state leakage and lets the scheduler
+construct a runner lazily when a task becomes active. Every built-in runner factory (e.g.
+`singleSession`, `councilRunner`) returns a `SessionPlanFactory`.
+
+## `SessionGate` — concurrency authority
+
+Source: `packages/engine/src/pool/session-gate.ts`. A two-level (total + per-model) FIFO gate.
+The scheduler uses the **manual acquire/release API** (it owns the session lifecycle);
+`run()` is a legacy RAII convenience for callers that can express a session as a single async
+function.
+
+```typescript
+interface SessionGateOptions {
+  total: number; // hard cap across ALL models
+  perModel: Record<string, number>; // keyed by `${provider}:${model}` or `${provider}:${model}:${agent}`
+}
+
+class SessionGate {
+  constructor(options: SessionGateOptions, signal?: AbortSignal);
+  onRelease?: () => void;
+
+  availableTotal(): number;
+  canStart(profile: { provider: string; model: string; agent?: string }): boolean;
+  acquire(profile): boolean; // manual — returns false when saturated
+  release(profile): void; // manual — must pair 1:1 with a true acquire
+
+  run<R>(profile, fn: (handle: { signal: AbortSignal }) => Promise<R>): Promise<R>; // legacy RAII
+}
+```
+
+### Scheduler-owned lifecycle: `canStart` / `acquire` / `release`
+
+These are the methods the `SessionScheduler` uses. They are **synchronous, pure try-acquire**
+calls — they never enqueue a FIFO waiter:
+
+- **`canStart(profile)`** — non-mutating peek: could a session for this profile's model be
+  admitted right now? `true` iff a total slot is free AND the per-model bucket has capacity.
+  Uncapped models are gated only by the total.
+- **`acquire(profile)`** — synchronously attempts to claim both a total slot and a per-model
+  slot. Returns `true` iff both decrements succeeded (atomic in single-threaded JS). Returns
+  `false` (never throws) when either is saturated. Does **not** enqueue a waiter.
+- **`release(profile)`** — restores one unit of per-model and one of total capacity, then
+  admits any FIFO `run()` waiters that may now fit, then fires `onRelease()`.
+
+**Pairing contract:** each `true` return from `acquire()` MUST be matched by exactly one
+later `release()` for the **same** profile. A `false` return MUST NOT be released. There is no
+internal bookkeeping to detect unbalanced releases — callers own this invariant.
+
+### Legacy RAII: `run(profile, fn)`
+
+For callers that can bracket a session as a single async function. `run()` acquires
+internally (enqueueing a FIFO waiter on the slow path), invokes `fn({ signal })`, and
+releases in a `finally` (idempotent via a `called` flag). The scheduler does **not** use
+`run()` — it uses acquire/release directly so session start and settle can live in different
+stack frames.
+
+### Lock ordering & model keys
+
+- **Lock ordering:** total slot decremented first, per-model second (on acquire); per-model
+  incremented first, total second (on release) — the exact reverse, preventing circular-wait.
+- **`dispatch()`** scans each model queue head and admits any FIFO `run()` waiter whose model
+  has capacity AND total has capacity.
+- **Model key resolution:** prefers the 3-part key `${provider}:${model}:${agent}` when an
+  agent is set AND a cap exists for it; otherwise falls back to the 2-part key.
+- **`DeadlockError`** is thrown when a callback synchronously re-enters `run()` on the same
+  gate while holding the last total slot (guaranteed deadlock).
+- **AbortSignal:** pre-queue abort removes the waiter from its FIFO and rejects with
+  `AbortError`; an already-aborted gate rejects immediately; a waiter that wakes only to
+  discover it's been aborted releases its slot and rejects.
+
+## `SessionScheduler` — the centerpiece executor
+
+Source: `packages/engine/src/pool/session-scheduler.ts`. Drives a `TaskGraph` through a
+`SessionGate` using a greedy, tiered drain loop. Unlike the deleted `RunnerPool`, it owns the
+gate lifecycle directly.
+
+```typescript
+interface SessionSchedulerOptions {
+  graph: TaskGraph;
+  gate: SessionGate;
+  profiles: Map<string, AgentProfile>;
+  sessionBaseDir: string;
+  cwd: string;
+  onStatus?: StatusCallbacks;
+  hookRegistry?: HookRegistry;
+  rendererRegistry?: RendererRegistry;
+  auditLog?: AuditLog;
+  signal?: AbortSignal;
+  stepTimeoutMs?: number;
+  phaseId: string;
+  apiKeys?: Record<string, string>;
+  activeSessions: Set<{ abort(): Promise<void> }>;
+  worktreeManager?: WorktreeManager;
+}
+
+class SessionScheduler {
+  constructor(options: SessionSchedulerOptions);
   run(): Promise<{ completedTasks: number; failedTasks: number }>;
 }
 ```
 
-### `RunnerPoolOptions`
+### `run()` — the main loop
 
-| Field                   | Required | Description                                                                                                                                                         |
-| ----------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `maxConcurrentSessions` | **Yes**  | Hard cap on concurrent in-flight sessions across ALL models. Passed to `SessionGate` as the `total` limit.                                                          |
-| `modelConcurrency`      | **Yes**  | Per-model concurrency caps keyed by `${provider}:${model}` (or `${provider}:${model}:${agent}`). Passed to `SessionGate` as the `perModel` map.                     |
-| `profilesDirs`          | **Yes**  | Directories containing `.md` profiles.                                                                                                                              |
-| `sessionBaseDir`        | **Yes**  | Base directory for persisted session storage (`{base}/{sessionId}/`).                                                                                               |
-| `cwd`                   | **Yes**  | Working directory.                                                                                                                                                  |
-| `taskTracker`           | **Yes**  | Shared `TaskTracker` the pool claims from.                                                                                                                          |
-| `phaseId`               | **Yes**  | The phase this pool serves.                                                                                                                                         |
-| `getRunnerForTask`      | No       | `(task: Task) => Runner`. The sole runner resolution path (no `getStepsForTask`). If absent or returns `undefined`, the task fails with `"No runner for task"`.     |
-| `apiKeys?`              | No       | Provider → API key overrides.                                                                                                                                       |
-| `onStatus?`             | No       | Status callbacks.                                                                                                                                                   |
-| `auditLog?`             | No       | Audit log. When present alongside `hookRegistry`, `RunnerPool.run()` auto-registers the default auditor so `structured_output` / `decision` events land in the log. |
-| `maxTaskRetries?`       | No       | Max times a failed task is retried within one pool run. Total attempts = `1 + maxTaskRetries`. Default `0` (no retries).                                            |
-| `stepTimeoutMs?`        | No       | Per-prompt watchdog timeout in milliseconds. Forwarded as `watchdogTimeoutMs` to sessions.                                                                          |
-| `signal?`               | No       | Abort signal.                                                                                                                                                       |
-| `rendererRegistry?`     | No       | Optional registry of custom output renderers keyed by profile name.                                                                                                 |
-| `hookRegistry?`         | No       | Optional registry of workflow hooks. Forwarded to runners via `RunnerContext.hookRegistry`.                                                                         |
-| `worktreeManager?`      | No       | `WorktreeManager` for per-task git worktree isolation. When set, tasks with `worktree === 'code'` get their own worktree.                                           |
-| `gate?`                 | No       | Pre-constructed `SessionGate`. Defaults to `new SessionGate({ total: maxConcurrentSessions, perModel: modelConcurrency }, signal)`.                                 |
+1. **Early exits.** Returns `{ completedTasks: 0, failedTasks: 0 }` if the signal is already
+   aborted or the graph is empty (without loading profiles or touching the gate).
+2. **Setup.**
+   - Clones `options.hookRegistry` into a scoped registry (so pool-internal subscriber
+     registrations never mutate the original).
+   - Tracks each task's initial status and fires `onTaskRegister` once per task.
+   - Wires `graph.onStatusTransition` → `emitStatusEvent` (differentiates `ready`→`active`
+     from `parked`→`active` — see [Task lifecycle](#task-lifecycle)).
+   - Calls `graph.failDeadlockedTasks()` — missing-dep tasks become terminal immediately.
+   - Wires `gate.onRelease` → `scheduleDrain()` (coalesced drain trigger).
+   - Registers an abort listener that aborts every active session, cancels every non-terminal
+     task, fire-and-forget-cleans up plan generators, and wakes the main loop.
+3. **Resume reconstruction.** `initializeResumedTasks()` — for tasks that were mid-flight
+   (`active` or `parked`) when a prior run was interrupted. Async generators aren't
+   serializable, so the scheduler creates a **fresh** generator via `runner.plan(ctx)` and
+   re-fetches the first batch. The [session idempotency](#resume-reconstruction) mechanism
+   replays cached sessions instantly; only sessions that never actually completed re-run.
+4. **Initial drain** — start as many sessions as possible.
+5. **Main drain loop:**
 
-### How `run()` works — the drain-loop model
+   ```
+   while (true):
+     if aborted → break
+     if inflight.size > 0:
+       rearm wake signal
+       await Promise.race([...inflight, wakePromise])
+     drainPass()
+     if inflight.size === 0:
+       if isDone() → break
+       drainPass()                    // false-deadlock guard
+       if inflight.size > 0 → continue
+       if isDone() → break
+       handleResourceDeadlock()       // escalate
+       break
+   drain remaining inflight (Promise.allSettled)
+   ```
 
-1. **Early-out** on `signal?.aborted` or an empty tracker (returns zeros **without loading
-   profiles or creating a gate**).
-2. **Clone the hook registry.** A scoped clone of `options.hookRegistry` is created so
-   pool-internal subscriber registrations never mutate the original.
-3. **Register tasks.** Fire `onTaskRegister` **once per task** (`taskId`, `phaseId`, `title`,
-   `dependencies`). No step layout is emitted — the projection's `TaskEntity` has no `steps`
-   field.
-4. **Load profiles.** `clearProfileCache()` then `loadProfilesFromDirs(profilesDirs)` — loaded
-   fresh on every `run()`.
-5. **Register abort listener** on the signal that aborts every active session.
-6. **Register the default auditor** (when both `auditLog` and `hookRegistry` are present) as a
-   subscriber for `onStructuredOutput` and `onDecision` **before** any tasks start.
-7. **Deadlock observer.** A `TaskSettled` listener surfaces deadlocked tasks
-   (`result.error` starts with `'deadlocked:'`) via `onTaskRejected`.
-8. **Drain loop:**
+6. **Teardown.** Unwires `gate.onRelease`, `graph.onStatusTransition`, the abort listener;
+   clears the scoped hook registry.
+7. **Count results** — `complete` → `completedTasks`; `failed`/`cancelled` → `failedTasks`.
 
-```
-while (true):
-  if aborted → break
-  claim all ready tasks (claimTasks(N, 'runner-pool'))
-  for each claimed task → start processTask coroutine (unbounded)
-  if no inflight coroutines:
-    trigger deadlock detection (isPoolDone)
-    flush microtask queue (so deadlocked TaskSettled fires)
-    break
-  await Promise.race(inflight)  // wait for first settlement, then re-loop
-drain remaining inflight (Promise.allSettled)
-```
+### The greedy tiered drain loop (`drainPass`)
 
-All ready tasks are claimed and their runner coroutines started immediately (unbounded). The
-`SessionGate` is the **sole concurrency cap** — runners gate themselves via
-`ctx.gate.run(profile, fn)` so at most `maxConcurrentSessions` sessions execute simultaneously;
-the rest block inside the gate FIFO. There is **no per-lane worker** and **no scheduler**.
+Each drain pass processes three tiers in **priority order**, starting specs greedily until
+gate capacity is exhausted:
 
-### How `processTask` works
+| Tier   | Tasks processed                       | Purpose                                                                                |
+| ------ | ------------------------------------- | -------------------------------------------------------------------------------------- |
+| **T1** | `getActiveTasks()`                    | Continue specs in an active task's held batch (current-task affinity).                 |
+| **T2** | `getParkedTasks()` (DESC by pressure) | Resume parked tasks whose pending specs now fit gate capacity.                         |
+| **T3** | `getReadyTasks()` (DESC by pressure)  | Initialize the runner + fetch the first batch, then start specs (**lazy activation**). |
 
-Each claimed task (`agentId = runner-{taskId}`) goes through:
+Within a tier, `tryStartBatchSpecs(entry)` iterates the held batch in order and starts every
+spec the gate can admit. Already-started specs are skipped.
 
-1. **Fire `onTaskStart`** with `{ taskId, title, agentId, phaseId, startedAt }`.
-2. **Resolve runner** via `resolveRunner`:
-   - If a scoped `hookRegistry` with `beforeTask` subscribers is present, invoke the
-     first-wins hook seeded with `{ task }`. A subscriber may return `{ skip: true }` (cancels
-     the task), `{ runner }` (overrides), or `undefined` (abstain).
-   - Otherwise, `getRunnerForTask(task)` is called.
-   - If no runner is resolved, the task fails with `"No runner for task"`.
-3. **Per-task worktree** (when `worktreeManager` is set and `task.worktree === 'code'`):
-   create a per-task worktree via `createTaskWorktree(task.id, task.prompt, task)`; set
-   `worktreeCwd` so the runner's sessions execute inside the isolated branch.
-4. **Build `RunnerContext`** — see [Runner contract](#runner-contract) below.
-5. **Invoke the runner** (`await runner(ctx)`). `SessionError` propagating from a runner is
-   captured with its `classification` threaded to the retry valve. Other thrown errors are
-   caught and become `{ status: 'failed', error }`.
-6. **Handle outcome:**
-   - `{ status: 'completed' }` → if a worktree was created, merge the task branch first
-     (`mergeTaskBranch`); a failed merge downgrades to `failed` (non-retriable). On success,
-     `safeComplete` + `onTaskComplete`.
-   - `{ status: 'failed', error }` → `safeFail`, report error, invoke the retry valve.
+- **T1 / T2** work on existing held batches. A spec that can't start (profile missing / gate
+  saturated) is skipped — the loop tries subsequent specs (mixed-profile batches may use a
+  different model that still has capacity).
+- **T3** first calls `initializeReadyTask(entry)`: resolve the runner (beforeTask hook),
+  optionally create a per-task worktree, create the plan generator, and fetch the first
+  non-empty batch. If the generator returns immediately (all sessions cached on resume), the
+  task is finalized here. Otherwise the held batch is set and specs are started.
 
-### Retry valve (`maybeRetry`)
+> **Why tiers matter:** active tasks (T1) get first claim on freed capacity because they
+> already have sessions running and hold a batch — continuing them avoids leaving partial
+> batches stranded. Parked tasks (T2) are next, ranked by how much downstream work they
+> unblock. Ready tasks (T3) are last — initializing one costs a worktree + a generator, so we
+> only do it when T1/T2 are satisfied.
 
-After a task fails, the pool decides whether to retry:
+### Lazy activation
 
-1. If the failure is **non-retriable** (e.g. merge failure) → preserve worktree, emit
-   `onDecision`, do not retry.
-2. If a `worktreeManager` is set → cull the task worktree (failed branch is never leaked).
-3. **Classify the error** using the propagated `SessionError.classification` (when available)
-   or `classify(reason)` from the message text.
-4. **Permanent / abort errors** are not retried. **Transient / empty / unknown** errors ARE
-   retried (subject to budget). This differs from the old `LanePool` which treated `unknown` as
-   non-retriable — `RunnerPool` treats it as retryable-by-default since runner outcomes may not
-   carry a labeled classification.
-5. If `maxTaskRetries` budget remains → apply exponential backoff (`classification.delayMs`
-   or `min(2000 * 2^used, 30000)`), abortable via `signal`. Clear persisted sessions
-   (`clearTaskSessions`), reset the task to `ready` (`resetTaskForRetry`), emit `onDecision`.
-   The drain loop re-claims and re-runs it.
-6. If budget exhausted → task stays `failed`.
-
-## `SessionGate` — concurrency authority
-
-Source: `packages/engine/src/pool/session-gate.ts`. A two-level (total + per-model) FIFO gate
-with RAII semantics. There is **no manual acquire/release API** — callers use
-`gate.run(profile, fn)`.
+A `ready` task stays `ready` until its **first session actually acquires a gate slot**. There
+are no premature `ready` → `active` transitions. The transition happens inside
+`tryStartBatchSpecs`, on the first successful `startSession` for the task:
 
 ```typescript
-class SessionGate {
-  constructor(options: SessionGateOptions, signal?: AbortSignal);
-  run<R>(
-    profile: { provider: string; model: string; agent?: string },
-    fn: (handle: { signal: AbortSignal }) => Promise<R>,
-  ): Promise<R>;
+// inside tryStartBatchSpecs, on the first spec that can start:
+if (entry.status === 'ready') graph.setTaskStatus(taskId, 'active'); // emits task_started
+if (entry.status === 'parked') graph.setTaskStatus(taskId, 'active'); // emits task_unparked
+```
+
+This means a task is never reported `active` to the UI (or to status callbacks) unless a real
+session is consuming a concurrency slot.
+
+### Parking
+
+A spec that can't acquire a slot **parks the task** (not the batch). Already-started siblings
+continue running and must settle before the generator advances.
+
+- When an `active` task has un-started specs but none can start (and its held batch is not
+  already fully settled — see H1 below), `tryStartBatchSpecs` transitions it to `parked` and
+  emits `task_parked`.
+- A `parked` task resumes (T2) when a drain pass finds its specs now fit capacity. The first
+  successful start transitions it back to `active` and emits `task_unparked`.
+- `ready` and `parked` tasks that can't start are left as-is — they don't park further.
+
+### H1 — the `advancing` guard
+
+While a task's `advanceBatch` is awaiting `gen.next(results)` (an async gap), the held batch
+is the **old, fully-settled** batch. A coalesced drain pass must not try to start or park on
+that stale batch. The `advancing` set marks tasks mid-advance; `tryStartBatchSpecs` skips them
+entirely. Additionally, a task whose held batch is already fully settled
+(`isBatchComplete`) is **never parked** — it's about to advance.
+
+### Coalesced drain (`scheduleDrain`)
+
+Multiple near-simultaneous triggers (session completions, `gate.onRelease`) are coalesced
+into **one** drain pass via a flag + `queueMicrotask`:
+
+```typescript
+private scheduleDrain(): void {
+  if (this.drainScheduled) return;
+  this.drainScheduled = true;
+  queueMicrotask(() => {
+    this.drainScheduled = false;
+    this.wakeResolve();    // unblocks the main loop's Promise.race
+  });
 }
 ```
 
-### `SessionGateOptions`
+The main loop `await`s `Promise.race([...inflight, wakePromise])`. A session settle resolves
+its inflight promise (deleting it from the set); `scheduleDrain` resolves `wakePromise`. Either
+way the loop wakes and calls `drainPass()` again.
 
-| Field      | Type                     | Description                                                                        |
-| ---------- | ------------------------ | ---------------------------------------------------------------------------------- |
-| `total`    | `number`                 | Hard cap on concurrent in-flight callbacks across ALL models.                      |
-| `perModel` | `Record<string, number>` | Per-model caps keyed by `${provider}:${model}` or `${provider}:${model}:${agent}`. |
+### Batch atomicity & advancement
 
-### How it works
+A batch is atomic: `gen.next(results)` is called **only when ALL specs in the held batch have
+settled**. `isBatchComplete` is O(1) — it compares a `batchSettledCount` counter (incremented
+when each `batchResults[i]` transitions `undefined` → defined) against the batch length.
 
-- **Lock ordering:** total slot acquired first, then per-model; released per-model first, then
-  total (reverse order) — prevents circular-wait.
-- **`tryAcquire(modelKey)`** is synchronous (JS is single-threaded → atomic). On success both
-  counters decrement. Fast path: both slots free synchronously.
-- **`dispatch()`** scans each model queue head and admits any FIFO waiter whose model has
-  capacity AND total has capacity. Resolves waiters on the next microtask.
-- **Model key resolution:** prefers the 3-part key `${provider}:${model}:${agent}` when an
-  agent is set AND a cap exists for it; otherwise falls back to the 2-part key.
-- **AbortSignal handling:** pre-queue abort removes the waiter from its FIFO and rejects with
-  `AbortError`. An already-aborted gate rejects immediately. A waiter that wakes only to
-  discover it's been aborted releases its slot and rejects.
-- **`DeadlockError`** guard: a synchronous re-entrant `run()` on the same gate while holding
-  the last total slot is detected and rejected.
-- **RAII:** the `release` callback is idempotent (via a `called` flag) and always runs in a
-  `finally` block.
+When a batch completes, `advanceBatch(entry)`:
+
+1. Sets the `advancing` flag (H1).
+2. Passes `[...entry.batchResults]` to `gen.next(results)` via `nextNonEmptyBatch` (which
+   skips empty `[]` yields and throws after 1000 consecutive empty batches — infinite-loop
+   guard).
+3. If the generator yields a new batch, resets per-batch state (`heldBatch`, `batchResults`,
+   `batchStarted`, `batchSettledCount`) and a subsequent drain pass starts its specs.
+4. If the generator returns, calls `finalizeTask`.
+5. Clears the `advancing` flag in a `finally`.
+
+If `gen.next` (or `gen.return`) throws, the error is captured and the task fails via
+`failTask`.
+
+### Single-session execution (`startSession`)
+
+```typescript
+private startSession(entry, specIndex, profile: AgentProfile): void
+```
+
+Called by `tryStartBatchSpecs` after `gate.canStart(profile)` returned true.
+
+1. **Idempotency pre-check (E1).** If the session is already cached
+   (`isSessionCached(sessionBaseDir, spec.id)` and `spec.resume !== true`), the gate
+   acquire/release is **skipped entirely** — `runner.execute()` returns the cached result
+   instantly via `runSession`'s idempotency mechanism. This is how resumed tasks replay
+   completed sessions without consuming a slot.
+2. **Acquire.** `gate.acquire(profile)`. If it returns `false` (a race: capacity vanished
+   between `canStart` and `acquire`), the task is parked if active, and `startSession`
+   returns without starting.
+3. **Mark started** in `batchStarted`.
+4. **Execute.** An async IIFE calls `runner.execute(executeCtx, spec)` (cached sessions skip
+   the timeout; non-cached sessions are wrapped in a `withTimeout` race — S1 — so a hanging
+   runner can't leak a slot). The gate slot is released in a `finally` (S1: ALWAYS released).
+5. **Settle.** The result is stored at `entry.batchResults[specIndex]`,
+   `completedSessions` is incremented, and `batchSettledCount` is updated (E2). If the batch
+   is now complete, `advanceBatch` is called.
+6. **Trigger.** `scheduleDrain()` — capacity freed and/or batch advanced.
+
+The session promise is added to the `inflight` set and removed on settle (both resolve and
+reject). `inflight` is the set the main loop races against.
+
+### Timeout hardening (S1 / S2)
+
+- **S1 (`executeTimeoutMs`):** `runner.execute()` is raced against a timeout (default
+  `DEFAULT_EXECUTE_TIMEOUT_MS` = 300 000 ms, or `stepTimeoutMs` from options). On timeout the
+  promise rejects, the `finally` releases the slot, and the result becomes a minimal
+  `{ mode: 'text', text: '' }` with an accumulated error message. No slot can be leaked.
+- **S2 (`GENERATOR_TIMEOUT_MS` = 5 000 ms):** `planGen.next()` and `planGen.return()` are
+  raced against a timeout. A leaked generator is preferred over blocking the scheduler. A
+  hanging `finally`/`await` inside the generator cannot stall a drain pass.
+
+### Task finalization
+
+Every task reaches a terminal state through one of two paths:
+
+- **`finalizeTask(entry)`** — the success path. Handles worktree merge-on-success
+  (`worktreeManager.mergeTaskBranch`). On success: sets `result = { completed: true }`,
+  `status = 'complete'`, calls `recalculateReady` to promote blocked dependents, cleans up the
+  generator. On merge failure or accumulated session errors, delegates to `failTask`.
+- **`failTask(entry, errorMsg)`** — the single failure path. Accumulates the error message,
+  culls the worktree (best-effort — `failTask` is the **single cull owner**; callers must not
+  cull before/after), sets `result = { completed: false, error }`, `status = 'failed'`,
+  `recalculateReady`, cleans up the generator. Defensive: if the task is already terminal
+  (e.g. cancelled by abort), it does nothing.
+
+### Deadlock detection
+
+Two kinds of deadlock are handled:
+
+1. **Missing-dependency deadlock** — `graph.failDeadlockedTasks()` runs at the start of
+   `run()`, before any sessions start. A blocked task whose dependency id doesn't exist in the
+   graph is marked `failed` with `result.error` starting with `deadlocked:`.
+2. **Resource deadlock** — detected in the main loop when `drainPass` started nothing,
+   nothing is in-flight, but non-terminal tasks remain (e.g. a spec references a profile that
+   doesn't exist, or all remaining tasks are parked with no path forward). A false-deadlock
+   guard does one more `drainPass` (capacity may have freed during T3's async initialization,
+   or a batch-advance may have just completed). If still stuck, `handleResourceDeadlock()`
+   routes each stuck task through `failTask` with a `resource deadlock: ...` message.
+
+### Resume reconstruction
+
+When a run is interrupted and later resumed from a reconstructed `TaskGraph`, tasks that were
+mid-flight (`active` or `parked`) have no live generator — async generators aren't
+serializable. `initializeResumedTasks` creates a **fresh** generator via `runner.plan(ctx)`
+and re-fetches the first batch. The status stays `active` or `parked`; the normal drain pass
+handles session starting and transitions.
+
+The [session idempotency](#the-session-primitive-runsession) mechanism ensures correctness:
+
+- Sessions that **completed** (`.complete` sentinel + valid `result.json`) return the cached
+  result instantly when `execute()` is called — they don't re-run, and they skip gate
+  acquire/release entirely (E1).
+- Sessions that were started but **never completed** are re-executed from scratch.
+
+**Determinism requirement:** `plan()` generators MUST be deterministic given the persisted
+session cache. If a runner's plan is non-deterministic (e.g. random branching), resume may
+produce a different session sequence. For council/parallel runners, worker outputs on resume
+may mix cached results (from completed siblings) with fresh results (from re-run siblings) —
+acceptable by design.
+
+### Runner resolution (`resolveRunner`)
+
+Resolution order, cached per task so `beforeTask` fires once:
+
+1. If a scoped `hookRegistry` with at least one `beforeTask` subscriber is present, invoke the
+   first-wins hook seeded with `{ task }`:
+   - `{ skip: true }` → skip (cancel) the task.
+   - `{ runner: ... }` → use the provided runner.
+   - `undefined` → abstain (fall through).
+2. Fall through to the entry's `runnerFactory()`.
+
+A hook that throws is logged and treated as abstain.
+
+### Status event emission (`emitStatusEvent`)
+
+Driven by `graph.onStatusTransition`. Differentiates transitions into `active` based on the
+**previous** status:
+
+| Transition          | Event                                         |
+| ------------------- | --------------------------------------------- |
+| `ready` → `active`  | `onTaskStart` (`task_started`)                |
+| `parked` → `active` | `onTaskUnparked` (`task_unparked`)            |
+| `*` → `parked`      | `onTaskParked` (`task_parked`)                |
+| `*` → `complete`    | `onTaskComplete`                              |
+| `*` → `failed`      | `onTaskRejected` (with `result.error`)        |
+| `*` → `cancelled`   | `onTaskRejected` (reason: `'task cancelled'`) |
+
+`ready` and `blocked` have no dedicated events.
+
+## Task lifecycle
+
+```
+blocked ──(deps settle)──► ready ──(first spec acquires slot)──► active ──► complete
+                              ▲                                       │
+                              │                                       ├─► failed
+                              │                                       └─► cancelled
+                              │
+                              └─(re-promoted by recalculateReady)
+                                      ▲
+                                      │
+                            parked ◄──┘
+                            (active task's un-started specs can't fit capacity)
+                            active ◄──(capacity frees, T2 resumes)
+```
+
+| Status      | Meaning                                                                                     | Terminal? |
+| ----------- | ------------------------------------------------------------------------------------------- | --------- |
+| `blocked`   | Has unsettled or missing dependencies.                                                      | No        |
+| `ready`     | All deps settled; runner not yet initialized / no session has acquired a slot yet.          | No        |
+| `active`    | At least one session is consuming a gate slot.                                              | No        |
+| `parked`    | Has un-started specs but none can fit gate capacity. Already-started siblings keep running. | No        |
+| `complete`  | All sessions succeeded; worktree merged (if any).                                           | Yes       |
+| `failed`    | A session/generator/merge failed, or deadlock detected.                                     | Yes       |
+| `cancelled` | Aborted by signal, or skipped by a `beforeTask` hook.                                       | Yes       |
+
+**Settled** = `complete | failed | cancelled`. Any non-settled task can be cancelled.
 
 ## The session primitive (`runSession`)
 
-Source: `packages/engine/src/pool/session.ts`. The single-step session primitive. Encapsulates
-the full agent session lifecycle for one prompt turn:
+Source: `packages/engine/src/pool/session.ts`. The single-step session primitive — one agent
+prompt turn. Full details are in the types reference; the essentials:
 
 ```typescript
 async function runSession(ctx: RunSessionContext): Promise<SessionResult>;
+function isSessionCached(sessionBaseDir: string, specId: string): boolean;
 function clearTaskSessions(sessionBaseDir: string, taskId: string): void;
 ```
 
 ### `SessionSpec`
 
-The specification for a single agent session.
-
-| Field         | Type         | Description                                                                           |
-| ------------- | ------------ | ------------------------------------------------------------------------------------- |
-| `id`          | `string`     | Unique session identifier (used for persistence path).                                |
-| `profile`     | `string`     | Agent profile ID (resolved against `ctx.profiles`).                                   |
-| `prompt`      | `string`     | The prompt text sent to the agent.                                                    |
-| `schema?`     | `ZodType`    | Optional Zod schema for structured output mode.                                       |
-| `outputMode`  | `OutputMode` | `'text' \| 'structured' \| 'filesystem'` — how the response is interpreted.           |
-| `isReadOnly?` | `boolean`    | When true, write/edit tools are stripped.                                             |
-| `runnerRole`  | `string`     | Role label for the runner (e.g. `'executor'`, `'reviewer'`). Propagated to callbacks. |
-| `attempt`     | `number`     | 1-based attempt number. Propagated to callbacks.                                      |
+| Field         | Type         | Description                                                                                                                         |
+| ------------- | ------------ | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `id`          | `string`     | Unique session id (persistence path segment).                                                                                       |
+| `profile`     | `string`     | Agent profile id (resolved against `ctx.profiles`).                                                                                 |
+| `prompt`      | `string`     | The prompt text.                                                                                                                    |
+| `schema?`     | `ZodType`    | Optional Zod schema for structured output.                                                                                          |
+| `outputMode`  | `OutputMode` | `'text' \| 'structured' \| 'filesystem'`.                                                                                           |
+| `isReadOnly?` | `boolean`    | When true, write/edit tools are stripped.                                                                                           |
+| `runnerRole`  | `string`     | Role label (e.g. `'executor'`, `'reviewer'`).                                                                                       |
+| `attempt`     | `number`     | 1-based attempt number.                                                                                                             |
+| `resume?`     | `boolean`    | Resume an existing session at this id instead of creating a fresh one (used by review loops). Bypasses the idempotency cache check. |
 
 ### `SessionResult`
 
@@ -291,107 +678,65 @@ type SessionResult =
   | { mode: 'filesystem'; files: string[] };
 ```
 
-### `SessionError`
+### Idempotency (the resume backbone)
 
-Thrown by `runSession` on any failure. Carries a structured `Classification` (kind: `'permanent'`
-| `'transient'` | `'abort'` | `'empty'` | `'unknown'`; `retryable: boolean`) and a `transient` shortcut.
+A session directory lives at `{sessionBaseDir}/{spec.id}/`. On completion, `runSession`
+persists `result.json` + a `.complete` sentinel (with SHA-256 checksum + directory fsync).
+On the next call with the same `spec.id`:
 
-### `RunSessionContext`
+- If `.complete` + valid `result.json` exist → the **cached** result is returned instantly
+  (no re-run). `isSessionCached()` is a fast `existsSync` pre-check the scheduler uses to skip
+  gate acquire/release for cached sessions (E1).
+- Corrupt cache (checksum/length mismatch) → permanent `SessionError`.
+- A `resume: true` spec bypasses the cache check and continues the existing conversation.
 
-| Field                 | Type                              | Description                                                                   |
-| --------------------- | --------------------------------- | ----------------------------------------------------------------------------- |
-| `spec`                | `SessionSpec`                     | The session specification to execute.                                         |
-| `sessionBaseDir`      | `string`                          | Base directory for persisted session storage.                                 |
-| `cwd`                 | `string`                          | Working directory for agent operations.                                       |
-| `worktreeCwd?`        | `string`                          | Per-task worktree path. When set, the agent runs inside the worktree.         |
-| `phaseId`             | `string`                          | Phase identifier for callbacks.                                               |
-| `agentId`             | `string`                          | Agent identifier for callbacks.                                               |
-| `apiKeys?`            | `Record<string, string>`          | API key overrides.                                                            |
-| `onStatus?`           | `StatusCallbacks`                 | Callbacks (`onSessionStart` / `onSessionComplete` + agent-status forwarding). |
-| `activeSessions`      | `Set<{ abort(): Promise<void> }>` | Mutable set for cooperative abort.                                            |
-| `profiles`            | `Map<string, AgentProfile>`       | Resolved profiles.                                                            |
-| `signal?`             | `AbortSignal`                     | Cooperative cancellation.                                                     |
-| `watchdogTimeoutMs?`  | `number`                          | Activity-based idle timeout.                                                  |
-| `watchdogMaxResumes?` | `number`                          | Max internal retries on watchdog timeout before permanent error.              |
+This is what makes [resume reconstruction](#resume-reconstruction) correct: completed sessions
+replay from cache, only incomplete sessions re-run.
 
-### Lifecycle
+### `runScheduledSession`
 
-1. **Pre-abort check** — rejects immediately if `signal.aborted`.
-2. **Path traversal validation** — `spec.id` is validated against traversal attacks (each
-   `/`-delimited segment checked).
-3. **Idempotency** — if `.complete` sentinel + valid `result.json` exist → return cached result.
-   Corrupt cache (checksum/length mismatch) → permanent `SessionError`.
-4. **Execute** — `executeAttempt`:
-   - Clear partial state, `mkdir` session directory.
-   - Resolve profile (read-only adjustment: add `write`/`edit` to `excludeTools`).
-   - Create session directly via `requireAgentPlugin(profile.agent).createSession(...)`.
-   - Register on `activeSessions` immediately (before any `await`).
-   - Arm watchdog timer (resets on `turn_start`, `tool_execution_start`, `turn_end`).
-   - Fire `onSessionStart`.
-   - Execute by output mode (text / structured / filesystem).
-   - Persist result atomically (`result.json` + `.complete` with SHA-256 checksum + directory fsync).
-   - Fire `onSessionComplete`.
-   - Cleanup in `finally`: clear watchdog, unsubscribe, remove from `activeSessions`, dispose session.
-5. **Watchdog retry** — when both `watchdogTimeoutMs` and `watchdogMaxResumes` are set, internal
-   retry re-creates the session up to `maxResumes` times before throwing a permanent error.
+Source: `packages/engine/src/pool/run-scheduled-session.ts`. A thin, **gate-free** wrapper
+around `runSession`. It constructs a `RunSessionContext` from a `SessionPlanContext` + spec
+and delegates. It does NOT acquire or release any gate — the scheduler has already done so.
+All errors (including `SessionError`) propagate to the caller.
 
-## Runner contract
+## Shared runner utilities
 
-Source: `packages/engine/src/pool/runners/types.ts`.
+Source: `packages/engine/src/pool/runners/runner-utils.ts`.
+
+### `defaultExecute`
 
 ```typescript
-type TaskOutcome = { status: 'completed' } | { status: 'failed'; error?: string };
-
-interface RunnerContext {
-  task: Task;
-  gate: SessionGate;
-  runSession: (ctx: RunSessionContext) => Promise<SessionResult>;
-  profiles: Map<string, AgentProfile>;
-  sessionBaseDir: string;
-  cwd: string;
-  worktreeCwd?: string;
-  apiKeys?: Record<string, string>;
-  activeSessions: Set<{ abort(): Promise<void> }>;
-  onStatus?: StatusCallbacks;
-  hookRegistry?: HookRegistry;
-  rendererRegistry?: RendererRegistry;
-  auditLog?: AuditLog;
-  signal?: AbortSignal;
-  stepTimeoutMs?: number;
-  phaseId: string;
-  agentId: string;
-  maxTaskRetries?: number;
-}
-
-type Runner = (ctx: RunnerContext) => Promise<TaskOutcome>;
+const defaultExecute: SessionPlanRunner['execute'] = (ctx, spec) => runScheduledSession(spec, ctx);
 ```
 
-A runner receives a `RunnerContext` and returns a `TaskOutcome`. Runners **must not re-throw**
-— all errors are caught and surfaced via `{ status: 'failed', error }`. The `RunnerPool` catch
-block is a safety net for truly unexpected errors.
+The standard `execute` implementation every built-in runner references. Delegates to
+`runScheduledSession` (gate-free). Runners should reference this instead of duplicating the
+inline method.
 
-### Key design points
+### `delegateToChild`
 
-- **No `completeTask`/`failTask` callbacks.** The runner returns an outcome; the pool settles
-  the task. This is a simplification from the old `TaskRunnerContext`.
-- **`ctx.runSession` is a passthrough** to the session primitive. The pool does NOT re-gate
-  `runSession` — runners call `ctx.gate.run` internally for each session (via
-  `runSessionViaGate`).
-- **`SessionError` propagation.** A `SessionError` thrown from `runSession` is allowed to
-  propagate through the runner to the pool, carrying its `classification` for the retry valve.
-  Unexpected non-`SessionError` throws are caught and surfaced as a minimal text result so the
-  runner can decide the outcome.
+```typescript
+function delegateToChild(
+  child: SessionPlanRunner,
+  ctx: SessionPlanContext,
+): AsyncGenerator<SessionSpec[], SessionResult[] | undefined, SessionResult[]>;
+```
 
-### `runSessionViaGate(ctx, spec)` — shared runner helper
-
-Source: `packages/engine/src/pool/runners/utils.ts`. The standard pattern for all built-in
-runners: resolve the profile from `ctx.profiles`, acquire a concurrency slot via
-`ctx.gate.run(profile, fn)`, and call `ctx.runSession` inside the gate callback. The gate's
-`handle.signal` is passed as `RunSessionContext.signal` for cooperative cancellation.
+Fully delegates to a child runner's `plan()`: creates the child generator, re-yields every
+batch, threads scheduler-supplied results back via `childGen.next(results)`, and returns the
+child's terminal value. A `try/finally` calls `childGen.return()` on early termination
+(whether normal, via a `.return()` from the parent, or via a thrown error) so the child's
+`finally` blocks always run. Composite runners use `yield* delegateToChild(child, ctx)`
+instead of duplicating the yield/next loop.
 
 ## Built-in runners
 
-All factories are in `packages/engine/src/pool/runners/`. Each returns a `Runner` function.
+All factories live in `packages/engine/src/pool/runners/` and return a `SessionPlanFactory`.
+Each runner's `plan()` is an async generator that yields batches; `execute()` delegates to
+`defaultExecute`. Compositors (`linearRunner`, `parallelRunner`, `branchRunner`,
+`coordinatorRunner`, `coalescingRunner`) use `delegateToChild` to nest child runners —
+nesting depth is unlimited and the `SessionGate` enforces the global cap regardless of depth.
 
 ---
 
@@ -400,18 +745,16 @@ All factories are in `packages/engine/src/pool/runners/`. Each returns a `Runner
 ```typescript
 import { singleSession } from '../pool/runners/single-session.js';
 
-const runner = singleSession({
+const factory = singleSession({
   role: 'execute',
   profile: 'coder',
   prompt: 'Implement the function',
   outputMode: 'text',
-  isReadOnly: false,
 });
 ```
 
-Runs exactly one session via the session primitive. Session ID: `{taskId}/{role}#{attempt}`.
-Returns `{ status: 'completed' }` on success; rethrows `SessionError` on failure (the pool
-catches it).
+Runs exactly **one** session. `plan()` yields a single batch `[fullSpec]` and returns
+`undefined`. Deterministic id: `` `${taskId}/${role}#${attempt}` `` (`attempt` defaults to 1).
 
 ---
 
@@ -420,12 +763,14 @@ catches it).
 ```typescript
 import { linearRunner } from '../pool/runners/linear-runner.js';
 
-const runner = linearRunner([childA, childB, childC]);
+const factory = linearRunner([childA, childB, childC]);
 ```
 
-Runs children in strict sequential order. If any child returns `{ status: 'failed' }`, the
-runner short-circuits and returns that outcome immediately, skipping all remaining children.
-A pure ordering/short-circuit combinator over arbitrary `Runner` functions.
+Runs children in **strict sequential order**. Each child's `plan()` is fully consumed (all
+batches re-yielded via `delegateToChild`) before advancing to the next child. The linear
+runner does **not** inspect results to decide short-circuiting — if a child's `execute()`
+throws, the scheduler marks the task failed and does not advance the generator, so remaining
+children are naturally skipped.
 
 ---
 
@@ -434,40 +779,15 @@ A pure ordering/short-circuit combinator over arbitrary `Runner` functions.
 ```typescript
 import { parallelRunner } from '../pool/runners/parallel-runner.js';
 
-const runner = parallelRunner([childA, childB]);
+const factory = parallelRunner([childA, childB]);
 ```
 
-Starts ALL children as independent coroutines and awaits them together via
-`Promise.allSettled`. If any child returns `{ status: 'failed' }`, returns that outcome (the
-first failed by array index). Siblings are **not** cancelled — they complete naturally and
-their gate slots release on their own. Deadlock-free: no child holds a resource while waiting
-for another.
-
----
-
-#### `reviewRunner(executeSpec, reviewSpec, options?)`
-
-```typescript
-import { reviewRunner } from '../pool/runners/review-runner.js';
-
-const runner = reviewRunner(
-  { role: 'execute', profile: 'coder', prompt: 'Write the code', outputMode: 'filesystem' },
-  { role: 'review', profile: 'reviewer', prompt: 'Review the code', outputMode: 'structured', schema: reviewSchema },
-  { maxRounds: 5 },
-);
-```
-
-Implements the execute→review loop. For each round (1..`maxRounds`, default `DEFAULT_MAX_ROUNDS`
-= 3):
-
-1. Run the execute session (`{taskId}/execute#{round}`), with accumulated feedback appended.
-2. Feed the execute result into the review prompt.
-3. Run the review session (`{taskId}/review#{round}`, structured output).
-4. If `reviewData.approved === true` → return `{ status: 'completed' }`.
-5. Otherwise collect feedback and continue.
-6. `maxRounds` exhausted → `{ status: 'failed', error }`.
-
-Transient `SessionError` in execute/review → retry-in-place (same round). Permanent → fail.
+Runs each child's **first batch** as a single combined parallel batch. Each child's
+`plan().next()` is called to collect its first batch; all are concatenated and yielded
+together. After the batch settles, results are split by child (based on how many specs each
+contributed) and forwarded back via `childGen.next(childResults)`. Children whose plan is
+exhausted after the first batch contribute nothing more. Deadlock-free: no child holds a
+resource while waiting for another.
 
 ---
 
@@ -476,14 +796,14 @@ Transient `SessionError` in execute/review → retry-in-place (same round). Perm
 ```typescript
 import { councilRunner } from '../pool/runners/council-runner.js';
 
-const runner = councilRunner(
+const factory = councilRunner(
   [
     {
       id: `${taskId}/worker[0]#1`,
       profile: 'architect',
       prompt: '...',
       outputMode: 'structured',
-      schema: zSchema,
+      schema,
       runnerRole: 'worker',
       attempt: 1,
     },
@@ -492,7 +812,7 @@ const runner = councilRunner(
       profile: 'engineer',
       prompt: '...',
       outputMode: 'structured',
-      schema: zSchema,
+      schema,
       runnerRole: 'worker',
       attempt: 1,
     },
@@ -509,10 +829,15 @@ const runner = councilRunner(
 );
 ```
 
-Runs N worker sessions in parallel (each as an independent `gate.run` coroutine, awaited
-together via `Promise.allSettled`). Successful worker results are concatenated into the
-synthesizer prompt. Failed workers are silently omitted. If ALL workers fail →
-`{ status: 'failed' }` (synthesizer not called). The synthesizer runs after all workers settle.
+Two phases:
+
+1. **Phase 1** — yields all worker specs as a single batch. The scheduler runs them
+   concurrently through the gate.
+2. **Phase 2** — builds the synthesizer prompt by concatenating worker outputs
+   (`text` → the text, `structured` → `JSON.stringify(data)`, `filesystem` → a placeholder),
+   yields `[synthSpec]` as a second batch.
+
+Worker IDs and the synthesizer id are taken directly from the supplied specs.
 
 ---
 
@@ -521,39 +846,57 @@ synthesizer prompt. Failed workers are silently omitted. If ALL workers fail →
 ```typescript
 import { mapRunner } from '../pool/runners/map-runner.js';
 
-const runner = mapRunner({
+const factory = mapRunner({
   items: ['file1.ts', 'file2.ts', 'file3.ts'],
-  sessionSpec: { role: 'process', profile: 'formatter', prompt: 'Format this file', outputMode: 'filesystem' },
-  concurrency: 3,
+  spec: {
+    id: '',
+    profile: 'formatter',
+    prompt: 'Format this file',
+    outputMode: 'filesystem',
+    runnerRole: 'worker',
+    attempt: 1,
+  },
+  role: 'worker',
 });
 ```
 
-Fans out over a collection, running one session per item. Session ID:
-`{taskId}/map[{index}].{role}#{attempt}`. Per-item prompt: `spec.prompt + "\n\nItem: " + JSON.stringify(item)`.
-When `concurrency` is set, a local worker-pool of that size serializes items; otherwise all
-items run in parallel. Uses `Promise.allSettled` — all sessions settle even on partial failure
-(no leak). All succeed → `{ status: 'completed' }`; any fail → `{ status: 'failed' }`.
+Fans out over a collection, yielding **one batch with one spec per item**. Per-item id:
+`` `${taskId}/map[${index}].${role}#${attempt}` ``. Per-item prompt:
+`spec.prompt + "\n\nItem: " + JSON.stringify(item)`. Concurrency is **not** managed here —
+the gate is the sole concurrency authority. Empty `items` → generator returns immediately.
 
 ---
 
-#### `branchRunner(options)`
+#### `reviewRunner(executeSpec, reviewSpec, options?)`
 
 ```typescript
-import { branchRunner } from '../pool/runners/branch-runner.js';
+import { reviewRunner } from '../pool/runners/review-runner.js';
 
-const runner = branchRunner({
-  branches: [
-    { condition: (ctx) => ctx.task.prompt.includes('fix'), runner: fixRunner },
-    { condition: (ctx) => ctx.task.prompt.includes('feature'), runner: featureRunner },
-  ],
-  default: triageRunner,
-});
+const factory = reviewRunner(
+  { role: 'execute', profile: 'coder', prompt: 'Write the code', outputMode: 'filesystem' },
+  { role: 'review', profile: 'reviewer', prompt: 'Review the code', outputMode: 'structured', schema: reviewSchema },
+  { maxRounds: 5, onReviewReject: (round) => snapshotPlan(round) },
+);
 ```
 
-Evaluates `branches` in order; the first whose `condition(ctx)` returns true wins and its
-runner executes. Conditions can be async (both sync and async are awaited). First truthy result
-short-circuits. If no branch matches and a `default` runner is provided, it runs. Otherwise the
-task fails with `{ status: 'failed', error: 'No branch matched' }`.
+Implements the **execute → review loop**. For each round (`1..maxRounds`, default
+`DEFAULT_MAX_ROUNDS` = 3):
+
+1. Yield the execute session batch (with accumulated feedback appended from prior rejections).
+2. Build the review prompt from the execute result (`text` → appended text, `structured` →
+   `JSON.stringify(data)`, `filesystem` → a placeholder note).
+3. Yield the review session batch (structured output).
+4. If `reviewData.approved === true` → generator returns (task completes).
+5. Otherwise collect `reviewData.feedback` and continue.
+6. `maxRounds` exhausted → `plan()` throws (task fails).
+
+IDs are **stable** across rounds: `` `${taskId}/${role}` ``. Round 2+ sets `resume: true` so
+the agent sees its prior work + the new feedback instead of starting over. `attempt` stays at
+1 — a resume is a continuation of the same session entity, keeping the projection key stable.
+
+`onReviewReject(round)` fires when a review rejects, before the next execute round. Lets
+callers preserve artifacts from the rejected round. Non-fatal: snapshot failures don't abort
+the loop.
 
 ---
 
@@ -562,14 +905,16 @@ task fails with `{ status: 'failed', error: 'No branch matched' }`.
 ```typescript
 import { coordinatorRunner } from '../pool/runners/coordinator-runner.js';
 
-const runner = coordinatorRunner(coordinatorSpec, {
+const factory = coordinatorRunner(coordinatorSpec, {
   childRunner: (coordinatorResult) => buildChildRunner(coordinatorResult),
 });
 ```
 
-Runs a coordinator session (structured output), fully awaits it, then delegates to
-`opts.childRunner(coordinatorResult)` — a factory that returns a `Runner` for the children. The
-coordinator must fully persist before any child is invoked (enforced by serial `await`).
+Runs a coordinator session (structured output), **fully awaits it**, then delegates to
+`opts.childRunner(coordinatorResult)` — a factory returning a `SessionPlanRunner` for the
+children. The coordinator must fully persist before any child is invoked (enforced by
+yielding the coordinator spec first and only calling `childRunner` after the result is
+received). Children assign their own IDs per the childRunner's convention.
 
 ---
 
@@ -578,83 +923,95 @@ coordinator must fully persist before any child is invoked (enforced by serial `
 ```typescript
 import { coalescingRunner } from '../pool/runners/coalescing-runner.js';
 
-const runner = coalescingRunner(coordinatorSpec, {
-  childRunner: (data) => buildChildRunner(data),
+const factory = coalescingRunner(coordinatorSpec, {
+  childRunner: (coordinatorResult, round) => buildChildRunner(coordinatorResult, round),
   maxRounds: 5,
 });
 ```
 
-Runs a coordinator → children → coordinator loop. Each round:
+Runs a **coordinator → children → coordinator loop**. Each round:
 
-1. Run coordinator session (`{taskId}/coordinator#{round}`).
+1. Yield the coordinator batch (id `` `${taskId}/coordinator#${round}` ``, `attempt = round`).
 2. Parse structured output: `{ done: boolean, children?: unknown[], feedback?: string }`.
-3. `done === true` → `{ status: 'completed' }`.
-4. Otherwise, run children via `opts.childRunner(data)`.
-5. If children fail → propagate the failure. Otherwise continue to next round.
-6. `maxRounds` exhausted (default `DEFAULT_MAX_ROUNDS`) → `{ status: 'failed' }`.
+3. `done === true` → generator returns (task completes).
+4. Otherwise delegate to `opts.childRunner(coordResult, round)` via `delegateToChild`.
+5. Loop back to step 1.
+6. `maxRounds` exhausted (default `DEFAULT_MAX_ROUNDS`) → `plan()` throws (task fails).
+
+Deadlock-safe: the coordinator completes and releases its slot before children spawn (serial
+yield per round).
+
+---
+
+#### `branchRunner(options)`
+
+```typescript
+import { branchRunner } from '../pool/runners/branch-runner.js';
+
+const factory = branchRunner({
+  branches: [
+    { condition: (ctx) => ctx.task.prompt.includes('fix'), runner: fixRunner },
+    { condition: (ctx) => ctx.task.prompt.includes('feature'), runner: featureRunner },
+  ],
+  default: triageRunner,
+});
+```
+
+Selects **exactly one** child based on conditions evaluated in order. Conditions can be sync
+or async (both are awaited); the first truthy result short-circuits. The selected branch's
+`plan()` is fully delegated to via `delegateToChild`. If no branch matches and a `default` is
+provided, it runs. If no match and no default → `plan()` throws `'No branch matched'` (task
+fails).
+
+---
 
 ### Decision guide
 
 | Pattern                                    | Runner              |
 | ------------------------------------------ | ------------------- |
 | One session, done                          | `singleSession`     |
-| Sequential pipeline, fail on first error   | `linearRunner`      |
-| Parallel fan-out, fail on first error      | `parallelRunner`    |
-| Execute → review → fix loop                | `reviewRunner`      |
+| Sequential pipeline                        | `linearRunner`      |
+| Parallel fan-out (first batches)           | `parallelRunner`    |
 | Multiple workers merged by a synthesizer   | `councilRunner`     |
 | Fan-out over a collection of items         | `mapRunner`         |
-| Conditional routing based on task metadata | `branchRunner`      |
+| Execute → review → fix loop                | `reviewRunner`      |
 | Coordinator decides, then children run     | `coordinatorRunner` |
 | Coordinator loop until `done: true`        | `coalescingRunner`  |
+| Conditional routing based on task metadata | `branchRunner`      |
 
 ### Composability
 
-All runners return `Runner` functions. They nest freely — e.g. a `branchRunner` branch can
+All runners return `SessionPlanFactory`. They nest freely — e.g. a `branchRunner` branch can
 contain a `reviewRunner`, whose execute step is a `mapRunner`, whose items are `singleSession`
-runners. Each child runner uses `ctx.gate.run` independently, so the `SessionGate` enforces the
-global concurrency cap regardless of nesting depth.
+runners. `delegateToChild` propagates `.return()` from parent to child so resource cleanup
+runs at every depth, and the `SessionGate` enforces the global concurrency cap regardless of
+nesting.
 
 ## Pool-level hooks
 
-The pool layer consumes the engine's hook system at a single seam:
+The scheduler consumes the engine's hook system at a single seam:
 
 ### `beforeTask` (first-wins, fires in `resolveRunner`)
 
-For each claimed task, `resolveRunner` invokes the `beforeTask` first-wins hook seeded with
-`{ task }` when a scoped `hookRegistry` with at least one subscriber is present. A subscriber
-may return:
+For each task being initialized, `resolveRunner` invokes the `beforeTask` first-wins hook
+seeded with `{ task }` when a scoped `hookRegistry` with at least one subscriber is present.
+A subscriber may return:
 
-- `{ skip: true }` → the task is **cancelled** in the tracker; no runner executes, no worktree
+- `{ skip: true }` → the task is **cancelled** in the graph; no runner executes, no worktree
   is created, no merge lifecycle fires.
 - `{ runner: ... }` → **override** the resolved runner.
-- `undefined` → **abstain**; `getRunnerForTask` resolves normally.
+- `undefined` → **abstain**; `entry.runnerFactory()` resolves normally.
 
-### `auditLog` + the default auditor (registered by `RunnerPool.run()`)
+Results are cached per task so `beforeTask` fires exactly once.
 
-When `RunnerPool.run()` is constructed with **both** `auditLog` and `hookRegistry`, it
-registers the default auditor as a subscriber for `onStructuredOutput` and `onDecision`
-**before** starting tasks. Because both are **observe** hooks (fan-out), a workflow that
-provides its own subscribers under the same names sees **both** fire — no manual
-`auditLog.append` call required.
-
-See [Hooks](hooks.md) for the full composition model and the catalog of influence/observe hooks.
-
-## Validation
-
-Source: `packages/engine/src/pool/validation.ts` and `packages/engine/src/pool/severity.ts`.
-
-- **`assertSafeName(value, label)`** — Throws unless `value` matches `^[a-zA-Z0-9_-]+$`. Used
-  on task IDs that appear in file paths.
-- **`Severity`** — `'critical' | 'high' | 'medium' | 'low'`.
-- **`isFailingSeverity(severity)`** — True for `critical` or `high`.
-- **`extractSeverity(output)`** — Reads `output.severity` if it is a string; otherwise
-  `'medium'`.
+See [Hooks](hooks.md) for the full composition model and the catalog of influence/observe
+hooks.
 
 ## Where to go next
 
-- [Building a new workflow](../guides/building-workflows.md) — using `RunnerPool` and
+- [Building a new workflow](../guides/building-workflows.md) — using `SessionScheduler` and
   composable runners.
 - [Event store & status](event-store.md) — what every lifecycle callback becomes.
 - [Hooks](hooks.md) — the full hook catalog, composition rules.
-- [Types reference](types.md) — `RunnerPoolOptions`, `TaskOutcome`, `SessionSpec`,
-  `RunnerContext`.
+- [Worktrees](worktrees.md) — per-task git worktree isolation.
+- [Types reference](types.md) — `SessionSchedulerOptions`, `SessionSpec`, `SessionPlanContext`.

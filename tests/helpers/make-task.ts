@@ -18,3 +18,12 @@ export function makeTask(overrides?: Partial<Task>): Task {
     ...overrides,
   };
 }
+
+/**
+ * Creates a Task whose status is `'parked'` — useful for scheduler / UI
+ * tests that need a parked (capacity-waiting) task fixture. Delegates to
+ * {@link makeTask} so all other defaults stay in sync.
+ */
+export function makeParkedTask(overrides?: Partial<Task>): Task {
+  return makeTask({ status: 'parked', ...overrides });
+}

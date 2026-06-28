@@ -204,7 +204,14 @@ export default ts.config(
 
   // Global ignores (node_modules is auto-ignored in flat config)
   {
-    ignores: ['dist/', 'coverage/', 'packages/*/dist/**', 'packages/*/node_modules/**'],
+    ignores: [
+      'dist/',
+      'coverage/',
+      'packages/*/dist/**',
+      'packages/*/node_modules/**',
+      // Engine runtime state (git worktrees for parallel work) — not source.
+      '.engin/**',
+    ],
   },
 
   // Prettier compatibility — MUST be last to disable conflicting rules

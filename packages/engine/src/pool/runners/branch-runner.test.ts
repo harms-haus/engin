@@ -1,294 +1,416 @@
-// ─── Tests for runners/branch-runner.ts ──────────────────────────────────────
+// ─── Tests for runners/branch-runner.ts (SessionPlan contract) ──────────
 //
 // Tests verify:
-//   1. First-matching condition runs; remaining branches NOT evaluated
-//   2. No branch matches + default provided → default runner executes
-//   3. No branch matches + no default → {status:'failed', error:'No branch matched'}
-//   4. Conditions evaluated in strict order; only first matching runner invoked
-//   5. Async conditions (return Promise<boolean>) work correctly
+//   1. First matching condition → its runner's plan is delegated to
+//   2. Remaining branches NOT evaluated after a match
+//   3. Selected branch's plan yields batches, results are forwarded
+//   4. No branch matches + default provided → default runner's plan used
+//   5. No branch matches + no default → plan throws
+//   6. Conditions evaluated in strict order
+//   7. Async conditions (return Promise<boolean>) work correctly
+//   8. execute() calls runScheduledSession and returns its result
+//   9. Factory creates a fresh runner instance each call
 //
-// The module under test is imported from './branch-runner.js'.
+// Mock strategy:
+//   - Shared mock via `test-fixtures.ts` → `mockRunScheduledSession`
+//   - Mock child SessionPlanRunners are constructed inline to control yield
+//     behavior and track result forwarding.
 
-import { describe, expect, it, mock } from 'bun:test';
+import { describe, expect, it } from 'bun:test';
+import type { SessionResult, SessionSpec } from '../session.js';
+import type { SessionPlanContext, SessionPlanRunner } from './session-plan-types.js';
+import {
+  CANNED_RESULT,
+  makePlanContext,
+  mockRunScheduledSession,
+  setupRunScheduledSessionMock,
+} from './test-fixtures.js';
 
-import type { AgentProfile, Task } from '../../core/types.js';
-import type { SessionResult } from '../session.js';
+// ─── Import module under test ────────────────────────────────────────────
+
 import { branchRunner } from './branch-runner.js';
-import type { Runner, RunnerContext, TaskOutcome } from './types.js';
 
-// ── Fixture helpers ─────────────────────────────────────────────────────────
+// ─── Mock wiring ─────────────────────────────────────────────────────────
 
-function makeTask(overrides?: Partial<Task>): Task {
+setupRunScheduledSessionMock();
+
+// ─── Helpers ──────────────────────────────────────────────────────────────
+
+/**
+ * Create a mock SessionPlanRunner whose plan yields the given batches in order.
+ */
+function makeMockChild(batches: SessionSpec[][], receivedResults?: SessionResult[][]): SessionPlanRunner {
   return {
-    id: 'task-abc',
-    title: 'Build feature',
-    prompt: 'Implement X',
-    profile: 'default',
-    files: [],
-    dependencies: [],
-    status: 'active',
-    phaseId: 'code',
-    worktree: 'none',
-    ...overrides,
-  };
-}
+    plan(_ctx: SessionPlanContext): AsyncGenerator<SessionSpec[], SessionResult[] | undefined, SessionResult[]> {
+      const gen = (async function* (): AsyncGenerator<SessionSpec[], SessionResult[] | undefined, SessionResult[]> {
+        for (const batch of batches) {
+          const results: SessionResult[] = yield batch;
+          receivedResults?.push(results);
+        }
+        return undefined;
+      })();
 
-function makeProfile(id: string, overrides?: Partial<AgentProfile>): AgentProfile {
-  return {
-    id,
-    name: id,
-    provider: 'openai',
-    model: 'gpt-4o',
-    thinkingLevel: 'low',
-    systemPrompt: `You are ${id}.`,
-    excludeTools: [],
-    includeTools: [],
-    ...overrides,
-  };
-}
+      return gen;
+    },
 
-function makeCtx(overrides?: Partial<RunnerContext>): RunnerContext {
-  const task = makeTask();
-  const profiles = new Map<string, AgentProfile>();
-  profiles.set('worker', makeProfile('worker'));
-  return {
-    task,
-    gate: {
-      run: mock(async (_p: unknown, fn: (h: { signal: AbortSignal }) => Promise<unknown>) =>
-        fn({ signal: new AbortController().signal }),
-      ),
-    } as unknown as RunnerContext['gate'],
-    runSession: mock(async () => ({ mode: 'text', text: 'ok' }) satisfies SessionResult),
-    profiles,
-    sessionBaseDir: '/tmp/sessions',
-    cwd: '/tmp/project',
-    activeSessions: new Set(),
-    phaseId: 'code',
-    agentId: 'agent-1',
-    ...overrides,
+    async execute(_ctx: SessionPlanContext, spec: SessionSpec): Promise<SessionResult> {
+      return mockRunScheduledSession(spec, _ctx);
+    },
   };
 }
 
 /**
- * Create a mock Runner that tracks calls and returns the given outcome.
- * Optionally collects the RunnerContext objects passed to it.
+ * Create a simple SessionSpec for testing.
  */
-function makeMockRunner(outcome: TaskOutcome, capturedCtx?: RunnerContext[]): Runner {
-  return mock(async (ctx: RunnerContext) => {
-    capturedCtx?.push(ctx);
-    return outcome;
-  }) as Runner;
+function makeSpec(id: string, overrides?: Partial<SessionSpec>): SessionSpec {
+  return {
+    id,
+    profile: 'executor',
+    prompt: 'Do the work',
+    outputMode: 'text',
+    runnerRole: 'executor',
+    attempt: 1,
+    ...overrides,
+  };
 }
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// ── Tests ───────────────────────────────────────────────────────────────────
+// ─── Tests ─────────────────────────────────────────────────────────────────
 
-describe('branchRunner', () => {
+describe('branchRunner (SessionPlan)', () => {
   // ── 1. First matching condition runs ────────────────────────────────────
 
-  it('1a. first condition matches → its runner executes', async () => {
-    const runnerA = makeMockRunner({ status: 'completed' });
-    const runnerB = makeMockRunner({ status: 'completed' });
+  it('1a. first condition matches → its runner plan is delegated to', async () => {
+    const branchABatch = [makeSpec('branch-a/spec#1')];
+    const branchBBatch = [makeSpec('branch-b/spec#1')];
 
-    const ctx = makeCtx();
-    const runner = branchRunner({
+    const childA = makeMockChild([branchABatch]);
+    const childB = makeMockChild([branchBBatch]);
+
+    const factory = branchRunner({
       branches: [
-        { condition: () => true, runner: runnerA },
-        { condition: () => true, runner: runnerB },
+        { condition: () => true, runner: childA },
+        { condition: () => true, runner: childB },
       ],
     });
 
-    const outcome: TaskOutcome = await runner(ctx);
+    const runner = factory();
+    const ctx = makePlanContext();
+    const gen = runner.plan(ctx);
 
-    expect(outcome).toEqual({ status: 'completed' });
-    expect(runnerA).toHaveBeenCalledTimes(1);
+    // Should yield branch A's batch
+    const first = await gen.next();
+    expect(first.done).toBe(false);
+    const batch = first.value as SessionSpec[];
+    expect(batch[0].id).toBe('branch-a/spec#1');
+
+    // Feed results back
+    const done = await gen.next([CANNED_RESULT]);
+    expect(done.done).toBe(true);
   });
 
   it('1b. second runner NOT invoked when first matches', async () => {
-    const runnerA = makeMockRunner({ status: 'completed' });
-    const runnerB = makeMockRunner({ status: 'completed' });
+    const childA = makeMockChild([[makeSpec('a#1')]]);
+    let childBPlanStarted = false;
 
-    const ctx = makeCtx();
-    const runner = branchRunner({
+    const childB = makeMockChild([]);
+    // Track whether childB's plan generator was ever entered
+    const childBGen = childB.plan(makePlanContext());
+    const originalNext = childBGen.next.bind(childBGen);
+    childBGen.next = async (...args: Parameters<typeof originalNext>) => {
+      childBPlanStarted = true;
+      return originalNext(...args);
+    };
+    childB.plan = () => childBGen;
+
+    const factory = branchRunner({
       branches: [
-        { condition: () => true, runner: runnerA },
-        { condition: () => true, runner: runnerB },
+        { condition: () => true, runner: childA },
+        { condition: () => true, runner: childB },
       ],
     });
 
-    await runner(ctx);
+    const runner = factory();
+    const ctx = makePlanContext();
+    const gen = runner.plan(ctx);
 
-    expect(runnerA).toHaveBeenCalledTimes(1);
-    expect(runnerB).not.toHaveBeenCalled();
+    await gen.next();
+    await gen.next([CANNED_RESULT]);
+
+    expect(childBPlanStarted).toBe(false);
   });
 
-  it('1c. the child runner receives the parent RunnerContext (same task id)', async () => {
-    const capturedCtx: RunnerContext[] = [];
-    const childRunner = makeMockRunner({ status: 'completed' }, capturedCtx);
+  it('1c. selected branch receives the correct SessionPlanContext', async () => {
+    let capturedCtx: SessionPlanContext | undefined;
 
-    const ctx = makeCtx();
-    const runner = branchRunner({
-      branches: [{ condition: () => true, runner: childRunner }],
+    const childA: SessionPlanRunner = {
+      // eslint-disable-next-line require-yield
+      plan: async function* plan(ctx: SessionPlanContext) {
+        capturedCtx = ctx;
+        return undefined;
+      },
+      execute: async () => CANNED_RESULT,
+    };
+
+    const factory = branchRunner({
+      branches: [{ condition: () => true, runner: childA }],
     });
 
-    await runner(ctx);
+    const runner = factory();
+    const ctx = makePlanContext();
+    const gen = runner.plan(ctx);
 
-    expect(capturedCtx).toHaveLength(1);
-    expect(capturedCtx[0].task.id).toBe('task-abc');
+    await gen.next();
+
+    expect(capturedCtx).toBeDefined();
+    expect(capturedCtx!.task.id).toBe('task-abc');
   });
 
-  // ── 2. No match + default → default runs ───────────────────────────────
+  // ── 2. Selected branch yields batches ─────────────────────────────────
 
-  it('2. no matching branch + default provided → default runner executes', async () => {
-    const defaultRunner = makeMockRunner({ status: 'completed' });
+  it('2a. selected branch yields batches that are re-yielded', async () => {
+    const childBatch = [makeSpec('selected/spec#1'), makeSpec('selected/spec#2')];
+    const child = makeMockChild([childBatch]);
 
-    const ctx = makeCtx();
-    const runner = branchRunner({
+    const factory = branchRunner({
+      branches: [{ condition: () => true, runner: child }],
+    });
+
+    const runner = factory();
+    const ctx = makePlanContext();
+    const gen = runner.plan(ctx);
+
+    const first = await gen.next();
+    expect(first.done).toBe(false);
+    const batch = first.value as SessionSpec[];
+    expect(batch).toHaveLength(2);
+    expect(batch[0].id).toBe('selected/spec#1');
+    expect(batch[1].id).toBe('selected/spec#2');
+  });
+
+  it('2b. results are forwarded to the selected branch', async () => {
+    const childResults: SessionResult[][] = [];
+    const child = makeMockChild([[makeSpec('selected/spec#1')]], childResults);
+
+    const factory = branchRunner({
+      branches: [{ condition: () => true, runner: child }],
+    });
+
+    const runner = factory();
+    const ctx = makePlanContext();
+    const gen = runner.plan(ctx);
+
+    await gen.next();
+
+    const result: SessionResult = { mode: 'text', text: 'forwarded result' };
+    await gen.next([result]);
+
+    expect(childResults).toHaveLength(1);
+    expect(childResults[0]).toEqual([result]);
+  });
+
+  it('2c. selected branch with multiple batches works', async () => {
+    const childBatches = [[makeSpec('batch0#1')], [makeSpec('batch1#1')]];
+    const child = makeMockChild(childBatches);
+
+    const factory = branchRunner({
+      branches: [{ condition: () => true, runner: child }],
+    });
+
+    const runner = factory();
+    const ctx = makePlanContext();
+    const gen = runner.plan(ctx);
+
+    // Batch 0
+    const b0 = await gen.next();
+    expect((b0.value as SessionSpec[])[0].id).toBe('batch0#1');
+
+    // Batch 1
+    const b1 = await gen.next([CANNED_RESULT]);
+    expect((b1.value as SessionSpec[])[0].id).toBe('batch1#1');
+
+    // Done
+    const done = await gen.next([CANNED_RESULT]);
+    expect(done.done).toBe(true);
+  });
+
+  // ── 3. No match + default → default runs ───────────────────────────────
+
+  it('3. no matching branch + default provided → default plan is delegated to', async () => {
+    const defaultBatch = [makeSpec('default/spec#1')];
+    const defaultChild = makeMockChild([defaultBatch]);
+
+    const factory = branchRunner({
       branches: [
-        { condition: () => false, runner: makeMockRunner({ status: 'completed' }) },
-        { condition: () => false, runner: makeMockRunner({ status: 'completed' }) },
+        { condition: () => false, runner: makeMockChild([]) },
+        { condition: () => false, runner: makeMockChild([]) },
       ],
-      default: defaultRunner,
+      default: defaultChild,
     });
 
-    const outcome: TaskOutcome = await runner(ctx);
+    const runner = factory();
+    const ctx = makePlanContext();
+    const gen = runner.plan(ctx);
 
-    expect(outcome).toEqual({ status: 'completed' });
-    expect(defaultRunner).toHaveBeenCalledTimes(1);
+    const first = await gen.next();
+    expect(first.done).toBe(false);
+    const batch = first.value as SessionSpec[];
+    expect(batch[0].id).toBe('default/spec#1');
+
+    const done = await gen.next([CANNED_RESULT]);
+    expect(done.done).toBe(true);
   });
 
-  it('2b. default runner also receives the parent RunnerContext', async () => {
-    const capturedCtx: RunnerContext[] = [];
-    const defaultRunner = makeMockRunner({ status: 'completed' }, capturedCtx);
+  it('3b. default runner with multiple batches works', async () => {
+    const defaultBatches = [[makeSpec('default/batch0#1')], [makeSpec('default/batch1#1')]];
+    const defaultChild = makeMockChild(defaultBatches);
 
-    const ctx = makeCtx();
-    const runner = branchRunner({
-      branches: [{ condition: () => false, runner: makeMockRunner({ status: 'completed' }) }],
-      default: defaultRunner,
+    const factory = branchRunner({
+      branches: [{ condition: () => false, runner: makeMockChild([]) }],
+      default: defaultChild,
     });
 
-    await runner(ctx);
+    const runner = factory();
+    const ctx = makePlanContext();
+    const gen = runner.plan(ctx);
 
-    expect(capturedCtx).toHaveLength(1);
-    expect(capturedCtx[0].task.id).toBe('task-abc');
+    const b0 = await gen.next();
+    expect((b0.value as SessionSpec[])[0].id).toBe('default/batch0#1');
+    const b1 = await gen.next([CANNED_RESULT]);
+    expect((b1.value as SessionSpec[])[0].id).toBe('default/batch1#1');
+    const done = await gen.next([CANNED_RESULT]);
+    expect(done.done).toBe(true);
   });
 
-  // ── 3. No match + no default → failed ──────────────────────────────────
+  // ── 4. No match + no default → throws ─────────────────────────────────
 
-  it('3. no matching branch + no default → {status:"failed", error matches /no branch matched/i}', async () => {
-    const ctx = makeCtx();
-    const runner = branchRunner({
-      branches: [{ condition: () => false, runner: makeMockRunner({ status: 'completed' }) }],
+  it('4. no matching branch + no default → plan throws "No branch matched"', async () => {
+    const factory = branchRunner({
+      branches: [{ condition: () => false, runner: makeMockChild([]) }],
     });
 
-    const outcome: TaskOutcome = await runner(ctx);
+    const runner = factory();
+    const ctx = makePlanContext();
+    const gen = runner.plan(ctx);
 
-    expect(outcome.status).toBe('failed');
-    expect((outcome as { error?: string }).error).toMatch(/no branch matched/i);
+    let threw = false;
+    try {
+      // The generator should throw when started and no branch matches
+      await gen.next();
+    } catch (e) {
+      threw = true;
+      expect((e as Error).message).toMatch(/no branch matched/i);
+    }
+    expect(threw).toBe(true);
   });
 
-  // ── 4. Conditions evaluated in order ───────────────────────────────────
+  // ── 5. Conditions evaluated in order ───────────────────────────────────
 
-  it('4a. conditions evaluated in order; first match stops evaluation', async () => {
+  it('5a. conditions evaluated in order; first match stops evaluation', async () => {
     const evalOrder: number[] = [];
 
-    const runnerA = makeMockRunner({ status: 'completed' });
-    const runnerB = makeMockRunner({ status: 'completed' });
+    const childA = makeMockChild([[makeSpec('a#1')]]);
+    const childB = makeMockChild([[makeSpec('b#1')]]);
 
-    const ctx = makeCtx();
-    const runner = branchRunner({
+    const factory = branchRunner({
       branches: [
         {
           condition: () => {
             evalOrder.push(0);
             return true;
           },
-          runner: runnerA,
+          runner: childA,
         },
         {
           condition: () => {
             evalOrder.push(1);
             return true;
           },
-          runner: runnerB,
+          runner: childB,
         },
       ],
     });
 
-    await runner(ctx);
+    const runner = factory();
+    const ctx = makePlanContext();
+    const gen = runner.plan(ctx);
 
-    // Second condition should not have been evaluated since first matched
+    await gen.next();
+    await gen.next([CANNED_RESULT]);
+
     expect(evalOrder).toEqual([0]);
-    expect(runnerA).toHaveBeenCalledTimes(1);
-    expect(runnerB).not.toHaveBeenCalled();
   });
 
-  it('4b. when first condition is false, second is evaluated and its runner runs', async () => {
+  it('5b. when first condition is false, second is evaluated and its runner runs', async () => {
     const evalOrder: number[] = [];
 
-    const runnerA = makeMockRunner({ status: 'completed' });
-    const runnerB = makeMockRunner({ status: 'completed' });
+    const childA = makeMockChild([[makeSpec('a#1')]]);
+    const childB = makeMockChild([[makeSpec('b#1')]]);
 
-    const ctx = makeCtx();
-    const runner = branchRunner({
+    const factory = branchRunner({
       branches: [
         {
           condition: () => {
             evalOrder.push(0);
             return false;
           },
-          runner: runnerA,
+          runner: childA,
         },
         {
           condition: () => {
             evalOrder.push(1);
             return true;
           },
-          runner: runnerB,
+          runner: childB,
         },
       ],
     });
 
-    await runner(ctx);
+    const runner = factory();
+    const ctx = makePlanContext();
+    const gen = runner.plan(ctx);
+
+    const first = await gen.next();
+    expect((first.value as SessionSpec[])[0].id).toBe('b#1');
+    await gen.next([CANNED_RESULT]);
 
     expect(evalOrder).toEqual([0, 1]);
-    expect(runnerA).not.toHaveBeenCalled();
-    expect(runnerB).toHaveBeenCalledTimes(1);
   });
 
-  // ── 5. Async conditions ────────────────────────────────────────────────
+  // ── 6. Async conditions ────────────────────────────────────────────────
 
-  it('5a. async condition (returns Promise<true>) → matching runner executes', async () => {
-    const runnerA = makeMockRunner({ status: 'completed' });
+  it('6a. async condition (returns Promise<true>) → matching runner executes', async () => {
+    const child = makeMockChild([[makeSpec('async-match/spec#1')]]);
 
-    const ctx = makeCtx();
-    const runner = branchRunner({
+    const factory = branchRunner({
       branches: [
         {
           condition: async () => {
             await delay(5);
             return true;
           },
-          runner: runnerA,
+          runner: child,
         },
       ],
     });
 
-    const outcome: TaskOutcome = await runner(ctx);
+    const runner = factory();
+    const ctx = makePlanContext();
+    const gen = runner.plan(ctx);
 
-    expect(outcome).toEqual({ status: 'completed' });
-    expect(runnerA).toHaveBeenCalledTimes(1);
+    const first = await gen.next();
+    expect(first.done).toBe(false);
+    expect((first.value as SessionSpec[])[0].id).toBe('async-match/spec#1');
   });
 
-  it('5b. async conditions evaluated in order; first true match stops further evaluation', async () => {
+  it('6b. async conditions evaluated in order; first match stops further evaluation', async () => {
     const evalOrder: number[] = [];
 
-    const runnerA = makeMockRunner({ status: 'completed' });
-    const runnerB = makeMockRunner({ status: 'completed' });
+    const childA = makeMockChild([[makeSpec('a#1')]]);
+    const childB = makeMockChild([[makeSpec('b#1')]]);
 
-    const ctx = makeCtx();
-    const runner = branchRunner({
+    const factory = branchRunner({
       branches: [
         {
           condition: async () => {
@@ -296,48 +418,102 @@ describe('branchRunner', () => {
             await delay(5);
             return true;
           },
-          runner: runnerA,
+          runner: childA,
         },
         {
           condition: async () => {
             evalOrder.push(1);
             return true;
           },
-          runner: runnerB,
+          runner: childB,
         },
       ],
     });
 
-    await runner(ctx);
+    const runner = factory();
+    const ctx = makePlanContext();
+    const gen = runner.plan(ctx);
+
+    await gen.next();
+    await gen.next([CANNED_RESULT]);
 
     expect(evalOrder).toEqual([0]);
-    expect(runnerA).toHaveBeenCalledTimes(1);
-    expect(runnerB).not.toHaveBeenCalled();
   });
 
-  it('5c. async condition returning false → continues to next branch', async () => {
-    const runnerB = makeMockRunner({ status: 'completed' });
+  it('6c. async condition returning false → continues to next branch', async () => {
+    const childB = makeMockChild([[makeSpec('b#1')]]);
 
-    const ctx = makeCtx();
-    const runner = branchRunner({
+    const factory = branchRunner({
       branches: [
         {
           condition: async () => {
             await delay(5);
             return false;
           },
-          runner: makeMockRunner({ status: 'completed' }),
+          runner: makeMockChild([]),
         },
         {
           condition: () => true,
-          runner: runnerB,
+          runner: childB,
         },
       ],
     });
 
-    const outcome: TaskOutcome = await runner(ctx);
+    const runner = factory();
+    const ctx = makePlanContext();
+    const gen = runner.plan(ctx);
 
-    expect(outcome).toEqual({ status: 'completed' });
-    expect(runnerB).toHaveBeenCalledTimes(1);
+    const first = await gen.next();
+    expect((first.value as SessionSpec[])[0].id).toBe('b#1');
+  });
+
+  // ── 7. execute delegates to runScheduledSession ────────────────────────
+
+  it('7a. execute calls runScheduledSession with spec and ctx', async () => {
+    mockRunScheduledSession.mockResolvedValue(CANNED_RESULT);
+
+    const factory = branchRunner({
+      branches: [{ condition: () => true, runner: makeMockChild([]) }],
+    });
+    const runner = factory();
+    const ctx = makePlanContext();
+
+    const spec: SessionSpec = makeSpec('task-abc/branch#1');
+    const result = await runner.execute(ctx, spec);
+
+    expect(result).toBe(CANNED_RESULT);
+    expect(mockRunScheduledSession).toHaveBeenCalledTimes(1);
+    expect(mockRunScheduledSession).toHaveBeenCalledWith(spec, ctx);
+  });
+
+  it('7b. execute propagates errors from runScheduledSession', async () => {
+    const error = new Error('session failed');
+    mockRunScheduledSession.mockRejectedValue(error);
+
+    const factory = branchRunner({
+      branches: [{ condition: () => true, runner: makeMockChild([]) }],
+    });
+    const runner = factory();
+    const ctx = makePlanContext();
+
+    const spec: SessionSpec = makeSpec('task-abc/branch#1');
+    await expect(runner.execute(ctx, spec)).rejects.toThrow(error);
+  });
+
+  // ── 8. Factory creates fresh instances ─────────────────────────────────
+
+  it('8. factory returns a new runner instance each call', async () => {
+    const factory = branchRunner({
+      branches: [{ condition: () => true, runner: makeMockChild([]) }],
+    });
+
+    const runnerA = factory();
+    const runnerB = factory();
+
+    expect(runnerA).not.toBe(runnerB);
+    expect(runnerA.plan).toBeInstanceOf(Function);
+    expect(runnerA.execute).toBeInstanceOf(Function);
+    expect(runnerB.plan).toBeInstanceOf(Function);
+    expect(runnerB.execute).toBeInstanceOf(Function);
   });
 });

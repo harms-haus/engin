@@ -1,26 +1,86 @@
+import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { PersistedAgentRecord, WorkflowState, WorktreeInfo } from '../core/types.js';
+import { isEnoentError } from '../core/utils.js';
 import { AuditLog } from './audit-log.js';
 import { TaskTracker } from './task-status.js';
-import { loadWorkflowState, saveWorkflowState, serializeWorkflowState } from './workflow-serializer.js';
+
+// ── Inlined serializer (formerly workflow-serializer.ts, removed in D2) ────
+//
+// The .engin-state.json read/write/serialize logic previously lived in a
+// separate workflow-serializer.ts module. It has been absorbed here as
+// private (non-exported) module-level functions so the serializer module
+// could be deleted without affecting any consumer of WorkflowStatusTracker.
+// The EventStore (snapshot + events.jsonl) is the canonical persistence
+// layer going forward; this .engin-state.json path is transitional cruft
+// slated for full removal once D3/D4 migrate all consumers off
+// WorkflowStatusTracker.
 
 /**
- * Conservative default for the number of concurrent lanes a workflow may run.
- *
- * The tracker cannot know the real value (it is configured on the lane pool,
- * which attaches up to `maxConcurrentLanes` listeners per TaskTracker event),
- * so this upper bound sizes {@link TaskTracker}'s `maxListeners` with enough
- * headroom that the tracker's own 3 listeners plus the lane pool's listeners
- * never trip a Node `MaxListenersExceededWarning`.
+ * Serialize a WorkflowStatusTracker's state into a plain WorkflowState object.
  */
-const DEFAULT_MAX_CONCURRENT_LANES = 8;
+function serializeWorkflowState(tracker: WorkflowStatusTracker): WorkflowState {
+  return {
+    taskPrompt: tracker.taskPrompt,
+    currentPhaseId: tracker.currentPhaseId,
+    completedPhaseIds: tracker.completedPhaseIds,
+    tasks: tracker.taskTracker.getAllTasks(),
+    workflowData: tracker.workflowData,
+    stats: { ...tracker.stats },
+    spawnedAgents: tracker.spawnedAgents.length > 0 ? tracker.spawnedAgents.map((a) => ({ ...a })) : [],
+    worktree: tracker.worktree,
+  };
+}
+
+// Monotonic counter guarantees a unique temp filename per call within a
+// process, so concurrent saves (e.g. an in-flight auto-persist racing with an
+// explicit save) never write/rename the same temp path.
+let saveSeq = 0;
+
+/**
+ * Atomically write the tracker state to disk.
+ * Writes to a uniquely-named temporary file then renames it to the final path.
+ * Also removes a stale legacy `.engin-state.json.tmp` left by a previous
+ * (pre-unique-name) failed write.
+ */
+async function saveWorkflowState(tracker: WorkflowStatusTracker, workDir: string): Promise<void> {
+  await mkdir(workDir, { recursive: true });
+  const filePath = join(workDir, '.engin-state.json');
+  // Clean up a stale legacy temp file from a previous failed write.
+  await rm(join(workDir, '.engin-state.json.tmp'), { force: true });
+  const tmpPath = join(workDir, `.engin-state.json.tmp.${process.pid}.${saveSeq++}`);
+  await writeFile(tmpPath, JSON.stringify(serializeWorkflowState(tracker), null, 2), 'utf-8');
+  await rename(tmpPath, filePath);
+}
+
+/**
+ * Read and parse the workflow state file from disk.
+ * Throws if the file does not exist or cannot be parsed.
+ */
+async function loadWorkflowState(workDir: string): Promise<WorkflowState> {
+  const filePath = join(workDir, '.engin-state.json');
+  let raw: string;
+  try {
+    raw = await readFile(filePath, 'utf-8');
+  } catch (err: unknown) {
+    if (isEnoentError(err)) {
+      throw new Error(`Workflow state file not found at "${filePath}"`, { cause: err });
+    }
+    throw new Error('Failed to load workflow state', { cause: err });
+  }
+  const parsed = JSON.parse(raw) as Record<string, unknown>;
+  // NOTE: This is a clean break — old run state files (pre hierarchy refactor)
+  // are NOT migrated. Callers that find a state file with an unexpected shape
+  // should reset to a pristine state rather than resume. See
+  // WorkflowStatusTracker.load for the reject/reset handling.
+  return parsed as unknown as WorkflowState;
+}
 
 export class WorkflowStatusTracker {
   /**
    * Best-effort safety net for trackers whose caller forgot to call
    * {@link dispose}. When a tracker becomes unreachable the registry callback
-   * tears down its EventEmitter listeners — *if* the object is still alive at
-   * finalization time.
+   * calls dispose — *if* the object is still alive at finalization time.
    *
    * The held value is a `WeakRef` (not `this` directly) and the callback does
    * not close over any instance, so the registry never strongly pins the
@@ -49,9 +109,6 @@ export class WorkflowStatusTracker {
   private _auditLog: AuditLog;
   private readonly workDir: string;
   private _signal: AbortSignal | null = null;
-  private _onTaskSettled: (() => void) | undefined;
-  private _onTaskReady: (() => void) | undefined;
-  private _onTaskClaimed: (() => void) | undefined;
   private _pendingSave = false;
   private _queuedSave = false;
   private _saveLock: Promise<void> = Promise.resolve();
@@ -63,20 +120,19 @@ export class WorkflowStatusTracker {
     this.workDir = workDir;
     this._taskTracker = new TaskTracker();
     this._auditLog = new AuditLog(join(workDir, 'audit'));
-    this.attachAutoPersist();
     if (signal) {
       this._signal = signal;
       signal.addEventListener(
         'abort',
         () => {
-          // Cancel any outstanding active tasks before disposal
+          // Cancel any outstanding active tasks before disposal.
+          // (TaskTracker no longer has a cancelTask method — D1 removed
+          //  scheduling. Direct status mutation is sufficient here since
+          //  this is the disposal path and WorkflowStatusTracker itself is
+          //  slated for removal in D2.)
           for (const t of this._taskTracker.getAllTasks()) {
             if (t.status === 'active') {
-              try {
-                this._taskTracker.cancelTask(t.id);
-              } catch {
-                // ignore errors from double-cancel or already settled
-              }
+              t.status = 'cancelled';
             }
           }
           this.dispose();
@@ -85,11 +141,10 @@ export class WorkflowStatusTracker {
       );
     } else {
       // No caller-supplied signal: register a GC safety net so that a forgotten
-      // dispose() still has a chance to tear down the leaked EventEmitter
-      // listeners. The held value is a WeakRef so the registry never strongly
-      // pins this tracker (the classic FinalizationRegistry leak). The callback
-      // is non-deterministic and may fire late or never — this is a backstop,
-      // not the primary cleanup path.
+      // dispose() still has a chance to clean up. The held value is a WeakRef
+      // so the registry never strongly pins this tracker (the classic
+      // FinalizationRegistry leak). The callback is non-deterministic and may
+      // fire late or never — this is a backstop, not the primary cleanup path.
       WorkflowStatusTracker.finalizationRegistry.register(this, new WeakRef(this));
     }
   }
@@ -118,44 +173,12 @@ export class WorkflowStatusTracker {
     }
   }
 
-  private attachAutoPersist(): void {
-    // Raise the per-instance limit above Node's default (10) so this tracker's
-    // own 3 listeners plus downstream consumers (e.g. the lane pool, which adds
-    // up to maxConcurrentLanes listeners per event) do not trip a Node
-    // MaxListenersExceededWarning.
-    this._taskTracker.setMaxListeners(DEFAULT_MAX_CONCURRENT_LANES + 5);
-    this._onTaskSettled = () => {
-      this.persistState();
-    };
-    this._onTaskReady = () => {
-      this.persistState();
-    };
-    this._onTaskClaimed = () => {
-      this.persistState();
-    };
-    this._taskTracker.on(TaskTracker.Events.TaskSettled, this._onTaskSettled);
-    this._taskTracker.on(TaskTracker.Events.TaskReady, this._onTaskReady);
-    this._taskTracker.on(TaskTracker.Events.TaskClaimed, this._onTaskClaimed);
-  }
-
   dispose(): void {
     // Idempotent: safe to invoke from any context (manual call, abort handler,
     // or the FinalizationRegistry backstop) which may fire zero, one, or many
     // times and possibly late. Once disposed, subsequent calls are no-ops.
     if (this._disposed) return;
     this._disposed = true;
-    if (this._onTaskSettled) {
-      this._taskTracker.removeListener(TaskTracker.Events.TaskSettled, this._onTaskSettled);
-      this._onTaskSettled = undefined;
-    }
-    if (this._onTaskReady) {
-      this._taskTracker.removeListener(TaskTracker.Events.TaskReady, this._onTaskReady);
-      this._onTaskReady = undefined;
-    }
-    if (this._onTaskClaimed) {
-      this._taskTracker.removeListener(TaskTracker.Events.TaskClaimed, this._onTaskClaimed);
-      this._onTaskClaimed = undefined;
-    }
     this._pendingSave = false;
     this._queuedSave = false;
     this._signal = null;
@@ -377,8 +400,17 @@ export class WorkflowStatusTracker {
       // in-flight (active) when the run was interrupted — completed and failed
       // tasks keep their settled status so they are NOT re-run.
       tracker._taskTracker = TaskTracker.fromJSON({ tasks: data.tasks }, { preserveState: true });
-      tracker._taskTracker.resetStuckTasks();
-      tracker.attachAutoPersist();
+      // Reset any tasks that were in-flight (active) when the run was
+      // interrupted so they can be re-run on resume. TaskTracker no longer
+      // has a resetStuckTasks method — direct mutation suffices.
+      for (const t of tracker._taskTracker.getAllTasks()) {
+        if (t.status === 'active') {
+          t.status = 'ready';
+          t.assignedAgent = undefined;
+          t.result = undefined;
+          t.reviewFeedback = undefined;
+        }
+      }
     }
 
     return tracker;

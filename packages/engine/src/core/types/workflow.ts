@@ -1,4 +1,5 @@
 import type { HookProvider, HookRegistry } from '../../hooks/types.js';
+import type { EventStore } from '../../tracking/event-store.js';
 import type { RendererRegistry } from '../renderer-registry.js';
 import type { WorktreeManager } from '../worktree-manager.js';
 
@@ -48,11 +49,10 @@ export interface WorkflowRunOptions {
   maxConcurrentTasks?: number;
   apiKeys?: Record<string, string>;
   onStatus?: StatusCallbacks;
-  /** Abort signal for cooperative cancellation (e.g. SIGINT). When provided to a
-   * WorkflowStatusTracker, it triggers automatic listener cleanup on abort. */
+  /** Abort signal for cooperative cancellation (e.g. SIGINT). */
   signal?: AbortSignal;
-  /** Pre-created WorkflowStatusTracker; workflows should reuse instead of creating their own. Typed as `unknown` to avoid circular imports. */
-  tracker?: unknown;
+  /** Shared event store so workflows can read projection state for resume / workflowData. */
+  eventStore?: EventStore;
   /** When true, use verbose console output instead of TUI dashboard */
   verbose?: boolean;
   /** Git worktree information for isolated execution */
@@ -61,9 +61,9 @@ export interface WorkflowRunOptions {
   rendererRegistry?: RendererRegistry;
   /** WorktreeManager for isolated git worktree execution */
   worktreeManager?: WorktreeManager;
-  /** The engine-assembled hook registry. Forwarded to RunnerPool / runTask so engine primitives can invoke hooks. */
+  /** The engine-assembled hook registry. Forwarded to runTask / session primitives so engine primitives can invoke hooks. */
   hookRegistry?: HookRegistry;
-  /** Optional per-prompt timeout in milliseconds. Forwarded to RunnerPool so
+  /** Optional per-prompt timeout in milliseconds. Forwarded to session primitives so
    *  each `session.prompt()` call is raced against a timeout. Unset/0/NaN → no
    *  timeout (zero behavior change). */
   stepTimeoutMs?: number;

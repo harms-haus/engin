@@ -1,382 +1,300 @@
-// ─── Tests for runners/map-runner.ts ────────────────────────────────────────
+// ─── Tests for runners/map-runner.ts (SessionPlan contract) ─────────────
 //
 // Tests verify:
-//   1. 5 items concurrency 2 all succeed → {status:'completed'}
-//       IDs: `map[0].<role>` … `map[4].<role>`; gate.run called; concurrency respected
-//   2. Per-item prompt convention: sessionSpec.prompt + "\n\nItem: " + JSON.stringify(item)
-//   3. Partial failure: 1 of 5 items fails → {status:'failed'}, all items settled (no leak)
-//   4. Concurrency=1 serializes items (deadlock-free)
-//   5. Real SessionGate with total=2 — items complete without deadlock
+//   1. plan() yields one batch with one spec per item
+//   2. Per-item prompt: spec.prompt + "\n\nItem: " + JSON.stringify(item)
+//   3. ID convention: `${taskId}/map[${index}].${role}#${attempt}`
+//   4. Empty items → plan generator returns immediately
+//   5. execute() calls runScheduledSession and returns its result
+//   6. Factory creates a fresh runner instance each call
+//   7. Spec fields (profile, outputMode, attempt, etc.) are propagated
+//   8. Custom role is used in session IDs
 //
-// Per-item prompt convention (documented):
-//   The mapRunner composes the per-item prompt as:
-//     sessionSpec.prompt + "\n\nItem: " + JSON.stringify(item)
-//
-// The module under test is imported from './map-runner.js'.
+// Mock strategy:
+//   - Shared mock via `test-fixtures.ts` → `mockRunScheduledSession`
+//   - We construct a real SessionPlanRunner via the factory and test its
+//     plan()/execute() methods directly.
 
-import { describe, expect, it, mock } from 'bun:test';
+import { describe, expect, it } from 'bun:test';
+import type { SessionSpec } from '../session.js';
+import {
+  CANNED_RESULT,
+  makePlanContext,
+  mockRunScheduledSession,
+  setupRunScheduledSessionMock,
+} from './test-fixtures.js';
 
-import type { AgentProfile, Task } from '../../core/types.js';
-import { SessionGate } from '../session-gate.js';
-import type { RunSessionContext, SessionResult } from '../session.js';
+// ─── Import module under test ────────────────────────────────────────────
+
 import { mapRunner } from './map-runner.js';
-import type { RunnerContext, TaskOutcome } from './types.js';
 
-// ── Fixture helpers ─────────────────────────────────────────────────────────
+// ─── Mock wiring ─────────────────────────────────────────────────────────
 
-function makeTask(overrides?: Partial<Task>): Task {
+setupRunScheduledSessionMock();
+
+// ─── Helpers ──────────────────────────────────────────────────────────────
+
+function makeSpec(overrides?: Partial<SessionSpec>): SessionSpec {
   return {
-    id: 'task-abc',
-    title: 'Build feature',
-    prompt: 'Implement X',
-    profile: 'default',
-    files: [],
-    dependencies: [],
-    status: 'active',
-    phaseId: 'code',
-    worktree: 'none',
-    ...overrides,
-  };
-}
-
-function makeProfile(id: string, overrides?: Partial<AgentProfile>): AgentProfile {
-  return {
-    id,
-    name: id,
-    provider: 'openai',
-    model: 'gpt-4o',
-    thinkingLevel: 'low',
-    systemPrompt: `You are ${id}.`,
-    excludeTools: [],
-    includeTools: [],
-    ...overrides,
-  };
-}
-
-function makeCtx(overrides?: Partial<RunnerContext>): RunnerContext {
-  const task = makeTask();
-  const profiles = new Map<string, AgentProfile>();
-  profiles.set('worker', makeProfile('worker'));
-  return {
-    task,
-    gate: {
-      run: mock(async (_p: unknown, fn: (h: { signal: AbortSignal }) => Promise<unknown>) =>
-        fn({ signal: new AbortController().signal }),
-      ),
-    } as unknown as RunnerContext['gate'],
-    runSession: mock(async () => ({ mode: 'text', text: 'ok' }) satisfies SessionResult),
-    profiles,
-    sessionBaseDir: '/tmp/sessions',
-    cwd: '/tmp/project',
-    activeSessions: new Set(),
-    phaseId: 'code',
-    agentId: 'agent-1',
-    ...overrides,
-  };
-}
-
-/**
- * Build a base session spec for mapRunner tests.
- * The `role` drives the session-ID suffix (e.g. `map[0].worker`).
- */
-function makeSessionSpec(overrides?: Record<string, unknown>) {
-  return {
-    profile: 'worker',
+    id: 'base-spec-id', // will be overridden by map runner
+    profile: 'executor',
     prompt: 'Process item',
-    outputMode: 'text' as const,
-    role: 'worker',
+    outputMode: 'text',
     runnerRole: 'worker',
     attempt: 1,
     ...overrides,
   };
 }
 
-const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+// ─── Tests ────────────────────────────────────────────────────────────────
 
-// ── Tests ───────────────────────────────────────────────────────────────────
+describe('mapRunner (SessionPlan)', () => {
+  // ── 1. plan yields one batch with one spec per item ───────────────
 
-describe('mapRunner', () => {
-  // ── 1. All items succeed ─────────────────────────────────────────────────
+  it('1a. plan yields one batch with 3 specs for 3 items', async () => {
+    const items = ['a', 'b', 'c'];
+    const factory = mapRunner({ items, spec: makeSpec() });
+    const runner = factory();
+    const ctx = makePlanContext();
+    const gen = runner.plan(ctx);
 
-  it('1a. 5 items concurrency 2 all succeed → returns {status:"completed"}', async () => {
-    const items = ['a', 'b', 'c', 'd', 'e'];
-    const sessionIds: string[] = [];
-
-    const runSession = mock(async (rsctx: RunSessionContext) => {
-      sessionIds.push(rsctx.spec.id);
-      return { mode: 'text', text: 'ok' } satisfies SessionResult;
-    });
-
-    const ctx = makeCtx({ runSession });
-    const runner = mapRunner({
-      items,
-      sessionSpec: makeSessionSpec(),
-      concurrency: 2,
-    });
-
-    const outcome: TaskOutcome = await runner(ctx);
-
-    expect(outcome).toEqual({ status: 'completed' });
-    expect(sessionIds).toHaveLength(5);
+    const first = await gen.next([]);
+    expect(first.done).toBe(false);
+    const batch = first.value as SessionSpec[];
+    expect(batch).toHaveLength(3);
   });
 
-  it('1b. IDs follow map[${index}].<role> pattern', async () => {
+  it('1b. batch contains exactly one spec per item', async () => {
     const items = ['x', 'y'];
-    const sessionIds: string[] = [];
+    const factory = mapRunner({ items, spec: makeSpec() });
+    const runner = factory();
+    const ctx = makePlanContext();
+    const gen = runner.plan(ctx);
 
-    const runSession = mock(async (rsctx: RunSessionContext) => {
-      sessionIds.push(rsctx.spec.id);
-      return { mode: 'text', text: 'ok' } satisfies SessionResult;
-    });
+    const first = await gen.next([]);
+    expect(first.value as SessionSpec[]).toHaveLength(2);
 
-    const ctx = makeCtx({ runSession });
-    const runner = mapRunner({
-      items,
-      sessionSpec: makeSessionSpec({ role: 'worker' }),
-    });
-
-    await runner(ctx);
-
-    expect(sessionIds[0]).toBe('task-abc/map[0].worker#1');
-    expect(sessionIds[1]).toBe('task-abc/map[1].worker#1');
+    const done = await gen.next([CANNED_RESULT, CANNED_RESULT]);
+    expect(done.done).toBe(true);
+    expect(done.value).toBeUndefined();
   });
 
-  it('1c. sessionSpec fields are propagated (profile, outputMode, attempt)', async () => {
-    const items = ['item-0'];
-    const specs: RunSessionContext[] = [];
-
-    const runSession = mock(async (rsctx: RunSessionContext) => {
-      specs.push(rsctx);
-      return { mode: 'text', text: 'ok' } satisfies SessionResult;
-    });
-
-    const ctx = makeCtx({ runSession });
-    const runner = mapRunner({
-      items,
-      sessionSpec: makeSessionSpec({
-        profile: 'worker',
-        prompt: 'Process item',
-        outputMode: 'text',
-        role: 'worker',
-        attempt: 1,
-      }),
-    });
-
-    await runner(ctx);
-
-    expect(specs[0].spec.profile).toBe('worker');
-    expect(specs[0].spec.outputMode).toBe('text');
-    expect(specs[0].spec.attempt).toBe(1);
-  });
-
-  it('1d. gate.run is called for each item with the resolved profile', async () => {
-    const items = ['a', 'b'];
-    const gateRunProfiles: unknown[] = [];
-
-    const gate = {
-      run: mock(async (profile: unknown, fn: (h: { signal: AbortSignal }) => Promise<unknown>) => {
-        gateRunProfiles.push(profile);
-        return fn({ signal: new AbortController().signal });
-      }),
-    } as unknown as RunnerContext['gate'];
-
-    const ctx = makeCtx({ gate });
-    const runner = mapRunner({
-      items,
-      sessionSpec: makeSessionSpec({ profile: 'worker' }),
-    });
-
-    await runner(ctx);
-
-    expect(gateRunProfiles).toHaveLength(2);
-    for (const profile of gateRunProfiles) {
-      expect(profile).toHaveProperty('provider', 'openai');
-      expect(profile).toHaveProperty('model', 'gpt-4o');
-    }
-  });
-
-  // ── 2. Per-item prompt convention ──────────────────────────────────────
+  // ── 2. Per-item prompt convention ─────────────────────────────────
 
   it('2a. per-item prompt includes the item via JSON.stringify', async () => {
     const items = [{ value: 42, label: 'test' }];
-    const receivedPrompts: string[] = [];
+    const factory = mapRunner({ items, spec: makeSpec({ prompt: 'Base prompt' }) });
+    const runner = factory();
+    const ctx = makePlanContext();
+    const gen = runner.plan(ctx);
 
-    const runSession = mock(async (rsctx: RunSessionContext) => {
-      receivedPrompts.push(rsctx.spec.prompt);
-      return { mode: 'text', text: 'ok' } satisfies SessionResult;
-    });
-
-    const ctx = makeCtx({ runSession });
-    const runner = mapRunner({
-      items,
-      sessionSpec: makeSessionSpec({ prompt: 'Base prompt' }),
-    });
-
-    await runner(ctx);
-
-    // The implement worker must append the serialized item to the base prompt
-    expect(receivedPrompts[0]).toContain('Base prompt');
-    expect(receivedPrompts[0]).toContain(JSON.stringify(items[0]));
+    const first = await gen.next([]);
+    const batch = first.value as SessionSpec[];
+    expect(batch[0].prompt).toContain('Base prompt');
+    expect(batch[0].prompt).toContain(JSON.stringify(items[0]));
   });
 
   it('2b. each item has its own prompt with its own item content', async () => {
     const items = ['first-item', 'second-item'];
-    const receivedPrompts: string[] = [];
+    const factory = mapRunner({ items, spec: makeSpec({ prompt: 'Process' }) });
+    const runner = factory();
+    const ctx = makePlanContext();
+    const gen = runner.plan(ctx);
 
-    const runSession = mock(async (rsctx: RunSessionContext) => {
-      receivedPrompts.push(rsctx.spec.prompt);
-      return { mode: 'text', text: 'ok' } satisfies SessionResult;
-    });
-
-    const ctx = makeCtx({ runSession });
-    const runner = mapRunner({
-      items,
-      sessionSpec: makeSessionSpec({ prompt: 'Process' }),
-    });
-
-    await runner(ctx);
-
-    expect(receivedPrompts).toHaveLength(2);
-    expect(receivedPrompts[0]).toContain('first-item');
-    expect(receivedPrompts[1]).toContain('second-item');
+    const first = await gen.next([]);
+    const batch = first.value as SessionSpec[];
+    expect(batch[0].prompt).toContain('first-item');
+    expect(batch[1].prompt).toContain('second-item');
   });
 
-  // ── 3. Partial failure ─────────────────────────────────────────────────
+  // ── 3. ID convention ─────────────────────────────────────────────
 
-  it('3a. 1 of 5 items fails → {status:"failed"}', async () => {
-    const items = ['a', 'b', 'c', 'd', 'e'];
-    let callCount = 0;
+  it('3a. IDs follow map[${index}].<role> pattern with default role "worker"', async () => {
+    const items = ['a', 'b'];
+    const factory = mapRunner({ items, spec: makeSpec() });
+    const runner = factory();
+    const ctx = makePlanContext({ task: { ...makePlanContext().task, id: 'task-abc' } });
+    const gen = runner.plan(ctx);
 
-    const runSession = mock(async (rsctx: RunSessionContext) => {
-      callCount++;
-      if (callCount === 3) {
-        throw new Error('item c failed');
-      }
-      return { mode: 'text', text: 'ok' } satisfies SessionResult;
-    });
-
-    const ctx = makeCtx({ runSession });
-    const runner = mapRunner({
-      items,
-      sessionSpec: makeSessionSpec(),
-      concurrency: 5,
-    });
-
-    const outcome: TaskOutcome = await runner(ctx);
-
-    expect(outcome.status).toBe('failed');
-    expect((outcome as { error?: string }).error).toBeTruthy();
+    const first = await gen.next([]);
+    const batch = first.value as SessionSpec[];
+    expect(batch[0].id).toBe('task-abc/map[0].worker#1');
+    expect(batch[1].id).toBe('task-abc/map[1].worker#1');
   });
 
-  it('3b. partial failure: all items are settled (no unhandled rejections / no session leak)', async () => {
-    const items = ['a', 'b', 'c'];
-    let callCount = 0;
-    let itemCStarted = false;
+  it('3b. IDs use custom role when provided', async () => {
+    const items = ['a'];
+    const factory = mapRunner({ items, spec: makeSpec(), role: 'analyst' });
+    const runner = factory();
+    const ctx = makePlanContext({ task: { ...makePlanContext().task, id: 'task-xyz' } });
+    const gen = runner.plan(ctx);
 
-    const runSession = mock(async (rsctx: RunSessionContext) => {
-      callCount++;
-      // Items a, b succeed
-      if (callCount <= 2) {
-        await delay(5);
-        return { mode: 'text', text: 'ok' } satisfies SessionResult;
-      }
-      // Item c: was started (session was created), then fails
-      if (rsctx.spec.id.includes('map[2]')) {
-        itemCStarted = true;
-        throw new Error('item c error');
-      }
-      return { mode: 'text', text: 'ok' } satisfies SessionResult;
-    });
-
-    const ctx = makeCtx({ runSession });
-    const runner = mapRunner({
-      items,
-      sessionSpec: makeSessionSpec(),
-      concurrency: 3,
-    });
-
-    const outcome: TaskOutcome = await runner(ctx);
-
-    // All items must have been started — no item was skipped due to short-circuit
-    expect(callCount).toBe(3);
-    expect(itemCStarted).toBe(true);
-    expect(outcome.status).toBe('failed');
+    const first = await gen.next([]);
+    const batch = first.value as SessionSpec[];
+    expect(batch[0].id).toBe('task-xyz/map[0].analyst#1');
   });
 
-  // ── 4. Concurrency=1 serializes ────────────────────────────────────────
+  it('3c. IDs use custom attempt from spec', async () => {
+    const items = ['a'];
+    const factory = mapRunner({ items, spec: makeSpec({ attempt: 3 }) });
+    const runner = factory();
+    const ctx = makePlanContext({ task: { ...makePlanContext().task, id: 'task-abc' } });
+    const gen = runner.plan(ctx);
 
-  it('4. concurrency=1 serializes items (no deadlock)', async () => {
-    const items = ['a', 'b', 'c'];
-    const order: number[] = [];
-    let idx = 0;
-
-    const gate = {
-      run: mock(async (_p: unknown, fn: (h: { signal: AbortSignal }) => Promise<unknown>) => {
-        return fn({ signal: new AbortController().signal });
-      }),
-    } as unknown as RunnerContext['gate'];
-
-    const runSession = mock(async () => {
-      const i = idx++;
-      order.push(i);
-      await delay(5);
-      return { mode: 'text', text: 'ok' } satisfies SessionResult;
-    });
-
-    const ctx = makeCtx({ gate, runSession });
-    const runner = mapRunner({
-      items,
-      sessionSpec: makeSessionSpec(),
-      concurrency: 1,
-    });
-
-    const outcome: TaskOutcome = await runner(ctx);
-
-    expect(outcome).toEqual({ status: 'completed' });
-    // With concurrency=1, items must complete sequentially in index order
-    expect(order).toEqual([0, 1, 2]);
+    const first = await gen.next([]);
+    const batch = first.value as SessionSpec[];
+    expect(batch[0].id).toBe('task-abc/map[0].worker#3');
+    expect(batch[0].attempt).toBe(3);
   });
 
-  // ── 5. Real SessionGate (deadlock-safety) ──────────────────────────────
+  // ── 4. Empty items ───────────────────────────────────────────────
 
-  it('5. deadlock-free: works with real SessionGate (total=2)', async () => {
-    const gate = new SessionGate({ total: 2, perModel: {} });
-    const items = ['a', 'b', 'c', 'd'];
-
-    const runSession = mock(async () => {
-      await delay(5);
-      return { mode: 'text', text: 'ok' } satisfies SessionResult;
-    });
-
-    const ctx = makeCtx({ gate, runSession });
-    const runner = mapRunner({
-      items,
-      sessionSpec: makeSessionSpec(),
-      concurrency: 4,
-    });
-
-    const outcome = await Promise.race([
-      runner(ctx).then((r) => r as TaskOutcome),
-      new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), 10_000)),
-    ]);
-
-    expect(outcome).toEqual({ status: 'completed' });
-  }, 15_000);
-
-  // ── 6. Edge: empty items ───────────────────────────────────────────────
-
-  it('6. empty items array → {status:"failed"} with appropriate error', async () => {
+  it('4. empty items array → plan generator returns immediately', async () => {
     const items: unknown[] = [];
+    const factory = mapRunner({ items, spec: makeSpec() });
+    const runner = factory();
+    const ctx = makePlanContext();
+    const gen = runner.plan(ctx);
 
-    const ctx = makeCtx();
-    const runner = mapRunner({
+    const result = await gen.next();
+    expect(result.done).toBe(true);
+    expect(result.value).toBeUndefined();
+  });
+
+  // ── 5. execute delegates to runScheduledSession ──────────────────
+
+  it('5a. execute calls runScheduledSession with spec and ctx', async () => {
+    mockRunScheduledSession.mockResolvedValue(CANNED_RESULT);
+
+    const factory = mapRunner({ items: ['a'], spec: makeSpec() });
+    const runner = factory();
+    const ctx = makePlanContext();
+
+    const spec: SessionSpec = {
+      id: 'task-abc/map[0].worker#1',
+      profile: 'executor',
+      prompt: 'Process item\n\nItem: "a"',
+      outputMode: 'text',
+      runnerRole: 'worker',
+      attempt: 1,
+    };
+
+    const result = await runner.execute(ctx, spec);
+
+    expect(result).toBe(CANNED_RESULT);
+    expect(mockRunScheduledSession).toHaveBeenCalledTimes(1);
+    expect(mockRunScheduledSession).toHaveBeenCalledWith(spec, ctx);
+  });
+
+  it('5b. execute propagates errors from runScheduledSession', async () => {
+    const error = new Error('session failed');
+    mockRunScheduledSession.mockRejectedValue(error);
+
+    const factory = mapRunner({ items: ['a'], spec: makeSpec() });
+    const runner = factory();
+    const ctx = makePlanContext();
+
+    const spec: SessionSpec = {
+      id: 'task-abc/map[0].worker#1',
+      profile: 'executor',
+      prompt: 'Process item\n\nItem: "a"',
+      outputMode: 'text',
+      runnerRole: 'worker',
+      attempt: 1,
+    };
+
+    await expect(runner.execute(ctx, spec)).rejects.toThrow(error);
+  });
+
+  // ── 6. Factory creates fresh instances ──────────────────────────
+
+  it('6. factory returns a new runner instance each call', async () => {
+    const factory = mapRunner({ items: ['a'], spec: makeSpec() });
+
+    const runnerA = factory();
+    const runnerB = factory();
+
+    expect(runnerA).not.toBe(runnerB);
+    expect(runnerA.plan).toBeInstanceOf(Function);
+    expect(runnerA.execute).toBeInstanceOf(Function);
+  });
+
+  // ── 7. Spec fields propagation ──────────────────────────────────
+
+  it('7a. spec fields (profile, outputMode, runnerRole) are propagated', async () => {
+    const items = ['item-0'];
+    const factory = mapRunner({
       items,
-      sessionSpec: makeSessionSpec(),
+      spec: makeSpec({
+        profile: 'custom-profile',
+        outputMode: 'structured',
+        runnerRole: 'analyst',
+      }),
     });
+    const runner = factory();
+    const ctx = makePlanContext();
+    const gen = runner.plan(ctx);
 
-    const outcome: TaskOutcome = await runner(ctx);
+    const first = await gen.next([]);
+    const spec = (first.value as SessionSpec[])[0];
+    expect(spec.profile).toBe('custom-profile');
+    expect(spec.outputMode).toBe('structured');
+    expect(spec.runnerRole).toBe('worker'); // runnerRole is set to role, not spec.runnerRole
+  });
 
-    expect(outcome.status).toBe('failed');
-    expect((outcome as { error?: string }).error).toBeTruthy();
+  it('7b. isReadOnly is propagated when set', async () => {
+    const items = ['item-0'];
+    const factory = mapRunner({
+      items,
+      spec: { ...makeSpec(), isReadOnly: true },
+    });
+    const runner = factory();
+    const ctx = makePlanContext();
+    const gen = runner.plan(ctx);
+
+    const first = await gen.next([]);
+    const spec = (first.value as SessionSpec[])[0];
+    expect(spec.isReadOnly).toBe(true);
+  });
+
+  // ── 8. Items with different types ───────────────────────────────
+
+  it('8a. string items are handled correctly', async () => {
+    const items = ['hello'];
+    const factory = mapRunner({ items, spec: makeSpec() });
+    const runner = factory();
+    const ctx = makePlanContext();
+    const gen = runner.plan(ctx);
+
+    const first = await gen.next([]);
+    const spec = (first.value as SessionSpec[])[0];
+    expect(spec.prompt).toContain('"hello"');
+  });
+
+  it('8b. number items are handled correctly', async () => {
+    const items = [42];
+    const factory = mapRunner({ items, spec: makeSpec() });
+    const runner = factory();
+    const ctx = makePlanContext();
+    const gen = runner.plan(ctx);
+
+    const first = await gen.next([]);
+    const spec = (first.value as SessionSpec[])[0];
+    expect(spec.prompt).toContain('42');
+  });
+
+  it('8c. object items are handled via JSON.stringify', async () => {
+    const items = [{ name: 'test', value: 1 }];
+    const factory = mapRunner({ items, spec: makeSpec() });
+    const runner = factory();
+    const ctx = makePlanContext();
+    const gen = runner.plan(ctx);
+
+    const first = await gen.next([]);
+    const spec = (first.value as SessionSpec[])[0];
+    expect(spec.prompt).toContain('"name"');
+    expect(spec.prompt).toContain('"test"');
+    expect(spec.prompt).toContain('"value"');
+    expect(spec.prompt).toContain('1');
   });
 });

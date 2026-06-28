@@ -623,7 +623,7 @@ describe('PhaseRunner — onPhaseSettled', () => {
         id: 'scout',
         // The scout phase produces settled tasks (with results) in the tracker.
         run: async (ctx) => {
-          ctx.tracker.taskTracker.addTask({
+          tracker.taskTracker.addTask({
             id: 's1',
             title: 'scout-1',
             prompt: 'p',
@@ -635,7 +635,7 @@ describe('PhaseRunner — onPhaseSettled', () => {
             status: 'complete',
             result: { found: 'api-keys' },
           });
-          ctx.tracker.taskTracker.addTask({
+          tracker.taskTracker.addTask({
             id: 's2',
             title: 'scout-2',
             prompt: 'p',
@@ -687,7 +687,7 @@ describe('PhaseRunner — onPhaseSettled', () => {
       makePhase({
         id: 'A',
         run: async (ctx) => {
-          ctx.tracker.taskTracker.addTask({
+          tracker.taskTracker.addTask({
             id: 'a1',
             title: 'task-1',
             prompt: 'p',
@@ -699,7 +699,7 @@ describe('PhaseRunner — onPhaseSettled', () => {
             status: 'complete',
             result: { artifact: 'doc.md' },
           });
-          ctx.tracker.taskTracker.addTask({
+          tracker.taskTracker.addTask({
             id: 'a2',
             title: 'task-2',
             prompt: 'p',
@@ -711,7 +711,7 @@ describe('PhaseRunner — onPhaseSettled', () => {
             status: 'complete',
             result: { artifact: 'spec.md' },
           });
-          ctx.tracker.taskTracker.addTask({
+          tracker.taskTracker.addTask({
             id: 'a3',
             title: 'task-3',
             prompt: 'p',

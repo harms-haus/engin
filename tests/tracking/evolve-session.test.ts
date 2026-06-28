@@ -58,6 +58,64 @@ describe('evolve – session_started', () => {
     expect(next.seq).toBe(state.seq + 1);
   });
 
+  it('sets status:"running" on first spawn', () => {
+    resetSeq();
+    const state = baseline();
+    const next = evolve(
+      state,
+      makeEvent(
+        'session_started',
+        { agentId: 'a1', profile: 'coder', runnerRole: 'executor', attempt: 1 },
+        { timestamp: '2026-06-26T10:00:00Z', agentId: 'a1', taskId: 't1', runnerRole: 'executor', attempt: 1 },
+      ),
+    );
+
+    const key = 'a1::t1::executor::1';
+    expect(next.sessions[key].status).toBe('running');
+    expect(next.sessions[key].active).toBe(true);
+  });
+
+  it('sets status:"running" on upsert (re-spawn)', () => {
+    resetSeq();
+    let state = baseline();
+    // First spawn
+    state = evolve(
+      state,
+      makeEvent(
+        'session_started',
+        { agentId: 'a1', profile: 'coder', runnerRole: 'executor', attempt: 1 },
+        { timestamp: '2026-06-26T10:00:00Z', agentId: 'a1', taskId: 't1', runnerRole: 'executor', attempt: 1 },
+      ),
+    );
+    const key = 'a1::t1::executor::1';
+    expect(state.sessions[key].status).toBe('running');
+
+    // Complete it
+    state = evolve(
+      state,
+      makeEvent(
+        'session_completed',
+        { agentId: 'a1' },
+        { timestamp: '2026-06-26T10:05:00Z', agentId: 'a1', taskId: 't1', runnerRole: 'executor', attempt: 1 },
+      ),
+    );
+    expect(state.sessions[key].status).toBe('completed');
+    expect(state.sessions[key].active).toBe(false);
+
+    // Re-spawn
+    state = evolve(
+      state,
+      makeEvent(
+        'session_started',
+        { agentId: 'a1', profile: 'coder-v2', runnerRole: 'executor', attempt: 1 },
+        { timestamp: '2026-06-26T10:10:00Z', agentId: 'a1', taskId: 't1', runnerRole: 'executor', attempt: 1 },
+      ),
+    );
+    expect(state.sessions[key].status).toBe('running');
+    expect(state.sessions[key].active).toBe(true);
+    expect(state.sessions[key].completedAt).toBeUndefined();
+  });
+
   it('uses runnerRole and attempt from metadata for the session key', () => {
     resetSeq();
     const state = baseline();
@@ -158,7 +216,7 @@ describe('evolve – session_started', () => {
 // ── session_completed dispatch ───────────────────────────────────────────────
 
 describe('evolve – session_completed', () => {
-  it('dispatches to handleSessionCompleted and marks agent inactive', () => {
+  it('dispatches to handleSessionCompleted and marks agent inactive + status completed', () => {
     resetSeq();
     let state = baseline();
 
@@ -174,6 +232,7 @@ describe('evolve – session_completed', () => {
 
     const key = 'a1::t1::executor::1';
     expect(state.sessions[key].active).toBe(true);
+    expect(state.sessions[key].status).toBe('running');
 
     // Complete the session
     state = evolve(
@@ -186,6 +245,7 @@ describe('evolve – session_completed', () => {
     );
 
     expect(state.sessions[key].active).toBe(false);
+    expect(state.sessions[key].status).toBe('completed');
     expect(state.sessions[key].completedAt).toBe('2026-06-26T10:05:00Z');
   });
 
@@ -234,6 +294,98 @@ describe('evolve – session_completed', () => {
 
     expect(state.sessions['a1::t1::executor::1'].active).toBe(false);
     expect(state.sessions['a1::t1::reviewer::1'].active).toBe(true);
+  });
+});
+
+// ── session_failed dispatch ─────────────────────────────────────────────────
+
+describe('evolve – session_failed', () => {
+  it('dispatches to handleSessionFailed and marks agent inactive + status failed', () => {
+    resetSeq();
+    let state = baseline();
+
+    // Spawn a session agent
+    state = evolve(
+      state,
+      makeEvent(
+        'session_started',
+        { agentId: 'a1', profile: 'coder', runnerRole: 'executor', attempt: 1 },
+        { timestamp: '2026-06-26T10:00:00Z', agentId: 'a1', taskId: 't1', runnerRole: 'executor', attempt: 1 },
+      ),
+    );
+
+    const key = 'a1::t1::executor::1';
+    expect(state.sessions[key].active).toBe(true);
+    expect(state.sessions[key].status).toBe('running');
+
+    // Fail the session
+    state = evolve(
+      state,
+      makeEvent(
+        'session_failed',
+        { error: 'Something broke' },
+        { timestamp: '2026-06-26T10:05:00Z', agentId: 'a1', taskId: 't1', runnerRole: 'executor', attempt: 1 },
+      ),
+    );
+
+    expect(state.sessions[key].active).toBe(false);
+    expect(state.sessions[key].status).toBe('failed');
+  });
+
+  it('is a no-op when the session entity does not exist', () => {
+    resetSeq();
+    const state = baseline();
+    const next = evolve(
+      state,
+      makeEvent('session_failed', {}, { timestamp: '2026-06-26T10:00:00Z', agentId: 'ghost' }),
+    );
+    expect(Object.keys(next.sessions)).toHaveLength(0);
+    expect(next.seq).toBe(state.seq + 1);
+  });
+
+  it('preserves accumulated log/tokens when failing', () => {
+    resetSeq();
+    let state = baseline();
+
+    // Spawn
+    state = evolve(
+      state,
+      makeEvent(
+        'session_started',
+        { agentId: 'a1', profile: 'coder', runnerRole: 'executor', attempt: 1 },
+        { timestamp: '2026-06-26T10:00:00Z', agentId: 'a1', taskId: 't1', runnerRole: 'executor', attempt: 1 },
+      ),
+    );
+
+    // Accumulate
+    state = evolve(
+      state,
+      makeEvent(
+        'turn_ended',
+        { turn: 1, tokens: { input: 200, output: 100 }, contentBlocks: [{ type: 'text', text: 'work' }] },
+        { timestamp: '2026-06-26T10:01:00Z', agentId: 'a1' },
+      ),
+    );
+
+    const key = 'a1::t1::executor::1';
+    expect(state.sessions[key].inputTokens).toBe(200);
+    expect(state.sessions[key].log).toHaveLength(1);
+
+    // Fail
+    state = evolve(
+      state,
+      makeEvent(
+        'session_failed',
+        { error: 'Kaboom' },
+        { timestamp: '2026-06-26T10:05:00Z', agentId: 'a1', taskId: 't1', runnerRole: 'executor', attempt: 1 },
+      ),
+    );
+
+    // Accumulated state preserved
+    expect(state.sessions[key].inputTokens).toBe(200);
+    expect(state.sessions[key].log).toHaveLength(1);
+    expect(state.sessions[key].status).toBe('failed');
+    expect(state.sessions[key].active).toBe(false);
   });
 });
 
@@ -349,14 +501,15 @@ describe('evolve – all event types still routed (including new session types)'
     'phase_completed',
     'session_started',
     'session_completed',
-    'session_started',
-    'session_completed',
+    'session_failed',
     'auto_retry_started',
     'auto_retry_completed',
     'task_registered',
     'task_started',
     'task_completed',
     'task_rejected',
+    'task_parked',
+    'task_unparked',
     'decision',
     'error',
     'sidebar_updated',
@@ -366,6 +519,7 @@ describe('evolve – all event types still routed (including new session types)'
     'tool_call_ended',
     'log',
     'agent_rendered',
+    'workflow_data_set',
   ];
 
   for (const type of knownTypes) {

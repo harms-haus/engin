@@ -1,245 +1,421 @@
-// ─── Tests for runners/linear-runner.ts ─────────────────────────────────────
-//
-// Tests 3–5 from the kb-4 contract spec.
+// ─── Tests for runners/linear-runner.ts (SessionPlan contract) ───────────
 //
 // Tests verify:
-//   3. two children run in order, both succeed → completed; ID prefixes verified
-//   4. child0 failed → return failed immediately, child1 NOT invoked
-//   5. REPLAY: child0 cached (no model call), child1 fresh
+//   1. plan() yields child batches in strict order (child1 batch, then child2)
+//   2. Results are forwarded back to children via gen.next(results)
+//   3. execute() calls runScheduledSession and returns its result
+//   4. The factory creates a fresh runner instance each call
+//   5. Empty children list → plan generator returns immediately
 //
-// The module under test is imported from './linear-runner.js'.
+// Mock strategy:
+//   - Shared mock via `test-fixtures.ts` → `mockRunScheduledSession`
+//   - Mock child SessionPlanRunners are constructed inline to control yield
+//     behavior and track result forwarding.
 
-import { describe, expect, it, mock } from 'bun:test';
+import { describe, expect, it } from 'bun:test';
+import type { SessionResult, SessionSpec } from '../session.js';
+import type { SessionPlanContext, SessionPlanRunner } from './session-plan-types.js';
+import {
+  CANNED_RESULT,
+  makePlanContext,
+  mockRunScheduledSession,
+  setupRunScheduledSessionMock,
+} from './test-fixtures.js';
 
-import type { AgentProfile, Task } from '../../core/types.js';
-import type { RunSessionContext, SessionResult } from '../session.js';
+// ─── Import module under test ────────────────────────────────────────────
+
 import { linearRunner } from './linear-runner.js';
-import type { Runner, RunnerContext, TaskOutcome } from './types.js';
 
-// ── Fixture helpers ─────────────────────────────────────────────────────────
+// ─── Mock wiring ─────────────────────────────────────────────────────────
 
-function makeTask(overrides?: Partial<Task>): Task {
+setupRunScheduledSessionMock();
+
+// ─── Helpers ──────────────────────────────────────────────────────────────
+
+/**
+ * Create a mock SessionPlanRunner whose plan yields the given batches in order.
+ *
+ * Each batch is a `SessionSpec[]`. When the scheduler feeds results back via
+ * `gen.next(results)`, the calls are recorded in `receivedResults`.
+ *
+ * @param batches - Batches to yield, one per yield.
+ * @param receivedResults - Optional array to collect results fed back.
+ * @param planReturns - Optional value for the generator's return (defaults to `undefined`).
+ */
+function makeMockChild(
+  batches: SessionSpec[][],
+  receivedResults?: SessionResult[][],
+  planReturns?: SessionResult[],
+): SessionPlanRunner {
   return {
-    id: 'task-abc',
-    title: 'Build feature',
-    prompt: 'Implement X',
-    profile: 'default',
-    files: [],
-    dependencies: [],
-    status: 'active',
-    phaseId: 'code',
-    worktree: 'none',
-    ...overrides,
-  };
-}
+    plan(_ctx: SessionPlanContext): AsyncGenerator<SessionSpec[], SessionResult[] | undefined, SessionResult[]> {
+      const gen = (async function* (): AsyncGenerator<SessionSpec[], SessionResult[] | undefined, SessionResult[]> {
+        for (const batch of batches) {
+          const results: SessionResult[] = yield batch;
+          receivedResults?.push(results);
+        }
+        return planReturns as SessionResult[] | undefined;
+      })();
 
-function makeProfile(id: string, overrides?: Partial<AgentProfile>): AgentProfile {
-  return {
-    id,
-    name: id,
-    provider: 'openai',
-    model: 'gpt-4o',
-    thinkingLevel: 'low',
-    systemPrompt: `You are ${id}.`,
-    excludeTools: [],
-    includeTools: [],
-    ...overrides,
-  };
-}
+      return gen;
+    },
 
-function makeCtx(overrides?: Partial<RunnerContext>): RunnerContext {
-  const task = makeTask();
-  const profiles = new Map<string, AgentProfile>();
-  profiles.set('child-a', makeProfile('child-a'));
-  profiles.set('child-b', makeProfile('child-b'));
-  return {
-    task,
-    gate: {
-      run: mock(async (_p: unknown, fn: (h: { signal: AbortSignal }) => Promise<unknown>) =>
-        fn({ signal: new AbortController().signal }),
-      ),
-    } as unknown as RunnerContext['gate'],
-    runSession: mock(async () => ({ mode: 'text', text: 'ok' }) satisfies SessionResult),
-    profiles,
-    sessionBaseDir: '/tmp/sessions',
-    cwd: '/tmp/project',
-    activeSessions: new Set(),
-    phaseId: 'code',
-    agentId: 'agent-1',
-    ...overrides,
+    async execute(_ctx: SessionPlanContext, spec: SessionSpec): Promise<SessionResult> {
+      return mockRunScheduledSession(spec, _ctx);
+    },
   };
 }
 
 /**
- * Create a mock Runner that tracks calls and returns the given outcome.
- * `capturedCtx` accumulates the RunnerContext objects passed to the runner.
+ * Create a simple SessionSpec for testing.
  */
-function makeMockRunner(outcome: TaskOutcome, capturedCtx?: RunnerContext[]): Runner {
-  return mock(async (ctx: RunnerContext) => {
-    capturedCtx?.push(ctx);
-    return outcome;
-  }) as Runner;
+function makeSpec(id: string, overrides?: Partial<SessionSpec>): SessionSpec {
+  return {
+    id,
+    profile: 'executor',
+    prompt: 'Do the work',
+    outputMode: 'text',
+    runnerRole: 'executor',
+    attempt: 1,
+    ...overrides,
+  };
 }
 
-// ── Tests ───────────────────────────────────────────────────────────────────
+// ─── Tests ────────────────────────────────────────────────────────────────
 
-describe('linearRunner', () => {
-  // ── 3. Both children succeed → completed, in order ──────────────────────
+describe('linearRunner (SessionPlan)', () => {
+  // ── 1. plan yields child batches in order ─────────────────────────────
 
-  it('3a. two children succeed → returns completed', async () => {
-    const order: number[] = [];
-    const child0 = mock(async () => {
-      order.push(0);
-      return { status: 'completed' } as const;
-    }) as Runner;
-    const child1 = mock(async () => {
-      order.push(1);
-      return { status: 'completed' } as const;
-    }) as Runner;
-    const ctx = makeCtx();
-    const runner = linearRunner([child0, child1]);
+  it('1a. yields child0 batch, then child1 batch (two children, one batch each)', async () => {
+    const child0Batch = [makeSpec('child0/spec#1')];
+    const child1Batch = [makeSpec('child1/spec#1')];
 
-    const outcome: TaskOutcome = await runner(ctx);
+    const child0 = makeMockChild([child0Batch]);
+    const child1 = makeMockChild([child1Batch]);
 
-    expect(outcome.status).toBe('completed');
-    expect(order).toEqual([0, 1]);
+    const factory = linearRunner([child0, child1]);
+    const runner = factory();
+    const ctx = makePlanContext();
+    const gen = runner.plan(ctx);
+
+    // First yield should come from child0
+    const first = await gen.next();
+    expect(first.done).toBe(false);
+    const batch0 = first.value as SessionSpec[];
+    expect(batch0).toBe(child0Batch);
+    expect(batch0[0].id).toBe('child0/spec#1');
+
+    // Advance child0 by feeding results
+    const second = await gen.next([CANNED_RESULT]);
+    expect(second.done).toBe(false);
+    const batch1 = second.value as SessionSpec[];
+    expect(batch1).toBe(child1Batch);
+    expect(batch1[0].id).toBe('child1/spec#1');
+
+    // Advance child1 by feeding results — generator should be done
+    const third = await gen.next([CANNED_RESULT]);
+    expect(third.done).toBe(true);
+    expect(third.value).toBeUndefined();
   });
 
-  it('3b. child0 runs before child1 (strict sequential order)', async () => {
-    const order: string[] = [];
-    const child0: Runner = async () => {
-      order.push('child0');
-      return { status: 'completed' };
-    };
-    const child1: Runner = async () => {
-      order.push('child1');
-      return { status: 'completed' };
-    };
-    const ctx = makeCtx();
+  it('1b. yields batches from one child before moving to the next (multi-batch child)', async () => {
+    const child0Batches = [[makeSpec('child0/batch0#1')], [makeSpec('child0/batch1#1')]];
+    const child1Batch = [makeSpec('child1/batch0#1')];
 
-    await linearRunner([child0, child1])(ctx);
+    const child0 = makeMockChild(child0Batches);
+    const child1 = makeMockChild([child1Batch]);
 
-    expect(order).toEqual(['child0', 'child1']);
+    const factory = linearRunner([child0, child1]);
+    const runner = factory();
+    const ctx = makePlanContext();
+    const gen = runner.plan(ctx);
+
+    // child0 batch 0
+    const b0 = await gen.next();
+    expect(b0.done).toBe(false);
+    const batch0 = b0.value as SessionSpec[];
+    expect(batch0[0].id).toBe('child0/batch0#1');
+
+    // child0 batch 1
+    const b1 = await gen.next([CANNED_RESULT]);
+    expect(b1.done).toBe(false);
+    const batch1 = b1.value as SessionSpec[];
+    expect(batch1[0].id).toBe('child0/batch1#1');
+
+    // child1 batch 0
+    const b2 = await gen.next([CANNED_RESULT]);
+    expect(b2.done).toBe(false);
+    const batch2 = b2.value as SessionSpec[];
+    expect(batch2[0].id).toBe('child1/batch0#1');
+
+    // done
+    const done = await gen.next([CANNED_RESULT]);
+    expect(done.done).toBe(true);
+    expect(done.value).toBeUndefined();
   });
 
-  it('3c. ID prefix for child0 is `linear[0].` and child1 is `linear[1].`', async () => {
-    const specs: RunnerContext[] = [];
-    const child0 = makeMockRunner({ status: 'completed' }, specs);
-    const child1 = makeMockRunner({ status: 'completed' });
-    const ctx = makeCtx();
+  it('1c. yields batches in order using a record of yields', async () => {
+    const yieldOrder: string[] = [];
 
-    // The linearRunner should prefix child role with `linear[i].` before
-    // delegating to singleSession. We verify by checking the context passed
-    // to child runners — the implementation will build IDs with this prefix.
-    const runner = linearRunner([child0, child1]);
-    await runner(ctx);
+    const child0Batch = [makeSpec('child0/spec#1')];
+    const child1Batch = [makeSpec('child1/spec#1')];
 
-    // Both children received their context
-    expect(specs).toHaveLength(1);
-  });
-
-  // ── 4. child0 failed → return failed, child1 NOT invoked ───────────────
-
-  it('4. child0 returns failed → linearRunner returns failed, child1 not invoked', async () => {
-    const child0: Runner = async () => ({ status: 'failed', error: 'child0 broke' });
-    const child1Invoked = mock(async () => ({ status: 'completed' as const }));
-    const ctx = makeCtx();
-
-    const outcome = await linearRunner([child0, child1Invoked])(ctx);
-
-    expect(outcome).toEqual({ status: 'failed', error: 'child0 broke' });
-    expect(child1Invoked).not.toHaveBeenCalled();
-  });
-
-  // ── 5. REPLAY: child0 cached, child1 fresh ─────────────────────────────
-
-  it('5. child0 cached (no model call), child1 fresh — both runSession called, only child1 does real work', async () => {
-    const gateRunCalls: string[] = [];
-
-    // Fake gate: track which profiles pass through gate.run
-    const gate = {
-      run: mock(
-        async (profile: { provider: string; model: string }, fn: (h: { signal: AbortSignal }) => Promise<unknown>) => {
-          gateRunCalls.push(`${profile.provider}:${profile.model}`);
-          return fn({ signal: new AbortController().signal });
-        },
-      ),
-    } as unknown as RunnerContext['gate'];
-
-    // Child0: simulates cached result (runSession returns immediately, no model call)
-    const child0SessionCalls = mock(async (_rsctx: RunSessionContext) => {
-      return { mode: 'text', text: 'cached-result', cached: true } as SessionResult;
-    });
-
-    // Child1: simulates fresh result (runSession does "real" work)
-    const child1SessionCalls = mock(async (_rsctx: RunSessionContext) => {
-      return { mode: 'text', text: 'fresh-result' } satisfies SessionResult;
-    });
-
-    let callCount = 0;
-    const runSession = mock(async (rsctx: RunSessionContext) => {
-      callCount++;
-      if (callCount === 1) return child0SessionCalls(rsctx);
-      return child1SessionCalls(rsctx);
-    });
-
-    const ctx = makeCtx({ gate, runSession });
-
-    // Build child runners using singleSession-like wrappers
-    const child0Runner: Runner = async (rctx) => {
-      await rctx.gate.run({ provider: 'openai', model: 'gpt-4o' }, async () =>
-        rctx.runSession({
-          spec: {
-            id: `${rctx.task.id}/linear[0].executor#1`,
-            profile: 'child-a',
-            prompt: 'work',
-            outputMode: 'text' as const,
-            runnerRole: 'executor',
-            attempt: 1,
-          },
-          sessionBaseDir: rctx.sessionBaseDir,
-          cwd: rctx.cwd,
-          phaseId: rctx.phaseId,
-          agentId: rctx.agentId,
-          profiles: rctx.profiles,
-          activeSessions: rctx.activeSessions,
-        }),
-      );
-      return { status: 'completed' };
+    const child0: SessionPlanRunner = {
+      plan: async function* () {
+        yieldOrder.push('plan child0');
+        const results: SessionResult[] = yield child0Batch;
+        yieldOrder.push(`child0 got ${results.length} result(s)`);
+        return undefined;
+      },
+      execute: async () => CANNED_RESULT,
     };
 
-    const child1Runner: Runner = async (rctx) => {
-      await rctx.gate.run({ provider: 'openai', model: 'gpt-4o' }, async () =>
-        rctx.runSession({
-          spec: {
-            id: `${rctx.task.id}/linear[1].executor#1`,
-            profile: 'child-b',
-            prompt: 'work',
-            outputMode: 'text' as const,
-            runnerRole: 'executor',
-            attempt: 1,
-          },
-          sessionBaseDir: rctx.sessionBaseDir,
-          cwd: rctx.cwd,
-          phaseId: rctx.phaseId,
-          agentId: rctx.agentId,
-          profiles: rctx.profiles,
-          activeSessions: rctx.activeSessions,
-        }),
-      );
-      return { status: 'completed' };
+    const child1: SessionPlanRunner = {
+      plan: async function* () {
+        yieldOrder.push('plan child1');
+        const results: SessionResult[] = yield child1Batch;
+        yieldOrder.push(`child1 got ${results.length} result(s)`);
+        return undefined;
+      },
+      execute: async () => CANNED_RESULT,
     };
 
-    const runner = linearRunner([child0Runner, child1Runner]);
-    const outcome = await runner(ctx);
+    const factory = linearRunner([child0, child1]);
+    const runner = factory();
+    const ctx = makePlanContext();
+    const gen = runner.plan(ctx);
 
-    expect(outcome.status).toBe('completed');
-    // Both children went through gate.run
-    expect(gateRunCalls).toHaveLength(2);
-    // Both children called runSession (cached + fresh)
-    expect(runSession).toHaveBeenCalledTimes(2);
-    // Child0's result has cached flag, child1 does not
-    const child0Res = (await (child0SessionCalls as ReturnType<typeof mock>).mock.results[0].value) as SessionResult;
-    expect((child0Res as Record<string, unknown>).cached).toBe(true);
+    // Start
+    const b0 = await gen.next();
+    expect((b0.value as SessionSpec[])[0].id).toBe('child0/spec#1');
+
+    // Feed results for child0
+    const b1 = await gen.next([CANNED_RESULT]);
+    expect((b1.value as SessionSpec[])[0].id).toBe('child1/spec#1');
+
+    // Feed results for child1
+    const done = await gen.next([CANNED_RESULT]);
+    expect(done.done).toBe(true);
+
+    expect(yieldOrder).toEqual(['plan child0', 'child0 got 1 result(s)', 'plan child1', 'child1 got 1 result(s)']);
+  });
+
+  // ── 2. Results forward back to children ──────────────────────────────
+
+  it('2. results are forwarded back to children via gen.next(results)', async () => {
+    const child0Results: SessionResult[][] = [];
+    const child1Results: SessionResult[][] = [];
+
+    const child0Batch = [makeSpec('child0/spec#1')];
+    const child1Batch = [makeSpec('child1/spec#1')];
+
+    const child0 = makeMockChild([child0Batch], child0Results);
+    const child1 = makeMockChild([child1Batch], child1Results);
+
+    const factory = linearRunner([child0, child1]);
+    const runner = factory();
+    const ctx = makePlanContext();
+    const gen = runner.plan(ctx);
+
+    const result0: SessionResult = { mode: 'text', text: 'result0' };
+    const result1: SessionResult = { mode: 'text', text: 'result1' };
+
+    // Get child0's batch
+    await gen.next();
+    // Feed results for child0
+    await gen.next([result0]);
+    expect(child0Results).toHaveLength(1);
+    expect(child0Results[0]).toEqual([result0]);
+
+    // Feed results for child1
+    await gen.next([result1]);
+    expect(child1Results).toHaveLength(1);
+    expect(child1Results[0]).toEqual([result1]);
+  });
+
+  it('2b. empty results array feeds back correctly', async () => {
+    const child0Results: SessionResult[][] = [];
+
+    const child0Batch = [makeSpec('child0/spec#1')];
+    const child0 = makeMockChild([child0Batch], child0Results);
+
+    const factory = linearRunner([child0]);
+    const runner = factory();
+    const ctx = makePlanContext();
+    const gen = runner.plan(ctx);
+
+    await gen.next();
+    await gen.next([]);
+    expect(child0Results).toHaveLength(1);
+    expect(child0Results[0]).toEqual([]);
+  });
+
+  // ── 3. execute delegates to runScheduledSession ──────────────────────
+
+  it('3a. execute calls runScheduledSession with spec and ctx', async () => {
+    mockRunScheduledSession.mockResolvedValue(CANNED_RESULT);
+
+    const child0 = makeMockChild([[makeSpec('child0/spec#1')]]);
+    const factory = linearRunner([child0]);
+    const runner = factory();
+    const ctx = makePlanContext();
+
+    const spec: SessionSpec = makeSpec('task-abc/executor#1');
+    const result = await runner.execute(ctx, spec);
+
+    expect(result).toBe(CANNED_RESULT);
+    expect(mockRunScheduledSession).toHaveBeenCalledTimes(1);
+    expect(mockRunScheduledSession).toHaveBeenCalledWith(spec, ctx);
+  });
+
+  it('3b. execute propagates errors from runScheduledSession', async () => {
+    const error = new Error('session failed');
+    mockRunScheduledSession.mockRejectedValue(error);
+
+    const child0 = makeMockChild([[makeSpec('child0/spec#1')]]);
+    const factory = linearRunner([child0]);
+    const runner = factory();
+    const ctx = makePlanContext();
+
+    const spec: SessionSpec = makeSpec('task-abc/executor#1');
+    await expect(runner.execute(ctx, spec)).rejects.toThrow(error);
+  });
+
+  // ── 4. Factory creates fresh instances ───────────────────────────────
+
+  it('4. factory returns a new runner instance each call', async () => {
+    const child0 = makeMockChild([[makeSpec('child0/spec#1')]]);
+    const factory = linearRunner([child0]);
+
+    const runnerA = factory();
+    const runnerB = factory();
+
+    expect(runnerA).not.toBe(runnerB);
+    expect(runnerA.plan).toBeInstanceOf(Function);
+    expect(runnerA.execute).toBeInstanceOf(Function);
+  });
+
+  // ── 5. Empty children list ──────────────────────────────────────────
+
+  it('5. empty children list → plan generator yields nothing and returns immediately', async () => {
+    const factory = linearRunner([]);
+    const runner = factory();
+    const ctx = makePlanContext();
+    const gen = runner.plan(ctx);
+
+    const result = await gen.next();
+    expect(result.done).toBe(true);
+    expect(result.value).toBeUndefined();
+  });
+
+  // ── 6. Single child ─────────────────────────────────────────────────
+
+  it('6. single child yields its batches and completes', async () => {
+    const childBatch = [makeSpec('only/spec#1')];
+    const child = makeMockChild([childBatch]);
+
+    const factory = linearRunner([child]);
+    const runner = factory();
+    const ctx = makePlanContext();
+    const gen = runner.plan(ctx);
+
+    const first = await gen.next();
+    expect(first.done).toBe(false);
+    expect(first.value as SessionSpec[]).toBe(childBatch);
+
+    const second = await gen.next([CANNED_RESULT]);
+    expect(second.done).toBe(true);
+    expect(second.value).toBeUndefined();
+  });
+
+  // ── 7. Early termination: child finally blocks run on .return() ─────
+
+  it('7a. early .return() on the parent plan triggers child finally block (resource leak fix)', async () => {
+    // Build a fake child whose plan has a try/finally spy. When the parent
+    // generator is .return()'d early, delegateToChild's finally calls
+    // childGen.return(), which must run the child's finally block.
+    let finallyRan = false;
+
+    const childBatch = [makeSpec('child0/spec#1')];
+    const child: SessionPlanRunner = {
+      plan: async function* (
+        _ctx: SessionPlanContext,
+      ): AsyncGenerator<SessionSpec[], SessionResult[] | undefined, SessionResult[]> {
+        try {
+          const results: SessionResult[] = yield childBatch;
+          return results;
+        } finally {
+          finallyRan = true;
+        }
+      },
+      execute: async () => CANNED_RESULT,
+    };
+
+    const factory = linearRunner([child]);
+    const runner = factory();
+    const ctx = makePlanContext();
+    const gen = runner.plan(ctx);
+
+    // Start the parent plan — this starts the child and yields its first batch.
+    const first = await gen.next();
+    expect(first.done).toBe(false);
+
+    // Simulate the scheduler early-terminating the plan (e.g. cancellation).
+    expect(finallyRan).toBe(false);
+    await gen.return(undefined);
+
+    // The child's finally block must have run — no resource leak.
+    expect(finallyRan).toBe(true);
+  });
+
+  it('7b. early .return() runs finally blocks for multiple children (only active child)', async () => {
+    // Only the currently-active child (child0) should have its finally run.
+    // child1 has not been started yet, so its finally should NOT run.
+    let child0FinallyRan = false;
+    let child1FinallyRan = false;
+
+    const child0: SessionPlanRunner = {
+      plan: async function* (
+        _ctx: SessionPlanContext,
+      ): AsyncGenerator<SessionSpec[], SessionResult[] | undefined, SessionResult[]> {
+        try {
+          yield [makeSpec('child0/spec#1')];
+          return undefined;
+        } finally {
+          child0FinallyRan = true;
+        }
+      },
+      execute: async () => CANNED_RESULT,
+    };
+
+    const child1: SessionPlanRunner = {
+      plan: async function* (
+        _ctx: SessionPlanContext,
+      ): AsyncGenerator<SessionSpec[], SessionResult[] | undefined, SessionResult[]> {
+        try {
+          yield [makeSpec('child1/spec#1')];
+          return undefined;
+        } finally {
+          child1FinallyRan = true;
+        }
+      },
+      execute: async () => CANNED_RESULT,
+    };
+
+    const factory = linearRunner([child0, child1]);
+    const runner = factory();
+    const ctx = makePlanContext();
+    const gen = runner.plan(ctx);
+
+    // Start — child0's first batch is yielded.
+    await gen.next();
+
+    // Early-terminate before child0 finishes.
+    await gen.return(undefined);
+
+    // child0 was active — its finally ran.
+    expect(child0FinallyRan).toBe(true);
+    // child1 was never started — its finally did not run.
+    expect(child1FinallyRan).toBe(false);
   });
 });

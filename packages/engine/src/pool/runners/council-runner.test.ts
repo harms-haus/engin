@@ -1,345 +1,277 @@
-// ─── Tests for runners/council-runner.ts ─────────────────────────────────────
-//
-// Tests for kb-5 A3b: councilRunner.
+// ─── Tests for runners/council-runner.ts (SessionPlan contract) ─────────
 //
 // Tests verify:
-//   - Basic: 3 workers → synthesizer → completed; IDs follow convention
-//   - Partial failure: 1 worker fails → continue with remaining
-//   - All workers fail: all workers fail → {status:'failed'}, synthesizer NOT called
-//   - Deadlock-freedom: real SessionGate total=1 completes without hang
-//   - Resume/replay: cached worker + synthesizer sessions return without model call
+//   1. plan() yields Phase1 (workers) then Phase2 (synthesizer)
+//   2. Worker results are concatenated into the synthesizer prompt
+//   3. Worker output formatting: text → text, structured → JSON, filesystem → "(...)"
+//   4. execute() calls runScheduledSession and returns its result
+//   5. Factory creates a fresh runner instance each call
 //
-// The module under test is imported from './council-runner.js'.
+// Mock strategy:
+//   - Shared mock via `test-fixtures.ts` → `mockRunScheduledSession`
+//   - We construct a real SessionPlanRunner via the factory and test its
+//     plan()/execute() methods directly, driving the plan generator
+//     step by step.
 
-import { describe, expect, it, mock } from 'bun:test';
+import { describe, expect, it } from 'bun:test';
+import type { SessionResult, SessionSpec } from '../session.js';
+import {
+  CANNED_RESULT,
+  makePlanContext,
+  mockRunScheduledSession,
+  setupRunScheduledSessionMock,
+} from './test-fixtures.js';
 
-import type { AgentProfile, Task } from '../../core/types.js';
-import { SessionGate } from '../session-gate.js';
-import type { RunSessionContext, SessionResult } from '../session.js';
+// ─── Import module under test ────────────────────────────────────────────
+
 import { councilRunner } from './council-runner.js';
-import type { RunnerContext, TaskOutcome } from './types.js';
 
-// ── Fixture helpers ─────────────────────────────────────────────────────────
+// ─── Mock wiring ─────────────────────────────────────────────────────────
 
-function makeTask(overrides?: Partial<Task>): Task {
-  return {
-    id: 'task-abc',
-    title: 'Build feature',
-    prompt: 'Implement X',
-    profile: 'default',
-    files: [],
-    dependencies: [],
-    status: 'active',
-    phaseId: 'code',
-    worktree: 'none',
-    ...overrides,
-  };
-}
+setupRunScheduledSessionMock();
 
-function makeProfile(id: string, overrides?: Partial<AgentProfile>): AgentProfile {
-  return {
-    id,
-    name: id,
-    provider: 'openai',
-    model: 'gpt-4o',
-    thinkingLevel: 'low',
-    systemPrompt: `You are ${id}.`,
-    excludeTools: [],
-    includeTools: [],
-    ...overrides,
-  };
-}
+// ─── Helpers ──────────────────────────────────────────────────────────────
 
-function makeCtx(overrides?: Partial<RunnerContext>): RunnerContext {
-  const task = makeTask();
-  const profiles = new Map<string, AgentProfile>();
-  profiles.set('worker', makeProfile('worker'));
-  profiles.set('synthesizer', makeProfile('synthesizer'));
-  return {
-    task,
-    gate: {
-      run: mock(async (_p: unknown, fn: (h: { signal: AbortSignal }) => Promise<unknown>) =>
-        fn({ signal: new AbortController().signal }),
-      ),
-    } as unknown as RunnerContext['gate'],
-    runSession: mock(async () => ({ mode: 'text', text: 'ok' }) satisfies SessionResult),
-    profiles,
-    sessionBaseDir: '/tmp/sessions',
-    cwd: '/tmp/project',
-    activeSessions: new Set(),
-    phaseId: 'code',
-    agentId: 'agent-1',
-    ...overrides,
-  };
-}
-
-/** Build a worker SessionSpec for councilRunner tests. */
-function makeWorkerSpec(index: number, overrides?: Record<string, unknown>) {
+function makeWorkerSpec(index: number, overrides?: Partial<SessionSpec>): SessionSpec {
   return {
     id: `task-abc/worker[${index}]#1`,
-    profile: 'worker',
+    profile: 'executor',
     prompt: `Worker ${index}`,
-    outputMode: 'text' as const,
+    outputMode: 'text',
     runnerRole: 'worker',
     attempt: 1,
     ...overrides,
   };
 }
 
-/** Build a synthesizer SessionSpec for councilRunner tests. */
-function makeSynthesizerSpec(overrides?: Record<string, unknown>) {
+function makeSynthesizerSpec(overrides?: Partial<SessionSpec>): SessionSpec {
   return {
     id: 'task-abc/synthesizer#1',
-    profile: 'synthesizer',
+    profile: 'executor',
     prompt: 'Synthesize the results',
-    outputMode: 'text' as const,
+    outputMode: 'text',
     runnerRole: 'synthesizer',
     attempt: 1,
     ...overrides,
   };
 }
 
-// ── Tests ───────────────────────────────────────────────────────────────────
+// ─── Tests ────────────────────────────────────────────────────────────────
 
-describe('councilRunner', () => {
-  // ── Basic flow: 3 workers → synthesizer → completed ─────────────────────
+describe('councilRunner (SessionPlan)', () => {
+  // ── 1. plan yields Phase1 (workers) then Phase2 (synthesizer) ─────
 
-  it('1a. 3 workers + synthesizer all succeed → returns completed', async () => {
-    const gateRunCalls: string[] = [];
-    const gate = {
-      run: mock(
-        async (profile: { provider: string; model: string }, fn: (h: { signal: AbortSignal }) => Promise<unknown>) => {
-          gateRunCalls.push(`${profile.provider}:${profile.model}`);
-          return fn({ signal: new AbortController().signal });
-        },
-      ),
-    } as unknown as RunnerContext['gate'];
-
-    const sessionCalls: string[] = [];
-    const runSession = mock(async (rsctx: RunSessionContext) => {
-      sessionCalls.push(rsctx.spec.id);
-      if (rsctx.spec.id.includes('worker')) {
-        return { mode: 'text', text: `result from ${rsctx.spec.id}` } satisfies SessionResult;
-      }
-      // synthesizer
-      return { mode: 'text', text: 'synthesized output' } satisfies SessionResult;
-    });
-
-    const ctx = makeCtx({ gate, runSession });
-    const workers = [makeWorkerSpec(0), makeWorkerSpec(1), makeWorkerSpec(2)];
+  it('1a. plan yields workers batch first, then synthesizer batch', async () => {
+    const workers = [makeWorkerSpec(0), makeWorkerSpec(1)];
     const synth = makeSynthesizerSpec();
-    const runner = councilRunner(workers, synth);
+    const factory = councilRunner(workers, synth);
+    const runner = factory();
+    const ctx = makePlanContext();
+    const gen = runner.plan(ctx);
 
-    const outcome: TaskOutcome = await runner(ctx);
+    // Phase1: first yield should be the workers batch
+    const phase1 = await gen.next([]);
+    expect(phase1.done).toBe(false);
+    const workerBatch = phase1.value as SessionSpec[];
+    expect(workerBatch).toHaveLength(2);
+    expect(workerBatch[0].id).toBe('task-abc/worker[0]#1');
+    expect(workerBatch[1].id).toBe('task-abc/worker[1]#1');
 
-    expect(outcome).toEqual({ status: 'completed' });
-    // 3 workers + 1 synthesizer = 4 gate.run calls
-    expect(gateRunCalls).toHaveLength(4);
-    // All 4 sessions called
-    expect(sessionCalls).toContain('task-abc/worker[0]#1');
-    expect(sessionCalls).toContain('task-abc/worker[1]#1');
-    expect(sessionCalls).toContain('task-abc/worker[2]#1');
-    expect(sessionCalls).toContain('task-abc/synthesizer#1');
-  });
-
-  it('1b. synthesizer prompt includes concatenated worker results', async () => {
-    const synthPrompts: string[] = [];
-    const runSession = mock(async (rsctx: RunSessionContext) => {
-      if (rsctx.spec.id.includes('synthesizer')) {
-        synthPrompts.push(rsctx.spec.prompt);
-        return { mode: 'text', text: 'synthesized' } satisfies SessionResult;
-      }
-      return { mode: 'text', text: `result ${rsctx.spec.id}` } satisfies SessionResult;
-    });
-
-    const ctx = makeCtx({ runSession });
-    const workers = [
-      makeWorkerSpec(0, { prompt: 'Worker 0 prompt' }),
-      makeWorkerSpec(1, { prompt: 'Worker 1 prompt' }),
+    // Feed worker results back
+    const workerResults: SessionResult[] = [
+      { mode: 'text', text: 'worker0 result' },
+      { mode: 'text', text: 'worker1 result' },
     ];
-    const synth = makeSynthesizerSpec({ prompt: 'Original synth prompt' });
 
-    await councilRunner(workers, synth)(ctx);
+    // Phase2: second yield should be the synthesizer batch
+    const phase2 = await gen.next(workerResults);
+    expect(phase2.done).toBe(false);
+    const synthBatch = phase2.value as SessionSpec[];
+    expect(synthBatch).toHaveLength(1);
+    expect(synthBatch[0].id).toBe('task-abc/synthesizer#1');
 
-    expect(synthPrompts).toHaveLength(1);
-    const prompt = synthPrompts[0];
-    // Should contain each worker's result
-    expect(prompt).toContain('result task-abc/worker[0]#1');
-    expect(prompt).toContain('result task-abc/worker[1]#1');
-    // Should still contain the original synthesizer prompt
-    expect(prompt).toContain('Original synth prompt');
+    // Feed synthesizer result back
+    const synthResult: SessionResult[] = [{ mode: 'text', text: 'synth output' }];
+    const done = await gen.next(synthResult);
+    expect(done.done).toBe(true);
+    expect(done.value).toBeUndefined();
   });
 
-  // ── Partial failure: 1 worker fails → continue with remaining ───────────
-
-  it('2a. 1 of 3 workers fails → continues with remaining, synthesizer runs', async () => {
-    const gate = {
-      run: mock(async (_p: unknown, fn: (h: { signal: AbortSignal }) => Promise<unknown>) =>
-        fn({ signal: new AbortController().signal }),
-      ),
-    } as unknown as RunnerContext['gate'];
-
-    let callCount = 0;
-    const runSession = mock(async (rsctx: RunSessionContext) => {
-      callCount++;
-      if (callCount === 2) {
-        // worker[1] fails
-        throw new Error('worker crashed');
-      }
-      return { mode: 'text', text: `result ${callCount}` } satisfies SessionResult;
-    });
-
-    const ctx = makeCtx({ gate, runSession });
-    const workers = [makeWorkerSpec(0), makeWorkerSpec(1), makeWorkerSpec(2)];
-    const synth = makeSynthesizerSpec();
-    const runner = councilRunner(workers, synth);
-
-    const outcome: TaskOutcome = await runner(ctx);
-
-    // Even though one worker failed, overall outcome is completed
-    expect(outcome).toEqual({ status: 'completed' });
-    // Synthesizer was still called (worker[0] + worker[2] results fed in)
-    expect(runSession).toHaveBeenCalled();
-    const synthCalls = (runSession as ReturnType<typeof mock>).mock.calls.filter((c: unknown[]) =>
-      (c[0] as RunSessionContext).spec.id.includes('synthesizer'),
-    );
-    expect(synthCalls.length).toBeGreaterThanOrEqual(1);
-    // Worker[1]'s error was caught, other workers completed
-    expect(gate.run).toHaveBeenCalledTimes(4); // 3 workers + 1 synth
-  });
-
-  it('2b. failing worker result is omitted from synthesizer prompt', async () => {
-    let callIndex = 0;
-    const runSession = mock(async (rsctx: RunSessionContext) => {
-      const idx = callIndex++;
-      // Worker 0 succeeds, worker 1 fails, worker 2 succeeds
-      if (rsctx.spec.id.includes('worker')) {
-        if (idx === 1) {
-          throw new Error('worker 1 crashed');
-        }
-        return { mode: 'text', text: `worker ${idx} result` } satisfies SessionResult;
-      }
-      // synthesizer
-      return { mode: 'text', text: 'synth' } satisfies SessionResult;
-    });
-
-    let synthPrompt = '';
-    const capturingRunSession = mock(async (rsctx: RunSessionContext) => {
-      if (rsctx.spec.id.includes('synthesizer')) {
-        synthPrompt = rsctx.spec.prompt;
-      }
-      return runSession(rsctx);
-    });
-
-    const ctx = makeCtx({ runSession: capturingRunSession });
-    const workers = [makeWorkerSpec(0), makeWorkerSpec(1), makeWorkerSpec(2)];
-    await councilRunner(workers, makeSynthesizerSpec())(ctx);
-
-    // The failed worker's result should NOT appear in the synthesizer prompt
-    // Only worker 0 and worker 2 results should be concatenated
-    const successfulResults = ['worker 0 result', 'worker 2 result'];
-    for (const r of successfulResults) {
-      expect(synthPrompt).toContain(r);
-    }
-    expect(synthPrompt).not.toContain('worker 1 result');
-  });
-
-  // ── All workers fail → {status:'failed'} ────────────────────────────────
-
-  it('3. all workers fail → returns {status:"failed"}, synthesizer NOT called', async () => {
-    const gate = {
-      run: mock(async (_p: unknown, fn: (h: { signal: AbortSignal }) => Promise<unknown>) =>
-        fn({ signal: new AbortController().signal }),
-      ),
-    } as unknown as RunnerContext['gate'];
-
-    const runSession = mock(async () => {
-      throw new Error('all workers crash');
-    });
-
-    const ctx = makeCtx({ gate, runSession });
+  it('1b. synthesizer prompt includes concatenated worker outputs', async () => {
     const workers = [makeWorkerSpec(0), makeWorkerSpec(1)];
-    const synth = makeSynthesizerSpec();
-    const runner = councilRunner(workers, synth);
+    const synth = makeSynthesizerSpec({ prompt: 'Original prompt' });
+    const factory = councilRunner(workers, synth);
+    const runner = factory();
+    const ctx = makePlanContext();
+    const gen = runner.plan(ctx);
 
-    const outcome: TaskOutcome = await runner(ctx);
+    // Phase1: get workers
+    await gen.next([]);
 
-    expect(outcome.status).toBe('failed');
-    // Synthesizer should NOT have been called since all workers failed
-    const synthCalls = (runSession as ReturnType<typeof mock>).mock.calls.filter((c: unknown[]) =>
-      (c[0] as RunSessionContext).spec.id.includes('synthesizer'),
-    );
-    expect(synthCalls).toHaveLength(0);
+    // Feed worker results back
+    const workerResults: SessionResult[] = [
+      { mode: 'text', text: 'result from worker 0' },
+      { mode: 'text', text: 'result from worker 1' },
+    ];
+
+    // Phase2: get synthesizer
+    const phase2 = await gen.next(workerResults);
+    const synthSpec = (phase2.value as SessionSpec[])[0];
+    expect(synthSpec.prompt).toContain('Original prompt');
+    expect(synthSpec.prompt).toContain('result from worker 0');
+    expect(synthSpec.prompt).toContain('result from worker 1');
   });
 
-  // ── Deadlock-freedom under total cap 1 ──────────────────────────────────
+  // ── 2. Worker result formatting ───────────────────────────────────
 
-  it('4. deadlock-freedom: real SessionGate total=1 completes within timeout', async () => {
-    const gate = new SessionGate({ total: 1, perModel: {} });
+  it('2a. text-mode worker results are included as-is', async () => {
+    const workers = [makeWorkerSpec(0)];
+    const synth = makeSynthesizerSpec();
+    const factory = councilRunner(workers, synth);
+    const runner = factory();
+    const ctx = makePlanContext();
+    const gen = runner.plan(ctx);
 
-    // Track execution order to verify serialization
-    const order: number[] = [];
-    let synthRan = false;
-    let idx = 0;
+    await gen.next([]);
+    const phase2 = await gen.next([{ mode: 'text', text: 'hello world' }]);
+    const prompt = (phase2.value as SessionSpec[])[0].prompt;
+    expect(prompt).toContain('hello world');
+  });
 
-    const runSession = mock(async (rsctx: RunSessionContext) => {
-      const n = idx++;
-      order.push(n);
-      if (rsctx.spec.id.includes('synthesizer')) {
-        synthRan = true;
-      }
-      // Simulate real work
-      await new Promise((r) => setTimeout(r, 5));
-      return { mode: 'text', text: `result ${n}` } satisfies SessionResult;
-    });
+  it('2b. structured-mode worker results are JSON-stringified', async () => {
+    const workers = [makeWorkerSpec(0)];
+    const synth = makeSynthesizerSpec();
+    const factory = councilRunner(workers, synth);
+    const runner = factory();
+    const ctx = makePlanContext();
+    const gen = runner.plan(ctx);
 
-    const ctx = makeCtx({ gate, runSession });
-    const workers = [makeWorkerSpec(0), makeWorkerSpec(1), makeWorkerSpec(2)];
-    const runner = councilRunner(workers, makeSynthesizerSpec());
+    await gen.next([]);
+    const data = { key: 'value', number: 42 };
+    const phase2 = await gen.next([{ mode: 'structured', data }]);
+    const prompt = (phase2.value as SessionSpec[])[0].prompt;
+    expect(prompt).toContain(JSON.stringify(data));
+  });
 
-    const result = await Promise.race([
-      runner(ctx).then((o) => ({ type: 'completed' as const, outcome: o })),
-      new Promise<{ type: 'timeout' }>((resolve) => setTimeout(() => resolve({ type: 'timeout' }), 5000)),
+  it('2c. filesystem-mode worker results are described', async () => {
+    const workers = [makeWorkerSpec(0)];
+    const synth = makeSynthesizerSpec();
+    const factory = councilRunner(workers, synth);
+    const runner = factory();
+    const ctx = makePlanContext();
+    const gen = runner.plan(ctx);
+
+    await gen.next([]);
+    const phase2 = await gen.next([{ mode: 'filesystem', files: ['file1.txt'] }]);
+    const prompt = (phase2.value as SessionSpec[])[0].prompt;
+    expect(prompt).toContain('(filesystem session');
+  });
+
+  it('2d. worker results are joined with the WORKER_OUTPUT_PREFIX separator', async () => {
+    const workers = [makeWorkerSpec(0), makeWorkerSpec(1)];
+    const synth = makeSynthesizerSpec({ prompt: 'Original' });
+    const factory = councilRunner(workers, synth);
+    const runner = factory();
+    const ctx = makePlanContext();
+    const gen = runner.plan(ctx);
+
+    await gen.next([]);
+    const phase2 = await gen.next([
+      { mode: 'text', text: 'A' },
+      { mode: 'text', text: 'B' },
     ]);
+    const prompt = (phase2.value as SessionSpec[])[0].prompt;
+    // The pattern is: original prompt + "\n\n---\nWorker output:\n" + joined worker outputs
+    // joined worker outputs = A + "\n\n---\nWorker output:\n" + B
+    // So prompt should contain "---\nWorker output:\n" twice
+    const separator = 'Worker output:';
+    expect(prompt.split(separator)).toHaveLength(3); // Original before first, A between, B after
+  });
 
-    expect(result.type).toBe('completed');
-    if (result.type === 'completed') {
-      expect(result.outcome).toEqual({ status: 'completed' });
-    }
-    expect(synthRan).toBe(true);
-    // All 3 workers + 1 synth ran in some order (serialized, so order is deterministic)
-    expect(order).toHaveLength(4);
-  }, 10000);
+  // ── 3. Synthesizer spec retains all original fields ───────────────
 
-  // ── Resume/replay: cached sessions ──────────────────────────────────────
-
-  it('5. resume/replay: cached worker + synthesizer sessions work', async () => {
-    const gate = {
-      run: mock(async (_p: unknown, fn: (h: { signal: AbortSignal }) => Promise<unknown>) =>
-        fn({ signal: new AbortController().signal }),
-      ),
-    } as unknown as RunnerContext['gate'];
-
-    const runSessionCalls: string[] = [];
-    const runSession = mock(async (rsctx: RunSessionContext) => {
-      runSessionCalls.push(rsctx.spec.id);
-      if (rsctx.spec.id.includes('worker')) {
-        return { mode: 'text', text: `cached-worker-${rsctx.spec.id}`, cached: true } as SessionResult;
-      }
-      return { mode: 'text', text: 'cached-synth', cached: true } as SessionResult;
+  it('3a. synthesizer spec keeps profile, outputMode, runnerRole, attempt', async () => {
+    const workers = [makeWorkerSpec(0)];
+    const synth = makeSynthesizerSpec({
+      profile: 'synth-profile',
+      outputMode: 'structured',
+      runnerRole: 'synth-role',
+      attempt: 2,
     });
+    const factory = councilRunner(workers, synth);
+    const runner = factory();
+    const ctx = makePlanContext();
+    const gen = runner.plan(ctx);
 
-    const ctx = makeCtx({ gate, runSession });
-    const workers = [makeWorkerSpec(0), makeWorkerSpec(1)];
-    const runner = councilRunner(workers, makeSynthesizerSpec());
+    await gen.next([]);
+    const phase2 = await gen.next([{ mode: 'text', text: 'ok' }]);
+    const spec = (phase2.value as SessionSpec[])[0];
+    expect(spec.profile).toBe('synth-profile');
+    expect(spec.outputMode).toBe('structured');
+    expect(spec.runnerRole).toBe('synth-role');
+    expect(spec.attempt).toBe(2);
+    expect(spec.id).toBe('task-abc/synthesizer#1');
+  });
 
-    const outcome = await runner(ctx);
+  // ── 4. execute delegates to runScheduledSession ──────────────────
 
-    expect(outcome).toEqual({ status: 'completed' });
-    // All sessions were called (cached = no model call, but runSession still invoked)
-    expect(runSessionCalls).toContain('task-abc/worker[0]#1');
-    expect(runSessionCalls).toContain('task-abc/worker[1]#1');
-    expect(runSessionCalls).toContain('task-abc/synthesizer#1');
-    expect(runSessionCalls).toHaveLength(3);
+  it('4a. execute calls runScheduledSession with spec and ctx', async () => {
+    mockRunScheduledSession.mockResolvedValue(CANNED_RESULT);
+
+    const workers = [makeWorkerSpec(0)];
+    const factory = councilRunner(workers, makeSynthesizerSpec());
+    const runner = factory();
+    const ctx = makePlanContext();
+
+    const spec: SessionSpec = makeWorkerSpec(0);
+    const result = await runner.execute(ctx, spec);
+
+    expect(result).toBe(CANNED_RESULT);
+    expect(mockRunScheduledSession).toHaveBeenCalledTimes(1);
+    expect(mockRunScheduledSession).toHaveBeenCalledWith(spec, ctx);
+  });
+
+  it('4b. execute propagates errors from runScheduledSession', async () => {
+    const error = new Error('session failed');
+    mockRunScheduledSession.mockRejectedValue(error);
+
+    const workers = [makeWorkerSpec(0)];
+    const factory = councilRunner(workers, makeSynthesizerSpec());
+    const runner = factory();
+    const ctx = makePlanContext();
+
+    const spec: SessionSpec = makeWorkerSpec(0);
+    await expect(runner.execute(ctx, spec)).rejects.toThrow(error);
+  });
+
+  // ── 5. Factory creates fresh instances ──────────────────────────
+
+  it('5. factory returns a new runner instance each call', async () => {
+    const workers = [makeWorkerSpec(0)];
+    const factory = councilRunner(workers, makeSynthesizerSpec());
+
+    const runnerA = factory();
+    const runnerB = factory();
+
+    expect(runnerA).not.toBe(runnerB);
+    expect(runnerA.plan).toBeInstanceOf(Function);
+    expect(runnerA.execute).toBeInstanceOf(Function);
+  });
+
+  // ── 6. Worker results with empty text are included (filtering only empty strings from join) ──
+
+  it('6a. empty worker text results still appear in prompt', async () => {
+    const workers = [makeWorkerSpec(0)];
+    const synth = makeSynthesizerSpec({ prompt: 'Base' });
+    const factory = councilRunner(workers, synth);
+    const runner = factory();
+    const ctx = makePlanContext();
+    const gen = runner.plan(ctx);
+
+    await gen.next([]);
+    const phase2 = await gen.next([{ mode: 'text', text: '' }]);
+    const prompt = (phase2.value as SessionSpec[])[0].prompt;
+    // Empty text is filtered out by the filter, so prompt should just be the base
+    expect(prompt).toBe('Base');
   });
 });

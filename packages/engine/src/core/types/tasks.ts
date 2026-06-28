@@ -1,8 +1,8 @@
 import type { TaskStatus } from '@engin/shared/types';
 
 /**
- * Executor-side Task (write-model) — the object the TaskTracker and LanePool mutate.
- * Carries phaseId + new TaskStatus + executor fields.
+ * Executor-side Task (write-model) — the object the SessionScheduler and TaskGraph
+ * mutate. Carries phaseId + new TaskStatus + executor fields.
  */
 export interface Task {
   id: string;

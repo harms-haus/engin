@@ -1,376 +1,310 @@
-// ─── Tests for runners/coordinator-runner.ts ─────────────────────────────────
-//
-// Tests for kb-5 A3b: coordinatorRunner.
+// ─── Tests for runners/coordinator-runner.ts (SessionPlan contract) ──────
 //
 // Tests verify:
-//   - Basic: coordinator decides 2 children → childRunner runs them → completed
-//   - Persist-before-children: coordinator runSession fully resolves before any
-//     child runSession is invoked (ordering assertion via mock call sequence)
-//   - Empty children: coordinator returns no children → still completed
-//   - Deadlock-freedom: real SessionGate total=1 completes without hang
-//   - Resume/replay: coordinator output cached → children spawned identically
-//     (verify createSession/runSession call counts)
+//   1. plan() yields coordinator spec first, then child batches
+//   2. childRunner receives the coordinator SessionResult from yield return
+//   3. Coordinator + child specs → totalSessions grows dynamically
+//   4. execute() calls runScheduledSession and returns its result
+//   5. Factory creates a fresh runner instance each call
+//   6. Empty child plan (no specs yielded) still completes cleanly
 //
-// The module under test is imported from './coordinator-runner.js'.
+// Mock strategy:
+//   - Shared mock via `test-fixtures.ts` → `mockRunScheduledSession`
+//   - Mock child SessionPlanRunners are constructed inline to control yield
+//     behavior and track result forwarding.
 
-import { describe, expect, it, mock } from 'bun:test';
+import { describe, expect, it } from 'bun:test';
+import type { SessionResult, SessionSpec } from '../session.js';
+import type { SessionPlanContext, SessionPlanRunner } from './session-plan-types.js';
+import {
+  CANNED_RESULT,
+  makePlanContext,
+  mockRunScheduledSession,
+  setupRunScheduledSessionMock,
+} from './test-fixtures.js';
 
-import type { AgentProfile, Task } from '../../core/types.js';
-import { SessionGate } from '../session-gate.js';
-import type { RunSessionContext, SessionResult, SessionSpec } from '../session.js';
+// ─── Import module under test ────────────────────────────────────────────
+
 import { coordinatorRunner } from './coordinator-runner.js';
-import type { Runner, RunnerContext, TaskOutcome } from './types.js';
 
-// ── Fixture helpers ─────────────────────────────────────────────────────────
+// ─── Mock wiring ─────────────────────────────────────────────────────────
 
-function makeTask(overrides?: Partial<Task>): Task {
+setupRunScheduledSessionMock();
+
+// ─── Helpers ──────────────────────────────────────────────────────────────
+
+/**
+ * Create a mock SessionPlanRunner whose plan yields the given batches in order.
+ */
+function makeMockChild(batches: SessionSpec[][], receivedResults?: SessionResult[][]): SessionPlanRunner {
   return {
-    id: 'task-xyz',
-    title: 'Coordinated task',
-    prompt: 'Coordinate work',
-    profile: 'default',
-    files: [],
-    dependencies: [],
-    status: 'active',
-    phaseId: 'code',
-    worktree: 'none',
-    ...overrides,
+    plan(_ctx: SessionPlanContext): AsyncGenerator<SessionSpec[], SessionResult[] | undefined, SessionResult[]> {
+      const gen = (async function* (): AsyncGenerator<SessionSpec[], SessionResult[] | undefined, SessionResult[]> {
+        for (const batch of batches) {
+          const results: SessionResult[] = yield batch;
+          receivedResults?.push(results);
+        }
+        return undefined;
+      })();
+
+      return gen;
+    },
+
+    async execute(_ctx: SessionPlanContext, spec: SessionSpec): Promise<SessionResult> {
+      return mockRunScheduledSession(spec, _ctx);
+    },
   };
 }
 
-function makeProfile(id: string, overrides?: Partial<AgentProfile>): AgentProfile {
+/**
+ * Create a simple SessionSpec for testing.
+ */
+function makeSpec(id: string, overrides?: Partial<SessionSpec>): SessionSpec {
   return {
     id,
-    name: id,
-    provider: 'openai',
-    model: 'gpt-4o',
-    thinkingLevel: 'low',
-    systemPrompt: `You are ${id}.`,
-    excludeTools: [],
-    includeTools: [],
-    ...overrides,
-  };
-}
-
-function makeCtx(overrides?: Partial<RunnerContext>): RunnerContext {
-  const task = makeTask();
-  const profiles = new Map<string, AgentProfile>();
-  profiles.set('coordinator', makeProfile('coordinator'));
-  profiles.set('worker', makeProfile('worker'));
-  return {
-    task,
-    gate: {
-      run: mock(async (_p: unknown, fn: (h: { signal: AbortSignal }) => Promise<unknown>) =>
-        fn({ signal: new AbortController().signal }),
-      ),
-    } as unknown as RunnerContext['gate'],
-    runSession: mock(async () => ({ mode: 'text', text: 'ok' }) satisfies SessionResult),
-    profiles,
-    sessionBaseDir: '/tmp/sessions',
-    cwd: '/tmp/project',
-    activeSessions: new Set(),
-    phaseId: 'code',
-    agentId: 'agent-1',
+    profile: 'executor',
+    prompt: 'Do the work',
+    outputMode: 'text',
+    runnerRole: 'executor',
+    attempt: 1,
     ...overrides,
   };
 }
 
 /** Build a coordinator SessionSpec. */
-function makeCoordinatorSpec(overrides?: Record<string, unknown>): SessionSpec {
+function makeCoordinatorSpec(overrides?: Partial<SessionSpec>): SessionSpec {
   return {
-    id: 'task-xyz/coordinator#1',
+    id: 'task-abc/coordinator#1',
     profile: 'coordinator',
     prompt: 'Plan the work',
     outputMode: 'structured',
     runnerRole: 'coordinator',
     attempt: 1,
-    schema: undefined,
     ...overrides,
-  } as SessionSpec;
+  };
 }
 
-// ── Tests ───────────────────────────────────────────────────────────────────
+// ─── Tests ─────────────────────────────────────────────────────────────────
 
-describe('coordinatorRunner', () => {
-  // ── Basic flow: coordinator → 2 children → completed ────────────────────
+describe('coordinatorRunner (SessionPlan)', () => {
+  // ── 1. plan yields coordinator first, then child batches ────────────────
 
-  it('1a. coordinator decides 2 children → childRunner runs them → completed', async () => {
-    // Coordinator returns structured data with children array
-    const coordinatorData = { children: ['write code', 'write tests'] };
-    const gateRunCalls: string[] = [];
+  it('1a. yields coordinator spec first, then child batches', async () => {
+    const childBatch = [makeSpec('child/spec#1')];
+    const childRunnerFactoryResults: SessionResult[] = [];
 
-    const gate = {
-      run: mock(
-        async (profile: { provider: string; model: string }, fn: (h: { signal: AbortSignal }) => Promise<unknown>) => {
-          gateRunCalls.push(`${profile.provider}:${profile.model}`);
-          return fn({ signal: new AbortController().signal });
-        },
-      ),
-    } as unknown as RunnerContext['gate'];
-
-    const runSession = mock(async (rsctx: RunSessionContext) => {
-      if (rsctx.spec.id.includes('coordinator')) {
-        return { mode: 'structured', data: coordinatorData } satisfies SessionResult;
-      }
-      // children
-      return { mode: 'text', text: 'child result' } satisfies SessionResult;
+    const factory = coordinatorRunner(makeCoordinatorSpec(), {
+      childRunner: (coordResult: SessionResult) => {
+        childRunnerFactoryResults.push(coordResult);
+        return makeMockChild([childBatch]);
+      },
     });
 
-    const ctx = makeCtx({ gate, runSession });
+    const runner = factory();
+    const ctx = makePlanContext();
+    const gen = runner.plan(ctx);
 
-    // childRunner creates a runner for each child in the coordinator result
-    const childRunner: (result: unknown) => Runner = (result) => {
-      const data = result as { children: string[] };
-      return async (childCtx: RunnerContext) => {
-        for (let i = 0; i < data.children.length; i++) {
-          await childCtx.gate.run({ provider: 'openai', model: 'gpt-4o' }, async () =>
-            childCtx.runSession({
-              spec: {
-                id: `${childCtx.task.id}/worker[${i}]#1`,
-                profile: 'worker',
-                prompt: data.children[i],
-                outputMode: 'text' as const,
-                runnerRole: 'worker',
-                attempt: 1,
-              },
-              sessionBaseDir: childCtx.sessionBaseDir,
-              cwd: childCtx.cwd,
-              phaseId: childCtx.phaseId,
-              agentId: childCtx.agentId,
-              profiles: childCtx.profiles,
-              activeSessions: childCtx.activeSessions,
-            }),
-          );
-        }
-        return { status: 'completed' };
-      };
-    };
+    // First yield: coordinator spec
+    const first = await gen.next();
+    expect(first.done).toBe(false);
+    const batch0 = first.value as SessionSpec[];
+    expect(batch0).toHaveLength(1);
+    expect(batch0[0].id).toBe('task-abc/coordinator#1');
 
-    const runner = coordinatorRunner(makeCoordinatorSpec(), { childRunner });
+    // Feed coordinator result back → child runner should be called
+    const coordResult: SessionResult = { mode: 'structured', data: { children: ['task A'] } };
+    const second = await gen.next([coordResult]);
+    expect(second.done).toBe(false);
+    const batch1 = second.value as SessionSpec[];
+    expect(batch1).toBe(childBatch);
+    expect(batch1[0].id).toBe('child/spec#1');
 
-    const outcome: TaskOutcome = await runner(ctx);
-
-    expect(outcome).toEqual({ status: 'completed' });
-    // 1 coordinator + 2 children = 3 gate.run calls
-    expect(gateRunCalls).toHaveLength(3);
-    // Coordinator was called with correct ID
-    const coordinatorCalls = (runSession as ReturnType<typeof mock>).mock.calls.filter((c: unknown[]) =>
-      (c[0] as RunSessionContext).spec.id.includes('coordinator'),
-    );
-    expect(coordinatorCalls).toHaveLength(1);
+    // Feed child result back → done
+    const third = await gen.next([CANNED_RESULT]);
+    expect(third.done).toBe(true);
+    expect(third.value).toBeUndefined();
   });
 
-  it('1b. coordinator returns empty children list → still completed', async () => {
-    const runSession = mock(async (rsctx: RunSessionContext) => {
-      if (rsctx.spec.id.includes('coordinator')) {
-        return { mode: 'structured', data: { children: [] } } satisfies SessionResult;
-      }
-      return { mode: 'text', text: 'should not be called' } satisfies SessionResult;
+  it('1b. childRunner receives the coordinator SessionResult', async () => {
+    const childRunnerFactoryResults: SessionResult[] = [];
+
+    const factory = coordinatorRunner(makeCoordinatorSpec(), {
+      childRunner: (coordResult: SessionResult) => {
+        childRunnerFactoryResults.push(coordResult);
+        return makeMockChild([]);
+      },
     });
 
-    const ctx = makeCtx({ runSession });
+    const runner = factory();
+    const ctx = makePlanContext();
+    const gen = runner.plan(ctx);
 
-    const childRunner: (result: unknown) => Runner = () => {
-      return async () => ({ status: 'completed' });
-    };
+    // Get coordinator batch
+    await gen.next();
 
-    const runner = coordinatorRunner(makeCoordinatorSpec(), { childRunner });
-    const outcome = await runner(ctx);
+    // Feed coordinator result
+    const coordResult: SessionResult = { mode: 'structured', data: { children: ['task A', 'task B'] } };
+    await gen.next([coordResult]);
 
-    expect(outcome).toEqual({ status: 'completed' });
-    // Only the coordinator session should have been called
-    expect(runSession).toHaveBeenCalledTimes(1);
+    expect(childRunnerFactoryResults).toHaveLength(1);
+    expect(childRunnerFactoryResults[0]).toBe(coordResult);
   });
 
-  // ── Persist-before-children ─────────────────────────────────────────────
+  it('1c. coordinator + child specs are yielded in order (totalSessions grows)', async () => {
+    const childBatch = [makeSpec('child/spec0#1'), makeSpec('child/spec1#1')];
 
-  it('2. persist-before-children: coordinator runSession fully resolves before any child runSession', async () => {
-    const timeline: string[] = [];
-
-    const gate = {
-      run: mock(async (_p: unknown, fn: (h: { signal: AbortSignal }) => Promise<unknown>) =>
-        fn({ signal: new AbortController().signal }),
-      ),
-    } as unknown as RunnerContext['gate'];
-
-    const runSession = mock(async (rsctx: RunSessionContext) => {
-      timeline.push(`start:${rsctx.spec.id}`);
-      // Simulate async work
-      await new Promise((r) => setTimeout(r, 5));
-      timeline.push(`end:${rsctx.spec.id}`);
-      if (rsctx.spec.id.includes('coordinator')) {
-        return { mode: 'structured', data: { children: ['write code', 'write tests'] } } satisfies SessionResult;
-      }
-      return { mode: 'text', text: 'child result' } satisfies SessionResult;
+    const factory = coordinatorRunner(makeCoordinatorSpec(), {
+      childRunner: () => makeMockChild([childBatch]),
     });
 
-    const ctx = makeCtx({ gate, runSession });
+    const runner = factory();
+    const ctx = makePlanContext();
+    const gen = runner.plan(ctx);
 
-    const childRunner: (result: unknown) => Runner = (result) => {
-      const data = result as { children: string[] };
-      return async (childCtx: RunnerContext) => {
-        for (let i = 0; i < data.children.length; i++) {
-          await childCtx.gate.run({ provider: 'openai', model: 'gpt-4o' }, async () =>
-            childCtx.runSession({
-              spec: {
-                id: `${childCtx.task.id}/worker[${i}]#1`,
-                profile: 'worker',
-                prompt: data.children[i],
-                outputMode: 'text' as const,
-                runnerRole: 'worker',
-                attempt: 1,
-              },
-              sessionBaseDir: childCtx.sessionBaseDir,
-              cwd: childCtx.cwd,
-              phaseId: childCtx.phaseId,
-              agentId: childCtx.agentId,
-              profiles: childCtx.profiles,
-              activeSessions: childCtx.activeSessions,
-            }),
-          );
-        }
-        return { status: 'completed' };
-      };
-    };
+    // Coordinator spec
+    const b0 = await gen.next();
+    expect(b0.value as SessionSpec[]).toHaveLength(1);
 
-    const runner = coordinatorRunner(makeCoordinatorSpec(), { childRunner });
-    const outcome = await runner(ctx);
+    // Child specs (2)
+    const b1 = await gen.next([CANNED_RESULT]);
+    expect(b1.value as SessionSpec[]).toHaveLength(2);
 
-    expect(outcome).toEqual({ status: 'completed' });
+    // Done
+    const done = await gen.next([CANNED_RESULT, CANNED_RESULT]);
+    expect(done.done).toBe(true);
 
-    // Assert ordering: coordinator end must come before any child start
-    const coordinatorEndIdx = timeline.findIndex((e) => e.startsWith('end:') && e.includes('coordinator'));
-    const firstChildStartIdx = timeline.findIndex((e) => e.startsWith('start:') && e.includes('worker'));
-
-    expect(coordinatorEndIdx).toBeGreaterThanOrEqual(0);
-    expect(firstChildStartIdx).toBeGreaterThanOrEqual(0);
-    expect(coordinatorEndIdx).toBeLessThan(firstChildStartIdx);
+    // Total yielded: 1 coordinator + 2 children = 3 specs
+    let totalSpecs = 0;
+    const gen2 = runner.plan(ctx);
+    const firstAgain = await gen2.next();
+    totalSpecs += (firstAgain.value as SessionSpec[]).length;
+    const secondAgain = await gen2.next([CANNED_RESULT]);
+    totalSpecs += (secondAgain.value as SessionSpec[]).length;
+    expect(totalSpecs).toBe(3);
   });
 
-  // ── Deadlock-freedom under total cap 1 ──────────────────────────────────
+  // ── 2. Child with multiple batches ────────────────────────────────────
 
-  it('3. deadlock-freedom: real SessionGate total=1 completes within timeout', async () => {
-    const gate = new SessionGate({ total: 1, perModel: {} });
+  it('2a. child yields multiple batches → all are forwarded', async () => {
+    const childBatches = [[makeSpec('child/batch0#1')], [makeSpec('child/batch1#1')]];
 
-    const coordinatorData = { children: ['task A', 'task B'] };
-    const runSession = mock(async (rsctx: RunSessionContext) => {
-      await new Promise((r) => setTimeout(r, 5));
-      if (rsctx.spec.id.includes('coordinator')) {
-        return { mode: 'structured', data: coordinatorData } satisfies SessionResult;
-      }
-      return { mode: 'text', text: 'child ok' } satisfies SessionResult;
+    const factory = coordinatorRunner(makeCoordinatorSpec(), {
+      childRunner: () => makeMockChild(childBatches),
     });
 
-    const ctx = makeCtx({ gate, runSession });
+    const runner = factory();
+    const ctx = makePlanContext();
+    const gen = runner.plan(ctx);
 
-    const childRunner: (result: unknown) => Runner = (result) => {
-      const data = result as { children: string[] };
-      return async (childCtx: RunnerContext) => {
-        for (let i = 0; i < data.children.length; i++) {
-          await childCtx.gate.run({ provider: 'openai', model: 'gpt-4o' }, async () =>
-            childCtx.runSession({
-              spec: {
-                id: `${childCtx.task.id}/worker[${i}]#1`,
-                profile: 'worker',
-                prompt: data.children[i],
-                outputMode: 'text' as const,
-                runnerRole: 'worker',
-                attempt: 1,
-              },
-              sessionBaseDir: childCtx.sessionBaseDir,
-              cwd: childCtx.cwd,
-              phaseId: childCtx.phaseId,
-              agentId: childCtx.agentId,
-              profiles: childCtx.profiles,
-              activeSessions: childCtx.activeSessions,
-            }),
-          );
-        }
-        return { status: 'completed' };
-      };
-    };
+    // Coordinator
+    await gen.next();
 
-    const runner = coordinatorRunner(makeCoordinatorSpec(), { childRunner });
+    // Child batch 0
+    const b0 = await gen.next([CANNED_RESULT]);
+    expect((b0.value as SessionSpec[])[0].id).toBe('child/batch0#1');
 
-    const result = await Promise.race([
-      runner(ctx).then((o) => ({ type: 'completed' as const, outcome: o })),
-      new Promise<{ type: 'timeout' }>((resolve) => setTimeout(() => resolve({ type: 'timeout' }), 5000)),
-    ]);
+    // Child batch 1
+    const b1 = await gen.next([CANNED_RESULT]);
+    expect((b1.value as SessionSpec[])[0].id).toBe('child/batch1#1');
 
-    expect(result.type).toBe('completed');
-    if (result.type === 'completed') {
-      expect(result.outcome).toEqual({ status: 'completed' });
-    }
-    // Coordinator + 2 children all ran
-    expect(runSession).toHaveBeenCalledTimes(3);
-  }, 10000);
+    // Done
+    const done = await gen.next([CANNED_RESULT]);
+    expect(done.done).toBe(true);
+  });
 
-  // ── Resume/replay: cached coordinator output ────────────────────────────
-
-  it('4. resume/replay: coordinator output cached → children spawned identically', async () => {
-    const gate = {
-      run: mock(async (_p: unknown, fn: (h: { signal: AbortSignal }) => Promise<unknown>) =>
-        fn({ signal: new AbortController().signal }),
-      ),
-    } as unknown as RunnerContext['gate'];
-
-    const runSessionCalls: string[] = [];
-    const runSession = mock(async (rsctx: RunSessionContext) => {
-      runSessionCalls.push(rsctx.spec.id);
-      if (rsctx.spec.id.includes('coordinator')) {
-        // Cached coordinator result
-        return {
-          mode: 'structured',
-          data: { children: ['cached task A', 'cached task B'] },
-          cached: true,
-        } as SessionResult;
-      }
-      return { mode: 'text', text: 'child result from cache', cached: true } as SessionResult;
+  it('2b. child with empty plan (no batches) → completes after coordinator', async () => {
+    const factory = coordinatorRunner(makeCoordinatorSpec(), {
+      childRunner: () => makeMockChild([]),
     });
 
-    const ctx = makeCtx({ gate, runSession });
+    const runner = factory();
+    const ctx = makePlanContext();
+    const gen = runner.plan(ctx);
 
-    const childRunnerCalls: { result: unknown }[] = [];
-    const childRunner: (result: unknown) => Runner = (result) => {
-      childRunnerCalls.push({ result });
-      const data = result as { children: string[] };
-      return async (childCtx: RunnerContext) => {
-        for (let i = 0; i < data.children.length; i++) {
-          await childCtx.gate.run({ provider: 'openai', model: 'gpt-4o' }, async () =>
-            childCtx.runSession({
-              spec: {
-                id: `${childCtx.task.id}/worker[${i}]#1`,
-                profile: 'worker',
-                prompt: data.children[i],
-                outputMode: 'text' as const,
-                runnerRole: 'worker',
-                attempt: 1,
-              },
-              sessionBaseDir: childCtx.sessionBaseDir,
-              cwd: childCtx.cwd,
-              phaseId: childCtx.phaseId,
-              agentId: childCtx.agentId,
-              profiles: childCtx.profiles,
-              activeSessions: childCtx.activeSessions,
-            }),
-          );
-        }
-        return { status: 'completed' };
-      };
-    };
+    // Coordinator
+    await gen.next();
 
-    const runner = coordinatorRunner(makeCoordinatorSpec(), { childRunner });
-    const outcome = await runner(ctx);
+    // Feed coordinator result → child yields nothing → done
+    const done = await gen.next([CANNED_RESULT]);
+    expect(done.done).toBe(true);
+    expect(done.value).toBeUndefined();
+  });
 
-    expect(outcome).toEqual({ status: 'completed' });
-    // Coordinator was called (cache hit = no model call, but runSession still invoked)
-    expect(runSessionCalls).toContain('task-xyz/coordinator#1');
-    // Both children were spawned from cached coordinator data
-    expect(runSessionCalls).toContain('task-xyz/worker[0]#1');
-    expect(runSessionCalls).toContain('task-xyz/worker[1]#1');
-    // childRunner was called exactly once with the coordinator result
-    expect(childRunnerCalls).toHaveLength(1);
-    const coordinatorResult = childRunnerCalls[0].result as { children: string[] };
-    expect(coordinatorResult.children).toEqual(['cached task A', 'cached task B']);
+  // ── 3. Results forwarded to child ──────────────────────────────────────
+
+  it('3. child receives results forwarded via gen.next', async () => {
+    const childResults: SessionResult[][] = [];
+    const childBatch = [makeSpec('child/spec#1')];
+    const child = makeMockChild([childBatch], childResults);
+
+    const factory = coordinatorRunner(makeCoordinatorSpec(), {
+      childRunner: () => child,
+    });
+
+    const runner = factory();
+    const ctx = makePlanContext();
+    const gen = runner.plan(ctx);
+
+    // Coordinator
+    await gen.next();
+
+    // Feed coordinator result + child results
+    const coordResult: SessionResult = { mode: 'structured', data: { done: false } };
+    const childResult: SessionResult = { mode: 'text', text: 'child output' };
+    await gen.next([coordResult]); // this triggers child to yield its batch
+    await gen.next([childResult]); // feed child result back
+
+    expect(childResults).toHaveLength(1);
+    expect(childResults[0]).toEqual([childResult]);
+  });
+
+  // ── 4. execute delegates to runScheduledSession ────────────────────────
+
+  it('4a. execute calls runScheduledSession with spec and ctx', async () => {
+    mockRunScheduledSession.mockResolvedValue(CANNED_RESULT);
+
+    const factory = coordinatorRunner(makeCoordinatorSpec(), {
+      childRunner: () => makeMockChild([]),
+    });
+    const runner = factory();
+    const ctx = makePlanContext();
+
+    const spec: SessionSpec = makeSpec('task-abc/coordinator#1');
+    const result = await runner.execute(ctx, spec);
+
+    expect(result).toBe(CANNED_RESULT);
+    expect(mockRunScheduledSession).toHaveBeenCalledTimes(1);
+    expect(mockRunScheduledSession).toHaveBeenCalledWith(spec, ctx);
+  });
+
+  it('4b. execute propagates errors from runScheduledSession', async () => {
+    const error = new Error('session failed');
+    mockRunScheduledSession.mockRejectedValue(error);
+
+    const factory = coordinatorRunner(makeCoordinatorSpec(), {
+      childRunner: () => makeMockChild([]),
+    });
+    const runner = factory();
+    const ctx = makePlanContext();
+
+    const spec: SessionSpec = makeSpec('task-abc/coordinator#1');
+    await expect(runner.execute(ctx, spec)).rejects.toThrow(error);
+  });
+
+  // ── 5. Factory creates fresh instances ─────────────────────────────────
+
+  it('5. factory returns a new runner instance each call', async () => {
+    const factory = coordinatorRunner(makeCoordinatorSpec(), {
+      childRunner: () => makeMockChild([]),
+    });
+
+    const runnerA = factory();
+    const runnerB = factory();
+
+    expect(runnerA).not.toBe(runnerB);
+    expect(runnerA.plan).toBeInstanceOf(Function);
+    expect(runnerA.execute).toBeInstanceOf(Function);
+    expect(runnerB.plan).toBeInstanceOf(Function);
+    expect(runnerB.execute).toBeInstanceOf(Function);
   });
 });

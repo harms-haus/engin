@@ -73,18 +73,19 @@ export class TaskListWidget implements Component {
   }
 
   /**
-   * When a task newly transitions to `active`, slide the viewport so that as
-   * many running (active) tasks as possible are visible. Uses a fixed window of
-   * `_maxVisibleLines` (the approximation noted in the spec: the real visible
-   * slot count can be ~2 smaller when the top/bottom `… more` indicator rows
-   * are present, but the resulting position is at most ~2 rows suboptimal).
+   * When a task newly transitions to `active` or `parked`, slide the viewport
+   * so that as many running (active + parked) tasks as possible are visible.
+   * Uses a fixed window of `_maxVisibleLines` (the approximation noted in the
+   * spec: the real visible slot count can be ~2 smaller when the top/bottom
+   * `… more` indicator rows are present, but the resulting position is at most
+   * ~2 rows suboptimal).
    *
    * Computes, for each candidate start offset `s` in `[0, ordered.length - 1]`,
-   * how many currently-`active` tasks have index in `[s, s + W)` in a single
-   * O(n) pass via a difference array (rather than re-counting per offset).
-   * Picks the offset that MAXIMIZES this count. Tie-break: if the current
-   * `_scrollOffset` achieves the maximum, keep it (avoids jitter); otherwise
-   * choose the smallest offset achieving the maximum.
+   * how many currently-`active`/`parked` tasks have index in `[s, s + W)` in
+   * a single O(n) pass via a difference array (rather than re-counting per
+   * offset). Picks the offset that MAXIMIZES this count. Tie-break: if the
+   * current `_scrollOffset` achieves the maximum, keep it (avoids jitter);
+   * otherwise choose the smallest offset achieving the maximum.
    */
   private _autoScrollToActive(): void {
     const ordered = this.ensureOrdered();
@@ -93,7 +94,7 @@ export class TaskListWidget implements Component {
     const W = this._maxVisibleLines;
     const activeIndices: number[] = [];
     ordered.forEach((task, i) => {
-      if (task.status === 'active') activeIndices.push(i);
+      if (task.status === 'active' || task.status === 'parked') activeIndices.push(i);
     });
     if (activeIndices.length === 0) return;
 
@@ -162,7 +163,7 @@ export class TaskListWidget implements Component {
 
   updateTasks(tasks: TaskEntity[]): void {
     // Capture the previous status of each task (by id) BEFORE reassignment so
-    // we can detect which tasks newly transitioned to `active`.
+    // we can detect which tasks newly transitioned to `active` or `parked`.
     const oldStatusById = new Map(this.tasks.map((t) => [t.id, t.status]));
     const oldIds = new Set(this.tasks.map((t) => t.id));
     const oldLength = this.tasks.length;
@@ -176,14 +177,19 @@ export class TaskListWidget implements Component {
     }
     this.invalidateCache();
 
-    // If any task newly transitioned to `active` (it existed before with a
-    // non-active status and is now `active`), re-fit the viewport to show as
-    // many running tasks as possible. Runs AFTER the ID-set-change reset and
-    // cache invalidation so the viewport math sees the new list and ordering.
-    // A freshly-loaded phase (no old counterpart for these ids) does NOT count
-    // as a transition, so auto-scroll does not override the phase-switch reset.
+    // If any task newly transitioned to `active` or `parked` (it existed
+    // before with a non-active/parked status and is now `active`/`parked`),
+    // re-fit the viewport to show as many running tasks as possible. Runs
+    // AFTER the ID-set-change reset and cache invalidation so the viewport
+    // math sees the new list and ordering. A freshly-loaded phase (no old
+    // counterpart for these ids) does NOT count as a transition, so auto-scroll
+    // does not override the phase-switch reset.
     const newlyActive = tasks.some(
-      (t) => t.status === 'active' && oldStatusById.has(t.id) && oldStatusById.get(t.id) !== 'active',
+      (t) =>
+        (t.status === 'active' || t.status === 'parked') &&
+        oldStatusById.has(t.id) &&
+        oldStatusById.get(t.id) !== 'active' &&
+        oldStatusById.get(t.id) !== 'parked',
     );
     if (newlyActive) {
       this._autoScrollToActive();
@@ -289,21 +295,28 @@ export class TaskListWidget implements Component {
       if (
         task.startedAt !== undefined &&
         (task.status === 'active' ||
+          task.status === 'parked' ||
           task.status === 'complete' ||
           task.status === 'failed' ||
           task.status === 'cancelled')
       ) {
         const endTime = task.completedAt !== undefined ? new Date(task.completedAt).getTime() : Date.now();
-        title += ' - ' + dim(formatElapsed(endTime - task.startedAt));
+        const elapsedStr = formatElapsed(endTime - task.startedAt);
+        // F4: For parked tasks, prefix with a dim 'paused ·' indicator to
+        // visually de-emphasize the elapsed display (the timer is frozen —
+        // a full parkedAt subtraction is a larger change).
+        title += ' - ' + (task.status === 'parked' ? dim(`paused \u00B7 ${elapsedStr}`) : dim(elapsedStr));
       }
       titleCells.push(maybeBold(title));
 
       // 4. Session progress column. When a task declares a sessionPlan,
       //  show ●{started}/{plan.length} progress through the planned sessions;
       //  otherwise fall back to the raw started-session count.
+      // Both active and parked tasks are in-progress, so session progress
+      // is shown for both.
       let step = '';
       const sessionCount = this._sessionCounts.get(task.id) ?? 0;
-      if (task.status === 'active') {
+      if (task.status === 'active' || task.status === 'parked') {
         if (task.sessionPlan && task.sessionPlan.length > 0) {
           const total = task.sessionPlan.length;
           // started is bounded by the plan length (a looping reviewRunner may

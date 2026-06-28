@@ -399,6 +399,58 @@ describe('evolveClient – task lifecycle', () => {
     expect(Object.keys(s.tasks)).toHaveLength(0);
     expect(s.seq).toBe(1);
   });
+
+  it('task_parked sets status to parked', () => {
+    let s = evolveClient(
+      blankProjection(),
+      event(
+        'task_registered',
+        {
+          taskId: 't1',
+          title: 'T',
+          phaseId: 'exec',
+        },
+        {},
+        1,
+      ),
+    );
+    s = evolveClient(s, event('task_started', { taskId: 't1', title: 'T' }, {}, 2));
+    s = evolveClient(s, event('task_parked', { taskId: 't1' }, {}, 3));
+    expect(s.tasks['t1'].status).toBe('parked');
+  });
+
+  it('task_parked on unknown task is a no-op', () => {
+    const s = evolveClient(blankProjection(), event('task_parked', { taskId: 'ghost' }, {}, 1));
+    expect(Object.keys(s.tasks)).toHaveLength(0);
+    expect(s.seq).toBe(1);
+  });
+
+  it('task_unparked sets status to active', () => {
+    let s = evolveClient(
+      blankProjection(),
+      event(
+        'task_registered',
+        {
+          taskId: 't1',
+          title: 'T',
+          phaseId: 'exec',
+        },
+        {},
+        1,
+      ),
+    );
+    s = evolveClient(s, event('task_started', { taskId: 't1', title: 'T' }, {}, 2));
+    s = evolveClient(s, event('task_parked', { taskId: 't1' }, {}, 3));
+    expect(s.tasks['t1'].status).toBe('parked');
+    s = evolveClient(s, event('task_unparked', { taskId: 't1' }, {}, 4));
+    expect(s.tasks['t1'].status).toBe('active');
+  });
+
+  it('task_unparked on unknown task is a no-op', () => {
+    const s = evolveClient(blankProjection(), event('task_unparked', { taskId: 'ghost' }, {}, 1));
+    expect(Object.keys(s.tasks)).toHaveLength(0);
+    expect(s.seq).toBe(1);
+  });
 });
 
 // ─── Agent log / decisions / errors ─────────────────────────────────────
@@ -527,6 +579,27 @@ describe('evolveClient – sidebar', () => {
     );
     // phases should NOT be present on sidebar; they live on projection.phases
     expect((s.sidebar as Record<string, unknown>).phases).toBeUndefined();
+  });
+});
+
+// ─── Workflow data ────────────────────────────────────────────────────
+
+describe('evolveClient – workflow data', () => {
+  it('workflow_data_set starts with undefined workflowData', () => {
+    const s = blankProjection();
+    expect(s.workflowData).toBeUndefined();
+  });
+
+  it('workflow_data_set merges event.data into workflowData', () => {
+    const s = evolveClient(blankProjection(), event('workflow_data_set', { key: 'value', num: 42 }, {}, 1));
+    expect(s.workflowData).toEqual({ key: 'value', num: 42 });
+  });
+
+  it('workflow_data_set clobbers same key on re-send', () => {
+    let s = evolveClient(blankProjection(), event('workflow_data_set', { key: 'v1', other: 'keep' }, {}, 1));
+    expect(s.workflowData).toEqual({ key: 'v1', other: 'keep' });
+    s = evolveClient(s, event('workflow_data_set', { key: 'v2', num: 99 }, {}, 2));
+    expect(s.workflowData).toEqual({ key: 'v2', other: 'keep', num: 99 });
   });
 });
 

@@ -11,7 +11,7 @@
 //   }
 //
 //   export interface PhaseRunContext {
-//     tracker: WorkflowStatusTracker;
+//     tracker: PhaseTracker;
 //     hookRegistry?: HookRegistry;
 //     state: Record<string, unknown>; // mutable state shared across phases
 //     cwd: string;
@@ -22,7 +22,7 @@
 //
 //   export interface PhaseRunnerOptions {
 //     phases: PhaseDefinition[];
-//     tracker: WorkflowStatusTracker;
+//     tracker: PhaseTracker;
 //     hookRegistry?: HookRegistry;
 //     cwd: string;
 //     workDir: string;
@@ -51,7 +51,9 @@ import type {
   PhaseDefinition,
   PhaseRunContext,
   PhaseRunnerOptions,
+  PhaseTracker,
 } from '../../packages/engine/src/core/phase-runner.js';
+import type { StatusCallbacks } from '../../packages/engine/src/core/types/callbacks.js';
 import type { HookContext, HookRegistry, WorkflowHooks } from '../../packages/engine/src/hooks/types.js';
 import { WorkflowStatusTracker } from '../../packages/engine/src/tracking/workflow-status.js';
 
@@ -74,12 +76,13 @@ interface ExpectedPhaseDefinition {
 
 interface ExpectedPhaseRunnerOptions {
   phases: PhaseDefinition[];
-  tracker: WorkflowStatusTracker;
+  tracker: PhaseTracker;
   hookRegistry?: HookRegistry;
   cwd: string;
   workDir: string;
   signal?: AbortSignal;
   maxRounds?: number;
+  onStatus?: StatusCallbacks;
 }
 
 assertEqual<Equal<PhaseDefinition, ExpectedPhaseDefinition>>('PhaseDefinition exact shape');
@@ -90,7 +93,7 @@ assertEqual<Equal<PhaseRunnerOptions, ExpectedPhaseRunnerOptions>>('PhaseRunnerO
 // whole object is minimal — extra OPTIONAL forwarded fields must not break this.
 
 assertEqual<Equal<'tracker' extends keyof PhaseRunContext ? true : false, true>>('PhaseRunContext.tracker present');
-assertEqual<Equal<PhaseRunContext['tracker'], WorkflowStatusTracker>>('PhaseRunContext.tracker: WorkflowStatusTracker');
+assertEqual<Equal<PhaseRunContext['tracker'], PhaseTracker>>('PhaseRunContext.tracker: PhaseTracker');
 
 assertEqual<Equal<'hookRegistry' extends keyof PhaseRunContext ? true : false, true>>(
   'PhaseRunContext.hookRegistry present',
@@ -165,14 +168,14 @@ class FakeRegistry implements HookRegistry {
 /**
  * A placeholder tracker value for the `PhaseRunContext.tracker` /
  * `PhaseRunnerOptions.tracker` fields. The TYPE contract (`tracker:
- * WorkflowStatusTracker`) is pinned by the `Equal<PhaseRunContext['tracker'],
- * WorkflowStatusTracker>` assertion above; this cast supplies a runtime value
+ * PhaseTracker`) is pinned by the `Equal<PhaseRunContext['tracker'],
+ * PhaseTracker>` assertion above; this cast supplies a runtime value
  * without constructing a real tracker (which would touch the filesystem via its
  * AuditLog). Same pattern as `registry: {} as HookRegistry` in the sibling
  * type-contract suites.
  */
-function fakeTracker(): WorkflowStatusTracker {
-  return {} as WorkflowStatusTracker;
+function fakeTracker(): PhaseTracker {
+  return {} as PhaseTracker;
 }
 
 /** Build a PhaseRunContext with all the declared required fields filled in. */
@@ -329,8 +332,8 @@ describe('PhaseRunContext', () => {
     void bad;
   });
 
-  it('tracker is typed WorkflowStatusTracker (negative compile check)', () => {
-    // @ts-expect-error — tracker must be a WorkflowStatusTracker, not a string
+  it('tracker is typed PhaseTracker (negative compile check)', () => {
+    // @ts-expect-error — tracker must be a PhaseTracker, not a string
     const bad: PhaseRunContext = { tracker: 'nope', state: {}, cwd: '/repo', workDir: '/repo/w' };
     void bad;
   });

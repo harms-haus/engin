@@ -1,20 +1,24 @@
-// ─── Tests for pool/session-gate.ts — RAII concurrency authority ─────────────
+// ─── Tests for pool/session-gate.ts — two-level concurrency authority ───────
 //
 // SessionGate provides two-level (total + per-model) FIFO concurrency gating
-// for LLM sessions. Callers acquire via `gate.run(profile, fn)` — the gate
-// holds the slot for the duration of `fn`, then releases automatically (RAII).
-// There is NO manual acquire/release API.
+// for LLM sessions. Two access modes:
 //
-// Constructor signature chosen: `new SessionGate(options, signal?)` where
+//   1. RAII mode:  `gate.run(profile, fn)` — holds a slot for the duration of
+//      `fn`, releases automatically on completion or throw.
+//   2. Manual mode: `gate.acquire(profile)` / `gate.release(profile)` — for
+//      scheduler-owned session lifecycles where start and end live in different
+//      stack frames (e.g. RunnerPool draining loop). Each `acquire()` must be
+//      paired with exactly one `release()`.
+//
+// The two modes interoperate: manual acquire/release can block/unblock RAII
+// run() waiters via the shared FIFO dispatch mechanism.
+//
+// Constructor signature: `new SessionGate(options, signal?)` where
 //   options: { total: number; perModel: Record<string, number> }
 //   signal?: AbortSignal (optional, for cooperative cancellation)
 //
 // This follows the common AbortSignal convention (separate from config) used
 // by fetch, EventTarget.addEventListener, etc.
-//
-// TDD: this test suite should FAIL against the current stub
-// (`throw new Error('not implemented')`). All 12 spec cases document the
-// required behavior for the green-phase implementation.
 
 import { describe, expect, it } from 'bun:test';
 import { DeadlockError, SessionGate } from './session-gate.js';
@@ -510,4 +514,174 @@ describe('SessionGate', () => {
     expect(heldResult).toBe('holding');
     expect(queuedResult).toBe('ok');
   }, 5000);
+
+  // ── 14. canStart (canonical) ≡ canAcquireFor (compat alias) ────────────
+  //
+  // canStart and canAcquireFor must return the same truthy/falsy result for
+  // identical inputs across a variety of total/per-model states (the latter
+  // delegates to the former).
+
+  it('14. canStart is an alias of canAcquireFor (equivalence)', async () => {
+    const gate = makeGate({ total: 3, perModel: { 'p:m': 2, 'p:n': 1 } });
+    const profileA = makeProfile('p', 'm');
+    const profileB = makeProfile('p', 'n');
+    const profileC = makeProfile('p', 'o'); // uncapped
+
+    // Both return true when there is capacity.
+    expect(gate.canStart(profileA)).toBe(true);
+    expect(gate.canAcquireFor(profileA)).toBe(true);
+    expect(gate.canStart(profileA)).toBe(gate.canAcquireFor(profileA));
+
+    // Both return false when total is exhausted.
+    // Acquire 3 slots (total=3).
+    gate.acquire(profileA); // 1
+    gate.acquire(profileB); // 2
+    gate.acquire(profileC); // 3
+
+    expect(gate.canStart(profileA)).toBe(false);
+    expect(gate.canAcquireFor(profileA)).toBe(false);
+    expect(gate.canStart(profileA)).toBe(gate.canAcquireFor(profileA));
+
+    // Release one — both return true again.
+    gate.release(profileA);
+    expect(gate.canStart(profileA)).toBe(true);
+    expect(gate.canAcquireFor(profileA)).toBe(true);
+
+    // Per-model cap: p:n has cap=1, already held.
+    expect(gate.canStart(profileB)).toBe(false);
+    expect(gate.canAcquireFor(profileB)).toBe(false);
+  });
+
+  // ── 15. acquire returns true on success, false on saturation ───────────
+  //
+  // Synchronous slot acquisition; returns true when both total and per-model
+  // slots are available, false otherwise. Does NOT queue or wait.
+
+  it('15. acquire returns true on success, false on saturation', async () => {
+    const gate = makeGate({ total: 1, perModel: { 'p:m': 1 } });
+    const profile = makeProfile('p', 'm');
+
+    // First acquire succeeds (both caps positive).
+    expect(gate.acquire(profile)).toBe(true);
+
+    // Second acquire for same model fails (per-model cap=1 exhausted).
+    expect(gate.acquire(profile)).toBe(false);
+
+    // Different model also fails (total cap=1 exhausted).
+    const profileB = makeProfile('p', 'n');
+    expect(gate.acquire(profileB)).toBe(false);
+
+    // Release one, then acquire should succeed again.
+    gate.release(profile);
+    expect(gate.acquire(profile)).toBe(true);
+  });
+
+  // ── 16. release restores capacity and fires onRelease ─────────────────
+  //
+  // After release, a previously-saturated total or per-model bucket admits
+  // new acquire calls. onRelease callback fires when a slot is freed.
+
+  it('16. release restores capacity and fires onRelease', () => {
+    const gate = makeGate({ total: 1 });
+    const profile = makeProfile('p', 'm');
+
+    let onReleaseFired = 0;
+    gate.onRelease = () => {
+      onReleaseFired++;
+    };
+
+    // Acquire the only slot.
+    expect(gate.acquire(profile)).toBe(true);
+    expect(gate.availableTotal()).toBe(0);
+
+    // Release it.
+    gate.release(profile);
+
+    // Capacity restored.
+    expect(gate.availableTotal()).toBe(1);
+    expect(onReleaseFired).toBe(1);
+
+    // Acquire again succeeds.
+    expect(gate.acquire(profile)).toBe(true);
+  });
+
+  // ── 17. acquire/release per-model independence ─────────────────────────
+  //
+  // Acquire for two different model keys with independent caps should
+  // each succeed up to their respective per-model caps.
+
+  it('17. acquire/release with per-model caps: independent model keys', () => {
+    const gate = makeGate({ total: 5, perModel: { 'a:x': 1, 'b:y': 2 } });
+    const profileA = makeProfile('a', 'x');
+    const profileB = makeProfile('b', 'y');
+    const profileC = makeProfile('a', 'x'); // same as A
+
+    // Acquire a:x (cap=1) → succeeds.
+    expect(gate.acquire(profileA)).toBe(true);
+
+    // Acquire a:x again (cap=1) → fails.
+    expect(gate.acquire(profileC)).toBe(false);
+
+    // Acquire b:y (cap=2) → succeeds.
+    expect(gate.acquire(profileB)).toBe(true);
+
+    // Acquire b:y again (cap=2, still 1 left) → succeeds.
+    expect(gate.acquire(profileB)).toBe(true);
+
+    // Acquire b:y third time (cap=2 exhausted) → fails.
+    expect(gate.acquire(profileB)).toBe(false);
+
+    // Release a:x → frees that per-model slot.
+    gate.release(profileA);
+
+    // Now a:x can be acquired again.
+    expect(gate.acquire(profileA)).toBe(true);
+
+    // Total cap (5) not exhausted; check availableTotal.
+    expect(gate.availableTotal()).toBe(2); // total=5, 3 acquired across all models
+  });
+
+  // ── 18. Cross-mode interop: acquire blocks run, release unblocks ──────
+  //
+  // gate.acquire holds the last total slot; a subsequent gate.run queues and
+  // does NOT invoke fn until gate.release frees the slot via dispatch().
+  // onRelease fires exactly once (for the release that unblocks the waiter).
+
+  it('18. cross-mode interop: acquire blocks run, release unblocks', async () => {
+    const gate = makeGate({ total: 1 });
+    const profile = makeProfile('p', 'm');
+
+    let onReleaseFired = 0;
+    gate.onRelease = () => {
+      onReleaseFired++;
+    };
+
+    // Acquire the only slot — holds it manually.
+    expect(gate.acquire(profile)).toBe(true);
+    expect(gate.availableTotal()).toBe(0);
+
+    // run() call — should queue and NOT execute fn yet.
+    let fnRan = false;
+    const runPromise = gate.run(profile, async () => {
+      fnRan = true;
+      return 'ok';
+    });
+
+    // Allow microtasks to settle — fn should still NOT have run
+    // because the slot is held via acquire().
+    await sleep(10);
+    expect(fnRan).toBe(false);
+
+    // Release the manually-held slot — dispatch() should admit the run() waiter.
+    gate.release(profile);
+
+    // onRelease fired exactly once (for the release that freed the slot).
+    // We check synchronously before the run() microtask resolves.
+    expect(onReleaseFired).toBe(1);
+
+    // Now the run() should complete.
+    const result = await runPromise;
+    expect(result).toBe('ok');
+    expect(fnRan).toBe(true);
+  });
 });

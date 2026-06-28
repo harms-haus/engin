@@ -54,7 +54,7 @@ import type {
   ShouldRetryPhaseArgs,
   WorkflowHooks,
 } from '../../packages/engine/src/hooks/types.js';
-import type { Runner } from '../../packages/engine/src/pool/runners/types.js';
+import type { SessionPlanRunner } from '../../packages/engine/src/pool/runners/session-plan-types.js';
 import type { StepDefinition } from '../../packages/engine/src/pool/types.js';
 
 // ─── Type-level exact equality utility ─────────────────────────────────────
@@ -113,10 +113,11 @@ interface ExpectedBeforeTaskArgs {
 }
 interface ExpectedBeforeTaskResult {
   skip?: boolean;
-  runner?: Runner;
+  runner?: SessionPlanRunner;
   steps?: StepDefinition[];
   files?: string[];
   reason?: string;
+  sessionPlan?: { role: string; profile: string }[];
 }
 
 // ─── Compile-time structural equality (arg/result types) ───────────────────
@@ -134,11 +135,11 @@ assertEqual<Equal<BeforeTaskResult, ExpectedBeforeTaskResult>>('BeforeTaskResult
 // ─── Compile-time: the six hook names are keys of WorkflowHooks ────────────
 //
 // Declaration merging adds these six phase/task keys. We assert PRESENCE
-// (not an exclusive `keyof` set): other hook-adding tasks (lane-level
-// onLaneError/shouldIsolate, workflow-level onWorkflowResume/onPersist/…) also
-// extend `WorkflowHooks` via declaration merging, so `keyof WorkflowHooks` is
-// the UNION of every task's fields. Pinning presence — not exclusivity — keeps
-// these suites independent (mirrors tests/hooks/workflow-hooks.test.ts).
+// (not an exclusive `keyof` set): other hook-adding tasks (workflow-level
+// onWorkflowResume/onPersist/…) also extend `WorkflowHooks` via declaration
+// merging, so `keyof WorkflowHooks` is the UNION of every task's fields.
+// Pinning presence — not exclusivity — keeps these suites independent
+// (mirrors tests/hooks/workflow-hooks.test.ts).
 
 assertEqual<Equal<'beforePhase' extends keyof WorkflowHooks ? true : false, true>>('beforePhase is a key');
 assertEqual<Equal<'afterPhase' extends keyof WorkflowHooks ? true : false, true>>('afterPhase is a key');

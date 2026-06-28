@@ -277,7 +277,7 @@ Same as `resolveApiKey` but throws with a helpful error listing expected env var
 
 **Removed in the session-first redesign.** Was used to run one agent as a one-step task.
 Use [`runSession`](#runsession) for single-session tasks, or
-[`RunnerPool`](#runnerpool) with `singleSession` for tasks that participate in the
+[`SessionScheduler`](#sessionscheduler) with `singleSession` for tasks that participate in the
 phase/task/session hierarchy.
 
 ## Session primitive
@@ -292,8 +292,8 @@ parsing & atomic result persistence, activity-based watchdog timeout, and
 (classified by the error classifier) on any failure.
 
 `RunSessionContext` carries: `spec` (`SessionSpec`), `sessionBaseDir`, `cwd`, optional
-`worktreeCwd`, `phaseId`, `agentId`, optional `apiKeys`, `onStatus`, `activeSessions`,
-`profiles`, `signal`, `watchdogTimeoutMs`, and `watchdogMaxResumes`.
+`worktreeCwd`, `phaseId`, `agentId`, optional `taskId`, optional `apiKeys`, `onStatus`,
+`activeSessions`, `profiles`, `signal`, `watchdogTimeoutMs`, and `watchdogMaxResumes`.
 
 `SessionSpec` fields: `id` (deterministic session identifier), `profile` (profile id),
 `prompt`, optional `schema` (Zod), `outputMode` (`'text'` | `'structured'` | `'filesystem'`),
@@ -313,61 +313,147 @@ error classifier) and a `transient: boolean` shortcut (`classification.retryable
 Recursively delete every persisted session for a task. No-op when the directory does not
 exist.
 
-## Runner pool
+## Session scheduler
 
-### `RunnerPool`
+The concurrent task execution engine. The `SessionScheduler` drives a `TaskGraph`
+through a `SessionGate` using a greedy tiered drain loop. It replaces the old
+`RunnerPool` (and before it, `LanePool` + `Scheduler`). Key differences from
+`RunnerPool`: runners are pure `SessionPlanRunner` async generators that never touch
+the gate — the scheduler owns gate acquisition/release directly (acquire before
+`execute()`, release on settle). There is no `maxTaskRetries`.
 
-The concurrent task execution pool for the session-first engine. Replaces `LanePool` +
-`Scheduler`. Key differences: no `getStepsForTask` (only `getRunnerForTask`), no
-`maxConcurrentLanes` / `laneWaitTimeoutMs` (replaced by `maxConcurrentSessions` +
-`modelConcurrency` via `SessionGate`), and runners return `TaskOutcome` directly (no
-`completeTask`/`failTask` callbacks on the context).
+### `SessionScheduler`
 
-Constructor takes `RunnerPoolOptions`; `run()` returns
-`{ completedTasks: number; failedTasks: number }`. Uses a drain-loop model: all ready
-tasks are claimed and their runner coroutines started immediately; the `SessionGate` is
-the sole concurrency cap — runners gate themselves via `ctx.gate.run()` so at most
-`maxConcurrentSessions` sessions execute simultaneously.
+Source: `packages/engine/src/pool/session-scheduler.ts`.
 
-See [Types reference](types.md) for `RunnerPoolOptions` and [Building a new workflow →
-RunnerPool](../guides/building-workflows.md#primitive-2--concurrent-tasks-with-runnerpool)
-for the full lifecycle and authoring patterns.
+Constructor takes `SessionSchedulerOptions` (see [Types reference →
+`SessionSchedulerOptions`](types.md#sessionscheduleroptions)). `run()` returns
+`{ completedTasks: number; failedTasks: number }`.
+
+The drain loop processes three tiers in priority order:
+
+- **T1 (active):** continue specs in active tasks' held batches.
+- **T2 (parked):** resume parked tasks whose pending specs now fit gate capacity.
+- **T3 (ready):** initialize runner + first batch, start first specs — a ready task
+  only becomes `'active'` when its first session actually acquires a slot (**lazy
+  activation**).
+
+A spec that cannot start parks the task (emits `task_parked`); already-started
+siblings continue running. A parked task that resumes emits `task_unparked`.
+Multiple near-simultaneous completions / `gate.onRelease` triggers coalesce into a
+single drain pass via `queueMicrotask`. Status transitions are emitted exclusively
+through `graph.onStatusTransition`; the scheduler owns event emission.
+
+See [Types reference → `SessionPlanRunner`](types.md#sessionplanrunner) for the
+runner contract, and [Types reference → `TaskGraphEntry`](types.md#taskgraphentry)
+for the per-task scheduler state.
+
+### `TaskGraph`
+
+Source: `packages/engine/src/pool/task-graph.ts`.
+
+A task dependency graph (DAG) with status tracking and blocking-pressure ranking.
+Owns the task DAG (forward + reverse-dependency indices), per-task status transitions
+(`blocked` / `ready` / `parked` / `active` / `complete` / `failed` / `cancelled`),
+memoized transitive-dependent counts (reverse-topology DFS), Kahn's-algorithm cycle
+detection at insert time, and missing-dependency deadlock detection.
+
+Unlike `TaskTracker`, `TaskGraph` does **not** emit Node `EventEmitter` events.
+Status transitions surface exclusively through the optional `onStatusTransition`
+callback, which the scheduler sets.
+
+Constructor: `new TaskGraph()`. Key methods:
+
+| Method                         | Behaviour                                                                                                                                                                                              |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `addTask(task, runnerFactory)` | Insert a task. Assigns initial status (`'ready'` if all deps settled, `'blocked'` otherwise). Runs cycle detection and **throws** on a cycle. Reverse-dep index + transitive-dependents cache updated. |
+| `addTasks(...tasks)`           | Batch insert. Each task may carry a `runnerFactory`; when omitted, a no-op factory is used. Cycle detection runs after each insertion.                                                                 |
+| `getTask(id)`                  | Return the live `TaskGraphEntry`, or `undefined`.                                                                                                                                                      |
+| `getAllTasks()`                | All entries in insertion order (live references).                                                                                                                                                      |
+| `getReadyTasks()`              | Tasks with status `'ready'`, sorted DESC by `transitiveDependentCount` (blocking pressure). Equal-pressure ties keep insertion order (stable FIFO).                                                    |
+| `getParkedTasks()`             | Tasks with status `'parked'`, sorted DESC by blocking pressure.                                                                                                                                        |
+| `getActiveTasks()`             | Tasks with status `'active'`, in insertion order.                                                                                                                                                      |
+| `setTaskStatus(id, status)`    | Transition a task's status (syncs `entry.status` + `entry.task.status`). Invokes `onStatusTransition` when the status actually changes.                                                                |
+| `recalculateReady(depsHint?)`  | Promote blocked dependents whose deps are now all settled (`'blocked'` → `'ready'`). When `depsHint` is given, only dependents of that task are checked.                                               |
+| `transitiveDependentCount(id)` | Count of tasks that transitively depend on `id` (backed by a memoized map invalidated on topology change). Used for blocking-pressure ranking.                                                         |
+| `failDeadlockedTasks()`        | Mark blocked tasks whose dependency ids don't exist in the graph as `'failed'`. Idempotent.                                                                                                            |
 
 ### `SessionGate`
 
-Two-level (total + per-model) FIFO concurrency gate for LLM sessions. Callers acquire via
-`gate.run(profile, fn)` — the gate holds the slot for the duration of `fn`, then releases
-automatically (RAII). There is no manual acquire/release API.
+Source: `packages/engine/src/pool/session-gate.ts`.
 
-Constructor takes `SessionGateOptions` (`{ total, perModel }`) and an optional `AbortSignal`.
-`gate.run(profile, fn)` resolves with `fn`'s result; the per-model key is
-`${provider}:${model}` (or `${provider}:${model}:${agent}` when an agent-specific cap
-exists).
+Two-level (total + per-model) FIFO concurrency gate for LLM sessions. The
+`SessionScheduler` acquires slots directly via `gate.acquire(profile)` and releases
+them via `gate.release(profile)` after each session settles. `gate.canStart(profile)`
+is a non-blocking capacity probe used by the drain loop to decide which specs can
+start. `gate.onRelease` is wired by the scheduler to trigger a coalesced drain pass
+when a slot frees up.
+
+Constructor takes `SessionGateOptions` (`{ total, perModel }`) and an optional
+`AbortSignal`. The per-model key is `${provider}:${model}` (or
+`${provider}:${model}:${agent}` when an agent-specific cap exists).
+
+### Session-plan helpers
+
+#### `runScheduledSession(spec, ctx): Promise<SessionResult>`
+
+Source: `packages/engine/src/pool/run-scheduled-session.ts`.
+
+Thin wrapper around [`runSession`](#runsession) for the `SessionScheduler`. Constructs
+a `RunSessionContext` from the `SessionPlanContext` + `SessionSpec` and delegates to
+`runSession`. The scheduler has already acquired the gate slot before calling this — it
+does **not** acquire or release any gate. Errors (including `SessionError`) propagate
+unchanged to the caller (the scheduler).
+
+#### `defaultExecute`
+
+Source: `packages/engine/src/pool/runners/runner-utils.ts`.
+
+Default `execute` implementation for `SessionPlanRunner`s. Delegates to
+`runScheduledSession` with the given spec and context. Since the scheduler acquires
+the gate slot before calling `execute()`, no gate interaction occurs here. All
+single-session `SessionPlanRunner`s that need an execute primitive should reference
+this instead of duplicating the method.
+
+#### `delegateToChild(child, ctx)`
+
+Source: `packages/engine/src/pool/runners/runner-utils.ts`.
+
+Shared async-generator helper that fully delegates to a child `SessionPlanRunner`'s
+`plan()`: re-yields every batch, threads results back via `childGen.next(results)`,
+and returns the child's terminal value. A `try/finally` calls `childGen.return()` on
+early termination (including a parent `.return()`), so the child's `finally` blocks
+always run. Composite runners delegate via `yield* delegateToChild(child, ctx)` so that
+`.return()` propagates from parent to child. _(Runner-internal utility — not exported
+from the top-level engine barrel.)_
 
 ## Composable runners
 
-All runners are factory functions returning a `Runner` (defined in
-`packages/engine/src/pool/runners/`). Each runner receives a `RunnerContext` and returns
-a `Promise<TaskOutcome>` where `TaskOutcome = { status: 'completed' } | { status: 'failed';
-error?: string }`.
+All runners are factory functions returning a [`SessionPlanFactory`](types.md#sessionplanfactory)
+(defined in `packages/engine/src/pool/runners/`). Each factory constructs a fresh
+[`SessionPlanRunner`](types.md#sessionplanrunner) — a stateful object with a `plan(ctx)`
+async generator (yielding batches of `SessionSpec[]`) and an `execute(ctx, spec)` method.
+The scheduler owns the gate and calls `execute()` for each spec; runners never acquire or
+release gate slots themselves. Child runners take `SessionPlanRunner[]` and composite
+runners delegate via `yield* delegateToChild(child, ctx)`.
 
-| Runner              | Signature                                                                  | Behaviour                                                                                                                                                              |
-| ------------------- | -------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `singleSession`     | `(spec: Omit<SessionSpec, 'id'> & { role: string }) => Runner`             | Runs exactly one session via the session primitive. Session id: `${taskId}/${role}#${attempt}`. Returns `{ status: 'completed' }` on success; rethrows `SessionError`. |
-| `linearRunner`      | `(children: Runner[]) => Runner`                                           | Runs children in strict sequential order. Short-circuits on the first `{ status: 'failed' }` child.                                                                    |
-| `reviewRunner`      | `(executeSpec, reviewSpec, options?) => Runner`                            | Implements the execute→review loop: run execute, feed output into review prompt; on rejection, append feedback and re-run execute. Up to `maxRounds` (default 3).      |
-| `councilRunner`     | `(workers: SessionSpec[], synthesizer: SessionSpec) => Runner`             | Runs worker sessions in parallel via `Promise.allSettled`; feeds concatenated outputs into a synthesizer session. All workers failing → `{ status: 'failed' }`.        |
-| `parallelRunner`    | `(children: Runner[]) => Runner`                                           | Starts all children as concurrent coroutines (`Promise.allSettled`). Returns the first failed child's outcome (by array index); siblings are not cancelled.            |
-| `mapRunner`         | `(options: MapRunnerOptions) => Runner`                                    | Fans out over a static `items` array, running one session per item with an optional concurrency cap. Session id: `${taskId}/map[${index}].${role}#${attempt}`.         |
-| `branchRunner`      | `(options: BranchRunnerOptions) => Runner`                                 | Evaluates branch conditions in order (sync or async); runs the first matching child Runner. Falls back to `default` or fails if no match.                              |
-| `coordinatorRunner` | `(coordinatorSpec: SessionSpec, opts: CoordinatorRunnerOptions) => Runner` | Runs a coordinator session (must fully resolve first), then delegates to `opts.childRunner(coordinatorResult)` to build + run children.                                |
-| `coalescingRunner`  | `(coordinatorSpec: SessionSpec, opts: CoalescingRunnerOptions) => Runner`  | Coordinator → children → coordinator loop. Each round the coordinator returns `{ done, children?, feedback? }`; `done: true` → completed. Loops to `maxRounds`.        |
+| Runner              | Signature                                                                              | Behaviour                                                                                                                                                                             |
+| ------------------- | -------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `singleSession`     | `(spec: Omit<SessionSpec, 'id'> & { role, attempt? }) => SessionPlanFactory`           | Runs exactly one session via `defaultExecute` (gate-free). Session id: `${taskId}/${role}#${attempt}`. Yields one batch `[fullSpec]`.                                                 |
+| `linearRunner`      | `(children: SessionPlanRunner[]) => SessionPlanFactory`                                | Runs children in strict sequential order. Each child's `plan()` is fully consumed before advancing. Short-circuits if a child's `execute()` throws (scheduler marks the task failed). |
+| `reviewRunner`      | `(executeSpec, reviewSpec, options?) => SessionPlanFactory`                            | Implements the execute→review loop: run execute, feed output into review prompt; on rejection, append feedback and re-run execute. Up to `maxRounds` (default 3).                     |
+| `councilRunner`     | `(workers: SessionSpec[], synthesizer: SessionSpec) => SessionPlanFactory`             | Runs worker sessions in parallel; feeds concatenated outputs into a synthesizer session. All workers failing → task fails.                                                            |
+| `parallelRunner`    | `(children: SessionPlanRunner[]) => SessionPlanFactory`                                | Starts all children as concurrent batches (`Promise.allSettled` delegation). Returns the first failed child's outcome (by array index); siblings are not cancelled.                   |
+| `mapRunner`         | `(options: MapRunnerOptions) => SessionPlanFactory`                                    | Fans out over a static `items` array, running one session per item with an optional concurrency cap. Session id: `${taskId}/map[${index}].${role}#${attempt}`.                        |
+| `branchRunner`      | `(options: BranchRunnerOptions) => SessionPlanFactory`                                 | Evaluates branch conditions in order (sync or async); runs the first matching child SessionPlanRunner. Falls back to `default` or fails if no match.                                  |
+| `coordinatorRunner` | `(coordinatorSpec: SessionSpec, opts: CoordinatorRunnerOptions) => SessionPlanFactory` | Runs a coordinator session (must fully resolve first), then delegates to `opts.childRunner(coordinatorResult)` to build + run children.                                               |
+| `coalescingRunner`  | `(coordinatorSpec: SessionSpec, opts: CoalescingRunnerOptions) => SessionPlanFactory`  | Coordinator → children → coordinator loop. Each round the coordinator returns `{ done, children?, feedback? }`; `done: true` → completed. Loops to `maxRounds`.                       |
 
 ### Removed runners
 
 The following runners from the old step-execution path (the removed `LanePool` /
 `Scheduler`) were **removed** in the session-first redesign. Use the composable
-runners above with [`RunnerPool`](#runnerpool).
+runners above with [`SessionScheduler`](#sessionscheduler).
 
 | Runner              | Replacement                                       |
 | ------------------- | ------------------------------------------------- |
@@ -377,7 +463,7 @@ runners above with [`RunnerPool`](#runnerpool).
 ## Tracking
 
 See [Event store & status](event-store.md) for `EventStore`, `createStoreCallbacks`, `evolve`,
-and the projection. See [Task pool & execution](task-pool.md) for `RunnerPool` and `TaskTracker`.
+and the projection. See [Task pool & execution](task-pool.md) for `SessionScheduler` and `TaskTracker`.
 
 The persisted-workflow-state classes are also exported:
 

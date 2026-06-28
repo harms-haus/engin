@@ -48,7 +48,7 @@ function assertEqual<T extends true>(_desc?: string): void {}
 // is a genuine independent structural comparison (not identity). Keeping these
 // in sync with the real definitions is exactly what guards the refactor.
 
-type ExpectedTaskStatus = 'ready' | 'blocked' | 'active' | 'complete' | 'failed' | 'cancelled';
+type ExpectedTaskStatus = 'ready' | 'blocked' | 'active' | 'complete' | 'failed' | 'cancelled' | 'parked';
 
 interface Expected {
   name: string;
@@ -90,19 +90,19 @@ assertEqual<Equal<StepDefinition<string>, ExpectedStepDefinition<string>>>(
 // ─── TaskStatus ─────────────────────────────────────────────────────────────
 
 describe('TaskStatus', () => {
-  it('contains exactly the six expected lifecycle states', () => {
+  it('contains exactly the seven expected lifecycle states', () => {
     // Each literal must be assignable to TaskStatus (compile-time) and the set
-    // must contain exactly six distinct members (runtime).
-    const all: TaskStatus[] = ['ready', 'blocked', 'active', 'complete', 'failed', 'cancelled'];
-    expect(all).toHaveLength(6);
-    expect(new Set(all).size).toBe(6);
+    // must contain exactly seven distinct members (runtime).
+    const all: TaskStatus[] = ['ready', 'blocked', 'active', 'complete', 'failed', 'cancelled', 'parked'];
+    expect(all).toHaveLength(7);
+    expect(new Set(all).size).toBe(7);
   });
 
   it('every member is a string literal', () => {
     // Covariance check: every TaskStatus is assignable to string. The fact that
     // the union is CLOSED (no extra members like 'paused') is enforced at
     // compile time by the Equal<TaskStatus, ExpectedTaskStatus> assertion above.
-    const all: TaskStatus[] = ['ready', 'blocked', 'active', 'complete', 'failed', 'cancelled'];
+    const all: TaskStatus[] = ['ready', 'blocked', 'active', 'complete', 'failed', 'cancelled', 'parked'];
     for (const s of all) {
       expect(typeof s).toBe('string');
     }
@@ -155,13 +155,15 @@ describe('TaskEntity', () => {
     const complete: TaskEntity = { ...base, status: 'complete', completedAt: '2025-01-01T00:00:00.000Z' };
     const failed: TaskEntity = { ...base, status: 'failed' };
     const cancelled: TaskEntity = { ...base, status: 'cancelled' };
-    expect([ready, blocked, active, complete, failed, cancelled].map((t) => t.status)).toEqual([
+    const parked: TaskEntity = { ...base, status: 'parked' };
+    expect([ready, blocked, active, complete, failed, cancelled, parked].map((t) => t.status)).toEqual([
       'ready',
       'blocked',
       'active',
       'complete',
       'failed',
       'cancelled',
+      'parked',
     ]);
   });
 

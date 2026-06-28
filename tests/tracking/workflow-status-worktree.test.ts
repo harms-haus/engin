@@ -386,7 +386,7 @@ describe('WorkflowStatusTracker – worktree persistence', () => {
         'engine',
         'src',
         'tracking',
-        'workflow-serializer.ts',
+        'workflow-status.ts',
       );
       const source = await fs.readFile(sourcePath, 'utf-8');
 

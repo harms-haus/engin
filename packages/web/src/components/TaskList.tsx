@@ -1,7 +1,7 @@
 import { formatElapsed } from '@engin/shared/text-utils';
 import React, { useEffect, useMemo, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
-import type { SessionEntity } from '../protocol-types';
+import type { SessionEntity, TaskEntity } from '../protocol-types';
 import {
   useHasSnapshot,
   useSelectedPhaseId,
@@ -26,28 +26,61 @@ function getStatusColor(status: string): string {
       return 'var(--error)';
     case 'cancelled':
       return 'var(--text-muted)';
+    case 'parked':
+      return 'var(--task-parked)';
     default:
       return 'var(--text-muted)';
   }
 }
 
-function sessionCountLabel(taskId: string, sessionsById: Record<string, SessionEntity>): string | null {
+function sessionProgressLabel(
+  taskId: string,
+  sessionsById: Record<string, SessionEntity>,
+  task?: TaskEntity,
+): string | null {
   const count = Object.values(sessionsById).filter((a) => a.taskId === taskId).length;
+  // When the task declares a sessionPlan and is in-progress (active/parked),
+  // render ●{done}/{total} progress — mirroring the TUI task-list-widget.
+  if (
+    task &&
+    (task.status === 'active' || task.status === 'parked') &&
+    task.sessionPlan &&
+    task.sessionPlan.length > 0
+  ) {
+    const total = task.sessionPlan.length;
+    const done = Math.min(count, total);
+    return `\u25CF${done}/${total}`;
+  }
   if (count === 0) return null;
   return `${count} ${count === 1 ? 'session' : 'sessions'}`;
 }
 
-function useElapsed(startedAt?: number, completedAt?: string): string | null {
+/**
+ * Elapsed-time hook for a task row.
+ *
+ * - Terminal / completed: computes from startedAt → completedAt (no interval).
+ * - Active: starts a 1-second interval that re-derives elapsed from `Date.now()`.
+ * - Parked (F4): FREEZES the display — no interval is started, so the elapsed
+ *   value captured at the last render (when the task became parked) persists
+ *   without counting wall-clock pause time. The returned `paused` flag lets the
+ *   caller apply a visual de-emphasis indicator.
+ */
+function useElapsed(
+  startedAt?: number,
+  completedAt?: string,
+  status?: string,
+): { text: string; paused: boolean } | null {
   const [now, setNow] = useState(() => Date.now());
+  const isParked = status === 'parked';
   useEffect(() => {
-    if (completedAt === undefined) {
+    if (completedAt === undefined && !isParked) {
       const interval = setInterval(() => setNow(Date.now()), 1000);
       return () => clearInterval(interval);
     }
-  }, [startedAt, completedAt]);
+  }, [startedAt, completedAt, isParked]);
   if (startedAt === undefined) return null;
   const endTime = completedAt !== undefined ? new Date(completedAt).getTime() : now;
-  return formatElapsed(endTime - startedAt);
+  return { text: formatElapsed(endTime - startedAt), paused: isParked };
 }
 
 const Task = React.memo(function Task({ taskId }: { taskId: string }) {
@@ -56,12 +89,12 @@ const Task = React.memo(function Task({ taskId }: { taskId: string }) {
   const selectTask = useWorkflowStore((s) => s.selectTask);
   const tasksById = useWorkflowStore((s) => s.tasksById);
   const sessionsById = useWorkflowStore((s) => s.sessionsById);
-  const elapsed = useElapsed(task?.startedAt, task?.completedAt);
+  const elapsed = useElapsed(task?.startedAt, task?.completedAt, task?.status);
 
   if (!task) return null;
 
   const isSelected = taskId === selectedTaskId;
-  const sessionLabel = sessionCountLabel(task.id, sessionsById);
+  const sessionLabel = sessionProgressLabel(task.id, sessionsById, task);
 
   return (
     <button
@@ -74,7 +107,12 @@ const Task = React.memo(function Task({ taskId }: { taskId: string }) {
       <div className="task-list__body">
         <span className="task-list__title">{task.title}</span>
         {sessionLabel && <span className="task-list__sessions">{sessionLabel}</span>}
-        {elapsed !== null && <span className="task-list__elapsed">{elapsed}</span>}
+        {elapsed !== null && (
+          <span className={`task-list__elapsed${elapsed.paused ? ' task-list__elapsed--paused' : ''}`}>
+            {elapsed.paused ? '\u23F8 ' : ''}
+            {elapsed.text}
+          </span>
+        )}
         {task.dependencies.length > 0 && (
           <span className="task-list__deps">
             {'deps: '}

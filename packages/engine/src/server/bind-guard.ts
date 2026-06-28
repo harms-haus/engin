@@ -5,7 +5,7 @@
 // Wildcard hosts (0.0.0.0, ::, etc.) bind to ALL network interfaces, which
 // exposes the server to the local network. Authentication is not yet
 // implemented, so binding anything other than a specific interface (e.g.
-// 127.0.0.1) is unsafe and must be rejected. See server-refactor.prompt.md §13.
+// 127.0.0.1) is unsafe and must be rejected.
 //
 // The guard lives here (in src/server/) rather than in the CLI layer so that
 // EVERY caller of `startDaemon` — `server up`, `engin run` auto-start, and

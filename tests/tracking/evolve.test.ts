@@ -661,6 +661,103 @@ describe('evolve', () => {
     });
   });
 
+  describe('task_parked', () => {
+    it('sets status to parked when task exists', () => {
+      resetSeq();
+      let state = evolve(createInitialProjection(), makeEvent('workflow_started', { taskPrompt: 'x' }));
+      state = evolve(state, makeEvent('phase_registered', { id: 'p1', label: 'P1', icon: '' }));
+      state = evolve(
+        state,
+        makeEvent('task_registered', {
+          taskId: 't1',
+          title: 'Do thing',
+          phaseId: 'p1',
+          dependencies: [],
+        }),
+      );
+      state = evolve(
+        state,
+        makeEvent(
+          'task_parked',
+          { taskId: 't1', reason: 'Waiting for upstream' },
+          { timestamp: new Date().toISOString(), taskId: 't1' },
+        ),
+      );
+      expect(state.tasks['t1'].status).toBe('parked');
+      expect(state.tasks['t1'].title).toBe('Do thing'); // other fields preserved
+    });
+
+    it('no-op when task does not exist (seq bumped)', () => {
+      resetSeq();
+      let state = evolve(createInitialProjection(), makeEvent('workflow_started', { taskPrompt: 'x' }));
+      const before = state;
+      state = evolve(
+        state,
+        makeEvent(
+          'task_parked',
+          { taskId: 'nonexistent', reason: 'Nope' },
+          { timestamp: new Date().toISOString(), taskId: 'nonexistent' },
+        ),
+      );
+      expect(state.tasks).toEqual({});
+      expect(state.seq).toBe(before.seq + 1);
+    });
+  });
+
+  describe('task_unparked', () => {
+    it('sets status to active when task exists', () => {
+      resetSeq();
+      let state = evolve(createInitialProjection(), makeEvent('workflow_started', { taskPrompt: 'x' }));
+      state = evolve(state, makeEvent('phase_registered', { id: 'p1', label: 'P1', icon: '' }));
+      state = evolve(
+        state,
+        makeEvent('task_registered', {
+          taskId: 't1',
+          title: 'Do thing',
+          phaseId: 'p1',
+          dependencies: [],
+        }),
+      );
+      // First park it
+      state = evolve(
+        state,
+        makeEvent(
+          'task_parked',
+          { taskId: 't1', reason: 'Blocked' },
+          { timestamp: new Date().toISOString(), taskId: 't1' },
+        ),
+      );
+      expect(state.tasks['t1'].status).toBe('parked');
+      // Now unpark
+      state = evolve(
+        state,
+        makeEvent(
+          'task_unparked',
+          { taskId: 't1', reason: 'Dependency resolved' },
+          { timestamp: new Date().toISOString(), taskId: 't1' },
+        ),
+      );
+      expect(state.tasks['t1'].status).toBe('active');
+      expect(state.tasks['t1'].title).toBe('Do thing'); // other fields preserved
+    });
+
+    it('no-op when task does not exist (seq bumped)', () => {
+      resetSeq();
+      let state = evolve(createInitialProjection(), makeEvent('workflow_started', { taskPrompt: 'x' }));
+      const before = state;
+      state = evolve(
+        state,
+        makeEvent(
+          'task_unparked',
+          { taskId: 'nonexistent' },
+          { timestamp: new Date().toISOString(), taskId: 'nonexistent' },
+        ),
+      );
+      expect(state.tasks).toEqual({});
+      expect(state.seq).toBe(before.seq + 1);
+    });
+  });
+
   describe('decision', () => {
     it('appends a LogEntry to the agent log', () => {
       resetSeq();
@@ -871,6 +968,57 @@ describe('evolve', () => {
       );
       expect(state.sidebar.title).toBe('My Workflow');
       expect(state.sidebar.indicator).toBe('Building…');
+    });
+  });
+
+  describe('workflow_data_set', () => {
+    it('merges event.data into state.workflowData', () => {
+      resetSeq();
+      let state = evolve(createInitialProjection(), makeEvent('workflow_started', { taskPrompt: 'x' }));
+      state = evolve(
+        state,
+        makeEvent('workflow_data_set', { key: 'value', number: 42 }, { timestamp: new Date().toISOString() }),
+      );
+      expect(state.workflowData).toEqual({ key: 'value', number: 42 });
+    });
+
+    it('accumulates data across multiple events', () => {
+      resetSeq();
+      let state = evolve(createInitialProjection(), makeEvent('workflow_started', { taskPrompt: 'x' }));
+      state = evolve(
+        state,
+        makeEvent('workflow_data_set', { key: 'value', number: 42 }, { timestamp: new Date().toISOString() }),
+      );
+      state = evolve(
+        state,
+        makeEvent('workflow_data_set', { another: 'data', number: 99 }, { timestamp: new Date().toISOString() }),
+      );
+      expect(state.workflowData).toEqual({ key: 'value', another: 'data', number: 99 });
+    });
+
+    it('starts with undefined workflowData when no event fired', () => {
+      resetSeq();
+      const state = evolve(createInitialProjection(), makeEvent('workflow_started', { taskPrompt: 'x' }));
+      expect(state.workflowData).toBeUndefined();
+    });
+
+    it('merges even when workflowData was undefined', () => {
+      resetSeq();
+      let state = evolve(createInitialProjection(), makeEvent('workflow_started', { taskPrompt: 'x' }));
+      expect(state.workflowData).toBeUndefined();
+      state = evolve(
+        state,
+        makeEvent('workflow_data_set', { first: 'entry' }, { timestamp: new Date().toISOString() }),
+      );
+      expect(state.workflowData).toEqual({ first: 'entry' });
+    });
+
+    it('bumps seq', () => {
+      resetSeq();
+      let state = evolve(createInitialProjection(), makeEvent('workflow_started', { taskPrompt: 'x' }));
+      const before = state;
+      state = evolve(state, makeEvent('workflow_data_set', { key: 'val' }, { timestamp: new Date().toISOString() }));
+      expect(state.seq).toBe(before.seq + 1);
     });
   });
 

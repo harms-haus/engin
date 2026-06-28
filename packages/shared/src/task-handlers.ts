@@ -1,9 +1,10 @@
 // ─── Task lifecycle handlers ────────────────────────────────────────────────
 //
 // Handlers for task registration and status transitions:
-// task_registered, task_started, task_completed, task_rejected.
+// task_registered, task_started, task_completed, task_rejected,
+// task_parked, task_unparked.
 
-import type { EventRecord, TaskEntity, WorkflowProjection } from './event-types.js';
+import type { EventRecord, TaskEntity, TaskStatus, WorkflowProjection } from './event-types.js';
 import { clone } from './evolve-utils.js';
 
 export function handleTaskRegistered(state: WorkflowProjection, event: EventRecord): WorkflowProjection {
@@ -63,31 +64,38 @@ export function handleTaskStarted(state: WorkflowProjection, event: EventRecord)
   });
 }
 
-export function handleTaskCompleted(state: WorkflowProjection, event: EventRecord): WorkflowProjection {
+// ─── Shared status transition helper ───────────────────────────────────────
+
+function transitionTaskStatus(
+  state: WorkflowProjection,
+  event: EventRecord,
+  status: TaskStatus,
+  extraPatch?: Record<string, unknown>,
+): WorkflowProjection {
   const taskId = String(event.data.taskId ?? event.metadata.taskId ?? '');
   const existing = state.tasks[taskId];
   if (!existing) return clone(state, { seq: event.seq });
   return clone(state, {
     tasks: {
       ...state.tasks,
-      [taskId]: clone(existing, {
-        status: 'complete' as const,
-        completedAt: event.metadata.timestamp,
-      }),
+      [taskId]: clone(existing, { status, ...extraPatch }),
     },
     seq: event.seq,
   });
 }
 
+export function handleTaskCompleted(state: WorkflowProjection, event: EventRecord): WorkflowProjection {
+  return transitionTaskStatus(state, event, 'complete', { completedAt: event.metadata.timestamp });
+}
+
 export function handleTaskRejected(state: WorkflowProjection, event: EventRecord): WorkflowProjection {
-  const taskId = String(event.data.taskId ?? event.metadata.taskId ?? '');
-  const existing = state.tasks[taskId];
-  if (!existing) return clone(state, { seq: event.seq });
-  return clone(state, {
-    tasks: {
-      ...state.tasks,
-      [taskId]: clone(existing, { status: 'failed' as const }),
-    },
-    seq: event.seq,
-  });
+  return transitionTaskStatus(state, event, 'failed');
+}
+
+export function handleTaskParked(state: WorkflowProjection, event: EventRecord): WorkflowProjection {
+  return transitionTaskStatus(state, event, 'parked');
+}
+
+export function handleTaskUnparked(state: WorkflowProjection, event: EventRecord): WorkflowProjection {
+  return transitionTaskStatus(state, event, 'active');
 }

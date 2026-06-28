@@ -149,7 +149,7 @@ Respond with JSON matching this shape:
 ```
 
 Pair this profile with a step that has `schema` and `isReadOnly: true`; the
-[RunnerPool](../reference/task-pool.md) will run it via a `reviewRunner` or `singleSession`, parse the JSON,
+[SessionScheduler](../reference/task-pool.md) will run it via a `reviewRunner` or `singleSession`, parse the JSON,
 and use `approved` to decide whether to advance or send feedback back to the implementer.
 
 ### Codex agent

@@ -1,7 +1,7 @@
 // ─── daemon lifecycle ──────────────────────────────────────────────────────
 //
 // Daemon lifecycle primitives that the engine server relies on for process
-// coordination. See server-refactor.prompt.md §8 "Daemon lifecycle".
+// coordination.
 //
 // Two layers live here:
 //

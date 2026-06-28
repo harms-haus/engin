@@ -18,10 +18,12 @@ Re-exported from `@earendil-works/pi-agent-core`.
 ### `TaskStatus`
 
 ```typescript
-type TaskStatus = 'ready' | 'blocked' | 'active' | 'complete' | 'failed' | 'cancelled';
+type TaskStatus = 'ready' | 'blocked' | 'active' | 'complete' | 'failed' | 'cancelled' | 'parked';
 ```
 
-Settled statuses (`complete`, `failed`, `cancelled`) are terminal on the executor side. See
+Settled statuses (`complete`, `failed`, `cancelled`) are terminal on the executor side. The
+`'parked'` status is transient — it marks a task whose current batch of sessions cannot start
+due to gate-capacity saturation; the scheduler resumes it when a slot frees up. See
 [Task pool & execution → Task lifecycle](task-pool.md#task-lifecycle).
 
 ### `EventType`
@@ -36,12 +38,15 @@ type EventType =
   | 'phase_completed'
   | 'session_started'
   | 'session_completed'
+  | 'session_failed'
   | 'auto_retry_started'
   | 'auto_retry_completed'
   | 'task_registered'
   | 'task_started'
   | 'task_completed'
   | 'task_rejected'
+  | 'task_parked'
+  | 'task_unparked'
   | 'decision'
   | 'error'
   | 'workflow_completed'
@@ -52,7 +57,8 @@ type EventType =
   | 'tool_call_started'
   | 'tool_call_ended'
   | 'log'
-  | 'agent_rendered';
+  | 'agent_rendered'
+  | 'workflow_data_set';
 ```
 
 See [Event store & status → The reducer](event-store.md#the-evolve-reducer).
@@ -100,15 +106,16 @@ The read-model (projection) shape. Source: `packages/shared/src/types.ts`. Does 
 executor-only fields. Has no `steps` or `activeStepIndex` — task-level progress is derived
 from status, and per-session detail lives in `SessionEntity`.
 
-| Field          | Type         | Description                                   |
-| -------------- | ------------ | --------------------------------------------- |
-| `id`           | `string`     | Unique task identifier.                       |
-| `title`        | `string`     | Short description.                            |
-| `phaseId`      | `string`     | **Required.** Phase the task belongs to.      |
-| `status`       | `TaskStatus` | Current lifecycle state.                      |
-| `dependencies` | `string[]`   | Task IDs that must complete before this task. |
-| `startedAt?`   | `number`     | Epoch milliseconds when the task started.     |
-| `completedAt?` | `string`     | ISO timestamp when the task completed.        |
+| Field          | Type                                  | Description                                                                                                                                                                                 |
+| -------------- | ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `id`           | `string`                              | Unique task identifier.                                                                                                                                                                     |
+| `title`        | `string`                              | Short description.                                                                                                                                                                          |
+| `phaseId`      | `string`                              | **Required.** Phase the task belongs to.                                                                                                                                                    |
+| `status`       | `TaskStatus`                          | Current lifecycle state.                                                                                                                                                                    |
+| `dependencies` | `string[]`                            | Task IDs that must complete before this task.                                                                                                                                               |
+| `startedAt?`   | `number`                              | Epoch milliseconds when the task started.                                                                                                                                                   |
+| `completedAt?` | `string`                              | ISO timestamp when the task completed.                                                                                                                                                      |
+| `sessionPlan?` | `{ role: string; profile: string }[]` | Ordered session plan declared when the task started (roles/profiles), so consumers can render all planned sessions + a `●N/M` progress counter. Absent for tasks that don't declare a plan. |
 
 ### `SessionEntity`
 
@@ -116,26 +123,27 @@ Source: `packages/shared/src/event-types.ts` (canonical; re-exported by the engi
 projection shape for a single agent session. Keyed by `sessionKey(agentId, taskId,
 runnerRole, attempt)` in `WorkflowProjection.sessions`.
 
-| Field            | Type         | Description                                                                                                                                                                                                                                         |
-| ---------------- | ------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `uid`            | `string`     | Stable key. Format is `agentId::taskId::runnerRole::attempt` when associated with a task role/attempt, `agentId::taskId::runnerRole` or `agentId::taskId` when some components are absent, or just `agentId` for non-task agents (scouts/planners). |
-| `agentId`        | `string`     | Agent identifier.                                                                                                                                                                                                                                   |
-| `profile`        | `string`     | Profile ID used to create the session.                                                                                                                                                                                                              |
-| `phaseId`        | `string`     | Phase the session belongs to.                                                                                                                                                                                                                       |
-| `taskId?`        | `string`     | Associated task, if any.                                                                                                                                                                                                                            |
-| `sessionId?`     | `string`     | Session identifier.                                                                                                                                                                                                                                 |
-| `sessionPath?`   | `string`     | Session storage path.                                                                                                                                                                                                                               |
-| `active`         | `boolean`    | Whether the session is currently running.                                                                                                                                                                                                           |
-| `log`            | `LogEntry[]` | Session log entries (capped at 500).                                                                                                                                                                                                                |
-| `toolCallCount`  | `number`     | Total tool calls made.                                                                                                                                                                                                                              |
-| `inputTokens`    | `number`     | Accumulated input tokens.                                                                                                                                                                                                                           |
-| `outputTokens`   | `number`     | Accumulated output tokens.                                                                                                                                                                                                                          |
-| `contextWindow?` | `number`     | Resolved model context window (from pi-ai `Model.contextWindow`), surfaced on `session_started`. Optional; used by the TUI to show a cumulative-consumption multiple.                                                                               |
-| `taskTitle`      | `string`     | Title of the associated task (empty if none).                                                                                                                                                                                                       |
-| `startedAt?`     | `string`     | ISO timestamp stamped once at first spawn (from the session-start event's `metadata.timestamp`); preserved across re-spawns. Used to compute per-session active time.                                                                               |
-| `completedAt?`   | `string`     | ISO timestamp when the session completed.                                                                                                                                                                                                           |
-| `runnerRole`     | `string`     | Role label for the runner that spawned this session (e.g. `'executor'`, `'reviewer'`, `'worker'`). Defaults to `'executor'` when not provided.                                                                                                      |
-| `attempt`        | `number`     | 1-based attempt/retry number. Defaults to `1` when not provided.                                                                                                                                                                                    |
+| Field            | Type                                                | Description                                                                                                                                                                                                                                         |
+| ---------------- | --------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `uid`            | `string`                                            | Stable key. Format is `agentId::taskId::runnerRole::attempt` when associated with a task role/attempt, `agentId::taskId::runnerRole` or `agentId::taskId` when some components are absent, or just `agentId` for non-task agents (scouts/planners). |
+| `agentId`        | `string`                                            | Agent identifier.                                                                                                                                                                                                                                   |
+| `profile`        | `string`                                            | Profile ID used to create the session.                                                                                                                                                                                                              |
+| `phaseId`        | `string`                                            | Phase the session belongs to.                                                                                                                                                                                                                       |
+| `taskId?`        | `string`                                            | Associated task, if any.                                                                                                                                                                                                                            |
+| `sessionId?`     | `string`                                            | Session identifier.                                                                                                                                                                                                                                 |
+| `sessionPath?`   | `string`                                            | Session storage path.                                                                                                                                                                                                                               |
+| `active`         | `boolean`                                           | Whether the session is currently running.                                                                                                                                                                                                           |
+| `status?`        | `'pending' \| 'running' \| 'completed' \| 'failed'` | Session lifecycle status (alongside the legacy active boolean).                                                                                                                                                                                     |
+| `log`            | `LogEntry[]`                                        | Session log entries (capped at 500).                                                                                                                                                                                                                |
+| `toolCallCount`  | `number`                                            | Total tool calls made.                                                                                                                                                                                                                              |
+| `inputTokens`    | `number`                                            | Accumulated input tokens.                                                                                                                                                                                                                           |
+| `outputTokens`   | `number`                                            | Accumulated output tokens.                                                                                                                                                                                                                          |
+| `contextWindow?` | `number`                                            | Resolved model context window (from pi-ai `Model.contextWindow`), surfaced on `session_started`. Optional; used by the TUI to show a cumulative-consumption multiple.                                                                               |
+| `taskTitle`      | `string`                                            | Title of the associated task (empty if none).                                                                                                                                                                                                       |
+| `startedAt?`     | `string`                                            | ISO timestamp stamped once at first spawn (from the session-start event's `metadata.timestamp`); preserved across re-spawns. Used to compute per-session active time.                                                                               |
+| `completedAt?`   | `string`                                            | ISO timestamp when the session completed.                                                                                                                                                                                                           |
+| `runnerRole`     | `string`                                            | Role label for the runner that spawned this session (e.g. `'executor'`, `'reviewer'`, `'worker'`). Defaults to `'executor'` when not provided.                                                                                                      |
+| `attempt`        | `number`                                            | 1-based attempt/retry number. Defaults to `1` when not provided.                                                                                                                                                                                    |
 
 ### `PhaseEntity`
 
@@ -180,6 +188,8 @@ interface WorkflowProjection {
   stats: { totalTokens: number; sessionCount: number };
   /** Server-captured console output (capped at MAX_RUN_LOG entries). */
   runLog: LogEntry[];
+  /** Arbitrary data attached via workflow_data_set events (shallow-merged). */
+  workflowData?: Record<string, unknown>;
 }
 ```
 
@@ -224,21 +234,21 @@ Serialized form of `WorkflowStatusTracker`. Written to `.engin-state.json`.
 
 Options passed to a workflow's `run()`. Source: `packages/engine/src/core/types/workflow.ts`.
 
-| Field                 | Type                     | Description                                                                                                                                                                                             |
-| --------------------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `cwd`                 | `string`                 | Working directory. For git-repo runs this is the **main worktree path** (`{run-id}/worktree`), not the original cwd.                                                                                    |
-| `workDir`             | `string`                 | Directory for workflow state persistence.                                                                                                                                                               |
-| `maxConcurrentTasks?` | `number`                 | Maximum parallel agents (default 5).                                                                                                                                                                    |
-| `apiKeys?`            | `Record<string, string>` | Provider → API key overrides.                                                                                                                                                                           |
-| `onStatus?`           | `StatusCallbacks`        | Callbacks for workflow/agent/session events.                                                                                                                                                            |
-| `verbose?`            | `boolean`                | Verbose console output instead of TUI dashboard.                                                                                                                                                        |
-| `signal?`             | `AbortSignal`            | Abort signal for cooperative cancellation.                                                                                                                                                              |
-| `tracker?`            | `unknown`                | Pre-created `WorkflowStatusTracker`, if any.                                                                                                                                                            |
-| `worktree?`           | `WorktreeInfo`           | Main worktree information (set alongside `worktreeManager` for git-repo runs).                                                                                                                          |
-| `worktreeManager?`    | `WorktreeManager`        | Per-run worktree manager. Forward to `RunnerPool` to enable per-task worktrees. Absent for the non-git fallback path.                                                                                   |
-| `rendererRegistry?`   | `RendererRegistry`       | Registry of per-profile renderers that transform agent JSON output into human-readable markdown.                                                                                                        |
-| `hookRegistry?`       | `HookRegistry`           | The engine-assembled hook registry (built by `composeHooks` from `WorkflowModule.hooks`). Forward to `RunnerPool` / `PhaseRunner` to activate their hooks. Absent when the workflow exports no `hooks`. |
-| `stepTimeoutMs?`      | `number`                 | Optional per-prompt timeout in milliseconds. Forwarded to the pool so each `session.prompt()` call is raced against a watchdog. Unset/0/NaN → no timeout.                                               |
+| Field                 | Type                     | Description                                                                                                                                                                                                   |
+| --------------------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cwd`                 | `string`                 | Working directory. For git-repo runs this is the **main worktree path** (`{run-id}/worktree`), not the original cwd.                                                                                          |
+| `workDir`             | `string`                 | Directory for workflow state persistence.                                                                                                                                                                     |
+| `maxConcurrentTasks?` | `number`                 | Maximum parallel agents (default 5).                                                                                                                                                                          |
+| `apiKeys?`            | `Record<string, string>` | Provider → API key overrides.                                                                                                                                                                                 |
+| `onStatus?`           | `StatusCallbacks`        | Callbacks for workflow/agent/session events.                                                                                                                                                                  |
+| `verbose?`            | `boolean`                | Verbose console output instead of TUI dashboard.                                                                                                                                                              |
+| `signal?`             | `AbortSignal`            | Abort signal for cooperative cancellation.                                                                                                                                                                    |
+| `eventStore?`         | `EventStore`             | Shared event store so workflows can read projection state for resume / workflowData.                                                                                                                          |
+| `worktree?`           | `WorktreeInfo`           | Main worktree information (set alongside `worktreeManager` for git-repo runs).                                                                                                                                |
+| `worktreeManager?`    | `WorktreeManager`        | Per-run worktree manager. Forward to `SessionScheduler` to enable per-task worktrees. Absent for the non-git fallback path.                                                                                   |
+| `rendererRegistry?`   | `RendererRegistry`       | Registry of per-profile renderers that transform agent JSON output into human-readable markdown.                                                                                                              |
+| `hookRegistry?`       | `HookRegistry`           | The engine-assembled hook registry (built by `composeHooks` from `WorkflowModule.hooks`). Forward to `SessionScheduler` / `PhaseRunner` to activate their hooks. Absent when the workflow exports no `hooks`. |
+| `stepTimeoutMs?`      | `number`                 | Optional per-prompt timeout in milliseconds. Forwarded to the pool so each `session.prompt()` call is raced against a watchdog. Unset/0/NaN → no timeout.                                                     |
 
 ### `WorkflowModule`
 
@@ -298,15 +308,16 @@ and `RunSummary.worktree`.
 
 Constructor options for `WorktreeManager`.
 
-| Field              | Type                     | Description                                                              |
-| ------------------ | ------------------------ | ------------------------------------------------------------------------ |
-| `repoRoot`         | `string`                 | Absolute path to the real git repository root.                           |
-| `sourceCwd`        | `string`                 | Original cwd (where `.worktreecopy` lives).                              |
-| `workDir`          | `string`                 | Run dir (`.engin/work/{run-id}/`) — parent of the main + task worktrees. |
-| `mainBranch`       | `string`                 | The main-wt branch name (`engin/{mainSlug}`). Provided by the caller.    |
-| `mainWorktreePath` | `string`                 | Absolute path to the main worktree (`{workDir}/worktree`).               |
-| `profilesDirs`     | `string[]`               | Profile directories for agent-based commit/conflict operations.          |
-| `apiKeys?`         | `Record<string, string>` | API keys for agent operations.                                           |
+| Field              | Type                     | Description                                                                                                                                                                     |
+| ------------------ | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `repoRoot`         | `string`                 | Absolute path to the real git repository root.                                                                                                                                  |
+| `sourceCwd`        | `string`                 | Original cwd (where `.worktreecopy` lives).                                                                                                                                     |
+| `workDir`          | `string`                 | Run dir (`.engin/work/{run-id}/`) — parent of the main + task worktrees.                                                                                                        |
+| `mainBranch`       | `string`                 | The main-wt branch name (`engin/{mainSlug}`). Provided by the caller.                                                                                                           |
+| `mainWorktreePath` | `string`                 | Absolute path to the main worktree (`{workDir}/worktree`).                                                                                                                      |
+| `profilesDirs`     | `string[]`               | Profile directories for agent-based commit/conflict operations.                                                                                                                 |
+| `apiKeys?`         | `Record<string, string>` | API keys for agent operations.                                                                                                                                                  |
+| `hookRegistry?`    | `HookRegistry`           | Optional hook registry for worktree-lifecycle hooks (`populateWorktree`, `beforeTaskWorktreeCreate`, `onTaskMerge`, …). When absent, methods behave as today (backward compat). |
 
 ### `TaskWorktreeInfo`
 
@@ -353,7 +364,7 @@ through `WorktreeManager.setupMainWorktree()`.
 
 ### `WorktreeCopyEntry`
 
-Source: `packages/engine/src/core/git.ts`. One parsed entry from a `.worktreecopy`
+Source: `packages/engine/src/core/worktree-populate.ts`. One parsed entry from a `.worktreecopy`
 file.
 
 | Field     | Type                    | Description                                                                                    |
@@ -362,32 +373,48 @@ file.
 | `mode`    | `'copy'` \| `'symlink'` | `copy` (default) copies the matched path; `symlink` (the `@symlink` prefix) creates a symlink. |
 | `negated` | `boolean`               | `true` when the line started with `!` (re-include a previously excluded path).                 |
 
-## Pool types
+## Pool & scheduling types
 
-### `RunnerPoolOptions`
+### `SessionSchedulerOptions`
 
-Source: `packages/engine/src/pool/runner-pool.ts`.
+Source: `packages/engine/src/pool/session-scheduler.ts`. Constructor options for
+`SessionScheduler` — the concurrent task execution engine that drives a
+`TaskGraph` through a `SessionGate`.
 
-| Field                   | Required          | Description                                                                                                                                                                                                      |
-| ----------------------- | ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `maxConcurrentSessions` | **Yes**           | Hard cap on concurrent in-flight sessions across ALL models. Passed to `SessionGate` as `total`.                                                                                                                 |
-| `modelConcurrency`      | **Yes**           | Per-model concurrency caps keyed by `${provider}:${model}` (or `${provider}:${model}:${agent}`). Passed to `SessionGate` as `perModel`.                                                                          |
-| `profilesDirs`          | **Yes**           | Directories containing `.md` profiles.                                                                                                                                                                           |
-| `sessionBaseDir`        | **Yes**           | Base directory for persisted session storage (`{base}/{sessionId}/`).                                                                                                                                            |
-| `cwd`                   | **Yes**           | Working directory.                                                                                                                                                                                               |
-| `taskTracker`           | **Yes**           | Shared `TaskTracker` the pool claims from.                                                                                                                                                                       |
-| `phaseId`               | **Yes**           | The phase this pool serves.                                                                                                                                                                                      |
-| `getRunnerForTask`      | No                | `(task: Task) => Runner`. The sole runner resolution path. If absent or returns `undefined`, the task fails.                                                                                                     |
-| `apiKeys?`              | No                | Provider → API key overrides.                                                                                                                                                                                    |
-| `onStatus?`             | No                | Status callbacks.                                                                                                                                                                                                |
-| `auditLog?`             | No                | Audit log. When present alongside `hookRegistry`, `RunnerPool.run()` auto-registers the default auditor so structured-output and decision events land in the durable log without manual `auditLog.append` calls. |
-| `maxTaskRetries?`       | No                | Max times a failed task is retried within one pool run. Total attempts = `1 + maxTaskRetries`. Default `0` (no retries).                                                                                         |
-| `stepTimeoutMs?`        | No                | Per-prompt watchdog timeout in milliseconds. Forwarded as `watchdogTimeoutMs` to sessions.                                                                                                                       |
-| `signal?`               | No                | Abort signal.                                                                                                                                                                                                    |
-| `rendererRegistry?`     | No                | Optional registry of custom output renderers keyed by profile name.                                                                                                                                              |
-| `hookRegistry?`         | No                | Optional registry of workflow hooks. Forwarded to runners via `RunnerContext.hookRegistry`.                                                                                                                      |
-| `worktreeManager?`      | `WorktreeManager` | Per-run worktree manager. When set, tasks with `worktree === 'code'` get their own worktree (branched off the main worktree) that is squash-merged on success and culled on failure/retry.                       |
-| `gate?`                 | `SessionGate`     | Pre-constructed gate. Defaults to `new SessionGate({ total: maxConcurrentSessions, perModel: modelConcurrency }, signal)`.                                                                                       |
+| Field               | Required          | Description                                                                                                                      |
+| ------------------- | ----------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `graph`             | **Yes**           | The task DAG (`TaskGraph`) with status tracking + blocking-pressure ranking.                                                     |
+| `gate`              | **Yes**           | Two-level concurrency gate (`SessionGate`).                                                                                      |
+| `profiles`          | **Yes**           | Resolved agent profiles keyed by profile id.                                                                                     |
+| `sessionBaseDir`    | **Yes**           | Base directory for persisted session storage (`{base}/{sessionId}/`).                                                            |
+| `cwd`               | **Yes**           | Working directory.                                                                                                               |
+| `onStatus?`         | No                | Status callbacks.                                                                                                                |
+| `hookRegistry?`     | No                | Hook registry (for `beforeTask` lifecycle hooks). Scoped-cloned at the start of `run()`.                                         |
+| `rendererRegistry?` | No                | Registry of custom output renderers keyed by profile id.                                                                         |
+| `auditLog?`         | No                | Audit log (for tracking session events).                                                                                         |
+| `signal?`           | No                | Abort signal.                                                                                                                    |
+| `stepTimeoutMs?`    | No                | Per-session execute timeout in milliseconds (default 300 000). Forwarded to sessions as `watchdogTimeoutMs`.                     |
+| `phaseId`           | **Yes**           | The phase this scheduler serves.                                                                                                 |
+| `apiKeys?`          | No                | Provider → API key overrides.                                                                                                    |
+| `activeSessions`    | **Yes**           | Mutable set of active sessions (for cooperative abort).                                                                          |
+| `worktreeManager?`  | `WorktreeManager` | Per-run worktree manager. When set, tasks with `worktree === 'code'` get their own worktree (merged on success, culled on fail). |
+
+### `TaskGraphEntry`
+
+Source: `packages/engine/src/pool/task-graph.ts`. A task plus its scheduler-managed
+session-plan state. The `task` and `status` fields are owned by `TaskGraph`; the
+runner / session-plan fields are mutated externally by the scheduler.
+
+| Field               | Type                                             | Description                                                                |
+| ------------------- | ------------------------------------------------ | -------------------------------------------------------------------------- |
+| `task`              | `Task`                                           | The underlying task definition.                                            |
+| `runnerFactory`     | `() => SessionPlanRunner`                        | Constructs a fresh `SessionPlanRunner` when the task becomes active.       |
+| `status`            | `TaskStatus`                                     | Current status (mirrors `task.status`; kept in sync by `TaskGraph`).       |
+| `planGen?`          | `AsyncGenerator<SessionSpec[], SessionResult[]>` | Live async generator from `runner.plan(ctx)`, while the task is executing. |
+| `heldBatch?`        | `SessionSpec[]`                                  | The currently-held batch of specs the scheduler is executing.              |
+| `batchResults`      | `SessionResult[]`                                | Results collected for the held batch so far (in spec order).               |
+| `completedSessions` | `number`                                         | Count of settled (completed or failed) `execute()` calls.                  |
+| `totalSessions`     | `number`                                         | Total count of `SessionSpec`s yielded across all batches so far.           |
 
 ### `SessionGateOptions`
 
@@ -402,16 +429,17 @@ Source: `packages/engine/src/pool/session-gate.ts`.
 
 Source: `packages/engine/src/pool/session.ts`.
 
-| Field         | Type         | Description                                                                           |
-| ------------- | ------------ | ------------------------------------------------------------------------------------- |
-| `id`          | `string`     | Unique session identifier (used for persistence path).                                |
-| `profile`     | `string`     | Agent profile ID (resolved against `ctx.profiles`).                                   |
-| `prompt`      | `string`     | The prompt text sent to the agent.                                                    |
-| `schema?`     | `ZodType`    | Optional Zod schema for structured output mode.                                       |
-| `outputMode`  | `OutputMode` | `'text' \| 'structured' \| 'filesystem'` — how the response is interpreted.           |
-| `isReadOnly?` | `boolean`    | When true, write/edit tools are stripped.                                             |
-| `runnerRole`  | `string`     | Role label for the runner (e.g. `'executor'`, `'reviewer'`). Propagated to callbacks. |
-| `attempt`     | `number`     | 1-based attempt number. Propagated to callbacks.                                      |
+| Field         | Type         | Description                                                                                                                                                                                                                             |
+| ------------- | ------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `id`          | `string`     | Unique session identifier (used for persistence path).                                                                                                                                                                                  |
+| `profile`     | `string`     | Agent profile ID (resolved against `ctx.profiles`).                                                                                                                                                                                     |
+| `prompt`      | `string`     | The prompt text sent to the agent.                                                                                                                                                                                                      |
+| `schema?`     | `ZodType`    | Optional Zod schema for structured output mode.                                                                                                                                                                                         |
+| `outputMode`  | `OutputMode` | `'text' \| 'structured' \| 'filesystem'` — how the response is interpreted.                                                                                                                                                             |
+| `isReadOnly?` | `boolean`    | When true, write/edit tools are stripped.                                                                                                                                                                                               |
+| `runnerRole`  | `string`     | Role label for the runner (e.g. `'executor'`, `'reviewer'`). Propagated to callbacks.                                                                                                                                                   |
+| `attempt`     | `number`     | 1-based attempt number. Propagated to callbacks.                                                                                                                                                                                        |
+| `resume?`     | `boolean`    | When true, resume an existing session at this id (continue its conversation) instead of creating a fresh one. Used by review loops so a rejected execute step is re-prompted in the same session. Bypasses the idempotency cache check. |
 
 ### `SessionResult`
 
@@ -422,47 +450,6 @@ type SessionResult =
   | { mode: 'text'; text: string }
   | { mode: 'structured'; data: unknown }
   | { mode: 'filesystem'; files: string[] };
-```
-
-### `TaskOutcome`
-
-Source: `packages/engine/src/pool/runners/types.ts`.
-
-```typescript
-type TaskOutcome = { status: 'completed' } | { status: 'failed'; error?: string };
-```
-
-### `RunnerContext`
-
-Source: `packages/engine/src/pool/runners/types.ts`.
-
-| Field               | Type                                                 | Description                                                                                           |
-| ------------------- | ---------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
-| `task`              | `Task`                                               | The task being executed.                                                                              |
-| `gate`              | `SessionGate`                                        | The concurrency gate. Runners call `ctx.gate.run(profile, fn)` for each session.                      |
-| `runSession`        | `(ctx: RunSessionContext) => Promise<SessionResult>` | Passthrough to the session primitive. NOT re-gated — runners gate internally via `runSessionViaGate`. |
-| `profiles`          | `Map<string, AgentProfile>`                          | Resolved agent profiles.                                                                              |
-| `sessionBaseDir`    | `string`                                             | Base directory for persisted session storage.                                                         |
-| `cwd`               | `string`                                             | Working directory.                                                                                    |
-| `worktreeCwd?`      | `string`                                             | Per-task worktree path (when worktree isolation is active).                                           |
-| `apiKeys?`          | `Record<string, string>`                             | Provider → API key overrides.                                                                         |
-| `activeSessions`    | `Set<{ abort(): Promise<void> }>`                    | Mutable set of active sessions for cooperative abort.                                                 |
-| `onStatus?`         | `StatusCallbacks`                                    | Status callbacks.                                                                                     |
-| `hookRegistry?`     | `HookRegistry`                                       | Optional registry of workflow hooks.                                                                  |
-| `rendererRegistry?` | `RendererRegistry`                                   | Optional registry of custom output renderers.                                                         |
-| `auditLog?`         | `AuditLog`                                           | Audit log.                                                                                            |
-| `signal?`           | `AbortSignal`                                        | Cooperative cancellation signal.                                                                      |
-| `stepTimeoutMs?`    | `number`                                             | Per-prompt watchdog timeout.                                                                          |
-| `phaseId`           | `string`                                             | Phase identifier.                                                                                     |
-| `agentId`           | `string`                                             | Agent identifier.                                                                                     |
-| `maxTaskRetries?`   | `number`                                             | Max same-run retries budget.                                                                          |
-
-### `Runner`
-
-Source: `packages/engine/src/pool/runners/types.ts`.
-
-```typescript
-type Runner = (ctx: RunnerContext) => Promise<TaskOutcome>;
 ```
 
 ### `RunSessionContext`
@@ -484,6 +471,69 @@ Source: `packages/engine/src/pool/session.ts`.
 | `signal?`             | `AbortSignal`                     | Cooperative cancellation.                                                     |
 | `watchdogTimeoutMs?`  | `number`                          | Activity-based idle timeout.                                                  |
 | `watchdogMaxResumes?` | `number`                          | Max internal retries on watchdog timeout before permanent error.              |
+
+### `SessionPlanContext`
+
+Source: `packages/engine/src/pool/runners/session-plan-types.ts`. Context passed to a
+`SessionPlanRunner`'s `plan()` and `execute()` methods. Unlike the old runner contract,
+this does **not** include a `gate`, a `runSession` function, or `maxTaskRetries` — the
+scheduler owns the gate and invokes `execute()` for each spec.
+
+| Field               | Type                              | Description                                                               |
+| ------------------- | --------------------------------- | ------------------------------------------------------------------------- |
+| `task`              | `Task`                            | The task being executed.                                                  |
+| `profiles`          | `Map<string, AgentProfile>`       | Resolved agent profiles keyed by profile id.                              |
+| `sessionBaseDir`    | `string`                          | Base directory for persisted session storage.                             |
+| `cwd`               | `string`                          | Working directory for agent operations.                                   |
+| `worktreeCwd?`      | `string`                          | Per-task worktree path. When set, agent sessions run inside the worktree. |
+| `apiKeys?`          | `Record<string, string>`          | Provider → API key overrides.                                             |
+| `activeSessions`    | `Set<{ abort(): Promise<void> }>` | Mutable set of active sessions (for cooperative abort).                   |
+| `onStatus?`         | `StatusCallbacks`                 | Status callbacks (`onSessionStart` / `onSessionComplete` + agent-status). |
+| `hookRegistry?`     | `HookRegistry`                    | Hook registry (for lifecycle hooks).                                      |
+| `rendererRegistry?` | `RendererRegistry`                | Registry of custom output renderers.                                      |
+| `auditLog?`         | `AuditLog`                        | Audit log (for tracking session events).                                  |
+| `signal?`           | `AbortSignal`                     | Cooperative cancellation signal.                                          |
+| `stepTimeoutMs?`    | `number`                          | Step timeout in milliseconds (passed through to session execution).       |
+| `phaseId`           | `string`                          | Phase identifier (propagated to lifecycle callbacks).                     |
+| `agentId`           | `string`                          | Agent identifier (propagated to lifecycle callbacks).                     |
+
+### `SessionPlanRunner`
+
+Source: `packages/engine/src/pool/runners/session-plan-types.ts`. The SessionPlan
+runner contract — a stateful object that decouples _planning_ (what sessions to run)
+from _scheduling_ (when to start them, subject to gate capacity). The scheduler owns
+the `SessionGate`; the runner never acquires or releases gate slots itself.
+
+```typescript
+interface SessionPlanRunner {
+  plan(ctx: SessionPlanContext): AsyncGenerator<SessionSpec[], SessionResult[] | undefined, SessionResult[]>;
+  execute(ctx: SessionPlanContext, spec: SessionSpec): Promise<SessionResult>;
+}
+```
+
+**`plan(ctx)`** — async generator yielding **batches** of `SessionSpec[]`. The scheduler
+calls `gen.next()` to receive the first batch, starts as many sessions as gate capacity
+allows, then calls `gen.next(results)` to advance **only once the entire batch has
+settled**. The `results` argument is `SessionResult[]` — one per spec, in order. A
+batch is **atomic**: the generator cannot advance until every spec settles. A spec that
+cannot start parks the task (status `'parked'`); already-started siblings keep running.
+The generator's `return` value may be a final `SessionResult[]` or `undefined`.
+
+**`execute(ctx, spec)`** — runs one `SessionSpec` and returns its `SessionResult`. Must
+**not** acquire the gate — the scheduler acquires the slot before calling `execute()`
+and releases it after the returned promise settles.
+
+### `SessionPlanFactory`
+
+Source: `packages/engine/src/pool/runners/session-plan-types.ts`.
+
+```typescript
+type SessionPlanFactory = () => SessionPlanRunner;
+```
+
+Factory that constructs a fresh `SessionPlanRunner` instance. Runners are stateful
+(they track plan progress across batches), so each task gets its own runner instance.
+The scheduler constructs a runner lazily when a task becomes active.
 
 ## Structured-output and loop option types
 
@@ -542,15 +592,18 @@ Source: `packages/engine/src/core/types/callbacks.ts`.
 | `onPhaseComplete`      | `{ phase, durationMs }`                                                                                   | A phase finishes.                         |
 | `onSessionStart`       | `{ agentId, profile, phaseId, taskId?, sessionId?, sessionPath?, contextWindow?, runnerRole?, attempt? }` | A session is created (agent spawned).     |
 | `onSessionComplete`    | `{ agentId, profile, phaseId, taskId?, sessionId?, runnerRole?, attempt? }`                               | A session finishes its prompt.            |
-| `onTaskStart`          | `{ taskId, title, agentId, phaseId?, startedAt? }`                                                        | A task is claimed and dispatched.         |
+| `onTaskStart`          | `{ taskId, title, agentId, phaseId?, startedAt?, sessionPlan? }`                                          | A task is claimed and dispatched.         |
 | `onTaskRegister`       | `{ taskId, phaseId, title, dependencies }`                                                                | A task is registered.                     |
 | `onTaskComplete`       | `{ taskId, title }`                                                                                       | A task passes review.                     |
 | `onTaskRejected`       | `{ taskId, title, reason }`                                                                               | A task fails review.                      |
+| `onTaskParked`         | `{ taskId, title, agentId, phaseId? }`                                                                    | A task is parked (gate at capacity).      |
+| `onTaskUnparked`       | `{ taskId, title, agentId, phaseId? }`                                                                    | A parked task resumes (slot freed).       |
 | `onDecision`           | `{ agentId, decision, reasoning, taskId? }`                                                               | A reviewer makes a decision.              |
 | `onAgentRender`        | `{ agentId, profile, taskId?, rendered }`                                                                 | A renderer produces markdown from output. |
 | `onError`              | `{ agentId, error, phaseId, taskId? }`                                                                    | A session encounters an error.            |
 | `onWorkflowComplete`   | `{ totalDurationMs, agentCount }`                                                                         | The workflow finishes successfully.       |
 | `onWorkflowFailed`     | `{ error: Error, phaseId }`                                                                               | The workflow throws an unhandled error.   |
+| `onWorkflowData`       | `{ data: Record<string, unknown> }`                                                                       | Arbitrary workflow data is attached.      |
 | `onSidebarUpdate`      | `{ title?, indicator? }`                                                                                  | Sidebar UI metadata is updated.           |
 | `onAutoRetryStart`     | `{ agentId, attempt, maxAttempts, delayMs, errorMessage? }`                                               | An auto-retry cycle begins.               |
 | `onAutoRetryCompleted` | `{ agentId, success, attempt, finalError? }`                                                              | An auto-retry cycle ends.                 |
@@ -644,17 +697,17 @@ level (matching [Hooks §3](hooks.md#3-hook-catalog)). `Task` is defined in `cor
 
 #### Phase / task level
 
-| Type                        | Fields                                                                                |
-| --------------------------- | ------------------------------------------------------------------------------------- |
-| `BeforePhaseArgs`           | `{ phaseId: string; state: Record<string, unknown> }`                                 |
-| `BeforePhaseResult`         | `{ skip?: boolean; statePatch?: Record<string, unknown> }`                            |
-| `AfterPhaseArgs`            | `{ phaseId: string; result: unknown; durationMs: number }`                            |
-| `BeforePhaseTransitionArgs` | `{ from: string; to: string; state: Record<string, unknown> }`                        |
-| `PhaseTransition`           | `{ type: 'advance' \| 'loop' \| 'jump'; target?: string }`                            |
-| `ShouldRetryPhaseArgs`      | `{ phaseId: string; result: unknown; round: number; state: Record<string, unknown> }` |
-| `OnPhaseSettledArgs`        | `{ phaseId: string; tasks: Task[]; state: Record<string, unknown> }`                  |
-| `BeforeTaskArgs`            | `{ task: Task; steps: StepDefinition[] }`                                             |
-| `BeforeTaskResult`          | `{ skip?: boolean; steps?: StepDefinition[]; files?: string[]; reason?: string }`     |
+| Type                        | Fields                                                                                                                                                           |
+| --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `BeforePhaseArgs`           | `{ phaseId: string; state: Record<string, unknown> }`                                                                                                            |
+| `BeforePhaseResult`         | `{ skip?: boolean; statePatch?: Record<string, unknown> }`                                                                                                       |
+| `AfterPhaseArgs`            | `{ phaseId: string; result: unknown; durationMs: number }`                                                                                                       |
+| `BeforePhaseTransitionArgs` | `{ from: string; to: string; state: Record<string, unknown> }`                                                                                                   |
+| `PhaseTransition`           | `{ type: 'advance' \| 'loop' \| 'jump'; target?: string }`                                                                                                       |
+| `ShouldRetryPhaseArgs`      | `{ phaseId: string; result: unknown; round: number; state: Record<string, unknown> }`                                                                            |
+| `OnPhaseSettledArgs`        | `{ phaseId: string; tasks: Task[]; state: Record<string, unknown> }`                                                                                             |
+| `BeforeTaskArgs`            | `{ task: Task; steps: StepDefinition[] }`                                                                                                                        |
+| `BeforeTaskResult`          | `{ skip?: boolean; runner?: SessionPlanRunner; steps?: StepDefinition[]; files?: string[]; reason?: string; sessionPlan?: { role: string; profile: string }[] }` |
 
 #### Scheduler / execution level
 

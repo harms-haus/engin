@@ -8,9 +8,11 @@
 // `afterPhase`) and bounded by `maxRounds` (default 3, reproducing the
 // historical ≤3-rounds retry logic).
 //
-// `WorkflowStatusTracker` is imported from ../tracking/workflow-status.js (the
-// real class the runner observes and mutates), `HookRegistry` is imported
-// type-only from ../hooks/types.js, and `createHookRegistry` is imported from
+// PhaseRunner depends only on the minimal {@link PhaseTracker} interface (D3
+// decoupling), NOT on the concrete `WorkflowStatusTracker` class. The legacy
+// `WorkflowStatusTracker` still satisfies `PhaseTracker`, so existing consumers
+// that pass one are unaffected. `HookRegistry` is imported type-only from
+// ../hooks/types.js, and `createHookRegistry` is imported from
 // ../hooks/registry.js so the runner can fall back to a fresh empty registry
 // when no `hookRegistry` is supplied via options.
 //
@@ -40,7 +42,33 @@ import type {
   ShouldRetryPhaseArgs,
 } from '../hooks/types.js';
 import { DEFAULT_MAX_ROUNDS } from '../pool/constants.js';
-import type { WorkflowStatusTracker } from '../tracking/workflow-status.js';
+import type { StatusCallbacks, Task } from './types.js';
+
+/**
+ * Minimal read/write surface the {@link PhaseRunner} needs from a tracker.
+ *
+ * Introduced in D3 to decouple the runner from the concrete
+ * `WorkflowStatusTracker` class (the duplicate-state tracker slated for full
+ * removal once D4 migrates all consumers). Any object satisfying this interface
+ * may drive the phase loop — the engine's eventual EventStore-backed tracker
+ * will implement it directly, and the legacy `WorkflowStatusTracker` already
+ * satisfies it today.
+ *
+ * `taskTracker` is typed as the narrowest shape the runner inspects: only
+ * `getAllTasks()` (surfaced to the `onPhaseSettled` hook). The concrete
+ * `TaskTracker` class exposes strictly more, so a real tracker's richer surface
+ * is assignable without narrowing.
+ */
+export interface PhaseTracker {
+  /** Register a phase (id / label / icon) for display purposes. */
+  registerPhase(info: { id: string; label: string; icon: string }): void;
+  /** Transition to a new phase (pushes the previous into completed). */
+  setPhase(phaseId: string): void;
+  /** Persist the tracker's current state (durable across crashes / resumes). */
+  save(): Promise<void>;
+  /** The task collection the runner surfaces to the `onPhaseSettled` hook. */
+  readonly taskTracker: { getAllTasks(): Task[] };
+}
 
 /**
  * A single declared phase of a workflow.
@@ -69,13 +97,12 @@ export interface PhaseDefinition {
  * abort signal for cooperative cancellation.
  */
 export interface PhaseRunContext {
-  tracker: WorkflowStatusTracker;
+  tracker: PhaseTracker;
   hookRegistry?: HookRegistry;
   state: Record<string, unknown>; // mutable state shared across phases
   cwd: string;
   workDir: string;
   signal?: AbortSignal;
-  // ... forwarded options
 }
 
 /**
@@ -87,12 +114,17 @@ export interface PhaseRunContext {
  */
 export interface PhaseRunnerOptions {
   phases: PhaseDefinition[];
-  tracker: WorkflowStatusTracker;
+  tracker: PhaseTracker;
   hookRegistry?: HookRegistry;
   cwd: string;
   workDir: string;
   signal?: AbortSignal;
   maxRounds?: number; // default 3 — reproduces the ≤3-rounds logic
+  /** Optional status-callback surface. When supplied the runner fires
+   *  `onPhaseRegister` / `onPhaseStart` / `onPhaseComplete` alongside its
+   *  tracker mutations so the projection learns about phases purely from
+   *  events (single-writer).  */
+  onStatus?: StatusCallbacks;
 }
 
 /**
@@ -100,7 +132,7 @@ export interface PhaseRunnerOptions {
  *
  * Drives a workflow through its declared phases, honouring the phase-level
  * influence hooks and bounded by `maxRounds`. The runner observes / mutates a
- * {@link WorkflowStatusTracker}: it registers every phase for display
+ * {@link PhaseTracker}: it registers every phase for display
  * (`tracker.registerPhase`), transitions between phases
  * (`tracker.setPhase`), persists after each transition (`tracker.save`), and
  * exposes the tracker's settled tasks to the `onPhaseSettled` hook.
@@ -147,9 +179,13 @@ export class PhaseRunner {
     if (phases.length === 0) return;
 
     // 1. Register every phase for display (fires "onPhaseRegister" via the
-    //    tracker — registerPhase persists each entry).
+    //    tracker — registerPhase persists each entry). When an `onStatus`
+    //    surface is supplied the same info is routed through
+    //    `onStatus.onPhaseRegister` so the EventStore-backed projection learns
+    //    about phase registrations purely from events (single-writer).
     for (const phase of phases) {
       tracker.registerPhase({ id: phase.id, label: phase.label, icon: phase.icon });
+      this.options.onStatus?.onPhaseRegister?.({ id: phase.id, label: phase.label, icon: phase.icon });
     }
 
     // Shared mutable state bag — one instance for the whole run, forwarded to
@@ -168,9 +204,13 @@ export class PhaseRunner {
       // Make this phase current. setPhase pushes the previous current (if any)
       // into completedPhaseIds — so by the time phase N's body runs, phase N-1
       // is recorded as completed. Persist immediately so the transition is
-      // durable (setPhase itself does NOT auto-persist).
+      // durable (setPhase itself does NOT auto-persist). When an `onStatus`
+      // surface is supplied the phase-start is routed through
+      //    `onStatus.onPhaseStart` so the projection learns about it purely
+      //    from events.
       tracker.setPhase(phase.id);
       await tracker.save();
+      this.options.onStatus?.onPhaseStart?.({ phase: phase.id, round: 1 });
 
       const phaseCtx = this.makePhaseContext(state);
       const hookCtx = this.makeHookContext();
@@ -236,13 +276,17 @@ export class PhaseRunner {
       }
 
       // 7. afterPhase (observe): fire-and-forget with the result + duration.
-      //    Maps onto the legacy "fire onPhaseComplete" step.
+      //    Maps onto the legacy "fire onPhaseComplete" step. When an `onStatus`
+      //    surface is supplied the completion is ALSO routed through
+      //    `onStatus.onPhaseComplete` so the projection learns about phase
+      //    completion purely from events.
       const afterArgs: AfterPhaseArgs = {
         phaseId: phase.id,
         result,
         durationMs,
       };
       await this.registry.invokeObserve('afterPhase', afterArgs, hookCtx);
+      this.options.onStatus?.onPhaseComplete?.({ phase: phase.id, durationMs });
 
       // 8. beforePhaseTransition (first-wins): default = advance. A jump
       //    rewrites the loop index to the target phase's position.

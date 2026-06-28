@@ -69,6 +69,10 @@
   font-family: var(--font-mono);
 }
 
+.task-list__elapsed--paused {
+  opacity: 0.5;
+}
+
 .task-list__deps {
   font-size: 11px;
   color: var(--text-muted);

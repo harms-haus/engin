@@ -590,6 +590,15 @@ describe('projection-helpers – isTerminalTaskStatus', () => {
     expect(isTerminalTaskStatus('ready')).toBe(false);
     expect(isTerminalTaskStatus('blocked')).toBe(false);
     expect(isTerminalTaskStatus('active')).toBe(false);
+    expect(isTerminalTaskStatus('parked')).toBe(false);
+  });
+
+  it('returns false for parked specifically (parked is in-progress, not terminal)', () => {
+    // 'parked' is a non-terminal status — the task is paused but still in
+    // progress and should not trigger completion-reselection. This test
+    // explicitly guards against a future change that would add 'parked' to
+    // the terminal set.
+    expect(isTerminalTaskStatus('parked')).toBe(false);
   });
 });
 

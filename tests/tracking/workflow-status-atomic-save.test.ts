@@ -3,6 +3,7 @@ import * as fs from 'node:fs/promises';
 import { join } from 'node:path';
 import { WorkflowStatusTracker } from '../../packages/engine/src/tracking/workflow-status.js';
 import { makeTask } from '../helpers/make-task.js';
+import { simulateClaim, simulateComplete } from '../helpers/task-lifecycle.js';
 import { useTempDir } from '../helpers/use-temp-dir.js';
 
 describe('WorkflowStatusTracker – atomic save', () => {
@@ -161,8 +162,8 @@ describe('WorkflowStatusTracker – atomic save', () => {
       tracker.setTaskPrompt('auto-atomic');
       tracker.taskTracker.addTask(makeTask({ id: 't1' }));
 
-      tracker.taskTracker.claimTasks(1, 'agent-1');
-      tracker.taskTracker.completeTask('t1');
+      simulateClaim(tracker.taskTracker, 't1', 'agent-1');
+      simulateComplete(tracker.taskTracker, 't1');
 
       await tracker.save();
 

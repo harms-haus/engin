@@ -2,6 +2,7 @@ import { describe, expect, it } from 'bun:test';
 // The event-types shim (packages/engine/src/tracking/event-types.ts) has been
 // deleted; types now come straight from @engin/shared/event-types.
 import type { EventRecord, EventType } from '@engin/shared/event-types';
+import { STATUS_CALLBACK_METHODS } from '../../packages/engine/src/core/types.js';
 import { createStoreCallbacks } from '../../packages/engine/src/tracking/store-callbacks.js';
 
 // ── Mock EventStore ──────────────────────────────────────────────────────────
@@ -194,6 +195,52 @@ describe('createStoreCallbacks', () => {
     });
   });
 
+  describe('onTaskParked', () => {
+    it('appends task_parked with correct data and metadata', () => {
+      const { store, calls } = createMockStore();
+      const cb = createStoreCallbacks(store as never);
+      cb.onTaskParked!({ taskId: 't1', title: 'Build auth', agentId: 'a1', phaseId: 'impl' });
+      expect(calls).toHaveLength(1);
+      expect(calls[0].type).toBe('task_parked');
+      expect(calls[0].data).toEqual({ taskId: 't1', title: 'Build auth', agentId: 'a1' });
+      expect(calls[0].metadata).toEqual({ taskId: 't1', agentId: 'a1', phaseId: 'impl' });
+    });
+
+    it('omits phaseId from metadata when phaseId is undefined', () => {
+      const { store, calls } = createMockStore();
+      const cb = createStoreCallbacks(store as never);
+      cb.onTaskParked!({ taskId: 't1', title: 'Parked', agentId: 'a1' });
+      expect(calls).toHaveLength(1);
+      expect(calls[0].type).toBe('task_parked');
+      expect(calls[0].data).toEqual({ taskId: 't1', title: 'Parked', agentId: 'a1' });
+      expect(calls[0].metadata).toEqual({ taskId: 't1', agentId: 'a1' });
+      expect(calls[0].metadata).not.toHaveProperty('phaseId');
+    });
+  });
+
+  describe('onTaskUnparked', () => {
+    it('appends task_unparked with correct data and metadata', () => {
+      const { store, calls } = createMockStore();
+      const cb = createStoreCallbacks(store as never);
+      cb.onTaskUnparked!({ taskId: 't1', title: 'Build auth', agentId: 'a1', phaseId: 'impl' });
+      expect(calls).toHaveLength(1);
+      expect(calls[0].type).toBe('task_unparked');
+      expect(calls[0].data).toEqual({ taskId: 't1', title: 'Build auth', agentId: 'a1' });
+      expect(calls[0].metadata).toEqual({ taskId: 't1', agentId: 'a1', phaseId: 'impl' });
+    });
+
+    it('omits phaseId from metadata when phaseId is undefined', () => {
+      const { store, calls } = createMockStore();
+      const cb = createStoreCallbacks(store as never);
+      cb.onTaskUnparked!({ taskId: 't1', title: 'Unparked', agentId: 'a1' });
+      expect(calls).toHaveLength(1);
+      expect(calls[0].type).toBe('task_unparked');
+      expect(calls[0].data).toEqual({ taskId: 't1', title: 'Unparked', agentId: 'a1' });
+      expect(calls[0].metadata).toEqual({ taskId: 't1', agentId: 'a1' });
+      expect(calls[0].metadata).not.toHaveProperty('phaseId');
+    });
+  });
+
   describe('onDecision', () => {
     it('appends decision with correct data and metadata', () => {
       const { store, calls } = createMockStore();
@@ -241,6 +288,19 @@ describe('createStoreCallbacks', () => {
       expect(calls[0].data.error).toBe('Kaboom');
       expect(calls[0].data.errorName).toBe('Error');
       expect(calls[0].data.phase).toBe('impl');
+      expect(calls[0].metadata).toBeUndefined();
+    });
+  });
+
+  describe('onWorkflowData', () => {
+    it('appends workflow_data_set with the raw data object and no metadata', () => {
+      const { store, calls } = createMockStore();
+      const cb = createStoreCallbacks(store as never);
+      const customData = { key: 'value', nested: { a: 1 } };
+      cb.onWorkflowData!({ data: customData });
+      expect(calls).toHaveLength(1);
+      expect(calls[0].type).toBe('workflow_data_set');
+      expect(calls[0].data).toBe(customData);
       expect(calls[0].metadata).toBeUndefined();
     });
   });
@@ -319,30 +379,7 @@ describe('createStoreCallbacks', () => {
     it('returns an object with all StatusCallbacks methods defined', () => {
       const { store } = createMockStore();
       const cb = createStoreCallbacks(store as never);
-      const methods = [
-        'onWorkflowStart',
-        'onPhaseRegister',
-        'onPhaseStart',
-        'onPhaseComplete',
-        'onTaskRegister',
-        'onSessionStart',
-        'onSessionComplete',
-        'onTaskStart',
-        'onTaskComplete',
-        'onTaskRejected',
-        'onDecision',
-        'onError',
-        'onWorkflowComplete',
-        'onWorkflowFailed',
-        'onSidebarUpdate',
-        'onTurnStart',
-        'onTurnEnd',
-        'onToolCallStart',
-        'onToolCallEnd',
-        'onAutoRetryStart',
-        'onAutoRetryCompleted',
-      ] as const;
-      for (const m of methods) {
+      for (const m of STATUS_CALLBACK_METHODS) {
         expect(typeof (cb as Record<string, unknown>)[m]).toBe('function');
       }
     });

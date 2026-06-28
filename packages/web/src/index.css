@@ -14,6 +14,7 @@
   --task-completed: #3fb950;
   --task-ready: #58a6ff;
   --task-blocked: #8b0000;
+  --task-parked: #d2a8ff;
   --font-mono: 'SF Mono', 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
   --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
 }

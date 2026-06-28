@@ -3,6 +3,7 @@ import * as fs from 'node:fs/promises';
 import { join } from 'node:path';
 import { WorkflowStatusTracker } from '../../packages/engine/src/tracking/workflow-status.js';
 import { makeTask } from '../helpers/make-task.js';
+import { simulateClaim, simulateComplete } from '../helpers/task-lifecycle.js';
 import { useTempDir } from '../helpers/use-temp-dir.js';
 
 /**
@@ -517,14 +518,16 @@ describe('WorkflowStatusTracker – persist architecture (bounded promise chain)
   // ── behavioral: auto-persist still works ──────────────────────────
 
   describe('auto-persist still works with new architecture', () => {
-    it('task completion triggers auto-persist', async () => {
+    it('task completion can be persisted via explicit save', async () => {
       tracker.setTaskPrompt('task-auto-persist');
       tracker.taskTracker.addTask(makeTask({ id: 't1' }));
 
-      tracker.taskTracker.claimTasks(1, 'agent-x');
-      tracker.taskTracker.completeTask('t1');
+      simulateClaim(tracker.taskTracker, 't1', 'agent-x');
+      simulateComplete(tracker.taskTracker, 't1');
 
-      await new Promise((r) => setTimeout(r, 50));
+      // Auto-persist via TaskTracker events was removed when TaskTracker's
+      // EventEmitter surface was eliminated. Explicit save() still works.
+      await tracker.save();
 
       const restored = await WorkflowStatusTracker.load(dir);
       expect(restored.taskTracker.getTask('t1')!.status).toBe('complete');

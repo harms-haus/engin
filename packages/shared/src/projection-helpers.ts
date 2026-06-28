@@ -159,6 +159,22 @@ export function pickMostRecentlyStartedActive(tasks: TaskEntity[]): TaskEntity |
 }
 
 /**
+ * Pick the most-recently-started (greatest `startedAt`) `parked` task from the
+ * supplied list. Tasks missing `startedAt` are treated as `-Infinity` (oldest).
+ * Returns `undefined` when the list contains no parked task. Used as a
+ * completion-reselection fallback (after {@link pickMostRecentlyStartedActive})
+ * so that when no `active` task remains but a parked (paused-but-in-progress)
+ * task does, it is re-selected instead of leaving the now-terminal task. Shared
+ * by the store-facing {@link reconcileSelection} and the TUI dashboard so the
+ * fallback cannot diverge between the two call sites.
+ */
+export function pickMostRecentlyStartedParked(tasks: TaskEntity[]): TaskEntity | undefined {
+  const parked = tasks.filter((t) => t.status === 'parked');
+  if (parked.length === 0) return undefined;
+  return parked.reduce((best, t) => ((t.startedAt ?? -Infinity) > (best.startedAt ?? -Infinity) ? t : best));
+}
+
+/**
  * Reconcile selection state after projection updates (snapshot or events).
  * Implements the Dashboard's follow rules:
  *
@@ -171,11 +187,13 @@ export function pickMostRecentlyStartedActive(tasks: TaskEntity[]): TaskEntity |
  *   the new phase starts clean. The very first call (selectedPhaseId === null)
  *   auto-selects currentPhaseId.
  * - TASK FOLLOW: if selectedTaskId is null or no longer belongs to the selected
- *   phase → auto-select the first active task (or first task). ADDITIONALLY,
- *   when the selected task transitioned out of 'active' (→ complete / failed /
- *   cancelled) and other active tasks remain, re-select the most-recently-
- *   started (greatest startedAt; missing startedAt → -Infinity) active task. If
- *   no active task remains, keep the completed task selected (intended).
+ *   phase → auto-select the first active or parked task (or first task).
+ *   ADDITIONALLY, when the selected task transitioned out of 'active' or
+ *   'parked' (→ complete / failed / cancelled) and other in-progress tasks
+ *   remain, re-select the most-recently-started (greatest startedAt; missing
+ *   startedAt → -Infinity) in-progress task — preferring an active task,
+ *   falling back to a parked one. If no in-progress task remains, keep the
+ *   completed task selected (intended).
  * - SESSION FOLLOW (B11): when the user has not pinned a session AND the log
  *   pane is not expanded (`isLogExpanded`), auto-select the most-recently-
  *   started (greatest `startedAt`) session whose `taskId` matches the selected
@@ -217,8 +235,10 @@ export function reconcileSelection(state: SelectionState, isLogExpanded?: boolea
     const tasksInPhase = Object.values(state.tasks).filter((t) => t.phaseId === state.selectedPhaseId);
 
     // Existing: auto-select when the current selection is null or stale.
+    // A 'parked' task is in-progress (paused but active), so it is eligible
+    // for auto-selection — mirroring the TUI dashboard's follow logic.
     if (state.selectedTaskId === null || !tasksInPhase.some((t) => t.id === state.selectedTaskId)) {
-      const firstActive = tasksInPhase.find((t) => t.status === 'active');
+      const firstActive = tasksInPhase.find((t) => t.status === 'active' || t.status === 'parked');
       const nextTaskId = firstActive?.id ?? tasksInPhase[0]?.id ?? null;
       // Only clobber selection when the task ACTUALLY changes — e.g. when the
       // selected task is gone or a fresh task is auto-selected. When there is
@@ -232,15 +252,19 @@ export function reconcileSelection(state: SelectionState, isLogExpanded?: boolea
     }
 
     // Task completion reselection: if the SELECTED task transitioned
-    // OUT of 'active' (→ complete / failed / cancelled) since the last call
-    // (prevSelectedTaskStatus === 'active') and other active tasks remain,
-    // re-select the most-recently-started (greatest startedAt; missing
-    // startedAt treated as -Infinity) active task. If no active task remains,
-    // keep the completed task selected (intended).
-    if (state.selectedTaskId !== null && state.prevSelectedTaskStatus === 'active') {
+    // OUT of 'active' or 'parked' (→ complete / failed / cancelled) since the
+    // last call (prevSelectedTaskStatus was 'active' or 'parked') and other
+    // in-progress tasks remain, re-select the most-recently-started (greatest
+    // startedAt; missing startedAt treated as -Infinity) in-progress task —
+    // preferring an active task, falling back to a parked one. If no
+    // in-progress task remains, keep the completed task selected (intended).
+    if (
+      state.selectedTaskId !== null &&
+      (state.prevSelectedTaskStatus === 'active' || state.prevSelectedTaskStatus === 'parked')
+    ) {
       const selectedTask = state.tasks[state.selectedTaskId];
       if (selectedTask && isTerminalTaskStatus(selectedTask.status)) {
-        const next = pickMostRecentlyStartedActive(tasksInPhase);
+        const next = pickMostRecentlyStartedActive(tasksInPhase) ?? pickMostRecentlyStartedParked(tasksInPhase);
         if (next) {
           state.selectedTaskId = next.id;
           state.userPinnedSession = false;

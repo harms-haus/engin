@@ -63,16 +63,16 @@ describe('docs/guides/building-workflows.md — createHarness removal', () => {
       expect(lifecycle).not.toContain('createHarness');
     });
 
-    it('mentions createSession', () => {
-      expect(lifecycle).toContain('createSession');
+    it('mentions runSession', () => {
+      expect(lifecycle).toContain('runSession');
     });
 
-    it('mentions spawnAgent', () => {
-      expect(lifecycle).toContain('spawnAgent');
+    it('mentions onAgentSpawn', () => {
+      expect(lifecycle).toContain('onAgentSpawn');
     });
 
-    it('mentions the agent plugin', () => {
-      expect(lifecycle.toLowerCase()).toContain('agent plugin');
+    it('mentions SessionScheduler', () => {
+      expect(lifecycle).toContain('SessionScheduler');
     });
 
     it('still fires onSessionStart (session id derived from taskId)', () => {
@@ -83,11 +83,11 @@ describe('docs/guides/building-workflows.md — createHarness removal', () => {
   // ── Lane-processing narrative (around line 273) ──────────────────────────
 
   describe('pool-processing narrative wording', () => {
-    const section = extractBlock(guide, '### How `RunnerPool` processes a task');
+    const section = extractBlock(guide, '### How `SessionScheduler` processes a task');
 
-    it('contains the "How RunnerPool processes a task" section', () => {
+    it('contains the "How SessionScheduler processes a task" section', () => {
       expect(section).not.toBe('');
-      expect(section).toContain('How `RunnerPool` processes a task');
+      expect(section).toContain('How `SessionScheduler` processes a task');
     });
 
     it('does not reference createHarness', () => {
@@ -99,8 +99,8 @@ describe('docs/guides/building-workflows.md — createHarness removal', () => {
       expect(section).not.toContain('harness session');
     });
 
-    it('references getRunnerForTask as the runner resolution', () => {
-      expect(section).toContain('getRunnerForTask');
+    it('references resolving the runner factory from the graph entry', () => {
+      expect(section).toContain('from the graph entry');
     });
   });
 

@@ -2,6 +2,7 @@ import { Key, matchesKey, truncateToWidth, type Component } from '@earendil-work
 import {
   isTerminalTaskStatus,
   pickMostRecentlyStartedActive,
+  pickMostRecentlyStartedParked,
   selectNextSession,
   type SessionEntity,
   type WorkflowProjection,
@@ -21,8 +22,6 @@ import { TaskListWidget } from './task-list-widget.js';
 function pickMostRecentlyStarted(sessions: SessionEntity[]): SessionEntity {
   return sessions.reduce((best, a) => ((a.startedAt ?? '') > (best.startedAt ?? '') ? a : best));
 }
-
-// ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface DashboardSelection {
   selectedPhaseId: string | null;
@@ -185,15 +184,19 @@ export class Dashboard implements Component {
     const currentSelectedTaskId = this._selection.selectedTaskId;
     if (currentSelectedTaskId !== null && phaseTasks.some((t) => t.id === currentSelectedTaskId)) {
       // Completion-transition reselection: if the selected task transitioned out
-      // of 'active' (→ complete/failed/cancelled) and other active tasks remain,
-      // re-select the most-recently-started (least active time) remaining active
-      // task. If no active task remains, keep the completed task selected
-      // (intended: it is still in phaseTasks).
+      // of 'active' or 'parked' (→ complete/failed/cancelled) and other
+      // in-progress tasks (active + parked) remain, re-select the
+      // most-recently-started remaining in-progress task. If none remain, keep
+      // the completed task selected (intended: it is still in phaseTasks).
       const oldStatus = oldProjection?.tasks[currentSelectedTaskId]?.status;
       const selectedTaskInPhase = phaseTasks.find((t) => t.id === currentSelectedTaskId);
       const newStatus = selectedTaskInPhase?.status;
-      if (oldStatus === 'active' && newStatus !== undefined && isTerminalTaskStatus(newStatus)) {
-        const next = pickMostRecentlyStartedActive(phaseTasks);
+      if (
+        (oldStatus === 'active' || oldStatus === 'parked') &&
+        newStatus !== undefined &&
+        isTerminalTaskStatus(newStatus)
+      ) {
+        const next = pickMostRecentlyStartedActive(phaseTasks) ?? pickMostRecentlyStartedParked(phaseTasks);
         if (next) {
           this._selection.selectedTaskId = next.id;
           this._selection.selectedSessionId = null;
@@ -202,8 +205,8 @@ export class Dashboard implements Component {
       }
     }
     if (this._selection.selectedTaskId === null || !phaseTasks.some((t) => t.id === this._selection.selectedTaskId)) {
-      // Auto-select first active task; if none, first task; if none, null
-      const activeTask = phaseTasks.find((t) => t.status === 'active');
+      // Auto-select first active or parked (in-progress) task; if none, first task; if none, null
+      const activeTask = phaseTasks.find((t) => t.status === 'active' || t.status === 'parked');
       const newTaskId = activeTask?.id ?? phaseTasks[0]?.id ?? null;
       if (newTaskId !== this._selection.selectedTaskId) {
         this._selection.selectedSessionId = null;

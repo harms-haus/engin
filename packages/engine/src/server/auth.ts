@@ -1,6 +1,6 @@
 // ─── auth — capability-token generation & the single authorize chokepoint ──
 //
-// Daemon-side authentication primitives. See server-refactor.prompt.md §13.
+// Daemon-side authentication primitives.
 //
 // `generateToken`/`writeServerToken`/`readServerToken`/`validateToken` manage
 // the capability token persisted at `<globalConfigDir>/server.token` (path

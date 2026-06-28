@@ -3,6 +3,7 @@ import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { WorkflowStatusTracker } from '../../packages/engine/src/tracking/workflow-status.js';
 import { makeTask } from '../helpers/make-task.js';
+import { simulateClaim, simulateComplete, simulateFail } from '../helpers/task-lifecycle.js';
 import { useTempDir } from '../helpers/use-temp-dir.js';
 
 describe('WorkflowStatusTracker', () => {
@@ -400,8 +401,8 @@ describe('WorkflowStatusTracker', () => {
       tracker.taskTracker.addTask(makeTask({ id: 'b', dependencies: ['a'] }));
 
       // Complete task a
-      tracker.taskTracker.claimTasks(1, 'agent-1');
-      tracker.taskTracker.completeTask('a');
+      simulateClaim(tracker.taskTracker, 'a', 'agent-1');
+      simulateComplete(tracker.taskTracker, 'a');
 
       await tracker.save();
       const restored = await WorkflowStatusTracker.load(dir);
@@ -433,8 +434,8 @@ describe('WorkflowStatusTracker', () => {
       tracker.setTaskPrompt('auto-persist-test');
       tracker.taskTracker.addTask(makeTask({ id: 't1' }));
 
-      tracker.taskTracker.claimTasks(1, 'agent-x');
-      tracker.taskTracker.completeTask('t1');
+      simulateClaim(tracker.taskTracker, 't1', 'agent-x');
+      simulateComplete(tracker.taskTracker, 't1');
 
       await tracker.save();
 
@@ -447,8 +448,8 @@ describe('WorkflowStatusTracker', () => {
       tracker.setTaskPrompt('fail-persist-test');
       tracker.taskTracker.addTask(makeTask({ id: 't1' }));
 
-      tracker.taskTracker.claimTasks(1, 'agent-x');
-      tracker.taskTracker.failTask('t1', { error: 'boom' });
+      simulateClaim(tracker.taskTracker, 't1', 'agent-x');
+      simulateFail(tracker.taskTracker, 't1', { error: 'boom' });
 
       await tracker.save();
 
@@ -471,8 +472,8 @@ describe('WorkflowStatusTracker', () => {
       expect(restored.taskTracker.getTask('t1')!.status).toBe('ready');
 
       // Run the full lifecycle on the loaded tracker
-      restored.taskTracker.claimTasks(1, 'agent-x');
-      restored.taskTracker.completeTask('t1');
+      simulateClaim(restored.taskTracker, 't1', 'agent-x');
+      simulateComplete(restored.taskTracker, 't1');
 
       await restored.save();
 
@@ -492,10 +493,10 @@ describe('WorkflowStatusTracker', () => {
         throw new Error('Simulated disk write failure');
       };
 
-      tracker.taskTracker.claimTasks(1, 'agent-x');
+      simulateClaim(tracker.taskTracker, 't1', 'agent-x');
 
       // completeTask should not throw — save() is fire-and-forget with .catch()
-      tracker.taskTracker.completeTask('t1');
+      simulateComplete(tracker.taskTracker, 't1');
 
       await tracker.save().catch(() => {});
 
@@ -555,8 +556,8 @@ describe('WorkflowStatusTracker', () => {
       isolatedTracker.dispose();
 
       // Completing a task after dispose should NOT write to disk
-      isolatedTracker.taskTracker.claimTasks(1, 'agent-1');
-      isolatedTracker.taskTracker.completeTask('t1');
+      simulateClaim(isolatedTracker.taskTracker, 't1', 'agent-1');
+      simulateComplete(isolatedTracker.taskTracker, 't1');
 
       // Load from disk — the task should still be 'ready' (pre-dispose state)
       const restored = await WorkflowStatusTracker.load(isolatedDir);
@@ -599,8 +600,8 @@ describe('WorkflowStatusTracker', () => {
       ac.abort();
 
       // Complete a task after abort — should NOT persist
-      signalTracker.taskTracker.claimTasks(1, 'agent-1');
-      signalTracker.taskTracker.completeTask('t1');
+      simulateClaim(signalTracker.taskTracker, 't1', 'agent-1');
+      simulateComplete(signalTracker.taskTracker, 't1');
 
       // The original tracker never saved, so load should fail
       await expect(WorkflowStatusTracker.load(dir)).rejects.toThrow('Workflow state file not found');
@@ -683,7 +684,7 @@ describe('WorkflowStatusTracker', () => {
 
       // Add a task and set it to active
       signalTracker.taskTracker.addTask(makeTask({ id: 'active-task' }));
-      signalTracker.taskTracker.claimTasks(1, 'agent-1');
+      simulateClaim(signalTracker.taskTracker, 'active-task', 'agent-1');
 
       expect(signalTracker.taskTracker.getTask('active-task')!.status).toBe('active');
 
@@ -705,7 +706,7 @@ describe('WorkflowStatusTracker', () => {
       });
 
       // Claim and start the first task
-      signalTracker.taskTracker.claimTasks(1, 'agent-1');
+      simulateClaim(signalTracker.taskTracker, 'active-task', 'agent-1');
 
       expect(signalTracker.taskTracker.getTask('active-task')!.status).toBe('active');
       expect(signalTracker.taskTracker.getTask('ready-task')!.status).toBe('ready');

@@ -361,6 +361,40 @@ describe('RunExecutor.execute — options.onStatus is the composed surface', () 
     expect(phase).toBeDefined();
     expect(phase!.data as Record<string, unknown>).toEqual({ phase: 'build', round: 3 });
   });
+
+  it('forwards onTaskParked / onTaskUnparked / onWorkflowData through the composed onStatus to the store', async () => {
+    // The newer status callbacks (parking + workflow data) must flow through
+    // the composed onStatus surface identically to the legacy callbacks.
+    const run = await makeRun();
+    const { workflow } = makeWorkflow({
+      runImpl: (options) => {
+        const cb = status(options);
+        cb.onWorkflowStart({ taskPrompt: TASK_PROMPT, resumed: false, workDir: options.workDir });
+        cb.onTaskRegister({
+          taskId: 't1',
+          phaseId: 'p1',
+          title: 'Task t1',
+          dependencies: [],
+        });
+        cb.onTaskParked({ taskId: 't1', title: 'Task t1', agentId: 'a1', phaseId: 'p1' });
+        cb.onTaskUnparked({ taskId: 't1', title: 'Task t1', agentId: 'a1', phaseId: 'p1' });
+        cb.onWorkflowData({ data: { summary: 'done' } });
+      },
+    });
+
+    await run.executor.execute(run.handle, workflow, run.storeCallbacks, run.msg);
+
+    const types = events(run.store).map((e) => e.type);
+    expect(types).toContain('task_parked');
+    expect(types).toContain('task_unparked');
+    expect(types).toContain('workflow_data_set');
+
+    // Verify the projection evolved correctly: task went parked → active.
+    const proj = run.store.getProjection();
+    expect(proj.tasks['t1'].status).toBe('active');
+    // workflowData was merged.
+    expect(proj.workflowData).toEqual({ summary: 'done' });
+  });
 });
 
 // ── (2) options.hookRegistry — forwarded to workflow primitives ─────────────

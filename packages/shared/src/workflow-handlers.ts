@@ -31,3 +31,11 @@ export function handleWorkflowFailed(state: WorkflowProjection, event: EventReco
     seq: event.seq,
   });
 }
+
+export function handleWorkflowDataSet(state: WorkflowProjection, event: EventRecord): WorkflowProjection {
+  const existing = state.workflowData ?? {};
+  return clone(state, {
+    workflowData: { ...existing, ...event.data },
+    seq: event.seq,
+  });
+}

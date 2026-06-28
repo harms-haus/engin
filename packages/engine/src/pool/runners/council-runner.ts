@@ -1,32 +1,28 @@
-// ─── Council Runner ──────────────────────────────────────────────────────
+// ─── Council Runner (SessionPlan contract) ───────────────────────────────
 //
-// A Runner that runs worker sessions in PARALLEL and feeds their concatenated
-// results into a synthesizer session.
+// A SessionPlanRunner that runs worker sessions in parallel (Phase1) and
+// feeds their concatenated results into a synthesizer session (Phase2).
 //
-// Workers are started as independent coroutines — each acquires its own gate
-// slot via `ctx.gate.run` and calls `ctx.runSession`. They are awaited together
-// via `Promise.allSettled`, so no worker holds a slot while waiting for a
-// sibling (deadlock-free under any gate cap ≥ 1).
+// Phase1: yields all worker specs as a single batch. The scheduler runs them
+//   concurrently through the gate. Results come back as SessionResult[] —
+//   one per worker, in spec order.
 //
-// Successful worker results are concatenated into the synthesizer prompt:
+// Phase2: builds the synthesizer prompt by concatenating the successful
+//   worker outputs (using the same formatting convention as the old
+//   council-runner). The enriched synthesizer spec is yielded as a second
+//   batch. The synthesizer spec's prompt is enriched BEFORE it is yielded
+//   (execute() runs the spec as-is).
 //
+// Worker output formatting:
 //   text        → the result text
 //   structured  → JSON.stringify(result.data)
 //   filesystem  → "(filesystem session — see files)"
 //
-// Each worker's output is appended to the synthesizer's original prompt in
-// order. Failed workers are silently omitted from the synthesizer prompt.
-//
-// If ALL workers fail, the synthesizer is NOT called and the runner returns
-// `{ status: 'failed' }`.
-//
-// Deterministic IDs: taken directly from the provided SessionSpec objects
-// (callers should use the convention `${taskId}/worker[${i}]#${attempt}`
-// and `${taskId}/synthesizer#${attempt}`).
+// `execute()` delegates to {@link defaultExecute} (gate-free).
 
 import type { SessionResult, SessionSpec } from '../session.js';
-import type { Runner, RunnerContext, TaskOutcome } from './types.js';
-import { runSessionViaGate } from './utils.js';
+import { defaultExecute } from './runner-utils.js';
+import type { SessionPlanContext, SessionPlanFactory, SessionPlanRunner } from './session-plan-types.js';
 
 /** Prefix prepended before each worker's result in the synthesizer prompt. */
 const WORKER_OUTPUT_PREFIX = '\n\n---\nWorker output:\n';
@@ -47,50 +43,52 @@ function formatWorkerResult(result: SessionResult): string {
 }
 
 /**
- * Create a Runner that runs workers in parallel and feeds their results into a
- * synthesizer session.
+ * Create a SessionPlanRunner that runs workers in parallel and feeds their
+ * results into a synthesizer session.
  *
- * Workers run as independent `gate.run` coroutines awaited together via
- * `Promise.allSettled`. Partial failure is tolerated (failed workers are
- * omitted from the synthesizer prompt). All workers failing →
- * `{ status: 'failed' }` (synthesizer NOT called).
+ * Phase1: all workers run concurrently (the scheduler manages gate capacity).
+ * Phase2: worker outputs are concatenated into the synthesizer prompt.
  *
- * @param workers — Array of SessionSpec for worker agents.
- * @param synthesizer — SessionSpec for the synthesizer agent.
+ * @param workers - Array of SessionSpec for worker agents.
+ * @param synthesizer - SessionSpec for the synthesizer agent.
+ * @returns A factory that constructs a fresh {@link SessionPlanRunner} for
+ *   each call.
  */
-export function councilRunner(workers: SessionSpec[], synthesizer: SessionSpec): Runner {
-  return async (ctx: RunnerContext): Promise<TaskOutcome> => {
-    // ── 1. Start all workers as independent gate.run coroutines ────────────
-    // Each promise starts executing immediately (acquiring its own gate slot);
-    // they are awaited together so no worker blocks on a sibling.
-    const workerPromises = workers.map((spec) => runSessionViaGate(ctx, spec));
-    const settled = await Promise.allSettled(workerPromises);
+export function councilRunner(workers: SessionSpec[], synthesizer: SessionSpec): SessionPlanFactory {
+  return (): SessionPlanRunner => {
+    return {
+      plan: async function* (
+        _ctx: SessionPlanContext,
+      ): AsyncGenerator<SessionSpec[], SessionResult[] | undefined, SessionResult[]> {
+        // ── Phase1: Yield all workers as a single batch ──────────────────
+        const workerResults: SessionResult[] = yield workers;
 
-    // ── 2. Collect successful worker results (omit failures) ──────────────
-    const workerResults: SessionResult[] = [];
-    for (const s of settled) {
-      if (s.status === 'fulfilled') {
-        workerResults.push(s.value);
-      }
-    }
+        // ── Phase2: Build synthesizer prompt from worker outputs ─────────
+        // Format each worker result and concatenate with the prefix separator.
+        const workerOutputs = workerResults
+          .map((r) => formatWorkerResult(r))
+          .filter((text) => text.length > 0)
+          .join(WORKER_OUTPUT_PREFIX);
 
-    // ── 3. All workers failed → synthesizer NOT called ─────────────────────
-    if (workerResults.length === 0) {
-      return { status: 'failed', error: 'All council workers failed' };
-    }
+        const synthPrompt =
+          workerOutputs.length > 0
+            ? `${synthesizer.prompt}${WORKER_OUTPUT_PREFIX}${workerOutputs}`
+            : synthesizer.prompt;
 
-    // ── 4. Build synthesizer prompt (original + concatenated worker outputs) ──
-    const workerOutputs = workerResults.map((r) => formatWorkerResult(r)).join(WORKER_OUTPUT_PREFIX);
-    const synthPrompt = `${synthesizer.prompt}${WORKER_OUTPUT_PREFIX}${workerOutputs}`;
+        const synthSpec: SessionSpec = {
+          ...synthesizer,
+          prompt: synthPrompt,
+        };
 
-    const synthSpec: SessionSpec = {
-      ...synthesizer,
-      prompt: synthPrompt,
+        // Yield the synthesizer batch. The scheduler will run it and feed
+        // the result back.
+        const _synthResult: SessionResult[] = yield [synthSpec];
+
+        // ── All done ─────────────────────────────────────────────────────
+        return;
+      },
+
+      execute: defaultExecute,
     };
-
-    // ── 5. Run synthesizer ─────────────────────────────────────────────────
-    await runSessionViaGate(ctx, synthSpec);
-
-    return { status: 'completed' };
   };
 }

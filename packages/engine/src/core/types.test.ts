@@ -83,6 +83,8 @@ describe('STATUS_CALLBACK_METHODS', () => {
       'onTaskRegister',
       'onTaskComplete',
       'onTaskRejected',
+      'onTaskParked',
+      'onTaskUnparked',
       'onDecision',
       'onAgentRender',
       'onError',
@@ -95,11 +97,12 @@ describe('STATUS_CALLBACK_METHODS', () => {
       'onAutoRetryStart',
       'onAutoRetryCompleted',
       'onSidebarUpdate',
+      'onWorkflowData',
     ]);
   });
 
-  it('has 22 members', () => {
-    expect(STATUS_CALLBACK_METHODS).toHaveLength(22);
+  it('has 25 members', () => {
+    expect(STATUS_CALLBACK_METHODS).toHaveLength(25);
   });
 
   it('contains no duplicate entries', () => {
@@ -130,12 +133,15 @@ describe('STATUS_CALLBACK_METHODS', () => {
       'onTaskRegister',
       'onTaskComplete',
       'onTaskRejected',
+      'onTaskParked',
+      'onTaskUnparked',
       'onDecision',
       'onAgentRender',
       'onError',
       'onWorkflowComplete',
       'onWorkflowFailed',
       'onSidebarUpdate',
+      'onWorkflowData',
       'onAutoRetryStart',
       'onAutoRetryCompleted',
       'onTurnStart',

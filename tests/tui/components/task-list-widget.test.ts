@@ -905,6 +905,134 @@ describe('TaskListWidget', () => {
         expect(lines[0]).toContain('10s');
       });
     });
+
+    describe('parked tasks (in-progress, paused)', () => {
+      it('parked task with startedAt shows elapsed time', () => {
+        const widget = new TaskListWidget();
+        widget.updateTasks([
+          makeTask({
+            id: 't1',
+            title: 'Parked Task',
+            status: 'parked',
+            startedAt: Date.now() - 5000,
+          }),
+        ]);
+        const lines = widget.render(WIDTH);
+        expect(lines).toHaveLength(1);
+        const line = lines[0];
+        expect(line).toContain('Parked Task');
+        expect(line).toContain('5s');
+        const stripped = stripAnsi(line);
+        expect((stripped.match(/ - /g) || []).length).toBe(1);
+      });
+
+      it('parked task without startedAt shows no elapsed', () => {
+        const widget = new TaskListWidget();
+        widget.updateTasks([
+          makeTask({
+            id: 't1',
+            title: 'Parked No Time',
+            status: 'parked',
+          }),
+        ]);
+        const lines = widget.render(WIDTH);
+        expect(lines).toHaveLength(1);
+        const line = lines[0];
+        expect(line).toContain('Parked No Time');
+        const stripped = stripAnsi(line);
+        expect(stripped).not.toMatch(/ - /);
+        expect(stripped).not.toMatch(/\d+[smh]/);
+        expect(stripped).toBe(statusIcon('parked') + '  t-01  Parked No Time');
+      });
+
+      it('parked task with sessionPlan shows ●N/M progress', () => {
+        const widget = new TaskListWidget();
+        widget.updateTasks([
+          makeTask({
+            id: 't1',
+            title: 'Parked Plan',
+            status: 'parked',
+            sessionPlan: [
+              { role: 'coder', profile: 'default' },
+              { role: 'reviewer', profile: 'default' },
+              { role: 'executor', profile: 'default' },
+            ],
+            startedAt: Date.now() - 5000,
+          }),
+        ]);
+        widget.setSessionCounts({ t1: 2 });
+        const lines = widget.render(WIDTH);
+        expect(lines).toHaveLength(1);
+        const line = lines[0];
+        expect(line).toContain(dim('●2/3'));
+        expect(line).toContain('5s');
+        expect(line).toContain('Parked Plan');
+      });
+
+      it('parked task with sessions shows session count when no sessionPlan', () => {
+        const widget = new TaskListWidget();
+        widget.updateTasks([
+          makeTask({
+            id: 't1',
+            title: 'PSess',
+            status: 'parked',
+            startedAt: Date.now() - 5000,
+          }),
+        ]);
+        widget.setSessionCounts({ t1: 3 });
+        const lines = widget.render(WIDTH);
+        expect(lines).toHaveLength(1);
+        const line = lines[0];
+        expect(line).toContain(dim('3 sessions'));
+        expect(line).toContain('5s');
+        expect(line).toContain('PSess');
+      });
+
+      it('parked task with zero session counts shows no session-count column', () => {
+        const widget = new TaskListWidget();
+        widget.updateTasks([
+          makeTask({
+            id: 't1',
+            title: 'Parked Zero',
+            status: 'parked',
+            startedAt: Date.now() - 3000,
+          }),
+        ]);
+        widget.setSessionCounts({ t1: 0 });
+        const lines = widget.render(WIDTH);
+        expect(lines).toHaveLength(1);
+        const line = lines[0];
+        expect(line).not.toContain('session');
+        expect(line).toContain('3s');
+      });
+
+      it('parked task with dependencies shows deps column', () => {
+        const widget = new TaskListWidget();
+        widget.updateTasks([
+          makeTask({ id: 'dep1', title: 'Dep 1', status: 'complete' }),
+          makeTask({
+            id: 't1',
+            title: 'Parked Deps',
+            status: 'parked',
+            startedAt: 1000,
+            completedAt: new Date(6000).toISOString(),
+            dependencies: ['dep1'],
+          }),
+        ]);
+        const lines = widget.render(120);
+        const line = lines[lines.length - 1];
+        expect(line).toContain('Parked Deps');
+        // dep1 is complete → rendered dim
+        expect(line).toContain(dim('t-01'));
+        const stripped = stripAnsi(line);
+        expect(stripped).toContain('t-01');
+        // deps appear after elapsed (5s = 6000-1000)
+        const elapsedIdx = stripped.indexOf('5s');
+        const depsIdx = stripped.indexOf('t-01');
+        expect(elapsedIdx).toBeGreaterThanOrEqual(0);
+        expect(depsIdx).toBeGreaterThan(elapsedIdx);
+      });
+    });
   });
 
   describe('dependency column rendering', () => {
@@ -1581,6 +1709,63 @@ describe('TaskListWidget', () => {
       // Scroll offset reset to 0: first row is a task (not an indicator) at t-01.
       expect(isIndicator(lines[0])).toBe(false);
       expect(firstTaskId(lines)).toBe('t-01');
+    });
+
+    it('scrolls to fit parked tasks when a task transitions to parked', () => {
+      const widget = new TaskListWidget();
+      // 25 tasks; first two are already parked (visible at offset 0).
+      const initial = makeManyTasks(25).map((t, i) =>
+        i < 2 ? { ...t, status: 'parked' as const, startedAt: 1000 } : t,
+      );
+      widget.updateTasks(initial);
+      // Scroll down past the parked cluster so they sit above the viewport.
+      widget.setSelectedTaskId('t25');
+      const scrolled = widget.render(WIDE);
+      expect(isIndicator(scrolled[0])).toBe(true); // top indicator → scrolled down
+      expect(renderedTaskIds(scrolled)).not.toContain('t-01'); // parked t-01 is off-screen
+
+      // A third task (registration index 2) transitions ready → parked.
+      const updated = initial.map((t, i) => (i === 2 ? { ...t, status: 'parked' as const, startedAt: 2000 } : t));
+      widget.updateTasks(updated);
+      const lines = widget.render(WIDE);
+
+      // Auto-scroll brings the parked cluster back into view at offset 0:
+      // first row is a task (no top indicator) starting at t-01.
+      expect(isIndicator(lines[0])).toBe(false);
+      expect(firstTaskId(lines)).toBe('t-01');
+      // The parked tasks are t-01, t-02, t-03 (indices 0,1,2). Only a viewport
+      // starting at offset 0 can show all three, so this is the maximum
+      // achievable count of visible running tasks.
+      expect(countVisible(lines, ['t-01', 't-02', 't-03'])).toBe(3);
+    });
+
+    it('counts parked tasks together with active tasks for auto-scroll optimization', () => {
+      const widget = new TaskListWidget();
+      // 25 tasks; one active (index 0) and one parked (index 1) at the top.
+      const initial = makeManyTasks(25).map((t, i) => {
+        if (i === 0) return { ...t, status: 'active' as const, startedAt: 1000 };
+        if (i === 1) return { ...t, status: 'parked' as const, startedAt: 2000 };
+        return t;
+      });
+      widget.updateTasks(initial);
+      // Scroll down so both are off-screen.
+      widget.setSelectedTaskId('t25');
+      const scrolled = widget.render(WIDE);
+      expect(isIndicator(scrolled[0])).toBe(true);
+      expect(renderedTaskIds(scrolled)).not.toContain('t-01');
+      expect(renderedTaskIds(scrolled)).not.toContain('t-02');
+
+      // A third task (index 8, within mid-range) transitions to active.
+      const updated = initial.map((t, i) => (i === 8 ? { ...t, status: 'active' as const, startedAt: 3000 } : t));
+      widget.updateTasks(updated);
+      const lines = widget.render(WIDE);
+
+      // Auto-scroll maximizes visible in-progress (active + parked) tasks:
+      // offset 0 shows t-01 (active), t-02 (parked), and t-09 (newly active)
+      // = 3 in-progress tasks in the window. This is the maximum.
+      expect(isIndicator(lines[0])).toBe(false);
+      expect(firstTaskId(lines)).toBe('t-01');
+      expect(countVisible(lines, ['t-01', 't-02', 't-09'])).toBe(3);
     });
   });
 });

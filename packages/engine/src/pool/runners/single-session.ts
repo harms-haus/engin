@@ -1,45 +1,63 @@
-// ─── Single-Session Runner ─────────────────────────────────────────────────
+// ─── Single-Session Runner (SessionPlan contract) ─────────────────────────
 //
-// A Runner that executes exactly one session via the session primitive.
-// The session ID follows the deterministic convention:
+// A SessionPlanRunner that executes exactly one session via the session
+// primitive. The session ID follows the deterministic convention:
 //
 //   `${taskId}/${role}#${attempt}`
 //
-// The runner delegates to the shared `runSessionViaGate` helper, which resolves
-// the profile from `ctx.profiles`, acquires a concurrency slot via
-// `ctx.gate.run`, and calls `ctx.runSession`. On success it returns
-// `{ status: 'completed' }`. SessionError from `runSession` is allowed to
-// propagate (the pool layer handles task settling).
+// The runner delegates to `runScheduledSession` (a gate-free wrapper around
+// `runSession`). It does NOT acquire or release any gate — the scheduler owns
+// the gate.
+//
+// plan() yields one batch `[fullSpec]` and returns `undefined` (the scheduler
+// tracks terminal results). execute() delegates to `runScheduledSession`.
 
-import type { SessionSpec } from '../session.js';
-import type { Runner, RunnerContext, TaskOutcome } from './types.js';
-import { runSessionViaGate } from './utils.js';
+import type { SessionResult, SessionSpec } from '../session.js';
+import { defaultExecute } from './runner-utils.js';
+import type { SessionPlanContext, SessionPlanFactory, SessionPlanRunner } from './session-plan-types.js';
 
 /**
- * Create a Runner that runs one session via the session primitive.
+ * Create a SessionPlanRunner that runs one session via the session primitive.
  *
- * Deterministic ID: `${taskId}/${role}#${attempt}` (attempt starts 1).
- * Returns `{ status: 'completed' }` on success; rethrows SessionError on failure.
+ * Deterministic ID: `${taskId}/${role}#${attempt}` (attempt defaults to 1).
+ *
+ * @param spec - Session spec fields (id is auto-generated). The `role` field
+ *   is used both as the role segment in the session ID and as `runnerRole`
+ *   in the generated spec. `attempt` defaults to 1.
+ * @returns A factory that constructs a fresh {@link SessionPlanRunner} for
+ *   each call.
  */
-export function singleSession(spec: Omit<SessionSpec, 'id'> & { role: string }): Runner {
-  return async (ctx: RunnerContext): Promise<TaskOutcome> => {
-    const role = spec.role;
-    const attempt = spec.attempt ?? 1;
-    const id = `${ctx.task.id}/${role}#${attempt}`;
+export function singleSession(
+  spec: Omit<SessionSpec, 'id' | 'attempt'> & { role: string; attempt?: number },
+): SessionPlanFactory {
+  return (): SessionPlanRunner => {
+    return {
+      plan: async function* (
+        ctx: SessionPlanContext,
+      ): AsyncGenerator<SessionSpec[], SessionResult[] | undefined, SessionResult[]> {
+        const role = spec.role;
+        const attempt = spec.attempt ?? 1;
+        const id = `${ctx.task.id}/${role}#${attempt}`;
 
-    const fullSpec: SessionSpec = {
-      id,
-      profile: spec.profile,
-      prompt: spec.prompt,
-      ...(spec.schema !== undefined ? { schema: spec.schema } : {}),
-      outputMode: spec.outputMode,
-      ...(spec.isReadOnly !== undefined ? { isReadOnly: spec.isReadOnly } : {}),
-      runnerRole: role,
-      attempt,
+        const fullSpec: SessionSpec = {
+          id,
+          profile: spec.profile,
+          prompt: spec.prompt,
+          ...(spec.schema !== undefined ? { schema: spec.schema } : {}),
+          outputMode: spec.outputMode,
+          ...(spec.isReadOnly !== undefined ? { isReadOnly: spec.isReadOnly } : {}),
+          runnerRole: role,
+          attempt,
+        };
+
+        // Yield the single batch. The scheduler will feed back results via
+        // gen.next(results) once this batch settles.
+        const _results: SessionResult[] = yield [fullSpec];
+        // We do not aggregate terminal results — return undefined.
+        return;
+      },
+
+      execute: defaultExecute,
     };
-
-    const result = await runSessionViaGate(ctx, fullSpec);
-
-    return { status: 'completed', result };
   };
 }
