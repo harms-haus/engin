@@ -458,13 +458,17 @@ describe('promptForStructured – JSON-only format instruction', () => {
     };
   }
 
-  it('initial prompt demands a JSON-only reply and forbids tool calls / thinking-only turns', async () => {
+  it('initial prompt demands a JSON-only final reply; tools allowed but turn must end on JSON text', async () => {
     const harness = makeHarness(['{"ok":true}']);
     await promptForStructured(harness, 'do the thing', schema);
 
     const firstPrompt = (harness.prompt as ReturnType<typeof mock>).mock.calls[0][0] as string;
     expect(firstPrompt).toMatch(/only a single valid JSON object/i);
-    expect(firstPrompt).toMatch(/do not call any tools/i);
+    // Tools are permitted during the turn; the contract is that the FINAL
+    // message is the JSON object as text (no ending on a thinking block /
+    // bare tool call).
+    expect(firstPrompt).toMatch(/may call tools/i);
+    expect(firstPrompt).toMatch(/FINAL message must be the JSON object as text/i);
     expect(firstPrompt).toMatch(/no markdown code fences/i);
     expect(firstPrompt).toContain('schema');
   });

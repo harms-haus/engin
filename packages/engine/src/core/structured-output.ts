@@ -238,13 +238,14 @@ export function schemaToString(schema: ZodType): string {
 /**
  * Build the JSON-format instruction appended to the initial (and retry) prompt.
  *
- * Emphasizes that the ENTIRE reply must be the JSON object — no prose, no
- * markdown fences, and crucially NO tool calls. This matters for
- * structured-output steps running on models with extended thinking or retained
- * read tools: without an explicit "emit the JSON as text, do not call tools"
- * instruction, such a model can end its turn on a thinking block or a
- * `tool_use` with no text block, yielding an empty `getLastAssistantText()`
- * → "No JSON found in response".
+ * Emphasizes that the FINAL message of the turn must be the JSON object — no
+ * prose, no markdown fences. Tool calls are permitted (many structured-output
+ * agents must write files or edit code before reporting); the contract is
+ * purely that the turn CONCLUDES by emitting the JSON as text. This matters for
+ * models with extended thinking or retained tools: without an explicit
+ * "finish by emitting the JSON as text" instruction, such a model can end its
+ * turn on a thinking block or a bare `tool_use` with no text block, yielding
+ * an empty `getLastAssistantText()` → "No JSON found in response".
  */
 function buildSchemaInstruction(schemaDesc: string): string {
   return [
@@ -252,7 +253,7 @@ function buildSchemaInstruction(schemaDesc: string): string {
     'Respond with ONLY a single valid JSON object matching the schema below.',
     '- No prose, explanations, or commentary before or after the JSON.',
     '- No markdown code fences (```), no headings — output the raw JSON object.',
-    '- Do NOT call any tools and do NOT end your turn on a thinking block. Emit the JSON object directly as text.',
+    '- You may call tools during your turn, but your FINAL message must be the JSON object as text. Do not end your turn on a thinking block or a tool call without emitting the JSON.',
     '',
     'JSON schema:',
     schemaDesc,
@@ -274,7 +275,7 @@ function buildRetryPrompt(
     reason === 'timeout'
       ? 'The previous prompt call timed out before any response was received. Please respond promptly with ONLY the JSON object.'
       : reason === 'empty'
-        ? 'Your previous reply contained NO text at all — it ended on a thinking block or a tool call, or was truncated. You MUST reply with the JSON object as text now: do not call any tools, and do not finish without emitting the JSON.'
+        ? 'Your previous reply contained NO text at all — it ended on a thinking block or a bare tool call, or was truncated before emitting any text. You MUST finish by emitting the JSON object as text now: do not end your turn without emitting the JSON.'
         : reason === 'no-json'
           ? 'Your previous reply contained no parseable JSON. Reply with ONLY the raw JSON object — no surrounding prose and no code fences.'
           : reason === 'parse'
