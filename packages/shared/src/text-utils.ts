@@ -47,9 +47,9 @@ const MS_PER_HOUR = 3_600_000;
  *
  * - For sub-second durations (`< 1000`) returns `'<1s'`.
  * - For durations under an hour returns minutes (and seconds when non-zero):
- *   e.g. `42_000 -> '42s'`, `65_000 -> '1m5s'`.
+ *   e.g. `42_000 -> '42s'`, `65_000 -> '1m 5s'`.
  * - For durations of an hour or more returns hours (and minutes when non-zero):
- *   e.g. `3_600_000 -> '1h'`, `5_025_000 -> '1h23m'`.
+ *   e.g. `3_600_000 -> '1h'`, `5_025_000 -> '1h 23m'`.
  */
 export function formatElapsed(ms: number): string {
   if (ms < MS_PER_SECOND) return '<1s';
@@ -57,9 +57,9 @@ export function formatElapsed(ms: number): string {
   if (ms < MS_PER_HOUR) {
     const mins = Math.floor(ms / MS_PER_MINUTE);
     const secs = Math.floor((ms % MS_PER_MINUTE) / MS_PER_SECOND);
-    return secs === 0 ? mins + 'm' : mins + 'm' + secs + 's';
+    return secs === 0 ? mins + 'm' : mins + 'm ' + secs + 's';
   }
   const hours = Math.floor(ms / MS_PER_HOUR);
   const mins = Math.floor((ms % MS_PER_HOUR) / MS_PER_MINUTE);
-  return mins === 0 ? hours + 'h' : hours + 'h' + mins + 'm';
+  return mins === 0 ? hours + 'h' : hours + 'h ' + mins + 'm';
 }

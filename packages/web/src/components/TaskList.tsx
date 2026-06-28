@@ -58,29 +58,32 @@ function sessionProgressLabel(
 /**
  * Elapsed-time hook for a task row.
  *
- * - Terminal / completed: computes from startedAt → completedAt (no interval).
- * - Active: starts a 1-second interval that re-derives elapsed from `Date.now()`.
- * - Parked (F4): FREEZES the display — no interval is started, so the elapsed
- *   value captured at the last render (when the task became parked) persists
- *   without counting wall-clock pause time. The returned `paused` flag lets the
- *   caller apply a visual de-emphasis indicator.
+ * The timer counts ACTIVE time only — wall-clock time spent `parked` (waiting
+ * for a gate slot) is excluded. The projection folds each active interval into
+ * `elapsedMs` on park / terminal transitions; `activeStartedAt` marks the
+ * current interval's start.
+ *
+ * - Active: ticks `elapsedMs + (now - activeStartedAt)` on a 1s interval.
+ * - Parked / terminal: frozen `elapsedMs` (no interval).
+ * - Never started (no startedAt): returns null so the caller renders nothing.
  */
-function useElapsed(
-  startedAt?: number,
-  completedAt?: string,
-  status?: string,
-): { text: string; paused: boolean } | null {
+function useElapsed(task?: TaskEntity): { text: string; paused: boolean } | null {
   const [now, setNow] = useState(() => Date.now());
-  const isParked = status === 'parked';
+  const startedAt = task?.startedAt;
+  const status = task?.status;
+  const isActive = status === 'active' && task?.activeStartedAt !== undefined;
   useEffect(() => {
-    if (completedAt === undefined && !isParked) {
+    if (isActive) {
       const interval = setInterval(() => setNow(Date.now()), 1000);
       return () => clearInterval(interval);
     }
-  }, [startedAt, completedAt, isParked]);
+  }, [isActive]);
   if (startedAt === undefined) return null;
-  const endTime = completedAt !== undefined ? new Date(completedAt).getTime() : now;
-  return { text: formatElapsed(endTime - startedAt), paused: isParked };
+  const elapsedMs =
+    isActive && task?.activeStartedAt !== undefined
+      ? (task?.elapsedMs ?? 0) + (now - task.activeStartedAt)
+      : (task?.elapsedMs ?? 0);
+  return { text: formatElapsed(elapsedMs), paused: status === 'parked' };
 }
 
 const Task = React.memo(function Task({ taskId }: { taskId: string }) {
@@ -89,7 +92,7 @@ const Task = React.memo(function Task({ taskId }: { taskId: string }) {
   const selectTask = useWorkflowStore((s) => s.selectTask);
   const tasksById = useWorkflowStore((s) => s.tasksById);
   const sessionsById = useWorkflowStore((s) => s.sessionsById);
-  const elapsed = useElapsed(task?.startedAt, task?.completedAt, task?.status);
+  const elapsed = useElapsed(task);
 
   if (!task) return null;
 

@@ -31,6 +31,19 @@ export interface TaskEntity {
   dependencies: string[]; // task ids
   startedAt?: number;
   completedAt?: string;
+  /** Accumulated ACTIVE running time in ms — excludes any wall-clock time
+   *  the task spent parked waiting for a gate slot. Folded on every
+   *  park / unpark / terminal transition by the evolve layer, so it is
+   *  deterministic under event replay. */
+  elapsedMs?: number;
+  /** ms epoch when the current active interval began. Set on `task_started`
+   *  and `task_unparked`; cleared on `task_parked` and terminal transitions.
+   *  `undefined` whenever the task is not currently active, so consumers know
+   *  NOT to tick it. For a live display an active task renders
+   *  `elapsedMs + (Date.now() - activeStartedAt)`. */
+  activeStartedAt?: number;
+  /** ms epoch when the task became parked. Cleared on unpark. */
+  parkedAt?: number;
   /** Ordered session plan declared when the task started (roles/profiles),
    *  so consumers can render all planned sessions + a ●N/M progress counter.
    *  Absent for tasks that don't declare a plan. */

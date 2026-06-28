@@ -291,6 +291,16 @@ export class TaskListWidget implements Component {
       iconCells.push(maybeBold(statusIcon(task.status)));
 
       // 3. Title + elapsed-time column
+      //
+      // The timer counts ACTIVE time only — wall-clock time spent `parked`
+      // (waiting for a gate slot) is excluded. The evolve layer folds each
+      // active interval into `elapsedMs` on every park / terminal transition;
+      // `activeStartedAt` marks the start of the current active interval, so a
+      // live task ticks `elapsedMs + (now - activeStartedAt)` on each render.
+      //
+      //   ready / blocked / never-started → blank (no suffix)
+      //   active                           → live elapsed (ticks each render)
+      //   parked / complete / failed / …   → frozen elapsedMs
       let title = statusColor(task.status)(task.title);
       if (
         task.startedAt !== undefined &&
@@ -300,12 +310,11 @@ export class TaskListWidget implements Component {
           task.status === 'failed' ||
           task.status === 'cancelled')
       ) {
-        const endTime = task.completedAt !== undefined ? new Date(task.completedAt).getTime() : Date.now();
-        const elapsedStr = formatElapsed(endTime - task.startedAt);
-        // F4: For parked tasks, prefix with a dim 'paused ·' indicator to
-        // visually de-emphasize the elapsed display (the timer is frozen —
-        // a full parkedAt subtraction is a larger change).
-        title += ' - ' + (task.status === 'parked' ? dim(`paused \u00B7 ${elapsedStr}`) : dim(elapsedStr));
+        const elapsedMs =
+          task.status === 'active' && task.activeStartedAt !== undefined
+            ? (task.elapsedMs ?? 0) + (Date.now() - task.activeStartedAt)
+            : (task.elapsedMs ?? 0);
+        title += ' - ' + dim(formatElapsed(elapsedMs));
       }
       titleCells.push(maybeBold(title));
 

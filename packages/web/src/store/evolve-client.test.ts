@@ -351,22 +351,25 @@ describe('evolveClient – task lifecycle', () => {
     expect(s.tasks['t-fallback'].title).toBe('Fallback');
   });
 
-  it('task_started sets status to active', () => {
+  it('task_started sets status active and starts the timer', () => {
     let s = evolveClient(
       blankProjection(),
+      event('task_registered', { taskId: 't1', title: 'Task', phaseId: 'exec' }, {}, 1),
+    );
+    s = evolveClient(
+      s,
       event(
-        'task_registered',
-        {
-          taskId: 't1',
-          title: 'Task',
-          phaseId: 'exec',
-        },
-        {},
-        1,
+        'task_started',
+        { taskId: 't1', title: 'Task', agentId: 'a1' },
+        { timestamp: '2025-01-01T00:00:00.000Z' },
+        2,
       ),
     );
-    s = evolveClient(s, event('task_started', { taskId: 't1', title: 'Task', agentId: 'a1' }, {}, 2));
-    expect(s.tasks['t1'].status).toBe('active');
+    const task = s.tasks['t1']!;
+    expect(task.status).toBe('active');
+    expect(task.elapsedMs).toBe(0);
+    expect(task.activeStartedAt).toBe(Date.parse('2025-01-01T00:00:00.000Z'));
+    expect(task.parkedAt).toBeUndefined();
   });
 
   it('task_started is a no-op when task does not exist', () => {
@@ -375,23 +378,20 @@ describe('evolveClient – task lifecycle', () => {
     expect(s.seq).toBe(1);
   });
 
-  it('task_rejected sets status failed', () => {
+  it('task_rejected folds the active interval into elapsedMs', () => {
     let s = evolveClient(
       blankProjection(),
-      event(
-        'task_registered',
-        {
-          taskId: 't1',
-          title: 'T',
-          phaseId: 'exec',
-        },
-        {},
-        1,
-      ),
+      event('task_registered', { taskId: 't1', title: 'T', phaseId: 'exec' }, {}, 1),
     );
-    s = evolveClient(s, event('task_started', { taskId: 't1', title: 'T' }, {}, 2));
-    s = evolveClient(s, event('task_rejected', { taskId: 't1' }, {}, 3));
-    expect(s.tasks['t1'].status).toBe('failed');
+    s = evolveClient(
+      s,
+      event('task_started', { taskId: 't1', title: 'T' }, { timestamp: '2025-01-01T00:00:00.000Z' }, 2),
+    );
+    s = evolveClient(s, event('task_rejected', { taskId: 't1' }, { timestamp: '2025-01-01T00:00:05.000Z' }, 3));
+    const task = s.tasks['t1']!;
+    expect(task.status).toBe('failed');
+    expect(task.elapsedMs).toBe(5000);
+    expect(task.activeStartedAt).toBeUndefined();
   });
 
   it('task_completed on unknown task is a no-op', () => {
@@ -400,23 +400,21 @@ describe('evolveClient – task lifecycle', () => {
     expect(s.seq).toBe(1);
   });
 
-  it('task_parked sets status to parked', () => {
+  it('task_parked folds the active interval into elapsedMs and clears activeStartedAt', () => {
     let s = evolveClient(
       blankProjection(),
-      event(
-        'task_registered',
-        {
-          taskId: 't1',
-          title: 'T',
-          phaseId: 'exec',
-        },
-        {},
-        1,
-      ),
+      event('task_registered', { taskId: 't1', title: 'T', phaseId: 'exec' }, {}, 1),
     );
-    s = evolveClient(s, event('task_started', { taskId: 't1', title: 'T' }, {}, 2));
-    s = evolveClient(s, event('task_parked', { taskId: 't1' }, {}, 3));
-    expect(s.tasks['t1'].status).toBe('parked');
+    s = evolveClient(
+      s,
+      event('task_started', { taskId: 't1', title: 'T' }, { timestamp: '2025-01-01T00:00:00.000Z' }, 2),
+    );
+    s = evolveClient(s, event('task_parked', { taskId: 't1' }, { timestamp: '2025-01-01T00:00:10.000Z' }, 3));
+    const task = s.tasks['t1']!;
+    expect(task.status).toBe('parked');
+    expect(task.elapsedMs).toBe(10_000);
+    expect(task.activeStartedAt).toBeUndefined();
+    expect(task.parkedAt).toBe(Date.parse('2025-01-01T00:00:10.000Z'));
   });
 
   it('task_parked on unknown task is a no-op', () => {
@@ -425,25 +423,46 @@ describe('evolveClient – task lifecycle', () => {
     expect(s.seq).toBe(1);
   });
 
-  it('task_unparked sets status to active', () => {
+  it('task_unparked starts a new active interval, preserving accumulated elapsedMs', () => {
     let s = evolveClient(
       blankProjection(),
-      event(
-        'task_registered',
-        {
-          taskId: 't1',
-          title: 'T',
-          phaseId: 'exec',
-        },
-        {},
-        1,
-      ),
+      event('task_registered', { taskId: 't1', title: 'T', phaseId: 'exec' }, {}, 1),
     );
-    s = evolveClient(s, event('task_started', { taskId: 't1', title: 'T' }, {}, 2));
-    s = evolveClient(s, event('task_parked', { taskId: 't1' }, {}, 3));
+    s = evolveClient(
+      s,
+      event('task_started', { taskId: 't1', title: 'T' }, { timestamp: '2025-01-01T00:00:00.000Z' }, 2),
+    );
+    s = evolveClient(s, event('task_parked', { taskId: 't1' }, { timestamp: '2025-01-01T00:00:10.000Z' }, 3));
     expect(s.tasks['t1'].status).toBe('parked');
-    s = evolveClient(s, event('task_unparked', { taskId: 't1' }, {}, 4));
-    expect(s.tasks['t1'].status).toBe('active');
+    s = evolveClient(s, event('task_unparked', { taskId: 't1' }, { timestamp: '2025-01-01T00:00:30.000Z' }, 4));
+    const task = s.tasks['t1']!;
+    expect(task.status).toBe('active');
+    // The 20s parked gap is NOT counted — elapsedMs carries over unchanged.
+    expect(task.elapsedMs).toBe(10_000);
+    expect(task.activeStartedAt).toBe(Date.parse('2025-01-01T00:00:30.000Z'));
+    expect(task.parkedAt).toBeUndefined();
+  });
+
+  it('full lifecycle: parked wall-clock is excluded from the final elapsed total', () => {
+    let s = evolveClient(
+      blankProjection(),
+      event('task_registered', { taskId: 't1', title: 'T', phaseId: 'exec' }, {}, 1),
+    );
+    // active 0–10s
+    s = evolveClient(
+      s,
+      event('task_started', { taskId: 't1', title: 'T' }, { timestamp: '2025-01-01T00:00:00.000Z' }, 2),
+    );
+    // parked 10–30s (20s excluded)
+    s = evolveClient(s, event('task_parked', { taskId: 't1' }, { timestamp: '2025-01-01T00:00:10.000Z' }, 3));
+    // active again 30–47s
+    s = evolveClient(s, event('task_unparked', { taskId: 't1' }, { timestamp: '2025-01-01T00:00:30.000Z' }, 4));
+    // complete at 47s → 10s + 17s = 27s active total
+    s = evolveClient(s, event('task_completed', { taskId: 't1' }, { timestamp: '2025-01-01T00:00:47.000Z' }, 5));
+    const task = s.tasks['t1']!;
+    expect(task.status).toBe('complete');
+    expect(task.elapsedMs).toBe(27_000);
+    expect(task.activeStartedAt).toBeUndefined();
   });
 
   it('task_unparked on unknown task is a no-op', () => {

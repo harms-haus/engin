@@ -729,8 +729,8 @@ describe('TaskList – elapsed time display', () => {
     expect(container.querySelector('.task-list__elapsed')).not.toBeInTheDocument();
   });
 
-  it('renders elapsed for a completed task using startedAt/completedAt diff', () => {
-    // diff = 42000ms → '42s'
+  it('renders elapsed for a completed task from its accumulated elapsedMs', () => {
+    // elapsedMs = 42000ms → '42s'
     const tasks: Record<string, TaskEntity> = {
       't-1': makeTask({
         id: 't-1',
@@ -738,7 +738,7 @@ describe('TaskList – elapsed time display', () => {
         phaseId: 'phase-1',
         status: 'complete',
         startedAt: 0,
-        completedAt: '1970-01-01T00:00:42.000Z',
+        elapsedMs: 42000,
       }),
     };
     seedStoreAct(tasks, 'phase-1');
@@ -750,7 +750,7 @@ describe('TaskList – elapsed time display', () => {
   });
 
   it('renders "<1s" for a sub-second completed duration', () => {
-    // diff = 500ms → '<1s'
+    // elapsedMs = 500ms → '<1s'
     const tasks: Record<string, TaskEntity> = {
       't-1': makeTask({
         id: 't-1',
@@ -758,7 +758,7 @@ describe('TaskList – elapsed time display', () => {
         phaseId: 'phase-1',
         status: 'complete',
         startedAt: 0,
-        completedAt: '1970-01-01T00:00:00.500Z',
+        elapsedMs: 500,
       }),
     };
     seedStoreAct(tasks, 'phase-1');
@@ -767,8 +767,8 @@ describe('TaskList – elapsed time display', () => {
     expect(container.querySelector('.task-list__elapsed')?.textContent).toBe('<1s');
   });
 
-  it('renders "1m30s" for a 90-second completed duration', () => {
-    // diff = 90000ms → '1m30s'
+  it('renders "1m 30s" for a 90-second completed duration', () => {
+    // elapsedMs = 90000ms → '1m 30s'
     const tasks: Record<string, TaskEntity> = {
       't-1': makeTask({
         id: 't-1',
@@ -776,13 +776,13 @@ describe('TaskList – elapsed time display', () => {
         phaseId: 'phase-1',
         status: 'complete',
         startedAt: 0,
-        completedAt: '1970-01-01T00:01:30.000Z',
+        elapsedMs: 90000,
       }),
     };
     seedStoreAct(tasks, 'phase-1');
 
     const { container } = render(<TaskList />);
-    expect(container.querySelector('.task-list__elapsed')?.textContent).toBe('1m30s');
+    expect(container.querySelector('.task-list__elapsed')?.textContent).toBe('1m 30s');
   });
 
   it('renders elapsed inline within the single-line task body next to the title', () => {
@@ -793,7 +793,7 @@ describe('TaskList – elapsed time display', () => {
         phaseId: 'phase-1',
         status: 'complete',
         startedAt: 0,
-        completedAt: '1970-01-01T00:00:42.000Z',
+        elapsedMs: 42000,
       }),
     };
     seedStoreAct(tasks, 'phase-1');
@@ -829,6 +829,7 @@ describe('TaskList – useElapsed live timer', () => {
         phaseId: 'phase-1',
         status: 'active',
         startedAt: 0,
+        activeStartedAt: 0,
       }),
     };
     seedStoreAct(tasks, 'phase-1');
@@ -845,6 +846,7 @@ describe('TaskList – useElapsed live timer', () => {
         phaseId: 'phase-1',
         status: 'active',
         startedAt: 0,
+        activeStartedAt: 0,
       }),
     };
     seedStoreAct(tasks, 'phase-1');
@@ -870,6 +872,7 @@ describe('TaskList – useElapsed live timer', () => {
         phaseId: 'phase-1',
         status: 'active',
         startedAt: 0,
+        activeStartedAt: 0,
       }),
     };
     seedStoreAct(tasks, 'phase-1');
@@ -882,11 +885,14 @@ describe('TaskList – useElapsed live timer', () => {
     });
     expect(container.querySelector('.task-list__elapsed')?.textContent).toBe('5s');
 
-    // Complete the task at a fixed completedAt (diff = 42000ms → '42s').
+    // Complete the task: the evolve layer would fold the active interval into
+    // elapsedMs and clear activeStartedAt. This direct store mutation mirrors
+    // that, freezing the timer at 42000ms → '42s'.
     act(() => {
       useWorkflowStore.setState((s) => {
         s.tasksById['t-1'].status = 'complete';
-        s.tasksById['t-1'].completedAt = '1970-01-01T00:00:42.000Z';
+        s.tasksById['t-1'].elapsedMs = 42000;
+        s.tasksById['t-1'].activeStartedAt = undefined;
       });
     });
     expect(container.querySelector('.task-list__elapsed')?.textContent).toBe('42s');
@@ -907,6 +913,7 @@ describe('TaskList – useElapsed live timer', () => {
         phaseId: 'phase-1',
         status: 'active',
         startedAt: 0,
+        activeStartedAt: 0,
         dependencies: ['dep-a'],
       }),
     };
@@ -962,6 +969,7 @@ describe('TaskList – useElapsed interval lifecycle', () => {
         phaseId: 'phase-1',
         status: 'active',
         startedAt: 0,
+        activeStartedAt: 0,
       }),
     };
     seedStoreAct(tasks, 'phase-1');
@@ -981,6 +989,7 @@ describe('TaskList – useElapsed interval lifecycle', () => {
         phaseId: 'phase-1',
         status: 'active',
         startedAt: 0,
+        activeStartedAt: 0,
       }),
     };
     seedStoreAct(tasks, 'phase-1');
@@ -1021,6 +1030,7 @@ describe('TaskList – useElapsed interval lifecycle', () => {
         phaseId: 'phase-1',
         status: 'active',
         startedAt: 0,
+        activeStartedAt: 0,
       }),
     };
     seedStoreAct(tasks, 'phase-1');
@@ -1455,6 +1465,7 @@ describe('TaskList – parked elapsed freeze', () => {
         phaseId: 'phase-1',
         status: 'active',
         startedAt: 0,
+        activeStartedAt: 0,
       }),
     };
     seedStoreAct(tasks, 'phase-1');
