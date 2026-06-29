@@ -9,7 +9,6 @@ export interface CliOptions {
   taskPrompt?: string;
   cwd: string;
   workDir?: string;
-  maxConcurrent: number;
   verbose: boolean;
   apiKeys: Record<string, string>;
   warnings: string[];
@@ -62,7 +61,6 @@ Commands:
 Options:
   --cwd <path>            Working directory (default: process.cwd())
   --work-dir <path>       Workflow working directory (run only)
-  --max-concurrent <n>    Max concurrent tasks (default: 5, run only)
   --verbose               Enable verbose logging
   --api-key <provider=key>  API key (repeatable)
   --host <host>           Web server bind host (default: 127.0.0.1)
@@ -86,6 +84,14 @@ const HOST_LAN_DEPRECATION_WARNING = "Server binding options (--host, --lan) are
 const WORKTREE_DEPRECATION_WARNING =
   '--worktree is no longer needed: git-repository runs now use worktrees automatically.';
 
+/**
+ * Deprecation warning emitted when the removed `--max-concurrent` flag is still
+ * passed. Total concurrency is now owned by each workflow's config
+ * (`defaultMaxConcurrentSessions`), surfaced to the engine's SessionGate.
+ */
+const MAX_CONCURRENT_DEPRECATION_WARNING =
+  '--max-concurrent is removed: total concurrency is now configured per-workflow (defaultMaxConcurrentSessions).';
+
 // ─── Argument Parsing ───────────────────────────────────────────────────────
 
 export function parseArgs(argv: string[]): CliOptions {
@@ -94,7 +100,6 @@ export function parseArgs(argv: string[]): CliOptions {
     return {
       command: 'help' as const,
       cwd: process.cwd(),
-      maxConcurrent: 5,
       verbose: false,
       apiKeys: {},
       warnings: [],
@@ -109,7 +114,6 @@ export function parseArgs(argv: string[]): CliOptions {
     return {
       command: 'version' as const,
       cwd: process.cwd(),
-      maxConcurrent: 5,
       verbose: false,
       apiKeys: {},
       warnings: [],
@@ -123,6 +127,7 @@ export function parseArgs(argv: string[]): CliOptions {
   const positionals: string[] = [];
   const flags: string[] = [];
   let worktreeProvided = false;
+  let maxConcurrentProvided = false;
   let i = 0;
   while (i < argv.length) {
     const arg = argv[i];
@@ -139,11 +144,15 @@ export function parseArgs(argv: string[]): CliOptions {
       }
       flags.push(arg, val);
     } else if (arg === '--max-concurrent') {
+      // Removed flag: total concurrency is now owned by the workflow config
+      // (defaultMaxConcurrentSessions). Consumed as a no-op (value skipped,
+      // not pushed to `flags`) with a deprecation warning so existing
+      // scripts/aliases don't hard-fail.
       const val = argv[++i];
       if (val === undefined || val.startsWith('--')) {
         throw new Error(`Missing value for ${arg}\n${USAGE}`);
       }
-      flags.push(arg, val);
+      maxConcurrentProvided = true;
     } else if (arg === '--verbose') {
       flags.push(arg);
     } else if (arg === '--api-key') {
@@ -189,9 +198,11 @@ export function parseArgs(argv: string[]): CliOptions {
   if (worktreeProvided) {
     warnings.push(WORKTREE_DEPRECATION_WARNING);
   }
+  if (maxConcurrentProvided) {
+    warnings.push(MAX_CONCURRENT_DEPRECATION_WARNING);
+  }
   let apiKeyWarningIssued = false;
   let workDir: string | undefined;
-  let maxConcurrent = 5;
   let host: string | undefined;
   let lan: boolean | undefined;
   let port: number | undefined;
@@ -205,13 +216,6 @@ export function parseArgs(argv: string[]): CliOptions {
       cwd = flags[++j];
     } else if (flag === '--work-dir') {
       workDir = flags[++j];
-    } else if (flag === '--max-concurrent') {
-      const raw = flags[++j];
-      const parsed = Number(raw);
-      if (!Number.isFinite(parsed) || parsed < 1 || !Number.isInteger(parsed)) {
-        throw new Error(`--max-concurrent must be a positive integer, got "${raw}"\n${USAGE}`);
-      }
-      maxConcurrent = parsed;
     } else if (flag === '--verbose') {
       verbose = true;
     } else if (flag === '--host') {
@@ -252,7 +256,6 @@ export function parseArgs(argv: string[]): CliOptions {
     return {
       command: 'run',
       cwd,
-      maxConcurrent,
       verbose,
       apiKeys,
       warnings,
@@ -271,7 +274,6 @@ export function parseArgs(argv: string[]): CliOptions {
     return {
       command,
       cwd,
-      maxConcurrent,
       verbose,
       apiKeys,
       warnings,
@@ -285,7 +287,7 @@ export function parseArgs(argv: string[]): CliOptions {
     if (positionals.length > 1) {
       throw new Error(`Unexpected argument: "${positionals[1]}"\n${USAGE}`);
     }
-    return { command: 'init', cwd, verbose, maxConcurrent, apiKeys, warnings, host, lan, port };
+    return { command: 'init', cwd, verbose, apiKeys, warnings, host, lan, port };
   }
 
   if (command === 'resume') {
@@ -300,7 +302,6 @@ export function parseArgs(argv: string[]): CliOptions {
       command: 'resume',
       cwd,
       workDir,
-      maxConcurrent,
       verbose,
       apiKeys,
       warnings,
@@ -324,7 +325,6 @@ export function parseArgs(argv: string[]): CliOptions {
       serverAction,
       cwd,
       verbose,
-      maxConcurrent,
       apiKeys,
       warnings,
       force,
@@ -352,7 +352,6 @@ export function parseArgs(argv: string[]): CliOptions {
     taskPrompt,
     cwd,
     workDir,
-    maxConcurrent,
     verbose,
     apiKeys,
     warnings,

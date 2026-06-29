@@ -19,7 +19,7 @@
 //       start_run       → runManager.startRun(payload WITHOUT `type`); on
 //                         success ws.send({ type:'run_started', ... }) and the
 //                         requesting ws is auto-subscribed. Optional fields
-//                         (workDir, maxConcurrent, apiKeys) are
+//                         (workDir, apiKeys) are
 //                         forwarded verbatim. On rejection no run_started is
 //                         sent and the ws is NOT auto-subscribed (no crash).
 //       subscribe       → runManager.subscribe(ws, runId); if the run exists
@@ -250,7 +250,7 @@ describe('createMessageRouter', () => {
       expect(passed.cwd).toBe('/tmp/project');
     });
 
-    it('start_run forwards optional fields verbatim (workDir, maxConcurrent, apiKeys)', async () => {
+    it('start_run forwards optional fields verbatim (workDir, apiKeys)', async () => {
       const runManager = createMockRunManager();
       const startRunMock = mock(async (_msg: StartRunMessage) => ({
         runId: 'run-opt',
@@ -266,7 +266,6 @@ describe('createMessageRouter', () => {
         taskPrompt: 'Do stuff',
         cwd: '/tmp/proj',
         workDir: '/tmp/work',
-        maxConcurrent: 3,
         apiKeys: { OPENAI_API_KEY: 'sk-x' },
       });
       await flushAsync();
@@ -278,7 +277,6 @@ describe('createMessageRouter', () => {
         taskPrompt: 'Do stuff',
         cwd: '/tmp/proj',
         workDir: '/tmp/work',
-        maxConcurrent: 3,
         apiKeys: { OPENAI_API_KEY: 'sk-x' },
       });
     });

@@ -165,7 +165,6 @@ describe('start_run — worktree gate removed', () => {
       taskPrompt: 'do the thing',
       cwd: '/repo',
       workDir: '/repo/.engin/runs/123-develop',
-      maxConcurrent: 3,
       apiKeys: { openai: 'sk-xxx' },
     };
     void sr;

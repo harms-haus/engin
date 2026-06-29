@@ -140,7 +140,6 @@ describe('CLI barrel — CliOptions type contract', () => {
     const options: CliOptions = parseArgs(['develop', 'do-thing', '--verbose']);
     expect(options.command).toBe('run');
     expect(typeof options.cwd).toBe('string');
-    expect(typeof options.maxConcurrent).toBe('number');
     expect(options.verbose).toBe(true);
     expect(Array.isArray(options.warnings)).toBe(true);
     expect(options.apiKeys).toEqual({});

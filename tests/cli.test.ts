@@ -28,7 +28,6 @@ describe('parseArgs', () => {
       taskPrompt: 'build a feature',
       cwd: '/c',
       workDir: undefined,
-      maxConcurrent: 5,
       verbose: false,
       apiKeys: {},
       warnings: [],
@@ -43,8 +42,6 @@ describe('parseArgs', () => {
       '/c',
       '--work-dir',
       '/w',
-      '--max-concurrent',
-      '5',
       '--verbose',
       '--api-key',
       'anthropic=sk-xxx',
@@ -56,7 +53,6 @@ describe('parseArgs', () => {
     expect(result.taskPrompt).toBe('build a feature');
     expect(result.cwd).toBe('/c');
     expect(result.workDir).toBe('/w');
-    expect(result.maxConcurrent).toBe(5);
     expect(result.verbose).toBe(true);
     expect(result.apiKeys).toEqual({
       anthropic: 'sk-xxx',
@@ -74,7 +70,6 @@ describe('parseArgs', () => {
     expect(result).toEqual({
       command: 'run',
       cwd: process.cwd(),
-      maxConcurrent: 5,
       verbose: false,
       apiKeys: {},
       warnings: [],
@@ -89,16 +84,10 @@ describe('parseArgs', () => {
     expect(result.warnings).toEqual(expect.arrayContaining([expect.stringMatching(/--worktree is no longer needed/i)]));
   });
 
-  it('returns interactive mode with --max-concurrent flag', () => {
-    const result = parseArgs(['--max-concurrent', '3']);
-    expect(result).toEqual({
-      command: 'run',
-      cwd: process.cwd(),
-      maxConcurrent: 3,
-      verbose: false,
-      apiKeys: {},
-      warnings: [],
-    });
+  it('treats --max-concurrent as a no-op and emits a removal warning (the flag was removed)', () => {
+    const result = parseArgs(['--verbose', '--max-concurrent', '3', '--cwd', '/custom']);
+    expect(result.command).toBe('run');
+    expect(result.warnings).toEqual(expect.arrayContaining([expect.stringMatching(/--max-concurrent is removed/i)]));
   });
 
   it('returns interactive mode with --api-key warning', () => {
@@ -132,11 +121,6 @@ describe('parseArgs', () => {
     expect(result.command).toBe('init');
   });
 
-  it('--max-concurrent defaults to 5', () => {
-    const result = parseArgs(['develop', 'task']);
-    expect(result.maxConcurrent).toBe(5);
-  });
-
   it('--verbose defaults to false', () => {
     const result = parseArgs(['init']);
     expect(result.verbose).toBe(false);
@@ -151,40 +135,12 @@ describe('parseArgs', () => {
     });
   });
 
-  describe('--max-concurrent validation', () => {
-    it('accepts valid positive integer', () => {
-      const result = parseArgs(['develop', 'task', '--max-concurrent', '5']);
-      expect(result.maxConcurrent).toBe(5);
-    });
-
-    it('rejects zero', () => {
-      expect(() => parseArgs(['develop', 'task', '--max-concurrent', '0'])).toThrow(/positive integer/);
-    });
-
-    it('rejects negative number', () => {
-      expect(() => parseArgs(['develop', 'task', '--max-concurrent', '-1'])).toThrow(/positive integer/);
-    });
-
-    it('rejects float', () => {
-      expect(() => parseArgs(['develop', 'task', '--max-concurrent', '1.5'])).toThrow(/positive integer/);
-    });
-
-    it('rejects non-numeric string', () => {
-      expect(() => parseArgs(['develop', 'task', '--max-concurrent', 'abc'])).toThrow(/positive integer/);
-    });
-
-    it('rejects empty string', () => {
-      expect(() => parseArgs(['develop', 'task', '--max-concurrent', ''])).toThrow(/positive integer/);
-    });
-  });
-
   describe('--help and --version', () => {
     it("--help returns { command: 'help' }", () => {
       const result = parseArgs(['--help']);
       expect(result).toEqual({
         command: 'help',
         cwd: process.cwd(),
-        maxConcurrent: 5,
         verbose: false,
         apiKeys: {},
         warnings: [],
@@ -201,7 +157,6 @@ describe('parseArgs', () => {
       expect(result).toEqual({
         command: 'version',
         cwd: process.cwd(),
-        maxConcurrent: 5,
         verbose: false,
         apiKeys: {},
         warnings: [],
@@ -554,7 +509,6 @@ describe('parseArgs', () => {
       workflowName: 'develop',
       taskPrompt: 'task',
       cwd: process.cwd(),
-      maxConcurrent: 5,
       verbose: false,
       apiKeys: {},
       warnings: [],
@@ -568,7 +522,6 @@ describe('parseArgs', () => {
       workflowName: 'develop',
       taskPrompt: 'task',
       cwd: process.cwd(),
-      maxConcurrent: 5,
       verbose: false,
       apiKeys: {},
       warnings: [],
@@ -583,7 +536,6 @@ describe('parseArgs', () => {
       workflowName: 'develop',
       taskPrompt: 'task',
       cwd: process.cwd(),
-      maxConcurrent: 5,
       verbose: false,
       apiKeys: {},
       warnings: [],
@@ -697,13 +649,6 @@ describe('main() interactive mode', () => {
     expect(result.cwd).toBe('/tmp');
   });
 
-  it('parseArgs with --max-concurrent returns interactive mode with correct value', () => {
-    const result = parseArgs(['--max-concurrent', '10']);
-    expect(result.command).toBe('run');
-    expect(result.maxConcurrent).toBe(10);
-    expect(result.workflowName).toBeUndefined();
-  });
-
   it('parseArgs with --api-key returns interactive mode with key parsed', () => {
     const result = parseArgs(['--api-key', 'openai=sk-123']);
     expect(result.command).toBe('run');
@@ -727,7 +672,6 @@ describe('main() interactive mode', () => {
     expect(result).toEqual({
       command: 'run',
       cwd: process.cwd(),
-      maxConcurrent: 5,
       verbose: false,
       apiKeys: {},
       warnings: [],

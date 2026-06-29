@@ -372,20 +372,20 @@ describe('ClientMessage – multi-run variants', () => {
     expect(msg.cwd).toBe('/home/user/project');
   });
 
-  it('start_run variant accepts all optional fields (workDir, maxConcurrent, apiKeys)', () => {
+  it('start_run variant accepts all optional fields (workDir, apiKeys)', () => {
     // NOTE: `worktree?: boolean` was removed — the worktree is now
     // unconditional for git repos, so start_run no longer carries a gate.
+    // NOTE: `maxConcurrent` was removed — total concurrency is now owned by
+    // each workflow's config (defaultMaxConcurrentSessions).
     const msg: ClientMessage = {
       type: 'start_run',
       workflowName: 'develop',
       taskPrompt: 'Build the feature',
       cwd: '/home/user/project',
       workDir: '/tmp/workdir',
-      maxConcurrent: 4,
       apiKeys: { anthropic: 'sk-xxx', openai: 'sk-yyy' },
     };
     expect(msg.workDir).toBe('/tmp/workdir');
-    expect(msg.maxConcurrent).toBe(4);
     expect(msg.apiKeys).toEqual({ anthropic: 'sk-xxx', openai: 'sk-yyy' });
   });
 

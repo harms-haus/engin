@@ -264,7 +264,6 @@ function makeOptions(overrides: Record<string, unknown> = {}) {
     taskPrompt: 'test task prompt',
     cwd: '/tmp/test-cwd',
     workDir: undefined as string | undefined,
-    maxConcurrent: 3,
     verbose: false,
     apiKeys: {},
     warnings: [],
@@ -583,8 +582,8 @@ describe('runCommand — daemon-client integration (T27)', () => {
       expect(startRunMsg.cwd).toBe('/my/project');
     });
 
-    it('includes maxConcurrent in start_run when provided', async () => {
-      const cmd = runCommand(makeOptions({ maxConcurrent: 7 }));
+    it('omits maxConcurrent from start_run (the flag was removed)', async () => {
+      const cmd = runCommand(makeOptions({}));
       await deliverAndAwait(cmd, [
         { type: 'run_started', runId: 'r1', summary: makeRunSummary('r1') },
         { type: 'run_complete', runId: 'r1' },
@@ -593,7 +592,7 @@ describe('runCommand — daemon-client integration (T27)', () => {
       const startRunMsg = capturedSentMessages.find(
         (m) => (m as Record<string, unknown>).type === 'start_run',
       ) as Record<string, unknown>;
-      expect(startRunMsg.maxConcurrent).toBe(7);
+      expect(startRunMsg.maxConcurrent).toBeUndefined();
     });
 
     it('includes apiKeys in start_run when provided', async () => {

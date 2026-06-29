@@ -116,7 +116,6 @@ export async function runCommand(options: CliOptions): Promise<void> {
     workflowName,
     taskPrompt: options.taskPrompt as string,
     cwd: options.cwd,
-    maxConcurrent: options.maxConcurrent,
     ...(Object.keys(options.apiKeys).length > 0 ? { apiKeys: options.apiKeys } : {}),
     ...(options.workDir ? { workDir: options.workDir } : {}),
   };
@@ -234,7 +233,6 @@ async function buildResumeStartResult(
     taskPrompt,
     cwd: options.cwd,
     workDir,
-    maxConcurrent: options.maxConcurrent,
     ...(Object.keys(options.apiKeys).length > 0 ? { apiKeys: options.apiKeys } : {}),
   };
 

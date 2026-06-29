@@ -117,7 +117,6 @@ export type ClientMessage =
       taskPrompt: string;
       cwd: string;
       workDir?: string;
-      maxConcurrent?: number;
       apiKeys?: Record<string, string>;
       /** Optional per-run timeout in milliseconds. When set, the run's
        *  AbortController is aborted after this duration, ending the run as

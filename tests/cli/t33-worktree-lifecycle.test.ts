@@ -123,7 +123,6 @@ function makeOptions(overrides: Record<string, unknown> = {}): Record<string, un
     workflowName: 'develop',
     taskPrompt: 'Build the thing',
     cwd: '/tmp/project',
-    maxConcurrent: 3,
     verbose: false,
     apiKeys: {},
     warnings: [],
@@ -269,13 +268,15 @@ describe('runCommand — start_run message', () => {
     expect('worktree' in srm).toBe(false);
   });
 
-  it('forwards workflowName, taskPrompt, cwd, and maxConcurrent', async () => {
-    const result = await runAndCaptureSetup(makeOptions({ maxConcurrent: 7 }));
+  it('forwards workflowName, taskPrompt, cwd (maxConcurrent removed)', async () => {
+    const result = await runAndCaptureSetup(makeOptions({}));
     const srm = result.startRunMessage as Record<string, unknown>;
     expect(srm.workflowName).toBe('develop');
     expect(srm.taskPrompt).toBe('Build the thing');
     expect(srm.cwd).toBe('/tmp/project');
-    expect(srm.maxConcurrent).toBe(7);
+    // maxConcurrent was removed from start_run (total concurrency is now
+    // owned by the workflow config, defaultMaxConcurrentSessions).
+    expect(srm.maxConcurrent).toBeUndefined();
   });
 
   it('resolves setup to a start-mode SetupResult', async () => {

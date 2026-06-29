@@ -523,12 +523,10 @@ describe('ClientMessage – variant parity (sample objects)', () => {
       taskPrompt: 'Build the feature',
       cwd: '/home/user/project',
       workDir: '/tmp/workdir',
-      maxConcurrent: 4,
       apiKeys: { anthropic: 'sk-xxx' },
     };
     checkClientMessage(sample);
     expect(sample.workDir).toBe('/tmp/workdir');
-    expect(sample.maxConcurrent).toBe(4);
   });
 
   it('subscribe variant', () => {

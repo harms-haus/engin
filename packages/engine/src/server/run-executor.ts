@@ -381,9 +381,6 @@ export class RunExecutor {
       ...(worktreeManager ? { worktreeManager } : {}),
       ...(worktreeManager ? { worktree: worktreeManager.getWorktreeInfo() } : {}),
     };
-    if (msg.maxConcurrent !== undefined) {
-      options.maxConcurrentTasks = msg.maxConcurrent;
-    }
     if (msg.apiKeys !== undefined) {
       options.apiKeys = msg.apiKeys;
     }
