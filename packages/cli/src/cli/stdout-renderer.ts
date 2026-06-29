@@ -120,7 +120,12 @@ export function createStdoutRenderer(deps: StdoutRendererDeps): StdoutRenderer {
         eventStart = idx === -1 ? 0 : idx + 1;
       }
       for (let i = eventStart; i < eventLog.length; i++) {
-        console.log(`${formatTime()} ${eventLog[i].line}`);
+        // Lifecycle lines from formatWorkflowEventLine are self-timestamped
+        // (`HH:mm:ssam/pm | … -> …`), so print them as-is — do NOT prepend
+        // formatTime() (that would double up the timestamp). The bracketed
+        // formatTime() prefix is reserved for verbose agent-log / runLog
+        // lines below, which carry no embedded time.
+        console.log(eventLog[i].line);
       }
       if (eventLog.length > 0) {
         lastSeenEventSeq = eventLog[eventLog.length - 1].seq;

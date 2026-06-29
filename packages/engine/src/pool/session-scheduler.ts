@@ -598,6 +598,7 @@ export class SessionScheduler {
       this.options.onStatus?.onTaskRejected?.({
         taskId: entry.task.id,
         title: entry.task.title,
+        phaseId: this.options.phaseId,
         reason: resolved.reason,
       });
       this.graph.setTaskStatus(entry.task.id, 'cancelled');
@@ -1134,12 +1135,13 @@ export class SessionScheduler {
         }
         break;
       case 'complete':
-        this.options.onStatus?.onTaskComplete?.({ taskId, title });
+        this.options.onStatus?.onTaskComplete?.({ taskId, title, phaseId });
         break;
       case 'failed':
         this.options.onStatus?.onTaskRejected?.({
           taskId,
           title,
+          phaseId,
           reason: ((entry.task.result as { error?: string } | undefined)?.error as string | undefined) ?? 'task failed',
         });
         break;
@@ -1147,6 +1149,7 @@ export class SessionScheduler {
         this.options.onStatus?.onTaskRejected?.({
           taskId,
           title,
+          phaseId,
           reason: 'task cancelled',
         });
         break;

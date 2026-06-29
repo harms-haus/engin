@@ -62,10 +62,17 @@ function fold(events: EventRecord[]): WorkflowProjection {
   return p;
 }
 
-/** Map events to their loud workflowEventLog entries (seq + line). */
+/** Format one event's log line using the POST-evolve projection as ctx
+ *  (mirrors what ClientStore.applyEvents does). */
+function loudLine(event: EventRecord, projection: WorkflowProjection): string | null {
+  return formatWorkflowEventLine(event, { phases: projection.phases, sessions: projection.sessions });
+}
+
+/** Map events to their loud workflowEventLog entries (seq + line), ctx-aware. */
 function loudEntries(events: EventRecord[]): { seq: number; line: string }[] {
+  const projection = fold(events);
   return events
-    .map((event) => ({ seq: event.seq, line: formatWorkflowEventLine(event) }))
+    .map((event) => ({ seq: event.seq, line: loudLine(event, projection) }))
     .filter((e): e is { seq: number; line: string } => e.line !== null);
 }
 
@@ -114,7 +121,8 @@ describe('ClientStore.applyEvents — workflow_completed emits summary lines', (
     const summary = formatWorkflowSummary(fold(events).sessions, 60000);
 
     // The completion line (deterministic from totalDurationMs + sessionCount) …
-    expect(lines).toContain('🎉 Complete in 60.0s (1 sessions)');
+    const completionLine = loudLine(events[events.length - 1], fold(events))!;
+    expect(lines).toContain(completionLine);
     // … plus exactly the two summary lines produced from the projection.
     expect(lines).toContain(summary[0]);
     expect(lines).toContain(summary[1]);
@@ -137,9 +145,10 @@ describe('ClientStore.applyEvents — workflow_completed emits summary lines', (
     const summary = formatWorkflowSummary(fold(events).sessions, 60000);
 
     // The completion line + exactly two summary lines, ALL sharing completedSeq.
+    const completionLine = loudLine(events[events.length - 1], fold(events))!;
     expect(atCompletedSeq).toHaveLength(3);
     expect(atCompletedSeq.every((e) => e.seq === completedSeq)).toBe(true);
-    expect(atCompletedSeq.map((e) => e.line)).toEqual(['🎉 Complete in 60.0s (1 sessions)', summary[0], summary[1]]);
+    expect(atCompletedSeq.map((e) => e.line)).toEqual([completionLine, summary[0], summary[1]]);
   });
 
   it('appends summary lines AFTER the completion line (ordering)', () => {
@@ -156,7 +165,8 @@ describe('ClientStore.applyEvents — workflow_completed emits summary lines', (
     const lines = store.getState().workflowEventLog.map((e) => e.line);
     const summary = formatWorkflowSummary(fold(events).sessions, 30000);
 
-    const completeIdx = lines.indexOf('🎉 Complete in 30.0s (1 sessions)');
+    const completionLine = loudLine(events[events.length - 1], fold(events))!;
+    const completeIdx = lines.indexOf(completionLine);
     const tokensIdx = lines.indexOf(summary[0]);
     const timeIdx = lines.indexOf(summary[1]);
 
@@ -246,7 +256,9 @@ describe('ClientStore.applyEvents — workflow_completed summary guards', () => 
     store.applyEvents(events);
 
     const lines = store.getState().workflowEventLog.map((e) => e.line);
-    expect(lines).toEqual(['⏳ Session a1 started (coder)', '🎉 Complete in 0.0s (1 sessions)']);
+    const projection = fold(events);
+    const expected = events.map((e) => loudLine(e, projection)).filter((l): l is string => l !== null);
+    expect(lines).toEqual([...expected]);
     expect(lines.some((l) => l.startsWith('📊 Tokens:'))).toBe(false);
     expect(lines.some((l) => l.startsWith('⏱ Time:'))).toBe(false);
   });
@@ -261,7 +273,9 @@ describe('ClientStore.applyEvents — workflow_completed summary guards', () => 
     store.applyEvents(events);
 
     const lines = store.getState().workflowEventLog.map((e) => e.line);
-    expect(lines).toEqual(['⏳ Session a1 started (coder)', '🎉 Complete in 0.0s (1 sessions)']);
+    const projection = fold(events);
+    const expected = events.map((e) => loudLine(e, projection)).filter((l): l is string => l !== null);
+    expect(lines).toEqual([...expected]);
     expect(lines.some((l) => l.startsWith('📊 Tokens:'))).toBe(false);
     expect(lines.some((l) => l.startsWith('⏱ Time:'))).toBe(false);
   });
@@ -274,7 +288,9 @@ describe('ClientStore.applyEvents — workflow_completed summary guards', () => 
 
     const lines = store.getState().workflowEventLog.map((e) => e.line);
     // Only the completion line (negative still renders inside it); no summary.
-    expect(lines).toEqual(['🎉 Complete in -0.0s (1 sessions)']);
+    const projection = fold(events);
+    const expected = events.map((e) => loudLine(e, projection)).filter((l): l is string => l !== null);
+    expect(lines).toEqual([...expected]);
     expect(lines.some((l) => l.startsWith('📊 Tokens:'))).toBe(false);
   });
 
@@ -285,8 +301,10 @@ describe('ClientStore.applyEvents — workflow_completed summary guards', () => 
     const store = new ClientStore();
     store.applyEvents(events);
 
+    const projection = fold(events);
+    const completionLine = loudLine(events[0], projection)!;
     expect(store.getState().workflowEventLog.map((e) => e.line)).toEqual([
-      '🎉 Complete in 3.5s (0 sessions)',
+      completionLine,
       '📊 Tokens: ↑0 in · ↓0 out',
       '⏱ Time: 3.5s total · 0.0s session (0%)',
     ]);

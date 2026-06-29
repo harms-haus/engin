@@ -106,14 +106,18 @@ export function createStoreCallbacks(store: StoreLike): StatusCallbacks {
     },
 
     onTaskComplete(info) {
-      store.append('task_completed', { taskId: info.taskId, title: info.title }, { taskId: info.taskId });
+      store.append(
+        'task_completed',
+        { taskId: info.taskId, title: info.title },
+        { taskId: info.taskId, ...(info.phaseId !== undefined ? { phaseId: info.phaseId } : {}) },
+      );
     },
 
     onTaskRejected(info) {
       store.append(
         'task_rejected',
         { taskId: info.taskId, title: info.title, reason: info.reason },
-        { taskId: info.taskId },
+        { taskId: info.taskId, ...(info.phaseId !== undefined ? { phaseId: info.phaseId } : {}) },
       );
     },
 
@@ -228,7 +232,11 @@ export function createStoreCallbacks(store: StoreLike): StatusCallbacks {
           delayMs: info.delayMs,
           errorMessage: info.errorMessage,
         },
-        { agentId: info.agentId },
+        {
+          agentId: info.agentId,
+          ...(info.taskId !== undefined ? { taskId: info.taskId } : {}),
+          ...(info.phaseId !== undefined ? { phaseId: info.phaseId } : {}),
+        },
       );
     },
 
@@ -236,7 +244,11 @@ export function createStoreCallbacks(store: StoreLike): StatusCallbacks {
       store.append(
         'auto_retry_completed',
         { success: info.success, attempt: info.attempt, finalError: info.finalError },
-        { agentId: info.agentId },
+        {
+          agentId: info.agentId,
+          ...(info.taskId !== undefined ? { taskId: info.taskId } : {}),
+          ...(info.phaseId !== undefined ? { phaseId: info.phaseId } : {}),
+        },
       );
     },
   };

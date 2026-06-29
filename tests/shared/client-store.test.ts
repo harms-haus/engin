@@ -54,7 +54,7 @@
 import { beforeEach, describe, expect, it } from 'bun:test';
 
 // ── Unit under test ─────────────────────────────────────────────────────────
-import type { ClientStoreState, WorkflowEventLogEntry } from '@engin/shared/client-store';
+import type { ClientStoreState } from '@engin/shared/client-store';
 import { ClientStore } from '@engin/shared/client-store';
 
 // ── Cross-check dependencies (the store must delegate to these) ──────────────
@@ -1251,14 +1251,10 @@ describe('ClientStore – workflowEventLog building', () => {
 
     const log = store.getState().workflowEventLog;
     expect(log).toHaveLength(2);
-    expect(log[0]).toEqual<WorkflowEventLogEntry>({
-      seq: 1,
-      line: '🚀 Workflow started: "build" (resumed: false)',
-    });
-    expect(log[1]).toEqual<WorkflowEventLogEntry>({
-      seq: 2,
-      line: '📦 Phase: scouting (round 1)',
-    });
+    expect(log[0].seq).toBe(1);
+    expect(log[0].line).toContain('🚀 workflow started: "build" (resumed: false)');
+    expect(log[1].seq).toBe(2);
+    expect(log[1].line).toContain('📦 phase started (round 1)');
   });
 
   it('produces a line equal to formatWorkflowEventLine for every loud event', () => {
@@ -1277,8 +1273,13 @@ describe('ClientStore – workflowEventLog building', () => {
     const store = new ClientStore();
     store.applyEvents(events);
 
+    // The store builds its format ctx from the POST-evolve projection
+    // (phases + sessions). Mirror that here so label / session-name
+    // resolution matches exactly.
+    const st = store.getState();
+    const ctx = { phases: st.phases, sessions: st.sessions };
     const expected = events
-      .map((event) => ({ seq: event.seq, line: formatWorkflowEventLine(event) }))
+      .map((event) => ({ seq: event.seq, line: formatWorkflowEventLine(event, ctx) }))
       .filter((e): e is { seq: number; line: string } => e.line !== null);
 
     // workflow_completed (totalDurationMs 5000 > 0) ALSO appends a two-line
@@ -1305,10 +1306,12 @@ describe('ClientStore – workflowEventLog building', () => {
     store.applyEvents(events);
 
     const log = store.getState().workflowEventLog;
+    const st = store.getState();
+    const ctx = { phases: st.phases, sessions: st.sessions };
     // Only workflow_started + agent_spawned produce lines (the rest are silent).
     expect(log).toHaveLength(2);
     for (const event of events) {
-      const sharedLine = formatWorkflowEventLine(event);
+      const sharedLine = formatWorkflowEventLine(event, ctx);
       if (sharedLine === null) {
         expect(log.find((e) => e.seq === event.seq)).toBeUndefined();
       } else {

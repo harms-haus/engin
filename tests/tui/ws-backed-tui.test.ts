@@ -35,7 +35,9 @@
 import { beforeEach, describe, expect, it } from 'bun:test';
 
 import { ClientStore } from '@engin/shared/client-store';
-import type { EventRecord, EventType } from '@engin/shared/event-types';
+import { createInitialProjection, type EventRecord, type EventType } from '@engin/shared/event-types';
+import { evolve } from '@engin/shared/evolve';
+import { formatWorkflowEventLine } from '@engin/shared/format-workflow-event';
 
 import type { Dashboard } from '../../packages/tui/src/components/dashboard.js';
 import type { EventLog } from '../../packages/tui/src/components/event-log.js';
@@ -44,6 +46,17 @@ import { createWsBackedTui } from '../../packages/tui/src/ws-backed-tui.js';
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 const ISO_NOW = '2026-06-15T00:00:00.000Z';
+
+/** Format `events` exactly as ClientStore.applyEvents would (fold to a
+ *  projection, then format each loud event with that projection as ctx).
+ *  Mirrors the store so assertions stay robust to label / session-name
+ *  resolution and the embedded time prefix. */
+function fmt(events: EventRecord[]): string[] {
+  let p = createInitialProjection();
+  for (const e of events) p = evolve(p, e);
+  const ctx = { phases: p.phases, sessions: p.sessions };
+  return events.map((e) => formatWorkflowEventLine(e, ctx)).filter((l): l is string => l !== null);
+}
 
 // ─── Event builder ───────────────────────────────────────────────────────────
 
@@ -178,8 +191,9 @@ describe('createWsBackedTui', () => {
   describe('subscription & initial sync', () => {
     it('subscribes to clientStore and reflects events applied after creation', () => {
       const ctx = createTestDeps();
-      ctx.clientStore.applyEvents([ev('workflow_started', { taskPrompt: 'build feature', resumed: false }, {}, 1)]);
-      expect(ctx.eventLog.lines).toEqual(['🚀 Workflow started: "build feature" (resumed: false)']);
+      const events = [ev('workflow_started', { taskPrompt: 'build feature', resumed: false }, {}, 1)];
+      ctx.clientStore.applyEvents(events);
+      expect(ctx.eventLog.lines).toEqual(fmt(events));
     });
 
     it('processes events already in the store on creation (replay)', () => {
@@ -187,17 +201,15 @@ describe('createWsBackedTui', () => {
       const eventLog = createMockEventLog();
       const dashboard = createMockDashboard();
       // Seed events BEFORE wiring up the adapter.
-      clientStore.applyEvents([
+      const events = [
         ev('workflow_started', { taskPrompt: 'preexisting', resumed: true }, {}, 1),
         ev('phase_started', { phase: 'scouting', round: 1 }, {}, 2),
-      ]);
+      ];
+      clientStore.applyEvents(events);
 
       createWsBackedTui({ clientStore, eventLog, dashboard, requestRender: () => {} });
 
-      expect(eventLog.lines).toEqual([
-        '🚀 Workflow started: "preexisting" (resumed: true)',
-        '📦 Phase: scouting (round 1)',
-      ]);
+      expect(eventLog.lines).toEqual(fmt(events));
     });
 
     it('syncs the dashboard with the current projection on creation', () => {
@@ -218,13 +230,15 @@ describe('createWsBackedTui', () => {
       const eventLog = createMockEventLog();
       const dashboard = createMockDashboard();
       // Seed one event before wiring.
-      clientStore.applyEvents([ev('workflow_started', { taskPrompt: 'first', resumed: false }, {}, 1)]);
+      const first = [ev('workflow_started', { taskPrompt: 'first', resumed: false }, {}, 1)];
+      clientStore.applyEvents(first);
       createWsBackedTui({ clientStore, eventLog, dashboard, requestRender: () => {} });
       expect(eventLog.lines).toHaveLength(1);
 
       // Apply a second batch — the first line must not be duplicated.
-      clientStore.applyEvents([ev('phase_started', { phase: 'build', round: 1 }, {}, 2)]);
-      expect(eventLog.lines).toEqual(['🚀 Workflow started: "first" (resumed: false)', '📦 Phase: build (round 1)']);
+      const second = [ev('phase_started', { phase: 'build', round: 1 }, {}, 2)];
+      clientStore.applyEvents(second);
+      expect(eventLog.lines).toEqual(fmt([...first, ...second]));
     });
   });
 
@@ -233,18 +247,20 @@ describe('createWsBackedTui', () => {
   describe('event log lines (ported from status-callbacks via shared formatWorkflowEventLine)', () => {
     it('forwards workflow_started line', () => {
       const ctx = createTestDeps();
-      ctx.clientStore.applyEvents([ev('workflow_started', { taskPrompt: 'ship it', resumed: false }, {}, 1)]);
-      expect(ctx.eventLog.lines).toEqual(['🚀 Workflow started: "ship it" (resumed: false)']);
+      const events = [ev('workflow_started', { taskPrompt: 'ship it', resumed: false }, {}, 1)];
+      ctx.clientStore.applyEvents(events);
+      expect(ctx.eventLog.lines).toEqual(fmt(events));
     });
 
     it('forwards workflow_completed line plus the two summary lines', () => {
       const ctx = createTestDeps();
-      ctx.clientStore.applyEvents([ev('workflow_completed', { totalDurationMs: 3456, sessionCount: 5 }, {}, 1)]);
+      const events = [ev('workflow_completed', { totalDurationMs: 3456, sessionCount: 5 }, {}, 1)];
+      ctx.clientStore.applyEvents(events);
       // totalDurationMs > 0 → the shared ClientStore appends a two-line
       // completion summary (empty session set → 0 tokens / 0 session time). All
       // three entries share seq 1, so the adapter drains them together.
       expect(ctx.eventLog.lines).toEqual([
-        '🎉 Complete in 3.5s (5 sessions)',
+        ...fmt(events),
         '📊 Tokens: ↑0 in · ↓0 out',
         '⏱ Time: 3.5s total · 0.0s session (0%)',
       ]);
@@ -252,88 +268,93 @@ describe('createWsBackedTui', () => {
 
     it('forwards workflow_failed line', () => {
       const ctx = createTestDeps();
-      ctx.clientStore.applyEvents([ev('workflow_failed', { phase: 'planning', error: 'something broke' }, {}, 1)]);
-      expect(ctx.eventLog.lines).toEqual(['💥 Failed at planning: something broke']);
+      const events = [ev('workflow_failed', { phase: 'planning', error: 'something broke' }, {}, 1)];
+      ctx.clientStore.applyEvents(events);
+      expect(ctx.eventLog.lines).toEqual(fmt(events));
     });
 
     it('forwards phase_registered line', () => {
       const ctx = createTestDeps();
-      ctx.clientStore.applyEvents([ev('phase_registered', { id: 'scouting', label: 'Scouting', icon: '🔍' }, {}, 1)]);
-      expect(ctx.eventLog.lines).toEqual(['📝 Phase registered: Scouting']);
+      const events = [
+        ev('phase_registered', { id: 'scouting', label: 'Scouting', icon: '🔍' }, { phaseId: 'scouting' }, 1),
+      ];
+      ctx.clientStore.applyEvents(events);
+      expect(ctx.eventLog.lines).toEqual(fmt(events));
     });
 
     it('forwards phase_started line', () => {
       const ctx = createTestDeps();
-      ctx.clientStore.applyEvents([ev('phase_started', { phase: 'scouting', round: 2 }, {}, 1)]);
-      expect(ctx.eventLog.lines).toEqual(['📦 Phase: scouting (round 2)']);
+      const events = [ev('phase_started', { phase: 'scouting', round: 2 }, {}, 1)];
+      ctx.clientStore.applyEvents(events);
+      expect(ctx.eventLog.lines).toEqual(fmt(events));
     });
 
     it('forwards phase_completed line', () => {
       const ctx = createTestDeps();
-      ctx.clientStore.applyEvents([ev('phase_completed', { phase: 'scouting', durationMs: 2500 }, {}, 1)]);
-      expect(ctx.eventLog.lines).toEqual(['✅ Phase scouting done (2.5s)']);
+      const events = [ev('phase_completed', { phase: 'scouting', durationMs: 2500 }, {}, 1)];
+      ctx.clientStore.applyEvents(events);
+      expect(ctx.eventLog.lines).toEqual(fmt(events));
     });
 
     it('forwards agent_spawned line (agentId from metadata)', () => {
       const ctx = createTestDeps();
-      ctx.clientStore.applyEvents([ev('session_started', { profile: 'scout' }, { agentId: 'a1' }, 1)]);
-      expect(ctx.eventLog.lines).toEqual(['⏳ Session a1 started (scout)']);
+      const events = [ev('session_started', { profile: 'scout' }, { agentId: 'a1' }, 1)];
+      ctx.clientStore.applyEvents(events);
+      expect(ctx.eventLog.lines).toEqual(fmt(events));
     });
 
     it('forwards agent_completed line', () => {
       const ctx = createTestDeps();
-      ctx.clientStore.applyEvents([
+      const events = [
         ev('session_started', { profile: 'scout' }, { agentId: 'a1', taskId: 't1' }, 1),
         ev('session_completed', {}, { agentId: 'a1', taskId: 't1' }, 2),
-      ]);
-      expect(ctx.eventLog.lines).toContain('✅ Session a1 complete');
+      ];
+      ctx.clientStore.applyEvents(events);
+      expect(ctx.eventLog.lines).toEqual(fmt(events));
     });
 
     it('forwards task_registered line', () => {
       const ctx = createTestDeps();
-      ctx.clientStore.applyEvents([
-        ev(
-          'task_registered',
-          {
-            taskId: 't1',
-            title: 'Task',
-            phaseId: 'p1',
-          },
-          {},
-          1,
-        ),
-      ]);
-      expect(ctx.eventLog.lines).toEqual(['📋 Task registered: "Task" (phase: p1)']);
+      const events = [
+        ev('task_registered', { taskId: 't1', title: 'Task', phaseId: 'p1' }, { taskId: 't1', phaseId: 'p1' }, 1),
+      ];
+      ctx.clientStore.applyEvents(events);
+      expect(ctx.eventLog.lines).toEqual(fmt(events));
     });
 
     it('forwards task_started line', () => {
       const ctx = createTestDeps();
-      ctx.clientStore.applyEvents([ev('task_started', { taskId: 't1', title: 'Implement feature' }, {}, 1)]);
-      expect(ctx.eventLog.lines).toEqual(['📋 Task t1: "Implement feature"']);
+      const events = [ev('task_started', { taskId: 't1', title: 'Implement feature' }, { taskId: 't1' }, 1)];
+      ctx.clientStore.applyEvents(events);
+      expect(ctx.eventLog.lines).toEqual(fmt(events));
     });
 
     it('forwards task_completed line', () => {
       const ctx = createTestDeps();
-      ctx.clientStore.applyEvents([ev('task_completed', { taskId: 't1' }, {}, 1)]);
-      expect(ctx.eventLog.lines).toEqual(['✅ Task t1 complete']);
+      const events = [ev('task_completed', { taskId: 't1' }, { taskId: 't1' }, 1)];
+      ctx.clientStore.applyEvents(events);
+      expect(ctx.eventLog.lines).toEqual(fmt(events));
     });
 
     it('forwards task_rejected line', () => {
       const ctx = createTestDeps();
-      ctx.clientStore.applyEvents([ev('task_rejected', { taskId: 't1', reason: 'bad code' }, {}, 1)]);
-      expect(ctx.eventLog.lines).toEqual(['❌ Task t1 rejected: bad code']);
+      const events = [ev('task_rejected', { taskId: 't1', reason: 'bad code' }, { taskId: 't1' }, 1)];
+      ctx.clientStore.applyEvents(events);
+      expect(ctx.eventLog.lines).toEqual(fmt(events));
     });
 
     it('forwards error line', () => {
       const ctx = createTestDeps();
-      ctx.clientStore.applyEvents([ev('error', { error: 'crash' }, { agentId: 'a1', phaseId: 'planning' }, 1)]);
-      expect(ctx.eventLog.lines).toEqual(['⚠️ Error in a1: crash (planning)']);
+      const events = [ev('error', { error: 'crash' }, { agentId: 'a1', phaseId: 'planning' }, 1)];
+      ctx.clientStore.applyEvents(events);
+      expect(ctx.eventLog.lines).toEqual(fmt(events));
     });
 
     it('forwards sidebar_updated line when a title is present', () => {
       const ctx = createTestDeps();
-      ctx.clientStore.applyEvents([ev('sidebar_updated', { title: 'My Workflow' }, {}, 1)]);
-      expect(ctx.eventLog.lines).toEqual(['📌 My Workflow']);
+      const events = [ev('sidebar_updated', { title: 'My Workflow' }, {}, 1)];
+      ctx.clientStore.applyEvents(events);
+      expect(ctx.eventLog.lines).toEqual(fmt(events));
     });
 
     it('does NOT forward sidebar_updated when there is no title', () => {
@@ -349,11 +370,12 @@ describe('createWsBackedTui', () => {
   describe('verbose events produce no event-log line', () => {
     it('decision is silent', () => {
       const ctx = createTestDeps();
-      ctx.clientStore.applyEvents([
+      const events = [
         ev('session_started', { profile: 'p' }, { agentId: 'a1', taskId: 't1' }, 1),
         ev('decision', { decision: 'proceed', reasoning: 'ok' }, { agentId: 'a1', taskId: 't1' }, 2),
-      ]);
-      expect(ctx.eventLog.lines).toEqual(['⏳ Session a1 started (p)']);
+      ];
+      ctx.clientStore.applyEvents(events);
+      expect(ctx.eventLog.lines).toEqual(fmt(events));
     });
 
     it('turn_started is silent', () => {
@@ -390,31 +412,32 @@ describe('createWsBackedTui', () => {
   describe('lastSeq tracking (no re-processing across batches)', () => {
     it('accumulates lines in order across multiple applyEvents calls', () => {
       const ctx = createTestDeps();
-      ctx.clientStore.applyEvents([ev('workflow_started', { taskPrompt: 'a', resumed: false }, {}, 1)]);
-      ctx.clientStore.applyEvents([ev('phase_started', { phase: 'p', round: 1 }, {}, 2)]);
-      ctx.clientStore.applyEvents([ev('phase_completed', { phase: 'p', durationMs: 0 }, {}, 3)]);
+      const e1 = [ev('workflow_started', { taskPrompt: 'a', resumed: false }, {}, 1)];
+      const e2 = [ev('phase_started', { phase: 'p', round: 1 }, {}, 2)];
+      const e3 = [ev('phase_completed', { phase: 'p', durationMs: 0 }, {}, 3)];
+      ctx.clientStore.applyEvents(e1);
+      ctx.clientStore.applyEvents(e2);
+      ctx.clientStore.applyEvents(e3);
 
-      expect(ctx.eventLog.lines).toEqual([
-        '🚀 Workflow started: "a" (resumed: false)',
-        '📦 Phase: p (round 1)',
-        '✅ Phase p done (0.0s)',
-      ]);
+      expect(ctx.eventLog.lines).toEqual(fmt([...e1, ...e2, ...e3]));
     });
 
     it('does not duplicate lines when a batch mixes loud and silent events', () => {
       const ctx = createTestDeps();
-      ctx.clientStore.applyEvents([
+      const first = [
         ev('workflow_started', { taskPrompt: 'x', resumed: false }, {}, 1),
         ev('session_started', { profile: 'p' }, { agentId: 'a1', taskId: 't1' }, 2),
         ev('decision', { decision: 'go' }, { agentId: 'a1', taskId: 't1' }, 3),
         ev('tool_call_started', { toolName: 'read' }, { agentId: 'a1', taskId: 't1' }, 4),
-      ]);
-      expect(ctx.eventLog.lines).toEqual(['🚀 Workflow started: "x" (resumed: false)', '⏳ Session a1 started (p)']);
+      ];
+      ctx.clientStore.applyEvents(first);
+      expect(ctx.eventLog.lines).toEqual(fmt(first));
 
       // A subsequent batch only adds its own lines.
-      ctx.clientStore.applyEvents([ev('phase_started', { phase: 'build', round: 1 }, {}, 5)]);
-      expect(ctx.eventLog.lines).toHaveLength(3);
-      expect(ctx.eventLog.lines[2]).toBe('📦 Phase: build (round 1)');
+      const second = [ev('phase_started', { phase: 'build', round: 1 }, {}, 5)];
+      ctx.clientStore.applyEvents(second);
+      expect(ctx.eventLog.lines).toHaveLength(fmt([...first, ...second]).length);
+      expect(ctx.eventLog.lines[2]).toBe(fmt([...first, ...second])[2]);
     });
 
     it('does not re-add lines for events that were already in the store at creation', () => {
@@ -772,7 +795,7 @@ describe('createWsBackedTui', () => {
       const ctx = createTestDeps();
       ctx.clientStore.applyEvents([ev('workflow_started', { taskPrompt: 'x', resumed: false }, {}, 1)]);
       ctx.clientStore.appendRunLog('warn', 'careful', ISO_NOW);
-      expect(ctx.eventLog.lines).toContain('🚀 Workflow started: "x" (resumed: false)');
+      expect(ctx.eventLog.lines.some((l) => l.includes('🚀 workflow started: "x" (resumed: false)'))).toBe(true);
       expect(ctx.eventLog.lines).toContain('⚠️ careful');
     });
   });
@@ -838,19 +861,15 @@ describe('createWsBackedTui', () => {
   describe('batch processing', () => {
     it('forwards all loud lines from a single applyEvents batch', () => {
       const ctx = createTestDeps();
-      ctx.clientStore.applyEvents([
+      const events = [
         ev('workflow_started', { taskPrompt: 'build', resumed: false }, {}, 1),
-        ev('phase_registered', { id: 'p1', label: 'Plan', icon: '📋' }, {}, 2),
+        ev('phase_registered', { id: 'p1', label: 'Plan', icon: '📋' }, { phaseId: 'p1' }, 2),
         ev('phase_started', { phase: 'p1', round: 1 }, {}, 3),
         ev('session_started', { profile: 'coder' }, { agentId: 'a1', taskId: 't1' }, 4),
         ev('decision', { decision: 'go' }, { agentId: 'a1', taskId: 't1' }, 5),
-      ]);
-      expect(ctx.eventLog.lines).toEqual([
-        '🚀 Workflow started: "build" (resumed: false)',
-        '📝 Phase registered: Plan',
-        '📦 Phase: p1 (round 1)',
-        '⏳ Session a1 started (coder)',
-      ]);
+      ];
+      ctx.clientStore.applyEvents(events);
+      expect(ctx.eventLog.lines).toEqual(fmt(events));
     });
 
     it('triggers a single dashboard sync per batch (listeners fire once per applyEvents)', () => {

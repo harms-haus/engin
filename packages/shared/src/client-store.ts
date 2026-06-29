@@ -126,10 +126,14 @@ export class ClientStore {
     this.state.seq = projection.seq;
     reconcileSelection(this.state);
 
-    // Build workflow-level event lines from this batch.
+    // Build workflow-level event lines from this batch. The ctx is built
+    // from the POST-evolve projection so phase labels resolve to their
+    // human-readable form and session names resolve to runnerRole/profile
+    // (rather than the raw scheduler-<id> agentId).
+    const ctx = { phases: this.state.phases, sessions: this.state.sessions };
     const collected: WorkflowEventLogEntry[] = [];
     for (const event of events) {
-      const line = formatWorkflowEventLine(event);
+      const line = formatWorkflowEventLine(event, ctx);
       if (line !== null) {
         collected.push({ seq: event.seq, line });
       }

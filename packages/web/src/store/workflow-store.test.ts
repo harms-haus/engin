@@ -587,8 +587,10 @@ describe('store – workflowEventLog', () => {
 
     const log = useWorkflowStore.getState().workflowEventLog;
     expect(log).toHaveLength(2);
-    expect(log[0]).toEqual({ seq: 1, line: '🚀 Workflow started: "build" (resumed: false)' });
-    expect(log[1]).toEqual({ seq: 2, line: '📦 Phase: scouting (round 1)' });
+    expect(log[0].seq).toBe(1);
+    expect(log[0].line).toContain('🚀 workflow started: "build" (resumed: false)');
+    expect(log[1].seq).toBe(2);
+    expect(log[1].line).toContain('📦 phase started (round 1)');
   });
 
   it('does NOT add entries for verbose events (decision, tool_call_started, turn_ended)', () => {
@@ -665,7 +667,7 @@ describe('store – workflowEventLog', () => {
 
   it('applySnapshot resets workflowEventLog on a fresh start (state.seq === 0)', () => {
     useWorkflowStore.setState({
-      workflowEventLog: [{ seq: 1, line: '🚀 Workflow started: "stale"' }],
+      workflowEventLog: [{ seq: 1, line: '06:00:00pm -> 🚀 workflow started: "stale"' }],
     });
     expect(useWorkflowStore.getState().workflowEventLog).toHaveLength(1);
 
@@ -678,14 +680,14 @@ describe('store – workflowEventLog', () => {
   it('applySnapshot does NOT clear workflowEventLog on reconnection (state.seq > 0, new seq >= state.seq)', () => {
     useWorkflowStore.setState({
       seq: 5,
-      workflowEventLog: [{ seq: 1, line: '🚀 Workflow started: "build"' }],
+      workflowEventLog: [{ seq: 1, line: '06:00:00pm -> 🚀 workflow started: "build"' }],
     });
 
     useWorkflowStore.getState().applySnapshot(SELECTED_RUN, blankProjection({ taskPrompt: 'build' }), 6);
 
     const log = useWorkflowStore.getState().workflowEventLog;
     expect(log).toHaveLength(1);
-    expect(log[0]).toEqual({ seq: 1, line: '🚀 Workflow started: "build"' });
+    expect(log[0]).toEqual({ seq: 1, line: '06:00:00pm -> 🚀 workflow started: "build"' });
     expect(useWorkflowStore.getState().seq).toBe(6);
   });
 

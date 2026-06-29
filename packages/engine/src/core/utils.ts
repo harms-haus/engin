@@ -62,16 +62,34 @@ export function composeStatusCallbacks(callbacks: StatusCallbacks[]): StatusCall
  * Forward agent-status callbacks from a {@link StatusCallbacks} object to an
  * {@link AgentStatusCallbacks} object. Returns `undefined` when `onStatus` is
  * not provided, which is the conventional "no-op" value for harness options.
+ *
+ * `taskId` / `phaseId` (when supplied by the session layer) are injected into
+ * the auto-retry callbacks so retry events carry enough identity for the event
+ * log prefix to name the owning task / phase. Other agent-status callbacks
+ * (turn / tool) are intentionally left untouched — they are silent in the
+ * event log and already carry `agentId`.
  */
-export function forwardAgentStatus(onStatus?: StatusCallbacks): AgentStatusCallbacks | undefined {
+export function forwardAgentStatus(
+  onStatus: StatusCallbacks | undefined,
+  ctx?: { taskId?: string; phaseId?: string },
+): AgentStatusCallbacks | undefined {
   if (!onStatus) return undefined;
+  const taskId = ctx?.taskId;
+  const phaseId = ctx?.phaseId;
+  const idPatch =
+    taskId !== undefined || phaseId !== undefined
+      ? {
+          ...(taskId !== undefined ? { taskId } : {}),
+          ...(phaseId !== undefined ? { phaseId } : {}),
+        }
+      : undefined;
   return {
     onTurnStart: (info) => onStatus.onTurnStart?.(info),
     onTurnEnd: (info) => onStatus.onTurnEnd?.(info),
     onToolCallStart: (info) => onStatus.onToolCallStart?.(info),
     onToolCallEnd: (info) => onStatus.onToolCallEnd?.(info),
-    onAutoRetryStart: (info) => onStatus.onAutoRetryStart?.(info),
-    onAutoRetryCompleted: (info) => onStatus.onAutoRetryCompleted?.(info),
+    onAutoRetryStart: (info) => onStatus.onAutoRetryStart?.(idPatch ? { ...info, ...idPatch } : info),
+    onAutoRetryCompleted: (info) => onStatus.onAutoRetryCompleted?.(idPatch ? { ...info, ...idPatch } : info),
   };
 }
 

@@ -259,10 +259,14 @@ export const useWorkflowStore = create<WorkflowStoreState>()(
         s.seq = projection.seq;
         reconcileSelection(canonicalView(s));
 
-        // Build workflow-level event lines from this batch
+        // Build workflow-level event lines from this batch. The ctx is built
+        // from the POST-evolve projection (via canonicalView) so phase labels
+        // resolve to their human-readable form and session names resolve to
+        // runnerRole/profile rather than the raw scheduler-<id> agentId.
+        const ctx = { phases: s.phases, sessions: s.sessionsById };
         const collected: WorkflowEventLogEntry[] = [];
         for (const event of events) {
-          const line = formatWorkflowEventLine(event);
+          const line = formatWorkflowEventLine(event, ctx);
           if (line !== null) {
             collected.push({ seq: event.seq, line });
           }

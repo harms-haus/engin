@@ -435,7 +435,7 @@ async function executeAttempt(
     // Always provide an onAgentStatus sink so the runtime has a callback
     // target for activity events. When ctx.onStatus is set, events are
     // forwarded to it; otherwise a no-op object is passed.
-    onAgentStatus: forwardAgentStatus(ctx.onStatus) ?? {},
+    onAgentStatus: forwardAgentStatus(ctx.onStatus, { taskId: ctx.taskId, phaseId: ctx.phaseId }) ?? {},
   });
 
   // ── TOCTOU: track the session IMMEDIATELY after createSession returns ──

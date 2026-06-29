@@ -30,6 +30,16 @@ function ev(type: EventType, data: Record<string, unknown> = {}): EventRecord {
   return { seq: ++seq, type, data, metadata: { timestamp: '2026-06-15T00:00:00Z' } };
 }
 
+/** Format an ISO timestamp as `HH:mm:ssam/pm` (local) — mirrors the formatter. */
+function timePref(iso: string): string {
+  const d = new Date(iso);
+  let h = d.getHours();
+  const ampm = h < 12 ? 'am' : 'pm';
+  h = h % 12;
+  if (h === 0) h = 12;
+  return `${String(h).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}${ampm}`;
+}
+
 describe('@engin/shared barrel', () => {
   it('exposes expected value exports', () => {
     expect(typeof evolve).toBe('function');
@@ -52,7 +62,7 @@ describe('@engin/shared barrel', () => {
     expect(state.tasks['t1']?.title).toBe('Write tests');
     expect(state.phases[0].taskIds).toEqual(['t1']);
     expect(formatWorkflowEventLine(ev('workflow_started', { taskPrompt: 'Build it', resumed: false }))).toBe(
-      '🚀 Workflow started: "Build it" (resumed: false)',
+      timePref('2026-06-15T00:00:00Z') + ' -> 🚀 workflow started: "Build it" (resumed: false)',
     );
     expect(isServerMessage({ type: 'run_complete', runId: 'r1' })).toBe(true);
     expect(isServerMessage({ type: 'snapshot', runId: 'r1', seq: 0, state: createInitialProjection() })).toBe(true);

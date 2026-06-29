@@ -89,9 +89,14 @@ describe('workflow-store — event log lines match @engin/shared/format-workflow
 
     const log = useWorkflowStore.getState().workflowEventLog;
 
-    // Every event in this set is "loud" — the shared formatter returns a line.
+    // The store builds its format ctx from the POST-evolve projection (phases
+    // + sessions). The expected lines must use the SAME ctx so label / session
+    // name resolution matches exactly — the contract under test is that the
+    // store forwards its projection-derived ctx to the shared formatter.
+    const s = useWorkflowStore.getState();
+    const ctx = { phases: s.phases, sessions: s.sessionsById };
     const expected = events
-      .map((event) => ({ seq: event.seq, line: formatWorkflowEventLine(event) }))
+      .map((event) => ({ seq: event.seq, line: formatWorkflowEventLine(event, ctx) }))
       .filter((e): e is { seq: number; line: string } => e.line !== null);
 
     expect(log).toEqual(expected);
@@ -109,12 +114,14 @@ describe('workflow-store — event log lines match @engin/shared/format-workflow
     useWorkflowStore.getState().applyEvents('run-1', events);
 
     const log = useWorkflowStore.getState().workflowEventLog;
+    const s = useWorkflowStore.getState();
+    const ctx = { phases: s.phases, sessions: s.sessionsById };
 
     // decision / tool_call_started / turn_ended are silent — only the first two
     // events produce lines.
     expect(log).toHaveLength(2);
     for (const event of events) {
-      const sharedLine = formatWorkflowEventLine(event);
+      const sharedLine = formatWorkflowEventLine(event, ctx);
       if (sharedLine === null) {
         expect(log.find((entry) => entry.seq === event.seq)).toBeUndefined();
       } else {
@@ -126,8 +133,10 @@ describe('workflow-store — event log lines match @engin/shared/format-workflow
   it('preserves the seq key on each log entry (matches the shared formatter call site)', () => {
     useWorkflowStore.getState().applyEvents('run-1', [ev('workflow_started', { taskPrompt: 'seq-check' }, {}, 77)]);
     const log = useWorkflowStore.getState().workflowEventLog;
+    const s = useWorkflowStore.getState();
+    const ctx = { phases: s.phases, sessions: s.sessionsById };
     expect(log[0].seq).toBe(77);
-    expect(log[0].line).toBe(formatWorkflowEventLine(ev('workflow_started', { taskPrompt: 'seq-check' }, {}, 77)));
+    expect(log[0].line).toBe(formatWorkflowEventLine(ev('workflow_started', { taskPrompt: 'seq-check' }, {}, 77), ctx));
   });
 });
 

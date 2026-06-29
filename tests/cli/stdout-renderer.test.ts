@@ -127,7 +127,7 @@ describe('createStdoutRenderer', () => {
   // ─── Non-verbose mode ────────────────────────────────────────────────────
 
   describe('non-verbose mode', () => {
-    it('prints lifecycle event lines from workflowEventLog with a timestamp prefix', () => {
+    it('prints self-timestamped lifecycle event lines (no extra bracket prefix)', () => {
       const { dispose } = createStdoutRenderer({
         clientStore: store,
         verbose: false,
@@ -137,9 +137,11 @@ describe('createStdoutRenderer', () => {
       store.applyEvents([ev('workflow_started', { taskPrompt: 'build feature', resumed: false }, {}, 1)]);
 
       expect(logSpy).toHaveBeenCalledTimes(1);
-      expect(logSpy.mock.calls[0][0]).toBe(
-        `[${FIXED_TIMESTAMP}] 🚀 Workflow started: "build feature" (resumed: false)`,
-      );
+      // Lifecycle lines are self-timestamped by formatWorkflowEventLine
+      // (`HH:mm:ssam/pm -> …`); the renderer prints them as-is and must NOT
+      // prepend its own bracketed formatTime() (would double the timestamp).
+      expect(logSpy.mock.calls[0][0]).toContain('🚀 workflow started: "build feature" (resumed: false)');
+      expect(logSpy.mock.calls[0][0]).not.toContain(`[${FIXED_TIMESTAMP}]`);
       dispose();
     });
 
@@ -506,7 +508,7 @@ describe('createStdoutRenderer', () => {
   // ─── formatTime usage ────────────────────────────────────────────────────
 
   describe('formatTime', () => {
-    it('uses the injected formatTime for the timestamp prefix on lifecycle events', () => {
+    it('does NOT prepend formatTime to self-timestamped lifecycle lines', () => {
       const { dispose } = createStdoutRenderer({
         clientStore: store,
         verbose: false,
@@ -516,11 +518,14 @@ describe('createStdoutRenderer', () => {
       store.applyEvents([ev('workflow_started', { taskPrompt: 'x' }, {}, 1)]);
 
       expect(logSpy).toHaveBeenCalledTimes(1);
-      expect(logSpy.mock.calls[0][0]).toBe(`[${FIXED_TIMESTAMP}] 🚀 Workflow started: "x" (resumed: false)`);
+      // Lifecycle lines carry their own embedded time — the renderer must not
+      // add the bracketed formatTime() prefix to them.
+      expect(logSpy.mock.calls[0][0]).not.toContain(`[${FIXED_TIMESTAMP}]`);
+      expect(logSpy.mock.calls[0][0]).toContain('workflow started');
       dispose();
     });
 
-    it('calls formatTime on each printed line', () => {
+    it('does not call formatTime for lifecycle-only batches (reserved for verbose/runLog)', () => {
       let callCount = 0;
       function countingFormatTime(): string {
         callCount++;
@@ -539,8 +544,9 @@ describe('createStdoutRenderer', () => {
       ]);
 
       expect(logSpy).toHaveBeenCalledTimes(2);
-      expect(logSpy.mock.calls[0][0]).toBe('[C1] 🚀 Workflow started: "x" (resumed: false)');
-      expect(logSpy.mock.calls[1][0]).toBe('[C2] 📦 Phase: p (round 1)');
+      // formatTime is NOT invoked for lifecycle lines (they are self-timestamped).
+      expect(callCount).toBe(0);
+      expect(logSpy.mock.calls[0][0]).not.toContain('[');
       dispose();
     });
 

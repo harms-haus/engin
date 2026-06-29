@@ -272,7 +272,7 @@ describe('WorkflowTUI', () => {
       clientStore.applyEvents([ev('workflow_started', { taskPrompt: 'ship it', resumed: false }, {}, 1)]);
 
       const joined = tui.getEventLog().render(80).join('\n');
-      expect(joined).toContain('🚀 Workflow started: "ship it" (resumed: false)');
+      expect(joined).toContain('🚀 workflow started: "ship it" (resumed: false)');
     });
 
     it('does not duplicate event-log lines across multiple applyEvents batches', () => {
@@ -283,8 +283,8 @@ describe('WorkflowTUI', () => {
       clientStore.applyEvents([ev('phase_started', { phase: 'build', round: 1 }, {}, 2)]);
 
       const joined = tui.getEventLog().render(80).join('\n');
-      expect(joined).toContain('🚀 Workflow started: "a" (resumed: false)');
-      expect(joined).toContain('📦 Phase: build (round 1)');
+      expect(joined).toContain('🚀 workflow started: "a" (resumed: false)');
+      expect(joined).toContain('📦 phase started (round 1)');
     });
 
     it('renders runLog warn entries with the ⚠️ prefix (server-captured console output)', () => {
@@ -326,7 +326,7 @@ describe('WorkflowTUI', () => {
       clientStore.appendRunLog('error', 'broke', ISO_NOW);
 
       const joined = tui.getEventLog().render(80).join('\n');
-      expect(joined).toContain('🚀 Workflow started: "x" (resumed: false)');
+      expect(joined).toContain('🚀 workflow started: "x" (resumed: false)');
       expect(joined).toContain('⚠️ careful');
       expect(joined).toContain('❌ broke');
     });

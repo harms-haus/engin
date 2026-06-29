@@ -35,8 +35,8 @@ export interface WorkflowStatusCallbacks {
     sessionPlan?: { role: string; profile: string }[];
   }) => void;
   onTaskRegister?: (info: { taskId: string; phaseId: string; title: string; dependencies: string[] }) => void;
-  onTaskComplete?: (info: { taskId: string; title: string }) => void;
-  onTaskRejected?: (info: { taskId: string; title: string; reason: string }) => void;
+  onTaskComplete?: (info: { taskId: string; title: string; phaseId?: string }) => void;
+  onTaskRejected?: (info: { taskId: string; title: string; reason: string; phaseId?: string }) => void;
   onTaskParked?: (info: { taskId: string; title: string; agentId: string; phaseId?: string }) => void;
   onTaskUnparked?: (info: { taskId: string; title: string; agentId: string; phaseId?: string }) => void;
   onDecision?: (info: { agentId: string; decision: string; reasoning: string; taskId?: string }) => void;
@@ -52,8 +52,19 @@ export interface WorkflowStatusCallbacks {
     maxAttempts: number;
     delayMs: number;
     errorMessage?: string;
+    /** Owning task / phase — propagated so the event log prefix can name them. */
+    taskId?: string;
+    phaseId?: string;
   }) => void;
-  onAutoRetryCompleted?: (info: { agentId: string; success: boolean; attempt: number; finalError?: string }) => void;
+  onAutoRetryCompleted?: (info: {
+    agentId: string;
+    success: boolean;
+    attempt: number;
+    finalError?: string;
+    /** Owning task / phase — propagated so the event log prefix can name them. */
+    taskId?: string;
+    phaseId?: string;
+  }) => void;
 }
 
 export type TurnContentBlock =
@@ -82,8 +93,19 @@ export interface AgentStatusCallbacks {
     maxAttempts: number;
     delayMs: number;
     errorMessage?: string;
+    /** Owning task / phase — propagated so the event log prefix can name them. */
+    taskId?: string;
+    phaseId?: string;
   }) => void;
-  onAutoRetryCompleted?: (info: { agentId: string; success: boolean; attempt: number; finalError?: string }) => void;
+  onAutoRetryCompleted?: (info: {
+    agentId: string;
+    success: boolean;
+    attempt: number;
+    finalError?: string;
+    /** Owning task / phase — propagated so the event log prefix can name them. */
+    taskId?: string;
+    phaseId?: string;
+  }) => void;
 }
 
 export type StatusCallbacks = WorkflowStatusCallbacks & AgentStatusCallbacks;

@@ -132,77 +132,77 @@ describe('EventLog – workflow-level event rendering', () => {
     pushEventsAct([mkEvent(1, 'workflow_started', { taskPrompt: 'build', resumed: false })]);
 
     const { container } = render(<EventLog />);
-    expect(container.textContent).toContain('🚀 Workflow started: "build" (resumed: false)');
+    expect(container.textContent).toContain('🚀 workflow started: "build" (resumed: false)');
   });
 
   it('renders phase_started with emoji line', () => {
     pushEventsAct([mkEvent(1, 'phase_started', { phase: 'scouting', round: 1 })]);
 
     const { container } = render(<EventLog />);
-    expect(container.textContent).toContain('📦 Phase: scouting (round 1)');
+    expect(container.textContent).toContain('📦 phase started (round 1)');
   });
 
   it('renders task_started with emoji line', () => {
     pushEventsAct([mkEvent(1, 'task_started', { taskId: 't1', title: 'T' }, { taskId: 't1' })]);
 
     const { container } = render(<EventLog />);
-    expect(container.textContent).toContain('📋 Task t1: "T"');
+    expect(container.textContent).toContain('📋 task started: "T"');
   });
 
   it('renders error with emoji line', () => {
     pushEventsAct([mkEvent(1, 'error', { error: 'crash' }, { agentId: 'a1', phaseId: 'planning' })]);
 
     const { container } = render(<EventLog />);
-    expect(container.textContent).toContain('⚠️ Error in a1: crash (planning)');
+    expect(container.textContent).toContain('⚠️ error: crash');
   });
 
   it('renders phase_completed with emoji line', () => {
     pushEventsAct([mkEvent(1, 'phase_completed', { phase: 'plan', durationMs: 3000 })]);
 
     const { container } = render(<EventLog />);
-    expect(container.textContent).toContain('✅ Phase plan done (3.0s)');
+    expect(container.textContent).toContain('✅ phase completed (3.0s)');
   });
 
   it('renders workflow_completed with emoji line', () => {
     pushEventsAct([mkEvent(1, 'workflow_completed', { totalDurationMs: 12500, sessionCount: 3 })]);
 
     const { container } = render(<EventLog />);
-    expect(container.textContent).toContain('🎉 Complete in 12.5s (3 sessions)');
+    expect(container.textContent).toContain('🎉 complete in 12.5s (3 sessions)');
   });
 
   it('renders workflow_failed with emoji line', () => {
     pushEventsAct([mkEvent(1, 'workflow_failed', { phase: 'exec', error: 'timeout' })]);
 
     const { container } = render(<EventLog />);
-    expect(container.textContent).toContain('💥 Failed at exec: timeout');
+    expect(container.textContent).toContain('💥 failed: timeout');
   });
 
   it('renders session_started with emoji line', () => {
     pushEventsAct([mkEvent(1, 'session_started', { profile: 'coder' }, { agentId: 'a1' })]);
 
     const { container } = render(<EventLog />);
-    expect(container.textContent).toContain('⏳ Session a1 started (coder)');
+    expect(container.textContent).toContain('⏳ session started (coder)');
   });
 
   it('renders session_completed with emoji line', () => {
     pushEventsAct([mkEvent(1, 'session_completed', {}, { agentId: 'a1' })]);
 
     const { container } = render(<EventLog />);
-    expect(container.textContent).toContain('✅ Session a1 complete');
+    expect(container.textContent).toContain('✅ session complete');
   });
 
   it('renders task_completed with emoji line', () => {
     pushEventsAct([mkEvent(1, 'task_completed', { taskId: 't1' }, { taskId: 't1' })]);
 
     const { container } = render(<EventLog />);
-    expect(container.textContent).toContain('✅ Task t1 complete');
+    expect(container.textContent).toContain('✅ task complete');
   });
 
   it('renders task_rejected with emoji line', () => {
     pushEventsAct([mkEvent(1, 'task_rejected', { taskId: 't1', reason: 'stale' }, { taskId: 't1' })]);
 
     const { container } = render(<EventLog />);
-    expect(container.textContent).toContain('❌ Task t1 rejected: stale');
+    expect(container.textContent).toContain('❌ task rejected: stale');
   });
 
   it('renders sidebar_updated with emoji line when title is set', () => {
@@ -234,7 +234,7 @@ describe('EventLog – workflow-level event rendering', () => {
     const lines = container.querySelectorAll('.event-log__entry');
     // Only workflow_started should render — all verbose events return null
     expect(lines).toHaveLength(1);
-    expect(lines[0].textContent).toContain('🚀 Workflow started: "hello"');
+    expect(lines[0].textContent).toContain('🚀 workflow started: "hello"');
   });
 
   it('renders multiple lifecycle events in order', () => {
@@ -248,7 +248,7 @@ describe('EventLog – workflow-level event rendering', () => {
     const text = container.textContent ?? '';
     const idx1 = text.indexOf('🚀');
     const idx2 = text.indexOf('📦');
-    const idx3 = text.indexOf('✅ Phase plan done');
+    const idx3 = text.indexOf('✅ phase completed');
     expect(idx1).toBeLessThan(idx2);
     expect(idx2).toBeLessThan(idx3);
   });
