@@ -2067,19 +2067,26 @@ describe('SessionScheduler', () => {
     expect(result.failedTasks).toBe(0);
   });
 
-  // ── 33. Transient error overcome by retry does NOT fail the task (t-04 regression) ─
+  // ── 33. A session that throws fails the task immediately (transient or not) ─
   //
-  // Reproduces the t-04 false-failure: a review-style runner whose execute
-  // session throws a TRANSIENT error (watchdog timeout) on round 1, then
-  // SUCCEEDS on round 2. The task must COMPLETE — the transient error was
-  // overcome by the runner's own retry loop and must not veto success.
-  it('33. transient error overcome by retry does not fail the task', async () => {
+  // A session's execute() is the single authority for session success: every
+  // internal retry (the SDK auto-retry ladder, in-session watchdog resumes,
+  // structured-output validation retries) lives INSIDE runSession and has
+  // already had its chances by the time execute() throws. The scheduler must
+  // fail the task immediately rather than feeding the runner a synthetic empty
+  // result and advancing — which would proceed to the next session in the plan
+  // (e.g. a review session) with nothing to act on, masking the failure.
+  //
+  // This replaces the former "transient error overcome by retry" behaviour:
+  // a thrown transient error (e.g. a watchdog timeout that exhausts
+  // watchdogMaxResumes, or a 429 that exhausts the SDK retries) is a decisive
+  // session failure. The runner's later rounds are never reached.
+  it('33. a session that throws fails the task immediately (transient throw)', async () => {
     const profiles = new Map([['default', makeProfile('default')]]);
     const gate = new SessionGate({ total: 2, perModel: {} });
-    const log: string[] = [];
     let attempt = 0;
-    // Fake runner: yields the same spec twice (two rounds), execute throws a
-    // transient SessionError on the first call and succeeds on the second.
+    // Fake runner: would yield twice, but execute throws on the first call.
+    // The second yield must never be reached — the task fails on the throw.
     const factory = (): SessionPlanRunner => ({
       async *plan(): AsyncGenerator<SessionSpec[], SessionResult[] | undefined, SessionResult[]> {
         yield [makeSpec('s1', 'default')];
@@ -2088,11 +2095,7 @@ describe('SessionScheduler', () => {
       },
       async execute(_ctx, spec): Promise<SessionResult> {
         attempt += 1;
-        log.push(`attempt:${attempt}`);
-        if (attempt === 1) {
-          throw new SessionError('watchdog timeout (transient)', { kind: 'transient', retryable: true });
-        }
-        return { mode: 'structured', data: { approved: true } };
+        throw new SessionError('watchdog timeout (transient)', { kind: 'transient', retryable: true });
       },
     });
     const graph = new TaskGraph();
@@ -2107,19 +2110,20 @@ describe('SessionScheduler', () => {
       phaseId: 'test',
     });
     const result = await scheduler.run();
-    expect(result.completedTasks).toBe(1);
-    expect(result.failedTasks).toBe(0);
-    expect(graph.getTask('A')?.status).toBe('complete');
-    expect(attempt).toBe(2);
+    expect(result.failedTasks).toBe(1);
+    expect(result.completedTasks).toBe(0);
+    expect(graph.getTask('A')?.status).toBe('failed');
+    // Only the first execute ran — the throw failed the task before round 2.
+    expect(attempt).toBe(1);
   });
 
-  // ── 34. Permanent error still fails even when the runner's generator returns ─
+  // ── 34. Permanent error fails the task immediately ──
   //
   // Counterpart to test 33: a spec that fails with a PERMANENT (non-transient)
-  // error must still fail the task, even though the runner's generator returns
-  // normally (the runner ignored the failure). Ensures the transient-relaxation
-  // doesn't mask real failures.
-  it('34. permanent error fails the task even when the generator returns', async () => {
+  // error also fails the task. With session throws routed to failTask
+  // regardless of transient/permanent, both kinds fail the task the moment the
+  // session throws (no synthetic empty result, no generator continuation).
+  it('34. permanent error fails the task immediately', async () => {
     const profiles = new Map([['default', makeProfile('default')]]);
     const gate = new SessionGate({ total: 2, perModel: {} });
     const factory = (): SessionPlanRunner => ({

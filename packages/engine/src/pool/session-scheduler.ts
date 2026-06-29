@@ -40,7 +40,7 @@ import type { AuditLog } from '../tracking/audit-log.js';
 import type { SessionPlanContext, SessionPlanRunner } from './runners/session-plan-types.js';
 import type { SessionGate } from './session-gate.js';
 import type { SessionResult, SessionSpec } from './session.js';
-import { isSessionCached, SessionError } from './session.js';
+import { isSessionCached } from './session.js';
 import type { TaskGraph, TaskGraphEntry } from './task-graph.js';
 
 // ─── Internal constants ───────────────────────────────────────────────────
@@ -117,14 +117,6 @@ export class SessionScheduler {
 
   /** Per-task: accumulated error messages from failed sessions. */
   private readonly taskErrors = new Map<string, string[]>();
-
-  /** Per-task: PERMANENT (non-transient) error messages from failed sessions.
-   *  Transient/retryable errors (e.g. watchdog timeouts that the runner's
-   *  review/retry loop overcame) are NOT recorded here — only {@link taskErrors}
-   *  keeps them for diagnostics. {@link finalizeTask} consults THIS map (not
-   *  taskErrors) so a task that ultimately succeeded isn't vetoed by stale
-   *  transient errors it already recovered from. */
-  private readonly taskPermanentErrors = new Map<string, string[]>();
 
   /** Per-task: worktree was created (for merge/cull lifecycle). */
   private readonly worktreeCreated = new Set<string>();
@@ -709,7 +701,7 @@ export class SessionScheduler {
     this.batchStarted.get(taskId)!.add(specIndex);
 
     const sessionPromise = (async (): Promise<void> => {
-      let result: SessionResult;
+      let result: SessionResult | undefined;
       let executeError: string | undefined;
       try {
         // The in-session inactivity watchdog (runSession, fed by stepTimeoutMs)
@@ -725,37 +717,37 @@ export class SessionScheduler {
         const errs = this.taskErrors.get(taskId) ?? [];
         errs.push(executeError);
         this.taskErrors.set(taskId, errs);
-        // A transient/retryable error (e.g. a watchdog timeout that the runner's
-        // review/retry loop will overcome) is NOT a permanent failure — record
-        // it for diagnostics only, so a task that ultimately succeeds isn't
-        // vetoed by a stale transient error it recovered from. Permanent errors
-        // (and unclassified ones, treated conservatively as permanent) ARE
-        // recorded for finalizeTask to act on.
-        const isTransient = err instanceof SessionError && err.transient === true;
-        if (!isTransient) {
-          const perm = this.taskPermanentErrors.get(taskId) ?? [];
-          perm.push(executeError);
-          this.taskPermanentErrors.set(taskId, perm);
-        }
-        result = { mode: 'text', text: '' };
       }
 
-      // Store the result at the spec's position (spec order preserved).
-      // E2: track batchSettledCount for O(1) isBatchComplete.
-      if (entry.batchResults[specIndex] === undefined) {
-        const count = this.batchSettledCount.get(taskId) ?? 0;
-        this.batchSettledCount.set(taskId, count + 1);
-      }
-      entry.batchResults[specIndex] = result;
-      entry.completedSessions++;
-
-      const batchComplete = this.isBatchComplete(entry);
+      let batchComplete = false;
       let advanced = false;
       try {
-        // If the entire batch has settled, advance the generator.
-        if (batchComplete) {
-          await this.advanceBatch(entry);
-          advanced = true;
+        if (executeError !== undefined) {
+          // A session that throws has exhausted EVERY internal retry — the SDK
+          // auto-retry ladder, the in-session watchdog resumes, and the
+          // structured-output validation retries all live INSIDE runSession and
+          // have already had their chances. Fail the task immediately rather
+          // than storing a synthetic empty result and advancing the runner:
+          // continuing would proceed to the next session in the plan (e.g. a
+          // review session) with nothing to act on, masking the failure.
+          await this.failTask(entry, executeError);
+        } else {
+          // Store the result at the spec's position (spec order preserved).
+          // E2: track batchSettledCount for O(1) isBatchComplete.
+          if (entry.batchResults[specIndex] === undefined) {
+            const count = this.batchSettledCount.get(taskId) ?? 0;
+            this.batchSettledCount.set(taskId, count + 1);
+          }
+          // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+          entry.batchResults[specIndex] = result!;
+          entry.completedSessions++;
+
+          // If the entire batch has settled, advance the generator.
+          batchComplete = this.isBatchComplete(entry);
+          if (batchComplete) {
+            await this.advanceBatch(entry);
+            advanced = true;
+          }
         }
       } catch (err) {
         // advanceBatch (gen.next) threw — convert to task failure.
@@ -919,22 +911,14 @@ export class SessionScheduler {
    * Finalize a task on NORMAL plan completion: handle the worktree merge, then
    * mark the task 'complete'. Reached only when the runner's plan generator
    * returns normally (advanceBatch's `next.done` / initializeReadyTask's
-   * `batchResult.done`). A runner that exhausts its retries THROWS, routing
-   * through {@link failTask} instead — so reaching here means the plan
-   * genuinely succeeded.
+   * `batchResult.done`). A session that throws routes through {@link failTask}
+   * INSTEAD — so reaching here means every session in the plan succeeded and
+   * the plan genuinely completed.
    *
-   * Accumulated {@link taskErrors} are NOT consulted here. Those entries come
-   * from sessions whose transient failures (e.g. watchdog timeouts) were
-   * captured as fallback results and fed back to the runner, which then drove
-   * its plan to completion via its own review/retry loop. Vetoing a successful
-   * task on those stale errors caused false failures — e.g. a review session
-   * that timed out on rounds 1–2 but APPROVED on round 3 (proven by the
-   * persisted result) still failed the task because the two timeouts lingered
-   * in taskErrors. {@link taskPermanentErrors} (PERMANENT, non-transient errors
-   * only) IS consulted: a genuinely unrecoverable spec failure still fails the
-   * task even if the runner's generator returned. Per-session errors remain
-   * visible in the audit trail via `scheduler_session_settle` events, so they
-   * are diagnosable, not lost.
+   * Accumulated {@link taskErrors} are NOT consulted here: with session throws
+   * routed to failTask, a task only reaches finalizeTask when all its sessions
+   * returned results normally. Per-session errors remain visible in the audit
+   * trail via `scheduler_session_settle` events, so they are diagnosable.
    *
    * The only other failure path from here is a worktree merge failure
    * (delegated to {@link failTask}). Triggers recalculateReady so blocked
@@ -947,13 +931,10 @@ export class SessionScheduler {
     // by abort), don't overwrite it.
     if (isTerminalTaskStatus(entry.status)) return;
 
-    const permanentErrors = this.taskPermanentErrors.get(taskId);
-    const hasPermanentErrors = permanentErrors !== undefined && permanentErrors.length > 0;
-
     // Worktree lifecycle. failTask is the single cull owner, so we only
     // handle the merge-on-success path here; failure culling is delegated to
     // failTask.
-    if (!hasPermanentErrors && this.worktreeCreated.has(taskId) && this.options.worktreeManager) {
+    if (this.worktreeCreated.has(taskId) && this.options.worktreeManager) {
       // Merge on success.
       let mergeFailed = false;
       let mergeErrMsg = '';
@@ -971,15 +952,6 @@ export class SessionScheduler {
         await this.failTask(entry, mergeErrMsg);
         return;
       }
-    }
-
-    if (hasPermanentErrors) {
-      // A PERMANENT spec failure occurred during the plan. Even though the
-      // runner's generator returned (rather than throwing), an unrecoverable
-      // error must still fail the task. (Transient errors that were retried
-      // and overcome are excluded — they're not in taskPermanentErrors.)
-      await this.failTask(entry, permanentErrors.join('; '));
-      return;
     }
 
     entry.task.result = { completed: true };
@@ -1046,7 +1018,6 @@ export class SessionScheduler {
     this.worktreeCwds.delete(taskId);
     // taskErrors is left for result aggregation but can be cleared after terminal.
     this.taskErrors.delete(taskId);
-    this.taskPermanentErrors.delete(taskId);
   }
 
   // ─── Runner resolution (beforeTask hook + factory fallback) ──────────────
