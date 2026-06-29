@@ -13,6 +13,10 @@ export interface GateSnapshot {
   totalAvailable: number;
   totalCap: number;
   models: { key: string; available: number; cap: number | null }[];
+  /** Provider-level shared pools (keys with no colon). Present only for
+   *  providers with a configured provider cap. Optional for synthetic
+   *  snapshots that predate provider caps. */
+  providers?: { key: string; available: number; cap: number }[];
 }
 
 /** Structured outcome of a single candidate within a drain pass, captured by
@@ -30,16 +34,21 @@ export interface CandidateTrace {
 /**
  * Explain WHY `gate.canStart(profile)` would return false, for the audit log.
  *
- * Distinguishes total-capacity saturation from per-model saturation and names
- * the offending model key + cap. Pure: it reads only the supplied snapshot
- * (no gate access), so callers must pass the gate's current
- * {@link SessionGate.snapshot} themselves.
+ * Distinguishes total-capacity saturation, provider-pool saturation, and
+ * per-model saturation, naming the offending bucket key + cap. Pure: it reads
+ * only the supplied snapshot (no gate access), so callers must pass the gate's
+ * current {@link SessionGate.snapshot} themselves.
  */
 export function buildCapacityFailureDescription(profile: AgentProfile, snapshot: GateSnapshot): string {
   if (snapshot.totalAvailable <= 0) {
     return `total saturated (0 of ${snapshot.totalCap} slots free)`;
   }
-  // Total has room → must be the per-model bucket.
+  // Provider-level shared pool, if configured.
+  const prov = snapshot.providers?.find((p) => p.key === profile.provider);
+  if (prov && prov.available <= 0) {
+    return `provider '${prov.key}' pool saturated (0 of ${prov.cap} free; total has ${snapshot.totalAvailable})`;
+  }
+  // Total + provider have room → must be the per-model bucket.
   const key = `${profile.provider}:${profile.model}`;
   const bucket = snapshot.models.find((m) => m.key === key || m.key === `${key}:${profile.agent}`);
   if (bucket) {
