@@ -50,4 +50,39 @@ export type AuditEvent =
       batchComplete: boolean;
       advanced: boolean;
       timestamp: string;
+    }
+  // ── Task retry lifecycle ───────────────────────────────────────────────
+  // Emitted by SessionScheduler when a failed task is scheduled for a
+  // blank-slate retry (failed attempt preserved, new session dir + worktree
+  // for the next attempt) and when a task fails permanently (retry budget
+  // exhausted or a non-retryable failure such as a resource deadlock).
+  | {
+      type: 'scheduler_task_retry_scheduled';
+      phaseId: string;
+      taskId: string;
+      /** The attempt that just failed (1-based). */
+      attempt: number;
+      /** Retries remaining after this failure (0 < retriesLeft <= MAX_RETRIES). */
+      retriesLeft: number;
+      error: string;
+      timestamp: string;
+    }
+  | {
+      type: 'scheduler_task_retry_reset';
+      phaseId: string;
+      taskId: string;
+      /** The attempt number about to run (1-based; >1 for a retry). */
+      attempt: number;
+      /** Per-attempt session base directory for the new (blank-slate) attempt. */
+      sessionBaseDir: string;
+      timestamp: string;
+    }
+  | {
+      type: 'scheduler_task_failed_permanent';
+      phaseId: string;
+      taskId: string;
+      attempt: number;
+      reason: string;
+      error: string;
+      timestamp: string;
     };

@@ -27,6 +27,8 @@
 // release on settle. Runners are pure SessionPlanRunner async generators that
 // never touch the gate.
 
+import { join } from 'node:path';
+
 import { isTerminalTaskStatus } from '@engin/shared';
 import type { TaskStatus } from '@engin/shared/types';
 
@@ -49,6 +51,24 @@ import type { TaskGraph, TaskGraphEntry } from './task-graph.js';
  *  the scheduler gives up and treats the operation as hung. A leaked
  *  generator is preferred over blocking the scheduler indefinitely. */
 const GENERATOR_TIMEOUT_MS = 5_000;
+
+/** Maximum number of blank-slate retries a failed task gets after its initial
+ *  attempt. Attempt 1 is the first run; up to MAX_RETRIES retries on top → at
+ *  most MAX_RETRIES + 1 total executions before a task fails permanently.
+ *
+ *  Only EXECUTION failures (a session execute()/plan-generator/merge throw)
+ *  are retryable. Structural failures (resource deadlock, missing dependency,
+ *  profile-not-found → cancelled) are non-retryable and fail the task at
+ *  once — they are deterministic and would fail identically every time. */
+export const MAX_RETRIES = 3;
+
+/** Subdirectory under {@link SessionSchedulerOptions.sessionBaseDir} used to
+ *  namespace per-attempt retry session data so a failed attempt's persisted
+ *  sessions are preserved for tracing instead of being overwritten.
+ *
+ *  Attempt 1 writes to `{sessionBaseDir}/{spec.id}/`; attempt N (>1) writes to
+ *  `{sessionBaseDir}/{RETRY_SUBDIR}/{taskId}/{N}/{spec.id}/`. */
+const RETRY_SUBDIR = '.retries';
 
 // ─── Options ───────────────────────────────────────────────────────────────
 
@@ -143,6 +163,20 @@ export class SessionScheduler {
 
   /** Per-task: cached SessionPlanContext for execute() calls (with apiKeys — S4). */
   private readonly executeCtxCache = new Map<string, SessionPlanContext>();
+
+  /** Per-task: 1-based attempt number (attempt 1 = first run; >1 = retry).
+   *  Absent means the task has not been initialized yet (treated as 1). */
+  private readonly taskAttempts = new Map<string, number>();
+
+  /** Per-task: session base directory for the CURRENT attempt. Absent falls
+   *  back to {@link SessionSchedulerOptions.sessionBaseDir}. Set in
+   *  {@link initializeReadyTask} (attempt 1) and {@link resetForRetry} (>1). */
+  private readonly taskSessionBaseDir = new Map<string, string>();
+
+  /** Task ids currently in 'failed' status with retry budget remaining — i.e.
+   *  scheduled for a blank-slate retry. Reset to 'ready' at the start of the
+   *  next drain pass (then picked up by T3 like any ready task). */
+  private readonly retryEligible = new Set<string>();
 
   /** Scoped clone of options.hookRegistry (created at start of run()). */
   private scopedHookRegistry?: HookRegistry;
@@ -411,6 +445,14 @@ export class SessionScheduler {
     this.pendingDrainTrigger = 'completion'; // default if re-armed mid-pass
     const candidates: CandidateTrace[] = [];
 
+    // T0: reset retry-eligible failed tasks → 'ready' (blank-slate retry).
+    // Each reset increments the attempt counter, clears per-attempt execution
+    // state, assigns a NEW per-attempt session base dir (preserving the failed
+    // attempt's data), and transitions failed → ready. They are then picked up
+    // by T3 below like any other ready task — retries are identical to ready
+    // tasks for scheduling, just processed once their failed attempt settles.
+    this.resetRetryEligibleTasks();
+
     // T1: Active tasks — continue their held batch specs.
     for (const entry of this.graph.getActiveTasks()) {
       const trace = this.tryStartBatchSpecs(entry);
@@ -456,6 +498,115 @@ export class SessionScheduler {
       gate: this.gate.snapshot(),
       candidates,
     });
+  }
+
+  // ─── Retry reset (T0) ────────────────────────────────────────────────────
+
+  /**
+   * Reset every retry-eligible 'failed' task for a blank-slate retry. Called
+   * at the START of each drain pass. A task marked retry-eligible (by
+   * {@link failTask}) is transitioned 'failed' → 'ready' here so T3 picks it
+   * up like any ready task.
+   *
+   * A retry is a BLANK-SLATE re-run, NOT a resume: the per-attempt session
+   * base directory changes (the failed attempt's data is preserved at its own
+   * path), a fresh plan generator is created, and the worktree is recreated on
+   * the SAME branch name. Failed tasks remain 'failed' between the failure and
+   * this reset (i.e. until the scheduler picks them up again).
+   */
+  private resetRetryEligibleTasks(): void {
+    if (this.retryEligible.size === 0) return;
+    // Snapshot — resetForRetry mutates the set.
+    for (const taskId of [...this.retryEligible]) {
+      const entry = this.graph.getTask(taskId);
+      if (!entry) {
+        this.retryEligible.delete(taskId);
+        continue;
+      }
+      // Only reset tasks still 'failed'. A concurrent terminal transition
+      // (e.g. abort → cancelled, or permanent failure) removes retry eligibility.
+      if (entry.status !== 'failed') {
+        this.retryEligible.delete(taskId);
+        continue;
+      }
+      this.resetForRetry(entry);
+    }
+  }
+
+  /**
+   * Reset a single 'failed' task for its next attempt: increment the attempt
+   * counter, clear ALL per-attempt execution state (runners, caches, batch
+   * state, worktree tracking, errors), assign a NEW per-attempt session base
+   * directory, drop the stale result, and transition 'failed' → 'ready'.
+   *
+   * Mirrors {@link cleanupTaskState} but ALSO resets the entry's session-plan
+   * fields (heldBatch, batchResults, counters) so initializeReadyTask starts
+   * cleanly. The generator was already cleaned up in {@link failTask}.
+   */
+  private resetForRetry(entry: TaskGraphEntry): void {
+    const taskId = entry.task.id;
+    const attempt = (this.taskAttempts.get(taskId) ?? 1) + 1;
+    this.taskAttempts.set(taskId, attempt);
+    this.retryEligible.delete(taskId);
+
+    // Clear per-attempt execution state (blank slate).
+    this.batchStarted.delete(taskId);
+    this.batchSettledCount.delete(taskId);
+    this.resolveCache.delete(taskId);
+    this.runners.delete(taskId);
+    this.planCtxCache.delete(taskId);
+    this.executeCtxCache.delete(taskId);
+    this.advancing.delete(taskId);
+    this.worktreeCreated.delete(taskId);
+    this.worktreeCwds.delete(taskId);
+    this.taskErrors.delete(taskId);
+
+    // Reset entry session-plan fields.
+    entry.planGen = undefined;
+    entry.heldBatch = undefined;
+    entry.batchResults = [];
+    entry.completedSessions = 0;
+    entry.totalSessions = 0;
+    entry.task.result = undefined;
+
+    // NEW per-attempt session base dir (attempt 1 lives at the base; retries
+    // under .retries/{taskId}/{N}/ so the failed attempt's data is preserved).
+    const base = this.sessionBaseDirFor(taskId, attempt);
+    this.taskSessionBaseDir.set(taskId, base);
+
+    // Transition failed → ready. T3 initializes + starts it this drain pass.
+    this.graph.setTaskStatus(taskId, 'ready');
+
+    this.trace({
+      type: 'scheduler_task_retry_reset',
+      phaseId: this.options.phaseId,
+      taskId,
+      attempt,
+      sessionBaseDir: base,
+    });
+  }
+
+  /**
+   * Resolve the session base directory for a given attempt of a task.
+   *
+   * Attempt 1 (the initial run) uses {@link SessionSchedulerOptions.sessionBaseDir}
+   * directly — sessions land at `{sessionBaseDir}/{spec.id}/`. Attempts > 1
+   * (retries) are namespaced under `{sessionBaseDir}/{RETRY_SUBDIR}/{taskId}/{N}/`
+   * so the failed attempt's persisted sessions remain at their original paths
+   * for problem tracing instead of being overwritten.
+   */
+  private sessionBaseDirFor(taskId: string, attempt: number): string {
+    if (attempt <= 1) return this.options.sessionBaseDir;
+    return join(this.options.sessionBaseDir, RETRY_SUBDIR, taskId, String(attempt));
+  }
+
+  /**
+   * The session base directory currently in effect for a task (its active
+   * attempt). Falls back to {@link SessionSchedulerOptions.sessionBaseDir} when
+   * no per-task override is set (attempt 1 before initializeReadyTask runs).
+   */
+  private sessionBase(taskId: string): string {
+    return this.taskSessionBaseDir.get(taskId) ?? this.options.sessionBaseDir;
   }
 
   // ─── Tier helper: start pending specs from a held batch ───────────────────
@@ -617,6 +768,12 @@ export class SessionScheduler {
 
     // Create the plan generator and fetch the first batch.
     const agentId = `scheduler-${entry.task.id}`;
+    // Record the attempt number + per-attempt session base dir. Attempt 1 uses
+    // the base dir directly; retries (>1, set by resetForRetry) are namespaced
+    // under .retries/{taskId}/{N}/ so the failed attempt's data is preserved.
+    if (!this.taskAttempts.has(entry.task.id)) this.taskAttempts.set(entry.task.id, 1);
+    const attempt = this.taskAttempts.get(entry.task.id) ?? 1;
+    this.taskSessionBaseDir.set(entry.task.id, this.sessionBaseDirFor(entry.task.id, attempt));
     // E3 + S4: build and cache two contexts — plan (no apiKeys) and execute
     // (with apiKeys). plan() never needs credentials; execute() does.
     const planCtx = this.buildPlanContext(entry, agentId, false);
@@ -681,7 +838,9 @@ export class SessionScheduler {
     // E1: idempotency pre-check — if the session is already cached, skip gate
     // acquire/release entirely. The runner.execute() call will return the
     // cached result instantly (via runSession's idempotency mechanism).
-    const cached = spec.resume !== true && isSessionCached(this.options.sessionBaseDir, spec.id);
+    // Uses the per-attempt session base dir so a retry (fresh dir) never sees
+    // a stale cache hit from a failed attempt.
+    const cached = spec.resume !== true && isSessionCached(this.sessionBase(taskId), spec.id);
 
     let acquired = false;
     if (!cached) {
@@ -878,12 +1037,26 @@ export class SessionScheduler {
 
   /**
    * Fail a task: push the error message, cull the worktree (best-effort),
-   * set terminal status to 'failed', and promote blocked dependents.
+   * clean up the plan generator, and route the failure.
    *
-   * This is the single failure path used by finalizeTask, the session IIFE
-   * (when advanceBatch/gen.next throws), and any future failure sites.
+   * When `retryable` is true (the default — execution failures: a session
+   * execute()/plan-generator/merge throw) AND the task still has retry budget
+   * ({@link MAX_RETRIES}), the task is left in 'failed' status and marked
+   * retry-eligible. The NEXT drain pass resets it to 'ready' for a blank-slate
+   * retry: a fresh plan generator, a NEW per-attempt session base directory
+   * (the failed attempt's data is preserved), and a fresh worktree on the SAME
+   * branch name. Blocked dependents are NOT promoted (the task may yet succeed).
+   *
+   * When `retryable` is false (structural failures: resource deadlock) OR the
+   * retry budget is exhausted, the failure is PERMANENT: status set 'failed',
+   * blocked dependents promoted via {@link TaskGraph.recalculateReady}.
+   *
+   * This is the single failure path used by finalizeTask (merge failure), the
+   * session IIFE (execute throw / gen.next throw), initializeReadyTask (plan
+   * generator error), and {@link handleResourceDeadlock}. Callers must NOT
+   * cull the worktree before/after calling failTask — culling is owned here.
    */
-  private async failTask(entry: TaskGraphEntry, errorMsg: string): Promise<void> {
+  private async failTask(entry: TaskGraphEntry, errorMsg: string, retryable = true): Promise<void> {
     const taskId = entry.task.id;
 
     // Defensive: if the task already reached a terminal state (e.g., cancelled
@@ -897,13 +1070,48 @@ export class SessionScheduler {
 
     // Cull the worktree (best-effort). This is the single cull owner for all
     // failure paths — callers must NOT cull before/after calling failTask.
+    // On a retry, initializeReadyTask recreates a fresh worktree on the SAME
+    // branch name (engin/{mainSlug}--{taskId}), so culling here is correct.
     await this.cullWorktree(taskId);
 
     entry.task.result = { completed: false, error: errs.join('; ') };
-    this.graph.setTaskStatus(taskId, 'failed');
-    this.graph.recalculateReady(taskId);
 
-    // Clean up the plan generator so any finally blocks run.
+    // Determine whether this failure is retryable.
+    const attempt = this.taskAttempts.get(taskId) ?? 1;
+    const retriesLeft = MAX_RETRIES - (attempt - 1); // attempt 1 → 3 retries left
+    const willRetry = retryable && retriesLeft > 0;
+
+    if (willRetry) {
+      // Retry-eligible: stay 'failed' until the next drain resets it.
+      this.retryEligible.add(taskId);
+      this.graph.setTaskStatus(taskId, 'failed');
+      // Do NOT recalculateReady — dependents stay blocked (task may yet
+      // succeed on retry). They are promoted only on permanent failure.
+      this.trace({
+        type: 'scheduler_task_retry_scheduled',
+        phaseId: this.options.phaseId,
+        taskId,
+        attempt,
+        retriesLeft,
+        error: errs.join('; '),
+      });
+    } else {
+      // Permanent failure.
+      this.retryEligible.delete(taskId);
+      this.graph.setTaskStatus(taskId, 'failed');
+      this.graph.recalculateReady(taskId);
+      this.trace({
+        type: 'scheduler_task_failed_permanent',
+        phaseId: this.options.phaseId,
+        taskId,
+        attempt,
+        reason: retryable ? 'retry budget exhausted' : 'non-retryable failure',
+        error: errs.join('; '),
+      });
+    }
+
+    // Clean up the plan generator so any finally blocks run. On a retry,
+    // initializeReadyTask creates a fresh generator (the old one is dropped).
     await this.cleanupGenerator(taskId);
   }
 
@@ -1016,8 +1224,12 @@ export class SessionScheduler {
     this.advancing.delete(taskId);
     this.worktreeCreated.delete(taskId);
     this.worktreeCwds.delete(taskId);
+    // Retry state (cleared once the task is permanently terminal).
+    this.retryEligible.delete(taskId);
+    this.taskSessionBaseDir.delete(taskId);
     // taskErrors is left for result aggregation but can be cleared after terminal.
     this.taskErrors.delete(taskId);
+    // taskAttempts is retained for result/audit reporting even after terminal.
   }
 
   // ─── Runner resolution (beforeTask hook + factory fallback) ──────────────
@@ -1135,9 +1347,12 @@ export class SessionScheduler {
 
   /**
    * Returns true when every task is in a terminal state (complete / failed /
-   * cancelled).
+   * cancelled) AND no failed task is awaiting a blank-slate retry. A
+   * retry-eligible 'failed' task is NOT done — the run continues so the next
+   * drain pass can reset and re-run it.
    */
   private isDone(): boolean {
+    if (this.retryEligible.size > 0) return false;
     for (const entry of this.graph.getAllTasks()) {
       if (!isTerminalTaskStatus(entry.status)) return false;
     }
@@ -1155,7 +1370,13 @@ export class SessionScheduler {
   private async handleResourceDeadlock(): Promise<void> {
     for (const entry of this.graph.getAllTasks()) {
       if (!isTerminalTaskStatus(entry.status)) {
-        await this.failTask(entry, `resource deadlock: task "${entry.task.id}" cannot start (status: ${entry.status})`);
+        // Structural failure — non-retryable (a deadlock will recur every
+        // attempt; retrying would only burn the budget).
+        await this.failTask(
+          entry,
+          `resource deadlock: task "${entry.task.id}" cannot start (status: ${entry.status})`,
+          false,
+        );
       }
     }
   }
@@ -1205,7 +1426,7 @@ export class SessionScheduler {
     const ctx: SessionPlanContext = {
       task: entry.task,
       profiles: this.options.profiles,
-      sessionBaseDir: this.options.sessionBaseDir,
+      sessionBaseDir: this.sessionBase(entry.task.id),
       cwd: this.options.cwd,
       activeSessions: this.options.activeSessions,
       phaseId: this.options.phaseId,

@@ -2067,29 +2067,24 @@ describe('SessionScheduler', () => {
     expect(result.failedTasks).toBe(0);
   });
 
-  // ── 33. A session that throws fails the task immediately (transient or not) ─
+  // ── 33. A session that throws fails the task (after exhausting retries) ──
   //
   // A session's execute() is the single authority for session success: every
   // internal retry (the SDK auto-retry ladder, in-session watchdog resumes,
   // structured-output validation retries) lives INSIDE runSession and has
-  // already had its chances by the time execute() throws. The scheduler must
-  // fail the task immediately rather than feeding the runner a synthetic empty
-  // result and advancing — which would proceed to the next session in the plan
-  // (e.g. a review session) with nothing to act on, masking the failure.
-  //
-  // This replaces the former "transient error overcome by retry" behaviour:
-  // a thrown transient error (e.g. a watchdog timeout that exhausts
-  // watchdogMaxResumes, or a 429 that exhausts the SDK retries) is a decisive
-  // session failure. The runner's later rounds are never reached.
-  it('33. a session that throws fails the task immediately (transient throw)', async () => {
+  // already had its chances by the time execute() throws. A thrown execution
+  // error is now retryable at the TASK level: the scheduler runs up to
+  // MAX_RETRIES blank-slate retries (initial attempt + 3 retries = 4 total)
+  // before the task fails permanently. An always-throwing execute therefore
+  // runs exactly MAX_RETRIES + 1 times and the task ends 'failed'.
+  it('33. a session that throws fails the task after exhausting retries (transient throw)', async () => {
     const profiles = new Map([['default', makeProfile('default')]]);
     const gate = new SessionGate({ total: 2, perModel: {} });
     let attempt = 0;
-    // Fake runner: would yield twice, but execute throws on the first call.
-    // The second yield must never be reached — the task fails on the throw.
+    // Fake runner: execute always throws (transient). The scheduler retries
+    // the whole plan blank-slate until the retry budget is exhausted.
     const factory = (): SessionPlanRunner => ({
       async *plan(): AsyncGenerator<SessionSpec[], SessionResult[] | undefined, SessionResult[]> {
-        yield [makeSpec('s1', 'default')];
         yield [makeSpec('s1', 'default')];
         return;
       },
@@ -2113,8 +2108,8 @@ describe('SessionScheduler', () => {
     expect(result.failedTasks).toBe(1);
     expect(result.completedTasks).toBe(0);
     expect(graph.getTask('A')?.status).toBe('failed');
-    // Only the first execute ran — the throw failed the task before round 2.
-    expect(attempt).toBe(1);
+    // Initial attempt + MAX_RETRIES retries = MAX_RETRIES + 1 total executions.
+    expect(attempt).toBe(4);
   });
 
   // ── 34. Permanent error fails the task immediately ──
@@ -2238,5 +2233,197 @@ describe('SessionScheduler', () => {
     completeSpec(controls, 'a2');
     completeSpec(controls, 'b1');
     await runP;
+  });
+
+  // ── 36. Retry: failed execution task succeeds on the 2nd attempt ──────
+  //
+  // A task whose first execute() throws (transient execution failure) is
+  // retried blank-slate. The 2nd attempt's execute succeeds → the task ends
+  // 'complete'. Verifies: failure is retryable, the retry runs a FRESH plan,
+  // and a retry that succeeds completes normally.
+  it('36. retry: execution failure succeeds on the 2nd attempt', async () => {
+    const profiles = new Map([['default', makeProfile('default')]]);
+    const gate = new SessionGate({ total: 2, perModel: {} });
+    const observedBaseDirs: string[] = [];
+    let planCalls = 0;
+    // First execute throws; from the 2nd attempt onward it succeeds.
+    const factory = (): SessionPlanRunner => ({
+      async *plan(): AsyncGenerator<SessionSpec[], SessionResult[] | undefined, SessionResult[]> {
+        planCalls++;
+        yield [makeSpec('s1', 'default')];
+        return;
+      },
+      async execute(ctx, spec): Promise<SessionResult> {
+        observedBaseDirs.push(ctx.sessionBaseDir);
+        if (planCalls === 1) {
+          throw new SessionError('boom (transient)', { kind: 'transient', retryable: true });
+        }
+        return { mode: 'text', text: 'ok' };
+      },
+    });
+    const graph = new TaskGraph();
+    graph.addTask({ ...makeTask('A') }, factory);
+    const scheduler = new SessionScheduler({
+      graph,
+      gate,
+      profiles,
+      sessionBaseDir: '/tmp/test-sessions',
+      cwd: '/tmp/test',
+      activeSessions: new Set(),
+      phaseId: 'test',
+    });
+    const result = await scheduler.run();
+    expect(result.completedTasks).toBe(1);
+    expect(result.failedTasks).toBe(0);
+    expect(graph.getTask('A')?.status).toBe('complete');
+    // The plan generator ran twice: initial attempt + one retry.
+    expect(planCalls).toBe(2);
+  });
+
+  // ── 37. Retry: per-attempt session base dir preserves failed data ──────
+  //
+  // Attempt 1 uses the base sessionBaseDir; a retry (attempt 2) is namespaced
+  // under {base}/.retries/{taskId}/2/ so the failed attempt's persisted
+  // sessions remain at the original path for tracing. The blank-slate retry
+  // never reads the failed attempt's session cache.
+  it('37. retry: 2nd attempt uses a namespaced session base dir', async () => {
+    const profiles = new Map([['default', makeProfile('default')]]);
+    const gate = new SessionGate({ total: 2, perModel: {} });
+    const observedBaseDirs: string[] = [];
+    let planCalls = 0;
+    const factory = (): SessionPlanRunner => ({
+      async *plan(): AsyncGenerator<SessionSpec[], SessionResult[] | undefined, SessionResult[]> {
+        planCalls++;
+        yield [makeSpec('s1', 'default')];
+        return;
+      },
+      async execute(ctx, spec): Promise<SessionResult> {
+        observedBaseDirs.push(ctx.sessionBaseDir);
+        if (planCalls === 1) {
+          throw new SessionError('boom', { kind: 'transient', retryable: true });
+        }
+        return { mode: 'text', text: 'ok' };
+      },
+    });
+    const graph = new TaskGraph();
+    graph.addTask({ ...makeTask('A') }, factory);
+    const scheduler = new SessionScheduler({
+      graph,
+      gate,
+      profiles,
+      sessionBaseDir: '/tmp/test-sessions',
+      cwd: '/tmp/test',
+      activeSessions: new Set(),
+      phaseId: 'test',
+    });
+    const result = await scheduler.run();
+    expect(result.completedTasks).toBe(1);
+    // Attempt 1 → base dir; attempt 2 → .retries/A/2.
+    expect(observedBaseDirs).toEqual(['/tmp/test-sessions', '/tmp/test-sessions/.retries/A/2']);
+  });
+
+  // ── 38. Retry: structural (deadlock) failure is NOT retried ────────────
+  //
+  // A resource deadlock is a non-retryable structural failure: retrying would
+  // fail identically. The task fails permanently on the first attempt with no
+  // retry, and blocked dependents are promoted.
+  it('38. retry: resource deadlock fails permanently (no retry)', async () => {
+    const gate = new SessionGate({ total: 1, perModel: { 'p:m': 1 } });
+    const profiles = new Map([['default', makeProfile('default')]]);
+    const controls = makeSpecControls(['s1']);
+    gate.acquire = () => false; // force acquire race → park → deadlock
+    let planCalls = 0;
+    const factory = (): SessionPlanRunner => ({
+      async *plan(): AsyncGenerator<SessionSpec[], SessionResult[] | undefined, SessionResult[]> {
+        planCalls++;
+        yield [makeSpec('s1', 'default')];
+        return;
+      },
+      async execute(): Promise<SessionResult> {
+        return { mode: 'text', text: 'ok' };
+      },
+    });
+    const graph = new TaskGraph();
+    graph.addTask({ ...makeTask('A') }, factory);
+    const scheduler = new SessionScheduler({
+      graph,
+      gate,
+      profiles,
+      sessionBaseDir: '/tmp/test-sessions',
+      cwd: '/tmp/test',
+      activeSessions: new Set(),
+      phaseId: 'test',
+    });
+    const result = await scheduler.run();
+    expect(result.failedTasks).toBe(1);
+    expect(graph.getTask('A')?.status).toBe('failed');
+    // No retry: the plan generator was created only once.
+    expect(planCalls).toBe(1);
+  });
+
+  // ── 39. Retry: retryable failure keeps dependents blocked ──────────────
+  //
+  // While a task is retry-eligible ('failed' with budget left) its dependents
+  // must stay 'blocked' — the task may yet succeed on retry, so promoting a
+  // dependent prematurely would be wrong. Here A fails once (retryable) then
+  // succeeds on its 2nd attempt; B (depends on A) only runs AFTER A actually
+  // completes, proving B was not promoted during A's retry window.
+  it('39. retry: dependent runs only after parent completes on retry', async () => {
+    const profiles = new Map([['default', makeProfile('default')]]);
+    const gate = new SessionGate({ total: 2, perModel: {} });
+    const controls = makeSpecControls(['a1', 'b1']);
+    const startOrder: string[] = [];
+    let aPlanCalls = 0;
+    const graph = new TaskGraph();
+    // A throws on attempt 1, succeeds on attempt 2.
+    graph.addTask(
+      { ...makeTask('A') },
+      (): SessionPlanRunner => ({
+        async *plan(): AsyncGenerator<SessionSpec[], SessionResult[] | undefined, SessionResult[]> {
+          aPlanCalls++;
+          yield [makeSpec('a1', 'default')];
+          return;
+        },
+        async execute(): Promise<SessionResult> {
+          startOrder.push('a');
+          if (aPlanCalls === 1) {
+            throw new SessionError('transient boom', { kind: 'transient', retryable: true });
+          }
+          return { mode: 'text', text: 'a-ok' };
+        },
+      }),
+    );
+    // B depends on A.
+    graph.addTask(
+      { ...makeTask('B', { dependencies: ['A'] }) },
+      (): SessionPlanRunner => ({
+        async *plan(): AsyncGenerator<SessionSpec[], SessionResult[] | undefined, SessionResult[]> {
+          yield [makeSpec('b1', 'default')];
+          return;
+        },
+        async execute(): Promise<SessionResult> {
+          startOrder.push('b');
+          return { mode: 'text', text: 'b-ok' };
+        },
+      }),
+    );
+    const scheduler = new SessionScheduler({
+      graph,
+      gate,
+      profiles,
+      sessionBaseDir: '/tmp/test-sessions',
+      cwd: '/tmp/test',
+      activeSessions: new Set(),
+      phaseId: 'test',
+    });
+    const result = await scheduler.run();
+    expect(result.completedTasks).toBe(2);
+    expect(graph.getTask('A')?.status).toBe('complete');
+    expect(graph.getTask('B')?.status).toBe('complete');
+    // A retried once (initial + 1 retry = 2 plan() calls).
+    expect(aPlanCalls).toBe(2);
+    // B only ran after A completed: the last 'a' start precedes the single 'b'.
+    expect(startOrder.filter((s) => s === 'b')).toEqual(['b']);
+    expect(startOrder.lastIndexOf('a')).toBeLessThan(startOrder.indexOf('b'));
   });
 });
