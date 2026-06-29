@@ -75,14 +75,6 @@ export class AgentLogWidget implements Component {
     this.dirty = true;
   }
 
-  setSelectedAgentUid(uid: string | null): void {
-    this._selectedSessionId = uid;
-    if (!this._expanded) {
-      this._scrollOffset = 0;
-    }
-    this.dirty = true;
-  }
-
   // ─── Session API (B9) ──────────────────────────────────────────────
 
   /** Set the session list (sessions filtered by task) for rendering session tabs. */
@@ -125,14 +117,6 @@ export class AgentLogWidget implements Component {
     return this._expanded ? this._expandedLineCount : this._collapsedLines;
   }
 
-  /**
-   * Returns the uid of the selected agent. When sessions are set (B9), this
-   * returns the selected session uid. Otherwise it falls back to null.
-   */
-  getSelectedAgentUid(): string | null {
-    return this._selectedSessionId;
-  }
-
   invalidate(): void {
     this.dirty = true;
   }
@@ -141,7 +125,7 @@ export class AgentLogWidget implements Component {
 
   /** Get the session entity for the selected session, or null if none. */
   private getSelectedAgent(): SessionEntity | null {
-    const sessionId = this.getSelectedAgentUid();
+    const sessionId = this.getSelectedSessionId();
     if (!sessionId) return null;
     return this._agents.find((a) => a.uid === sessionId) ?? null;
   }

@@ -14,14 +14,6 @@ import { RunRegistry } from './run-registry.js';
 import { StatusBridge } from './status-bridge.js';
 import { SubscriptionManager } from './subscription-manager.js';
 
-// Install the global console capture ONCE at module load. The wrappers route
-// per-run console.warn/error/info output to the active run's store via
-// AsyncLocalStorage (see console-capture.ts). Idempotent and inert outside any
-// run context, so it is safe to call at import time. Replacing the per-run
-// save/restore of the process-global `console` with async-context routing
-// fixes the concurrent-run capture corruption.
-installConsoleCapture();
-
 // ─── Types ──────────────────────────────────────────────────────────────────
 
 /** The payload of a `start_run` client message (without the `type` discriminator). */
@@ -105,6 +97,8 @@ export interface StartRunResult {
  * ~60 s after the run reaches a terminal state. The public API is unchanged.
  */
 export class RunManager {
+  private static consoleCaptureInstalled = false;
+
   private readonly registry = new RunRegistry();
   private readonly subscriptions = new SubscriptionManager();
   private readonly executor: RunExecutor;
@@ -115,6 +109,10 @@ export class RunManager {
    * `runs` message to all clients.
    */
   constructor(private readonly onRunsChanged: () => void) {
+    if (!RunManager.consoleCaptureInstalled) {
+      installConsoleCapture();
+      RunManager.consoleCaptureInstalled = true;
+    }
     this.executor = new RunExecutor(this.registry, onRunsChanged);
   }
 
@@ -454,6 +452,10 @@ export class RunManager {
    * runs settle.
    */
   async shutdownAll(): Promise<void> {
+    // Arm shutdown mode FIRST so any executor finally-block reap armed AFTER
+    // cancelAllReap (below) executes synchronously instead of leaking a
+    // deferred timer past teardown.
+    this.registry.beginShutdown();
     // Snapshot the handles so abort/flush/dispose iterate a stable set even if
     // a reaper fires concurrently during shutdown.
     const handles = Array.from(this.registry.values());

@@ -838,13 +838,13 @@ describe('WorkflowTUI', () => {
       const dashboard = setupBasic(tui);
 
       // Initially step 0 / agent-1 is selected
-      expect(dashboard.agentLog.getSelectedAgentUid()).toBeTruthy();
-      const initialAgent = dashboard.agentLog.getSelectedAgentUid();
+      expect(dashboard.agentLog.getSelectedSessionId()).toBeTruthy();
+      const initialSession = dashboard.agentLog.getSelectedSessionId();
 
       dashboard.handleInput(TAB);
-      const secondAgent = dashboard.agentLog.getSelectedAgentUid();
+      const secondSession = dashboard.agentLog.getSelectedSessionId();
       // Tab cycles to next step (with agentKey)
-      expect(secondAgent).not.toBe(initialAgent);
+      expect(secondSession).not.toBe(initialSession);
     });
 
     it('non-arrow/non-tab keys are NOT routed to any subcomponent', () => {

@@ -54,7 +54,7 @@ function setupWidget(
   const entity = makeAgent({ agentId, profile, phaseId });
   sessions.push(entity);
   widget.setAgents(sessions);
-  widget.setSelectedAgentUid(entity.uid);
+  widget.setSelectedSessionId(entity.uid);
   return { widget, sessions, uid: entity.uid };
 }
 
@@ -65,7 +65,7 @@ describe('AgentLogWidget (session-based)', () => {
     const widget = new AgentLogWidget(5);
     const agent = makeAgent({ agentId: 'a', phaseId: 'p' });
     widget.setAgents([agent]);
-    // Don't call setSelectedAgentUid → nothing selected
+    // Don't call setSelectedSessionId → nothing selected
     const lines = widget.render(WIDTH);
     expect(stripAnsi(lines[0]!)).toContain('No session selected');
   });
@@ -94,7 +94,7 @@ describe('AgentLogWidget (session-based)', () => {
       ],
     });
     widget.setAgents([agent]);
-    widget.setSelectedAgentUid(agent.uid);
+    widget.setSelectedSessionId(agent.uid);
 
     const lines = widget.render(WIDTH);
     const allText = lines.map(stripAnsi).join('\n');
@@ -285,7 +285,7 @@ describe('AgentLogWidget (session-based)', () => {
       log: Array.from({ length: 50 }, (_, i) => makeLogEntry('text', `line ${i}`)),
     });
     widget.setAgents([agent]);
-    widget.setSelectedAgentUid(agent.uid);
+    widget.setSelectedSessionId(agent.uid);
     widget.toggleExpand();
 
     widget.render(WIDTH); // initial render
@@ -304,7 +304,7 @@ describe('AgentLogWidget (session-based)', () => {
       log: Array.from({ length: 50 }, (_, i) => makeLogEntry('text', `line ${i}`)),
     });
     widget.setAgents([agent]);
-    widget.setSelectedAgentUid(agent.uid);
+    widget.setSelectedSessionId(agent.uid);
     widget.toggleExpand();
 
     widget.render(WIDTH);
@@ -324,7 +324,7 @@ describe('AgentLogWidget (session-based)', () => {
       log: Array.from({ length: 50 }, (_, i) => makeLogEntry('text', `line ${i}`)),
     });
     widget.setAgents([agent]);
-    widget.setSelectedAgentUid(agent.uid);
+    widget.setSelectedSessionId(agent.uid);
     widget.toggleExpand();
     widget.render(WIDTH);
     widget.handleInput('\x1b[A');
@@ -348,7 +348,7 @@ describe('AgentLogWidget (session-based)', () => {
       log: Array.from({ length: 50 }, (_, i) => makeLogEntry('text', `line ${i}`)),
     });
     widget.setAgents([agent]);
-    widget.setSelectedAgentUid(agent.uid);
+    widget.setSelectedSessionId(agent.uid);
 
     const collapsed = widget.render(WIDTH);
     expect(collapsed.length).toBe(widget.getExpandedLineCount());
@@ -368,7 +368,7 @@ describe('AgentLogWidget (session-based)', () => {
       log: [makeLogEntry('text', longText)],
     });
     widget.setAgents([agent]);
-    widget.setSelectedAgentUid(agent.uid);
+    widget.setSelectedSessionId(agent.uid);
 
     const lines = widget.render(WIDTH);
     // Each rendered line should be <= WIDTH (visible width)
@@ -381,7 +381,7 @@ describe('AgentLogWidget (session-based)', () => {
     const { widget } = setupWidget(20);
     const longTitle = 'A'.repeat(300);
     widget.setAgents([makeAgent({ agentId: 'a', phaseId: 'p', uid: 'long-uid', taskTitle: longTitle })]);
-    widget.setSelectedAgentUid('long-uid');
+    widget.setSelectedSessionId('long-uid');
     const header = stripAnsi(widget.render(80)[0]!);
     expect(header).toContain('…');
   });

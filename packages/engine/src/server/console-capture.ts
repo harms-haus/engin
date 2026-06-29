@@ -50,8 +50,8 @@ export async function runWithConsoleCapture<T>(store: EventStore, fn: () => Prom
 
 /**
  * Coerce console call arguments to a single human-readable message string,
- * joining with spaces. Matches the legacy `args.join(' ')` output for string
- * arguments while stringifying non-string arguments explicitly.
+ * joining with spaces. Stringifies non-string arguments explicitly,
+ * matching `args.join(' ')` behavior for string arguments.
  */
 function formatMessage(args: unknown[]): string {
   return args.map((a) => (typeof a === 'string' ? a : String(a))).join(' ');

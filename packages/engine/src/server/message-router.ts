@@ -40,8 +40,6 @@ export function createMessageRouter(runManager: RunManager): MessageRouter {
    * and closes the WebSocket.
    */
   function routeMessage(ws: ServerWebSocket, msg: ClientMessage): void {
-    // T35: authorize chokepoint — every inbound ClientMessage must pass
-    // through this gate before being routed to RunManager.
     if (!authorize(msg, ws).authorized) {
       ws.send(JSON.stringify({ type: 'auth_required' } satisfies ServerMessage));
       ws.close();

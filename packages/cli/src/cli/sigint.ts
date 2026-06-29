@@ -5,11 +5,11 @@ import { formatTime } from './console-status.js';
 // ─── Non-TTY SIGINT Handler ─────────────────────────────────────────────────
 //
 // Registers a process-level SIGINT listener for the NON-TUI (stdout-renderer)
-// CLI path. TTY/TUI mode handles Ctrl+C via the TUI's own input handler (T31),
+// CLI path. TTY/TUI mode handles Ctrl+C via the TUI's own input handler,
 // NOT through this module — the raw-mode stdin loop intercepts \x03 before it
 // ever becomes a process signal.
 //
-// Contract (T30):
+// Contract:
 //   - First SIGINT: send { type: 'cancel_run', runId } via the engine client
 //     and print a cancellation message. Do NOT exit — the run keeps running on
 //     the server; the client simply stops once the terminal event arrives

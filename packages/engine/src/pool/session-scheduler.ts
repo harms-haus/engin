@@ -40,6 +40,8 @@ import type { HookContext, HookRegistry } from '../hooks/types.js';
 import type { AuditLog } from '../tracking/audit-log.js';
 
 import type { SessionPlanContext, SessionPlanRunner } from './runners/session-plan-types.js';
+import type { CandidateTrace } from './scheduler-audit.js';
+import { buildCapacityFailureDescription } from './scheduler-audit.js';
 import type { SessionGate } from './session-gate.js';
 import type { SessionResult, SessionSpec } from './session.js';
 import { isSessionCached } from './session.js';
@@ -52,6 +54,29 @@ import type { TaskGraph, TaskGraphEntry } from './task-graph.js';
  *  generator is preferred over blocking the scheduler indefinitely. */
 const GENERATOR_TIMEOUT_MS = 5_000;
 
+/**
+ * Error raised by {@link SessionScheduler.withTimeout} when a plan-generator
+ * operation (gen.next / gen.return) does not settle within its grace period.
+ *
+ * This is a dedicated error class so callers can distinguish a generator/
+ * plan timeout from a genuine error thrown by the wrapped promise — the catch
+ * blocks in `nextNonEmptyBatch` and `cleanupGenerator` swallow it to keep the
+ * scheduler running after a hung generator rather than failing the task.
+ */
+export class GeneratorTimeoutError extends Error {
+  /** Label identifying the operation that timed out (e.g. 'plan generator next()'). */
+  readonly label: string;
+  /** The grace period, in milliseconds, that elapsed before the timeout fired. */
+  readonly ms: number;
+
+  constructor(label: string, ms: number) {
+    super(`${label} timed out after ${ms}ms`);
+    this.name = 'GeneratorTimeoutError';
+    this.label = label;
+    this.ms = ms;
+  }
+}
+
 /** Maximum number of blank-slate retries a failed task gets after its initial
  *  attempt. Attempt 1 is the first run; up to MAX_RETRIES retries on top → at
  *  most MAX_RETRIES + 1 total executions before a task fails permanently.
@@ -61,6 +86,12 @@ const GENERATOR_TIMEOUT_MS = 5_000;
  *  profile-not-found → cancelled) are non-retryable and fail the task at
  *  once — they are deterministic and would fail identically every time. */
 export const MAX_RETRIES = 3;
+
+/** Maximum number of consecutive empty batches (`[]`) the plan generator may
+ *  yield before {@link SessionScheduler.nextNonEmptyBatch} gives up. This is
+ *  purely an infinite-loop guard: a healthy runner either yields a non-empty
+ *  batch or completes, so exceeding this threshold signals a broken generator. */
+export const MAX_EMPTY_BATCHES = 1000;
 
 /** Subdirectory under {@link SessionSchedulerOptions.sessionBaseDir} used to
  *  namespace per-attempt retry session data so a failed attempt's persisted
@@ -108,18 +139,6 @@ export interface SessionSchedulerOptions {
 // ─── Internal resolution result ─────────────────────────────────────────────
 
 type ResolveResult = { kind: 'runner'; runner: SessionPlanRunner } | { kind: 'skip'; reason: string };
-
-/** Structured outcome of a single candidate within a drain pass, captured by
- *  tryStartBatchSpecs for the scheduler_drain audit event. */
-interface CandidateTrace {
-  taskId: string;
-  status: string;
-  dependents: number;
-  started: { specId: string; profile: string }[];
-  parkedSpecs: { specId: string; profile: string; reason: string }[];
-  skipped: boolean;
-  skipReason?: string;
-}
 
 // ─── SessionScheduler ──────────────────────────────────────────────────────
 
@@ -291,6 +310,11 @@ export class SessionScheduler {
           });
         }
       }
+      // 'failed' is a terminal status, so the cancel loop above skips
+      // retry-eligible failed tasks — but they must not be retried after an
+      // abort. Clear them so the abort-triggered drain pass does not reset
+      // them to 'ready' (resetRetryEligibleTasks) and re-initialize them.
+      this.retryEligible.clear();
       // Wake the main loop so it exits.
       this.pendingDrainTrigger = 'abort';
       this.scheduleDrain();
@@ -377,9 +401,9 @@ export class SessionScheduler {
   }
 
   /** Best-effort audit append: never throws, never produces an unhandled
-   *  rejection. Scheduler traces are diagnostic — a logging failure must not
+   *  rejection. Audit failures are diagnostic — a logging failure must not
    *  affect scheduling. */
-  private trace(event: Parameters<NonNullable<SessionSchedulerOptions['auditLog']>['append']>[0]): void {
+  private audit(event: Parameters<NonNullable<SessionSchedulerOptions['auditLog']>['append']>[0]): void {
     this.options.auditLog?.append(event).catch(() => {
       /* best-effort — swallow audit write failures */
     });
@@ -528,7 +552,7 @@ export class SessionScheduler {
     }
 
     // ── Audit: record why each candidate was started / parked / skipped. ──
-    this.trace({
+    this.audit({
       type: 'scheduler_drain',
       phaseId: this.options.phaseId,
       trigger,
@@ -587,16 +611,7 @@ export class SessionScheduler {
     this.retryEligible.delete(taskId);
 
     // Clear per-attempt execution state (blank slate).
-    this.batchStarted.delete(taskId);
-    this.batchSettledCount.delete(taskId);
-    this.resolveCache.delete(taskId);
-    this.runners.delete(taskId);
-    this.planCtxCache.delete(taskId);
-    this.executeCtxCache.delete(taskId);
-    this.advancing.delete(taskId);
-    this.worktreeCreated.delete(taskId);
-    this.worktreeCwds.delete(taskId);
-    this.taskErrors.delete(taskId);
+    this.clearTaskMaps(taskId);
 
     // Reset entry session-plan fields.
     entry.planGen = undefined;
@@ -614,7 +629,7 @@ export class SessionScheduler {
     // Transition failed → ready. T3 initializes + starts it this drain pass.
     this.graph.setTaskStatus(taskId, 'ready');
 
-    this.trace({
+    this.audit({
       type: 'scheduler_task_retry_reset',
       phaseId: this.options.phaseId,
       taskId,
@@ -719,7 +734,7 @@ export class SessionScheduler {
         trace.parkedSpecs.push({
           specId: spec.id,
           profile: spec.profile,
-          reason: this.describeCapacityFailure(profile),
+          reason: buildCapacityFailureDescription(profile, this.gate.snapshot()),
         });
         continue;
       }
@@ -744,28 +759,6 @@ export class SessionScheduler {
       this.graph.setTaskStatus(entry.task.id, 'parked');
     }
     return trace;
-  }
-
-  /** Explain WHY `gate.canStart(profile)` returned false, for the audit trace.
-   *  Distinguishes total-capacity saturation, provider-pool saturation, and
-   *  per-model saturation, naming the offending bucket key + cap. */
-  private describeCapacityFailure(profile: AgentProfile): string {
-    const snap = this.gate.snapshot();
-    if (snap.totalAvailable <= 0) {
-      return `total saturated (0 of ${snap.totalCap} slots free)`;
-    }
-    // Provider-level shared pool, if configured.
-    const prov = snap.providers.find((p) => p.key === profile.provider);
-    if (prov && prov.available <= 0) {
-      return `provider '${prov.key}' pool saturated (0 of ${prov.cap} free; total has ${snap.totalAvailable})`;
-    }
-    // Total + provider have room → must be the per-model bucket.
-    const key = `${profile.provider}:${profile.model}`;
-    const bucket = snap.models.find((m) => m.key === key || m.key === `${key}:${profile.agent}`);
-    if (bucket) {
-      return `model '${bucket.key}' saturated (0 of ${bucket.cap ?? '∞'} free; total has ${snap.totalAvailable})`;
-    }
-    return `model '${key}' has no capacity`;
   }
 
   // ─── T3 initialization: resolve runner, create worktree, get first batch ─
@@ -860,9 +853,10 @@ export class SessionScheduler {
    * the spec is NOT a resume), the gate acquire/release is skipped entirely —
    * the runner.execute() call returns the cached result instantly.
    *
-   * S1: runner.execute() is wrapped in a timeout race so a hanging runner
-   * can't leak a gate slot / deadlock the scheduler. The gate slot is ALWAYS
-   * released (try/finally around execute).
+   * S1: runner.execute() is NOT wrapped in an external timeout here — freeze
+   * detection is handled by the in-session watchdog inside runSession
+   * (session.ts). The gate slot is ALWAYS released via try/finally so a hung
+   * runner cannot leak a slot or deadlock the scheduler.
    *
    * On session settle: slot released, result stored at specIndex,
    * completedSessions incremented. When all specs in the heldBatch settle,
@@ -974,7 +968,7 @@ export class SessionScheduler {
       }
 
       // ── Audit: record this session's settle outcome + batch effect. ──────
-      this.trace({
+      this.audit({
         type: 'scheduler_session_settle',
         phaseId: this.options.phaseId,
         taskId,
@@ -1051,14 +1045,13 @@ export class SessionScheduler {
 
   /**
    * Fetch the next non-empty batch from the plan generator, skipping empty
-   * yields (`[]`). Throws if the generator yields more than 1000 consecutive
-   * empty batches (infinite-loop guard).
+   * yields (`[]`). Throws if the generator yields more than
+   * {@link MAX_EMPTY_BATCHES} consecutive empty batches (infinite-loop guard).
    */
   private async nextNonEmptyBatch(
     entry: TaskGraphEntry,
     seed: SessionResult[],
   ): Promise<IteratorResult<SessionSpec[], SessionResult[] | undefined>> {
-    const maxEmpty = 1000;
     let emptyCount = 0;
     // S2: wrap gen.next in a timeout race so a hanging generator can't block
     // the scheduler. Accept a leaked generator over blocking.
@@ -1066,7 +1059,7 @@ export class SessionScheduler {
     let next = await this.withTimeout(entry.planGen!.next(seed), GENERATOR_TIMEOUT_MS, 'plan generator next()');
     while (!next.done && next.value.length === 0) {
       emptyCount++;
-      if (emptyCount > maxEmpty) {
+      if (emptyCount > MAX_EMPTY_BATCHES) {
         throw new Error(`Session plan generator yielded ${emptyCount}+ empty batches without completing`);
       }
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
@@ -1129,7 +1122,7 @@ export class SessionScheduler {
       this.graph.setTaskStatus(taskId, 'failed');
       // Do NOT recalculateReady — dependents stay blocked (task may yet
       // succeed on retry). They are promoted only on permanent failure.
-      this.trace({
+      this.audit({
         type: 'scheduler_task_retry_scheduled',
         phaseId: this.options.phaseId,
         taskId,
@@ -1142,7 +1135,7 @@ export class SessionScheduler {
       this.retryEligible.delete(taskId);
       this.graph.setTaskStatus(taskId, 'failed');
       this.graph.recalculateReady(taskId);
-      this.trace({
+      this.audit({
         type: 'scheduler_task_failed_permanent',
         phaseId: this.options.phaseId,
         taskId,
@@ -1150,6 +1143,9 @@ export class SessionScheduler {
         reason: retryable ? 'retry budget exhausted' : 'non-retryable failure',
         error: errs.join('; '),
       });
+      // The task is permanently terminal — release per-task state (fix 8).
+      // Safe now: entry.task.result (with the aggregated error) is already set.
+      this.cleanupTaskState(taskId);
     }
 
     // Clean up the plan generator so any finally blocks run. On a retry,
@@ -1208,6 +1204,8 @@ export class SessionScheduler {
     this.graph.setTaskStatus(taskId, 'complete');
     // Promote blocked dependents whose deps are now all settled.
     this.graph.recalculateReady(taskId);
+    // The task is permanently terminal — release per-task state (fix 8).
+    this.cleanupTaskState(taskId);
 
     // Clean up the plan generator so any finally blocks run.
     await this.cleanupGenerator(taskId);
@@ -1231,6 +1229,31 @@ export class SessionScheduler {
     }
   }
 
+  // ─── Per-task map clearing ─────────────────────────────────────────────
+
+  /**
+   * Clear the per-task execution-state Map/Set entries shared by both the
+   * retry-reset path ({@link resetForRetry}) and the permanent-terminal
+   * cleanup path ({@link cleanupTaskState}).
+   *
+   * This is exactly the 10-field intersection of the two paths. The fields
+   * that diverge between them — `retryEligible`, `taskSessionBaseDir`, and
+   * `taskAttempts` — are owned by each caller and deliberately NOT touched
+   * here.
+   */
+  private clearTaskMaps(taskId: string): void {
+    this.batchStarted.delete(taskId);
+    this.batchSettledCount.delete(taskId);
+    this.resolveCache.delete(taskId);
+    this.runners.delete(taskId);
+    this.planCtxCache.delete(taskId);
+    this.executeCtxCache.delete(taskId);
+    this.advancing.delete(taskId);
+    this.worktreeCreated.delete(taskId);
+    this.worktreeCwds.delete(taskId);
+    this.taskErrors.delete(taskId);
+  }
+
   // ─── Generator cleanup helper ────────────────────────────────────────────
 
   /**
@@ -1249,28 +1272,18 @@ export class SessionScheduler {
     if (!entry?.planGen) return;
     try {
       await this.withTimeout(entry.planGen.return(undefined), GENERATOR_TIMEOUT_MS, 'plan generator return()');
-    } catch {
-      // Swallow — generator cleanup failures (including timeout) shouldn't propagate.
+    } catch (err) {
+      console.warn(`[scheduler-${taskId}] Generator cleanup failed: ${safeErrorMessage(err)}`);
     }
   }
 
   /** Per-task state cleanup: delete all scheduler-side map entries for a task
    *  that has reached a terminal state. Bounds memory across long runs (fix 8). */
   private cleanupTaskState(taskId: string): void {
-    this.batchStarted.delete(taskId);
-    this.batchSettledCount.delete(taskId);
-    this.resolveCache.delete(taskId);
-    this.runners.delete(taskId);
-    this.planCtxCache.delete(taskId);
-    this.executeCtxCache.delete(taskId);
-    this.advancing.delete(taskId);
-    this.worktreeCreated.delete(taskId);
-    this.worktreeCwds.delete(taskId);
+    this.clearTaskMaps(taskId);
     // Retry state (cleared once the task is permanently terminal).
     this.retryEligible.delete(taskId);
     this.taskSessionBaseDir.delete(taskId);
-    // taskErrors is left for result aggregation but can be cleared after terminal.
-    this.taskErrors.delete(taskId);
     // taskAttempts is retained for result/audit reporting even after terminal.
   }
 
@@ -1427,14 +1440,19 @@ export class SessionScheduler {
 
   /**
    * Race a promise against a timeout. If the timeout fires first, the returned
-   * promise rejects with an Error mentioning `label`. Used by S1 (runner.execute
-   * timeout) and S2 (planGen.next/return timeout) to prevent a hanging runner
-   * or generator from blocking the scheduler indefinitely.
+   * promise rejects with a {@link GeneratorTimeoutError} mentioning `label`. Used
+   * by S2 (planGen.next/return timeout) to prevent a hanging generator from
+   * blocking the scheduler indefinitely.
+   *
+   * The timeout timer is cleared via `.then()` callbacks when the promise
+   * settles first (resolve OR reject), so no timer leak lingers. When the
+   * timeout fires first the timer has already executed; a later settle still
+   * calls `clearTimeout` on the already-fired timer (a harmless no-op).
    */
   private withTimeout<T>(p: Promise<T>, ms: number, label?: string): Promise<T> {
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
-        reject(new Error(label ? `${label} timed out after ${ms}ms` : `Timed out after ${ms}ms`));
+        reject(new GeneratorTimeoutError(label ?? 'plan generator operation', ms));
       }, ms);
       // Don't let the timeout timer keep the process alive.
       if (typeof timer === 'object' && 'unref' in timer) {

@@ -1,59 +1,15 @@
 // ─── RunExecutor ────────────────────────────────────────────────────────────
 //
-// Workflow execution body extracted from RunManager (decomposition step). It
-// contains the former private `executeWorkflow` async IIFE: the workflow.run()
-// lifecycle, store flush, status transitions (running → complete / failed),
-// terminal broadcasts, renderer-registry wiring, the post-terminal reaper
-// scheduling, AND the worktree lifecycle:
+// Runs a single workflow to completion and drives its terminal lifecycle:
+// the workflow.run() lifecycle, store flush, status transitions
+// (running → complete / failed), terminal broadcasts, renderer-registry
+// wiring, the post-terminal reaper scheduling, AND the worktree lifecycle.
 //
-//   - When git is available, RunExecutor creates a {@link WorktreeManager},
-//     calls `setupMainWorktree()`, wires it onto the handle + WorkflowRunOptions
-//     (options.cwd becomes the MAIN WORKTREE PATH — the transparency
-//     mechanism by which the workflow sees the worktree as its cwd), and
-//     derives the main-wt branch via `generateTitleAndBranch` +
-//     `sanitizeBranchSlug`.
-//   - When the cwd is NOT a git repo, it warns and runs in-place (no
-//     worktree), leaving options.cwd = handle.cwd.
-//   - On failure, the worktree is PRESERVED (no cleanup) so the user can
-//     inspect or retry. The run-end final merge is NOT automatic — it is
-//     driven by the user via `RunManager.handleWorktreeAction` once the run
-//     reaches a terminal state.
-//
-// WORKFLOW-LEVEL HOOK WIRING (this task): `execute` owns a SUBSET of the
-// workflow-level hooks declared in hooks/types.ts. After `composeHooks`
-// builds the registry, `execute` registers the DEFAULT implementations of
-// the engine-owned hooks (see run-executor.test.ts suite 7):
-//
-//   - `onWorkflowResume` / `onWorkflowAbort` — always registered (engine
-//     lifecycle). The engine FIRES them: `onWorkflowResume` on resume
-//     detection (the store already has events), `onWorkflowAbort` in the
-//     AbortError branch of the catch block BEFORE the handle is marked failed.
-//   - `beforeRunMerge` / `onRunMergeConflict` — registered only on the git
-//     path (the run-end final-merge pair). The engine does NOT fire them
-//     here — `RunManager.handleWorktreeAction` invokes them once the run is
-//     terminal and the user requests the merge. The defaults reproduce the
-//     default squash-merge / agent-resolution UX.
-//
-// DESIGN SPLIT: the `onPersist` / `onRestore` defaults are NOT registered by
-// the engine — the WorkflowStatusTracker they capture is created by the
-// WORKFLOW (spir.ts), so the workflow registers those defaults itself. The
-// engine only fires / registers hooks it owns; it does not fabricate a
-// tracker.
-//
-// All wiring is ADDITIVE: when no workflow-provided hooks are present, the
-// defaults reproduce the prior behavior EXACTLY (existing workflows are
-// unaffected).
-//
-// CRITICAL INVARIANT:
-//   `execute` MUST call `bridge.broadcastTerminal(...)` to emit the terminal
-//   `run_complete` / `run_failed` messages. `broadcastTerminal` is the ONLY
-//   path for terminal messages — so if the
-//   call is dropped, clients never learn a run finished.
-//
-// RunExecutor does NOT load workflows (the facade does) — it only consumes the
-// {@link WorkflowModule} it is handed. It assumes the handle is already
-// registered in the {@link RunRegistry} (the facade registers before calling
-// execute).
+// The public `execute()` method is a slim orchestrator that delegates each
+// cohesive sub-step to a dedicated private helper (see the helper docstrings
+// below for their individual contracts). `execute()` composes the hooks,
+// threads the registry across helpers, and drives the try/catch/finally that
+// routes success vs. failure into the terminal handlers.
 
 import { join } from 'node:path';
 
@@ -77,10 +33,13 @@ import {
   defaultOnWorkflowAbort,
   defaultOnWorkflowResume,
 } from '../hooks/defaults/index.js';
+import type { HookRegistry } from '../hooks/registry.js';
 import type { HookContext, HookProvider } from '../hooks/types.js';
+import type { EventStore } from '../tracking/event-store.js';
 import { runWithConsoleCapture } from './console-capture.js';
 import type { RunHandle, StartRunMessage } from './run-manager.js';
 import type { RunRegistry } from './run-registry.js';
+import type { StatusBridge } from './status-bridge.js';
 
 /**
  * Default delay (ms) before a terminal run's handle is reaped from the
@@ -115,58 +74,18 @@ export class RunExecutor {
   }
 
   /**
-   * Run the workflow to completion.
-   *
-   * Before launching the workflow, the executor probes `isGitRepo(handle.cwd)`:
-   *
-   *   - **git available** — it derives a main-wt branch via
-   *     `generateTitleAndBranch` + `sanitizeBranchSlug` (prefixed `engin/`),
-   *     constructs a {@link WorktreeManager}, calls `setupMainWorktree()`, and
-   *     wires it onto the handle (`handle.worktreeManager`, `handle.worktree`,
-   *     `handle.summary.worktree`) and the `WorkflowRunOptions`. The workflow's
-   *     `options.cwd` becomes the MAIN WORKTREE PATH (not the original cwd) —
-   *     the transparency mechanism by which the workflow sees the worktree as
-   *     its cwd.
-   *   - **non-git cwd** — it warns via `console.warn` and runs in-place
-   *     (`options.cwd = handle.cwd`, no worktree, no manager).
-   *
-   * After composing the workflow-provided hooks with the store callbacks via
-   * `composeHooks`, the executor registers the DEFAULT implementations of
-   * the engine-owned workflow-level hooks into the same registry:
-   * `onWorkflowResume` and `onWorkflowAbort` always; `beforeRunMerge` and
-   * `onRunMergeConflict` on the git path only. (The `onPersist` / `onRestore`
-   * defaults are NOT registered here — the tracker they capture is owned by
-   * the workflow.)
-   *
-   * RESUME: before launching `workflow.run()`, the executor probes the store
-   * for prior events. If any exist (this is a RESUME of a previously-started
-   * run), it fires `registry.invokeObserve('onWorkflowResume', { workDir,
-   * tracker: undefined }, ctx)` so the workflow can restore sidebar state,
-   * clear stale sessions, etc. On a fresh run (empty store) the hook is NOT
-   * fired.
-   *
-   * On success it flushes the store (durability BEFORE the status flip), marks
-   * the run complete, and broadcasts `run_complete` via
-   * {@link StatusBridge.broadcastTerminal}. On failure it flushes first
-   * (partial events stay durable), distinguishes `AbortError` (from
-   * `controller.abort()`) from genuine errors. In the AbortError branch it
-   * fires `registry.invokeObserve('onWorkflowAbort', { reason: 'Aborted',
-   * workDir }, ctx)` BEFORE marking the run failed — `onWorkflowAbort` is a
-   * distinct seam from any future `onWorkflowFailed` semantics. Then it marks
-   * the run failed and broadcasts `run_failed`. The worktree is PRESERVED on
-   * failure (no cleanup) so the user can inspect or retry — the run-end final
-   * merge is driven by the user via `RunManager.handleWorktreeAction` once the
-   * run is terminal, using the `handle.summary.worktree` info carried in the
-   * `run_complete` broadcast. The finally block notifies the control server
-   * that the active-run set changed and schedules a reaper that disposes the
-   * bridge and removes the handle after the reap delay.
+   * Run the workflow to completion. This is a slim orchestrator that delegates
+   * each cohesive sub-step to a dedicated private helper. The helpers, in call
+   * order: {@link setupRenderer}, {@link setupWorktree},
+   * {@link registerDefaultHooks}, {@link detectAndFireResume},
+   * {@link buildWorkflowOptions}, {@link runWithTimeoutGuard},
+   * {@link handleTerminalSuccess} / {@link handleTerminalError}, and
+   * {@link scheduleReaper}.
    *
    * The workflow execution body runs inside a {@link runWithConsoleCapture}
-   * scope so any `console.warn`/`error`/`info` output made during execution
-   * (including the flush/terminal/finally teardown) is routed to THIS run's
-   * store as a `log` event. This is concurrency-safe: concurrent runs each
-   * capture their own output via AsyncLocalStorage with no per-run mutation
-   * of the global `console` object.
+   * scope so console output made during execution (including teardown) is
+   * routed to THIS run's store as a `log` event (concurrency-safe via
+   * AsyncLocalStorage).
    */
   async execute(
     handle: RunHandle,
@@ -176,152 +95,154 @@ export class RunExecutor {
   ): Promise<void> {
     const { runId, store, controller, bridge } = handle;
 
-    // Create a fresh renderer registry for this run and give the workflow
-    // module an opportunity to register output renderers for its agent
-    // profiles. When no renderers are registered (or the workflow does not
-    // export registerRenderers), the registry is empty and all render calls
-    // return undefined — the correct default behavior.
+    const rendererRegistry = this.setupRenderer(workflow);
+
+    const hookProviders: HookProvider = workflow.hooks ?? [];
+    const { onStatus: composedStatus, registry: hookRegistry } = composeHooks(storeCallbacks, hookProviders);
+
+    const { worktreeManager, profilesDirs } = await this.setupWorktree(handle, msg, hookRegistry);
+
+    this.registerDefaultHooks(hookRegistry, profilesDirs, msg, handle);
+
+    const hookCtx: HookContext = {
+      registry: hookRegistry,
+      cwd: handle.cwd,
+      workDir: handle.workDir,
+      signal: controller.signal,
+    };
+
+    await this.detectAndFireResume(store, hookRegistry, hookCtx, handle.workDir);
+
+    const options = this.buildWorkflowOptions(
+      handle,
+      composedStatus,
+      hookRegistry,
+      rendererRegistry,
+      worktreeManager,
+      msg,
+    );
+
+    await runWithConsoleCapture(store, async () => {
+      try {
+        await this.runWithTimeoutGuard(store, controller, msg, async (isTimedOut) => {
+          try {
+            await workflow.run(handle.taskPrompt, options);
+            await this.handleTerminalSuccess(handle, store, bridge);
+          } catch (err: unknown) {
+            await this.handleTerminalError(handle, store, bridge, hookRegistry, hookCtx, isTimedOut(), err);
+          }
+        });
+      } finally {
+        this.scheduleReaper(runId, handle);
+        this.onRunsChanged();
+      }
+    });
+  }
+
+  /**
+   * Create a fresh renderer registry for this run and give the workflow module
+   * an opportunity to register output renderers for its agent profiles. When
+   * no renderers are registered (or the workflow does not export
+   * registerRenderers), the registry is empty and all render calls return
+   * undefined — the correct default behavior.
+   */
+  private setupRenderer(workflow: WorkflowModule): RendererRegistry {
     const rendererRegistry = new RendererRegistry();
     if (typeof workflow.registerRenderers === 'function') {
       workflow.registerRenderers(rendererRegistry);
     }
+    return rendererRegistry;
+  }
 
-    // ─── Hook composition seam ───────────────────────────────────────────
-    //
-    // Compose the engine's status-callback surface with workflow-provided
-    // hooks BEFORE the worktree setup so the registry can be threaded into
-    // the {@link WorktreeManager} (which invokes the worktree-lifecycle hooks
-    // during `setupMainWorktree()` and `createTaskWorktree()`). `composeHooks`
-    // returns:
-    //  - `onStatus`     — a {@link StatusCallbacks} wrapper that delegates
-    //                     every STATUS_CALLBACK_METHOD to `storeCallbacks`
-    //                     verbatim (zero behavior change). Observe/influence
-    //                     firing is NOT done here — it is deferred to the
-    //                     engine primitives that own a proper HookContext.
-    //  - `registry`     — a fresh {@link HookRegistry} carrying the workflow's
-    //                     influence hooks (empty when `workflow.hooks` is
-    //                     undefined — the existing-workflows path).
-    //
-    // When `workflow.hooks` is undefined, `workflow.hooks ?? []` feeds an
-    // empty provider list into `composeHooks`, yielding an empty registry AND
-    // a composed `onStatus` that is behaviorally identical to
-    // `storeCallbacks` — the firmest guarantee in the hook system (existing
-    // workflows are unaffected).
-    const hookProviders: HookProvider = workflow.hooks ?? [];
-    const { onStatus: composedStatus, registry: hookRegistry } = composeHooks(storeCallbacks, hookProviders);
-
-    // ─── Worktree setup ──────────────────────────────────────────────────
-    //
-    // When the cwd is a git repo, isolate the run inside a main worktree on a
-    // dedicated `engin/<slug>` branch. The branch slug is derived from the
-    // task prompt via `generateTitleAndBranch` (LLM) + `sanitizeBranchSlug`.
-    // The workflow sees the worktree as its cwd via `options.cwd` (the
-    // transparency mechanism). When git is NOT available, warn and run
-    // in-place against the original cwd.
-    //
-    // On the git path the worktree-lifecycle DEFAULT implementations
-    // (`populateWorktree`, `beforeTaskWorktreeCreate`, `onTaskMerge`, …) are
-    // registered into the SAME registry BEFORE the WorktreeManager is
-    // constructed, so `setupMainWorktree()` — which invokes the
-    // `populateWorktree` pipeline hook — observes the default subscriber
-    // (and any workflow-provided override registered earlier by
-    // `composeHooks`). The registry is then threaded to the WorktreeManager
-    // via the `hookRegistry` option.
+  /**
+   * Set up the worktree isolation for the run.
+   *
+   * When the cwd is a git repo: derive a main-wt branch via
+   * `generateTitleAndBranch` + `sanitizeBranchSlug` (prefixed `engin/`),
+   * register the worktree-lifecycle DEFAULT hooks BEFORE constructing the
+   * {@link WorktreeManager} (so `setupMainWorktree()` — which invokes the
+   * `populateWorktree` pipeline hook — observes them), construct the manager,
+   * call `setupMainWorktree()`, and wire it onto the handle
+   * (`handle.worktreeManager`, `handle.worktree`, `handle.summary.worktree`).
+   *
+   * When the cwd is NOT a git repo: warn via `console.warn` and run in-place
+   * (no worktree, no manager). Returns `profilesDirs` only on the git path.
+   */
+  private async setupWorktree(
+    handle: RunHandle,
+    msg: StartRunMessage,
+    hookRegistry: HookRegistry,
+  ): Promise<{ worktreeManager?: WorktreeManager; profilesDirs?: string[] }> {
     const isGit = isGitRepo(handle.cwd);
-    let worktreeManager: WorktreeManager | undefined;
-    // Lifted out of the `if (isGit)` block so the merge-default registration
-    // below can build `createDefaultOnRunMergeConflict` from the same
-    // `profilesDirs` computed here. It stays `undefined` on the non-git
-    // path — the merge + worktree defaults are NOT registered in that case
-    // (there is no worktree to merge).
-    let profilesDirs: string[] | undefined;
-
-    if (isGit) {
-      const repoRoot = getRepoRoot(handle.cwd);
-      profilesDirs = resolveProfilesDirs(handle.cwd, handle.workflowName);
-
-      // Register the worktree-lifecycle DEFAULTS (git path only) BEFORE
-      // constructing the WorktreeManager so `setupMainWorktree()` sees them.
-      // They compose WITH any workflow-provided subscriber registered earlier
-      // by `composeHooks` (observe fan-out fires both; pipeline runs both in
-      // order; first-wins lets the workflow's earlier-registered hook
-      // decide). The defaults reproduce the default `.worktreecopy` /
-      // squash-merge / agent-resolution UX when the workflow opts out.
-      hookRegistry.register({
-        beforeTaskWorktreeCreate: createDefaultBeforeTaskWorktreeCreate(),
-        populateWorktree: createDefaultPopulateWorktree(handle.cwd),
-        afterTaskWorktreeCreate: defaultAfterTaskWorktreeCreate,
-        onTaskMerge: defaultOnTaskMerge,
-        onMergeConflict: createDefaultOnMergeConflict(profilesDirs, msg.apiKeys),
-        onCommitFailure: createDefaultOnCommitFailure(profilesDirs, msg.apiKeys),
-      });
-
-      const { branchName: rawBranch } = await generateTitleAndBranch({
-        profilesDirs,
-        taskPrompt: handle.taskPrompt,
-        cwd: handle.cwd,
-        apiKeys: msg.apiKeys,
-      });
-      const slug = sanitizeBranchSlug(rawBranch);
-      const mainBranch = `engin/${slug}`;
-      const mainWorktreePath = join(handle.workDir, 'worktree');
-
-      worktreeManager = new WorktreeManager({
-        repoRoot,
-        sourceCwd: handle.cwd,
-        workDir: handle.workDir,
-        mainBranch,
-        mainWorktreePath,
-        profilesDirs,
-        apiKeys: msg.apiKeys,
-        hookRegistry,
-      });
-      await worktreeManager.setupMainWorktree();
-
-      // Wire the manager + worktree info onto the handle so
-      // `RunManager.handleWorktreeAction` can drive the final merge UX once
-      // the run reaches a terminal state. `summary.worktree` carries the
-      // same info to clients via the `run_complete` broadcast so they can
-      // prompt for the merge.
-      handle.worktreeManager = worktreeManager;
-      handle.worktree = worktreeManager.getWorktreeInfo();
-      handle.summary.worktree = {
-        worktreePath: mainWorktreePath,
-        branchName: mainBranch,
-        originalCwd: handle.cwd,
-      };
-    } else {
-      // Non-git: warn but continue in-place (no worktrees).
+    if (!isGit) {
       console.warn(`[run-executor] cwd is not a git repository. Running without worktrees.`);
+      return {};
     }
 
-    // ─── Default workflow-hook registration ─────────────────────────────
-    //
-    // The engine owns a SUBSET of the workflow-level hooks: the ones driven
-    // by the engine's own lifecycle (resume, abort) and the git-driven
-    // run-end final-merge pair (beforeRunMerge / onRunMergeConflict). It
-    // registers their DEFAULT implementations into the SAME registry
-    // `composeHooks` built, so:
-    //
-    //  - the engine-fired observe hooks (onWorkflowResume, onWorkflowAbort)
-    //    have a well-defined (identity / log) behavior even when the
-    //    workflow registers no subscriber; AND
-    //  - the git-path merge hooks reproduce the default squash-merge /
-    //    agent-resolution UX when the workflow opts out.
-    //
-    // DESIGN SPLIT (called out by the task and pinned by suite 7 of
-    // run-executor.test.ts): the engine fires onWorkflowResume /
-    // onWorkflowAbort (engine lifecycle) and registers the merge defaults
-    // (git-driven; `profilesDirs` is computed in the git branch above). The
-    // `onPersist` / `onRestore` defaults are NOT registered by the engine —
-    // the WorkflowStatusTracker they capture is created by the WORKFLOW
-    // (spir.ts), so the workflow registers those defaults itself. The engine
-    // only fires hooks it owns; it does not fabricate a tracker.
-    //
-    // The defaults are appended AFTER `composeHooks` registers the
-    // workflow's own providers, so a workflow-provided subscriber composes
-    // WITH the default under the same name (observe fan-out fires both;
-    // first-wins lets the workflow's earlier-registered hook decide).
+    const repoRoot = getRepoRoot(handle.cwd);
+    const profilesDirs = resolveProfilesDirs(handle.cwd, handle.workflowName);
+
+    hookRegistry.register({
+      beforeTaskWorktreeCreate: createDefaultBeforeTaskWorktreeCreate(),
+      populateWorktree: createDefaultPopulateWorktree(handle.cwd),
+      afterTaskWorktreeCreate: defaultAfterTaskWorktreeCreate,
+      onTaskMerge: defaultOnTaskMerge,
+      onMergeConflict: createDefaultOnMergeConflict(profilesDirs, msg.apiKeys),
+      onCommitFailure: createDefaultOnCommitFailure(profilesDirs, msg.apiKeys),
+    });
+
+    const { branchName: rawBranch } = await generateTitleAndBranch({
+      profilesDirs,
+      taskPrompt: handle.taskPrompt,
+      cwd: handle.cwd,
+      apiKeys: msg.apiKeys,
+    });
+    const slug = sanitizeBranchSlug(rawBranch);
+    const mainBranch = `engin/${slug}`;
+    const mainWorktreePath = join(handle.workDir, 'worktree');
+
+    const worktreeManager = new WorktreeManager({
+      repoRoot,
+      sourceCwd: handle.cwd,
+      workDir: handle.workDir,
+      mainBranch,
+      mainWorktreePath,
+      profilesDirs,
+      apiKeys: msg.apiKeys,
+      hookRegistry,
+    });
+    await worktreeManager.setupMainWorktree();
+
+    handle.worktreeManager = worktreeManager;
+    handle.worktree = worktreeManager.getWorktreeInfo();
+    handle.summary.worktree = {
+      worktreePath: mainWorktreePath,
+      branchName: mainBranch,
+      originalCwd: handle.cwd,
+    };
+
+    return { worktreeManager, profilesDirs };
+  }
+
+  /**
+   * Register the DEFAULT implementations of the engine-owned workflow-level
+   * hooks into the registry built by `composeHooks`:
+   *
+   *   - `onWorkflowResume` / `onWorkflowAbort` — always registered (engine
+   *     lifecycle).
+   *   - `beforeRunMerge` / `onRunMergeConflict` — registered only on the git
+   *     path (the run-end final-merge pair).
+   *
+   * The defaults are appended AFTER `composeHooks` registers the workflow's
+   * own providers, so a workflow-provided subscriber composes WITH the default
+   * under the same name.
+   */
+  private registerDefaultHooks(
+    hookRegistry: HookRegistry,
+    profilesDirs: string[] | undefined,
+    msg: StartRunMessage,
+    _handle: RunHandle,
+  ): void {
     hookRegistry.register({
       onWorkflowResume: defaultOnWorkflowResume,
       onWorkflowAbort: defaultOnWorkflowAbort,
@@ -332,51 +253,47 @@ export class RunExecutor {
           }
         : {}),
     });
+  }
 
-    // The per-run {@link HookContext} shared by every hook the engine fires
-    // from this `execute` invocation. `cwd` is the ORIGINAL cwd (handle.cwd),
-    // NOT the worktree path — hooks that need the worktree path receive it
-    // via their args (e.g. BeforeRunMergeArgs.worktree). `signal` is the
-    // run's AbortController signal so hooks can cooperate with cancellation.
-    const hookCtx: HookContext = {
-      registry: hookRegistry,
-      cwd: handle.cwd,
-      workDir: handle.workDir,
-      signal: controller.signal,
-    };
-
-    // ─── Resume detection ─────────────────────────────────────────────────
-    //
-    // Before launching the workflow, probe the store for prior events. When
-    // the store already has events (this is a RESUME of a previously-started
-    // run, e.g. an EventStore.load() that replayed a pre-existing
-    // events.jsonl), fire the `onWorkflowResume` observe hook so the
-    // workflow can restore sidebar state, clear stale sessions, warm caches,
-    // etc. BEFORE workflow.run() executes. On a fresh run (empty store) the
-    // hook is NOT fired — the default is registered but never invoked.
-    //
-    // `getEventsSince(0)` returns every record with seq > 0, i.e. every
-    // event in the ring buffer (loaded from disk on EventStore.load OR
-    // appended in this session). A non-empty result means prior state exists.
+  /**
+   * Resume detection: before launching `workflow.run()`, probe the store for
+   * prior events. When the store already has events (this is a RESUME of a
+   * previously-started run), fire the `onWorkflowResume` observe hook so the
+   * workflow can restore sidebar state, clear stale sessions, warm caches,
+   * etc. On a fresh run (empty store) the hook is NOT fired.
+   */
+  private async detectAndFireResume(
+    store: EventStore,
+    hookRegistry: HookRegistry,
+    hookCtx: HookContext,
+    workDir: string,
+  ): Promise<void> {
     const isResume = store.getEventsSince(0).length > 0;
     if (isResume) {
-      await hookRegistry.invokeObserve('onWorkflowResume', { workDir: handle.workDir, tracker: undefined }, hookCtx);
+      await hookRegistry.invokeObserve('onWorkflowResume', { workDir, tracker: undefined }, hookCtx);
     }
+  }
 
-    // Build the workflow run options. When git is available, `cwd` becomes
-    // the MAIN WORKTREE PATH (the transparency mechanism). The worktree
-    // manager + info are forwarded so the workflow can spawn per-task
-    // worktrees off the main one. `onStatus` is the COMPOSED surface (not the
-    // raw storeCallbacks) and `hookRegistry` is forwarded so workflow code
-    // that constructs RunnerPool / calls runTask can pass `hookRegistry:
-    // options.hookRegistry` and the engine primitives can invoke hooks at the
-    // proper lifecycle seams.
+  /**
+   * Build the {@link WorkflowRunOptions} handed to `workflow.run()`. When git
+   * is available, `cwd` becomes the MAIN WORKTREE PATH (the transparency
+   * mechanism). `onStatus` is the COMPOSED surface and `hookRegistry` is
+   * forwarded so engine primitives can invoke hooks at proper lifecycle seams.
+   */
+  private buildWorkflowOptions(
+    handle: RunHandle,
+    composedStatus: StatusCallbacks,
+    hookRegistry: HookRegistry,
+    rendererRegistry: RendererRegistry,
+    worktreeManager: WorktreeManager | undefined,
+    msg: StartRunMessage,
+  ): WorkflowRunOptions {
     const options: WorkflowRunOptions = {
-      cwd: isGit && worktreeManager ? worktreeManager.mainWorktreePath : handle.cwd,
+      cwd: worktreeManager ? worktreeManager.mainWorktreePath : handle.cwd,
       workDir: handle.workDir,
       onStatus: composedStatus,
       hookRegistry,
-      signal: controller.signal,
+      signal: handle.controller.signal,
       rendererRegistry,
       ...(worktreeManager ? { worktreeManager } : {}),
       ...(worktreeManager ? { worktree: worktreeManager.getWorktreeInfo() } : {}),
@@ -384,149 +301,136 @@ export class RunExecutor {
     if (msg.apiKeys !== undefined) {
       options.apiKeys = msg.apiKeys;
     }
+    return options;
+  }
 
-    // Run the workflow inside an async-local console capture context. Any
-    // console.warn/error/info call made during execution — including the
-    // flush/terminal/finally teardown below — is routed to THIS run's store as
-    // a `log` event by the globally-installed console wrappers (see
-    // console-capture.ts). This is concurrency-safe: concurrent runs each
-    // capture their own output with no per-run mutation of the process-global
-    // `console` object. console.log is intentionally not captured and the
-    // originals are always forwarded to (so the server log file still gets
-    // them). The context exits automatically when this scope settles, so no
-    // save/restore is needed.
-    await runWithConsoleCapture(store, async () => {
-      // Per-run timeout: only when runTimeoutMs is a positive finite number.
-      // Sets a flag AND aborts the controller so the catch block can distinguish
-      // "Run timed out" from "Run cancelled". Cleared on normal completion.
-      // When unset/0/NaN/negative: identical to today (no timer).
-      let runTimeoutTimer: ReturnType<typeof setTimeout> | undefined;
-      let runTimedOut = false;
-      if (msg.runTimeoutMs != null && Number.isFinite(msg.runTimeoutMs) && msg.runTimeoutMs > 0) {
-        runTimeoutTimer = setTimeout(() => {
-          runTimedOut = true;
-          controller.abort();
-        }, msg.runTimeoutMs);
-      }
+  /**
+   * Wrap the workflow execution (including terminal success/error handling)
+   * with the per-run timeout guard. When `runTimeoutMs` is a positive finite
+   * number, a timer is armed that sets the `runTimedOut` flag AND aborts the
+   * controller so the terminal error path can distinguish "Run timed out"
+   * from "Run cancelled". The timer remains active until `fn` settles (covering
+   * store flush + terminal broadcast), then is always cleared in the finally.
+   *
+   * The `isTimedOut` callback lets the error handler inside `fn` read the
+   * live flag at the point the error is handled.
+   */
+  private async runWithTimeoutGuard(
+    _store: EventStore,
+    controller: AbortController,
+    msg: StartRunMessage,
+    fn: (isTimedOut: () => boolean) => Promise<void>,
+  ): Promise<void> {
+    let runTimedOut = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    if (msg.runTimeoutMs != null && Number.isFinite(msg.runTimeoutMs) && msg.runTimeoutMs > 0) {
+      timer = setTimeout(() => {
+        runTimedOut = true;
+        controller.abort();
+      }, msg.runTimeoutMs);
+    }
 
-      try {
-        await workflow.run(handle.taskPrompt, options);
+    try {
+      await fn(() => runTimedOut);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+  }
 
-        // Durability: flush BEFORE flipping status so the terminal event
-        // records are on disk by the time clients see "complete".
-        await store.flush();
+  /**
+   * The success terminal path: flush the store (durability BEFORE the status
+   * flip), run nothing-succeeded detection, then mark the run complete and
+   * broadcast `run_complete` via {@link StatusBridge.broadcastTerminal}.
+   *
+   * Nothing-succeeded detection: when the workflow resolved but NO tasks
+   * completed, treat the run as a failure by throwing an Error with counts.
+   * A workflow that legitimately produces zero tasks is NOT a failure.
+   */
+  private async handleTerminalSuccess(handle: RunHandle, store: EventStore, bridge: StatusBridge): Promise<void> {
+    await store.flush();
 
-        // Nothing-succeeded detection: when the workflow resolved but NO
-        // tasks completed (all failed / deadlocked-now-failed / non-terminal),
-        // treat the run as a failure. A workflow that legitimately produces
-        // zero tasks is NOT a failure (0 registered → run_complete).
-        const projection = store.getProjection();
-        const taskEntries = Object.values(projection.tasks);
-        const registeredTasks = taskEntries.length;
-        if (registeredTasks > 0) {
-          const completedTasks = taskEntries.filter((t) => t.status === 'complete').length;
-          if (completedTasks === 0) {
-            const failedTasks = taskEntries.filter((t) => t.status === 'failed').length;
-            // Break out non-terminal statuses for accurate diagnostics. Tasks
-            // in 'ready', 'blocked', 'active', or 'cancelled' (any status
-            // that is neither 'complete' nor 'failed') are counted per-status
-            // so the user can see what was stuck vs what genuinely failed.
-            const nonTerminalStatuses = ['ready', 'blocked', 'active', 'cancelled'] as const;
-            const nonTerminalParts: string[] = [];
-            for (const s of nonTerminalStatuses) {
-              const count = taskEntries.filter((t) => t.status === s).length;
-              if (count > 0) nonTerminalParts.push(`${count} ${s}`);
-            }
-            const nonTerminalSummary =
-              nonTerminalParts.length > 0 ? '; non-terminal: ' + nonTerminalParts.join(', ') : '';
-            throw new Error(`Run completed with 0 successful tasks (${failedTasks} failed${nonTerminalSummary})`);
-          }
+    const projection = store.getProjection();
+    const taskEntries = Object.values(projection.tasks);
+    const registeredTasks = taskEntries.length;
+    if (registeredTasks > 0) {
+      const completedTasks = taskEntries.filter((t) => t.status === 'complete').length;
+      if (completedTasks === 0) {
+        const failedTasks = taskEntries.filter((t) => t.status === 'failed').length;
+        const nonTerminalStatuses = ['ready', 'blocked', 'active', 'cancelled'] as const;
+        const nonTerminalParts: string[] = [];
+        for (const s of nonTerminalStatuses) {
+          const count = taskEntries.filter((t) => t.status === s).length;
+          if (count > 0) nonTerminalParts.push(`${count} ${s}`);
         }
-
-        handle.status = 'complete';
-        handle.summary.status = 'complete';
-        // CRITICAL: broadcastTerminal is the ONLY path for terminal messages.
-        //
-        // Carry `handle.summary.worktree` on the terminal broadcast so clients
-        // can drive the post-run final-merge prompt. The main worktree is set
-        // up ASYNCHRONOUSLY inside this execute() (an LLM branch-slug call
-        // precedes it), which runs fire-and-forget AFTER RunManager.startRun()
-        // returned — so the `run_started` summary it sent had NO worktree yet.
-        // By terminal time the worktree is guaranteed present (it is wired
-        // before workflow.run() launches), making the terminal message the
-        // race-free source the client must read. Omitted on the non-git path.
-        bridge.broadcastTerminal({
-          type: 'run_complete',
-          runId,
-          ...(handle.summary.worktree ? { worktree: handle.summary.worktree } : {}),
-        });
-      } catch (err: unknown) {
-        // Flush even on error so partial events are durable.
-        await store.flush();
-
-        // Distinguish timeout → cancel → genuine errors.
-        // runTimedOut is set by the per-run timeout handler (above); isAbort
-        // catches both user-initiated cancels AND the timeout abort. Check
-        // runTimedOut FIRST so "Run timed out" is distinct from "Run cancelled".
-        const isAbort = err instanceof Error && err.name === 'AbortError';
-
-        // Abort hook: fire `onWorkflowAbort` BEFORE flipping the handle
-        // status to 'failed'. This distinguishes a cooperative abort (from
-        // controller.abort()) from a genuine failure — `onWorkflowAbort` is
-        // a distinct seam from any future `onWorkflowFailed` semantics
-        // (§7). The hook is observe fan-out: a workflow that registered no
-        // subscriber still gets the default (which logs the reason via
-        // console.warn, captured to this run's store as a `log` event by
-        // the surrounding runWithConsoleCapture scope). Awaited so the
-        // workflow can perform synchronous abort cleanup (e.g. tearing down
-        // child processes) before the terminal broadcast fires.
-        if (isAbort) {
-          await hookRegistry.invokeObserve('onWorkflowAbort', { reason: 'Aborted', workDir: handle.workDir }, hookCtx);
-        }
-
-        const message = runTimedOut
-          ? 'Run timed out'
-          : isAbort
-            ? 'Run cancelled'
-            : redactSecrets(err instanceof Error ? err.message : String(err));
-
-        handle.status = 'failed';
-        handle.summary.status = 'failed';
-
-        const phaseId = store.getProjection().currentPhaseId;
-        // CRITICAL: broadcastTerminal is the ONLY path for terminal messages.
-        // Mirror the success branch: carry `handle.summary.worktree` so a
-        // failed run can still surface its (preserved) worktree for manual
-        // merge. The worktree is preserved on failure by design — surfacing
-        // its path/branch here lets the client (or `engin resume`) find it.
-        bridge.broadcastTerminal({
-          type: 'run_failed',
-          runId,
-          error: message,
-          phase: phaseId,
-          ...(handle.summary.worktree ? { worktree: handle.summary.worktree } : {}),
-        });
-      } finally {
-        // Clear the run-timeout timer so it can't fire post-settle. Placed
-        // here instead of duplicating in both try and catch so it is always
-        // reached — even if store.flush() or invokeObserve throws inside catch.
-        if (runTimeoutTimer !== undefined) clearTimeout(runTimeoutTimer);
-
-        this.onRunsChanged();
-
-        // Schedule a reaper: once the run is no longer 'running', dispose the
-        // bridge AND the run's store, then remove the handle from the registry
-        // after the reap delay. Disposing the store tears down its subscribers
-        // and ensures any pending coalesced writes become no-ops so they never
-        // fire into a dead store. The registry gates the firing on the run
-        // still being registered and terminal (see RunRegistry.scheduleReap).
-        this.registry.scheduleReap(runId, this.reapDelayMs, () => {
-          bridge.dispose();
-          store.dispose();
-          this.registry.remove(runId);
-          this.onRunsChanged();
-        });
+        const nonTerminalSummary = nonTerminalParts.length > 0 ? '; non-terminal: ' + nonTerminalParts.join(', ') : '';
+        throw new Error(`Run completed with 0 successful tasks (${failedTasks} failed${nonTerminalSummary})`);
       }
+    }
+
+    handle.status = 'complete';
+    handle.summary.status = 'complete';
+    bridge.broadcastTerminal({
+      type: 'run_complete',
+      runId: handle.runId,
+      ...(handle.summary.worktree ? { worktree: handle.summary.worktree } : {}),
+    });
+  }
+
+  /**
+   * The error terminal path: flush the store (partial events stay durable),
+   * fire `onWorkflowAbort` for a cooperative abort BEFORE flipping the status,
+   * then mark the run failed and broadcast `run_failed`.
+   *
+   * Distinguish timeout → cancel → genuine errors. `onWorkflowAbort` is fired
+   * before the status flip so the workflow can perform synchronous abort
+   * cleanup.
+   */
+  private async handleTerminalError(
+    handle: RunHandle,
+    store: EventStore,
+    bridge: StatusBridge,
+    hookRegistry: HookRegistry,
+    hookCtx: HookContext,
+    runTimedOut: boolean,
+    err: unknown,
+  ): Promise<void> {
+    await store.flush();
+
+    const isAbort = err instanceof Error && err.name === 'AbortError';
+    if (isAbort) {
+      await hookRegistry.invokeObserve('onWorkflowAbort', { reason: 'Aborted', workDir: handle.workDir }, hookCtx);
+    }
+
+    const message = runTimedOut
+      ? 'Run timed out'
+      : isAbort
+        ? 'Run cancelled'
+        : redactSecrets(err instanceof Error ? err.message : String(err));
+
+    handle.status = 'failed';
+    handle.summary.status = 'failed';
+
+    const phaseId = store.getProjection().currentPhaseId;
+    bridge.broadcastTerminal({
+      type: 'run_failed',
+      runId: handle.runId,
+      error: message,
+      phase: phaseId,
+      ...(handle.summary.worktree ? { worktree: handle.summary.worktree } : {}),
+    });
+  }
+
+  /**
+   * Schedule the post-terminal reaper: dispose the bridge and the run's store,
+   * then remove the handle from the registry after the reap delay.
+   */
+  private scheduleReaper(runId: string, handle: RunHandle): void {
+    const { store, bridge } = handle;
+    this.registry.scheduleReap(runId, this.reapDelayMs, () => {
+      bridge.dispose();
+      store.dispose();
+      this.registry.remove(runId);
+      this.onRunsChanged();
     });
   }
 }

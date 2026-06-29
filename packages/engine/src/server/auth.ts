@@ -115,7 +115,7 @@ export type AuthorizeResult = { authorized: true } | { authorized: false; reason
  * constant-time compare of the client-supplied token (from the `auth` message
  * or a connection header) against the stored server token via
  * `validateToken(supplied)`. Until the server startup path writes a token
- * (T35) and clients are updated to send it, every message is authorized.
+ * and clients are updated to send it, every message is authorized.
  */
 export function authorize(_msg: ClientMessage, _ws: unknown): AuthorizeResult {
   return { authorized: true };

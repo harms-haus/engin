@@ -27,6 +27,24 @@ export class RunRegistry {
   private readonly runs = new Map<string, RunHandle>();
 
   /**
+   * Once true, {@link scheduleReap} executes its callback synchronously
+   * instead of arming a `setTimeout`. Armed by {@link beginShutdown} at the
+   * start of {@link RunManager.shutdownAll} so the executor's finally-block
+   * reap (which runs AFTER `cancelAllReap`) cannot re-arm a deferred timer
+   * that survives shutdown.
+   */
+  private shutdown = false;
+
+  /**
+   * Mark the registry as shutting down. Subsequent {@link scheduleReap}
+   * calls execute their callback immediately rather than scheduling a timer,
+   * closing the shutdown reap race. Idempotent.
+   */
+  beginShutdown(): void {
+    this.shutdown = true;
+  }
+
+  /**
    * Tracked pending reap timers, keyed by runId. Every timer armed by
    * {@link scheduleReap} is recorded here so it can be cancelled via
    * {@link cancelReap} / {@link cancelAllReap} — preventing the recursive
@@ -84,9 +102,7 @@ export class RunRegistry {
    * the run is still registered, no longer `'running'`, AND has no active
    * subscribers.
    *
-   * This encapsulates the reaper guard that was previously inlined in
-   * RunManager.executeWorkflow's finally block
-   * (`if (handle.status !== 'running') { ... }`). The guards protect against:
+   * The reaper guards protect against:
    *   1. reaping a run that resumed into a second execution (status back to
    *      `'running'`),
    *   2. firing after an explicit shutdown removed the handle before the timer
@@ -116,6 +132,13 @@ export class RunRegistry {
    *                 subscribers.
    */
   scheduleReap(runId: string, delayMs: number, onReap: () => void): void {
+    // Shutdown mode: execute the reap callback immediately so the
+    // finally-block re-arm (which runs AFTER cancelAllReap during
+    // shutdownAll) cannot leak a deferred timer past teardown.
+    if (this.shutdown) {
+      onReap();
+      return;
+    }
     // Re-arming replaces any previous timer for this runId so we never hold
     // two dangling timers for the same run.
     this.cancelReap(runId);

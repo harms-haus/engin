@@ -501,3 +501,141 @@ describe('RunRegistry — reap timer cancellation (leak fix)', () => {
     expect(() => registry.cancelAllReap()).not.toThrow();
   });
 });
+
+// ── (4) Shutdown mode — beginShutdown + scheduleReap immediate execution ────
+//
+// Race-condition fix. During `shutdownAll()`, RunManager aborts every run and
+// calls `cancelAllReap()` to clear pending reapers. But each executor's
+// `finally` block calls `scheduleReap(...)` AFTER the cancel — re-arming a NEW
+// reaper timer that fires long after shutdown "completed", disposing bridges /
+// stores and removing handles well past teardown.
+//
+// The fix: `RunRegistry.beginShutdown()` arms a `shutdown` flag. Once armed,
+// `scheduleReap` executes the reap callback SYNCHRONOUSLY instead of scheduling
+// a `setTimeout`. So the late finally-block reap runs immediately and can never
+// leak past shutdown.
+//
+// These tests pin that behavior and will FAIL against the pre-fix code (which
+// has no `beginShutdown` method and always arms a timer).
+
+describe('RunRegistry — shutdown mode (beginShutdown)', () => {
+  it('exposes a beginShutdown() method that is callable and does not throw', () => {
+    const registry = new RunRegistry();
+    expect(typeof registry.beginShutdown).toBe('function');
+    expect(() => registry.beginShutdown()).not.toThrow();
+  });
+
+  it('beginShutdown is idempotent (calling it more than once is harmless)', () => {
+    const registry = new RunRegistry();
+    expect(() => {
+      registry.beginShutdown();
+      registry.beginShutdown();
+    }).not.toThrow();
+  });
+
+  it('scheduleReap during shutdown executes onReap IMMEDIATELY (no timer armed)', () => {
+    // TARGET behavior: once beginShutdown() has been called, scheduleReap must
+    // fire onReap synchronously instead of arming a setTimeout. This is what
+    // closes the shutdown race — the executor's finally-block reap (which runs
+    // AFTER cancelAllReap) cannot re-arm a deferred timer that survives
+    // shutdown.
+    const registry = new RunRegistry();
+    registry.register(makeHandle(RUN_ID, { status: 'complete' }));
+    registry.beginShutdown();
+
+    let reaped = false;
+    registry.scheduleReap(RUN_ID, REAP_DELAY, () => {
+      reaped = true;
+    });
+
+    // Fired synchronously — no flushPending() needed.
+    expect(reaped).toBe(true);
+    // And NO timer was armed (the leak is gone).
+    expect(pendingCount()).toBe(0);
+  });
+
+  it('scheduleReap during shutdown leaves no tracked reap timer behind', () => {
+    // The internal reapTimers entry must stay clean so a later cancelAllReap /
+    // remove finds nothing dangling.
+    const registry = new RunRegistry();
+    registry.register(makeHandle(RUN_ID, { status: 'complete' }));
+    registry.beginShutdown();
+
+    let reaped = false;
+    registry.scheduleReap(RUN_ID, REAP_DELAY, () => {
+      reaped = true;
+    });
+    expect(reaped).toBe(true);
+
+    // Flushing the queue fires nothing — no deferred reaper was armed.
+    flushPending();
+    expect(reaped).toBe(true);
+    expect(pendingCount()).toBe(0);
+    // cancelAllReap afterwards is a no-op (nothing pending).
+    expect(() => registry.cancelAllReap()).not.toThrow();
+  });
+
+  it('scheduleReap during shutdown fires onReap exactly once (no double-reap)', () => {
+    const registry = new RunRegistry();
+    registry.register(makeHandle(RUN_ID, { status: 'complete' }));
+    registry.beginShutdown();
+
+    let count = 0;
+    registry.scheduleReap(RUN_ID, REAP_DELAY, () => {
+      count += 1;
+    });
+    // Draining the (empty) timer queue must not fire it a second time.
+    flushPending();
+    expect(count).toBe(1);
+  });
+
+  it('a late re-arm AFTER beginShutdown still fires immediately (executor finally path)', () => {
+    // Mirrors the exact shutdown race: a deferred reaper is armed, then
+    // cancelAllReap() clears it, then beginShutdown() is set, then the
+    // executor's finally re-arms via scheduleReap(). The re-arm must fire
+    // immediately rather than starting a fresh deferred timer.
+    const registry = new RunRegistry();
+    registry.register(makeHandle(RUN_ID, { status: 'complete' }));
+
+    let firstReaped = false;
+    registry.scheduleReap(RUN_ID, REAP_DELAY, () => {
+      firstReaped = true;
+    });
+    expect(pendingCount()).toBe(1);
+
+    // shutdownAll sequence: cancel every pending reaper, then arm the flag.
+    registry.cancelAllReap();
+    registry.beginShutdown();
+    expect(pendingCount()).toBe(0);
+
+    // The executor's finally-block re-arm arrives AFTER the cancel.
+    let secondReaped = false;
+    registry.scheduleReap(RUN_ID, REAP_DELAY, () => {
+      secondReaped = true;
+    });
+
+    expect(secondReaped).toBe(true);
+    expect(pendingCount()).toBe(0);
+    // The cancelled first reaper never fired.
+    expect(firstReaped).toBe(false);
+  });
+
+  it('normal (non-shutdown) scheduleReap still arms a timer and defers onReap', () => {
+    // GUARD: when beginShutdown has NOT been called, scheduleReap must behave
+    // exactly as before — arm a timer and defer onReap until it fires. The
+    // shutdown flag must NOT change the normal (steady-state) path.
+    const registry = new RunRegistry();
+    registry.register(makeHandle(RUN_ID, { status: 'complete' }));
+
+    let reaped = false;
+    registry.scheduleReap(RUN_ID, REAP_DELAY, () => {
+      reaped = true;
+    });
+
+    // Deferred — not fired yet, a timer IS armed.
+    expect(reaped).toBe(false);
+    expect(pendingCount()).toBe(1);
+    flushPending();
+    expect(reaped).toBe(true);
+  });
+});

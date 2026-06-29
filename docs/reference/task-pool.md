@@ -528,9 +528,13 @@ Called by `tryStartBatchSpecs` after `gate.canStart(profile)` returned true.
    between `canStart` and `acquire`), the task is parked if active, and `startSession`
    returns without starting.
 3. **Mark started** in `batchStarted`.
-4. **Execute.** An async IIFE calls `runner.execute(executeCtx, spec)` (cached sessions skip
-   the timeout; non-cached sessions are wrapped in a `withTimeout` race — S1 — so a hanging
-   runner can't leak a slot). The gate slot is released in a `finally` (S1: ALWAYS released).
+4. **Execute.** An async IIFE calls `runner.execute(executeCtx, spec)`. It is **not**
+   wrapped in an external wall-clock timeout here — freeze detection is the responsibility
+   of the in-session inactivity watchdog inside `runSession` (see S1 below). If `execute()`
+   throws (e.g. `WatchdogTimeoutError`), the error is accumulated into `taskErrors` and
+   `failTask(entry, executeError)` is called **immediately** — the scheduler does not store a
+   synthetic empty result or advance the generator. The gate slot is released in a `finally`
+   (S1: ALWAYS released).
 5. **Settle.** The result is stored at `entry.batchResults[specIndex]`,
    `completedSessions` is incremented, and `batchSettledCount` is updated (E2). If the batch
    is now complete, `advanceBatch` is called.
@@ -541,10 +545,14 @@ reject). `inflight` is the set the main loop races against.
 
 ### Timeout hardening (S1 / S2)
 
-- **S1 (`executeTimeoutMs`):** `runner.execute()` is raced against a timeout (default
-  `DEFAULT_EXECUTE_TIMEOUT_MS` = 300 000 ms, or `stepTimeoutMs` from options). On timeout the
-  promise rejects, the `finally` releases the slot, and the result becomes a minimal
-  `{ mode: 'text', text: '' }` with an accumulated error message. No slot can be leaked.
+- **S1 — in-session inactivity watchdog (no wall-clock race):** `runner.execute()` is NOT
+  raced against a scheduler-side timeout. Model-freeze detection lives entirely inside
+  `runSession`, which arms an inactivity watchdog (`DEFAULT_WATCHDOG_TIMEOUT_MS` = 300 000 ms,
+  overridable via `SessionPlanContext.stepTimeoutMs`). The watchdog RESETS on every agent
+  activity event and only fires when the model goes silent for the full window; a genuine
+  freeze surfaces as a thrown `WatchdogTimeoutError` from `runner.execute()`, which the
+  scheduler routes to `failTask`. The gate slot is ALWAYS released via try/finally regardless
+  of outcome, so a hung runner cannot leak a slot or deadlock the scheduler.
 - **S2 (`GENERATOR_TIMEOUT_MS` = 5 000 ms):** `planGen.next()` and `planGen.return()` are
   raced against a timeout. A leaked generator is preferred over blocking the scheduler. A
   hanging `finally`/`await` inside the generator cannot stall a drain pass.
@@ -668,17 +676,18 @@ function clearTaskSessions(sessionBaseDir: string, taskId: string): void;
 
 ### `SessionSpec`
 
-| Field         | Type         | Description                                                                                                                         |
-| ------------- | ------------ | ----------------------------------------------------------------------------------------------------------------------------------- |
-| `id`          | `string`     | Unique session id (persistence path segment).                                                                                       |
-| `profile`     | `string`     | Agent profile id (resolved against `ctx.profiles`).                                                                                 |
-| `prompt`      | `string`     | The prompt text.                                                                                                                    |
-| `schema?`     | `ZodType`    | Optional Zod schema for structured output.                                                                                          |
-| `outputMode`  | `OutputMode` | `'text' \| 'structured' \| 'filesystem'`.                                                                                           |
-| `isReadOnly?` | `boolean`    | When true, write/edit tools are stripped.                                                                                           |
-| `runnerRole`  | `string`     | Role label (e.g. `'executor'`, `'reviewer'`).                                                                                       |
-| `attempt`     | `number`     | 1-based attempt number.                                                                                                             |
-| `resume?`     | `boolean`    | Resume an existing session at this id instead of creating a fresh one (used by review loops). Bypasses the idempotency cache check. |
+| Field               | Type         | Description                                                                                                                                                                                                                                                           |
+| ------------------- | ------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `id`                | `string`     | Unique session id (persistence path segment).                                                                                                                                                                                                                         |
+| `profile`           | `string`     | Agent profile id (resolved against `ctx.profiles`).                                                                                                                                                                                                                   |
+| `prompt`            | `string`     | The prompt text.                                                                                                                                                                                                                                                      |
+| `schema?`           | `ZodType`    | Optional Zod schema for structured output.                                                                                                                                                                                                                            |
+| `outputMode`        | `OutputMode` | `'text' \| 'structured' \| 'filesystem'`.                                                                                                                                                                                                                             |
+| `isReadOnly?`       | `boolean`    | When true, write/edit tools are stripped.                                                                                                                                                                                                                             |
+| `runnerRole`        | `string`     | Role label (e.g. `'executor'`, `'reviewer'`).                                                                                                                                                                                                                         |
+| `attempt`           | `number`     | 1-based attempt number.                                                                                                                                                                                                                                               |
+| `resume?`           | `boolean`    | Resume an existing session at this id instead of creating a fresh one (used by review loops). Bypasses the idempotency cache check.                                                                                                                                   |
+| `allowedWriteDirs?` | `string[]?`  | Optional override of the session write sandbox. When omitted on a non-read-only session, runSession confines writes to the session cwd (`worktreeCwd ?? cwd`) by default; read-only sessions skip the sandbox entirely (their write/edit tools are already stripped). |
 
 ### `SessionResult`
 

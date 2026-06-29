@@ -83,6 +83,12 @@ import type { AgentProfile, Task } from '../core/types.js';
 import type { SessionPlanContext, SessionPlanRunner } from './runners/session-plan-types.js';
 import { SessionGate } from './session-gate.js';
 import { SessionScheduler } from './session-scheduler.js';
+import type { TaskGraphEntry } from './task-graph.js';
+// Namespace import so this file still loads before the green team exports
+// GeneratorTimeoutError (a missing *named* export would otherwise abort the
+// whole file with a SyntaxError). `schedulerModule.GeneratorTimeoutError` is
+// `undefined` until exported.
+import * as schedulerModule from './session-scheduler.js';
 import type { SessionResult, SessionSpec } from './session.js';
 import { SessionError } from './session.js';
 import { TaskGraph } from './task-graph.js';
@@ -274,6 +280,119 @@ function buildFixture(opts: {
   });
 
   return { graph, gate: opts.gate, profiles: opts.profiles, activeSessions, log, events, scheduler };
+}
+
+// ── Per-task state inspection helpers ───────────────────────────────────────
+//
+// cleanupTaskState(taskId) deletes the scheduler's per-task map/Set entries
+// once a task is permanently terminal. These helpers reach into the private
+// fields to verify that behavior (memory-leak guard).
+
+/** Names of the scheduler's per-task Map<string,* fields. */
+const PER_TASK_MAP_FIELDS = [
+  'runners',
+  'resolveCache',
+  'planCtxCache',
+  'executeCtxCache',
+  'batchStarted',
+  'batchSettledCount',
+  'taskSessionBaseDir',
+  'taskErrors',
+  'worktreeCwds',
+] as const;
+
+/** Names of the scheduler's per-task Set<string> fields. */
+const PER_TASK_SET_FIELDS = ['advancing', 'worktreeCreated', 'retryEligible'] as const;
+
+/** Return the names of all per-task map/Set fields that currently hold an
+ *  entry for `taskId`. Empty array ⟺ the task's state has been cleaned up. */
+function perTaskStateFor(scheduler: SessionScheduler, taskId: string): string[] {
+  const s = scheduler as unknown as Record<string, unknown>;
+  const present: string[] = [];
+  for (const k of PER_TASK_MAP_FIELDS) {
+    if ((s[k] as Map<string, unknown> | undefined)?.has(taskId)) present.push(k);
+  }
+  for (const k of PER_TASK_SET_FIELDS) {
+    if ((s[k] as Set<string> | undefined)?.has(taskId)) present.push(k);
+  }
+  return present;
+}
+
+/** True if the scheduler still knows the attempt count for `taskId`
+ *  (taskAttempts is deliberately NOT cleared by cleanupTaskState). */
+function taskAttemptsKnown(scheduler: SessionScheduler, taskId: string): boolean {
+  const s = scheduler as unknown as Record<string, unknown>;
+  return Boolean((s['taskAttempts'] as Map<string, unknown> | undefined)?.has(taskId));
+}
+
+/** Return the scheduler's recorded attempt count for `taskId`, or undefined. */
+function taskAttemptValue(scheduler: SessionScheduler, taskId: string): number | undefined {
+  const s = scheduler as unknown as Record<string, unknown>;
+  return (s['taskAttempts'] as Map<string, number> | undefined)?.get(taskId);
+}
+
+/** Return the scheduler's recorded session base dir for `taskId`, or undefined. */
+function taskSessionBaseDirValue(scheduler: SessionScheduler, taskId: string): string | undefined {
+  const s = scheduler as unknown as Record<string, unknown>;
+  return (s['taskSessionBaseDir'] as Map<string, string> | undefined)?.get(taskId);
+}
+
+/** True if `taskId` is currently marked retry-eligible. */
+function isRetryEligible(scheduler: SessionScheduler, taskId: string): boolean {
+  const s = scheduler as unknown as Record<string, unknown>;
+  return Boolean((s['retryEligible'] as Set<string> | undefined)?.has(taskId));
+}
+
+/** The 10 per-task maps/sets cleared by the shared `clearTaskMaps(taskId)`
+ *  helper — the exact intersection of resetForRetry's and cleanupTaskState's
+ *  per-task cleanup. `retryEligible`, `taskSessionBaseDir`, and
+ *  `taskAttempts` are intentionally NOT part of this shared subset (they
+ *  diverge between the two callers). */
+const SHARED_CLEAR_FIELDS = [
+  'batchStarted',
+  'batchSettledCount',
+  'resolveCache',
+  'runners',
+  'planCtxCache',
+  'executeCtxCache',
+  'advancing',
+  'worktreeCreated',
+  'worktreeCwds',
+  'taskErrors',
+] as const;
+
+/** Return the names of the shared clear-subset fields that currently hold an
+ *  entry for `taskId`. Empty array ⟺ the shared maps have been cleared. */
+function sharedFieldsPresent(scheduler: SessionScheduler, taskId: string): string[] {
+  const s = scheduler as unknown as Record<string, unknown>;
+  const present: string[] = [];
+  for (const k of SHARED_CLEAR_FIELDS) {
+    const field = s[k] as Map<string, unknown> | Set<string> | undefined;
+    if (field?.has(taskId)) present.push(k);
+  }
+  return present;
+}
+
+/** Populate EVERY per-task Map/Set field with a sentinel entry for `taskId`,
+ *  so the map-clearing helpers can be verified field-by-field. */
+function populateAllTaskState(scheduler: SessionScheduler, taskId: string): void {
+  const s = scheduler as unknown as Record<string, unknown>;
+  (s['runners'] as Map<string, unknown>).set(taskId, {
+    plan: async function* () {},
+    execute: async () => ({ mode: 'text', text: '' }),
+  });
+  (s['batchStarted'] as Map<string, unknown>).set(taskId, new Set([0]));
+  (s['batchSettledCount'] as Map<string, unknown>).set(taskId, 0);
+  (s['resolveCache'] as Map<string, unknown>).set(taskId, { kind: 'runner' });
+  (s['planCtxCache'] as Map<string, unknown>).set(taskId, { sessionBaseDir: '/base' });
+  (s['executeCtxCache'] as Map<string, unknown>).set(taskId, { sessionBaseDir: '/base' });
+  (s['worktreeCreated'] as Set<string>).add(taskId);
+  (s['worktreeCwds'] as Map<string, unknown>).set(taskId, '/wt');
+  (s['taskErrors'] as Map<string, unknown>).set(taskId, ['err']);
+  (s['advancing'] as Set<string>).add(taskId);
+  (s['retryEligible'] as Set<string>).add(taskId);
+  (s['taskSessionBaseDir'] as Map<string, unknown>).set(taskId, '/base');
+  (s['taskAttempts'] as Map<string, unknown>).set(taskId, 1);
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────
@@ -2505,5 +2624,688 @@ describe('SessionScheduler', () => {
     expect(result.failedTasks).toBe(0);
     expect(graph.getTask('A')?.status).toBe('complete');
     expect(log).toContain('start:a1');
+  });
+
+  // ── 42. Per-task state is cleaned up after a task completes ─────────────
+  //
+  // cleanupTaskState(taskId) deletes the scheduler-side per-task map entries
+  // (runners, batchStarted, resolveCache, planCtxCache, executeCtxCache,
+  // advancing, worktreeCreated, worktreeCwds, retryEligible,
+  // taskSessionBaseDir, taskErrors) once a task is permanently terminal. It
+  // must fire on NORMAL completion (finalizeTask) so the maps don't grow
+  // unboundedly across long runs. taskAttempts is deliberately PRESERVED
+  // (needed for result/audit reporting).
+  it('42. per-task maps are cleaned up after a task completes normally', async () => {
+    const profiles = new Map([['default', makeProfile('default')]]);
+    const gate = new SessionGate({ total: 2, perModel: {} });
+    const log: string[] = [];
+    const controls = makeSpecControls(['s1']);
+    const { scheduler, graph } = buildFixture({
+      tasks: [
+        {
+          ...makeTask('A'),
+          runnerFactory: makeFakeRunnerFactory([[makeSpec('s1', 'default')]], controls, log),
+        },
+      ],
+      profiles,
+      gate,
+      log,
+    });
+
+    completeSpec(controls, 's1');
+    const result = await scheduler.run();
+
+    expect(result.completedTasks).toBe(1);
+    expect(graph.getTask('A')?.status).toBe('complete');
+
+    // After completion the per-task state must be gone (no leak).
+    expect(perTaskStateFor(scheduler, 'A')).toEqual([]);
+    // taskAttempts is intentionally retained for reporting.
+    expect(taskAttemptsKnown(scheduler, 'A')).toBe(true);
+  });
+
+  // ── 43. Per-task state is cleaned up after a PERMANENT failure ───────────
+  //
+  // The same cleanup must fire on the PERMANENT failure branch of failTask
+  // (retry budget exhausted OR non-retryable structural failure). Maps that
+  // accumulated errors / runner handles during the attempts must be released.
+  // Again, taskAttempts is preserved.
+  it('43. per-task maps are cleaned up after a task fails permanently', async () => {
+    const profiles = new Map([['default', makeProfile('default')]]);
+    const gate = new SessionGate({ total: 2, perModel: {} });
+    const graph = new TaskGraph();
+    // execute() always throws (transient) → exhausts MAX_RETRIES → permanent.
+    graph.addTask(
+      { ...makeTask('A') },
+      (): SessionPlanRunner => ({
+        async *plan(): AsyncGenerator<SessionSpec[], SessionResult[] | undefined, SessionResult[]> {
+          yield [makeSpec('s1', 'default')];
+          return;
+        },
+        async execute(): Promise<SessionResult> {
+          throw new SessionError('always fails (transient)', { kind: 'transient', retryable: true });
+        },
+      }),
+    );
+    const scheduler = new SessionScheduler({
+      graph,
+      gate,
+      profiles,
+      sessionBaseDir: '/tmp/test-sessions',
+      cwd: '/tmp/test',
+      activeSessions: new Set(),
+      phaseId: 'test',
+    });
+
+    // Retry budget exhausted → permanent failure → run() rejects.
+    await expect(scheduler.run()).rejects.toThrow(/permanently-failed/);
+    expect(graph.getTask('A')?.status).toBe('failed');
+
+    // Per-task state must be released on permanent failure (no leak).
+    expect(perTaskStateFor(scheduler, 'A')).toEqual([]);
+    // taskAttempts retained for reporting.
+    expect(taskAttemptsKnown(scheduler, 'A')).toBe(true);
+  });
+
+  // ── 44. Per-task state is NOT cleaned on a retryable (retry-eligible) failure ──
+  //
+  // When a task fails but still has retry budget, it stays 'failed' (retry-
+  // eligible) until the next drain pass resets it for a fresh attempt. The
+  // per-task state MUST survive this window — the retry needs it (the runner,
+  // plan/execute contexts, accumulated errors, attempt counter, base dir).
+  // cleanupTaskState must therefore NOT fire on the retry-eligible branch.
+  //
+  // This task fails once (transient, retry-eligible) then succeeds on its
+  // 2nd attempt. We snapshot the maps at the 'failed' transition and assert
+  // they are still populated at that point.
+  it('44. per-task maps are NOT cleaned on a retryable failure (retry needs them)', async () => {
+    const profiles = new Map([['default', makeProfile('default')]]);
+    const gate = new SessionGate({ total: 2, perModel: {} });
+    let planCalls = 0;
+    const graph = new TaskGraph();
+    let snapshotAtFailure: string[] | null = null;
+    graph.addTask(
+      { ...makeTask('A') },
+      (): SessionPlanRunner => ({
+        async *plan(): AsyncGenerator<SessionSpec[], SessionResult[] | undefined, SessionResult[]> {
+          planCalls++;
+          yield [makeSpec('s1', 'default')];
+          return;
+        },
+        async execute(): Promise<SessionResult> {
+          if (planCalls === 1) {
+            throw new SessionError('transient boom', { kind: 'transient', retryable: true });
+          }
+          return { mode: 'text', text: 'ok' };
+        },
+      }),
+    );
+    const scheduler = new SessionScheduler({
+      graph,
+      gate,
+      profiles,
+      sessionBaseDir: '/tmp/test-sessions',
+      cwd: '/tmp/test',
+      activeSessions: new Set(),
+      phaseId: 'test',
+      onStatus: {
+        onTaskRejected: () => {
+          // Snapshot the per-task maps the instant the task goes 'failed'.
+          // For the single retryable failure this fires exactly once.
+          if (snapshotAtFailure === null) {
+            snapshotAtFailure = perTaskStateFor(scheduler, 'A');
+          }
+        },
+      },
+    });
+
+    const result = await scheduler.run();
+    expect(result.completedTasks).toBe(1);
+    expect(graph.getTask('A')?.status).toBe('complete');
+    // The plan generator ran twice: initial attempt + one retry.
+    expect(planCalls).toBe(2);
+
+    // At the retry-eligible failure the core execution state the retry
+    // depends on was still present (NOT prematurely cleaned up).
+    expect(snapshotAtFailure).not.toBeNull();
+    const snap = snapshotAtFailure!;
+    expect(snap).toContain('runners');
+    expect(snap).toContain('planCtxCache');
+    expect(snap).toContain('executeCtxCache');
+    expect(snap).toContain('taskSessionBaseDir');
+    expect(snap).toContain('taskErrors');
+    expect(snap).toContain('retryEligible');
+
+    // After the eventual success, the terminal completion path cleans up.
+    expect(perTaskStateFor(scheduler, 'A')).toEqual([]);
+  });
+
+  // ── 45. clearTaskMaps clears exactly the shared per-task maps ───────────
+  //
+  // resetForRetry and cleanupTaskState both clear the same per-task execution-
+  // state maps. That shared subset is extracted into a private
+  // clearTaskMaps(taskId) helper which clears EXACTLY these 10 maps:
+  //   batchStarted, batchSettledCount, resolveCache, runners, planCtxCache,
+  //   executeCtxCache, advancing, worktreeCreated, worktreeCwds, taskErrors.
+  //
+  // It must NOT touch the three path-divergent fields:
+  //   - retryEligible       (resetForRetry removes it; cleanupTaskState removes it)
+  //   - taskSessionBaseDir  (resetForRetry SETS a new value; cleanupTaskState deletes)
+  //   - taskAttempts        (always retained for reporting)
+  // Those divergent fields are owned by each caller, not the shared helper.
+  //
+  // This test drives the extraction: clearTaskMaps does not exist yet, so it
+  // fails until the green team extracts the helper.
+  it('45. clearTaskMaps clears exactly the shared per-task maps', () => {
+    const profiles = new Map([['default', makeProfile('default')]]);
+    const gate = new SessionGate({ total: 2, perModel: {} });
+    const graph = new TaskGraph();
+    graph.addTask(
+      { ...makeTask('A') },
+      (): SessionPlanRunner => ({
+        async *plan() {
+          yield [];
+          return;
+        },
+        async execute() {
+          return { mode: 'text', text: '' };
+        },
+      }),
+    );
+    const scheduler = new SessionScheduler({
+      graph,
+      gate,
+      profiles,
+      sessionBaseDir: '/tmp/test-sessions',
+      cwd: '/tmp/test',
+      activeSessions: new Set(),
+      phaseId: 'test',
+    });
+
+    populateAllTaskState(scheduler, 'A');
+
+    // Sanity: every shared field holds an entry before clearing.
+    expect(sharedFieldsPresent(scheduler, 'A')).toEqual([...SHARED_CLEAR_FIELDS]);
+
+    // Invoke the extracted private helper directly.
+    const clearTaskMaps = (
+      scheduler as unknown as {
+        clearTaskMaps?: (id: string) => void;
+      }
+    ).clearTaskMaps;
+    expect(clearTaskMaps).toBeTypeOf('function');
+    clearTaskMaps!.call(scheduler, 'A');
+
+    // The 10 shared maps/sets are all gone.
+    expect(sharedFieldsPresent(scheduler, 'A')).toEqual([]);
+
+    // The three divergent fields are deliberately untouched by the helper.
+    expect(isRetryEligible(scheduler, 'A')).toBe(true);
+    expect(taskSessionBaseDirValue(scheduler, 'A')).toBe('/base');
+    expect(taskAttemptsKnown(scheduler, 'A')).toBe(true);
+  });
+
+  // ── 46. resetForRetry clears shared maps, drops retryEligible, sets a NEW base dir ──
+  //
+  // resetForRetry is the retry-reset path (failed → ready for a blank-slate
+  // re-run). It calls clearTaskMaps(taskId) for the shared maps and then does
+  // reset-specific work: increment the attempt counter, DELETE this task from
+  // retryEligible (it was retry-eligible; now it's being re-run), and SET a
+  // NEW per-attempt namespaced taskSessionBaseDir (NOT delete the old one).
+  //
+  // This pins the END STATE of resetForRetry so the extraction is provably
+  // behavior-preserving. The differential vs cleanupTaskState (next test):
+  //   - retryEligible:       removed (same as cleanup, but reset owns it)
+  //   - taskSessionBaseDir:  SET to namespaced retry path (cleanup DELETES it)
+  //   - taskAttempts:        incremented & retained (cleanup also retains)
+  it('46. resetForRetry clears shared maps, drops retryEligible, sets a NEW base dir', () => {
+    const profiles = new Map([['default', makeProfile('default')]]);
+    const gate = new SessionGate({ total: 2, perModel: {} });
+    const graph = new TaskGraph();
+    graph.addTask(
+      { ...makeTask('A') },
+      (): SessionPlanRunner => ({
+        async *plan() {
+          yield [];
+          return;
+        },
+        async execute() {
+          return { mode: 'text', text: '' };
+        },
+      }),
+    );
+    const scheduler = new SessionScheduler({
+      graph,
+      gate,
+      profiles,
+      sessionBaseDir: '/tmp/test-sessions',
+      cwd: '/tmp/test',
+      activeSessions: new Set(),
+      phaseId: 'test',
+    });
+
+    // Simulate a task that has failed attempt 1 and is awaiting a retry reset.
+    graph.setTaskStatus('A', 'failed');
+    populateAllTaskState(scheduler, 'A');
+
+    const entry = graph.getTask('A')!;
+    // Invoke the private resetForRetry(entry) directly.
+    const resetForRetry = (
+      scheduler as unknown as {
+        resetForRetry: (e: typeof entry) => void;
+      }
+    ).resetForRetry;
+    resetForRetry.call(scheduler, entry);
+
+    // The 10 shared maps/sets are cleared.
+    expect(sharedFieldsPresent(scheduler, 'A')).toEqual([]);
+    // retryEligible is dropped (this task is now being re-run, not awaiting).
+    expect(isRetryEligible(scheduler, 'A')).toBe(false);
+    // taskSessionBaseDir is SET (not deleted) to the namespaced attempt-2 path.
+    expect(taskSessionBaseDirValue(scheduler, 'A')).toBe('/tmp/test-sessions/.retries/A/2');
+    // Attempt counter incremented and retained.
+    expect(taskAttemptValue(scheduler, 'A')).toBe(2);
+    // Task transitioned failed → ready so T3 picks it up.
+    expect(graph.getTask('A')?.status).toBe('ready');
+  });
+
+  // ── 47. cleanupTaskState clears shared maps AND retryEligible AND taskSessionBaseDir ──
+  //
+  // cleanupTaskState is the permanent-terminal cleanup path (normal
+  // completion or exhausted/non-retryable failure). It calls
+  // clearTaskMaps(taskId) for the shared maps and then does cleanup-specific
+  // work: DELETE retryEligible and taskSessionBaseDir (the task is gone for
+  // good, so neither the retry flag nor the base dir is needed). taskAttempts
+  // is still retained for result/audit reporting.
+  //
+  // The differential vs resetForRetry (prev test):
+  //   - retryEligible:       DELETED (reset also removes it — convergent here)
+  //   - taskSessionBaseDir:  DELETED (reset SETS a new value)
+  //   - taskAttempts:        retained (reset increments it)
+  it('47. cleanupTaskState clears shared maps AND retryEligible AND taskSessionBaseDir', () => {
+    const profiles = new Map([['default', makeProfile('default')]]);
+    const gate = new SessionGate({ total: 2, perModel: {} });
+    const graph = new TaskGraph();
+    graph.addTask(
+      { ...makeTask('A') },
+      (): SessionPlanRunner => ({
+        async *plan() {
+          yield [];
+          return;
+        },
+        async execute() {
+          return { mode: 'text', text: '' };
+        },
+      }),
+    );
+    const scheduler = new SessionScheduler({
+      graph,
+      gate,
+      profiles,
+      sessionBaseDir: '/tmp/test-sessions',
+      cwd: '/tmp/test',
+      activeSessions: new Set(),
+      phaseId: 'test',
+    });
+
+    populateAllTaskState(scheduler, 'A');
+
+    // Invoke the private cleanupTaskState(taskId) directly.
+    const cleanupTaskState = (
+      scheduler as unknown as {
+        cleanupTaskState: (id: string) => void;
+      }
+    ).cleanupTaskState;
+    cleanupTaskState.call(scheduler, 'A');
+
+    // The 10 shared maps/sets are cleared.
+    expect(sharedFieldsPresent(scheduler, 'A')).toEqual([]);
+    // Cleanup-specific: retryEligible and taskSessionBaseDir are DELETED
+    // (unlike resetForRetry which keeps a fresh taskSessionBaseDir).
+    expect(isRetryEligible(scheduler, 'A')).toBe(false);
+    expect(taskSessionBaseDirValue(scheduler, 'A')).toBeUndefined();
+    // taskAttempts is retained for reporting (deliberately not cleared).
+    expect(taskAttemptsKnown(scheduler, 'A')).toBe(true);
+    expect(taskAttemptValue(scheduler, 'A')).toBe(1);
+  });
+
+  // ── 48. Abort clears retryEligible (no retry reset / re-init after abort) ───
+  //
+  // When a task fails with a retryable execution error it lands in
+  // `retryEligible` (status 'failed', retry budget remaining) awaiting a
+  // blank-slate retry on the NEXT drain pass (resetRetryEligibleTasks →
+  // resetForRetry). Because 'failed' is a TERMINAL status, the abort handler's
+  // cancel loop SKIPS such a task — so the task keeps sitting in
+  // retryEligible after abort. The abort handler MUST therefore clear
+  // retryEligible, otherwise the drain pass triggered by the abort could
+  // reset the failed task to 'ready' and re-initialize it — wasted work / a
+  // leaked runner after the pool has already been aborted.
+  //
+  // This test drives that fix: it aborts the pool at the exact instant the
+  // task becomes retry-eligible and then asserts retryEligible is empty once
+  // run() settles. Without the `this.retryEligible.clear()` in the abort
+  // handler this assertion FAILS (the task id lingers in retryEligible).
+  it('48. abort clears retryEligible — no retry reset / re-init after abort', async () => {
+    const ac = new AbortController();
+    const profiles = new Map([['default', makeProfile('default')]]);
+    const gate = new SessionGate({ total: 2, perModel: {} });
+
+    let planCalls = 0;
+    // Runner whose execute() throws a TRANSIENT (retryable) error → failTask
+    // marks the task retry-eligible ('failed' + retryEligible) and stays there
+    // until the next drain pass would reset it.
+    const factory = (): SessionPlanRunner => ({
+      async *plan(): AsyncGenerator<SessionSpec[], SessionResult[] | undefined, SessionResult[]> {
+        planCalls += 1;
+        yield [makeSpec('s1', 'default')];
+        return;
+      },
+      async execute(): Promise<SessionResult> {
+        throw new SessionError('transient boom', { kind: 'transient', retryable: true });
+      },
+    });
+
+    const graph = new TaskGraph();
+    graph.addTask({ ...makeTask('A') }, factory);
+
+    const activeSessions = new Set<{ abort(): Promise<void> }>();
+    let didAbort = false;
+    const scheduler = new SessionScheduler({
+      graph,
+      gate,
+      profiles,
+      sessionBaseDir: '/tmp/test-sessions',
+      cwd: '/tmp/test',
+      activeSessions,
+      phaseId: 'test',
+      signal: ac.signal,
+      onStatus: {
+        // Abort the pool the instant task A transitions to 'failed' (its
+        // retryable failure). failTask adds A to retryEligible BEFORE firing
+        // this transition, so at this moment A is 'failed' + retry-eligible.
+        // The abort handler must clear retryEligible.
+        onTaskRejected: () => {
+          if (!didAbort) {
+            didAbort = true;
+            ac.abort();
+          }
+        },
+      },
+    });
+
+    const result = await scheduler.run();
+
+    // After abort, A stays terminal 'failed' — it is NOT retried.
+    expect(graph.getTask('A')?.status).toBe('failed');
+    expect(result.failedTasks).toBe(1);
+    expect(result.completedTasks).toBe(0);
+
+    // PRIMARY — drives the fix: retryEligible must be cleared by the abort
+    // handler. Without `this.retryEligible.clear()` this FAILS (A lingers).
+    const retryEligible = (scheduler as unknown as { retryEligible: Set<string> }).retryEligible;
+    expect(retryEligible.has('A')).toBe(false);
+    expect(retryEligible.size).toBe(0);
+
+    // SECONDARY — the drain pass after abort must NOT reset / re-initialize
+    // the task. resetForRetry was never called: the attempt counter stays 1
+    // (it would be 2 after a retry reset) and the plan generator ran exactly
+    // once (the initial attempt), with no blank-slate retry.
+    const taskAttempts = (scheduler as unknown as { taskAttempts: Map<string, number> }).taskAttempts;
+    expect(taskAttempts.get('A')).toBe(1);
+    expect(planCalls).toBe(1);
+  });
+});
+
+// ── withTimeout + GeneratorTimeoutError (S2 plan-generator timeout helper) ──
+//
+// SessionScheduler#withTimeout races a promise against a timeout. When the
+// timeout fires first it MUST reject with a dedicated GeneratorTimeoutError —
+// a distinct error class so callers can tell a generator/plan timeout apart
+// from a genuine error thrown by the wrapped promise. When the promise
+// settles first (resolve OR reject) the timeout timer MUST be cleared so no
+// timer leak lingers.
+//
+// withTimeout is a private method with no scheduler state, so these tests
+// exercise it directly on a bare scheduler instance.
+
+describe('SessionScheduler.withTimeout / GeneratorTimeoutError', () => {
+  /** Bare scheduler — withTimeout is a pure helper that reads no scheduler state. */
+  function makeBareScheduler(): SessionScheduler {
+    const graph = new TaskGraph();
+    const gate = new SessionGate({ total: 1, perModel: {} });
+    const profiles = new Map([['default', makeProfile('default')]]);
+    return new SessionScheduler({
+      graph,
+      gate,
+      profiles,
+      sessionBaseDir: '/tmp/test',
+      cwd: '/tmp/test',
+      activeSessions: new Set(),
+      phaseId: 'test',
+    });
+  }
+
+  /** Typed view of the private withTimeout method. */
+  type WithTimeoutFn = <T>(p: Promise<T>, ms: number, label?: string) => Promise<T>;
+
+  function withTimeoutOf(scheduler: SessionScheduler): WithTimeoutFn {
+    return (scheduler as unknown as { withTimeout: WithTimeoutFn }).withTimeout.bind(scheduler);
+  }
+
+  /**
+   * Resolve the GeneratorTimeoutError class from the module namespace. Throws
+   * a clear, specific failure when it isn't exported yet (instead of a cryptic
+   * `undefined is not a constructor`), so the green team gets a precise spec.
+   */
+  function getGeneratorTimeoutError(): new (label: string, ms: number) => Error {
+    const cls = (
+      schedulerModule as {
+        GeneratorTimeoutError?: new (label: string, ms: number) => Error;
+      }
+    ).GeneratorTimeoutError;
+    if (typeof cls !== 'function') {
+      throw new Error(
+        'Expected GeneratorTimeoutError to be exported from session-scheduler.ts, ' +
+          'but it is not exported (typeof === ' +
+          typeof cls +
+          ').',
+      );
+    }
+    return cls;
+  }
+
+  /** Install spies on global setTimeout/clearTimeout that record created and
+   *  cleared timer ids. Returns accessors + a restore() function. */
+  function spyTimers(): {
+    createdTimers: ReturnType<typeof setTimeout>[];
+    clearedTimers: ReturnType<typeof setTimeout>[];
+    restore(): void;
+  } {
+    const originalSetTimeout = globalThis.setTimeout;
+    const originalClearTimeout = globalThis.clearTimeout;
+    const createdTimers: ReturnType<typeof setTimeout>[] = [];
+    const clearedTimers: ReturnType<typeof setTimeout>[] = [];
+    globalThis.setTimeout = ((fn: TimerHandler, ms?: number, ...rest: unknown[]) => {
+      const id = originalSetTimeout(fn, ms, ...rest);
+      createdTimers.push(id);
+      return id;
+    }) as typeof setTimeout;
+    globalThis.clearTimeout = ((id?: ReturnType<typeof setTimeout>) => {
+      if (id !== undefined) clearedTimers.push(id);
+      return originalClearTimeout(id as ReturnType<typeof setTimeout>);
+    }) as typeof clearTimeout;
+    return {
+      createdTimers,
+      clearedTimers,
+      restore() {
+        globalThis.setTimeout = originalSetTimeout;
+        globalThis.clearTimeout = originalClearTimeout;
+      },
+    };
+  }
+
+  it('withTimeout resolves with the promise value when it settles before the timeout', async () => {
+    const withTimeout = withTimeoutOf(makeBareScheduler());
+    await expect(withTimeout(Promise.resolve('done'), 1000, 'plan generator next()')).resolves.toBe('done');
+  });
+
+  it('withTimeout rejects with a GeneratorTimeoutError when the promise does not settle in time', async () => {
+    const withTimeout = withTimeoutOf(makeBareScheduler());
+    const GeneratorTimeoutError = getGeneratorTimeoutError();
+    // A promise that never settles — only the timeout can resolve the race.
+    const hanging = new Promise<string>(() => {});
+    await expect(withTimeout(hanging, 30, 'plan generator next()')).rejects.toBeInstanceOf(GeneratorTimeoutError);
+  });
+
+  it('the timeout error message includes the label and the timeout duration', async () => {
+    const withTimeout = withTimeoutOf(makeBareScheduler());
+    const GeneratorTimeoutError = getGeneratorTimeoutError();
+    const hanging = new Promise<string>(() => {});
+    const label = 'plan generator next()';
+    const ms = 42;
+    let caught: unknown;
+    try {
+      await withTimeout(hanging, ms, label);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(GeneratorTimeoutError);
+    const message = (caught as Error).message;
+    expect(message).toContain(label);
+    expect(message).toContain(String(ms));
+  });
+
+  it('GeneratorTimeoutError is constructable as (label, ms) and is an Error subclass', () => {
+    const GeneratorTimeoutError = getGeneratorTimeoutError();
+    const err = new GeneratorTimeoutError('plan generator next()', 5000);
+    expect(err).toBeInstanceOf(Error);
+    expect(err.message).toContain('plan generator next()');
+    expect(err.message).toContain('5000');
+  });
+
+  it('clears the timeout timer when the promise resolves before the timeout', async () => {
+    const withTimeout = withTimeoutOf(makeBareScheduler());
+    const spy = spyTimers();
+    try {
+      const result = await withTimeout(Promise.resolve('done'), 1000, 'plan generator next()');
+      expect(result).toBe('done');
+      // Exactly one timer was created (the timeout).
+      expect(spy.createdTimers).toHaveLength(1);
+      // That timer was cleared when the promise settled.
+      expect(spy.clearedTimers).toContain(spy.createdTimers[0]);
+    } finally {
+      spy.restore();
+    }
+  });
+
+  it('clears the timeout timer when the promise rejects before the timeout and propagates the original error', async () => {
+    const withTimeout = withTimeoutOf(makeBareScheduler());
+    const GeneratorTimeoutError = getGeneratorTimeoutError();
+    const spy = spyTimers();
+    const originalError = new Error('genuine failure');
+    try {
+      // The underlying rejection must be propagated UNCHANGED (not wrapped in
+      // a GeneratorTimeoutError), and the timer must be cleared.
+      await expect(withTimeout(Promise.reject(originalError), 1000, 'plan generator next()')).rejects.toBe(
+        originalError,
+      );
+      expect(spy.createdTimers).toHaveLength(1);
+      expect(spy.clearedTimers).toContain(spy.createdTimers[0]);
+      // Sanity: a genuine error is distinct from a timeout error.
+      expect(originalError).not.toBeInstanceOf(GeneratorTimeoutError);
+    } finally {
+      spy.restore();
+    }
+  });
+});
+
+// ─── MAX_EMPTY_BATCHES infinite-loop guard ─────────────────────────────────
+//
+// session-scheduler.ts extracts the former local magic value
+// `const maxEmpty = 1000` into a module-level named constant
+// `MAX_EMPTY_BATCHES`. These tests (a) drive + verify that extraction via the
+// exported constant, and (b) characterize the exact guard behavior so the
+// refactor is provably behavior-preserving:
+//   - a plan generator yielding >1000 consecutive empty batches THROWS;
+//   - exactly 1000 empty batches followed by a real batch is allowed.
+//
+// The guard lives in the private `nextNonEmptyBatch`, exercised directly via a
+// typed cast (mirroring the withTimeout tests above) so the throw itself — not
+// the surrounding retry/failure routing — is what's asserted.
+
+describe('SessionScheduler nextNonEmptyBatch infinite-loop guard (MAX_EMPTY_BATCHES)', () => {
+  /** Bare scheduler — nextNonEmptyBatch reads only entry.planGen, no scheduler state. */
+  function makeBareScheduler(): SessionScheduler {
+    const graph = new TaskGraph();
+    const gate = new SessionGate({ total: 1, perModel: {} });
+    const profiles = new Map([['default', makeProfile('default')]]);
+    return new SessionScheduler({
+      graph,
+      gate,
+      profiles,
+      sessionBaseDir: '/tmp/test',
+      cwd: '/tmp/test',
+      activeSessions: new Set(),
+      phaseId: 'test',
+    });
+  }
+
+  /** Typed view of the private nextNonEmptyBatch method. */
+  type NextNonEmptyBatchFn = (
+    entry: TaskGraphEntry,
+    seed: SessionResult[],
+  ) => Promise<IteratorResult<SessionSpec[], SessionResult[] | undefined>>;
+
+  function nextNonEmptyBatchOf(scheduler: SessionScheduler): NextNonEmptyBatchFn {
+    return (scheduler as unknown as { nextNonEmptyBatch: NextNonEmptyBatchFn }).nextNonEmptyBatch.bind(scheduler);
+  }
+
+  /** Build a plan generator that yields `count` empty batches, optionally a
+   *  final non-empty batch, then completes. */
+  function makePlanGen(
+    emptyCount: number,
+    finalBatch?: SessionSpec[],
+  ): AsyncGenerator<SessionSpec[], SessionResult[] | undefined> {
+    return (async function* (): AsyncGenerator<SessionSpec[], SessionResult[] | undefined> {
+      for (let i = 0; i < emptyCount; i++) yield [];
+      if (finalBatch) yield finalBatch;
+      return undefined;
+    })();
+  }
+
+  /** A TaskGraphEntry carrying only the planGen nextNonEmptyBatch reads. */
+  function entryWithPlan(planGen: AsyncGenerator<SessionSpec[], SessionResult[] | undefined>): TaskGraphEntry {
+    return { planGen } as unknown as TaskGraphEntry;
+  }
+
+  it('MAX_EMPTY_BATCHES is exported as a named constant equal to 1000', () => {
+    // Drives the extraction: the former local `const maxEmpty = 1000` must be
+    // lifted to a module-level named constant MAX_EMPTY_BATCHES (exported, like
+    // its neighbor MAX_RETRIES) so the guard threshold is named, not magic.
+    expect((schedulerModule as { MAX_EMPTY_BATCHES?: number }).MAX_EMPTY_BATCHES).toBe(1000);
+  });
+
+  it('throws when the generator yields more than 1000 consecutive empty batches', async () => {
+    const nextNonEmptyBatch = nextNonEmptyBatchOf(makeBareScheduler());
+    const entry = entryWithPlan(makePlanGen(1001));
+    await expect(nextNonEmptyBatch(entry, [])).rejects.toThrow(/empty batches without completing/);
+  });
+
+  it('does NOT throw at the boundary: exactly 1000 empty batches then a real batch returns the batch', async () => {
+    const nextNonEmptyBatch = nextNonEmptyBatchOf(makeBareScheduler());
+    const spec = makeSpec('s1', 'default');
+    const entry = entryWithPlan(makePlanGen(1000, [spec]));
+    const result = await nextNonEmptyBatch(entry, []);
+    expect(result.done).toBe(false);
+    expect(result.value).toEqual([spec]);
+  });
+
+  it('returns immediately for a generator that yields a non-empty first batch (no empties)', async () => {
+    const nextNonEmptyBatch = nextNonEmptyBatchOf(makeBareScheduler());
+    const spec = makeSpec('s1', 'default');
+    const entry = entryWithPlan(makePlanGen(0, [spec]));
+    const result = await nextNonEmptyBatch(entry, []);
+    expect(result.done).toBe(false);
+    expect(result.value).toEqual([spec]);
   });
 });

@@ -515,41 +515,48 @@ describe('SessionGate', () => {
     expect(queuedResult).toBe('ok');
   }, 5000);
 
-  // ── 14. canStart (canonical) ≡ canAcquireFor (compat alias) ────────────
+  // ── 14. canAcquireFor removed; canStart is the canonical API ───────────
   //
-  // canStart and canAcquireFor must return the same truthy/falsy result for
-  // identical inputs across a variety of total/per-model states (the latter
-  // delegates to the former).
+  // `canAcquireFor` was a dead-code backward-compat alias of `canStart` with
+  // NO importers anywhere in the codebase. It must NOT exist on SessionGate —
+  // not as an instance property, not on the prototype, not anywhere in the
+  // prototype chain. `canStart` remains the canonical capacity-check method
+  // and must still behave correctly across total + per-model states.
 
-  it('14. canStart is an alias of canAcquireFor (equivalence)', async () => {
+  it('14. canAcquireFor is removed; canStart remains the canonical capacity check', () => {
     const gate = makeGate({ total: 3, perModel: { 'p:m': 2, 'p:n': 1 } });
     const profileA = makeProfile('p', 'm');
     const profileB = makeProfile('p', 'n');
     const profileC = makeProfile('p', 'o'); // uncapped
 
-    // Both return true when there is capacity.
-    expect(gate.canStart(profileA)).toBe(true);
-    expect(gate.canAcquireFor(profileA)).toBe(true);
-    expect(gate.canStart(profileA)).toBe(gate.canAcquireFor(profileA));
+    // The dead alias must be gone entirely: no own property, no prototype
+    // method, nothing reachable via the prototype chain.
+    expect('canAcquireFor' in gate).toBe(false);
+    expect(Object.hasOwn(SessionGate.prototype, 'canAcquireFor')).toBe(false);
+    expect((gate as unknown as Record<string, unknown>).canAcquireFor).toBeUndefined();
 
-    // Both return false when total is exhausted.
-    // Acquire 3 slots (total=3).
+    // canStart remains and is a real function.
+    expect(typeof gate.canStart).toBe('function');
+    expect(Object.hasOwn(SessionGate.prototype, 'canStart')).toBe(true);
+
+    // canStart still behaves correctly across capacity states.
+    // True when there is capacity.
+    expect(gate.canStart(profileA)).toBe(true);
+    expect(gate.canStart(profileB)).toBe(true);
+    expect(gate.canStart(profileC)).toBe(true); // uncapped model
+
+    // False once the total cap is exhausted.
     gate.acquire(profileA); // 1
     gate.acquire(profileB); // 2
     gate.acquire(profileC); // 3
-
     expect(gate.canStart(profileA)).toBe(false);
-    expect(gate.canAcquireFor(profileA)).toBe(false);
-    expect(gate.canStart(profileA)).toBe(gate.canAcquireFor(profileA));
 
-    // Release one — both return true again.
+    // True again after a release.
     gate.release(profileA);
     expect(gate.canStart(profileA)).toBe(true);
-    expect(gate.canAcquireFor(profileA)).toBe(true);
 
-    // Per-model cap: p:n has cap=1, already held.
+    // Per-model cap respected: p:n has cap=1, already held → false.
     expect(gate.canStart(profileB)).toBe(false);
-    expect(gate.canAcquireFor(profileB)).toBe(false);
   });
 
   // ── 15. acquire returns true on success, false on saturation ───────────
@@ -683,6 +690,147 @@ describe('SessionGate', () => {
     const result = await runPromise;
     expect(result).toBe('ok');
     expect(fnRan).toBe(true);
+  });
+
+  // ── 19. Release without acquire (double-release) inflates counters ────
+  //
+  // The gate keeps NO bookkeeping of which profiles have been acquired, so
+  // `release(profile)` with no matching `acquire(profile)` is silently
+  // accepted and inflates both the total and per-model available counters
+  // beyond their configured caps. This is the caller-owned pairing
+  // invariant documented on `release()`; these tests pin the exact behavior
+  // so a future internal guard (if added) would be detectable.
+
+  it('19. release without acquire (double-release) inflates the available counters', () => {
+    const gate = makeGate({ total: 2, perModel: { 'p:m': 1 } });
+    const profile = makeProfile('p', 'm');
+
+    expect(gate.availableTotal()).toBe(2); // baseline
+
+    let onReleaseCount = 0;
+    gate.onRelease = () => {
+      onReleaseCount++;
+    };
+
+    // Release with NO prior acquire — accepted silently.
+    gate.release(profile);
+
+    // Total counter inflated beyond its cap (2 → 3).
+    expect(gate.availableTotal()).toBe(3);
+    // onRelease still fires for the spurious release.
+    expect(onReleaseCount).toBe(1);
+
+    // The per-model bucket springs into existence at its cap (1) and then
+    // inflates by one (1 → 2); the configured cap is unchanged.
+    let snap = gate.snapshot();
+    const bucket = snap.models.find((m) => m.key === 'p:m');
+    expect(bucket?.available).toBe(2);
+    expect(bucket?.cap).toBe(1);
+
+    // A second spurious release inflates further — there is NO idempotency guard.
+    gate.release(profile);
+    expect(gate.availableTotal()).toBe(4);
+    expect(onReleaseCount).toBe(2);
+    snap = gate.snapshot();
+    expect(snap.models.find((m) => m.key === 'p:m')?.available).toBe(3);
+  });
+
+  it('19b. inflated counters let acquire succeed above the real cap', () => {
+    const gate = makeGate({ total: 1, perModel: { 'p:m': 1 } });
+    const profile = makeProfile('p', 'm');
+
+    // Saturate the real cap.
+    expect(gate.acquire(profile)).toBe(true);
+    expect(gate.acquire(profile)).toBe(false); // genuinely full
+
+    // A spurious release inflates capacity, so a third acquire now "succeeds"
+    // even though only one session is truly in flight.
+    gate.release(profile); // double-release (no matching second acquire)
+    gate.release(profile); // triple-release
+    expect(gate.availableTotal()).toBe(2); // inflated past the cap of 1
+
+    expect(gate.acquire(profile)).toBe(true); // admitted on phantom capacity
+    expect(gate.availableTotal()).toBe(1);
+  });
+
+  // ── 20. Manual acquire() after the gate signal aborts ───────────────────
+  //
+  // The AbortSignal only drains `run()` waiters (and rejects already-aborted
+  // `run()` calls). The synchronous `acquire()` / `tryAcquire()` path never
+  // consults the signal, so a scheduler that owns its own lifecycle can keep
+  // claiming slots after abort. Pin this so the abort/run vs acquire split
+  // stays explicit.
+
+  it('20. manual acquire() succeeds after the gate signal aborts (abort only gates run())', async () => {
+    const ac = new AbortController();
+    // total and per-model caps both generous so capacity is never the limiting
+    // factor — this isolates the abort behavior from saturation.
+    const gate = makeGate({ total: 5, perModel: { 'p:m': 5 } }, ac.signal);
+    const profile = makeProfile('p', 'm');
+
+    // Before abort: normal acquire behavior.
+    expect(gate.acquire(profile)).toBe(true);
+    expect(gate.availableTotal()).toBe(4);
+    expect(gate.canStart(profile)).toBe(true);
+
+    ac.abort();
+
+    // After abort: the synchronous acquire() path does NOT consult the signal,
+    // so it keeps claiming slots (and canStart keeps reporting capacity).
+    expect(gate.acquire(profile)).toBe(true);
+    expect(gate.availableTotal()).toBe(3);
+    expect(gate.canStart(profile)).toBe(true);
+
+    // run() still rejects (already-aborted gate), but acquire() keeps working.
+    await expect(gate.run(profile, async () => 'x')).rejects.toThrow('AbortError');
+  });
+
+  // ── 21. Concurrent dispatch with mixed models ───────────────────────────
+  //
+  // total=2 with perModel a:m=1, b:m=1. Three concurrent run() calls
+  // (a:m, b:m, a:m): the first a:m and the b:m run together (2 total, each
+  // within its per-model cap of 1); the second a:m is held back by its
+  // per-model cap until the first a:m settles. Peak concurrency never
+  // exceeds the total cap of 2.
+
+  it('21. concurrent dispatch with mixed models respects both total and per-model caps', async () => {
+    const gate = makeGate({ total: 2, perModel: { 'a:m': 1, 'b:m': 1 } });
+
+    let running = 0;
+    let peak = 0;
+
+    const pa = gate.run(makeProfile('a', 'm'), async () => {
+      running++;
+      peak = Math.max(peak, running);
+      await sleep(15);
+      running--;
+      return 'a1';
+    });
+    const pb = gate.run(makeProfile('b', 'm'), async () => {
+      running++;
+      peak = Math.max(peak, running);
+      await sleep(15);
+      running--;
+      return 'b1';
+    });
+    // Second a:m — blocked by the per-model cap (a:m=1) even though the total
+    // still has room while both a1 and b1 are in flight.
+    const pc = gate.run(makeProfile('a', 'm'), async () => {
+      running++;
+      peak = Math.max(peak, running);
+      running--;
+      return 'a2';
+    });
+
+    // While a1 and b1 are held: exactly 2 running, 1 queued behind a:m.
+    await sleep(5);
+    expect(running).toBe(2);
+    expect(peak).toBe(2);
+
+    const results = await Promise.all([pa, pb, pc]);
+    expect(results).toEqual(['a1', 'b1', 'a2']);
+    // Peak never exceeded the total cap of 2.
+    expect(peak).toBe(2);
   });
 });
 

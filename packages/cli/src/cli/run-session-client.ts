@@ -1,10 +1,9 @@
 // ─── RunSessionClient — extracted daemon-client execution lifecycle ────────
 //
-// Encapsulates the T27 client-side lifecycle formerly implemented inline as
-// `executeViaDaemon` in commands.ts. `runCommand` and `resumeCommand` are now
-// thin wrappers that construct a {@link RunSessionClient} with a `setup`
-// callback (which resolves the `start_run` message — or the attach target)
-// and call `.run()`.
+// Encapsulates the daemon-client execution lifecycle. `runCommand` and
+// `resumeCommand` are thin wrappers that construct a {@link RunSessionClient}
+// with a `setup` callback (which resolves the `start_run` message — or the
+// attach target) and call `.run()`.
 
 import { ClientStore } from '@engin/shared/client-store';
 import { EngineClient } from '@engin/shared/engine-client';
@@ -46,7 +45,7 @@ export interface PostTerminalContext {
   runId: string;
   /** The EngineClient used to send messages to the daemon. */
   engineClient: EngineClient;
-  /** T33: Worktree info captured from run_started (may be undefined when
+  /** Worktree info captured from run_started (may be undefined when
    *  the run did not use a worktree). */
   capturedWorktree?: { worktreePath: string; branchName: string; originalCwd?: string };
   /**
@@ -112,7 +111,7 @@ export async function ensureDaemonRunning(port: number, host: string): Promise<v
 /**
  * Execute a workflow run as a **pure daemon client**.
  *
- * This encapsulates the T27 client-side lifecycle shared by `runCommand` and
+ * This encapsulates the client-side lifecycle shared by `runCommand` and
  * `resumeCommand`:
  *
  * 1. Create a {@link ClientStore} and {@link EngineClient} (localhost WS) —
@@ -131,7 +130,7 @@ export async function ensureDaemonRunning(port: number, host: string): Promise<v
  * 10. Disconnect + cleanup (always, via `finally`).
  *
  * **Timing note**: The EngineClient is created and `connect`ed after an
- * initial `await readServerToken()` call (T35). The `onMessage` callback is
+ * initial `await readServerToken()` call. The `onMessage` callback is
  * installed before the `setup()` await, so callers that deliver messages
  * after a microtask checkpoint reach the handler.
  */
@@ -177,18 +176,18 @@ export class RunSessionClient {
     // flush it via the onConnected callback (or directly if already connected).
     let pendingStartRun: ClientMessage | undefined;
 
-    // T33: Captured from the run_started message so postTerminalAction (in
+    // Captured from the run_started message so postTerminalAction (in
     // runCommand) can build the worktree prompt after the run completes.
     let capturedWorktree: { worktreePath: string; branchName: string; originalCwd?: string } | undefined;
 
-    // T33: Pending one-shot resolver for the next `worktree_merge_result`
+    // Pending one-shot resolver for the next `worktree_merge_result`
     // message. Set by `waitForResult` (below) and drained by the
     // `worktree_merge_result` case in the onMessage handler. At most one
     // resolver is pending at a time — the final-merge prompt awaits each
     // result serially before issuing the next action.
     let pendingWorktreeResultResolver: ((result: WorktreeMergeResult) => void) | null = null;
 
-    // ── Read server auth token (T35) ──────────────────────────────────
+    // ── Read server auth token ───────────────────────────────────────────
     // The token is read BEFORE creating the EngineClient so it can be passed
     // as `authToken` in the constructor options. EngineClient then sends
     // `{ type:'auth', token }` on each (re)connect.
@@ -264,7 +263,7 @@ export class RunSessionClient {
             break;
           case 'run_complete':
             if (msg.runId === runId) {
-              // T33: Capture worktree from the terminal broadcast. This is the
+              // Capture worktree from the terminal broadcast. This is the
               // AUTHORITATIVE source: the main worktree is set up
               // asynchronously by RunExecutor.execute() (an LLM branch-slug
               // call precedes it) AFTER RunManager.startRun() returned, so the
@@ -293,7 +292,7 @@ export class RunSessionClient {
             }
             break;
           case 'worktree_merge_result':
-            // T33: Forward the merge outcome to the pending final-merge prompt
+            // Forward the merge outcome to the pending final-merge prompt
             // (if any). Only results for our run are delivered; others are
             // ignored. The resolver is drained and cleared so a later result
             // does not re-resolve an already-settled promise.
@@ -437,7 +436,7 @@ export class RunSessionClient {
 
       // ── Post-terminal action (e.g. worktree prompt) ─────────────────────
       if (postTerminalAction && runId) {
-        // T33: `waitForResult` lets the final-merge prompt await the next
+        // `waitForResult` lets the final-merge prompt await the next
         // `worktree_merge_result` for this run (resolved by the onMessage
         // handler above). Each call arms a fresh one-shot resolver.
         const waitForResult = (): Promise<WorktreeMergeResult> =>

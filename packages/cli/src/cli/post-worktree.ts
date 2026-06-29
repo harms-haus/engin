@@ -6,8 +6,8 @@ import readline from 'node:readline';
  * Simplified post-worktree options. The server performs every git operation;
  * the client only collects the worktree/branch identity and the task prompt.
  *
- * The legacy git-operation fields (`profilesDirs`, `repoRoot`, `originalCwd`,
- * `apiKeys`) were removed when the merge/PR logic moved server-side. The
+ * Git-operation fields (`profilesDirs`, `repoRoot`, `originalCwd`,
+ * `apiKeys`) are not included here — the server performs all git operations. The
  * interactive prompt itself is driven by {@link FinalMergeOptions}, which
  * extends this shape with the `sendAction` / `waitForResult` callbacks needed
  * to talk to the server.
@@ -19,7 +19,7 @@ export interface PostWorktreeOptions {
   branchName: string;
   /** The task prompt that seeded the run. */
   taskPrompt: string;
-  /** T33: The run ID associated with this worktree. */
+  /** The run ID associated with this worktree. */
   runId: string;
 }
 
@@ -162,8 +162,8 @@ export async function promptFinalMerge(
     // If stdin closes before/while a question is pending (EOF, exhausted
     // piped input, CI, closed terminal), the question callback never fires.
     // Resolve with preservation so the process never deadlocks — mirrors
-    // the defensive `rl.on('close', ...)` guard in promptYesNo/confirmStop
-    // (commands.ts). Only acts when no other exit path has settled first.
+    // the defensive `rl.on('close', ...)` guard in promptYesNo (prompt.ts).
+    // Only acts when no other exit path has settled first.
     rl.on('close', () => {
       if (settled) return;
       settled = true;

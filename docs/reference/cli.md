@@ -40,8 +40,7 @@ engin <workflow-name> <task-prompt> [options]
    3619). If down, auto-start the daemon detached and wait for readiness (polling
    `/health` with a timeout). If it fails to come up, error clearly.
 2. **Submit.** Connect an `EngineClient` over WebSocket to `ws://127.0.0.1:<port>/ws`
-   and send `start_run { workflowName, taskPrompt, cwd, workDir?, maxConcurrent?,
-apiKeys? }`. Receive `run_started { runId, summary }` (the client is
+   and send `start_run { workflowName, taskPrompt, cwd, workDir?, apiKeys? }`. Receive `run_started { runId, summary }` (the client is
    auto-subscribed to the run). Note: `summary.worktree` is populated
    asynchronously by the run executor (after an LLM-generated branch slug +
    worktree setup), so it is NOT present on the initial `run_started` message;
@@ -78,7 +77,6 @@ resulting stream to stdout.
 | -------------------------- | ------------------------------------ | --------------------------------------------------------------------------------------------------- |
 | `--cwd <path>`             | `process.cwd()`                      | Project working directory.                                                                          |
 | `--work-dir <path>`        | `.engin/work/<timestamp>-<workflow>` | Directory for workflow state persistence (forwarded to the server).                                 |
-| `--max-concurrent <n>`     | `5`                                  | Maximum parallel agents. Must be a positive integer.                                                |
 | `--verbose`                | off                                  | Verbose stdout output (turn/tool detail). Disables the TUI when stdout is a TTY.                    |
 | `--api-key <provider=key>` | —                                    | Provider → API key override (repeatable). Forwarded to the server. **Visible in process listings.** |
 | `--port <port>`            | `3619`                               | Server port to connect to / auto-start. Integer in 1–65535.                                         |
@@ -86,6 +84,8 @@ resulting stream to stdout.
 > `--host` and `--lan` are **deprecated for `run`/`resume`** — server binding is
 > `engin server up`'s concern. If passed to `run`/`resume`, a deprecation warning is
 > emitted and they have no effect (the CLI always connects to `127.0.0.1`).
+
+> `--max-concurrent <n>` is **removed** — passing it emits a one-line removal warning and is otherwise a no-op. Total concurrency is now owned by each workflow's own `SessionGate` (sized from its config); the CLI no longer sends a concurrency hint to the server.
 
 A value beginning with `--` (e.g. `--port --verbose`) is rejected as a missing
 value. Unknown flags throw. `--help`/`-h` and `--version`/`-v` short-circuit before

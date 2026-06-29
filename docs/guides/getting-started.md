@@ -55,7 +55,6 @@ Useful flags:
 ```bash
 engin apidoc "Generate API docs" \
   --cwd ./my-project \
-  --max-concurrent 5 \
   --verbose
 ```
 
@@ -63,7 +62,6 @@ engin apidoc "Generate API docs" \
 | -------------------------- | ---------------------------------------------------------------------------- |
 | `--cwd <path>`             | Project working directory (default: current directory).                      |
 | `--work-dir <path>`        | Directory for workflow state. Default: `.engin/work/<timestamp>-<workflow>`. |
-| `--max-concurrent <n>`     | Maximum parallel agents (default: `5`). Must be a positive integer.          |
 | `--verbose`                | Verbose console output. Disables the TUI dashboard when stdout is a TTY.     |
 | `--api-key <provider=key>` | Provider → API key override (repeatable). Visible in process listings.       |
 | `--host <host>`            | _Deprecated for `run`._ Bind host — use `engin server up --host` instead.    |

@@ -1,5 +1,6 @@
 // ─── Core ───────────────────────────────────────────────────────────────────
 export * from './agents/index.js';
+export * from './core/agent-lifecycle.js';
 export * from './core/agent-loop.js';
 export * from './core/config.js';
 export * from './core/git.js';

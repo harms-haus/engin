@@ -4,8 +4,8 @@
 // reused for BOTH the hardened conflict resolver and the commit/lint-failure
 // safety net.
 //
-// Unlike the structured-output / validation-retry paths (which re-prompt within
-// an existing session and validate text/file output), this primitive:
+// Unlike the structured-output path (which re-prompts within an existing session
+// and validates structured output), this primitive:
 //   - Spawns its OWN tool-using agent session (write/edit/bash enabled) scoped
 //     to a single worktree.
 //   - Drives the agent with free-form `session.prompt()` — NOT

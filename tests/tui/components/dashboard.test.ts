@@ -560,7 +560,7 @@ describe('Dashboard', () => {
       });
       d.syncFromProjection(p1);
       // selectedStepIndex follows the active step (0).
-      expect(d.agentLog.getSelectedAgentUid()).toBe('a1');
+      expect(d.agentLog.getSelectedSessionId()).toBe('a1');
 
       // Expand the agent log (user starts reviewing).
       d.agentLog.toggleExpand();
@@ -584,7 +584,7 @@ describe('Dashboard', () => {
 
       // Expanded → follow is blocked: the selection stays on step 0.
       // The selection is still pushed to the agent log (step 0 selected).
-      expect(d.agentLog.getSelectedAgentUid()).toBe('a1');
+      expect(d.agentLog.getSelectedSessionId()).toBe('a1');
 
       // Rendered tab bar: session a1 is the selected (underlined) session;
       // no active-step indicators (the session tab bar uses runner role labels).
@@ -857,7 +857,7 @@ describe('Dashboard', () => {
       // agentLog should have 2 sessions (filtered by taskId + phaseId)
       // We can't directly inspect agentLog's internal state, but we can check
       // that the selected agent uid is one of the expected ones
-      expect(d.agentLog.getSelectedAgentUid()).toBe('agent-1');
+      expect(d.agentLog.getSelectedSessionId()).toBe('agent-1');
     });
 
     it('calls invalidate on all sub-widgets', () => {
@@ -1367,19 +1367,19 @@ describe('Dashboard', () => {
       d.syncFromProjection(p);
 
       // Initial selection follows activeStepIndex 0 → agent a1
-      expect(d.agentLog.getSelectedAgentUid()).toBe('a1');
+      expect(d.agentLog.getSelectedSessionId()).toBe('a1');
 
       // Tab → cycle to next step (index 1) → agent a2
       d.handleInput('\t');
-      expect(d.agentLog.getSelectedAgentUid()).toBe('a2');
+      expect(d.agentLog.getSelectedSessionId()).toBe('a2');
 
       // Tab again → wrap around to step index 0 → agent a1
       d.handleInput('\t');
-      expect(d.agentLog.getSelectedAgentUid()).toBe('a1');
+      expect(d.agentLog.getSelectedSessionId()).toBe('a1');
 
       // Shift+Tab → backward to step index 1 → agent a2
       d.handleInput('\x1b[Z');
-      expect(d.agentLog.getSelectedAgentUid()).toBe('a2');
+      expect(d.agentLog.getSelectedSessionId()).toBe('a2');
     });
 
     it('tab sets userPinnedStep to true', () => {

@@ -26,6 +26,9 @@ import { forwardAgentStatus } from './utils.js';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
+/** Options for creating a new agent session via {@link spawnAgent}. Bundles
+ *  the identifiers, profile override knobs, session persistence paths, and
+ *  lifecycle hooks needed to set up and track a single agent invocation. */
 export interface AgentLifecycleOptions {
   profileId: string;
   agentId: string;
@@ -54,6 +57,10 @@ export interface AgentLifecycleOptions {
   activeSessions?: Set<{ abort(): Promise<void> }>;
 }
 
+/** Handle returned by {@link spawnAgent}, exposing the created session and
+ *  its lifecycle controls. The caller drives the prompt/renderer invocation;
+ *  disposal and completion callbacks are separate so a session can be
+ *  completed (firing the callback + untracking) without being torn down. */
 export interface AgentLifecycleHandle {
   /** The created {@link AgentRuntime}. */
   session: AgentRuntime;

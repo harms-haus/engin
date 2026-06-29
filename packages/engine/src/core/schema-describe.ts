@@ -1,6 +1,16 @@
 // ─── Schema Describe ────────────────────────────────────────────────────────
 // Zod _def types are not publicly exported, so any is unavoidable here
 
+/** Recursively describe a Zod schema's `_def` object as a human-readable
+ *  type-annotation string. Used internally by structured-output.ts and
+ *  exported for workflow consumers who need a lightweight schema summary.
+ *
+ * @param def — A Zod schema's internal `_def` object (e.g. `ZodString._def`).
+ *             Accepts `any` because Zod does not export public `_def` types.
+ * @returns A human-readable type string such as
+ *          `"{ name: string, age: number }"` or `"string"` or
+ *          `"\"red\" | \"green\" | \"blue\""`.
+ *          Returns `"unknown"` for unrecognised / nullish inputs. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function describeSchema(def: any): string {
   if (!def) return 'unknown';

@@ -338,7 +338,6 @@ export class TaskGraph {
     });
   }
 
-  // DUPLICATE of TaskTracker.addReverseDep — keep in sync until task D1 removes TaskTracker.
   private addReverseDep(parentId: string, childId: string): void {
     const set = this.reverseDeps.get(parentId);
     if (set) {
@@ -350,7 +349,6 @@ export class TaskGraph {
     this.transitiveDependents = null;
   }
 
-  // DUPLICATE of TaskTracker.removeReverseDep — keep in sync until task D1 removes TaskTracker.
   private removeReverseDep(parentId: string, childId: string): void {
     const set = this.reverseDeps.get(parentId);
     if (set) {
@@ -360,7 +358,6 @@ export class TaskGraph {
     this.transitiveDependents = null;
   }
 
-  // DUPLICATE of TaskTracker.getTransitiveDependents — keep in sync until task D1 removes TaskTracker.
   /**
    * Build (once, then memoize) a map of each task → the set of all tasks that
    * transitively depend on it. Derived purely from the dependency topology, so
@@ -391,7 +388,6 @@ export class TaskGraph {
     return result;
   }
 
-  // DUPLICATE of TaskTracker.detectCycle — keep in sync until task D1 removes TaskTracker.
   /**
    * Single-source cycle detection using Kahn's-algorithm-style DFS coloring.
    * Throws when a back-edge (cycle) is detected starting from `startId`.

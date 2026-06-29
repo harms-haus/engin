@@ -1,14 +1,9 @@
 // ─── SubscriptionManager ────────────────────────────────────────────────────
 //
-// Per-run WebSocket subscriber fan-out, extracted from RunManager
-// (decomposition step). It is the logic that was previously inlined in the
-// per-run `broadcast` closure and the RunManager.subscribe / unsubscribe /
-// unsubscribeAll methods.
-//
-// The manager operates on a RunHandle's `subscribers` set passed in by the
-// facade (the registry owns the handles; this manager owns the fan-out
-// semantics). The RunManager facade resolves a runId to its handle via the
-// registry, then delegates to these methods.
+// Per-run WebSocket subscriber fan-out. The manager operates on a RunHandle's
+// `subscribers` set passed in by the facade (the registry owns the handles;
+// this manager owns the fan-out semantics). The RunManager facade resolves a
+// runId to its handle via the registry, then delegates to these methods.
 
 import type { ServerMessage } from '@engin/shared/protocol-types';
 import type { ServerWebSocket } from 'bun';

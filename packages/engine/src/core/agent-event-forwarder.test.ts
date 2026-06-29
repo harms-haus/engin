@@ -69,7 +69,7 @@ describe('createAgentEventForwarder — auto_retry_start', () => {
     expect(captured[0].delayMs).toBe(1000);
   });
 
-  it('falls back to 1/1/0 when numeric fields are falsy', () => {
+  it('falls back to 1/1/0 when numeric fields are falsy (attempt=0 boundary)', () => {
     const captured: Array<{ attempt: number; maxAttempts: number; delayMs: number }> = [];
     const onStatus: AgentStatusCallbacks = {
       onAutoRetryStart: (info) => captured.push(info),
@@ -84,9 +84,71 @@ describe('createAgentEventForwarder — auto_retry_start', () => {
       errorMessage: '',
     } as any);
 
+    // attempt=0 and maxAttempts=0 are falsy → coerce to the 1 fallback;
+    // delayMs=0 is falsy → falls through to the explicit `|| 0` default (0).
     expect(captured[0].attempt).toBe(1);
     expect(captured[0].maxAttempts).toBe(1);
     expect(captured[0].delayMs).toBe(0);
+  });
+
+  it('preserves boundary value when attempt === maxAttempts (final retry)', () => {
+    const captured: Array<{ attempt: number; maxAttempts: number; delayMs: number }> = [];
+    const onStatus: AgentStatusCallbacks = {
+      onAutoRetryStart: (info) => captured.push(info),
+    };
+
+    const forwarder = createAgentEventForwarder(onStatus, 'a');
+    // attempt === maxAttempts: the last permitted attempt. These are real
+    // numbers (not falsy) so the `||` fallbacks must NOT kick in.
+    forwarder({
+      type: 'auto_retry_start',
+      attempt: 3,
+      maxAttempts: 3,
+      delayMs: 500,
+      errorMessage: 'final attempt',
+    } as any);
+
+    expect(captured[0].attempt).toBe(3);
+    expect(captured[0].maxAttempts).toBe(3);
+    expect(captured[0].delayMs).toBe(500);
+  });
+
+  it('does not propagate taskId or phaseId (forwarder sets neither)', () => {
+    const captured: Array<{ taskId?: string; phaseId?: string }> = [];
+    const onStatus: AgentStatusCallbacks = {
+      onAutoRetryStart: (info) => captured.push(info),
+    };
+
+    const forwarder = createAgentEventForwarder(onStatus, 'a');
+    forwarder({
+      type: 'auto_retry_start',
+      attempt: 1,
+      maxAttempts: 3,
+      delayMs: 1000,
+      errorMessage: 'err',
+    } as any);
+
+    // The callback type declares optional taskId/phaseId, but the forwarder
+    // only ever sets agentId/attempt/maxAttempts/delayMs/errorMessage — the
+    // ownership/task context fields stay undefined for the forwarder to emit.
+    expect(captured[0].taskId).toBeUndefined();
+    expect(captured[0].phaseId).toBeUndefined();
+  });
+
+  it('throws when errorMessage is undefined (not defensive, unlike finalError)', () => {
+    // The `auto_retry_start` event type marks `errorMessage: string` as
+    // required, but a provider could omit it. Unlike `finalError` (which
+    // guards `!= null` before calling redactSecrets), errorMessage is passed
+    // straight to redactSecrets — which throws a TypeError on undefined.
+    // Pin this current behavior (it is a real asymmetry/bug worth fixing).
+    const onStatus: AgentStatusCallbacks = {
+      onAutoRetryStart: () => {},
+    };
+
+    const forwarder = createAgentEventForwarder(onStatus, 'a');
+    expect(() => {
+      forwarder({ type: 'auto_retry_start', attempt: 1, maxAttempts: 3, delayMs: 100 } as any);
+    }).toThrow();
   });
 
   it('does not fire when onAutoRetryStart is not provided', () => {
@@ -160,6 +222,51 @@ describe('createAgentEventForwarder — auto_retry_end', () => {
     expect(captured[0].success).toBe(true);
     expect(captured[0].attempt).toBe(1);
     expect(captured[0].finalError).toBeUndefined();
+  });
+
+  it('normalizes success to a strict boolean (only literal true passes)', () => {
+    const captured: Array<{ success: boolean }> = [];
+    const onStatus: AgentStatusCallbacks = {
+      onAutoRetryCompleted: (info) => captured.push(info),
+    };
+
+    const forwarder = createAgentEventForwarder(onStatus, 'a');
+    // The forwarder uses `e.success === true`, so only the literal boolean
+    // true is treated as success — every other value (omitted, 1, 'yes') is
+    // coerced to false.
+    forwarder({ type: 'auto_retry_end', success: undefined as any, attempt: 1 } as any);
+    forwarder({ type: 'auto_retry_end', success: 1 as any, attempt: 1 } as any);
+    forwarder({ type: 'auto_retry_end', success: 'yes' as any, attempt: 1 } as any);
+    forwarder({ type: 'auto_retry_end', success: true, attempt: 1 } as any);
+
+    expect(captured.map((c) => c.success)).toEqual([false, false, false, true]);
+  });
+
+  it('treats null finalError as undefined (defensive `!= null` guard)', () => {
+    const captured: Array<{ finalError?: string }> = [];
+    const onStatus: AgentStatusCallbacks = {
+      onAutoRetryCompleted: (info) => captured.push(info),
+    };
+
+    const forwarder = createAgentEventForwarder(onStatus, 'a');
+    forwarder({ type: 'auto_retry_end', success: false, attempt: 1, finalError: null } as any);
+
+    // finalError guards `!= null` before redacting, so null → undefined
+    // (contrast with auto_retry_start's errorMessage, which has no such guard).
+    expect(captured[0].finalError).toBeUndefined();
+  });
+
+  it('does not propagate taskId or phaseId (forwarder sets neither)', () => {
+    const captured: Array<{ taskId?: string; phaseId?: string }> = [];
+    const onStatus: AgentStatusCallbacks = {
+      onAutoRetryCompleted: (info) => captured.push(info),
+    };
+
+    const forwarder = createAgentEventForwarder(onStatus, 'a');
+    forwarder({ type: 'auto_retry_end', success: true, attempt: 1 } as any);
+
+    expect(captured[0].taskId).toBeUndefined();
+    expect(captured[0].phaseId).toBeUndefined();
   });
 
   it('defensively coerces attempt to number', () => {
@@ -236,21 +343,17 @@ describe('createAgentEventForwarder — existing events (regression)', () => {
     expect(captured.map((c) => c.turn)).toEqual([1, 2, 3]);
   });
 
-  it('still forwards tool_execution_start to onToolCallStart', () => {
-    const captured: Array<{ toolName: string; toolCallId: string }> = [];
-    const onStatus: AgentStatusCallbacks = {
-      onToolCallStart: (info) => captured.push(info),
-    };
-
-    const forwarder = createAgentEventForwarder(onStatus, 'a1');
-    forwarder({ type: 'tool_execution_start', toolName: 'bash', toolCallId: 'tc1', args: { command: 'ls' } } as any);
-
-    expect(captured).toHaveLength(1);
-    expect(captured[0].toolName).toBe('bash');
-  });
-
-  it('forwards tool_execution_start args to onToolCallStart arguments', () => {
-    const captured: Array<{ arguments: Record<string, unknown> }> = [];
+  it('forwards tool_execution_start toolName, toolCallId, and args together', () => {
+    // Consolidates two prior tests that each exercised the same
+    // tool_execution_start → onToolCallStart path but asserted a different
+    // field (toolName vs arguments). Verifying all three fields in one call
+    // covers the same path without duplicating setup.
+    const captured: Array<{
+      agentId: string;
+      toolName: string;
+      toolCallId: string;
+      arguments: Record<string, unknown>;
+    }> = [];
     const onStatus: AgentStatusCallbacks = {
       onToolCallStart: (info) => captured.push(info),
     };
@@ -263,6 +366,10 @@ describe('createAgentEventForwarder — existing events (regression)', () => {
       args: { path: '/tmp/x', content: 'hello' },
     } as any);
 
+    expect(captured).toHaveLength(1);
+    expect(captured[0].agentId).toBe('a1');
+    expect(captured[0].toolName).toBe('write');
+    expect(captured[0].toolCallId).toBe('tc1');
     expect(captured[0].arguments).toEqual({ path: '/tmp/x', content: 'hello' });
   });
 
@@ -278,29 +385,24 @@ describe('createAgentEventForwarder — existing events (regression)', () => {
     expect(captured[0].arguments).toEqual({});
   });
 
-  it('still forwards tool_execution_end to onToolCallEnd', () => {
+  it('forwards tool_execution_end isError flag and defaults to false when undefined', () => {
+    // Consolidates two prior tests (isError: true explicitly, and the default
+    // when undefined) that exercised the same tool_execution_end path.
     const captured: Array<{ isError: boolean }> = [];
     const onStatus: AgentStatusCallbacks = {
       onToolCallEnd: (info) => captured.push(info),
     };
 
     const forwarder = createAgentEventForwarder(onStatus, 'a1');
+
+    // Explicit isError: true passes through.
     forwarder({ type: 'tool_execution_end', toolName: 'bash', toolCallId: 'tc1', isError: true } as any);
+    // Omitted isError defaults to false.
+    forwarder({ type: 'tool_execution_end', toolName: 'bash', toolCallId: 'tc2' } as any);
 
-    expect(captured).toHaveLength(1);
+    expect(captured).toHaveLength(2);
     expect(captured[0].isError).toBe(true);
-  });
-
-  it('defaults tool_execution_end isError to false when undefined', () => {
-    const captured: Array<{ isError: boolean }> = [];
-    const onStatus: AgentStatusCallbacks = {
-      onToolCallEnd: (info) => captured.push(info),
-    };
-
-    const forwarder = createAgentEventForwarder(onStatus, 'a1');
-    forwarder({ type: 'tool_execution_end', toolName: 'bash', toolCallId: 'tc1' } as any);
-
-    expect(captured[0].isError).toBe(false);
+    expect(captured[1].isError).toBe(false);
   });
 
   it('ignores unrecognized event types without crashing', () => {
@@ -338,8 +440,15 @@ describe('createAgentEventForwarder — turn_end', () => {
     expect(captured[0].tokens).toEqual({ input: 100, output: 50 });
   });
 
-  it('does not include tokens for non-assistant messages', () => {
-    const captured: Array<{ tokens?: { input: number; output: number } }> = [];
+  it('skips both tokens and content blocks for non-assistant messages', () => {
+    // Consolidates two prior tests that each sent the same non-assistant
+    // turn_end event and asserted a single different field (tokens vs
+    // contentBlocks). Both fields are gated behind the same `isAssistant`
+    // check, so one event covers both.
+    const captured: Array<{
+      tokens?: { input: number; output: number };
+      contentBlocks?: TurnContentBlock[];
+    }> = [];
     const onStatus: AgentStatusCallbacks = {
       onTurnStart: () => {},
       onTurnEnd: (info) => captured.push(info),
@@ -349,10 +458,11 @@ describe('createAgentEventForwarder — turn_end', () => {
     forwarder({ type: 'turn_start' } as any);
     forwarder({
       type: 'turn_end',
-      message: { role: 'user', usage: { input: 100, output: 50 } },
+      message: { role: 'user', usage: { input: 100, output: 50 }, content: [{ type: 'text', text: 'hi' }] },
     } as any);
 
     expect(captured[0].tokens).toBeUndefined();
+    expect(captured[0].contentBlocks).toBeUndefined();
   });
 
   it('maps text content blocks', () => {
@@ -393,6 +503,29 @@ describe('createAgentEventForwarder — turn_end', () => {
     } as any);
 
     expect(captured[0].contentBlocks).toEqual([{ type: 'thinking', thinking: 'reasoning here', redacted: true }]);
+  });
+
+  it('maps thinking block without a redacted field (redacted stays undefined)', () => {
+    const captured: Array<{ contentBlocks?: TurnContentBlock[] }> = [];
+    const onStatus: AgentStatusCallbacks = {
+      onTurnStart: () => {},
+      onTurnEnd: (info) => captured.push(info),
+    };
+
+    const forwarder = createAgentEventForwarder(onStatus, 'a1');
+    forwarder({ type: 'turn_start' } as any);
+    forwarder({
+      type: 'turn_end',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'thinking', thinking: 'no redaction flag' }],
+      },
+    } as any);
+
+    // The forwarder always assigns `redacted: block.redacted`, so when the
+    // source omits it the mapped block carries `redacted: undefined`.
+    expect(captured[0].contentBlocks).toEqual([{ type: 'thinking', thinking: 'no redaction flag' }]);
+    expect(captured[0].contentBlocks![0].redacted).toBeUndefined();
   });
 
   it('maps toolCall content blocks', () => {
@@ -444,6 +577,44 @@ describe('createAgentEventForwarder — turn_end', () => {
     ]);
   });
 
+  it('maps an empty content array to an empty contentBlocks array', () => {
+    const captured: Array<{ contentBlocks?: TurnContentBlock[] }> = [];
+    const onStatus: AgentStatusCallbacks = {
+      onTurnStart: () => {},
+      onTurnEnd: (info) => captured.push(info),
+    };
+
+    const forwarder = createAgentEventForwarder(onStatus, 'a1');
+    forwarder({ type: 'turn_start' } as any);
+    forwarder({
+      type: 'turn_end',
+      message: { role: 'assistant', content: [] },
+    } as any);
+
+    // An assistant message with content: [] is truthy, so the mapper runs and
+    // produces [] (distinct from "no content" which yields undefined).
+    expect(captured[0].contentBlocks).toEqual([]);
+  });
+
+  it('treats null content as no content (contentBlocks undefined)', () => {
+    const captured: Array<{ contentBlocks?: TurnContentBlock[] }> = [];
+    const onStatus: AgentStatusCallbacks = {
+      onTurnStart: () => {},
+      onTurnEnd: (info) => captured.push(info),
+    };
+
+    const forwarder = createAgentEventForwarder(onStatus, 'a1');
+    forwarder({ type: 'turn_start' } as any);
+    forwarder({
+      type: 'turn_end',
+      message: { role: 'assistant', content: null },
+    } as any);
+
+    // The `isAssistant && e.message.content` guard is falsy for null, so the
+    // mapper is skipped and contentBlocks stays undefined.
+    expect(captured[0].contentBlocks).toBeUndefined();
+  });
+
   it('preserves block ordering when multiple recognized types present', () => {
     const captured: Array<{ contentBlocks?: TurnContentBlock[] }> = [];
     const onStatus: AgentStatusCallbacks = {
@@ -484,23 +655,6 @@ describe('createAgentEventForwarder — turn_end', () => {
     forwarder({
       type: 'turn_end',
       message: { role: 'assistant' },
-    } as any);
-
-    expect(captured[0].contentBlocks).toBeUndefined();
-  });
-
-  it('does not map content blocks for non-assistant messages', () => {
-    const captured: Array<{ contentBlocks?: TurnContentBlock[] }> = [];
-    const onStatus: AgentStatusCallbacks = {
-      onTurnStart: () => {},
-      onTurnEnd: (info) => captured.push(info),
-    };
-
-    const forwarder = createAgentEventForwarder(onStatus, 'a1');
-    forwarder({ type: 'turn_start' } as any);
-    forwarder({
-      type: 'turn_end',
-      message: { role: 'user', content: [{ type: 'text', text: 'hi' }] },
     } as any);
 
     expect(captured[0].contentBlocks).toBeUndefined();

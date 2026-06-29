@@ -50,7 +50,7 @@ function makeAgent(overrides: Partial<SessionEntity> = {}): SessionEntity {
 function renderCollapsed(agent: SessionEntity, width = 120): string[] {
   const widget = new AgentLogWidget(20);
   widget.setAgents([agent]);
-  widget.setSelectedAgentUid(agent.uid);
+  widget.setSelectedSessionId(agent.uid);
   return widget.render(width);
 }
 
@@ -179,7 +179,7 @@ describe('AgentLogWidget header — layout & controls', () => {
     const agent = makeAgent({ contextWindow: 200000 });
     const widget = new AgentLogWidget(20);
     widget.setAgents([agent]);
-    widget.setSelectedAgentUid(agent.uid);
+    widget.setSelectedSessionId(agent.uid);
     widget.toggleExpand();
 
     const header = stripAnsi(widget.render(120)[0]!);

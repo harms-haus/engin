@@ -23,23 +23,14 @@
 //   - DeadlockError guard: a synchronous re-entrant run() on the same gate
 //     while holding the last total slot is detected and rejected.
 
+/** Concurrency limits for the {@link SessionGate}. Controls how many LLM
+ *  sessions may be in-flight simultaneously — both a hard total cap and a
+ *  per-model cap keyed by `"${provider}:${model}"` (or
+ *  `"${provider}:${model}:${agent}"` when an agent-level cap is configured). */
 export interface SessionGateOptions {
   /** Hard cap on concurrent in-flight callbacks across ALL models. */
   total: number;
-  /** Concurrency caps keyed by specificity (most-specific that matches wins
-   *  for the model level; provider level is layered additively — see below):
-   *
-   *    `${provider}`                — provider-level cap: shared pool across
-   *                                   ALL of the provider's models. Applied
-   *                                   IN ADDITION to any model/agent cap.
-   *    `${provider}:${model}`       — per-model cap.
-   *    `${provider}:${model}:${agent}` — per-agent override (most specific).
-   *
-   *  Provider caps (no colon) and model caps are independent constraints:
-   *  an acquire must satisfy BOTH the provider pool (if set) and the
-   *  model/agent bucket (if set), in addition to the total. Use a provider
-   *  cap to model a shared rate-limit pool across a provider's models
-   *  (e.g. `zai: 7` when all zai models draw from one account limit). */
+  /** Per-model cap keyed by `${provider}:${model}` (or `${provider}:${model}:${agent}` when agent is set). */
   perModel: Record<string, number>;
 }
 
@@ -55,7 +46,6 @@ export class DeadlockError extends Error {
   }
 }
 
-/** Internal AbortError-like DOMException substitute (no global required). */
 function abortError(): Error {
   const err = new Error('AbortError');
   err.name = 'AbortError';
@@ -65,7 +55,7 @@ function abortError(): Error {
 interface Waiter {
   resolve: () => void;
   reject: (reason?: unknown) => void;
-  /** Mutated by abort handler when this waiter is drained. */
+  /** Set when the abort handler fires for this waiter. */
   aborted: boolean;
 }
 
@@ -79,12 +69,6 @@ export class SessionGate {
   private readonly totalCap: number;
   private readonly perModel: Record<string, number>;
   private readonly models = new Map<string, ModelBucket>();
-  /** Provider-level buckets keyed by `${provider}`. Only present for providers
-   *  that have a `${provider}` entry in `perModel`. Unlike model buckets these
-   *  never own a FIFO queue — waiters always live in their (most-specific)
-   *  model bucket's queue; the provider bucket is purely an additional
-   *  capacity counter checked during acquire/dispatch. */
-  private readonly providers = new Map<string, ModelBucket>();
 
   private readonly signal?: AbortSignal;
 
@@ -94,8 +78,8 @@ export class SessionGate {
    *  for an in-flight task to fully settle. */
   onRelease?: () => void;
 
-  /** True during the synchronous portion of a callback invocation — used to
-   *  detect guaranteed-deadlock re-entrant run() calls. */
+  /** True during the synchronous portion of the callback — used to detect
+   *  guaranteed-deadlock re-entrant run() calls. */
   private inSyncCallback = false;
 
   constructor(options: SessionGateOptions, signal?: AbortSignal) {
@@ -103,14 +87,6 @@ export class SessionGate {
     this.totalCap = options.total;
     this.perModel = options.perModel;
     this.signal = signal;
-    // Eagerly materialize provider-level buckets (keys with no ':'). These
-    // represent a shared pool across all of a provider's models and are
-    // decremented additively alongside any model/agent cap.
-    for (const [key, cap] of Object.entries(this.perModel)) {
-      if (!key.includes(':')) {
-        this.providers.set(key, { available: cap, queue: [] });
-      }
-    }
   }
 
   /** Current number of available total (cross-model) concurrency slots.
@@ -129,7 +105,6 @@ export class SessionGate {
     totalAvailable: number;
     totalCap: number;
     models: { key: string; available: number; cap: number | null }[];
-    providers: { key: string; available: number; cap: number }[];
   } {
     const models: { key: string; available: number; cap: number | null }[] = [];
     for (const [key, bucket] of this.models) {
@@ -140,11 +115,7 @@ export class SessionGate {
         cap: configured === undefined ? null : configured,
       });
     }
-    const providers: { key: string; available: number; cap: number }[] = [];
-    for (const [key, bucket] of this.providers) {
-      providers.push({ key, available: bucket.available, cap: this.perModel[key] });
-    }
-    return { totalAvailable: this.totalAvailable, totalCap: this.totalCap, models, providers };
+    return { totalAvailable: this.totalAvailable, totalCap: this.totalCap, models };
   }
 
   /** Non-mutating peek: could a session for this profile's model be admitted
@@ -156,25 +127,14 @@ export class SessionGate {
    *  task stays 'ready' until its first session actually has capacity. */
   canStart(profile: { provider: string; model: string; agent?: string }): boolean {
     if (this.totalAvailable <= 0) return false;
-    // Provider-level pool (shared across the provider's models), if configured.
-    const pb = this.providers.get(profile.provider);
-    if (pb !== undefined && pb.available <= 0) return false;
     const key = this.modelKey(profile);
     const cap = this.perModel[key];
-    if (cap === undefined) return true; // uncapped model — only total (+ provider) gates it
+    if (cap === undefined) return true; // uncapped model — only total gates it
     const b = this.models.get(key);
     return b === undefined ? cap > 0 : b.available > 0;
   }
-
-  /** Backward-compatible alias of {@link canStart}. Delegates to canStart.
-   *  Used by legacy `run()`-based callers (e.g. RunnerPool). */
-  canAcquireFor(profile: { provider: string; model: string; agent?: string }): boolean {
-    return this.canStart(profile);
-  }
-
-  /** Compute the per-model key for a profile. Prefers the 3-part
-   *  `${provider}:${model}:${agent}` key when an agent is set AND a cap
-   *  exists for it; otherwise falls back to the 2-part key. */
+  /** Build the per-model key for a profile. Uses the 3-part key when an agent
+   *  is set AND a cap exists for that key; otherwise falls back to 2-part. */
   private modelKey(profile: { provider: string; model: string; agent?: string }): string {
     const two = `${profile.provider}:${profile.model}`;
     if (profile.agent) {
@@ -184,8 +144,7 @@ export class SessionGate {
     return two;
   }
 
-  /** Get-or-create the model bucket. Buckets with no explicit cap are
-   *  treated as effectively unlimited (Infinity). */
+  /** Get-or-create the model bucket. Uncapped models are effectively infinite. */
   private bucket(modelKey: string): ModelBucket {
     let b = this.models.get(modelKey);
     if (!b) {
@@ -196,43 +155,30 @@ export class SessionGate {
     return b;
   }
 
-  /** Synchronously attempt to claim a total slot, a provider-pool slot (if
-   *  the provider has a cap), and a per-model slot. Returns true iff ALL
-   *  applicable decrements succeeded (atomic in single-threaded JS). */
-  private tryAcquire(modelKey: string, providerKey: string): boolean {
+  /** Try to claim both a total and a per-model slot (atomic in single-threaded JS). */
+  private tryAcquire(modelKey: string): boolean {
     if (this.totalAvailable <= 0) return false;
-    const pb = this.providers.get(providerKey);
-    if (pb !== undefined && pb.available <= 0) return false;
     const b = this.bucket(modelKey);
     if (b.available <= 0) return false;
     this.totalAvailable -= 1;
-    if (pb !== undefined) pb.available -= 1;
     b.available -= 1;
     return true;
   }
 
-  /** Synchronously admit as many FIFO waiters as capacity allows. Scans each
-   *  model's queue head; because total capacity is shared, admission of one
-   *  model's head may block another's until a total (or provider-pool) slot
-   *  frees. A waiter is admitted only when the total, its provider pool (if
-   *  any), AND its model bucket all have capacity. */
+  /** Admit FIFO waiters while capacity allows. Total capacity is shared across
+   *  models, so admitting one model's head may block another's. */
   private dispatch(): void {
     let progressed = true;
     while (progressed) {
       progressed = false;
-      for (const [key, b] of this.models) {
+      for (const b of this.models.values()) {
         if (b.queue.length === 0) continue;
         if (b.available <= 0) continue;
         if (this.totalAvailable <= 0) break;
-        // Provider-level pool (shared across the provider's models).
-        const provider = key.split(':')[0] ?? key;
-        const pb = this.providers.get(provider);
-        if (pb !== undefined && pb.available <= 0) continue;
         // Admit queue head.
         const waiter = b.queue.shift();
         if (!waiter) continue;
         this.totalAvailable -= 1;
-        if (pb !== undefined) pb.available -= 1;
         b.available -= 1;
         progressed = true;
         // Resolve on next microtask so the caller's await unblocks.
@@ -245,19 +191,17 @@ export class SessionGate {
     profile: { provider: string; model: string; agent?: string },
     fn: (handle: { signal: AbortSignal }) => Promise<R>,
   ): Promise<R> {
-    // Already-aborted gate rejects immediately.
     if (this.signal?.aborted) {
       throw abortError();
     }
 
     const modelKey = this.modelKey(profile);
-    const providerKey = profile.provider;
     const bucket = this.bucket(modelKey);
 
-    // Fast path: all slots free synchronously.
-    if (!this.tryAcquire(modelKey, providerKey)) {
-      // DeadlockError guard: a synchronous re-entrant run() while holding
-      // the last total slot would never acquire — detect and reject.
+    // Fast path: both slots free synchronously.
+    if (!this.tryAcquire(modelKey)) {
+      // DeadlockError guard: re-entrant run() while holding the last total
+      // slot would never acquire — detect and reject.
       if (this.inSyncCallback && this.totalAvailable <= 0) {
         throw new DeadlockError();
       }
@@ -276,10 +220,8 @@ export class SessionGate {
       };
       bucket.queue.push(waiter);
 
-      // Wire up abort handling (if a signal is present).
       const onAbort = () => {
         if (waiter.aborted) return;
-        // Remove from FIFO if still queued.
         const idx = bucket.queue.indexOf(waiter);
         if (idx !== -1) {
           bucket.queue.splice(idx, 1);
@@ -292,40 +234,36 @@ export class SessionGate {
       await waitPromise;
       this.signal?.removeEventListener('abort', onAbort);
 
-      // Abort-vs-dispatch race: the waiter may have been dispatched (resolved)
-      // AND then aborted in a later tick. If aborted after waking, release the
-      // slot we just consumed and reject.
+      // Abort-vs-dispatch race: the waiter may have been dispatched AND then
+      // aborted in a later tick. If aborted after waking, release the slot
+      // we just consumed and reject.
       if (waiter.aborted) {
-        this.releaseSlot(modelKey, providerKey);
+        this.releaseSlot(modelKey);
         throw abortError();
       }
     }
 
-    // ── Slot held: run the callback under RAII. ──────────────────────────
+    // ── Slot held: run the callback ──────────────────────────────────────
 
-    // Build the cooperative handle signal. If the gate signal aborts during
-    // the callback we propagate it; we do NOT force-kill in-flight callbacks.
     const handleSignal = this.signal ?? new AbortController().signal;
 
     let called = false;
     const release = () => {
       if (called) return;
       called = true;
-      this.releaseSlot(modelKey, providerKey);
+      this.releaseSlot(modelKey);
     };
 
     try {
-      // Abort-vs-dispatch race (already-aborted after acquiring): release
-      // immediately and reject without invoking fn.
+      // Abort-vs-dispatch race: gate aborted after we acquired but before fn.
       if (this.signal?.aborted) {
         throw abortError();
       }
 
-      // Invoke fn. The synchronous portion of an async fn executes before
-      // the first internal await — set inSyncCallback so any re-entrant
-      // run() within that window can be detected as a guaranteed deadlock.
-      // A try/finally wraps ONLY the synchronous fn() call so that a
-      // synchronous throw also resets the flag (fix-1: defensive reset).
+      // The synchronous portion of an async fn runs before the first await.
+      // Flag inSyncCallback so re-entrant run() within that window can be
+      // detected as a deadlock. The try/finally ensures the flag is reset
+      // even on synchronous throw.
       this.inSyncCallback = true;
       let resultPromise: Promise<R>;
       try {
@@ -339,64 +277,39 @@ export class SessionGate {
     }
   }
 
-  /** Synchronously attempt to claim a concurrency slot for the given
-   *  profile, for use by the scheduler when it owns the session lifecycle
-   *  (acquire before execute, release on settle). This is the manual-pairing
-   *  alternative to the RAII `run()` — callers that need to bracket a session
-   *  whose start and end are in different stack frames (e.g. the RunnerPool
-   *  draining loop) use acquire()/release(); callers that can express the
-   *  session as a single async function prefer `run()`.
-   *
-   *  This is a pure try-acquire: it decrements the total counter FIRST and the
-   *  per-model counter SECOND (preserving the gate's lock-ordering invariant —
-   *  see the file header), and returns `false` (never throws) when EITHER the
-   *  total OR the per-model capacity is exhausted. It does NOT enqueue a FIFO
-   *  waiter; the caller decides whether to retry, queue externally, or skip.
+  /** Try to claim a concurrency slot for the given profile. This is the
+   *  manual-pairing alternative to RAII `run()` for scheduler-owned sessions
+   *  (e.g. RunnerPool draining loop). Pure try-acquire: decrements total FIRST
+   *  then per-model (per lock-ordering invariant in file header). Returns
+   *  `false` (never throws) when either total or per-model capacity is
+   *  exhausted; does NOT enqueue a FIFO waiter.
    *
    *  Pairing contract: each `true` return MUST be matched by exactly one later
-   *  `release(profile)` for the SAME profile (same model key). A `false`
-   *  return MUST NOT be released. Unbalanced calls inflate the available
-   *  counters and break the cap.
+   *  `release(profile)` for the SAME model key. A `false` return MUST NOT be
+   *  released. See `release()` for lock-ordering details.
    *
-   *  @returns `true` if both total and per-model slots were available and
-   *           decremented; `false` if either is saturated. */
+   *  @returns `true` if both slots were available and decremented. */
   acquire(profile: { provider: string; model: string; agent?: string }): boolean {
-    return this.tryAcquire(this.modelKey(profile), profile.provider);
+    return this.tryAcquire(this.modelKey(profile));
   }
 
-  /** Release a previously-acquired slot for the given profile, restoring one
-   *  unit of per-model capacity AND one unit of total capacity, then admit any
-   *  FIFO `run()` waiters that may now be admissible and fire `onRelease()` so
-   *  the pool can claim newly-freed capacity. This is the manual-pairing
-   *  counterpart to `acquire()` for scheduler-owned session lifecycles; the
-   *  RAII `run()` path releases internally via the same mechanism.
+  /** Release a previously-acquired slot and admit any FIFO waiters that may
+   *  now be admissible, then fire `onRelease()` so the pool can claim freed
+   *  capacity. Lock ordering: per-model FIRST then total — reverse of
+   *  `acquire()` — to prevent circular-wait (see file header).
    *
-   *  Lock ordering: per-model counter is incremented FIRST and the total
-   *  counter SECOND — the exact reverse of `acquire()` / `tryAcquire()` — to
-   *  preserve the gate's lock-ordering invariant (see file header) and prevent
-   *  circular-wait.
-   *
-   *  Pairing contract: call this exactly once for each prior successful
-   *  `acquire()` with the SAME profile. Releasing without a matching acquire,
-   *  or releasing more than once per acquire, will inflate the available
-   *  counters beyond their configured caps — there is no internal bookkeeping
-   *  to detect unbalanced releases, so callers own this invariant. */
+   *  Pairing contract: see `acquire()`. The RAII `run()` path releases
+   *  internally via the same mechanism. */
   release(profile: { provider: string; model: string; agent?: string }): void {
-    this.releaseSlot(this.modelKey(profile), profile.provider);
+    this.releaseSlot(this.modelKey(profile));
   }
 
-  /** Release a per-model + provider-pool (if any) + total slot (per-model
-   *  FIRST, then provider, then total — reverse of tryAcquire's lock
-   *  ordering), then dispatch any waiters that may now be admissible, then
-   *  fire `onRelease()`. Always increments the applicable counters;
-   *  idempotency / pairing is owned by the caller (RAII `called` flag for the
-   *  `run()` path, or the scheduler's acquire/release bookkeeping for the
-   *  manual path). */
-  private releaseSlot(modelKey: string, providerKey: string): void {
+  /** Release per-model FIRST then total (reverse of tryAcquire), then dispatch
+   *  waiters and fire onRelease. Always increments both counters; idempotency
+   *  is owned by the caller. */
+  private releaseSlot(modelKey: string): void {
     const b = this.bucket(modelKey);
     b.available += 1;
-    const pb = this.providers.get(providerKey);
-    if (pb !== undefined) pb.available += 1;
     this.totalAvailable += 1;
     this.dispatch();
     // Notify the pool that capacity freed so it can claim waiting ready tasks.

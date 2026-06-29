@@ -53,8 +53,10 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { RendererRegistry } from '../core/renderer-registry.js';
 import type { StatusCallbacks, WorkflowModule, WorkflowRunOptions } from '../core/types.js';
 import { STATUS_CALLBACK_METHODS } from '../core/types.js';
+import type { WorktreeManager } from '../core/worktree-manager.js';
 import { HookRegistry } from '../hooks/registry.js';
 import type {
   HookContext,
@@ -68,7 +70,7 @@ import { EventStore } from '../tracking/event-store.js';
 import { createStoreCallbacks } from '../tracking/store-callbacks.js';
 import { RunExecutor } from './run-executor.js';
 import type { RunHandle, StartRunMessage } from './run-manager.js';
-import type { RunRegistry } from './run-registry.js';
+import { RunRegistry } from './run-registry.js';
 import { StatusBridge } from './status-bridge.js';
 
 // ── Constants ───────────────────────────────────────────────────────────────
@@ -1318,5 +1320,482 @@ describe('RunExecutor.execute — nothing-succeeded detection', () => {
     // No non-terminal tasks — the breakdown suffix should be absent.
     expect(String((terminal as { error?: string }).error)).not.toContain('non-terminal');
     expect(run.broadcasts.find((m) => m.type === 'run_complete')).toBeUndefined();
+  });
+});
+
+// ── (10) Shutdown reap race — beginShutdown makes the finally-block reap fire now ─
+//
+// The race this pins: `RunManager.shutdownAll()` aborts every run and calls
+// `cancelAllReap()` to clear pending reapers. But each executor's `finally`
+// block calls `this.registry.scheduleReap(...)` AFTER the cancel — re-arming a
+// NEW reaper timer that survives shutdown and later disposes bridges / stores /
+// removes handles well past teardown.
+//
+// Fix contract: `RunRegistry.beginShutdown()` arms a `shutdown` flag; once
+// armed, `scheduleReap` executes the reap callback SYNCHRONOUSLY. So when the
+// executor's finally re-arms during shutdown, the reap runs immediately:
+// bridge + store disposed, handle removed from the registry, and NO deferred
+// timer is left dangling.
+//
+// These tests drive the REAL `RunRegistry` (not the record-only stub used by
+// `makeRun`) so the actual shutdown-mode reap behavior is exercised. They will
+// FAIL against the pre-fix code (no `beginShutdown`, reaper deferred via a
+// timer → the handle is still registered and the bridge / store are NOT yet
+// disposed once `execute` resolves).
+
+describe('RunExecutor.execute — shutdown reap race (beginShutdown)', () => {
+  /**
+   * Build a run backed by a REAL `RunRegistry` (registered handle) instead of
+   * the record-only stub. Returns the registry + executor plus spy flags for
+   * whether the bridge / store were disposed. Reuses `makeRun`'s handle / store
+   * / bridge / storeCallbacks plumbing + teardown registration, then swaps in a
+   * real registry and a fresh executor bound to it.
+   */
+  async function makeRunWithRealRegistry(reapDelayMs = 60_000): Promise<{
+    handle: RunHandle;
+    store: EventStore;
+    storeCallbacks: StatusCallbacks;
+    bridge: StatusBridge;
+    broadcasts: ServerMessage[];
+    registry: RunRegistry;
+    onRunsChanged: Mock<() => void>;
+    executor: RunExecutor;
+    msg: StartRunMessage;
+    bridgeDisposed: () => boolean;
+    storeDisposed: () => boolean;
+  }> {
+    const base = await makeRun(reapDelayMs);
+
+    // Spy on bridge.dispose / store.dispose WITHOUT losing the real teardown
+    // (both are idempotent — assigning an own property shadows the prototype
+    // method, and we delegate to the bound original).
+    let bridgeDisposed = false;
+    const realBridgeDispose = base.bridge.dispose.bind(base.bridge);
+    base.bridge.dispose = () => {
+      bridgeDisposed = true;
+      realBridgeDispose();
+    };
+    let storeDisposed = false;
+    const realStoreDispose = base.store.dispose.bind(base.store);
+    base.store.dispose = () => {
+      storeDisposed = true;
+      realStoreDispose();
+    };
+
+    const registry = new RunRegistry();
+    registry.register(base.handle);
+
+    const onRunsChanged = mock(() => undefined);
+    const executor = new RunExecutor(registry, onRunsChanged, reapDelayMs);
+
+    return {
+      handle: base.handle,
+      store: base.store,
+      storeCallbacks: base.storeCallbacks,
+      bridge: base.bridge,
+      broadcasts: base.broadcasts,
+      registry,
+      onRunsChanged,
+      executor,
+      msg: base.msg,
+      bridgeDisposed: () => bridgeDisposed,
+      storeDisposed: () => storeDisposed,
+    };
+  }
+
+  /** Read-only peek at the registry's tracked reap timers (size only). */
+  function trackedTimerCount(registry: RunRegistry): number {
+    return (registry as unknown as { reapTimers: Map<string, unknown> }).reapTimers.size;
+  }
+
+  it('after beginShutdown, the finally-block reap fires immediately on a successful run', async () => {
+    // Simulates shutdownAll(): beginShutdown() is armed BEFORE the executor's
+    // finally block runs. The finally's scheduleReap must reap synchronously.
+    const run = await makeRunWithRealRegistry();
+    const { workflow } = makeWorkflow({ runImpl: () => undefined });
+
+    run.registry.beginShutdown();
+    await run.executor.execute(run.handle, workflow, run.storeCallbacks, run.msg);
+
+    // The run completed.
+    expect(run.handle.status).toBe('complete');
+    // The reap fired IMMEDIATELY (during the finally block) — handle removed …
+    expect(run.registry.get(RUN_ID)).toBeUndefined();
+    expect(run.registry.listRuns()).toHaveLength(0);
+    // … bridge + store disposed …
+    expect(run.bridgeDisposed()).toBe(true);
+    expect(run.storeDisposed()).toBe(true);
+    // … and NO deferred reaper timer is left dangling in the registry.
+    expect(trackedTimerCount(run.registry)).toBe(0);
+    // The reap re-notified the control server (onRunsChanged fires in the
+    // finally AND inside the reap callback).
+    expect(run.onRunsChanged.mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('after beginShutdown, the finally-block reap fires immediately on an ABORTED run (the real shutdownAll path)', async () => {
+    // shutdownAll() aborts runs; the executor lands in the AbortError branch
+    // (status 'failed'), then finally re-arms via scheduleReap. With shutdown
+    // armed, the reap must fire immediately so the aborted run's bridge / store
+    // are torn down at shutdown time rather than 60s later.
+    const run = await makeRunWithRealRegistry();
+    const { workflow } = makeWorkflow({
+      runImpl: () => {
+        const err = new Error('aborted');
+        err.name = 'AbortError';
+        throw err;
+      },
+    });
+
+    run.registry.beginShutdown();
+    await run.executor.execute(run.handle, workflow, run.storeCallbacks, run.msg);
+
+    expect(run.handle.status).toBe('failed');
+    // Reaped immediately: handle gone, everything disposed, no lingering timer.
+    expect(run.registry.get(RUN_ID)).toBeUndefined();
+    expect(run.bridgeDisposed()).toBe(true);
+    expect(run.storeDisposed()).toBe(true);
+    expect(trackedTimerCount(run.registry)).toBe(0);
+  });
+
+  it('without beginShutdown, the finally-block reap is DEFERRED (handle survives, not disposed)', async () => {
+    // GUARD (pins the contrast): when shutdown has NOT begun, the executor's
+    // finally reaper must remain deferred via a timer. The handle stays
+    // registered and the bridge / store are NOT disposed once execute resolves.
+    // This proves the immediate-reap behavior is driven by beginShutdown, not
+    // by some unrelated change to the executor.
+    const run = await makeRunWithRealRegistry();
+    const { workflow } = makeWorkflow({ runImpl: () => undefined });
+
+    // NOTE: deliberately do NOT call beginShutdown().
+    await run.executor.execute(run.handle, workflow, run.storeCallbacks, run.msg);
+
+    // Reap is deferred: handle still registered, nothing disposed yet.
+    expect(run.handle.status).toBe('complete');
+    expect(run.registry.get(RUN_ID)).toBeDefined();
+    expect(run.registry.listRuns()).toHaveLength(1);
+    expect(run.bridgeDisposed()).toBe(false);
+    expect(run.storeDisposed()).toBe(false);
+    // A deferred reaper timer IS tracked for this run.
+    expect(trackedTimerCount(run.registry)).toBe(1);
+
+    // Clean up the deferred timer so it doesn't outlive the test.
+    run.registry.cancelAllReap();
+  });
+});
+
+// ── (10) execute() decomposition into private helpers (refactor target) ────
+//
+// These tests pin the TARGET STRUCTURE of the `execute()` decomposition: the
+// 361-line god function must be split into named private helpers, leaving
+// `execute()` as a ~40-line orchestrator that calls them in sequence. They are
+// the RED-team specification for the green-team refactor — they FAIL against
+// the current monolithic `execute()` (none of the helpers exist, the body still
+// contains all the inline logic) and PASS once the helpers are extracted.
+//
+// Behavior preservation is pinned by suites (1)–(9) above (the existing safety
+// net). These tests pin ONLY the structural decomposition:
+//
+//   (a) the nine named private methods exist on the instance,
+//   (b) `execute()` delegates to them (it calls them rather than duplicating
+//       their logic inline),
+//   (c) `execute()` no longer contains the extracted logic inline (its source
+//       body is a slim orchestration method, not the god function), and
+//   (d) the self-contained helpers honor their documented contracts when
+//       invoked directly.
+//
+// The `private` modifier is a compile-time only concept in TypeScript/JSC, so
+// accessing the helpers via an `as any` cast reads the real runtime method off
+// the prototype — the cleanest way to pin their existence without exposing them.
+
+describe('RunExecutor — execute() decomposed into private helpers', () => {
+  // The exact set of private helpers the refactor must extract, with the names
+  // and responsibilities specified by the task.
+  const HELPER_NAMES = [
+    'setupRenderer',
+    'setupWorktree',
+    'registerDefaultHooks',
+    'detectAndFireResume',
+    'buildWorkflowOptions',
+    'runWithTimeoutGuard',
+    'handleTerminalSuccess',
+    'handleTerminalError',
+    'scheduleReaper',
+  ] as const;
+
+  // ── (a) existence ──────────────────────────────────────────────────────────
+
+  describe('extracts each named private helper onto the instance', () => {
+    for (const name of HELPER_NAMES) {
+      it(`exposes a private helper ${name}(...) on the instance`, async () => {
+        const run = await makeRun();
+        const executor = run.executor as unknown as Record<string, unknown>;
+
+        // The refactor must define this method on the class. Before the
+        // refactor it is `undefined` (the logic still lives inline inside
+        // execute()), so this assertion FAILS until the extraction lands.
+        expect(typeof executor[name]).toBe('function');
+      });
+    }
+  });
+
+  // ── (b) delegation: execute() calls the helpers ────────────────────────────
+
+  /**
+   * Wrap each extracted helper on the instance with a call-through spy that
+   * tallies invocations. The spy delegates to the real prototype method (so
+   * behavior is unchanged) but records that `execute()` reached for the helper
+   * instead of inlining its logic.
+   *
+   * Before the refactor the helpers do not exist, so every tally stays 0 —
+   * making the delegation assertions below FAIL (the desired RED state).
+   */
+  function spyOnHelpers(executor: unknown): Record<string, number> {
+    const inst = executor as Record<string, unknown>;
+    const calls: Record<string, number> = {};
+    for (const name of HELPER_NAMES) {
+      calls[name] = 0;
+      const orig = inst[name];
+      if (typeof orig !== 'function') continue; // pre-refactor: helper absent
+      const fn = orig as (...args: unknown[]) => unknown;
+      // Shadow the prototype method with an own property that preserves `this`.
+      inst[name] = function spy(this: unknown, ...args: unknown[]): unknown {
+        calls[name]++;
+        return fn.apply(this, args);
+      };
+    }
+    return calls;
+  }
+
+  describe('execute() delegates to the helpers instead of inlining their logic', () => {
+    it('on a successful run, execute() invokes setup → register → resume → options → run → success → reap', async () => {
+      const run = await makeRun();
+      const calls = spyOnHelpers(run.executor);
+      const { workflow } = makeWorkflow({ runImpl: () => undefined });
+
+      await run.executor.execute(run.handle, workflow, run.storeCallbacks, run.msg);
+
+      // The orchestrator MUST reach every helper in the success path.
+      expect(calls.setupRenderer).toBe(1);
+      expect(calls.setupWorktree).toBe(1);
+      expect(calls.registerDefaultHooks).toBe(1);
+      expect(calls.detectAndFireResume).toBe(1);
+      expect(calls.buildWorkflowOptions).toBe(1);
+      expect(calls.runWithTimeoutGuard).toBe(1);
+      expect(calls.handleTerminalSuccess).toBe(1);
+      expect(calls.scheduleReaper).toBe(1);
+      // The error helper must NOT fire on the success path.
+      expect(calls.handleTerminalError).toBe(0);
+
+      // And the observable success behavior is still intact (delegation did
+      // not swallow the real work).
+      expect(run.handle.status).toBe('complete');
+      expect(run.broadcasts.some((m) => m.type === 'run_complete')).toBe(true);
+    });
+
+    it('on a failed run, execute() invokes handleTerminalError (not handleTerminalSuccess)', async () => {
+      const run = await makeRun();
+      const calls = spyOnHelpers(run.executor);
+      const { workflow } = makeWorkflow({
+        runImpl: () => {
+          throw new Error('boom');
+        },
+      });
+
+      await run.executor.execute(run.handle, workflow, run.storeCallbacks, run.msg);
+
+      expect(calls.setupRenderer).toBe(1);
+      expect(calls.setupWorktree).toBe(1);
+      expect(calls.buildWorkflowOptions).toBe(1);
+      // The error path is taken: handleTerminalError fires, success does not.
+      expect(calls.handleTerminalError).toBe(1);
+      expect(calls.handleTerminalSuccess).toBe(0);
+      // The reaper still schedules on the error path (it lives in finally).
+      expect(calls.scheduleReaper).toBe(1);
+
+      expect(run.handle.status).toBe('failed');
+      expect(run.broadcasts.some((m) => m.type === 'run_failed')).toBe(true);
+    });
+  });
+
+  // ── (c) execute() body is a slim orchestrator ──────────────────────────────
+
+  describe('execute() body no longer contains the extracted logic inline', () => {
+    // Identifiers whose references MUST move OUT of execute() into the
+    // corresponding helper. `composeHooks` and `runWithConsoleCapture` are
+    // deliberately NOT in this list: the orchestrator may still call them
+    // directly (hook composition threads the registry across helpers; the
+    // console-capture scope wraps the try/catch/finally orchestration).
+    const EXTRACTED_MARKERS = [
+      'new RendererRegistry',
+      'registerRenderers',
+      'isGitRepo',
+      'getRepoRoot',
+      'resolveProfilesDirs',
+      'generateTitleAndBranch',
+      'sanitizeBranchSlug',
+      'new WorktreeManager',
+      'setupMainWorktree',
+      'createDefaultBeforeTaskWorktreeCreate',
+      'createDefaultPopulateWorktree',
+      'defaultAfterTaskWorktreeCreate',
+      'defaultOnTaskMerge',
+      'createDefaultOnMergeConflict',
+      'createDefaultOnCommitFailure',
+      'defaultOnWorkflowResume',
+      'defaultOnWorkflowAbort',
+      'defaultBeforeRunMerge',
+      'createDefaultOnRunMergeConflict',
+      'getEventsSince',
+      'getProjection',
+      'redactSecrets',
+      'broadcastTerminal',
+      'setTimeout',
+      'clearTimeout',
+      'registry.scheduleReap',
+    ] as const;
+
+    it('execute() source does not reference any identifier that now lives in a helper', () => {
+      const src = (RunExecutor.prototype as unknown as { execute: () => void }).execute.toString();
+
+      // Collect the markers that (wrongly) still appear so the failure message
+      // is actionable — it lists exactly which helpers the implementer forgot.
+      const remaining = EXTRACTED_MARKERS.filter((m) => src.includes(m));
+      expect(remaining).toEqual([]);
+    });
+
+    it('execute() source is a slim orchestration method (well under the 130-line god function)', () => {
+      const src = (RunExecutor.prototype as unknown as { execute: () => void }).execute.toString();
+      const lines = src.split('\n').length;
+
+      // The target is ~40 lines; 80 leaves generous room for the
+      // runWithConsoleCapture callback + try/catch/finally orchestration while
+      // still forcing a real extraction (the current god function is 130 lines).
+      expect(lines).toBeLessThanOrEqual(80);
+    });
+  });
+
+  // ── (d) self-contained helpers honor their documented contracts ────────────
+
+  describe('extracted helpers are independently callable with their documented contract', () => {
+    it('setupRenderer(workflow) returns an empty RendererRegistry when the workflow has no registerRenderers', async () => {
+      const run = await makeRun();
+      const ex = run.executor as unknown as {
+        setupRenderer: (workflow: WorkflowModule) => RendererRegistry;
+      };
+      const { workflow } = makeWorkflow(); // no registerRenderers exported
+
+      const registry = ex.setupRenderer(workflow);
+
+      expect(registry).toBeInstanceOf(RendererRegistry);
+      expect(registry.render('any-profile', { x: 1 })).toBeUndefined();
+    });
+
+    it('setupRenderer(workflow) calls workflow.registerRenderers with the fresh registry and returns it', async () => {
+      const run = await makeRun();
+      const ex = run.executor as unknown as {
+        setupRenderer: (workflow: WorkflowModule) => RendererRegistry;
+      };
+      let received: RendererRegistry | undefined;
+      const workflow: WorkflowModule = {
+        run: async () => undefined,
+        registerRenderers: (r: RendererRegistry) => {
+          received = r;
+          r.register('my-profile', (d) => `rendered:${String(d)}`);
+        },
+      };
+
+      const registry = ex.setupRenderer(workflow);
+
+      // The SAME registry instance is handed to registerRenderers and returned.
+      expect(registry).toBeInstanceOf(RendererRegistry);
+      expect(received).toBe(registry);
+      expect(registry.render('my-profile', 'hello')).toBe('rendered:hello');
+    });
+
+    it('buildWorkflowOptions() on the non-git path produces cwd=handle.cwd and omits worktree fields', async () => {
+      const run = await makeRun();
+      const ex = run.executor as unknown as {
+        buildWorkflowOptions: (
+          handle: RunHandle,
+          composedStatus: StatusCallbacks,
+          hookRegistry: HookRegistry,
+          rendererRegistry: RendererRegistry,
+          worktreeManager: unknown,
+          msg: StartRunMessage,
+        ) => WorkflowRunOptions;
+      };
+      const composedStatus: StatusCallbacks = { onWorkflowStart: () => undefined } as unknown as StatusCallbacks;
+      const hookRegistry = new HookRegistry();
+      const rendererRegistry = new RendererRegistry();
+
+      // Non-git path: worktreeManager is undefined → cwd is the original cwd,
+      // and no worktree/worktreeManager keys are present (the transparency
+      // mechanism does not apply when there is no worktree).
+      const options = ex.buildWorkflowOptions(
+        run.handle,
+        composedStatus,
+        hookRegistry,
+        rendererRegistry,
+        undefined,
+        run.msg,
+      );
+
+      expect(options.cwd).toBe(run.handle.cwd);
+      expect(options.workDir).toBe(run.handle.workDir);
+      expect(options.onStatus).toBe(composedStatus);
+      expect(options.hookRegistry).toBe(hookRegistry);
+      expect(options.rendererRegistry).toBe(rendererRegistry);
+      expect(options.signal).toBe(run.handle.controller.signal);
+      expect('worktreeManager' in options).toBe(false);
+      expect('worktree' in options).toBe(false);
+      // makeRun's msg carries no apiKeys → apiKeys must not be set.
+      expect('apiKeys' in options).toBe(false);
+    });
+
+    it('buildWorkflowOptions() on the git path uses the worktree path as cwd and forwards worktree fields', async () => {
+      const run = await makeRun();
+      const ex = run.executor as unknown as {
+        buildWorkflowOptions: (
+          handle: RunHandle,
+          composedStatus: StatusCallbacks,
+          hookRegistry: HookRegistry,
+          rendererRegistry: RendererRegistry,
+          worktreeManager: unknown,
+          msg: StartRunMessage,
+        ) => WorkflowRunOptions;
+      };
+      const composedStatus: StatusCallbacks = {} as unknown as StatusCallbacks;
+      const hookRegistry = new HookRegistry();
+      const rendererRegistry = new RendererRegistry();
+      // A worktree-manager-shaped stub: the transparency mechanism reads
+      // `mainWorktreePath` for cwd and `getWorktreeInfo()` for the worktree field.
+      const worktreeInfo = {
+        worktreePath: '/repo/.engin/run/worktree',
+        branchName: 'engin/main',
+        originalCwd: run.handle.cwd,
+      };
+      // Cast through `unknown`: the stub implements only the two members
+      // buildWorkflowOptions touches (mainWorktreePath, getWorktreeInfo),
+      // avoiding the full WorktreeManager constructor (which needs a git repo).
+      const worktreeManager = {
+        mainWorktreePath: '/repo/.engin/run/worktree',
+        getWorktreeInfo: () => worktreeInfo,
+      } as unknown as WorktreeManager;
+
+      const options = ex.buildWorkflowOptions(
+        run.handle,
+        composedStatus,
+        hookRegistry,
+        rendererRegistry,
+        worktreeManager,
+        run.msg,
+      );
+
+      // cwd becomes the MAIN WORKTREE PATH (the transparency mechanism), and
+      // both worktreeManager + worktree are forwarded onto the options.
+      expect(options.cwd).toBe('/repo/.engin/run/worktree');
+      expect(options.worktreeManager).toBe(worktreeManager);
+      expect(options.worktree).toEqual(worktreeInfo);
+    });
   });
 });
