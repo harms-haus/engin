@@ -1,6 +1,5 @@
-import type { Task } from '../core/types.js';
+import type { StepDefinition, Task } from '../core/types.js';
 import { collectFileSection } from './file-context.js';
-import type { StepDefinition } from './types.js';
 
 /**
  * Build the prompt text for a step. On retry, appends review feedback.

@@ -130,6 +130,17 @@ Options passed to `AgentPlugin.createSession`:
 | `resumeSessionPath?` | Path to an existing session for resumption.                  |
 | `agentId?`           | Agent ID used in status callbacks (defaults to `sessionId`). |
 
+### Write-sandbox utilities
+
+Source: `packages/engine/src/agents/pi-coding-agent/write-sandbox.ts`. General-purpose path-safety helpers that enforce write-sandbox boundaries, re-exported from the agents barrel so custom agent plugins and workflows can reuse them.
+
+- `createWriteSandboxExtension({ allowedDirs, cwd }): ExtensionFactory` — build a pi `tool_call` extension that blocks `write`/`edit` calls resolving outside `allowedDirs`. Paths are canonicalized with `realpathSync` so symlink escapes are contained.
+- `resolveToolPath(inputPath, cwd): string` — lexical resolution mirroring pi's write/edit tools (expand `~`, strip a leading `@`, resolve relatives against `cwd`).
+- `canonicalizePath(p): string` — `realpathSync`-based canonicalization. When the leaf path does not yet exist (e.g. a new file being created), canonicalizes the existing parent directory and re-appends the basename so ancestor symlinks are resolved. Re-throws the original error if the parent is also missing or inaccessible (fail closed).
+- `isPathWithin(target, dir): boolean` — true when `target` resolves inside `dir`.
+- `resolveAllowedDirs(allowedDirs, cwd): string[]` — canonicalize each allowed dir against `cwd`.
+- `findAllowedDir(target, resolvedAllowedDirs): string | null` — return the first allowed dir containing `target`, else `null`.
+
 ## Config resolution
 
 ### `getGlobalConfigDir(): string`
@@ -426,6 +437,42 @@ early termination (including a parent `.return()`), so the child's `finally` blo
 always run. Composite runners delegate via `yield* delegateToChild(child, ctx)` so that
 `.return()` propagates from parent to child. _(Runner-internal utility — not exported
 from the top-level engine barrel.)_
+
+### Session watchdog
+
+Source: `packages/engine/src/pool/session-watchdog.ts`.
+
+Reusable activity-based idle watchdog extracted from the session primitive. Workflow code building custom session execution can reuse it to reproduce `runSession`'s freeze-detection semantics.
+
+#### `createSessionWatchdog(timeoutMs, onTimeout?): SessionWatchdog`
+
+Returns a handle with three methods. When `timeoutMs` is `undefined` the watchdog is disabled: `arm()` and `dispose()` are no-ops and `race()` returns its argument unchanged.
+
+- `arm()` — clear any in-flight timer and arm a fresh idle window.
+- `race<T>(work: Promise<T>): Promise<T>` — race `work` against the watchdog promise. A no-op `.catch` is pre-attached to `work` and the race result so a late abort-triggered rejection never surfaces as unhandled. Rejects with `WatchdogTimeoutError` when the timer wins.
+- `dispose()` — clear the in-flight timer.
+
+`onTimeout` is invoked (without `await`) when the timer fires — typically `() => session.abort().catch(() => {})`.
+
+#### `WatchdogTimeoutError`
+
+`Error` subclass thrown by `race()` when the idle window elapses. `name === 'WatchdogTimeoutError'`. The scheduler routes a thrown `WatchdogTimeoutError` from `runner.execute()` to `failTask`.
+
+### Plan-generator timeout
+
+Source: `packages/engine/src/pool/scheduler-timeout.ts`.
+
+#### `withTimeout<T>(p: Promise<T>, ms: number, label?: string): Promise<T>`
+
+Race a promise against a `setTimeout`. Rejects with `GeneratorTimeoutError` (mentioning `label`, defaulting to `'plan generator operation'`) when the timeout fires first. The timer is cleared via `.then()` when the promise settles first, and `.unref()`-ed so it cannot keep the process alive.
+
+#### `GeneratorTimeoutError`
+
+`Error` subclass with readonly `label: string` and `ms: number`. The scheduler swallows it in `nextNonEmptyBatch` / `cleanupGenerator` so a hung generator does not fail the task.
+
+#### `GENERATOR_TIMEOUT_MS`
+
+Constant `5_000` — the grace period the scheduler uses for `planGen.next()` / `planGen.return()`.
 
 ## Composable runners
 

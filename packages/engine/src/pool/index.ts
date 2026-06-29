@@ -1,9 +1,14 @@
 export * from './constants.js';
+export * from './file-context.js';
+export * from './prompt-builder.js';
 export * from './run-scheduled-session.js';
 export * from './runners/index.js';
 export * from './runners/session-plan-types.js';
+export * from './scheduler-audit.js';
+export * from './scheduler-timeout.js';
 export * from './session-gate.js';
 export * from './session-scheduler.js';
+export * from './session-watchdog.js';
 export * from './session.js';
 export * from './task-graph.js';
-export * from './types.js';
+export { assertSafeName } from './validation.js';

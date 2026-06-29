@@ -1,8 +1,6 @@
 // ─── TaskGraph: DAG + Status + Dependency Pressure ─────────────────────────
 //
-// TaskGraph is the scheduler-facing task model that supersedes the status /
-// dependency-tracking portions of the old TaskTracker (task-status.ts). It
-// owns:
+// TaskGraph is the scheduler-facing task model. It owns:
 //
 //   - The task DAG (forward + reverse dependency indices).
 //   - Per-task status transitions (blocked / ready / parked / active /
@@ -13,10 +11,8 @@
 //   - Deadlock detection: blocked tasks whose dependency ids don't exist in
 //     the graph are marked failed via the onStatusTransition callback.
 //
-// Unlike TaskTracker, TaskGraph does NOT emit Node EventEmitter events.
 // Status transitions are surfaced exclusively through the optional
-// `onStatusTransition` callback, which the scheduler sets to emit events
-// (or drive UI updates) in whatever way it sees fit.
+// `onStatusTransition` callback — TaskGraph does not emit Node events.
 //
 // Each task is wrapped in a {@link TaskGraphEntry} that also carries the
 // runner factory + scheduler-managed session-plan state (held batch, results,

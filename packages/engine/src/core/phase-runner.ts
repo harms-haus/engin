@@ -8,13 +8,13 @@
 // `afterPhase`) and bounded by `maxRounds` (default 3, reproducing the
 // historical ≤3-rounds retry logic).
 //
-// PhaseRunner depends only on the minimal {@link PhaseTracker} interface (D3
-// decoupling), NOT on the concrete `WorkflowStatusTracker` class. The legacy
-// `WorkflowStatusTracker` still satisfies `PhaseTracker`, so existing consumers
-// that pass one are unaffected. `HookRegistry` is imported type-only from
-// ../hooks/types.js, and `createHookRegistry` is imported from
-// ../hooks/registry.js so the runner can fall back to a fresh empty registry
-// when no `hookRegistry` is supplied via options.
+// PhaseRunner depends only on the minimal {@link PhaseTracker} interface, NOT
+// on the concrete `WorkflowStatusTracker` class. `WorkflowStatusTracker`
+// happens to satisfy `PhaseTracker`, so existing consumers that pass one are
+// unaffected. `HookRegistry` is imported type-only from ../hooks/types.js, and
+// `createHookRegistry` is imported from ../hooks/registry.js so the runner can
+// fall back to a fresh empty registry when no `hookRegistry` is supplied via
+// options.
 //
 // DEFAULT behaviors (no hooks registered):
 //   - beforePhase            → no-op (don't skip; no statePatch)
@@ -47,12 +47,10 @@ import type { StatusCallbacks, Task } from './types.js';
 /**
  * Minimal read/write surface the {@link PhaseRunner} needs from a tracker.
  *
- * Introduced in D3 to decouple the runner from the concrete
- * `WorkflowStatusTracker` class (the duplicate-state tracker slated for full
- * removal once D4 migrates all consumers). Any object satisfying this interface
- * may drive the phase loop — the engine's eventual EventStore-backed tracker
- * will implement it directly, and the legacy `WorkflowStatusTracker` already
- * satisfies it today.
+ * PhaseRunner depends only on this interface, not on any concrete tracker
+ * implementation. Any object satisfying this interface may drive the phase
+ * loop — the legacy `WorkflowStatusTracker` satisfies it today, and future
+ * EventStore-backed trackers will implement it directly.
  *
  * `taskTracker` is typed as the narrowest shape the runner inspects: only
  * `getAllTasks()` (surfaced to the `onPhaseSettled` hook). The concrete

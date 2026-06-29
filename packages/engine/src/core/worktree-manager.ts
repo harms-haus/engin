@@ -19,8 +19,8 @@
 // must go through `worktreeManager.setupMainWorktree()`.
 //
 // The final run-end merge into real `main` (and its conflict resolution /
-// abort UX) is also owned here via `finalMergeToMain` /
-// `resolveFinalMergeConflicts` / `abortFinalMerge`.
+// abort UX) lives in `worktree-final-merge.ts` as standalone functions; the
+// thin delegation methods below pass `this`-derived context through to them.
 
 import { join } from 'node:path';
 
@@ -35,13 +35,10 @@ import type {
 import { assertSafeName } from '../pool/validation.js';
 import {
   abortMerge,
-  checkoutBranch,
   cleanUntracked,
   commitChanges,
   createWorktree,
   deleteBranchForce,
-  getCurrentBranch,
-  getMainBranch,
   removeWorktree,
   resetHard,
   restoreSavedBranch,
@@ -51,6 +48,12 @@ import {
   worktreePrune,
 } from './git.js';
 import type { Task, WorktreeInfo } from './types.js';
+import type { FinalMergeContext, SavedBranchHolder } from './worktree-final-merge.js';
+import {
+  abortFinalMerge,
+  finalMergeToMain as finalMergeToMainFn,
+  resolveFinalMergeConflicts as resolveFinalMergeConflictsFn,
+} from './worktree-final-merge.js';
 import { runTooledFixup } from './worktree-fixup.js';
 import { resolveConflictsWithAgent } from './worktree-lifecycle.js';
 import { commitWorktreeChanges } from './worktree-operations.js';
@@ -743,17 +746,32 @@ export class WorktreeManager {
   }
 
   // ─── Final Merge to Real Main ─────────────────────────────────────────────
+  //
+  // Thin delegations to the standalone functions in `worktree-final-merge.ts`.
+  // The real logic lives there; these methods pass `this`-derived context
+  // (the shared git-lock, repoRoot, mainBranch, …) and the saved-branch
+  // holder so the extracted functions behave exactly as the inlined bodies did.
 
   /**
-   * Squash-merges the main-wt branch into the real `main` branch. Used by the
-   * run-end final merge UX.
-   *
-   * On conflict, does NOT abort — the caller decides whether to resolve (via
-   * {@link resolveFinalMergeConflicts}) or abort (via {@link abortFinalMerge}).
-   * The repo is left in the conflicted merge state on real `main`.
-   *
-   * Returns `{ success, conflicts, conflictsResolved }`. On a clean merge,
-   * `conflicts` is empty and the previously-checked-out branch is restored.
+   * Builds the {@link FinalMergeContext} the extracted final-merge functions
+   * need, forwarding the WorktreeManager's single shared-state git lock so the
+   * final merge serializes against every other shared-state git operation.
+   */
+  private makeFinalMergeCtx(): FinalMergeContext {
+    return {
+      repoRoot: this.repoRoot,
+      mainBranch: this.mainBranch,
+      mainWorktreePath: this.mainWorktreePath,
+      profilesDirs: this.profilesDirs,
+      apiKeys: this.apiKeys,
+      withGitLock: (fn) => this.withGitLock(fn),
+    };
+  }
+
+  /**
+   * Squash-merges the main-wt branch into real `main`. Delegates to
+   * {@link finalMergeToMainFn} (worktree-final-merge.ts); see there for the
+   * conflict / commit-failure semantics.
    */
   async finalMergeToMain(): Promise<{
     success: boolean;
@@ -761,113 +779,29 @@ export class WorktreeManager {
     conflictsResolved: boolean;
     error?: string;
   }> {
-    return this.withGitLock(async () => {
-      // 1. Commit any pending changes in the main worktree.
-      await commitWorktreeChanges({
-        profilesDirs: this.profilesDirs,
-        worktreePath: this.mainWorktreePath,
-        taskPrompt: 'Final merge',
-        apiKeys: this.apiKeys,
-      });
-
-      // 2. Save the currently-checked-out branch so it can be restored after.
-      //    Stored on the instance (not a local) so it survives across the
-      //    conflict → resolve flow, where `resolveFinalMergeConflicts` runs in a
-      //    separate call and `cleanup()` performs the actual restore.
-      this.savedBranch = getCurrentBranch(this.repoRoot);
-
-      // 3. Check out the real main branch.
-      const realMain = getMainBranch(this.repoRoot);
-      checkoutBranch(this.repoRoot, realMain);
-
-      // 4. Squash-merge the main-wt branch into real main.
-      const result = squashMergeBranch(this.repoRoot, this.mainBranch);
-
-      if (result.success) {
-        try {
-          commitChanges(this.repoRoot, `Merge engin run: ${this.mainBranch}`);
-        } catch (commitErr) {
-          // Roll back the staged squash so real main is left clean for a
-          // caller retry / manual intervention (mirrors the per-task merge).
-          try {
-            abortMerge(this.repoRoot);
-          } catch {
-            /* no merge in progress */
-          }
-          try {
-            resetHard(this.repoRoot);
-          } catch {
-            /* best-effort */
-          }
-          restoreSavedBranch(this.repoRoot, this.savedBranch);
-          throw commitErr;
-        }
-        restoreSavedBranch(this.repoRoot, this.savedBranch);
-        return { success: true, conflicts: [], conflictsResolved: false };
-      }
-
-      // On conflict, leave the repo on real main with the merge in progress so
-      // the caller can resolve or abort. Do NOT restore the saved branch — the
-      // caller's next action operates on the conflicted merge state.
-      return {
-        success: false,
-        conflicts: result.conflicts,
-        conflictsResolved: false,
-        ...(result.error ? { error: result.error } : {}),
-      };
-    });
+    const holder: SavedBranchHolder = { savedBranch: this.savedBranch };
+    const result = await finalMergeToMainFn(this.makeFinalMergeCtx(), holder);
+    // Write back so `cleanup()` can restore it across the conflict → resolve flow.
+    this.savedBranch = holder.savedBranch;
+    return result;
   }
 
   /**
-   * Resolves conflicts from a failed {@link finalMergeToMain} via the agent.
-   * On success, stages the resolved files and commits the merge. Returns
-   * `{ resolved: true }` when all conflicts were resolved, or
-   * `{ resolved: false, error? }` when the agent could not resolve them
-   * (carrying a short diagnostic for the client).
+   * Resolves conflicts from a failed {@link finalMergeToMain}. Delegates to
+   * {@link resolveFinalMergeConflictsFn}.
    */
   async resolveFinalMergeConflicts(
     conflicts: string[],
     taskPrompt: string,
   ): Promise<{ resolved: boolean; error?: string }> {
-    return this.withGitLock(async () => {
-      const resolveResult = await resolveConflictsWithAgent(
-        this.profilesDirs,
-        this.repoRoot,
-        conflicts,
-        taskPrompt,
-        this.apiKeys,
-      );
-
-      if (!resolveResult.resolved) {
-        return { resolved: false, ...(resolveResult.error ? { error: resolveResult.error } : {}) };
-      }
-
-      stageFiles(this.repoRoot, conflicts);
-      try {
-        commitChanges(this.repoRoot, `Merge resolution: ${this.mainBranch}`);
-      } catch (commitErr) {
-        try {
-          abortMerge(this.repoRoot);
-        } catch {
-          /* no merge in progress */
-        }
-        try {
-          resetHard(this.repoRoot);
-        } catch {
-          /* best-effort */
-        }
-        throw commitErr;
-      }
-      return { resolved: true };
-    });
+    return resolveFinalMergeConflictsFn(this.makeFinalMergeCtx(), conflicts, taskPrompt);
   }
 
   /**
-   * Aborts an in-progress final merge on the repo root. Used when the caller
-   * decides not to resolve conflicts from {@link finalMergeToMain}.
+   * Aborts an in-progress final merge. Delegates to {@link abortFinalMergeFn}.
    */
   async abortFinalMerge(): Promise<void> {
-    await this.withGitLock(() => Promise.resolve(abortMerge(this.repoRoot)));
+    await abortFinalMerge(this.makeFinalMergeCtx());
   }
 
   // ─── Cleanup ──────────────────────────────────────────────────────────────

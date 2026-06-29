@@ -10,33 +10,13 @@
 // actually invokes git — no mocking of execGit needed. This verifies the
 // real-world behavior: a valid branch is restored, and a non-existent branch
 // (simulating detached HEAD where the symbolic ref is gone) does NOT throw.
-//
-// NOTE: `restoreSavedBranch` is added to git.ts by the implementer in the
-// refactor step. Until then, the dynamic import resolves to `undefined` and
-// these tests are skipped. After the refactor they run for real.
 
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { checkoutBranch, getCurrentBranch } from './git.js';
-
-// ─── Dynamic import: restoreSavedBranch (added by the refactor) ─────────────
-
-/**
- * `restoreSavedBranch` is added to git.ts by the implementer's refactor. We
- * load it dynamically so this test file compiles both BEFORE (function absent)
- * and AFTER (function present) the change. When absent, the contract tests
- * below are skipped via `it.skipIf`.
- */
-const { restoreSavedBranch } = await import('./git.js').then(
-  (mod) => ({
-    restoreSavedBranch: (mod as { restoreSavedBranch?: (repoRoot: string, savedBranch: string) => void })
-      .restoreSavedBranch,
-  }),
-  () => ({ restoreSavedBranch: undefined }),
-);
+import { checkoutBranch, getCurrentBranch, restoreSavedBranch } from './git.js';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -98,35 +78,50 @@ describe('checkoutBranch (primitive used by restoreSavedBranch)', () => {
 // ─── restoreSavedBranch ─────────────────────────────────────────────────────
 
 describe('restoreSavedBranch', () => {
-  // These tests run only after the implementer has moved restoreSavedBranch
-  // into git.ts. Before the refactor, the dynamic import yields undefined and
-  // they are skipped — no false failures during the write-tests step.
-  it.skipIf(!restoreSavedBranch)('checks out the given branch when it exists', () => {
+  it('checks out the given branch when it exists', () => {
     expect(getCurrentBranch(repoDir)).toBe('main');
 
-    restoreSavedBranch!(repoDir, 'feature');
+    restoreSavedBranch(repoDir, 'feature');
 
     expect(getCurrentBranch(repoDir)).toBe('feature');
   });
 
-  it.skipIf(!restoreSavedBranch)('does NOT throw when the branch does not exist (swallows error)', () => {
+  it('does NOT throw when the branch does not exist (swallows error)', () => {
     // A non-existent branch simulates the detached-HEAD scenario where the
     // symbolic ref is gone. restoreSavedBranch must swallow the checkout error.
     expect(() => {
-      restoreSavedBranch!(repoDir, 'nonexistent-branch-xyz');
+      restoreSavedBranch(repoDir, 'nonexistent-branch-xyz');
     }).not.toThrow();
   });
 
-  it.skipIf(!restoreSavedBranch)('leaves the current branch unchanged when checkout fails', () => {
+  it('leaves the current branch unchanged when checkout fails', () => {
     expect(getCurrentBranch(repoDir)).toBe('main');
 
-    restoreSavedBranch!(repoDir, 'nonexistent-branch-xyz');
+    restoreSavedBranch(repoDir, 'nonexistent-branch-xyz');
 
     // The current branch must still be main (the failed checkout changed nothing).
     expect(getCurrentBranch(repoDir)).toBe('main');
   });
 
-  it.skipIf(!restoreSavedBranch)('is exported from git.ts', () => {
+  it('is exported from git.ts', () => {
     expect(typeof restoreSavedBranch).toBe('function');
+  });
+
+  it('returns undefined on the success path (void contract)', () => {
+    // restoreSavedBranch is a fire-and-forget helper; callers must not rely on
+    // a meaningful return value.
+    expect(restoreSavedBranch(repoDir, 'feature')).toBeUndefined();
+  });
+
+  it('returns undefined on the failure path (void contract)', () => {
+    expect(restoreSavedBranch(repoDir, 'nonexistent-branch-xyz')).toBeUndefined();
+  });
+
+  it('is a no-op that does not throw when restoring the already-current branch', () => {
+    expect(getCurrentBranch(repoDir)).toBe('main');
+
+    expect(() => restoreSavedBranch(repoDir, 'main')).not.toThrow();
+
+    expect(getCurrentBranch(repoDir)).toBe('main');
   });
 });

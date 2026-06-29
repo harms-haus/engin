@@ -11,9 +11,8 @@
 // later task — so importing this module produces an empty namespace at
 // runtime and stays free of circular runtime dependencies.
 
-import type { Task, WorkflowState, WorktreeInfo } from '../core/types.js';
+import type { StepDefinition, Task, WorkflowState, WorktreeInfo } from '../core/types.js';
 import type { SessionPlanRunner } from '../pool/runners/session-plan-types.js';
-import type { StepDefinition } from '../pool/types.js';
 
 /**
  * How multiple subscribers to the same hook name are combined when the registry

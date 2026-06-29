@@ -288,6 +288,15 @@ Source: `packages/engine/src/core/types/workflow.ts`.
 | `agentId?`           | `string`                 | Agent ID for status callbacks (defaults to `sessionId`).                                                                                                                                                                                                                                                                                                                                                                                                    |
 | `allowedWriteDirs?`  | `string[]`               | Optional write-sandbox override: blocks `write`/`edit` outside these directories (resolved against `cwd`). When **omitted** on a non-read-only session, the engine applies a default sandbox confining writes to the session's own cwd (`worktreeCwd ?? cwd`) so a task cannot leak changes into the main working directory. Read-only sessions skip the sandbox entirely. Pass an explicit array to broaden writes (e.g. to a shared artifacts directory). |
 
+### `WriteSandboxOptions`
+
+Options for `createWriteSandboxExtension` (see [API reference → Write-sandbox utilities](api.md#write-sandbox-utilities)). Source: `packages/engine/src/agents/pi-coding-agent/write-sandbox.ts`.
+
+| Field         | Type       | Description                                                   |
+| ------------- | ---------- | ------------------------------------------------------------- |
+| `allowedDirs` | `string[]` | Directories that `write`/`edit` calls may resolve into.       |
+| `cwd`         | `string`   | Base directory relatives resolve against when canonicalizing. |
+
 ## Worktree types
 
 Source: `packages/engine/src/core/types/workflow.ts` (`WorktreeInfo`),
@@ -539,6 +548,18 @@ type SessionPlanFactory = () => SessionPlanRunner;
 Factory that constructs a fresh `SessionPlanRunner` instance. Runners are stateful
 (they track plan progress across batches), so each task gets its own runner instance.
 The scheduler constructs a runner lazily when a task becomes active.
+
+### Session watchdog & generator-timeout types
+
+Source: `packages/engine/src/pool/session-watchdog.ts` (`SessionWatchdog`, `WatchdogTimeoutError`)
+and `packages/engine/src/pool/scheduler-timeout.ts` (`GeneratorTimeoutError`). All three are
+re-exported from the entry point for workflow code building custom session primitives.
+
+| Type                    | Description                                                                                                                               |
+| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `SessionWatchdog`       | Handle returned by `createSessionWatchdog` (`arm()`, `race<T>(work)`, `dispose()`) implementing activity-based idle detection.            |
+| `WatchdogTimeoutError`  | `Error` subclass thrown by `SessionWatchdog.race()` when the idle window elapses; routed by the scheduler to `failTask`.                  |
+| `GeneratorTimeoutError` | `Error` subclass (readonly `label`, `ms`) raised by `withTimeout`; swallowed by the scheduler so a hung generator does not fail the task. |
 
 ## Structured-output and loop option types
 

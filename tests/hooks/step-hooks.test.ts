@@ -34,7 +34,7 @@
 //   ): ContextBlock[] => [...(acc ?? []), next];
 //
 // `Task` is imported (type-only) from `../core/types.js`; `StepDefinition`
-// from `../pool/types.js`. `worktreeCwd` is the per-task worktree path (the
+// from `../core/types.js`. `worktreeCwd` is the per-task worktree path (the
 // "two-cwd world"); `cwd` is the run cwd.
 //
 // This suite is written TEST-FIRST, mirroring tests/hooks/index-barrel.test.ts
@@ -219,10 +219,10 @@ describe('types.ts — Task and StepDefinition imports', () => {
     expect(src).toMatch(/import\s+type\s*\{[^}]*\bTask\b[^}]*\}\s*from\s*['"]\.\.\/core\/types\.js['"]/);
   });
 
-  it("imports StepDefinition (type-only) from '../pool/types.js'", () => {
-    // `StepDefinition` is surfaced via pool/types.ts (which re-exports it from
-    // core/types.ts). The task pins the import path to ../pool/types.js.
-    expect(src).toMatch(/import\s+type\s*\{[^}]*\bStepDefinition\b[^}]*\}\s*from\s*['"]\.\.\/pool\/types\.js['"]/);
+  it("imports StepDefinition (type-only) from '../core/types.js'", () => {
+    // `StepDefinition` is surfaced via core/types.ts (which re-exports it from
+    // @engin/shared/types). The task repointed the import to ../core/types.js.
+    expect(src).toMatch(/import\s+type\s*\{[^}]*\bStepDefinition\b[^}]*\}\s*from\s*['"]\.\.\/core\/types\.js['"]/);
   });
 });
 

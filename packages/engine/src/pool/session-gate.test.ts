@@ -974,3 +974,399 @@ describe('SessionGate provider-level caps', () => {
     expect(snap.providers.length).toBe(1); // opencode-go has no provider cap
   });
 });
+
+// ─── Abort race-hardening & waiter-queue cleanup ──────────────────────────
+//
+// SessionGate.run() guards three abort race conditions:
+//
+//   1. Pre-queue abort — the signal fires while the waiter is still in the
+//      FIFO queue. onAbort splices the waiter out and rejects with AbortError.
+//      No slot is consumed (the waiter never reached tryAcquire/dispatch).
+//   2. Abort-vs-dispatch — the signal fires AFTER dispatch() has shifted the
+//      waiter from the queue (consuming a slot) but BEFORE the awaited
+//      waitPromise unblocks. The waiter wakes, discovers this.signal.aborted
+//      === true inside the try block, and rejects; the finally block releases
+//      the slot it just consumed.
+//   3. Already-aborted gate — run() on a gate whose signal is already aborted
+//      rejects immediately at the top of run() without touching any counter.
+//
+// These tests exercise all three paths plus waiter-queue cleanup and abort-
+// listener teardown (no leak after normal completion).
+
+describe('SessionGate abort race-hardening & queue cleanup', () => {
+  // ── Pre-queue abort removes waiter from FIFO, no slot consumed ──────
+  it('pre-queue abort: waiter spliced from FIFO, rejects, no slot consumed', async () => {
+    const ac = new AbortController();
+    const gate = makeGate({ total: 1 }, ac.signal);
+    const profile = makeProfile('p', 'm');
+
+    const hold = deferred();
+
+    // run1 holds the only total slot.
+    const p1 = gate.run(profile, async () => {
+      await hold.promise;
+      return 'r1';
+    });
+
+    // run2 queues behind run1 (slot is held → slow path).
+    const p2 = gate.run(profile, async () => 'r2');
+
+    await sleep(10);
+    expect(gate.availableTotal()).toBe(0); // slot held by run1
+
+    // Abort while run2 is still in the FIFO queue (pre-queue abort path).
+    ac.abort();
+
+    // run2 is rejected with AbortError — name and message both match.
+    await expect(p2).rejects.toThrow('AbortError');
+    const err = await p2.catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).name).toBe('AbortError');
+
+    // The aborted waiter was removed from the queue, NOT given a slot.
+    // availableTotal is still 0 (run1 holds) — no slot leaked to run2.
+    expect(gate.availableTotal()).toBe(0);
+
+    // run1 completes normally (in-flight calls are not rejected by the gate).
+    hold.resolve();
+    expect(await p1).toBe('r1');
+
+    // After run1 settles the slot is fully available.
+    expect(gate.availableTotal()).toBe(1);
+  });
+
+  // ── Abort-vs-dispatch race (dispatch THEN abort) ────────────────────
+  //
+  // This is the hardest race to trigger: dispatch() must shift the waiter
+  // from the queue (consuming a slot) BEFORE abort fires. We achieve this
+  // deterministically by using manual acquire/release — release() calls
+  // dispatch() synchronously, and we abort immediately after in the same
+  // synchronous stack.
+
+  it('abort-vs-dispatch: dispatched waiter discovers abort, releases consumed slot', async () => {
+    const ac = new AbortController();
+    const gate = makeGate({ total: 1 }, ac.signal);
+    const profile = makeProfile('p', 'm');
+
+    let onReleaseCount = 0;
+    gate.onRelease = () => {
+      onReleaseCount++;
+    };
+
+    // Hold the only slot manually so we can release it synchronously.
+    expect(gate.acquire(profile)).toBe(true);
+    expect(gate.availableTotal()).toBe(0);
+
+    // Queue a waiter via run().
+    let fnRan = false;
+    const p2 = gate.run(profile, async () => {
+      fnRan = true;
+      return 'r2';
+    });
+
+    await sleep(10);
+    expect(fnRan).toBe(false); // still queued, not dispatched
+
+    // Release the slot — dispatch() synchronously shifts the waiter from
+    // the queue, consumes the freed slot, and queues waiter.resolve() as a
+    // microtask.
+    gate.release(profile);
+
+    // Immediately abort — the waiter is NO LONGER in the queue (dispatch
+    // already shifted it). onAbort finds idx === -1 and does nothing.
+    ac.abort();
+
+    // The waiter's resolve microtask fires → waitPromise resolves → run2
+    // wakes → discovers this.signal.aborted === true → throws AbortError
+    // before fn is called → finally releases the slot.
+    await expect(p2).rejects.toThrow('AbortError');
+    expect(fnRan).toBe(false); // fn was never entered
+
+    // The slot consumed by dispatch was released by the race guard.
+    expect(gate.availableTotal()).toBe(1);
+
+    // onRelease fired exactly twice: once for the manual release, once for
+    // the race-guard release in run2's finally.
+    expect(onReleaseCount).toBe(2);
+
+    // A subsequent acquire confirms the slot is truly free.
+    expect(gate.acquire(profile)).toBe(true);
+    expect(gate.availableTotal()).toBe(0);
+    gate.release(profile);
+    expect(gate.availableTotal()).toBe(1);
+  });
+
+  // ── Abort-vs-dispatch via microtask interleaving (RAII path) ────────
+  //
+  // Genuine abort-vs-dispatch race through the RAII run() path. The hard
+  // part is the timing: dispatch() must shift the waiter out of its FIFO
+  // (consuming a slot) BEFORE abort fires, so onAbort's queue splice is a
+  // no-op and the waiter only discovers the abort when it wakes.
+  //
+  // When the holder's deferred resolves, the microtask chain is:
+  //   microtask 1: holder fn resumes and resolves its promise
+  //   microtask 2: run()'s `await resultPromise` resumes → finally release()
+  //                → releaseSlot() → dispatch() shifts the waiter (slot
+  //                consumed) and queues waiter.resolve() as microtask 3
+  //   microtask 3: waiter.resolve() fires → waitPromise resolves → run2 wakes
+  //
+  // So the abort must land AFTER microtask 2 (dispatch) but BEFORE microtask 3
+  // (waiter wakes). A single `await Promise.resolve()` yields only ONE
+  // microtask — which lands the abort BEFORE dispatch runs. That is the
+  // pre-queue abort path (covered by the test above), NOT this race: the
+  // waiter is still in its FIFO when abort fires and is simply spliced out.
+  // We schedule the abort TWO microtasks out via nested queueMicrotask so it
+  // lands inside the genuine race window.
+  //
+  // Discriminator: onRelease fires once for the holder's release AND once
+  // more for the waiter's race-guard release in the finally block →
+  // onReleaseCount === 2. Under the pre-queue path it would be exactly 1
+  // (the waiter never consumed a slot), so this assertion PROVES dispatch
+  // admitted the waiter before the abort.
+
+  it('abort-vs-dispatch via microtask interleaving: waiter dispatched then wakes to abort, slot released', async () => {
+    const ac = new AbortController();
+    const gate = makeGate({ total: 1 }, ac.signal);
+    const profile = makeProfile('p', 'm');
+
+    let onReleaseCount = 0;
+    gate.onRelease = () => {
+      onReleaseCount++;
+    };
+
+    const hold = deferred();
+
+    const p1 = gate.run(profile, async () => {
+      await hold.promise;
+      return 'r1';
+    });
+
+    let fnRan = false;
+    const p2 = gate.run(profile, async () => {
+      fnRan = true;
+      return 'r2';
+    });
+
+    // Attach handlers synchronously so p2's rejection (which fires while we
+    // are still awaiting p1, inside the race window) is never reported as an
+    // unhandled rejection.
+    const p1Settled = p1.then(
+      (v) => ({ ok: true as const, v }),
+      (e) => ({ ok: false as const, e }),
+    );
+    const p2Settled = p2.then(
+      (v) => ({ ok: true as const, v }),
+      (e) => ({ ok: false as const, e }),
+    );
+
+    await sleep(10);
+
+    // Resolve the holder, then schedule the abort TWO microtasks out so it
+    // lands AFTER dispatch has shifted the waiter but BEFORE the waiter wakes.
+    hold.resolve();
+    queueMicrotask(() => queueMicrotask(() => ac.abort()));
+
+    const r1 = await p1Settled;
+    const r2 = await p2Settled;
+
+    // p1 completes normally — its abort check ran (and passed) before the
+    // abort fired, and it is never re-checked after fn resolves.
+    expect(r1.ok).toBe(true);
+    if (r1.ok) {
+      expect(r1.v).toBe('r1');
+    }
+
+    // p2 rejected: it WAS dispatched, woke, and discovered this.signal.aborted
+    // before fn was ever entered.
+    expect(r2.ok).toBe(false);
+    if (!r2.ok) {
+      expect(r2.e).toBeInstanceOf(Error);
+      expect((r2.e as Error).name).toBe('AbortError');
+    }
+    expect(fnRan).toBe(false);
+
+    // PROOF of the race path: onRelease fired exactly twice — once for the
+    // holder's release and once for the waiter's race-guard release. The
+    // pre-queue abort path would yield 1 (waiter never consumed a slot), so
+    // this assertion fails if the timing regresses to path 1.
+    expect(onReleaseCount).toBe(2);
+
+    // The slot the waiter briefly consumed was released by the race guard.
+    expect(gate.availableTotal()).toBe(1);
+
+    // A subsequent acquire() (which ignores the abort signal) confirms the
+    // slot is genuinely free, not phantom.
+    expect(gate.acquire(profile)).toBe(true);
+    expect(gate.availableTotal()).toBe(0);
+    gate.release(profile);
+    expect(gate.availableTotal()).toBe(1);
+  });
+
+  // ── Multiple waiters aborted, queue fully cleaned ───────────────────
+  it('multiple queued waiters all reject on abort; queue cleaned, no phantom slots', async () => {
+    const ac = new AbortController();
+    const gate = makeGate({ total: 1 }, ac.signal);
+    const profile = makeProfile('p', 'm');
+
+    const hold = deferred();
+    const p1 = gate.run(profile, async () => {
+      await hold.promise;
+      return 'r1';
+    });
+
+    const p2 = gate.run(profile, async () => 'r2');
+    const p3 = gate.run(profile, async () => 'r3');
+    const p4 = gate.run(profile, async () => 'r4');
+
+    await sleep(10);
+    expect(gate.availableTotal()).toBe(0); // all held back by run1
+
+    // Pre-attach rejection handlers BEFORE aborting. ac.abort() fires
+    // onAbort synchronously, which rejects all three wait promises at once.
+    // Without pre-attached handlers, the rejections would be unhandled
+    // until the first await — Bun treats that as an error.
+    const e2 = p2.catch((e: unknown) => e);
+    const e3 = p3.catch((e: unknown) => e);
+    const e4 = p4.catch((e: unknown) => e);
+
+    // Abort — all three queued waiters are in the FIFO.
+    ac.abort();
+
+    // All three reject with AbortError.
+    expect(((await e2) as Error).name).toBe('AbortError');
+    expect(((await e3) as Error).name).toBe('AbortError');
+    expect(((await e4) as Error).name).toBe('AbortError');
+
+    // No slot was consumed by any of the aborted waiters.
+    expect(gate.availableTotal()).toBe(0);
+
+    // run1 completes normally.
+    hold.resolve();
+    expect(await p1).toBe('r1');
+
+    // After run1 settles the gate is fully available — no phantom waiters
+    // remain in the queue to steal the freed slot.
+    expect(gate.availableTotal()).toBe(1);
+
+    // snapshot confirms no leaked capacity.
+    const snap = gate.snapshot();
+    expect(snap.totalAvailable).toBe(1);
+    expect(snap.totalCap).toBe(1);
+  });
+
+  // ── Abort listener cleanup after normal completion ─────────────────
+  //
+  // After a waiter resolves normally, the onAbort listener is removed from
+  // the signal via removeEventListener (called right after the awaited
+  // waitPromise). Aborting later must not cause any unhandled rejection or
+  // double-settling of the already-completed run(). We verify this directly
+  // by installing an 'unhandledRejection' monitor around the late abort.
+
+  it('abort listener removed after normal completion: no leak, no double-settle, no unhandled rejection', async () => {
+    const ac = new AbortController();
+    const gate = makeGate({ total: 1 }, ac.signal);
+    const profile = makeProfile('p', 'm');
+
+    // Capture any unhandled rejection that escapes during the test — there
+    // must be none. If the onAbort listener were NOT removed after normal
+    // completion and tried to reject the already-settled run() promise, the
+    // rejection would surface here.
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => {
+      unhandled.push(reason);
+    };
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      // run() completes normally before any abort.
+      const result = await gate.run(profile, async () => 'ok');
+      expect(result).toBe('ok');
+      expect(gate.availableTotal()).toBe(1);
+
+      // Abort AFTER the waiter has already completed and its listener removed.
+      ac.abort();
+
+      // Drain the microtask/task queues so any stray rejection would be
+      // reported before we assert.
+      await sleep(10);
+
+      // No unhandled rejection escaped — the listener was cleaned up.
+      expect(unhandled).toEqual([]);
+
+      // The gate is now in aborted state — new run() calls reject immediately
+      // (already-aborted gate path).
+      await expect(gate.run(profile, async () => 'x')).rejects.toThrow('AbortError');
+
+      // availableTotal is unaffected — already-aborted run() never touches
+      // counters, and the late abort did not double-release.
+      expect(gate.availableTotal()).toBe(1);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
+  });
+
+  // ── Per-model bucket capacity restored after pre-queue abort ────────
+  it('pre-queue abort does not inflate or deflate per-model bucket capacity', async () => {
+    const ac = new AbortController();
+    const gate = makeGate({ total: 2, perModel: { 'p:m': 1 } }, ac.signal);
+    const profile = makeProfile('p', 'm');
+
+    const hold = deferred();
+    const p1 = gate.run(profile, async () => {
+      await hold.promise;
+      return 'r1';
+    });
+
+    // run2 queues behind the per-model cap (p:m cap = 1).
+    const p2 = gate.run(profile, async () => 'r2');
+
+    await sleep(10);
+
+    // p:m bucket has cap=1, all consumed by p1.
+    let snap = gate.snapshot();
+    const bucket = snap.models.find((m) => m.key === 'p:m');
+    expect(bucket?.available).toBe(0);
+    expect(bucket?.cap).toBe(1);
+
+    ac.abort();
+    await expect(p2).rejects.toThrow('AbortError');
+
+    // After abort, p2 was spliced from the queue — per-model available
+    // is unchanged (still 0 because p1 holds).
+    snap = gate.snapshot();
+    expect(snap.models.find((m) => m.key === 'p:m')?.available).toBe(0);
+
+    hold.resolve();
+    expect(await p1).toBe('r1');
+
+    // After p1 settles, per-model bucket and total are fully restored.
+    snap = gate.snapshot();
+    expect(snap.models.find((m) => m.key === 'p:m')?.available).toBe(1);
+    expect(snap.totalAvailable).toBe(2);
+  });
+
+  // ── Already-aborted gate: run() rejects without touching counters ──
+  it('already-aborted gate: run() rejects immediately, no counter touched, no bucket created', async () => {
+    const ac = new AbortController();
+    ac.abort(); // abort before any run()
+
+    const gate = makeGate({ total: 3, perModel: { 'p:m': 2 } }, ac.signal);
+    const profile = makeProfile('p', 'm');
+
+    expect(gate.availableTotal()).toBe(3);
+
+    // Multiple run() calls all reject immediately (top-of-run check).
+    await expect(gate.run(profile, async () => 'a')).rejects.toThrow('AbortError');
+    await expect(gate.run(profile, async () => 'b')).rejects.toThrow('AbortError');
+    const err = await gate.run(profile, async () => 'c').catch((e: unknown) => e);
+    expect((err as Error).name).toBe('AbortError');
+
+    // availableTotal unchanged — no slot was consumed or released.
+    expect(gate.availableTotal()).toBe(3);
+
+    // The per-model bucket was never materialized (run() threw before
+    // bucket() was called).
+    const snap = gate.snapshot();
+    expect(snap.models).toEqual([]);
+    expect(snap.totalAvailable).toBe(3);
+  });
+});

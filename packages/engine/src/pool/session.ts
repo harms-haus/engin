@@ -50,6 +50,7 @@ import { classify } from '../core/error-classifier.js';
 import { promptForStructured } from '../core/structured-output.js';
 import type { AgentProfile, StatusCallbacks } from '../core/types.js';
 import { forwardAgentStatus, safeErrorMessage } from '../core/utils.js';
+import { createSessionWatchdog, WatchdogTimeoutError } from './session-watchdog.js';
 import { assertSafeName } from './validation.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────
@@ -177,14 +178,6 @@ function isPositiveFinite(n: number | undefined): n is number {
  *  when the model goes silent for this whole window — it is NOT a wall-clock
  *  cap on the session. */
 export const DEFAULT_WATCHDOG_TIMEOUT_MS = 300_000;
-
-/** Sentinel error thrown internally when the watchdog timer fires. */
-class WatchdogTimeoutError extends Error {
-  constructor(timeoutMs: number) {
-    super(`Session watchdog timed out after ${timeoutMs}ms of inactivity`);
-    this.name = 'WatchdogTimeoutError';
-  }
-}
 
 /** Write `data` to `filePath` and fsync the file descriptor (durability). */
 function writeAndFsync(filePath: string, data: string): void {
@@ -447,58 +440,23 @@ async function executeAttempt(
   const sessionPath = session.sessionFile ?? sessionDir;
 
   // ── Watchdog setup ─────────────────────────────────────────────────────
-  let watchdogTimer: ReturnType<typeof setTimeout> | undefined;
-
-  const armWatchdog = (): void => {
-    if (watchdogTimeoutMs === undefined) return;
-    if (watchdogTimer !== undefined) clearTimeout(watchdogTimer);
-    watchdogTimer = setTimeout(() => {
-      // Abort the session. The raced prompt/structured promise rejects when
-      // the abort propagates — that rejection is swallowed by
-      // `raceWithWatchdog` (a no-op `.catch` is attached to the loser).
-      session.abort().catch(() => {
-        /* swallow abort errors */
-      });
-      // Deliver the watchdog timeout via the shared reject captured by
-      // `raceWithWatchdog`.
-      watchdogReject?.(new WatchdogTimeoutError(watchdogTimeoutMs));
-    }, watchdogTimeoutMs);
-  };
-
-  let watchdogReject: ((reason: unknown) => void) | undefined;
-
-  /**
-   * Race `work` against the watchdog timer. When the watchdog fires first,
-   * `work`'s eventual rejection (triggered by `session.abort()`) is swallowed
-   * via a no-op `.catch` so it never surfaces as an unhandled rejection.
-   * Returns the resolved value of `work`, or throws `WatchdogTimeoutError`
-   * when the watchdog wins the race.
-   */
-  const raceWithWatchdog = <T>(work: Promise<T>): Promise<T> => {
-    if (watchdogTimeoutMs === undefined) return work;
-    const watchdogPromise = new Promise<never>((_, reject) => {
-      watchdogReject = reject;
-    });
-    // Pre-attach a no-op catch so that when the watchdog wins and the abort
-    // propagates into `work`, the resulting rejection is swallowed (mirrors
-    // the same pattern from the legacy step runner).
-    work.catch(() => {
-      /* swallow abort-triggered rejection from the raced loser */
-    });
-    return Promise.race([work, watchdogPromise]) as Promise<T>;
-  };
+  const watchdog = createSessionWatchdog(watchdogTimeoutMs, () =>
+    session.abort().catch(() => {
+      /* swallow abort errors */
+    }),
+  );
 
   // Subscribe to runtime events for watchdog reset. `onAgentStatus` (wired
   // above via forwardAgentStatus) handles status-callback forwarding; this
   // subscription is ONLY for resetting the watchdog idle timer on activity.
   const unsubscribe = session.subscribe((event) => {
     if (event.type === 'turn_start' || event.type === 'tool_execution_start' || event.type === 'turn_end') {
-      armWatchdog();
+      watchdog.arm();
     }
   });
 
   // Arm the initial watchdog timer.
-  armWatchdog();
+  watchdog.arm();
 
   // ── Fire onSessionStart ────────────────────────────────────────────────
   ctx.onStatus?.onSessionStart?.({
@@ -532,15 +490,15 @@ async function executeAttempt(
         throw new SessionError('Structured output mode requires a schema', { kind: 'permanent', retryable: false });
       }
       const structuredPromise = promptForStructured(session, promptText, schema, { maxRetries: 3 });
-      const { result: data } = await raceWithWatchdog(structuredPromise);
+      const { result: data } = await watchdog.race(structuredPromise);
       result = { mode: 'structured', data };
     } else if (ctx.spec.outputMode === 'filesystem') {
       // Filesystem: prompt the agent; files are written during the turn.
-      await raceWithWatchdog(session.prompt(promptText));
+      await watchdog.race(session.prompt(promptText));
       result = { mode: 'filesystem', files: [] };
     } else {
       // Text mode: prompt + extract text + fail-fast on empty/error.
-      await raceWithWatchdog(session.prompt(promptText));
+      await watchdog.race(session.prompt(promptText));
 
       const text = session.getLastAssistantText();
       const lastAssistant = session.getLastAssistantMessage();
@@ -576,7 +534,7 @@ async function executeAttempt(
     return result;
   } finally {
     // ── Cleanup (every exit path) ────────────────────────────────────────
-    if (watchdogTimer !== undefined) clearTimeout(watchdogTimer);
+    watchdog.dispose();
     unsubscribe();
     ctx.activeSessions.delete(session);
     try {

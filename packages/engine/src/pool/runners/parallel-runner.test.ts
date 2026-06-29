@@ -343,3 +343,168 @@ describe('parallelRunner (SessionPlan)', () => {
     expect(runnerA.execute).toBeInstanceOf(Function);
   });
 });
+
+// ─── Characterization: results/batch size mismatch ──────────────────────
+//
+// These tests characterize the CURRENT behavior of parallelRunner when the
+// results array length does not match the combined batch size. The runner
+// does NOT validate this — it silently truncates or ignores. These tests PIN
+// that behavior so a future hardening change (adding an assertion) is a
+// conscious, test-visible decision.
+//
+// The split logic under test is:
+//
+//   let offset = 0;
+//   for (const entry of childEntries) {
+//     const childResults = results.slice(offset, offset + entry.batch.length);
+//     offset += entry.batch.length;
+//     await entry.gen.next(childResults);
+//   }
+//
+// `Array.prototype.slice` clamps its end index to the array length and never
+// throws, so a too-short `results` array yields short/empty slices and a
+// too-long `results` array simply leaves the tail untouched.
+
+describe('parallelRunner: results/batch size mismatch (characterization)', () => {
+  // ── C1. Fewer results than specs (silent truncation) ──────────────────
+
+  it('C1. fewer results than specs silently truncates the trailing child to []', async () => {
+    const child0Results: SessionResult[][] = [];
+    const child1Results: SessionResult[][] = [];
+
+    // child0 contributes 2 specs, child1 contributes 1 spec → combined = 3.
+    const child0 = makeMockChild([[makeSpec('c0/s0#1'), makeSpec('c0/s1#1')]], child0Results);
+    const child1 = makeMockChild([[makeSpec('c1/s0#1')]], child1Results);
+
+    const factory = parallelRunner([child0, child1]);
+    const runner = factory();
+    const ctx = makePlanContext();
+    const gen = runner.plan(ctx);
+
+    const first = await gen.next();
+    const combinedBatch = first.value as SessionSpec[];
+    expect(combinedBatch).toHaveLength(3);
+
+    // Feed back only TWO results for a THREE-spec batch.
+    const r0: SessionResult = { mode: 'text', text: 'r0' };
+    const r1: SessionResult = { mode: 'text', text: 'r1' };
+    const done = await gen.next([r0, r1]);
+
+    expect(done.done).toBe(true);
+
+    // child0: slice(0, 2) → [r0, r1]  (correct, full batch)
+    expect(child0Results).toHaveLength(1);
+    expect(child0Results[0]).toEqual([r0, r1]);
+
+    // child1: slice(2, 3) on a length-2 array → []  (SILENT TRUNCATION)
+    expect(child1Results).toHaveLength(1);
+    expect(child1Results[0]).toEqual([]);
+  });
+
+  // ── C2. More results than specs (extras silently dropped) ────────────
+
+  it('C2. more results than specs silently drops the extras', async () => {
+    const child0Results: SessionResult[][] = [];
+    const child1Results: SessionResult[][] = [];
+
+    // child0 contributes 1 spec, child1 contributes 1 spec → combined = 2.
+    const child0 = makeMockChild([[makeSpec('c0/s0#1')]], child0Results);
+    const child1 = makeMockChild([[makeSpec('c1/s0#1')]], child1Results);
+
+    const factory = parallelRunner([child0, child1]);
+    const runner = factory();
+    const ctx = makePlanContext();
+    const gen = runner.plan(ctx);
+
+    const first = await gen.next();
+    const combinedBatch = first.value as SessionSpec[];
+    expect(combinedBatch).toHaveLength(2);
+
+    // Feed back THREE results for a TWO-spec batch. r2 has nowhere to go.
+    const r0: SessionResult = { mode: 'text', text: 'r0' };
+    const r1: SessionResult = { mode: 'text', text: 'r1' };
+    const r2: SessionResult = { mode: 'text', text: 'r2-dropped' };
+    const done = await gen.next([r0, r1, r2]);
+
+    expect(done.done).toBe(true);
+
+    // child0: slice(0, 1) → [r0]
+    expect(child0Results).toHaveLength(1);
+    expect(child0Results[0]).toEqual([r0]);
+
+    // child1: slice(1, 2) → [r1]  (r2 is never forwarded — SILENT DROP)
+    expect(child1Results).toHaveLength(1);
+    expect(child1Results[0]).toEqual([r1]);
+
+    // No third child exists, so r2 cannot be observed via any tracker.
+    // (Its absence is the assertion: only r0 and r1 ever reach a child.)
+    const allForwarded = [...child0Results.flat(), ...child1Results.flat()];
+    expect(allForwarded).toHaveLength(2);
+    expect(allForwarded).not.toContain(r2);
+  });
+
+  // ── C3. Zero results for a non-zero batch ────────────────────────────
+
+  it('C3. zero results for a non-zero batch yields an empty slice (no throw)', async () => {
+    const childResults: SessionResult[][] = [];
+
+    // Single child contributes a 2-spec batch.
+    const child = makeMockChild([[makeSpec('c0/s0#1'), makeSpec('c0/s1#1')]], childResults);
+
+    const factory = parallelRunner([child]);
+    const runner = factory();
+    const ctx = makePlanContext();
+    const gen = runner.plan(ctx);
+
+    const first = await gen.next();
+    const combinedBatch = first.value as SessionSpec[];
+    expect(combinedBatch).toHaveLength(2);
+
+    // Feed back ZERO results for a TWO-spec batch.
+    const done = await gen.next([]);
+
+    expect(done.done).toBe(true);
+
+    // child: slice(0, 2) on a length-0 array → []  (SILENT TRUNCATION)
+    expect(childResults).toHaveLength(1);
+    expect(childResults[0]).toEqual([]);
+  });
+
+  // ── C4. Correct count (happy path, for contrast) ─────────────────────
+
+  it('C4. correct result count splits exactly across children (happy path)', async () => {
+    const child0Results: SessionResult[][] = [];
+    const child1Results: SessionResult[][] = [];
+
+    // child0 contributes 2 specs, child1 contributes 1 spec → combined = 3.
+    const child0 = makeMockChild([[makeSpec('c0/s0#1'), makeSpec('c0/s1#1')]], child0Results);
+    const child1 = makeMockChild([[makeSpec('c1/s0#1')]], child1Results);
+
+    const factory = parallelRunner([child0, child1]);
+    const runner = factory();
+    const ctx = makePlanContext();
+    const gen = runner.plan(ctx);
+
+    const first = await gen.next();
+    const combinedBatch = first.value as SessionSpec[];
+    expect(combinedBatch).toHaveLength(3);
+
+    // Feed back exactly THREE results for the THREE-spec batch.
+    const r0: SessionResult = { mode: 'text', text: 'r0' };
+    const r1: SessionResult = { mode: 'text', text: 'r1' };
+    const r2: SessionResult = { mode: 'text', text: 'r2' };
+    const done = await gen.next([r0, r1, r2]);
+
+    expect(done.done).toBe(true);
+
+    // Exact split: child0 → [r0, r1], child1 → [r2].
+    expect(child0Results).toHaveLength(1);
+    expect(child0Results[0]).toEqual([r0, r1]);
+    expect(child1Results).toHaveLength(1);
+    expect(child1Results[0]).toEqual([r2]);
+
+    // Everything forwarded, nothing dropped or invented.
+    const allForwarded = [...child0Results.flat(), ...child1Results.flat()];
+    expect(allForwarded).toEqual([r0, r1, r2]);
+  });
+});

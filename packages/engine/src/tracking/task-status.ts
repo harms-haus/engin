@@ -1,10 +1,8 @@
-// ─── TaskTracker — thin read-only task store ───────────────────────────────
+// ─── TaskTracker — minimal in-memory task store ────────────────────────────
 //
-// All scheduling logic has been migrated to TaskGraph (pool/task-graph.ts).
-// This class is a minimal store that WorkflowStatusTracker
-// (tracking/workflow-status.ts) depends on for basic task storage and
-// serialization. Once WorkflowStatusTracker is removed (D2), this file can
-// be deleted entirely.
+// Thin read-only store backing WorkflowStatusTracker's task storage and
+// .engin-state.json serialization. All scheduling logic lives in TaskGraph
+// (pool/task-graph.ts).
 
 import type { Task, TaskStatus } from '../core/types.js';
 

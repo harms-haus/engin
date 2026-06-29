@@ -2,9 +2,8 @@ import { afterEach, describe, expect, it } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { Task } from '../core/types.js';
+import type { StepDefinition, Task } from '../core/types.js';
 import { buildPrompt } from './prompt-builder.js';
-import type { StepDefinition } from './types.js';
 
 // ── Fixture cleanup ────────────────────────────────────────────────────────
 

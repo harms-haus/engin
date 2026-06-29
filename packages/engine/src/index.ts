@@ -15,6 +15,7 @@ export * from './core/title-generator.js';
 export * from './core/types.js';
 export * from './core/utils.js';
 export * from './core/workflow-loader.js';
+export * from './core/worktree-final-merge.js';
 export * from './core/worktree-fixup.js';
 export * from './core/worktree-lifecycle.js';
 export * from './core/worktree-manager.js';

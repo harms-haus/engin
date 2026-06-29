@@ -8,17 +8,9 @@
 //   2. Re-exports the agent-registry API and the event forwarder so consumers
 //      have a single import surface.
 //
-// Also guards the engine `index.ts` public surface cleanup:
-//   - `core/harness-factory.js` is no longer exported from the engine barrel.
-//   - `core/write-sandbox.js` is no longer exported from the engine barrel
-//     (the write-sandbox module now lives under the adapter directory).
-//
 // Module under test: ./index.js (and ../index.js for the engine barrel).
 
 import { beforeEach, describe, expect, it } from 'bun:test';
-import { readFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 // ─── Import the barrels under test ──────────────────────────────────────────
 //
@@ -61,11 +53,6 @@ const isolatedRequireAgentPlugin = IsolatedRegistry.requireAgentPlugin;
 import { codexAdapter } from './codex/adapter.js';
 import { cursorAdapter } from './cursor/adapter.js';
 import { piCodingAgentAdapter } from './pi-coding-agent/adapter.js';
-
-// ─── Paths ──────────────────────────────────────────────────────────────────
-
-const here = dirname(fileURLToPath(import.meta.url));
-const engineIndexPath = resolve(here, '..', 'index.ts');
 
 /** The built-in adapter ids that must self-register on barrel import. */
 const BUILTIN_ADAPTER_IDS = ['pi-coding-agent', 'codex', 'cursor'] as const;
@@ -188,28 +175,4 @@ describe('sessions/index.ts — re-exported registry API', () => {
     expect(engineBarrel.DEFAULT_AGENT_PLUGIN_ID).toBe('pi-coding-agent');
     expect(engineBarrel.createAgentEventForwarder).toBeInstanceOf(Function);
   });
-});
-
-// ─── Engine index.ts public surface cleanup ────────────────────────────────
-//
-// The harness-factory and core/write-sandbox modules have been removed from
-// the engine barrel. We assert against the source file so the test fails fast
-// if either line is accidentally reintroduced. This mirrors the task
-// verification: `rg 'harness-factory|core/write-sandbox' index.ts` → empty.
-
-describe('engine index.ts — removed exports', () => {
-  const source = readFileSync(engineIndexPath, 'utf8');
-
-  it('no longer exports core/harness-factory.js', () => {
-    expect(source).not.toContain('core/harness-factory.js');
-    expect(source).not.toMatch(/export\s+\*\s+from\s+['"]\.\/core\/harness-factory\.js['"]/);
-  });
-
-  it('no longer exports core/write-sandbox.js', () => {
-    expect(source).not.toContain('core/write-sandbox.js');
-    expect(source).not.toMatch(/export\s+\*\s+from\s+['"]\.\/core\/write-sandbox\.js['"]/);
-  });
-
-  // removed in C2 per §2.14 — the sessions barrel was folded into ./agents/index.js;
-  // the engine barrel re-exports ./agents/index.js (tested by the Core section test above).
 });

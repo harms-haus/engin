@@ -42,6 +42,7 @@ import type { AuditLog } from '../tracking/audit-log.js';
 import type { SessionPlanContext, SessionPlanRunner } from './runners/session-plan-types.js';
 import type { CandidateTrace } from './scheduler-audit.js';
 import { buildCapacityFailureDescription } from './scheduler-audit.js';
+import { GENERATOR_TIMEOUT_MS, withTimeout } from './scheduler-timeout.js';
 import type { SessionGate } from './session-gate.js';
 import type { SessionResult, SessionSpec } from './session.js';
 import { isSessionCached } from './session.js';
@@ -49,33 +50,9 @@ import type { TaskGraph, TaskGraphEntry } from './task-graph.js';
 
 // ─── Internal constants ───────────────────────────────────────────────────
 
-/** Grace period for plan-generator operations (gen.next / gen.return) before
- *  the scheduler gives up and treats the operation as hung. A leaked
- *  generator is preferred over blocking the scheduler indefinitely. */
-const GENERATOR_TIMEOUT_MS = 5_000;
-
-/**
- * Error raised by {@link SessionScheduler.withTimeout} when a plan-generator
- * operation (gen.next / gen.return) does not settle within its grace period.
- *
- * This is a dedicated error class so callers can distinguish a generator/
- * plan timeout from a genuine error thrown by the wrapped promise — the catch
- * blocks in `nextNonEmptyBatch` and `cleanupGenerator` swallow it to keep the
- * scheduler running after a hung generator rather than failing the task.
- */
-export class GeneratorTimeoutError extends Error {
-  /** Label identifying the operation that timed out (e.g. 'plan generator next()'). */
-  readonly label: string;
-  /** The grace period, in milliseconds, that elapsed before the timeout fired. */
-  readonly ms: number;
-
-  constructor(label: string, ms: number) {
-    super(`${label} timed out after ${ms}ms`);
-    this.name = 'GeneratorTimeoutError';
-    this.label = label;
-    this.ms = ms;
-  }
-}
+/** Re-export {@link GeneratorTimeoutError} for callers that depend on the
+ *  historical pool surface (`pool/index.ts` → `session-scheduler.ts`). */
+export { GeneratorTimeoutError } from './scheduler-timeout.js';
 
 /** Maximum number of blank-slate retries a failed task gets after its initial
  *  attempt. Attempt 1 is the first run; up to MAX_RETRIES retries on top → at
@@ -1056,14 +1033,14 @@ export class SessionScheduler {
     // S2: wrap gen.next in a timeout race so a hanging generator can't block
     // the scheduler. Accept a leaked generator over blocking.
     // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-    let next = await this.withTimeout(entry.planGen!.next(seed), GENERATOR_TIMEOUT_MS, 'plan generator next()');
+    let next = await withTimeout(entry.planGen!.next(seed), GENERATOR_TIMEOUT_MS, 'plan generator next()');
     while (!next.done && next.value.length === 0) {
       emptyCount++;
       if (emptyCount > MAX_EMPTY_BATCHES) {
         throw new Error(`Session plan generator yielded ${emptyCount}+ empty batches without completing`);
       }
       // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-      next = await this.withTimeout(entry.planGen!.next([]), GENERATOR_TIMEOUT_MS, 'plan generator next()');
+      next = await withTimeout(entry.planGen!.next([]), GENERATOR_TIMEOUT_MS, 'plan generator next()');
     }
     return next;
   }
@@ -1271,7 +1248,7 @@ export class SessionScheduler {
     const entry = this.graph.getTask(taskId);
     if (!entry?.planGen) return;
     try {
-      await this.withTimeout(entry.planGen.return(undefined), GENERATOR_TIMEOUT_MS, 'plan generator return()');
+      await withTimeout(entry.planGen.return(undefined), GENERATOR_TIMEOUT_MS, 'plan generator return()');
     } catch (err) {
       console.warn(`[scheduler-${taskId}] Generator cleanup failed: ${safeErrorMessage(err)}`);
     }
@@ -1436,42 +1413,19 @@ export class SessionScheduler {
     }
   }
 
-  // ─── Timeout helper ─────────────────────────────────────────────────────
+  // ─── Timeout helper (delegates to the standalone utility) ───────────────
 
   /**
-   * Race a promise against a timeout. If the timeout fires first, the returned
-   * promise rejects with a {@link GeneratorTimeoutError} mentioning `label`. Used
-   * by S2 (planGen.next/return timeout) to prevent a hanging generator from
-   * blocking the scheduler indefinitely.
-   *
-   * The timeout timer is cleared via `.then()` callbacks when the promise
-   * settles first (resolve OR reject), so no timer leak lingers. When the
-   * timeout fires first the timer has already executed; a later settle still
-   * calls `clearTimeout` on the already-fired timer (a harmless no-op).
+   * Race a promise against a timeout. Thin delegate over the standalone
+   * {@link withTimeout} utility in `scheduler-timeout.ts`, retained so the
+   * scheduler surface stays backward-compatible. The implementation lives in
+   * the extracted module so workflow code outside the scheduler can reuse it.
    */
   private withTimeout<T>(p: Promise<T>, ms: number, label?: string): Promise<T> {
-    return new Promise<T>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        reject(new GeneratorTimeoutError(label ?? 'plan generator operation', ms));
-      }, ms);
-      // Don't let the timeout timer keep the process alive.
-      if (typeof timer === 'object' && 'unref' in timer) {
-        (timer as { unref?(): void }).unref?.();
-      }
-      p.then(
-        (val) => {
-          clearTimeout(timer);
-          resolve(val);
-        },
-        (err) => {
-          clearTimeout(timer);
-          reject(err);
-        },
-      );
-    });
+    return withTimeout(p, ms, label);
   }
 
-  // ─── Context builder ─────────────────────────────────────────────────────
+  // ─── Context builder ─────────────────────────────────────────────
 
   /**
    * Build a SessionPlanContext from the scheduler options + entry state.

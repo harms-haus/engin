@@ -17,7 +17,7 @@
 //   beforeTask?:           FirstWinsHook<BeforeTaskResult | undefined, BeforeTaskArgs> | …[];
 //
 // …with the accompanying arg/result types (imported from ../core/types.js for
-// Task and ../pool/types.js for StepDefinition, type-only). Each hook field
+// Task and ../core/types.js for StepDefinition, type-only). Each hook field
 // accepts EITHER a single subscriber function OR an array of them (the
 // `SingleFn | SingleFn[]` shape consumed by `HookRegistry.register`).
 //
@@ -36,7 +36,7 @@
 // they go GREEN once the spec is implemented.
 
 import { describe, expect, it } from 'bun:test';
-import type { Task } from '../../packages/engine/src/core/types.js';
+import type { StepDefinition, Task } from '../../packages/engine/src/core/types.js';
 import type {
   AfterPhaseArgs,
   AllRunHook,
@@ -55,7 +55,6 @@ import type {
   WorkflowHooks,
 } from '../../packages/engine/src/hooks/types.js';
 import type { SessionPlanRunner } from '../../packages/engine/src/pool/runners/session-plan-types.js';
-import type { StepDefinition } from '../../packages/engine/src/pool/types.js';
 
 // ─── Type-level exact equality utility ─────────────────────────────────────
 // Resolves to `true` iff X and Y are structurally identical (catches extra /
@@ -616,7 +615,7 @@ describe('subscriber round-trips', () => {
 describe('module surface', () => {
   it('types.js remains a loadable module with only type-level exports (no runtime circular dep)', async () => {
     // The new type-only imports (Task from ../core/types.js, StepDefinition
-    // from ../pool/types.js) are erased at runtime, so importing the module
+    // from ../core/types.js) are erased at runtime, so importing the module
     // must succeed and the resulting namespace must still carry no value exports.
     const mod = await import('../../packages/engine/src/hooks/types.js');
     expect(mod).toBeTypeOf('object');

@@ -7,8 +7,8 @@
 
 /**
  * Append a feedback entry to the task's reviewFeedback array, initializing if
- * needed. Mutates the task object in place — callers hold a direct reference
- * (see `TaskTracker.claimTasks`'s mutable-reference aliasing contract).
+ * needed. Mutates the task object in place because callers hold a direct
+ * reference to it.
  */
 export function appendReviewFeedback(task: { reviewFeedback?: string[] }, feedback: string): void {
   if (!task.reviewFeedback) {

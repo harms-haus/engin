@@ -5,16 +5,11 @@ import { isEnoentError } from '../core/utils.js';
 import { AuditLog } from './audit-log.js';
 import { TaskTracker } from './task-status.js';
 
-// ── Inlined serializer (formerly workflow-serializer.ts, removed in D2) ────
+// ── Private serialization helpers for .engin-state.json ────────────────────
 //
-// The .engin-state.json read/write/serialize logic previously lived in a
-// separate workflow-serializer.ts module. It has been absorbed here as
-// private (non-exported) module-level functions so the serializer module
-// could be deleted without affecting any consumer of WorkflowStatusTracker.
-// The EventStore (snapshot + events.jsonl) is the canonical persistence
-// layer going forward; this .engin-state.json path is transitional cruft
-// slated for full removal once D3/D4 migrate all consumers off
-// WorkflowStatusTracker.
+// Private module-level helpers for the .engin-state.json persistence path
+// used by WorkflowStatusTracker. The EventStore (snapshot + events.jsonl) is
+// the canonical persistence layer going forward.
 
 /**
  * Serialize a WorkflowStatusTracker's state into a plain WorkflowState object.
@@ -126,10 +121,6 @@ export class WorkflowStatusTracker {
         'abort',
         () => {
           // Cancel any outstanding active tasks before disposal.
-          // (TaskTracker no longer has a cancelTask method — D1 removed
-          //  scheduling. Direct status mutation is sufficient here since
-          //  this is the disposal path and WorkflowStatusTracker itself is
-          //  slated for removal in D2.)
           for (const t of this._taskTracker.getAllTasks()) {
             if (t.status === 'active') {
               t.status = 'cancelled';
@@ -395,14 +386,13 @@ export class WorkflowStatusTracker {
 
     // Rebuild TaskTracker from saved tasks
     if (data.tasks && data.tasks.length > 0) {
-      // preserveState skips fromJSON's default resetForRetry (which would also
-      // re-arm failed tasks). On resume we only want to re-arm tasks that were
+      // preserveState: true instructs fromJSON to restore tasks as-is without
+      // any transformation. On resume we only want to re-arm tasks that were
       // in-flight (active) when the run was interrupted — completed and failed
       // tasks keep their settled status so they are NOT re-run.
       tracker._taskTracker = TaskTracker.fromJSON({ tasks: data.tasks }, { preserveState: true });
       // Reset any tasks that were in-flight (active) when the run was
-      // interrupted so they can be re-run on resume. TaskTracker no longer
-      // has a resetStuckTasks method — direct mutation suffices.
+      // interrupted so they can be re-run on resume.
       for (const t of tracker._taskTracker.getAllTasks()) {
         if (t.status === 'active') {
           t.status = 'ready';

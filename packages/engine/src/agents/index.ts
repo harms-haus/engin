@@ -21,3 +21,20 @@ export {
   registerAgentPlugin,
   requireAgentPlugin,
 } from '../core/agent-registry.js';
+
+// ─── Write-sandbox utilities ──────────────────────────────────────────────────
+//
+// General-purpose path-safety helpers that enforce write-sandbox boundaries.
+// Re-exported here so custom agent plugins, workflows, and other consumers can
+// import them from the agents barrel or the engine entrypoint rather than from
+// the deep internal path under `pi-coding-agent/`.
+
+export {
+  canonicalizePath,
+  createWriteSandboxExtension,
+  findAllowedDir,
+  isPathWithin,
+  resolveAllowedDirs,
+  resolveToolPath,
+} from './pi-coding-agent/write-sandbox.js';
+export type { WriteSandboxOptions } from './pi-coding-agent/write-sandbox.js';

@@ -1,17 +1,11 @@
-// ─── Tests for worktree-operations.ts — unaffected by restoreSavedBranch removal ──
+// ─── Tests for worktree-operations.ts ──────────────────────────────────────
 //
-// Characterization tests verifying that deleting the dead `restoreSavedBranch`
-// helper from this module (consolidated into git.ts) does not change its
-// observable behavior. `restoreSavedBranch` was private dead code whose only
-// caller (`mergeWorktreeToMain`) was already removed by task-3.
-//
-// These tests verify:
-//   1. The module's two exported functions (`commitWorktreeChanges`,
-//      `createLintValidationGate`) remain importable and functional.
-//   2. `commitWorktreeChanges` does NOT call `checkoutBranch` — that primitive
-//      was only consumed by the now-deleted `restoreSavedBranch`, so no code
-//      path in this module should trigger it.
-//   3. `commitWorktreeChanges` is a no-op when there are no changes (clean tree).
+// Unit tests for the two exported functions of this module:
+//   1. `commitWorktreeChanges` — verifies its clean-tree no-op behavior
+//      (stage-all then early return when the diff is empty, with no commit
+//      message generated and no commit made).
+//   2. `createLintValidationGate` — export smoke test confirming the function
+//      remains importable.
 
 import { afterAll, beforeEach, describe, expect, it, mock } from 'bun:test';
 
@@ -26,7 +20,6 @@ const realWorktreeLifecycle = Object.assign({}, await import('./worktree-lifecyc
 const mockStageAll = mock((_dir: string): void => {});
 const mockGetDiff = mock((_dir: string): string => '');
 const mockCommitChanges = mock((_dir: string, _message: string): void => {});
-const mockCheckoutBranch = mock((_repoRoot: string, _branch: string): void => {});
 const mockGenerateCommitMessage = mock(async (): Promise<string> => 'chore: update');
 const mockRunTooledFixup = mock(
   async (): Promise<{ success: boolean; attempts: number; lastError?: string }> => ({
@@ -42,7 +35,6 @@ mock.module('./git.js', () => ({
   stageAll: mockStageAll,
   getDiff: mockGetDiff,
   commitChanges: mockCommitChanges,
-  checkoutBranch: mockCheckoutBranch,
 }));
 
 mock.module('./worktree-lifecycle.js', () => ({
@@ -73,7 +65,6 @@ beforeEach(() => {
   mockStageAll.mockReset();
   mockGetDiff.mockReset();
   mockCommitChanges.mockReset();
-  mockCheckoutBranch.mockReset();
   mockGenerateCommitMessage.mockReset();
   mockRunTooledFixup.mockReset();
 });
@@ -107,24 +98,5 @@ describe('commitWorktreeChanges — clean tree (no-op)', () => {
     // No commit message generated, no commit made.
     expect(mockGenerateCommitMessage).not.toHaveBeenCalled();
     expect(mockCommitChanges).not.toHaveBeenCalled();
-  });
-
-  it('does NOT invoke checkoutBranch (restoreSavedBranch was the only caller)', async () => {
-    // restoreSavedBranch — the ONLY consumer of checkoutBranch in this module —
-    // is being deleted as dead code. No code path in commitWorktreeChanges
-    // should ever call checkoutBranch. This test would FAIL if a future change
-    // accidentally wired branch switching into the commit flow.
-    mockGetDiff.mockReturnValue('some diff');
-    mockGenerateCommitMessage.mockResolvedValue('msg');
-
-    await WorktreeOperations.commitWorktreeChanges({
-      profilesDirs: ['/profiles'],
-      worktreePath: '/worktree',
-      taskPrompt: 'Do things',
-    });
-
-    // checkoutBranch was imported solely for the dead restoreSavedBranch.
-    // It must never be called by the live code.
-    expect(mockCheckoutBranch).not.toHaveBeenCalled();
   });
 });
