@@ -719,3 +719,110 @@ describe('SessionGate snapshot()', () => {
     expect(gate.snapshot().totalAvailable).toBe(3);
   });
 });
+
+// ── Provider-level caps ─────────────────────────────────────────────────────
+//
+// A `${provider}` key (no colon) in perModel establishes a shared pool across
+// ALL of that provider's models, applied IN ADDITION to any model/agent cap
+// and the total. This models providers whose models draw from a single
+// account-level rate-limit pool.
+
+describe('SessionGate provider-level caps', () => {
+  it('19. provider cap shared across models: total provider concurrency bounded', async () => {
+    // zai pool = 2 shared across glm-5.1 and glm-5.2; total left high so it
+    // never gates. Only the provider pool should bind.
+    const gate = makeGate({ total: 10, perModel: { zai: 2 } });
+    const hold = deferred();
+
+    const started: string[] = [];
+    const run = (model: string) =>
+      gate.run(makeProfile('zai', model), async () => {
+        started.push(model);
+        await hold.promise;
+        return model;
+      });
+
+    // Launch 3 sessions across two models — only 2 should start (provider pool).
+    const p1 = run('glm-5.1');
+    const p2 = run('glm-5.2');
+    const p3 = run('glm-5.1');
+    await sleep(10);
+
+    expect(started.sort()).toEqual(['glm-5.1', 'glm-5.2']);
+    const snap = gate.snapshot();
+    const zai = snap.providers.find((pv) => pv.key === 'zai');
+    expect(zai?.available).toBe(0);
+    expect(zai?.cap).toBe(2);
+
+    // Releasing one frees a provider slot → the 3rd proceeds.
+    hold.resolve();
+    await Promise.all([p1, p2, p3]);
+    expect(started.length).toBe(3);
+  });
+
+  it('20. provider cap layers under per-model cap (most restrictive wins)', () => {
+    // Provider pool 3, but glm-5.2 individually capped at 1.
+    const gate = makeGate({ total: 10, perModel: { zai: 3, 'zai:glm-5.2': 1 } });
+
+    // glm-5.2 limited to 1 by its model cap.
+    expect(gate.acquire({ provider: 'zai', model: 'glm-5.2' })).toBe(true);
+    expect(gate.acquire({ provider: 'zai', model: 'glm-5.2' })).toBe(false);
+    // Provider pool still has room (3 - 1 = 2) for a different model.
+    expect(gate.acquire({ provider: 'zai', model: 'glm-5.1' })).toBe(true);
+    expect(gate.acquire({ provider: 'zai', model: 'glm-5.1' })).toBe(true);
+    // Now provider pool exhausted (3 used) even though glm-5.1 has no model cap.
+    expect(gate.acquire({ provider: 'zai', model: 'glm-5.1' })).toBe(false);
+
+    const snap = gate.snapshot();
+    expect(snap.providers.find((p) => p.key === 'zai')?.available).toBe(0);
+  });
+
+  it('21. provider cap does not affect a different provider', () => {
+    const gate = makeGate({ total: 10, perModel: { zai: 1 } });
+    expect(gate.acquire({ provider: 'zai', model: 'glm-5.2' })).toBe(true);
+    // opencode-go unaffected by zai's pool.
+    expect(gate.acquire({ provider: 'opencode-go', model: 'deepseek' })).toBe(true);
+    expect(gate.acquire({ provider: 'zai', model: 'glm-5.1' })).toBe(false);
+  });
+
+  it('22. canStart reflects provider-pool saturation', () => {
+    const gate = makeGate({ total: 10, perModel: { zai: 1 } });
+    expect(gate.canStart({ provider: 'zai', model: 'glm-5.2' })).toBe(true);
+    gate.acquire({ provider: 'zai', model: 'glm-5.2' });
+    // Same provider, different model — still blocked by the shared pool.
+    expect(gate.canStart({ provider: 'zai', model: 'glm-5.1' })).toBe(false);
+    // Different provider — fine.
+    expect(gate.canStart({ provider: 'opencode-go', model: 'mimo' })).toBe(true);
+  });
+
+  it('23. release restores provider-pool capacity and admits queued waiter', async () => {
+    const gate = makeGate({ total: 10, perModel: { zai: 1 } });
+    const hold = deferred();
+    const order: string[] = [];
+
+    const p1 = gate.run(makeProfile('zai', 'glm-5.1'), async () => {
+      order.push('first');
+      await hold.promise;
+      return 'r1';
+    });
+    // Queued behind the provider pool (different model, same provider).
+    const p2 = gate.run(makeProfile('zai', 'glm-5.2'), async () => {
+      order.push('second');
+      return 'r2';
+    });
+    await sleep(10);
+    expect(order).toEqual(['first']);
+
+    hold.resolve();
+    await p1;
+    await p2;
+    expect(order).toEqual(['first', 'second']);
+  });
+
+  it('24. snapshot reports provider buckets', () => {
+    const gate = new SessionGate({ total: 5, perModel: { zai: 2, 'zai:glm-5.2': 1 } });
+    const snap = gate.snapshot();
+    expect(snap.providers.find((p) => p.key === 'zai')?.cap).toBe(2);
+    expect(snap.providers.length).toBe(1); // opencode-go has no provider cap
+  });
+});

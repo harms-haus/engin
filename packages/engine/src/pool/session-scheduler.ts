@@ -747,14 +747,19 @@ export class SessionScheduler {
   }
 
   /** Explain WHY `gate.canStart(profile)` returned false, for the audit trace.
-   *  Distinguishes total-capacity saturation from per-model saturation and
-   *  names the offending model key + cap. */
+   *  Distinguishes total-capacity saturation, provider-pool saturation, and
+   *  per-model saturation, naming the offending bucket key + cap. */
   private describeCapacityFailure(profile: AgentProfile): string {
     const snap = this.gate.snapshot();
     if (snap.totalAvailable <= 0) {
       return `total saturated (0 of ${snap.totalCap} slots free)`;
     }
-    // Total has room → must be the per-model bucket.
+    // Provider-level shared pool, if configured.
+    const prov = snap.providers.find((p) => p.key === profile.provider);
+    if (prov && prov.available <= 0) {
+      return `provider '${prov.key}' pool saturated (0 of ${prov.cap} free; total has ${snap.totalAvailable})`;
+    }
+    // Total + provider have room → must be the per-model bucket.
     const key = `${profile.provider}:${profile.model}`;
     const bucket = snap.models.find((m) => m.key === key || m.key === `${key}:${profile.agent}`);
     if (bucket) {

@@ -26,7 +26,20 @@
 export interface SessionGateOptions {
   /** Hard cap on concurrent in-flight callbacks across ALL models. */
   total: number;
-  /** Per-model cap keyed by `${provider}:${model}` (or `${provider}:${model}:${agent}` when agent is set). */
+  /** Concurrency caps keyed by specificity (most-specific that matches wins
+   *  for the model level; provider level is layered additively — see below):
+   *
+   *    `${provider}`                — provider-level cap: shared pool across
+   *                                   ALL of the provider's models. Applied
+   *                                   IN ADDITION to any model/agent cap.
+   *    `${provider}:${model}`       — per-model cap.
+   *    `${provider}:${model}:${agent}` — per-agent override (most specific).
+   *
+   *  Provider caps (no colon) and model caps are independent constraints:
+   *  an acquire must satisfy BOTH the provider pool (if set) and the
+   *  model/agent bucket (if set), in addition to the total. Use a provider
+   *  cap to model a shared rate-limit pool across a provider's models
+   *  (e.g. `zai: 7` when all zai models draw from one account limit). */
   perModel: Record<string, number>;
 }
 
@@ -66,6 +79,12 @@ export class SessionGate {
   private readonly totalCap: number;
   private readonly perModel: Record<string, number>;
   private readonly models = new Map<string, ModelBucket>();
+  /** Provider-level buckets keyed by `${provider}`. Only present for providers
+   *  that have a `${provider}` entry in `perModel`. Unlike model buckets these
+   *  never own a FIFO queue — waiters always live in their (most-specific)
+   *  model bucket's queue; the provider bucket is purely an additional
+   *  capacity counter checked during acquire/dispatch. */
+  private readonly providers = new Map<string, ModelBucket>();
 
   private readonly signal?: AbortSignal;
 
@@ -84,6 +103,14 @@ export class SessionGate {
     this.totalCap = options.total;
     this.perModel = options.perModel;
     this.signal = signal;
+    // Eagerly materialize provider-level buckets (keys with no ':'). These
+    // represent a shared pool across all of a provider's models and are
+    // decremented additively alongside any model/agent cap.
+    for (const [key, cap] of Object.entries(this.perModel)) {
+      if (!key.includes(':')) {
+        this.providers.set(key, { available: cap, queue: [] });
+      }
+    }
   }
 
   /** Current number of available total (cross-model) concurrency slots.
@@ -102,6 +129,7 @@ export class SessionGate {
     totalAvailable: number;
     totalCap: number;
     models: { key: string; available: number; cap: number | null }[];
+    providers: { key: string; available: number; cap: number }[];
   } {
     const models: { key: string; available: number; cap: number | null }[] = [];
     for (const [key, bucket] of this.models) {
@@ -112,7 +140,11 @@ export class SessionGate {
         cap: configured === undefined ? null : configured,
       });
     }
-    return { totalAvailable: this.totalAvailable, totalCap: this.totalCap, models };
+    const providers: { key: string; available: number; cap: number }[] = [];
+    for (const [key, bucket] of this.providers) {
+      providers.push({ key, available: bucket.available, cap: this.perModel[key] });
+    }
+    return { totalAvailable: this.totalAvailable, totalCap: this.totalCap, models, providers };
   }
 
   /** Non-mutating peek: could a session for this profile's model be admitted
@@ -124,9 +156,12 @@ export class SessionGate {
    *  task stays 'ready' until its first session actually has capacity. */
   canStart(profile: { provider: string; model: string; agent?: string }): boolean {
     if (this.totalAvailable <= 0) return false;
+    // Provider-level pool (shared across the provider's models), if configured.
+    const pb = this.providers.get(profile.provider);
+    if (pb !== undefined && pb.available <= 0) return false;
     const key = this.modelKey(profile);
     const cap = this.perModel[key];
-    if (cap === undefined) return true; // uncapped model — only total gates it
+    if (cap === undefined) return true; // uncapped model — only total (+ provider) gates it
     const b = this.models.get(key);
     return b === undefined ? cap > 0 : b.available > 0;
   }
@@ -161,32 +196,43 @@ export class SessionGate {
     return b;
   }
 
-  /** Synchronously attempt to claim both a total slot and a per-model slot.
-   *  Returns true iff both decrements succeeded (atomic in single-threaded JS). */
-  private tryAcquire(modelKey: string): boolean {
+  /** Synchronously attempt to claim a total slot, a provider-pool slot (if
+   *  the provider has a cap), and a per-model slot. Returns true iff ALL
+   *  applicable decrements succeeded (atomic in single-threaded JS). */
+  private tryAcquire(modelKey: string, providerKey: string): boolean {
     if (this.totalAvailable <= 0) return false;
+    const pb = this.providers.get(providerKey);
+    if (pb !== undefined && pb.available <= 0) return false;
     const b = this.bucket(modelKey);
     if (b.available <= 0) return false;
     this.totalAvailable -= 1;
+    if (pb !== undefined) pb.available -= 1;
     b.available -= 1;
     return true;
   }
 
   /** Synchronously admit as many FIFO waiters as capacity allows. Scans each
    *  model's queue head; because total capacity is shared, admission of one
-   *  model's head may block another's until a total slot frees. */
+   *  model's head may block another's until a total (or provider-pool) slot
+   *  frees. A waiter is admitted only when the total, its provider pool (if
+   *  any), AND its model bucket all have capacity. */
   private dispatch(): void {
     let progressed = true;
     while (progressed) {
       progressed = false;
-      for (const b of this.models.values()) {
+      for (const [key, b] of this.models) {
         if (b.queue.length === 0) continue;
         if (b.available <= 0) continue;
         if (this.totalAvailable <= 0) break;
+        // Provider-level pool (shared across the provider's models).
+        const provider = key.split(':')[0] ?? key;
+        const pb = this.providers.get(provider);
+        if (pb !== undefined && pb.available <= 0) continue;
         // Admit queue head.
         const waiter = b.queue.shift();
         if (!waiter) continue;
         this.totalAvailable -= 1;
+        if (pb !== undefined) pb.available -= 1;
         b.available -= 1;
         progressed = true;
         // Resolve on next microtask so the caller's await unblocks.
@@ -205,10 +251,11 @@ export class SessionGate {
     }
 
     const modelKey = this.modelKey(profile);
+    const providerKey = profile.provider;
     const bucket = this.bucket(modelKey);
 
-    // Fast path: both slots free synchronously.
-    if (!this.tryAcquire(modelKey)) {
+    // Fast path: all slots free synchronously.
+    if (!this.tryAcquire(modelKey, providerKey)) {
       // DeadlockError guard: a synchronous re-entrant run() while holding
       // the last total slot would never acquire — detect and reject.
       if (this.inSyncCallback && this.totalAvailable <= 0) {
@@ -249,7 +296,7 @@ export class SessionGate {
       // AND then aborted in a later tick. If aborted after waking, release the
       // slot we just consumed and reject.
       if (waiter.aborted) {
-        this.releaseSlot(modelKey);
+        this.releaseSlot(modelKey, providerKey);
         throw abortError();
       }
     }
@@ -264,7 +311,7 @@ export class SessionGate {
     const release = () => {
       if (called) return;
       called = true;
-      this.releaseSlot(modelKey);
+      this.releaseSlot(modelKey, providerKey);
     };
 
     try {
@@ -314,7 +361,7 @@ export class SessionGate {
    *  @returns `true` if both total and per-model slots were available and
    *           decremented; `false` if either is saturated. */
   acquire(profile: { provider: string; model: string; agent?: string }): boolean {
-    return this.tryAcquire(this.modelKey(profile));
+    return this.tryAcquire(this.modelKey(profile), profile.provider);
   }
 
   /** Release a previously-acquired slot for the given profile, restoring one
@@ -335,18 +382,21 @@ export class SessionGate {
    *  counters beyond their configured caps — there is no internal bookkeeping
    *  to detect unbalanced releases, so callers own this invariant. */
   release(profile: { provider: string; model: string; agent?: string }): void {
-    this.releaseSlot(this.modelKey(profile));
+    this.releaseSlot(this.modelKey(profile), profile.provider);
   }
 
-  /** Release a per-model + total slot (per-model FIRST, then total — reverse
-   *  of tryAcquire's lock ordering), then dispatch any waiters that may now be
-   *  admissible, then fire `onRelease()`. Always increments both counters;
+  /** Release a per-model + provider-pool (if any) + total slot (per-model
+   *  FIRST, then provider, then total — reverse of tryAcquire's lock
+   *  ordering), then dispatch any waiters that may now be admissible, then
+   *  fire `onRelease()`. Always increments the applicable counters;
    *  idempotency / pairing is owned by the caller (RAII `called` flag for the
    *  `run()` path, or the scheduler's acquire/release bookkeeping for the
    *  manual path). */
-  private releaseSlot(modelKey: string): void {
+  private releaseSlot(modelKey: string, providerKey: string): void {
     const b = this.bucket(modelKey);
     b.available += 1;
+    const pb = this.providers.get(providerKey);
+    if (pb !== undefined) pb.available += 1;
     this.totalAvailable += 1;
     this.dispatch();
     // Notify the pool that capacity freed so it can claim waiting ready tasks.
