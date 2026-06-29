@@ -447,9 +447,15 @@ export class RunManager {
 
   /**
    * Cancel every active run, flush every store, and dispose every bridge.
-   * Used during graceful server shutdown. Idempotent. Does not remove handles
-   * from the registry — the executor's finally blocks reap them after their
-   * runs settle.
+   * Used during graceful server shutdown. Idempotent.
+   *
+   * Arms shutdown mode on the registry (see {@link RunRegistry.beginShutdown})
+   * so each executor's finally-block reap — which fires AFTER
+   * {@link RunRegistry.cancelAllReap} here, once the aborted run settles —
+   * runs synchronously instead of leaking a deferred timer past teardown.
+   * Consequently settled runs are reaped (removed from the registry) during
+   * the shutdown drain; their stores are flushed first so partial events
+   * stay durable.
    */
   async shutdownAll(): Promise<void> {
     // Arm shutdown mode FIRST so any executor finally-block reap armed AFTER

@@ -525,7 +525,7 @@ describe('createAgentEventForwarder — turn_end', () => {
     // The forwarder always assigns `redacted: block.redacted`, so when the
     // source omits it the mapped block carries `redacted: undefined`.
     expect(captured[0].contentBlocks).toEqual([{ type: 'thinking', thinking: 'no redaction flag' }]);
-    expect(captured[0].contentBlocks![0].redacted).toBeUndefined();
+    expect((captured[0].contentBlocks![0] as Extract<TurnContentBlock, { type: 'thinking' }>).redacted).toBeUndefined();
   });
 
   it('maps toolCall content blocks', () => {

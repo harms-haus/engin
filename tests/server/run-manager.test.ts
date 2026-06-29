@@ -743,9 +743,11 @@ describe('RunManager', () => {
       await manager.shutdownAll();
 
       // Both controllers were aborted → each IIFE catch flips status to
-      // 'failed' (abort path). shutdownAll does not delete from the map.
-      await waitFor(() => manager.listRuns().length === 2 && manager.listRuns().every((r) => r.status === 'failed'));
-      expect(manager.listRuns().map((r) => r.status)).toEqual(['failed', 'failed']);
+      // 'failed' (abort path), the store is flushed (durable partial events),
+      // and the executor's finally-block reaps immediately — shutdown mode
+      // (beginShutdown) arms a synchronous reap, so the handles are removed
+      // from the registry right after their runs settle.
+      await waitFor(() => manager.listRuns().length === 0);
 
       // Stores were flushed (durable partial events).
       expect(existsSync(join(wd1, 'events.jsonl'))).toBe(true);

@@ -285,7 +285,8 @@ describe('index.ts — Core section re-exports the new modules', () => {
     expect(indexSource).toContain("export * from './core/worktree-manager.js';");
   });
 
-  it('lists both new modules in the Core section', () => {
+  it('lists the new Core wildcard exports (agent-lifecycle + worktree-fixup + worktree-manager)', () => {
+    expect(coreSpecifiers).toContain('agent-lifecycle.js');
     expect(coreSpecifiers).toContain('worktree-fixup.js');
     expect(coreSpecifiers).toContain('worktree-manager.js');
   });
@@ -296,11 +297,12 @@ describe('index.ts — Core section re-exports the new modules', () => {
     }
   });
 
-  it('adds exactly two new Core wildcard exports (ORIGINAL_CORE_SPECIFIERS + worktree-fixup + worktree-manager)', () => {
-    // 18 pre-existing core exports + 2 new (worktree-fixup, worktree-manager)
-    // = 20. harness-factory.js and write-sandbox.js were removed from the barrel
-    // (harness-factory deleted, write-sandbox moved), so they are not counted.
-    expect(coreSpecifiers).toHaveLength(ORIGINAL_CORE_SPECIFIERS.length + 2);
+  it('adds exactly three new Core wildcard exports (ORIGINAL_CORE_SPECIFIERS + agent-lifecycle + worktree-fixup + worktree-manager)', () => {
+    // 17 pre-existing core exports + 3 new (agent-lifecycle, worktree-fixup,
+    // worktree-manager) = 20. harness-factory.js and write-sandbox.js were
+    // removed from the barrel (harness-factory deleted, write-sandbox moved),
+    // so they are not counted.
+    expect(coreSpecifiers).toHaveLength(ORIGINAL_CORE_SPECIFIERS.length + 3);
   });
 });
 

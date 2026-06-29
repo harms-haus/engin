@@ -2803,9 +2803,9 @@ describe('SessionScheduler', () => {
     graph.addTask(
       { ...makeTask('A') },
       (): SessionPlanRunner => ({
-        async *plan() {
-          yield [];
-          return;
+        async *plan(): AsyncGenerator<SessionSpec[], SessionResult[] | undefined, SessionResult[]> {
+          yield [] as SessionSpec[];
+          return undefined;
         },
         async execute() {
           return { mode: 'text', text: '' };
@@ -2865,9 +2865,9 @@ describe('SessionScheduler', () => {
     graph.addTask(
       { ...makeTask('A') },
       (): SessionPlanRunner => ({
-        async *plan() {
-          yield [];
-          return;
+        async *plan(): AsyncGenerator<SessionSpec[], SessionResult[] | undefined, SessionResult[]> {
+          yield [] as SessionSpec[];
+          return undefined;
         },
         async execute() {
           return { mode: 'text', text: '' };
@@ -2929,9 +2929,9 @@ describe('SessionScheduler', () => {
     graph.addTask(
       { ...makeTask('A') },
       (): SessionPlanRunner => ({
-        async *plan() {
-          yield [];
-          return;
+        async *plan(): AsyncGenerator<SessionSpec[], SessionResult[] | undefined, SessionResult[]> {
+          yield [] as SessionSpec[];
+          return undefined;
         },
         async execute() {
           return { mode: 'text', text: '' };
@@ -3125,8 +3125,8 @@ describe('SessionScheduler.withTimeout / GeneratorTimeoutError', () => {
     const originalClearTimeout = globalThis.clearTimeout;
     const createdTimers: ReturnType<typeof setTimeout>[] = [];
     const clearedTimers: ReturnType<typeof setTimeout>[] = [];
-    globalThis.setTimeout = ((fn: TimerHandler, ms?: number, ...rest: unknown[]) => {
-      const id = originalSetTimeout(fn, ms, ...rest);
+    globalThis.setTimeout = ((...args: Parameters<typeof setTimeout>) => {
+      const id = originalSetTimeout(...args);
       createdTimers.push(id);
       return id;
     }) as typeof setTimeout;
