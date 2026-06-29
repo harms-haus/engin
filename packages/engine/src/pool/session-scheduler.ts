@@ -247,6 +247,25 @@ export class SessionScheduler {
       this.emitStatusEvent(taskId, prev, status);
     };
 
+    // RESUME: a task that permanently failed in a PRIOR (persisted) run gets
+    // a fresh chance when the phase is re-run (e.g. via `engine resume`). A
+    // freshly-built graph never carries a 'failed' status — new tasks start
+    // 'ready'/'blocked' — so any 'failed' task present at run() start MUST be
+    // a resumed permanent failure. Reset it to 'ready' (clearing its result)
+    // so the drain loop re-attempts it with a full retry budget. This runs
+    // BEFORE failDeadlockedTasks so genuinely-deadlocked tasks (missing deps)
+    // are still re-detected below; a retry-exhausted task whose deps exist is
+    // unaffected by failDeadlockedTasks (it only inspects 'blocked' tasks).
+    // Cancelled tasks (intentional skips / aborts) are intentionally NOT
+    // reset — only permanently-failed tasks get re-attempted on resume.
+    for (const entry of this.graph.getAllTasks()) {
+      if (entry.status === 'failed') {
+        entry.task.result = undefined;
+        this.taskAttempts.delete(entry.task.id);
+        this.graph.setTaskStatus(entry.task.id, 'ready');
+      }
+    }
+
     // Fail deadlocked tasks (missing deps) immediately.
     this.graph.failDeadlockedTasks();
 
@@ -327,6 +346,24 @@ export class SessionScheduler {
       this.graph.onStatusTransition = undefined;
       this.options.signal?.removeEventListener('abort', abortActiveSessions);
       this.scopedHookRegistry = undefined;
+    }
+
+    // A phase that ends with permanently-failed tasks is a FAILED phase — it
+    // MUST NOT advance to the next phase. Cancelled tasks (intentional skips /
+    // cooperative aborts) are NOT failures and do not block advancement, so
+    // only status 'failed' triggers this guard. Throw so the failure
+    // propagates through the phase's run() callback → PhaseRunner → workflow,
+    // aborting the run instead of continuing. (Skipped when the run was
+    // aborted — in that case tasks are 'cancelled', not 'failed', but the
+    // guard keeps the abort path explicit.)
+    if (!this.options.signal?.aborted) {
+      const failedEntries = this.graph.getAllTasks().filter((e) => e.status === 'failed');
+      if (failedEntries.length > 0) {
+        const ids = failedEntries.map((e) => e.task.id).join(', ');
+        throw new Error(
+          `Phase '${this.options.phaseId}' ended with ${failedEntries.length} permanently-failed task(s): ${ids}. Phase cannot continue — use 'engine resume' to re-attempt the failed tasks.`,
+        );
+      }
     }
 
     // Count results.

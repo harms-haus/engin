@@ -511,10 +511,11 @@ describe('SessionScheduler', () => {
     expect(log).toContain('start:r1');
 
     completeSpec(controls, 'r1');
-    const result = await runPromise;
+    // P is stuck (model b cap=0 → resource deadlock → permanently failed), so
+    // the phase ends failed and run() rejects. R still completed first.
+    await expect(runPromise).rejects.toThrow(/permanently-failed/);
 
-    expect(result.completedTasks).toBe(1); // R completed
-    expect(result.failedTasks).toBe(1); // P failed (stuck)
+    expect(log).toContain('start:r1'); // R ran and completed
     expect(log).not.toContain('start:p2'); // p2 never started (cap=0)
   });
 
@@ -586,10 +587,10 @@ describe('SessionScheduler', () => {
       log,
     });
 
-    const result = await scheduler.run();
+    // The phase ends with a permanently-failed task → run() rejects so the
+    // phase cannot advance. (A missing-dep deadlock fails B immediately.)
+    await expect(scheduler.run()).rejects.toThrow(/permanently-failed/);
 
-    expect(result.failedTasks).toBe(1);
-    expect(result.completedTasks).toBe(0);
     expect(graph.getTask('B')?.status).toBe('failed');
     expect(log).not.toContain('start:b1');
   });
@@ -612,9 +613,8 @@ describe('SessionScheduler', () => {
       log,
     });
 
-    const result = await scheduler.run();
+    await expect(scheduler.run()).rejects.toThrow(/permanently-failed/);
 
-    expect(result.failedTasks).toBe(1);
     expect(graph.getTask('A')?.status).toBe('failed');
     expect(log).not.toContain('start:s1');
   });
@@ -851,11 +851,9 @@ describe('SessionScheduler', () => {
     await tick();
 
     // After both settle, the batch advances. Since s2 had an error,
-    // the task should end up failed.
-    const result = await runPromise;
+    // the task ends up permanently failed → run() rejects.
+    await expect(runPromise).rejects.toThrow(/permanently-failed/);
 
-    expect(result.failedTasks).toBe(1);
-    expect(result.completedTasks).toBe(0);
     expect(graph.getTask('A')?.status).toBe('failed');
   });
 
@@ -936,12 +934,10 @@ describe('SessionScheduler', () => {
       log,
     });
 
-    const result = await scheduler.run();
+    await expect(scheduler.run()).rejects.toThrow(/permanently-failed/);
 
     // The task transitions to active then parks when acquire fails.
     // With no way forward, the deadlock handler eventually fails it.
-    expect(result.failedTasks).toBe(1);
-    expect(result.completedTasks).toBe(0);
     expect(graph.getTask('A')?.status).toBe('failed');
     expect(log).not.toContain('start:s1');
   });
@@ -1190,10 +1186,9 @@ describe('SessionScheduler', () => {
     // A must have emitted a 'parked' event (not stuck 'active').
     expect(events.some((e) => e.taskId === 'A' && e.status === 'parked')).toBe(true);
 
-    // A is stuck (modelB cap=0) → resource deadlock → A eventually fails.
-    const result = await runPromise;
-    expect(result.failedTasks).toBe(1);
-    expect(result.completedTasks).toBe(0);
+    // A is stuck (modelB cap=0) → resource deadlock → A permanently fails,
+    // so run() rejects.
+    await expect(runPromise).rejects.toThrow(/permanently-failed/);
     expect(graph.getTask('A')?.status).toBe('failed');
   });
 
@@ -2104,9 +2099,8 @@ describe('SessionScheduler', () => {
       activeSessions: new Set(),
       phaseId: 'test',
     });
-    const result = await scheduler.run();
-    expect(result.failedTasks).toBe(1);
-    expect(result.completedTasks).toBe(0);
+    // Retry budget exhausted → permanently failed → run() rejects.
+    await expect(scheduler.run()).rejects.toThrow(/permanently-failed/);
     expect(graph.getTask('A')?.status).toBe('failed');
     // Initial attempt + MAX_RETRIES retries = MAX_RETRIES + 1 total executions.
     expect(attempt).toBe(4);
@@ -2142,9 +2136,8 @@ describe('SessionScheduler', () => {
       activeSessions: new Set(),
       phaseId: 'test',
     });
-    const result = await scheduler.run();
-    expect(result.failedTasks).toBe(1);
-    expect(result.completedTasks).toBe(0);
+    // Permanent (non-transient) error → permanently failed → run() rejects.
+    await expect(scheduler.run()).rejects.toThrow(/permanently-failed/);
     expect(graph.getTask('A')?.status).toBe('failed');
   });
 
@@ -2354,8 +2347,8 @@ describe('SessionScheduler', () => {
       activeSessions: new Set(),
       phaseId: 'test',
     });
-    const result = await scheduler.run();
-    expect(result.failedTasks).toBe(1);
+    // Non-retryable structural failure → permanently failed → run() rejects.
+    await expect(scheduler.run()).rejects.toThrow(/permanently-failed/);
     expect(graph.getTask('A')?.status).toBe('failed');
     // No retry: the plan generator was created only once.
     expect(planCalls).toBe(1);
@@ -2425,5 +2418,92 @@ describe('SessionScheduler', () => {
     // B only ran after A completed: the last 'a' start precedes the single 'b'.
     expect(startOrder.filter((s) => s === 'b')).toEqual(['b']);
     expect(startOrder.lastIndexOf('a')).toBeLessThan(startOrder.indexOf('b'));
+  });
+
+  // ── 40. Permanently-failed task rejects run() even when a sibling completed ──
+  //
+  // The production bug this guards: a phase in which some tasks permanently
+  // fail MUST NOT advance to the next phase. run() rejects (throwing the
+  // phase) so the failure propagates through the phase callback → PhaseRunner
+  // → workflow, aborting the run. Here A completes but B exhausts its retry
+  // budget → run() rejects, naming B. Only status 'failed' triggers this —
+  // cancelled/skipped tasks (test 9) do not.
+  it('40. permanently-failed task rejects run() even when a sibling completed', async () => {
+    const profiles = new Map([['default', makeProfile('default')]]);
+    const gate = new SessionGate({ total: 2, perModel: {} });
+    const controls = makeSpecControls(['a1']);
+    const log: string[] = [];
+    const graph = new TaskGraph();
+    // A — succeeds.
+    graph.addTask({ ...makeTask('A') }, makeFakeRunnerFactory([[makeSpec('a1', 'default')]], controls, log));
+    // B — always throws (transient) → exhausts MAX_RETRIES → permanently failed.
+    graph.addTask(
+      { ...makeTask('B') },
+      (): SessionPlanRunner => ({
+        async *plan(): AsyncGenerator<SessionSpec[], SessionResult[] | undefined, SessionResult[]> {
+          yield [makeSpec('b1', 'default')];
+          return;
+        },
+        async execute(): Promise<SessionResult> {
+          log.push('start:b1');
+          throw new SessionError('always fails', { kind: 'transient', retryable: true });
+        },
+      }),
+    );
+    const scheduler = new SessionScheduler({
+      graph,
+      gate,
+      profiles,
+      sessionBaseDir: '/tmp/test-sessions',
+      cwd: '/tmp/test',
+      activeSessions: new Set(),
+      phaseId: 'implementing',
+    });
+    completeSpec(controls, 'a1');
+    // Phase ends with B permanently failed → run() rejects so it cannot advance.
+    await expect(scheduler.run()).rejects.toThrow(/permanently-failed.*\bB\b/);
+    expect(graph.getTask('A')?.status).toBe('complete');
+    expect(graph.getTask('B')?.status).toBe('failed');
+  });
+
+  // ── 41. Resume re-attempts permanently-failed tasks ─────────────────────
+  //
+  // When a phase is re-run (e.g. via `engine resume`), tasks that permanently
+  // failed in the prior persisted run get a fresh chance: their 'failed'
+  // status is reset to 'ready' (result cleared, retry budget restored) and
+  // they are re-executed. A freshly-built graph never carries 'failed' (new
+  // tasks start 'ready'/'blocked'), so any 'failed' task present at run()
+  // start must be a resumed permanent failure.
+  it('41. resume resets permanently-failed tasks to ready and re-attempts them', async () => {
+    const profiles = new Map([['default', makeProfile('default')]]);
+    const gate = new SessionGate({ total: 2, perModel: {} });
+    const log: string[] = [];
+    const controls = makeSpecControls(['a1']);
+    const graph = new TaskGraph();
+    // Simulate a persisted permanent failure: status preset to 'failed' with a
+    // stale result from the prior run.
+    graph.addTask(
+      { ...makeTask('A', { status: 'failed', result: { completed: false, error: 'prior run' } }) },
+      makeFakeRunnerFactory([[makeSpec('a1', 'default')]], controls, log),
+    );
+    expect(graph.getTask('A')?.status).toBe('failed'); // pre-resume
+
+    const scheduler = new SessionScheduler({
+      graph,
+      gate,
+      profiles,
+      sessionBaseDir: '/tmp/test-sessions',
+      cwd: '/tmp/test',
+      activeSessions: new Set(),
+      phaseId: 'implementing',
+    });
+    completeSpec(controls, 'a1');
+
+    // Resume reset the failed task → re-attempted → succeeded → phase resolves.
+    const result = await scheduler.run();
+    expect(result.completedTasks).toBe(1);
+    expect(result.failedTasks).toBe(0);
+    expect(graph.getTask('A')?.status).toBe('complete');
+    expect(log).toContain('start:a1');
   });
 });
