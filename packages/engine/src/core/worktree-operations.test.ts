@@ -10,6 +10,8 @@
 
 import { afterAll, afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 
+import type { FixupOptions } from './worktree-fixup.js';
+
 // ─── Capture real modules before mocking ──────────────────────────────────
 
 const realGit = Object.assign({}, await import('./git.js'));
@@ -23,7 +25,7 @@ const mockGetDiff = mock((_dir: string): string => '');
 const mockCommitChanges = mock((_dir: string, _message: string): void => {});
 const mockGenerateCommitMessage = mock(async (): Promise<string> => 'chore: update');
 const mockRunTooledFixup = mock(
-  async (): Promise<{ success: boolean; attempts: number; lastError?: string }> => ({
+  async (_opts: FixupOptions): Promise<{ success: boolean; attempts: number; lastError?: string }> => ({
     success: true,
     attempts: 1,
   }),
