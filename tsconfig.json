@@ -14,6 +14,7 @@
     "paths": {
       "@engin/shared": ["./packages/shared/src/index.ts"],
       "@engin/shared/*": ["./packages/shared/src/*"],
+      "@harms-haus/ink-overlay": ["./packages/ink-overlay/dist/index.js"],
       "@app/*": ["./packages/web/src/*"]
     }
   },

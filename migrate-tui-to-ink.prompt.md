@@ -11,7 +11,9 @@
 > The counts, file list, and domain descriptions below were re-derived from the
 > current tree, but the workflow should still re-verify them — the codebase
 > moves fast (the engine was redesigned to be session-first since this prompt
-> was first written; see §3.2).
+> was first written; see §3.2). A sibling package, `@harms-haus/ink-overlay`,
+> has also been linked into the repo to provide the overlay/modal layer — see
+> §3.5; do not hand-roll overlays.
 
 ---
 
@@ -47,6 +49,17 @@ package.
   types) and **Yoga** (`yoga-layout`, brought in by Ink). Pin React 19.x and
   Ink 7.x (verify the latest 7.x on npm during scouting — report the exact
   versions and their `engines.node` requirement).
+- **Overlays/modals: `@harms-haus/ink-overlay`** (our own package, already
+  linked into this repo — see §3.5). It provides `<OverlayHost>` (mount once),
+  `<Modal>` (centered dialog with focus trap + raw-mode capture), `<Layer>`
+  (low-level, custom anchors/placement incl. top-right), `<Popover>`,
+  `<Tooltip>`, `<Toast>`, `<CommandPalette>`, plus an imperative `overlay` /
+  `toasts` service, LIFO input dispatch, and Bun/non-TTY runtime detection
+  (`isBun`, `isNonInteractive`, `getRuntimeInfo`). Peer deps `ink >=7` /
+  `react >=19` match the locked versions below. **This replaces the entire
+  §5.2 gap #1 (DIY overlays) — do NOT hand-roll the centered detach/kill prompt
+  or the top-right QR overlay.** Verify the exact component APIs during scouting
+  by reading `packages/ink-overlay/docs/` and `src/`.
 - **Scrolling: `ink-scroll-view`** (community) for the interactive, navigable,
   expand/collapse agent log and any other virtualized/scrollable region. This is
   a **hard dependency** — verify during scouting that it is still maintained, its
@@ -230,6 +243,54 @@ be **re-used as-is** (not re-implemented) by the Ink version:
 `formatElapsed` previously lived in `theme.ts`; it has since moved to shared.
 `stripAnsi` likewise is gone from the TUI.
 
+### 3.5 The overlay framework already linked in this repo — `@harms-haus/ink-overlay`
+
+The centered detach/kill prompt and the top-right QR overlay (the §5.2 gap #1
+"DIY overlays" problem) are **already solved** by a sibling package,
+`@harms-haus/ink-overlay`, which is **linked into this repo and ready to use**.
+Do not hand-roll overlays.
+
+**How it's linked (local dev only — not a published/published-to-registry dep):**
+
+- `packages/ink-overlay` is a **symlink** to `~/Documents/software/ink-overlay`
+  (a separate git repo). The symlink is gitignored, so other contributors must
+  recreate it locally (clone `ink-overlay` next to this repo and symlink it, or
+  adjust the tsconfig path below to point at their checkout).
+- Resolution is via **tsconfig path aliases** (NOT a `package.json` dep — Bun's
+  workspace resolver does not follow the symlink, and `link:`/global `bun link`
+  flows were tried and rejected). Aliases are declared in **both**
+  `tsconfig.json` and `packages/tui/tsconfig.json` (mirroring how
+  `@engin/shared` is wired):
+  - root `tsconfig.json`: `"@harms-haus/ink-overlay": ["./packages/ink-overlay/dist/index.js"]`
+  - `packages/tui/tsconfig.json`: `"@harms-haus/ink-overlay": ["../ink-overlay/dist/index.js"]`
+- The alias points at the **built `dist/`** entry, so after editing
+  `ink-overlay` source you must rebuild it (`bun run build` in the
+  `ink-overlay` repo) before the changes are visible here. (Verified resolving
+  at runtime under Bun 1.3.14 and passing `tsc --noEmit`.)
+
+**Public surface (verify against `packages/ink-overlay/src/index.tsx`):**
+
+- Components: `<OverlayHost>` (mount once at the app root), `<Modal>` (centered
+  bordered dialog — always `capture` + focus trap + `role='dialog'` click-away
+  dismiss), `<Layer>` (low-level floating layer with custom `anchor` /
+  `placement` / `capture` / `backdrop` / `z` — use this for the top-right QR),
+  `<Popover>`, `<Tooltip>`, `<Toast>`, `<CommandPalette>`.
+- Hooks: `useFocusTrap`, `useRegisterInput`, **`useInputCaptureState()`**
+  (background widgets call this to gate their own `useInput`/`useFocus` while a
+  capturing overlay is open — directly relevant to the current app's
+  Ctrl+D-must-work-even-while-prompt-is-shown requirement; see §6).
+- Imperative services: `overlay` and `toasts` (fire floating layers/toasts from
+  non-React code, e.g. event handlers).
+- Runtime detection: `isBun()`, `isNonInteractive()`, `getRuntimeInfo()` — use
+  these for the §5.3 Bun-input validation and the §5.4 non-TTY/`patchConsole`
+  decisions instead of rolling your own.
+- Pure positioning helpers: `anchorToFlexbox`, `computePopoverPosition`,
+  `sortLayers`, etc.
+
+Full docs live in `packages/ink-overlay/docs/` (`concepts/` for architecture,
+positioning, input & focus, animation, runtime & environments;
+`components/` for per-component usage). **Read them during scouting.**
+
 ---
 
 ## 4. Research findings — the burden being eliminated (verify the counts/claims)
@@ -321,22 +382,31 @@ counts (re-derived 2026-06-29):
 - **Testing:** `ink-testing-library` — `render(<App/>).lastFrame()` for
   snapshotting. Verify the import + API.
 
-### 5.2 Where Ink does WORSE than the current framework (the two real gaps)
+### 5.2 Where Ink does WORSE than the current framework (the real gaps)
 
-1. **Overlays/modals — DIY.** Ink reportedly has **no first-party overlay/modal**
-   and **no `showOverlay({anchor:'center'|'top-right'})` equivalent**, and
-   **no z-index** (paint-order only). The migration must rebuild the centered
-   detach/kill prompt and the top-right QR using `<Box position="absolute"
-top/right={n|'%'}>` plus `useWindowSize()` centering math, behind a small
-   `<Overlay>` wrapper that approximates the current `OverlayHandle`. **Verify
-   the absence of a first-party overlay and the presence of
-   `position="absolute"`.**
+1. **Overlays/modals — SOLVED by `@harms-haus/ink-overlay` (§3.5).** Ink itself
+   has **no first-party overlay/modal**, no `showOverlay({anchor:'center'|'top-right'})`
+   equivalent, and no z-index (paint-order only). But we don't need to hand-roll
+   this: `@harms-haus/ink-overlay` is already linked and provides exactly these
+   primitives — `<Modal>` (centered, captures input + focus trap, dismiss on
+   Esc/click-away) for the detach/kill prompt, and `<Layer anchor=...>` (or
+   `<Popover>` / a top-right anchored layer) for the QR overlay, all coordinated
+   through a single `<OverlayHost>` with LIFO input dispatch and `z`-sorting.
+   Map the current `OverlayHandle` show/hide pattern onto controlled
+   `<Modal open={...} onDismiss={...}>` (or the imperative `overlay` service).
+   **Verify the exact `<Modal>` / `<Layer>` / `overlay` APIs and the available
+   `anchor`/`placement` values in `packages/ink-overlay/docs/` during scouting,**
+   and confirm a top-right placement exists for the QR. (If, contrary to
+   expectation, a needed placement is missing, fall back to `<Layer>` with
+   manual `useWindowSize()` coords — but check the library first.)
 2. **Interactive scroll — DIY (use `ink-scroll-view`).** Ink's only virtualized
    primitive, `<Static>`, is **append-only** — fine for the _completed-event_
    portion of the event log, **wrong** for the navigable, expand/collapse agent
    (session) log. The locked decision is to use **`ink-scroll-view`** for that.
    **Verify `ink-scroll-view`'s maintenance status, latest version, API, and Ink
-   peer compatibility.**
+   peer compatibility.** (Note: the event log's bounded retention + scroll-back
+   may also be a fit for `<Static>` for the append-only tail + a small scrollable
+   window — decide during planning.)
 
 ### 5.3 The blocker to validate FIRST — Bun + interactive Ink input
 
@@ -355,6 +425,13 @@ and **test keyboard input under Bun early** (e.g. a minimal Ink app with
 Bun version? If not, document the failure mode. This is the one risk that can
 invalidate the entire migration.
 
+**Also relevant:** `@harms-haus/ink-overlay` (§3.5) already ships runtime
+helpers — `isBun()`, `isNonInteractive()`, `getRuntimeInfo()` — plus a
+`BUN_TEST_RESULTS.md` at its repo root documenting a prior Bun raw-mode test
+pass. Check whether `ink-overlay`'s own Bun test results (and its
+`InputDispatcher`, which gates raw-mode enable to "once") cover the failure
+modes above before re-deriving them from scratch.
+
 ### 5.4 Other Ink gotchas to verify
 
 - `patchConsole` (default `true`) rewrites stdout to interleave `console.*` —
@@ -367,7 +444,9 @@ invalidate the entire migration.
 - Re-calling `render()` on the same stdout without `unmount()`/`cleanup()` is
   reportedly unsupported — one Ink instance per stream.
 - TTY assumptions: in CI/non-TTY, Ink auto-detects and renders only the final
-  frame; piped stdout loses interactivity.
+  frame; piped stdout loses interactivity. (`@harms-haus/ink-overlay`'s
+  `isNonInteractive()` / `getRuntimeInfo()` can drive graceful degradation here —
+  see its `docs/concepts/runtime-and-environments.md`.)
 - React 19 + Node 22 floor may force toolchain bumps — check against the
   project's `engines` (currently unset) / Node usage.
 
@@ -427,9 +506,10 @@ carry them forward into the Ink version:
 - Do not port the hand-rolled caches (`event-log`'s 4 caches, the
   `dirty`/`cachedWidth`/`cachedLines` trio) — reactivity replaces them.
 - Do not introduce a second TUI library or a general "compatibility shim"; the
-  only new framework deps should be `ink`, `react`, `ink-scroll-view`, and
-  `ink-testing-library` (dev). (`qrcode` already transitively present — declare
-  it explicitly, do not swap it out.)
+  only new framework deps should be `ink`, `react`, `@harms-haus/ink-overlay`
+  (already linked — §3.5), `ink-scroll-view`, and `ink-testing-library` (dev).
+  (`qrcode` already transitively present — declare it explicitly, do not swap it
+  out.)
 - Do not change `packages/shared` projection/follow helpers
   (`WorkflowProjection`, `toProjection`, `isTerminalTaskStatus`,
   `pickMostRecentlyStartedActive`/`Parked`, `selectNextSession`,
@@ -471,10 +551,19 @@ carry them forward into the Ink version:
 - `packages/shared/src/index.ts`, `projection-helpers.ts`, `event-types.ts`,
   `types.ts`, `client-store.ts`, `format-*.ts`, `text-utils.ts` — projection,
   follow helpers, entities, store, formatters.
+- **`packages/ink-overlay/`** (symlink → `~/Documents/software/ink-overlay`) —
+  the overlay framework to use (§3.5). Read `src/index.tsx` (public exports),
+  `docs/concepts/*` (architecture, positioning, input & focus, animation,
+  runtime & environments), `docs/components/*` (`overlay-host`, `modal`,
+  `layers`, `popover`), and `BUN_TEST_RESULTS.md` (prior Bun raw-mode test
+  results). Confirm the `<Modal>` / `<Layer anchor=...>` / `overlay` service
+  APIs cover the centered detach/kill prompt + top-right QR.
 - `package.json`, `bunfig.toml`, `bun.lock`, `tsconfig.json`,
   `packages/tui/tsconfig.json` (root + `packages/tui`) — exact versions (Bun
-  1.3.14, React slot, Node engines, `@engin/shared` path alias).
+  1.3.14, React slot, Node engines, `@engin/shared` + `@harms-haus/ink-overlay`
+  path aliases).
 - npm/GitHub for current versions + maintenance of: `ink`, `react`,
-  `yoga-layout`, `ink-scroll-view`, `ink-testing-library`.
+  `yoga-layout`, `ink-scroll-view`, `ink-testing-library`. (Note:
+  `@harms-haus/ink-overlay` is linked locally, not from npm.)
 - Bun + Ink input issues (§5.3) — verify status against the project's Bun
   version (1.3.14).

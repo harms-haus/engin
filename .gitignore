@@ -5,3 +5,6 @@ dist/
 .env
 .engin/
 coverage/
+
+# Locally-linked external package (separate git repo)
+packages/ink-overlay
