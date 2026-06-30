@@ -110,35 +110,35 @@ export async function finalMergeToMain(ctx: FinalMergeContext, holder: SavedBran
     //    conflict → resolve flow, where `resolveFinalMergeConflicts` runs in a
     //    separate call and `WorktreeManager.cleanup()` performs the actual
     //    restore.
-    holder.savedBranch = getCurrentBranch(ctx.repoRoot);
+    holder.savedBranch = await getCurrentBranch(ctx.repoRoot);
 
     // 3. Check out the real main branch.
-    const realMain = getMainBranch(ctx.repoRoot);
-    checkoutBranch(ctx.repoRoot, realMain);
+    const realMain = await getMainBranch(ctx.repoRoot);
+    await checkoutBranch(ctx.repoRoot, realMain);
 
     // 4. Squash-merge the main-wt branch into real main.
-    const result = squashMergeBranch(ctx.repoRoot, ctx.mainBranch);
+    const result = await squashMergeBranch(ctx.repoRoot, ctx.mainBranch);
 
     if (result.success) {
       try {
-        commitChanges(ctx.repoRoot, `Merge engin run: ${ctx.mainBranch}`);
+        await commitChanges(ctx.repoRoot, `Merge engin run: ${ctx.mainBranch}`);
       } catch (commitErr) {
         // Roll back the staged squash so real main is left clean for a
         // caller retry / manual intervention (mirrors the per-task merge).
         try {
-          abortMerge(ctx.repoRoot);
+          await abortMerge(ctx.repoRoot);
         } catch {
           /* no merge in progress */
         }
         try {
-          resetHard(ctx.repoRoot);
+          await resetHard(ctx.repoRoot);
         } catch {
           /* best-effort */
         }
-        restoreSavedBranch(ctx.repoRoot, holder.savedBranch);
+        await restoreSavedBranch(ctx.repoRoot, holder.savedBranch);
         throw commitErr;
       }
-      restoreSavedBranch(ctx.repoRoot, holder.savedBranch);
+      await restoreSavedBranch(ctx.repoRoot, holder.savedBranch);
       return { success: true, conflicts: [], conflictsResolved: false };
     }
 
@@ -179,17 +179,17 @@ export async function resolveFinalMergeConflicts(
       return { resolved: false, ...(resolveResult.error ? { error: resolveResult.error } : {}) };
     }
 
-    stageFiles(ctx.repoRoot, conflicts);
+    await stageFiles(ctx.repoRoot, conflicts);
     try {
-      commitChanges(ctx.repoRoot, `Merge resolution: ${ctx.mainBranch}`);
+      await commitChanges(ctx.repoRoot, `Merge resolution: ${ctx.mainBranch}`);
     } catch (commitErr) {
       try {
-        abortMerge(ctx.repoRoot);
+        await abortMerge(ctx.repoRoot);
       } catch {
         /* no merge in progress */
       }
       try {
-        resetHard(ctx.repoRoot);
+        await resetHard(ctx.repoRoot);
       } catch {
         /* best-effort */
       }
@@ -204,5 +204,5 @@ export async function resolveFinalMergeConflicts(
  * decides not to resolve conflicts from {@link finalMergeToMain}.
  */
 export async function abortFinalMerge(ctx: FinalMergeContext): Promise<void> {
-  await ctx.withGitLock(() => Promise.resolve(abortMerge(ctx.repoRoot)));
+  await ctx.withGitLock(() => abortMerge(ctx.repoRoot));
 }

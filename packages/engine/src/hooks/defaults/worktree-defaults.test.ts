@@ -53,7 +53,6 @@ import type {
   PopulateWorktreeArgs,
   WorkflowHooks,
 } from '../types.js';
-import * as defaultsBarrel from './index.js';
 import {
   createDefaultBeforeTaskWorktreeCreate,
   createDefaultOnCommitFailure,
@@ -127,11 +126,6 @@ afterEach(() => {
 // ── createDefaultBeforeTaskWorktreeCreate ───────────────────────────────────
 
 describe('createDefaultBeforeTaskWorktreeCreate', () => {
-  it('returns a function (a FirstWinsHook)', () => {
-    const hook = createDefaultBeforeTaskWorktreeCreate();
-    expect(typeof hook).toBe('function');
-  });
-
   it('is assignable to WorkflowHooks.beforeTaskWorktreeCreate (type-level + identity)', () => {
     const hook = createDefaultBeforeTaskWorktreeCreate();
     const hooks: WorkflowHooks = { beforeTaskWorktreeCreate: hook };
@@ -216,11 +210,6 @@ describe('createDefaultBeforeTaskWorktreeCreate', () => {
 // ── createDefaultPopulateWorktree ───────────────────────────────────────────
 
 describe('createDefaultPopulateWorktree', () => {
-  it('returns a function (a PipelineHook<void, PopulateWorktreeArgs>)', () => {
-    const hook = createDefaultPopulateWorktree('/some/source');
-    expect(typeof hook).toBe('function');
-  });
-
   it('is assignable to WorkflowHooks.populateWorktree (type-level + identity)', () => {
     const hook = createDefaultPopulateWorktree('/some/source');
     const hooks: WorkflowHooks = { populateWorktree: hook };
@@ -311,10 +300,6 @@ describe('createDefaultPopulateWorktree', () => {
 // ── defaultOnTaskMerge ──────────────────────────────────────────────────────
 
 describe('defaultOnTaskMerge', () => {
-  it('is a function (a FirstWinsHook)', () => {
-    expect(typeof defaultOnTaskMerge).toBe('function');
-  });
-
   it('is assignable to WorkflowHooks.onTaskMerge (type-level + identity)', () => {
     const hooks: WorkflowHooks = { onTaskMerge: defaultOnTaskMerge };
     expect(hooks.onTaskMerge).toBe(defaultOnTaskMerge);
@@ -352,11 +337,6 @@ describe('defaultOnTaskMerge', () => {
 // ── createDefaultOnMergeConflict ────────────────────────────────────────────
 
 describe('createDefaultOnMergeConflict', () => {
-  it('returns a function (a FirstWinsHook)', () => {
-    const hook = createDefaultOnMergeConflict(['/profiles']);
-    expect(typeof hook).toBe('function');
-  });
-
   it('is assignable to WorkflowHooks.onMergeConflict (type-level + identity)', () => {
     const hook = createDefaultOnMergeConflict(['/profiles']);
     const hooks: WorkflowHooks = { onMergeConflict: hook };
@@ -373,12 +353,6 @@ describe('createDefaultOnMergeConflict', () => {
     };
     const result = await hook(args, makeCtx());
     expect(result).toEqual({ strategy: 'agent' });
-  });
-
-  it('accepts an optional apiKeys map as the second factory argument', () => {
-    // Type-level + runtime: the factory signature is (profilesDirs, apiKeys?).
-    const hook = createDefaultOnMergeConflict(['/profiles'], { OPENAI_API_KEY: 'sk-test' });
-    expect(typeof hook).toBe('function');
   });
 
   it('returns the agent marker regardless of conflict count / paths', async () => {
@@ -428,11 +402,6 @@ describe('createDefaultOnMergeConflict', () => {
 // ── createDefaultOnCommitFailure ────────────────────────────────────────────
 
 describe('createDefaultOnCommitFailure', () => {
-  it('returns a function (a FirstWinsHook)', () => {
-    const hook = createDefaultOnCommitFailure(['/profiles']);
-    expect(typeof hook).toBe('function');
-  });
-
   it('is assignable to WorkflowHooks.onCommitFailure (type-level + identity)', () => {
     const hook = createDefaultOnCommitFailure(['/profiles']);
     const hooks: WorkflowHooks = { onCommitFailure: hook };
@@ -448,11 +417,6 @@ describe('createDefaultOnCommitFailure', () => {
     };
     const result = await hook(args, makeCtx());
     expect(result).toEqual({ strategy: 'agent' });
-  });
-
-  it('accepts an optional apiKeys map as the second factory argument', () => {
-    const hook = createDefaultOnCommitFailure(['/profiles'], { ANTHROPIC_API_KEY: 'sk-test' });
-    expect(typeof hook).toBe('function');
   });
 
   it('returns the agent marker regardless of error count / content', async () => {
@@ -487,10 +451,6 @@ describe('createDefaultOnCommitFailure', () => {
 // ── defaultAfterTaskWorktreeCreate ──────────────────────────────────────────
 
 describe('defaultAfterTaskWorktreeCreate', () => {
-  it('is a function (an ObserveHook)', () => {
-    expect(typeof defaultAfterTaskWorktreeCreate).toBe('function');
-  });
-
   it('is assignable to WorkflowHooks.afterTaskWorktreeCreate (type-level + identity)', () => {
     const hooks: WorkflowHooks = { afterTaskWorktreeCreate: defaultAfterTaskWorktreeCreate };
     expect(hooks.afterTaskWorktreeCreate).toBe(defaultAfterTaskWorktreeCreate);
@@ -687,24 +647,5 @@ describe('defaults compose through the HookRegistry', () => {
     );
 
     expect(result).toEqual({ skip: false, baseBranch: 'engin/custom' });
-  });
-});
-
-// ── Defaults barrel (./index.js) ────────────────────────────────────────────
-//
-// The task requires "Export all. Add to packages/engine/src/hooks/defaults/
-// index.ts." These pin that re-export so a consumer importing from the
-// defaults barrel gets every worktree default. Accessed via a Record cast so
-// the test is a pure runtime check.
-
-describe('defaults barrel (./index.js)', () => {
-  it('re-exports all six worktree defaults', () => {
-    const barrel = defaultsBarrel as unknown as Record<string, unknown>;
-    expect(typeof barrel.createDefaultBeforeTaskWorktreeCreate).toBe('function');
-    expect(typeof barrel.createDefaultPopulateWorktree).toBe('function');
-    expect(typeof barrel.defaultOnTaskMerge).toBe('function');
-    expect(typeof barrel.createDefaultOnMergeConflict).toBe('function');
-    expect(typeof barrel.createDefaultOnCommitFailure).toBe('function');
-    expect(typeof barrel.defaultAfterTaskWorktreeCreate).toBe('function');
   });
 });

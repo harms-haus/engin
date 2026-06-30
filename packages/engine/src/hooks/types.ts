@@ -77,17 +77,6 @@ export type FirstWinsHook<Result, Args> = (
 export type AllRunHook<Contribution, Args> = (args: Args, ctx: HookContext) => Contribution | Promise<Contribution>;
 
 /**
- * Internal metadata describing a declared hook. The reducer is required for
- * `'all-run'` hooks — it folds per-subscriber contributions into a single
- * aggregated value.
- */
-export interface HookDefinition {
-  name: string;
-  rule: CompositionRule;
-  reducer?: (acc: unknown, next: unknown) => unknown;
-}
-
-/**
  * Hook registry — the engine's typed entry point for invoking workflow-provided
  * hooks. This is the INTERFACE only; the concrete implementation ships in a
  * later task.

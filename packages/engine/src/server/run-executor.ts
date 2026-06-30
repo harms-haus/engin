@@ -173,13 +173,13 @@ export class RunExecutor {
     msg: StartRunMessage,
     hookRegistry: HookRegistry,
   ): Promise<{ worktreeManager?: WorktreeManager; profilesDirs?: string[] }> {
-    const isGit = isGitRepo(handle.cwd);
+    const isGit = await isGitRepo(handle.cwd);
     if (!isGit) {
       console.warn(`[run-executor] cwd is not a git repository. Running without worktrees.`);
       return {};
     }
 
-    const repoRoot = getRepoRoot(handle.cwd);
+    const repoRoot = await getRepoRoot(handle.cwd);
     const profilesDirs = resolveProfilesDirs(handle.cwd, handle.workflowName);
 
     hookRegistry.register({

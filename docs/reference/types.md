@@ -63,6 +63,41 @@ type EventType =
 
 See [Event store & status → The reducer](event-store.md#the-evolve-reducer).
 
+## Error classification types
+
+Source: `packages/engine/src/core/error-classifier.ts`. See
+[API reference → Error classification](api.md#error-classification).
+
+### `ErrorKind`
+
+```typescript
+type ErrorKind = 'transient' | 'permanent' | 'abort' | 'empty' | 'unknown';
+```
+
+The structured error category returned by `classify`. Classification precedence is
+abort > empty > permanent > transient > unknown.
+
+### `Classification`
+
+```typescript
+interface Classification {
+  kind: ErrorKind;
+  retryable: boolean;
+  delayMs?: number;
+}
+```
+
+The verdict returned by `classify`. `retryable` is `true` for transient/empty verdicts;
+`delayMs` is present only on transient verdicts (exponential backoff, jittered, capped).
+
+### `ClassifyOptions`
+
+| Field                   | Type                                               | Description                                                                                                        |
+| ----------------------- | -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `lastAssistantMessage?` | `{ stopReason?, errorMessage?, content?, usage? }` | The last assistant message (as returned by `extractLastAssistantMessage`), for empty/overflow/transient detection. |
+| `contextWindow?`        | `number`                                           | Model context window, for silent context-overflow detection.                                                       |
+| `attempt?`              | `number`                                           | 1-based attempt number, used to compute transient backoff delay (default `1`).                                     |
+
 ## Core types
 
 ### `AgentProfile`
@@ -657,6 +692,18 @@ A discriminated union representing the content of an assistant turn:
 
 `contentBlocks` is only populated when the turn's message has `role: 'assistant'`.
 
+### `AgentRenderHandler`
+
+Source: `packages/engine/src/core/renderer-invocation.ts`. The callback shape passed to
+[`invokeRenderer`](api.md#invokerenderer) for delivering a rendered agent output.
+
+```typescript
+type AgentRenderHandler = (info: { agentId: string; profile: string; taskId: string; rendered: string }) => void;
+```
+
+Mirrors the `onAgentRender` status-callback payload (`{ agentId, profile, taskId?, rendered }`),
+with `taskId` required here because `invokeRenderer` always operates within a task context.
+
 ## Hook types
 
 Source: **`packages/engine/src/hooks/types.ts`** (the canonical `WorkflowHooks` interface and
@@ -675,7 +722,6 @@ ever disagrees with `types.ts`, the code wins.
 | `PipelineHook<V, Args>`  | `(value, args, ctx) => V \| Promise<V>` — ordered value transform (rule: `'pipeline'`).                                                                                                                                                                                        |
 | `FirstWinsHook<R, Args>` | `(args, ctx) => R \| undefined \| Promise<R \| undefined>` — first non-`undefined` wins (rule: `'first-wins'`). Only `undefined` abstains (`false`/`0`/`''` are decisions).                                                                                                    |
 | `AllRunHook<C, Args>`    | `(args, ctx) => C \| Promise<C>` — every subscriber contributes, folded by the hook's reducer (rule: `'all-run'`).                                                                                                                                                             |
-| `HookDefinition`         | `{ name: string; rule: CompositionRule; reducer?: (acc, next) => unknown }`. The reducer is required for `'all-run'` hooks.                                                                                                                                                    |
 | `HookRegistry`           | Interface: `register(hooks)`, `invokeObserve(name, args, ctx)`, `invokePipeline(name, initialValue, args, ctx)`, `invokeFirstWins(name, args, ctx)`, `invokeAllRun(name, args, ctx)`, `hasSubscribers(name)`, `clone()`. Each `invoke*` is generic over `keyof WorkflowHooks`. |
 | `WorkflowHooks`          | The hook catalog interface — grown by declaration merging across `types.ts`. Each field is `SomeHook<Args> \| SomeHook<Args>[]`. See [Hooks §3](hooks.md#3-hook-catalog) for every field's signature, rule, and wiring status.                                                 |
 | `HookProvider`           | `WorkflowHooks \| WorkflowHooks[]` — what `WorkflowModule.hooks` accepts (a single object or an array registered in order).                                                                                                                                                    |

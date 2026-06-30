@@ -70,9 +70,9 @@ describe('WorkflowStatusTracker – persist architecture (bounded promise chain)
       // Trigger persistState multiple times in rapid succession
       tracker.setTaskPrompt('v1');
       tracker.setWorkflowData({ key1: 'v1' });
-      tracker.recordAgentSpawn('a1', 'coder', 'scouting');
+      tracker.recordAgentSpawn({ agentId: 'a1', profile: 'coder', phaseId: 'scouting' });
       tracker.setTaskPrompt('v2');
-      tracker.recordAgentSpawn('a2', 'coder', 'planning');
+      tracker.recordAgentSpawn({ agentId: 'a2', profile: 'coder', phaseId: 'planning' });
 
       // All mutations should be in memory immediately
       expect(tracker.taskPrompt).toBe('v2');
@@ -132,7 +132,7 @@ describe('WorkflowStatusTracker – persist architecture (bounded promise chain)
 
       // While save is in-flight, trigger another change
       tracker.setTaskPrompt('coalesced');
-      tracker.recordAgentSpawn('a1', 'coder', 'scouting');
+      tracker.recordAgentSpawn({ agentId: 'a1', profile: 'coder', phaseId: 'scouting' });
 
       // Now release the slow save
       slowSaveResolve!();
@@ -253,7 +253,7 @@ describe('WorkflowStatusTracker – persist architecture (bounded promise chain)
       expect(() => {
         tracker.setTaskPrompt('resilient');
         tracker.setWorkflowData({ tag: 'resilient' });
-        tracker.recordAgentSpawn('a1', 'coder', 'scouting');
+        tracker.recordAgentSpawn({ agentId: 'a1', profile: 'coder', phaseId: 'scouting' });
         tracker.recordAgentComplete('a1');
       }).not.toThrow();
 
@@ -312,7 +312,12 @@ describe('WorkflowStatusTracker – persist architecture (bounded promise chain)
     it('no promise chain accumulates after rapid agent spawns', async () => {
       // recordAgentSpawn calls persistState — rapid spawns should not chain
       for (let i = 0; i < 50; i++) {
-        tracker.recordAgentSpawn(`agent-${i}`, 'coder', 'implementing', `task-${i}`);
+        tracker.recordAgentSpawn({
+          agentId: `agent-${i}`,
+          profile: 'coder',
+          phaseId: 'implementing',
+          taskId: `task-${i}`,
+        });
       }
 
       // All in memory immediately
@@ -426,10 +431,10 @@ describe('WorkflowStatusTracker – persist architecture (bounded promise chain)
 
       // Multiple changes while in-flight
       tracker.setTaskPrompt('change-1');
-      tracker.recordAgentSpawn('a1', 'coder', 'scouting');
+      tracker.recordAgentSpawn({ agentId: 'a1', profile: 'coder', phaseId: 'scouting' });
       await new Promise((r) => setTimeout(r, 5));
       tracker.setTaskPrompt('change-2');
-      tracker.recordAgentSpawn('a2', 'coder', 'planning');
+      tracker.recordAgentSpawn({ agentId: 'a2', profile: 'coder', phaseId: 'planning' });
 
       // Release barrier
       inFlightResolve!();
@@ -535,7 +540,7 @@ describe('WorkflowStatusTracker – persist architecture (bounded promise chain)
     });
 
     it('recordAgentSpawn triggers auto-persist', async () => {
-      tracker.recordAgentSpawn('agent-1', 'coder', 'scouting');
+      tracker.recordAgentSpawn({ agentId: 'agent-1', profile: 'coder', phaseId: 'scouting' });
 
       await new Promise((r) => setTimeout(r, 50));
 
@@ -544,7 +549,7 @@ describe('WorkflowStatusTracker – persist architecture (bounded promise chain)
     });
 
     it('recordAgentComplete triggers auto-persist', async () => {
-      tracker.recordAgentSpawn('agent-1', 'coder', 'scouting');
+      tracker.recordAgentSpawn({ agentId: 'agent-1', profile: 'coder', phaseId: 'scouting' });
       await new Promise((r) => setTimeout(r, 50));
 
       tracker.recordAgentComplete('agent-1');

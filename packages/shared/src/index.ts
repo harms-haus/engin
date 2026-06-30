@@ -36,6 +36,7 @@ export {
   writeProjectionToState,
 } from './projection-helpers.js';
 export { isServerMessage } from './protocol-types.js';
+export { DEFAULT_SERVER_PORT } from './server-defaults.js';
 
 // ─── Type exports from canonical homes ──────────────────────────────────────
 

@@ -3,9 +3,14 @@ export * from './agents/index.js';
 export * from './core/agent-lifecycle.js';
 export * from './core/agent-loop.js';
 export * from './core/config.js';
+export * from './core/error-classifier.js';
 export * from './core/git.js';
+export * from './core/network.js';
+export * from './core/path-relativizer.js';
 export * from './core/phase-runner.js';
 export * from './core/profile.js';
+export * from './core/redact.js';
+export * from './core/renderer-invocation.js';
 export * from './core/renderer-registry.js';
 export * from './core/schema-describe.js';
 export * from './core/setup.js';
@@ -29,11 +34,7 @@ export * from './pool/index.js';
 // ─── Tracking ──────────────────────────────────────────────────────────────
 export * from '@engin/shared/event-types';
 export * from '@engin/shared/evolve';
-export * from './tracking/audit-log.js';
-export * from './tracking/event-store.js';
-export { createStoreCallbacks } from './tracking/store-callbacks.js';
-export * from './tracking/task-status.js';
-export * from './tracking/workflow-status.js';
+export * from './tracking/index.js';
 
 // ─── Server ────────────────────────────────────────────────────────────────
 export * from './server/auth.js';

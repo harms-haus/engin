@@ -33,7 +33,7 @@ describe('WorkflowStatusTracker – agent persistence', () => {
 
   describe('recordAgentSpawn', () => {
     it('adds a record with all required fields', () => {
-      tracker.recordAgentSpawn('agent-1', 'coder', 'scouting');
+      tracker.recordAgentSpawn({ agentId: 'agent-1', profile: 'coder', phaseId: 'scouting' });
 
       const sessions = tracker.spawnedAgents;
       expect(sessions).toHaveLength(1);
@@ -45,14 +45,21 @@ describe('WorkflowStatusTracker – agent persistence', () => {
     });
 
     it('stores taskId when provided', () => {
-      tracker.recordAgentSpawn('agent-1', 'coder', 'implementing', 'task-42');
+      tracker.recordAgentSpawn({ agentId: 'agent-1', profile: 'coder', phaseId: 'implementing', taskId: 'task-42' });
 
       const sessions = tracker.spawnedAgents;
       expect(sessions[0].taskId).toBe('task-42');
     });
 
     it('stores runnerRole and attempt when provided', () => {
-      tracker.recordAgentSpawn('agent-1', 'coder', 'implementing', 'task-42', 'coder', 2);
+      tracker.recordAgentSpawn({
+        agentId: 'agent-1',
+        profile: 'coder',
+        phaseId: 'implementing',
+        taskId: 'task-42',
+        runnerRole: 'coder',
+        attempt: 2,
+      });
 
       const sessions = tracker.spawnedAgents;
       const a = sessions[0];
@@ -77,9 +84,9 @@ describe('WorkflowStatusTracker – agent persistence', () => {
     });
 
     it('appends multiple records in order', () => {
-      tracker.recordAgentSpawn('agent-1', 'coder', 'scouting');
-      tracker.recordAgentSpawn('agent-2', 'reviewer', 'scouting_review');
-      tracker.recordAgentSpawn('agent-3', 'coder', 'implementing', 'task-1');
+      tracker.recordAgentSpawn({ agentId: 'agent-1', profile: 'coder', phaseId: 'scouting' });
+      tracker.recordAgentSpawn({ agentId: 'agent-2', profile: 'reviewer', phaseId: 'scouting_review' });
+      tracker.recordAgentSpawn({ agentId: 'agent-3', profile: 'coder', phaseId: 'implementing', taskId: 'task-1' });
 
       const sessions = tracker.spawnedAgents;
       expect(sessions).toHaveLength(3);
@@ -89,7 +96,7 @@ describe('WorkflowStatusTracker – agent persistence', () => {
     });
 
     it('triggers auto-persist', async () => {
-      tracker.recordAgentSpawn('agent-1', 'coder', 'scouting');
+      tracker.recordAgentSpawn({ agentId: 'agent-1', profile: 'coder', phaseId: 'scouting' });
 
       await tracker.save();
 
@@ -106,7 +113,7 @@ describe('WorkflowStatusTracker – agent persistence', () => {
     it('sets completedAt on the matching record', () => {
       const before = new Date().toISOString();
 
-      tracker.recordAgentSpawn('agent-1', 'coder', 'scouting');
+      tracker.recordAgentSpawn({ agentId: 'agent-1', profile: 'coder', phaseId: 'scouting' });
       tracker.recordAgentComplete('agent-1');
 
       const after = new Date().toISOString();
@@ -119,8 +126,8 @@ describe('WorkflowStatusTracker – agent persistence', () => {
     });
 
     it('only affects the matching agent', () => {
-      tracker.recordAgentSpawn('agent-1', 'coder', 'scouting');
-      tracker.recordAgentSpawn('agent-2', 'reviewer', 'scouting_review');
+      tracker.recordAgentSpawn({ agentId: 'agent-1', profile: 'coder', phaseId: 'scouting' });
+      tracker.recordAgentSpawn({ agentId: 'agent-2', profile: 'reviewer', phaseId: 'scouting_review' });
 
       tracker.recordAgentComplete('agent-1');
 
@@ -130,8 +137,8 @@ describe('WorkflowStatusTracker – agent persistence', () => {
     });
 
     it('handles completing multiple sessions independently', () => {
-      tracker.recordAgentSpawn('agent-1', 'coder', 'scouting');
-      tracker.recordAgentSpawn('agent-2', 'reviewer', 'scouting_review');
+      tracker.recordAgentSpawn({ agentId: 'agent-1', profile: 'coder', phaseId: 'scouting' });
+      tracker.recordAgentSpawn({ agentId: 'agent-2', profile: 'reviewer', phaseId: 'scouting_review' });
 
       tracker.recordAgentComplete('agent-1');
       tracker.recordAgentComplete('agent-2');
@@ -142,7 +149,7 @@ describe('WorkflowStatusTracker – agent persistence', () => {
     });
 
     it('is a no-op for unknown agentId', () => {
-      tracker.recordAgentSpawn('agent-1', 'coder', 'scouting');
+      tracker.recordAgentSpawn({ agentId: 'agent-1', profile: 'coder', phaseId: 'scouting' });
       tracker.recordAgentComplete('unknown-agent');
 
       const sessions = tracker.spawnedAgents;
@@ -151,7 +158,7 @@ describe('WorkflowStatusTracker – agent persistence', () => {
     });
 
     it('triggers auto-persist', async () => {
-      tracker.recordAgentSpawn('agent-1', 'coder', 'scouting');
+      tracker.recordAgentSpawn({ agentId: 'agent-1', profile: 'coder', phaseId: 'scouting' });
       await tracker.save();
 
       tracker.recordAgentComplete('agent-1');
@@ -167,7 +174,7 @@ describe('WorkflowStatusTracker – agent persistence', () => {
 
   describe('toJSON', () => {
     it('includes spawnedAgents in output', () => {
-      tracker.recordAgentSpawn('agent-1', 'coder', 'scouting', 'task-1');
+      tracker.recordAgentSpawn({ agentId: 'agent-1', profile: 'coder', phaseId: 'scouting', taskId: 'task-1' });
       tracker.recordAgentComplete('agent-1');
 
       const json = tracker.toJSON();
@@ -183,7 +190,7 @@ describe('WorkflowStatusTracker – agent persistence', () => {
     });
 
     it('spawnedAgents in JSON is a copy', () => {
-      tracker.recordAgentSpawn('agent-1', 'coder', 'scouting');
+      tracker.recordAgentSpawn({ agentId: 'agent-1', profile: 'coder', phaseId: 'scouting' });
 
       const json = tracker.toJSON();
       json.spawnedAgents!.push({ agentId: 'fake', profile: 'p', phaseId: 'scouting' });
@@ -201,8 +208,13 @@ describe('WorkflowStatusTracker – agent persistence', () => {
 
   describe('save / load round-trip', () => {
     it('restores spawnedAgents through save and load', async () => {
-      tracker.recordAgentSpawn('agent-1', 'coder', 'scouting');
-      tracker.recordAgentSpawn('agent-2', 'reviewer', 'scouting_review', 'task-5');
+      tracker.recordAgentSpawn({ agentId: 'agent-1', profile: 'coder', phaseId: 'scouting' });
+      tracker.recordAgentSpawn({
+        agentId: 'agent-2',
+        profile: 'reviewer',
+        phaseId: 'scouting_review',
+        taskId: 'task-5',
+      });
       tracker.recordAgentComplete('agent-1');
 
       await tracker.save();
@@ -244,12 +256,12 @@ describe('WorkflowStatusTracker – agent persistence', () => {
     });
 
     it('restored tracker can continue recording sessions', async () => {
-      tracker.recordAgentSpawn('agent-1', 'coder', 'scouting');
+      tracker.recordAgentSpawn({ agentId: 'agent-1', profile: 'coder', phaseId: 'scouting' });
       tracker.recordAgentComplete('agent-1');
       await tracker.save();
 
       const restored = await WorkflowStatusTracker.load(dir);
-      restored.recordAgentSpawn('agent-2', 'reviewer', 'planning');
+      restored.recordAgentSpawn({ agentId: 'agent-2', profile: 'reviewer', phaseId: 'planning' });
       restored.recordAgentComplete('agent-2');
 
       // In-memory state is immediately available
@@ -270,8 +282,8 @@ describe('WorkflowStatusTracker – agent persistence', () => {
     it('spawnedAgents persists alongside other workflow state', async () => {
       tracker.setTaskPrompt('Full state test');
       tracker.setPhase('implementing');
-      tracker.recordAgentSpawn('agent-1', 'coder', 'scouting');
-      tracker.recordAgentSpawn('agent-2', 'reviewer', 'planning', 'task-1');
+      tracker.recordAgentSpawn({ agentId: 'agent-1', profile: 'coder', phaseId: 'scouting' });
+      tracker.recordAgentSpawn({ agentId: 'agent-2', profile: 'reviewer', phaseId: 'planning', taskId: 'task-1' });
       tracker.recordAgentComplete('agent-1');
       tracker.addTokensToStats({ input: 100, output: 50 });
       tracker.incrementAgentCount();
@@ -290,7 +302,7 @@ describe('WorkflowStatusTracker – agent persistence', () => {
 
   describe('auto-persist on agent spawn/complete', () => {
     it('spawn triggers auto-persist to disk', async () => {
-      tracker.recordAgentSpawn('agent-1', 'coder', 'scouting');
+      tracker.recordAgentSpawn({ agentId: 'agent-1', profile: 'coder', phaseId: 'scouting' });
 
       await tracker.save();
 
@@ -300,7 +312,7 @@ describe('WorkflowStatusTracker – agent persistence', () => {
     });
 
     it('complete triggers auto-persist to disk', async () => {
-      tracker.recordAgentSpawn('agent-1', 'coder', 'scouting');
+      tracker.recordAgentSpawn({ agentId: 'agent-1', profile: 'coder', phaseId: 'scouting' });
       await tracker.save();
 
       tracker.recordAgentComplete('agent-1');
@@ -315,7 +327,7 @@ describe('WorkflowStatusTracker – agent persistence', () => {
 
   describe('PersistedAgentRecord shape', () => {
     it('records match the PersistedAgentRecord interface shape', () => {
-      tracker.recordAgentSpawn('a1', 'coder', 'scouting', 't1');
+      tracker.recordAgentSpawn({ agentId: 'a1', profile: 'coder', phaseId: 'scouting', taskId: 't1' });
       const record: PersistedAgentRecord = tracker.spawnedAgents[0];
 
       // Verify all fields exist with correct types
@@ -332,8 +344,8 @@ describe('WorkflowStatusTracker – agent persistence', () => {
     });
 
     it('all SpawnedAgents in WorkflowState JSON match PersistedAgentRecord', async () => {
-      tracker.recordAgentSpawn('a1', 'coder', 'scouting', 't1');
-      tracker.recordAgentSpawn('a2', 'reviewer', 'planning');
+      tracker.recordAgentSpawn({ agentId: 'a1', profile: 'coder', phaseId: 'scouting', taskId: 't1' });
+      tracker.recordAgentSpawn({ agentId: 'a2', profile: 'reviewer', phaseId: 'planning' });
       tracker.recordAgentComplete('a1');
 
       await tracker.save();
@@ -399,7 +411,7 @@ describe('WorkflowStatusTracker – agent persistence', () => {
     it('recordAgentSpawn returns synchronously without blocking for I/O', () => {
       // Call should return immediately — not block on file write
       const start = performance.now();
-      tracker.recordAgentSpawn('agent-1', 'coder', 'scouting');
+      tracker.recordAgentSpawn({ agentId: 'agent-1', profile: 'coder', phaseId: 'scouting' });
       const elapsed = performance.now() - start;
 
       // A sync file write would typically take >1ms; a synchronous in-memory op
@@ -411,7 +423,7 @@ describe('WorkflowStatusTracker – agent persistence', () => {
     });
 
     it('recordAgentComplete returns synchronously without blocking for I/O', () => {
-      tracker.recordAgentSpawn('agent-1', 'coder', 'scouting');
+      tracker.recordAgentSpawn({ agentId: 'agent-1', profile: 'coder', phaseId: 'scouting' });
 
       const start = performance.now();
       tracker.recordAgentComplete('agent-1');
@@ -426,7 +438,12 @@ describe('WorkflowStatusTracker – agent persistence', () => {
     it('multiple rapid spawn calls are coalesced into fewer disk writes', async () => {
       // Rapidly spawn multiple sessions
       for (let i = 0; i < 5; i++) {
-        tracker.recordAgentSpawn(`agent-${i}`, 'coder', 'implementing', `task-${i}`);
+        tracker.recordAgentSpawn({
+          agentId: `agent-${i}`,
+          profile: 'coder',
+          phaseId: 'implementing',
+          taskId: `task-${i}`,
+        });
       }
 
       // All 5 should be in memory immediately
@@ -444,7 +461,7 @@ describe('WorkflowStatusTracker – agent persistence', () => {
     });
 
     it('spawn immediately followed by complete persists both', async () => {
-      tracker.recordAgentSpawn('agent-1', 'coder', 'scouting');
+      tracker.recordAgentSpawn({ agentId: 'agent-1', profile: 'coder', phaseId: 'scouting' });
       tracker.recordAgentComplete('agent-1');
 
       // In-memory state reflects both operations
@@ -463,7 +480,7 @@ describe('WorkflowStatusTracker – agent persistence', () => {
       // Ensure no state file exists yet
       await expect(fs.access(join(dir, '.engin-state.json'))).rejects.toThrow();
 
-      tracker.recordAgentSpawn('agent-1', 'coder', 'scouting');
+      tracker.recordAgentSpawn({ agentId: 'agent-1', profile: 'coder', phaseId: 'scouting' });
 
       await tracker.save();
 

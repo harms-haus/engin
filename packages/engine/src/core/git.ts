@@ -2,26 +2,34 @@
 
 /**
  * Runs `git` with the given args in the specified working directory.
- * Returns trimmed stdout on success; throws a descriptive Error on non-zero exit.
+ * Returns trimmed stdout on success; rejects with a descriptive Error on
+ * non-zero exit. Uses async `Bun.spawn` (awaited `.exited`) so it never
+ * blocks the event loop; stdout/stderr are drained via `new Response(...).text()`.
  */
-function execGit(args: string[], cwd: string): string {
-  const decoder = new TextDecoder();
-
-  const result = Bun.spawnSync({
+async function execGit(args: string[], cwd: string): Promise<string> {
+  const proc = Bun.spawn({
     cmd: ['git', ...args],
     cwd,
     stdout: 'pipe',
     stderr: 'pipe',
   });
 
-  const stdout = decoder.decode(result.stdout).trim();
-  const stderr = decoder.decode(result.stderr).trim();
+  // Drain stdout/stderr in parallel with awaiting exit so the proc's pipe
+  // buffers cannot fill and deadlock the spawn.
+  const [exitCode, stdout, stderr] = await Promise.all([
+    proc.exited,
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+  ]);
 
-  if (result.exitCode !== 0) {
-    throw new Error(`git ${args.join(' ')} failed (exit code ${result.exitCode}) in ${cwd}: ${stderr}`);
+  const trimmedStdout = stdout.trim();
+  const trimmedStderr = stderr.trim();
+
+  if (exitCode !== 0) {
+    throw new Error(`git ${args.join(' ')} failed (exit code ${exitCode}) in ${cwd}: ${trimmedStderr}`);
   }
 
-  return stdout;
+  return trimmedStdout;
 }
 
 // ─── Exported Functions ──────────────────────────────────────────────────────
@@ -29,9 +37,9 @@ function execGit(args: string[], cwd: string): string {
 /**
  * Returns true only when `dir` is inside a git working tree.
  */
-export function isGitRepo(dir: string): boolean {
+export async function isGitRepo(dir: string): Promise<boolean> {
   try {
-    const output = execGit(['rev-parse', '--is-inside-work-tree'], dir);
+    const output = await execGit(['rev-parse', '--is-inside-work-tree'], dir);
     return output === 'true';
   } catch {
     return false;
@@ -41,14 +49,14 @@ export function isGitRepo(dir: string): boolean {
 /**
  * Returns the top-level directory of the repository containing `dir`.
  */
-export function getRepoRoot(dir: string): string {
+export async function getRepoRoot(dir: string): Promise<string> {
   return execGit(['rev-parse', '--show-toplevel'], dir);
 }
 
 /**
  * Returns the name of the current (checked-out) branch.
  */
-export function getCurrentBranch(dir: string): string {
+export async function getCurrentBranch(dir: string): Promise<string> {
   return execGit(['rev-parse', '--abbrev-ref', 'HEAD'], dir);
 }
 
@@ -57,10 +65,10 @@ export function getCurrentBranch(dir: string): string {
  * falling back to verifying `main`, then `master`, and finally returning
  * `'main'` as a default.
  */
-export function getMainBranch(dir: string): string {
+export async function getMainBranch(dir: string): Promise<string> {
   // Try symbolic-ref refs/remotes/origin/HEAD
   try {
-    const ref = execGit(['symbolic-ref', 'refs/remotes/origin/HEAD'], dir);
+    const ref = await execGit(['symbolic-ref', 'refs/remotes/origin/HEAD'], dir);
     const prefix = 'refs/remotes/origin/';
     if (ref.startsWith(prefix)) {
       return ref.slice(prefix.length);
@@ -72,7 +80,7 @@ export function getMainBranch(dir: string): string {
 
   // Try verifying `main`
   try {
-    execGit(['rev-parse', '--verify', 'main'], dir);
+    await execGit(['rev-parse', '--verify', 'main'], dir);
     return 'main';
   } catch {
     // fall through
@@ -80,7 +88,7 @@ export function getMainBranch(dir: string): string {
 
   // Try verifying `master`
   try {
-    execGit(['rev-parse', '--verify', 'master'], dir);
+    await execGit(['rev-parse', '--verify', 'master'], dir);
     return 'master';
   } catch {
     // fall through
@@ -92,53 +100,53 @@ export function getMainBranch(dir: string): string {
 /**
  * Creates a new git worktree at `targetPath` with a new branch `branchName`.
  */
-export function createWorktree(repoRoot: string, branchName: string, targetPath: string): void {
-  execGit(['worktree', 'add', '-b', branchName, targetPath], repoRoot);
+export async function createWorktree(repoRoot: string, branchName: string, targetPath: string): Promise<void> {
+  await execGit(['worktree', 'add', '-b', branchName, targetPath], repoRoot);
 }
 
 /**
  * Removes (forcefully) an existing git worktree at `worktreePath`.
  */
-export function removeWorktree(repoRoot: string, worktreePath: string): void {
-  execGit(['worktree', 'remove', '--force', worktreePath], repoRoot);
+export async function removeWorktree(repoRoot: string, worktreePath: string): Promise<void> {
+  await execGit(['worktree', 'remove', '--force', worktreePath], repoRoot);
 }
 
 /**
  * Lists files that are in an unresolved conflict state (unmerged).
  */
-export function listConflictedFiles(repoRoot: string): string[] {
-  const output = execGit(['diff', '--name-only', '--diff-filter=U'], repoRoot);
+export async function listConflictedFiles(repoRoot: string): Promise<string[]> {
+  const output = await execGit(['diff', '--name-only', '--diff-filter=U'], repoRoot);
   return output.split('\n').filter((line) => line.length > 0);
 }
 
 /**
  * Stages all changes (including untracked files) in `dir`.
  */
-export function stageAll(dir: string): void {
-  execGit(['add', '-A'], dir);
+export async function stageAll(dir: string): Promise<void> {
+  await execGit(['add', '-A'], dir);
 }
 
 /**
  * Commits the staged changes with the given `message`.
  */
-export function commitChanges(dir: string, message: string): void {
-  execGit(['commit', '-m', message], dir);
+export async function commitChanges(dir: string, message: string): Promise<void> {
+  await execGit(['commit', '-m', message], dir);
 }
 
 /**
  * Checks out the specified `branch` in the repo at `repoRoot`.
  */
-export function checkoutBranch(repoRoot: string, branch: string): void {
-  execGit(['checkout', branch], repoRoot);
+export async function checkoutBranch(repoRoot: string, branch: string): Promise<void> {
+  await execGit(['checkout', branch], repoRoot);
 }
 
 /**
  * Restore the previously checked-out branch. Errors are swallowed because
  * the repo may be in a detached-HEAD state where the symbolic ref is gone.
  */
-export function restoreSavedBranch(repoRoot: string, savedBranch: string): void {
+export async function restoreSavedBranch(repoRoot: string, savedBranch: string): Promise<void> {
   try {
-    checkoutBranch(repoRoot, savedBranch);
+    await checkoutBranch(repoRoot, savedBranch);
   } catch {
     // Ignore — may be detached HEAD.
   }
@@ -149,15 +157,15 @@ export function restoreSavedBranch(repoRoot: string, savedBranch: string): void 
  * Returns `{ success: true }` on clean merge, or
  * `{ success: false, conflicts: string[] }` when conflicts occur.
  */
-export function mergeBranch(
+export async function mergeBranch(
   repoRoot: string,
   branch: string,
-): { success: true } | { success: false; conflicts: string[] } {
+): Promise<{ success: true } | { success: false; conflicts: string[] }> {
   try {
-    execGit(['merge', '--no-edit', branch], repoRoot);
+    await execGit(['merge', '--no-edit', branch], repoRoot);
     return { success: true };
   } catch {
-    const conflicts = listConflictedFiles(repoRoot);
+    const conflicts = await listConflictedFiles(repoRoot);
     return { success: false, conflicts };
   }
 }
@@ -165,8 +173,8 @@ export function mergeBranch(
 /**
  * Aborts an in-progress merge.
  */
-export function abortMerge(repoRoot: string): void {
-  execGit(['merge', '--abort'], repoRoot);
+export async function abortMerge(repoRoot: string): Promise<void> {
+  await execGit(['merge', '--abort'], repoRoot);
 }
 
 /**
@@ -182,8 +190,8 @@ export function abortMerge(repoRoot: string): void {
  * NOT remove untracked files (the squash of tracked changes does not create
  * any) — pair with `cleanUntracked` if a resolution agent left scratch files.
  */
-export function resetHard(dir: string): void {
-  execGit(['reset', '--hard', 'HEAD'], dir);
+export async function resetHard(dir: string): Promise<void> {
+  await execGit(['reset', '--hard', 'HEAD'], dir);
 }
 
 /**
@@ -191,23 +199,23 @@ export function resetHard(dir: string): void {
  * cleanup after a failed merge/commit in a SHARED worktree. Swallow callers
  * (see `WorktreeManager.safeResetMainWorktree`) treat a throw as non-fatal.
  */
-export function cleanUntracked(dir: string): void {
-  execGit(['clean', '-fd'], dir);
+export async function cleanUntracked(dir: string): Promise<void> {
+  await execGit(['clean', '-fd'], dir);
 }
 
 /**
  * Pushes `branch` to `remote` (default `'origin'`) and sets upstream tracking.
  */
-export function pushBranch(dir: string, branch: string, remote = 'origin'): void {
-  execGit(['push', '-u', remote, branch], dir);
+export async function pushBranch(dir: string, branch: string, remote = 'origin'): Promise<void> {
+  await execGit(['push', '-u', remote, branch], dir);
 }
 
 /**
  * Returns the diff of the working tree against HEAD.
  * If that is empty, returns the cached (staged) diff instead.
  */
-export function getDiff(dir: string): string {
-  const diff = execGit(['diff', 'HEAD', '--', '.'], dir);
+export async function getDiff(dir: string): Promise<string> {
+  const diff = await execGit(['diff', 'HEAD', '--', '.'], dir);
   if (diff.length > 0) {
     return diff;
   }
@@ -218,8 +226,8 @@ export function getDiff(dir: string): string {
  * Runs `git worktree prune` to sweep orphaned worktree metadata left behind
  * by crashed runs (where worktree directories were deleted without telling git).
  */
-export function worktreePrune(repoRoot: string): void {
-  execGit(['worktree', 'prune'], repoRoot);
+export async function worktreePrune(repoRoot: string): Promise<void> {
+  await execGit(['worktree', 'prune'], repoRoot);
 }
 
 /**
@@ -245,15 +253,15 @@ export function sanitizeBranchSlug(text: string): string {
  * must invoke {@link commitChanges} afterwards. On failure, returns the list
  * of conflicted files.
  */
-export function squashMergeBranch(
+export async function squashMergeBranch(
   repoRoot: string,
   branch: string,
-): { success: true } | { success: false; conflicts: string[]; error?: string } {
+): Promise<{ success: true } | { success: false; conflicts: string[]; error?: string }> {
   try {
-    execGit(['merge', '--squash', branch], repoRoot);
+    await execGit(['merge', '--squash', branch], repoRoot);
     return { success: true };
   } catch (err) {
-    const conflicts = listConflictedFiles(repoRoot);
+    const conflicts = await listConflictedFiles(repoRoot);
     // Only surface the underlying git message when this is NOT a conflict
     // failure — conflict failures are represented by the `conflicts` list
     // and handled separately by callers.
@@ -270,17 +278,17 @@ export function squashMergeBranch(
  * intended (e.g. conflict-resolved) files are staged, not the agent's scratch
  * or untracked files.
  */
-export function stageFiles(repoRoot: string, files: string[]): void {
+export async function stageFiles(repoRoot: string, files: string[]): Promise<void> {
   if (files.length === 0) {
     return;
   }
-  execGit(['add', '--', ...files], repoRoot);
+  await execGit(['add', '--', ...files], repoRoot);
 }
 
 /**
  * Force-deletes a branch (`git branch -D`). Used during task worktree culling
  * to remove branches even when they contain unmerged commits.
  */
-export function deleteBranchForce(repoRoot: string, branch: string): void {
-  execGit(['branch', '-D', branch], repoRoot);
+export async function deleteBranchForce(repoRoot: string, branch: string): Promise<void> {
+  await execGit(['branch', '-D', branch], repoRoot);
 }

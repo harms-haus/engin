@@ -8,6 +8,7 @@
 // writes its own pidfile, installs SIGTERM/SIGINT handlers for graceful
 // shutdown, and keeps the process alive.
 
+import { DEFAULT_SERVER_PORT } from '@engin/shared';
 import { startControlServer } from './control-server.js';
 import { removeStalePidfile, writePidfile } from './daemon.js';
 import { RunManager } from './run-manager.js';
@@ -22,11 +23,11 @@ interface EntrypointOptions {
 /**
  * Parses `--port <n>` and `--host <addr>` from `process.argv`.
  *
- * Defaults: `port = 3619`, `host = '127.0.0.1'`. Exits with a usage message
+ * Defaults: `port = {@link DEFAULT_SERVER_PORT}`, `host = '127.0.0.1'`. Exits with a usage message
  * and non-zero status on an invalid `--port`.
  */
 function parseEntrypointArgs(argv: string[]): EntrypointOptions {
-  let port = 3619;
+  let port = DEFAULT_SERVER_PORT;
   let host = '127.0.0.1';
 
   for (let i = 0; i < argv.length; i++) {

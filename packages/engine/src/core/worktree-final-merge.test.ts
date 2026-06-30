@@ -304,7 +304,7 @@ describe('finalMergeToMain', () => {
     expect(holder.savedBranch).toBe('feature');
 
     // The repo is restored to the saved branch.
-    expect(getCurrentBranch(repo)).toBe('feature');
+    expect(await getCurrentBranch(repo)).toBe('feature');
 
     // Real main now carries the squash commit.
     const mainLog = git(['log', '--oneline', 'main'], repo);
@@ -376,10 +376,10 @@ describe('finalMergeToMain', () => {
 
       // The repo is on REAL main — the saved branch is NOT restored (the
       // caller's next action operates on the conflicted merge state).
-      expect(getCurrentBranch(repo)).toBe('main');
+      expect(await getCurrentBranch(repo)).toBe('main');
 
       // The merge is in progress: conflicted files are present.
-      expect(listConflictedFiles(repo)).toEqual([CONFLICT_FILE]);
+      expect(await listConflictedFiles(repo)).toEqual([CONFLICT_FILE]);
     },
   );
 
@@ -400,7 +400,7 @@ describe('finalMergeToMain', () => {
       expect(holder.savedBranch).toBe('feature');
 
       // The repo is restored to the saved branch despite the failure.
-      expect(getCurrentBranch(repo)).toBe('feature');
+      expect(await getCurrentBranch(repo)).toBe('feature');
 
       // Real main is clean — the staged squash was discarded (resetHard),
       // so NO merge commit landed.
@@ -425,7 +425,7 @@ describe('resolveFinalMergeConflicts', () => {
     async () => {
       const repo = createRepoWithConflict();
       setupSquashConflictOnMain(repo); // repo on main, app.txt conflicted
-      expect(listConflictedFiles(repo)).toEqual([CONFLICT_FILE]);
+      expect(await listConflictedFiles(repo)).toEqual([CONFLICT_FILE]);
 
       // Simulate the agent resolving the conflict (remove conflict markers).
       writeFileSync(join(repo, CONFLICT_FILE), 'RESOLVED-line1\ncommon base\n');
@@ -453,7 +453,7 @@ describe('resolveFinalMergeConflicts', () => {
       expect(git(['show', `HEAD:${CONFLICT_FILE}`], repo)).toBe('RESOLVED-line1\ncommon base');
 
       // No conflicts remain — the merge is complete.
-      expect(listConflictedFiles(repo)).toEqual([]);
+      expect(await listConflictedFiles(repo)).toEqual([]);
     },
   );
 
@@ -470,7 +470,7 @@ describe('resolveFinalMergeConflicts', () => {
       expect(result).toEqual({ resolved: false, error: 'agent gave up' });
 
       // The conflicted state is untouched — still in conflict.
-      expect(listConflictedFiles(repo)).toEqual([CONFLICT_FILE]);
+      expect(await listConflictedFiles(repo)).toEqual([CONFLICT_FILE]);
 
       // No resolution commit was created.
       const log = git(['log', '--oneline'], repo);
@@ -491,7 +491,7 @@ describe('resolveFinalMergeConflicts', () => {
       await expect(resolveFinalMergeConflicts!(ctx, [CONFLICT_FILE], 'Fix')).rejects.toThrow();
 
       // Reset to HEAD — conflicts cleared, no resolution commit.
-      expect(listConflictedFiles(repo)).toEqual([]);
+      expect(await listConflictedFiles(repo)).toEqual([]);
       const log = git(['log', '--oneline'], repo);
       expect(log).not.toContain('Merge resolution');
     },
@@ -527,13 +527,13 @@ describe('abortFinalMerge', () => {
     const repo = createRepoWithConflict();
     // Use a REGULAR merge (sets MERGE_HEAD) so `git merge --abort` succeeds.
     setupRegularConflictOnMain(repo);
-    expect(listConflictedFiles(repo)).toEqual([CONFLICT_FILE]);
+    expect(await listConflictedFiles(repo)).toEqual([CONFLICT_FILE]);
     expect(existsSync(join(repo, '.git', 'MERGE_HEAD'))).toBe(true);
 
     await abortFinalMerge!(makeCtx(repo));
 
     // Conflicts cleared.
-    expect(listConflictedFiles(repo)).toEqual([]);
+    expect(await listConflictedFiles(repo)).toEqual([]);
     // MERGE_HEAD gone — the merge is no longer in progress.
     expect(existsSync(join(repo, '.git', 'MERGE_HEAD'))).toBe(false);
     // The conflicted file reverted to main's version.

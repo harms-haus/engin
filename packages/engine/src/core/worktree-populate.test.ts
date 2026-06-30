@@ -126,39 +126,72 @@ describe('readWorktreeCopyEntries', () => {
 // ─── createSymlinkWithRetry ─────────────────────────────────────────────────
 
 describe('createSymlinkWithRetry', () => {
-  it('creates a symlink pointing at the target', () => {
+  it('creates a symlink pointing at the target', async () => {
     const target = join(tmpRoot, 'target.txt');
     writeFileSync(target, 'hi');
     const link = join(tmpRoot, 'link.txt');
 
-    createSymlinkWithRetry(target, link);
+    await createSymlinkWithRetry(target, link);
 
     expect(lstatSync(link).isSymbolicLink()).toBe(true);
     expect(readlinkSync(link)).toBe(target);
   });
 
-  it('is a no-op when a symlink already points to the correct target', () => {
+  it('returns a Promise on the success path (is async)', async () => {
+    // The function must be async: it returns a thenable, not `undefined`.
     const target = join(tmpRoot, 'target.txt');
     writeFileSync(target, 'hi');
     const link = join(tmpRoot, 'link.txt');
-    createSymlinkWithRetry(target, link);
-    const beforeMtime = lstatSync(link).mtimeMs;
 
-    // Second call must not throw and must leave the symlink intact.
-    expect(() => createSymlinkWithRetry(target, link)).not.toThrow();
-    expect(lstatSync(link).isSymbolicLink()).toBe(true);
-    expect(readlinkSync(link)).toBe(target);
-    void beforeMtime;
+    const result = createSymlinkWithRetry(target, link);
+
+    expect(result).toBeInstanceOf(Promise);
+    await result;
   });
 
-  it('throws when the target does not exist and the link cannot be created', () => {
+  it('is a no-op when a symlink already points to the correct target', async () => {
+    const target = join(tmpRoot, 'target.txt');
+    writeFileSync(target, 'hi');
+    const link = join(tmpRoot, 'link.txt');
+    await createSymlinkWithRetry(target, link);
+
+    // Second call must resolve (not reject) and leave the symlink intact.
+    await createSymlinkWithRetry(target, link);
+    expect(lstatSync(link).isSymbolicLink()).toBe(true);
+    expect(readlinkSync(link)).toBe(target);
+  });
+
+  it('rejects (does not throw synchronously) when the link cannot be created', async () => {
     // Creating a symlink to a non-existent target does NOT throw on most
     // platforms, so instead we point at an invalid path inside a path that
-    // would require a missing parent dir without mkdir. We verify the function
-    // either succeeds (dangling symlink) or throws — but importantly it does
-    // not silently swallow on a genuinely unwritable location.
+    // would require a missing parent dir without mkdir. The async contract
+    // means failures surface as a rejected Promise, not a synchronous throw.
     const impossibleLink = join(tmpRoot, 'no-such-dir', 'link');
-    expect(() => createSymlinkWithRetry('/nonexistent/target', impossibleLink, 1, 1)).toThrow();
+    await expect(createSymlinkWithRetry('/nonexistent/target', impossibleLink, 1, 1)).rejects.toThrow();
+  });
+
+  it('does not block the event loop during retry backoff', async () => {
+    // Force repeated retries by pointing at an unwritable link path; each
+    // failed attempt backs off for `backoffMs`. A non-blocking backoff
+    // (`await Bun.sleep` / `setTimeout`) yields to the event loop so a
+    // concurrent setInterval keeps ticking throughout. A synchronous
+    // `Bun.sleepSync` freezes the entire thread and the interval cannot fire
+    // until the call returns.
+    const impossibleLink = join(tmpRoot, 'no-such-dir', 'link');
+    let ticks = 0;
+    const handle = setInterval(() => {
+      ticks++;
+    }, 10);
+
+    try {
+      await expect(createSymlinkWithRetry('/nonexistent/target', impossibleLink, 4, 40)).rejects.toThrow();
+    } finally {
+      clearInterval(handle);
+    }
+
+    // 4 retries x 40ms ~= 160ms of backoff. A 10ms interval should fire many
+    // times when the loop is yielded; a synchronous sleep would freeze it.
+    expect(ticks).toBeGreaterThan(5);
   });
 });
 
@@ -230,28 +263,47 @@ describe('populateWorktree', () => {
     expect(existsSync(join(target, 'b.txt'))).toBe(false);
   });
 
-  it('creates a symlink for a symlink-mode entry', () => {
+  it('returns a Promise (awaits async symlink creation)', async () => {
+    // Because symlink creation is now async, populateWorktree must await it
+    // internally and therefore itself return a Promise.
     const source = join(tmpRoot, 'source');
     const target = join(tmpRoot, 'target');
     mkdirSync(source);
     mkdirSync(target);
     writeFileSync(join(source, '.env'), 'SECRET=1');
 
-    populateWorktree(source, target, [{ pattern: '.env', mode: 'symlink', negated: false }]);
+    const result = populateWorktree(source, target, [{ pattern: '.env', mode: 'symlink', negated: false }]);
+
+    expect(result).toBeInstanceOf(Promise);
+    await result;
 
     const linkPath = join(target, '.env');
     expect(lstatSync(linkPath).isSymbolicLink()).toBe(true);
     expect(readlinkSync(linkPath)).toBe(join(source, '.env'));
   });
 
-  it('symlink mode takes precedence over copy when both match', () => {
+  it('creates a symlink for a symlink-mode entry', async () => {
+    const source = join(tmpRoot, 'source');
+    const target = join(tmpRoot, 'target');
+    mkdirSync(source);
+    mkdirSync(target);
+    writeFileSync(join(source, '.env'), 'SECRET=1');
+
+    await populateWorktree(source, target, [{ pattern: '.env', mode: 'symlink', negated: false }]);
+
+    const linkPath = join(target, '.env');
+    expect(lstatSync(linkPath).isSymbolicLink()).toBe(true);
+    expect(readlinkSync(linkPath)).toBe(join(source, '.env'));
+  });
+
+  it('symlink mode takes precedence over copy when both match', async () => {
     const source = join(tmpRoot, 'source');
     const target = join(tmpRoot, 'target');
     mkdirSync(source);
     mkdirSync(target);
     writeFileSync(join(source, 'shared'), 'data');
 
-    populateWorktree(source, target, [
+    await populateWorktree(source, target, [
       { pattern: 'shared', mode: 'copy', negated: false },
       { pattern: 'shared', mode: 'symlink', negated: false },
     ]);

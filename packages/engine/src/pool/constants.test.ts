@@ -19,10 +19,4 @@ describe('DEFAULT_MAX_ROUNDS (shared constant)', () => {
   it('is the number 3 (the historical ≤3-rounds retry / fixer bound)', () => {
     expect(DEFAULT_MAX_ROUNDS).toBe(3);
   });
-
-  it('is a finite positive integer (not NaN, not Infinity)', () => {
-    expect(Number.isInteger(DEFAULT_MAX_ROUNDS)).toBe(true);
-    expect(Number.isFinite(DEFAULT_MAX_ROUNDS)).toBe(true);
-    expect(DEFAULT_MAX_ROUNDS).toBeGreaterThan(0);
-  });
 });

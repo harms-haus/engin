@@ -6,21 +6,18 @@
 // are NOT TDD-red; they validate that the composition of SessionGate +
 // SessionScheduler + SessionPlan runner combinators is deadlock-free.
 //
-// Four cases:
-//   1. 8 independent gate.run calls awaited together (Promise.all) under
-//      total=1 → all complete (serialize), no hang (5s timeout).
-//   2. A single task whose runnerFactory is
+// Two cases (gate-level serialization under total=1 and the forbidden
+// nested-held acquire are covered in session-gate.test.ts and are
+// intentionally NOT duplicated here):
+//   1. A single task whose runnerFactory is
 //      linearRunner([reviewRunner(…), reviewRunner(…)]) driven through the
 //      SessionScheduler under total=1 → task reaches 'complete', no hang.
-//   3. A single task whose runnerFactory is
+//   2. A single task whose runnerFactory is
 //      linearRunner([coordinatorRunner(…, parallelRunner([…])), singleSession])
 //      — deep nesting — driven through the SessionScheduler under total=1 →
 //      task reaches 'complete', no hang.
-//   4. Forbidden nested-held acquire: a callback that synchronously calls
-//      gate.run on the same gate while holding the last total slot either
-//      throws DeadlockError or completes (never hangs).
 //
-// Mock strategy (cases 2 & 3): real SessionGate ({ total:1, perModel:{} }),
+// Mock strategy: real SessionGate ({ total:1, perModel:{} }),
 // real SessionScheduler + TaskGraph, and REAL SessionPlan combinators
 // (linearRunner / coordinatorRunner / parallelRunner / reviewRunner /
 // singleSession). The top-level runner's `execute` is swapped for a canned
@@ -42,7 +39,7 @@ import { parallelRunner } from './runners/parallel-runner.js';
 import { reviewRunner } from './runners/review-runner.js';
 import type { SessionPlanContext, SessionPlanRunner } from './runners/session-plan-types.js';
 import { singleSession } from './runners/single-session.js';
-import { DeadlockError, SessionGate } from './session-gate.js';
+import { SessionGate } from './session-gate.js';
 import { SessionScheduler } from './session-scheduler.js';
 import type { SessionResult, SessionSpec } from './session.js';
 import { TaskGraph } from './task-graph.js';
@@ -142,33 +139,9 @@ function buildScheduler(
 // ─── Tests ─────────────────────────────────────────────────────────────────
 
 describe('spike-deadlock', () => {
-  // ── 1. 8 independent gate.run calls under total=1 ──────────────────────
+  // ── 1. linearRunner([reviewRunner, reviewRunner]) under total=1 ─────────
 
-  it('1. 8 independent gate.run() calls under total=1 serialize without hang', async () => {
-    const gate = new SessionGate({ total: 1, perModel: {} });
-    const profile = { provider: 'p', model: 'm' };
-
-    const results = await withTimeout(
-      Promise.all([
-        gate.run(profile, async () => 'r0'),
-        gate.run(profile, async () => 'r1'),
-        gate.run(profile, async () => 'r2'),
-        gate.run(profile, async () => 'r3'),
-        gate.run(profile, async () => 'r4'),
-        gate.run(profile, async () => 'r5'),
-        gate.run(profile, async () => 'r6'),
-        gate.run(profile, async () => 'r7'),
-      ]),
-    );
-
-    expect(results).toHaveLength(8);
-    // FIFO ordering: calls complete in submission order.
-    expect(results).toEqual(['r0', 'r1', 'r2', 'r3', 'r4', 'r5', 'r6', 'r7']);
-  });
-
-  // ── 2. linearRunner([reviewRunner, reviewRunner]) under total=1 ─────────
-
-  it('2. linearRunner([reviewRunner, reviewRunner]) under total=1 completes via scheduler', async () => {
+  it('1. linearRunner([reviewRunner, reviewRunner]) under total=1 completes via scheduler', async () => {
     const taskId = 'spike-linear';
 
     const runnerFactory = (): SessionPlanRunner =>
@@ -213,9 +186,9 @@ describe('spike-deadlock', () => {
     expect(result.failedTasks).toBe(0);
   });
 
-  // ── 3. Deep nesting: coordinatorRunner → parallelRunner → singleSession ─
+  // ── 2. Deep nesting: coordinatorRunner → parallelRunner → singleSession ─
 
-  it('3. linearRunner([coordinatorRunner(…, parallelRunner([…])), singleSession]) under total=1 completes', async () => {
+  it('2. linearRunner([coordinatorRunner(…, parallelRunner([…])), singleSession]) under total=1 completes', async () => {
     const taskId = 'spike-coord';
 
     const runnerFactory = (): SessionPlanRunner =>
@@ -269,38 +242,5 @@ describe('spike-deadlock', () => {
 
     expect(result.completedTasks).toBe(1);
     expect(result.failedTasks).toBe(0);
-  });
-
-  // ── 4. Forbidden nested-held acquire ──────────────────────────────────
-  //
-  // When a callback synchronously calls gate.run on the same gate while
-  // holding the last total slot, the gate either throws DeadlockError
-  // (if detected) or the inner call completes after the outer releases
-  // (but in practice the inner call would hang forever since no slot is
-  // available). The SessionGate accepts either outcome as long as the test
-  // never hangs.
-
-  it('4. re-entrant run() on last slot either throws DeadlockError or completes (never hangs)', async () => {
-    const gate = new SessionGate({ total: 1, perModel: {} });
-    const profile = { provider: 'p', model: 'm' };
-
-    const outcome = await withTimeout(
-      gate
-        .run(profile, async () => {
-          // Synchronous re-entrant call while holding the only slot.
-          return gate.run(profile, async () => 'inner');
-        })
-        .then(
-          () => 'completed' as const,
-          (e: unknown) => {
-            if (e instanceof DeadlockError) return 'deadlock-error' as const;
-            throw e; // Unexpected error — let it propagate
-          },
-        ),
-      2000,
-    );
-
-    // Must not hang.
-    expect(outcome === 'deadlock-error' || outcome === 'completed').toBe(true);
   });
 });

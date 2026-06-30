@@ -5,17 +5,69 @@
 // / worktree-fixup.ts agent helpers. They do NOT print to the console — callers
 // decide how to surface progress/results to their context (CLI vs. server log).
 //
-// The module exports exactly two functions consumed by application code:
+// The module exports:
 //
-//   - `commitWorktreeChanges` — used by WorktreeManager (worktree-manager.ts)
-//     to stage + commit pending worktree changes (with a lint fix-up safety
-//     net that retries the commit once when the pre-commit hook rejects it).
+//   - `commitWorktreeChanges` — stage + commit pending changes (with a lint
+//     fix-up safety net).
+//   - `commitWithFixupRetry` —  shared retry-with-fixup helper used by both
+//     `commitWorktreeChanges` and `WorktreeManager.commitMergeWithRetry`.
 //   - `createLintValidationGate` — the PRIMARY lint defence used by oneStepTask
-//     validation; runs `prettier --write` + a single `eslint --fix` pass.
+//     validation.
 
 import { commitChanges, getDiff, stageAll } from './git.js';
 import { runTooledFixup } from './worktree-fixup.js';
 import { generateCommitMessage } from './worktree-lifecycle.js';
+
+// ─── commitWithFixupRetry ────────────────────────────────────────────────────
+
+export interface CommitWithFixupRetryOptions {
+  /** Absolute path to the worktree directory. */
+  worktreePath: string;
+  /** Commit message to use for both the initial attempt and the retry. */
+  message: string;
+  /** Profiles directories for the tooled fix-up agent. */
+  profilesDirs: string[];
+  /** The task prompt that seeded the run (forwarded to the fix-up agent). */
+  taskPrompt: string;
+  /** API keys for agent operations. */
+  apiKeys?: Record<string, string>;
+}
+
+/**
+ * Attempt a git commit, and on pre-commit/lint-hook rejection spawn the tooled
+ * fix-up agent, re-stage, and retry the commit exactly once through the REAL
+ * hook (never `--no-verify`). On exhaustion (fix-up fails OR the retry commit
+ * also throws) the ORIGINAL commit error is re-thrown so callers see the real
+ * gate failure. The fix-up primitive retries internally; this helper only
+ * retries the COMMIT once.
+ */
+export async function commitWithFixupRetry(opts: CommitWithFixupRetryOptions): Promise<void> {
+  try {
+    await commitChanges(opts.worktreePath, opts.message);
+    return;
+  } catch (commitError) {
+    const errorContext = commitError instanceof Error ? commitError.message : String(commitError);
+
+    const fixupResult = await runTooledFixup({
+      profilesDirs: opts.profilesDirs,
+      worktreePath: opts.worktreePath,
+      taskPrompt: opts.taskPrompt,
+      errorContext,
+      apiKeys: opts.apiKeys,
+    });
+
+    if (!fixupResult.success) {
+      throw commitError;
+    }
+
+    await stageAll(opts.worktreePath);
+    try {
+      await commitChanges(opts.worktreePath, opts.message);
+    } catch {
+      throw commitError;
+    }
+  }
+}
 
 // ─── Option Types ────────────────────────────────────────────────────────────
 
@@ -36,14 +88,7 @@ export interface CommitWorktreeOptions {
  * Stage and commit any uncommitted changes inside the worktree using an
  * agent-generated commit message. No-op when the working tree is clean.
  *
- * SAFETY NET: when the pre-commit hook (lint-staged/eslint gate) rejects the
- * commit on the first pass, the tooled fix-up agent is spawned to repair the
- * lint errors, the changes are re-staged, and the commit is retried exactly
- * once. The fix-up primitive retries internally (up to 3 times); this
- * function only retries the COMMIT once. If the fix-up fails OR the retry
- * commit also throws, the ORIGINAL commit error is re-thrown so callers can
- * surface it as a genuine failure. `--no-verify` is NEVER used — the commit
- * always goes through the real hook (bypassing it would hide real problems).
+ * Delegates the retry-with-fixup safety net to {@link commitWithFixupRetry}.
  * For the PRIMARY lint defence (run before the commit), see
  * {@link createLintValidationGate}.
  */
@@ -56,8 +101,8 @@ export async function commitWorktreeChanges(opts: CommitWorktreeOptions): Promis
   // merge a fast-forward no-op, so `git commit` fails with "nothing to commit"
   // and the worktree is left unmerged. Staging up front (a no-op when clean)
   // ensures the diff reflects every change before the guard runs.
-  stageAll(opts.worktreePath);
-  const diff = getDiff(opts.worktreePath);
+  await stageAll(opts.worktreePath);
+  const diff = await getDiff(opts.worktreePath);
   if (!diff) return;
 
   const message = await generateCommitMessage(
@@ -68,41 +113,13 @@ export async function commitWorktreeChanges(opts: CommitWorktreeOptions): Promis
     opts.apiKeys,
   );
 
-  try {
-    commitChanges(opts.worktreePath, message);
-  } catch (commitError) {
-    // The pre-commit hook (lint-staged/eslint gate) rejected the commit.
-    // Spawn the tooled fix-up agent to repair the lint errors, then re-stage
-    // and retry the commit exactly once. The fix-up primitive retries
-    // internally (up to 3 times); this function only retries the COMMIT once.
-    const errorContext = commitError instanceof Error ? commitError.message : String(commitError);
-
-    const fixupResult = await runTooledFixup({
-      profilesDirs: opts.profilesDirs,
-      worktreePath: opts.worktreePath,
-      taskPrompt: opts.taskPrompt,
-      errorContext,
-      apiKeys: opts.apiKeys,
-    });
-
-    if (!fixupResult.success) {
-      // The fix-up agent could not repair the errors. Re-throw the ORIGINAL
-      // commit error so callers see the real gate failure (not the fix-up's
-      // lastError, which is a verification diagnostic, not the user-facing
-      // failure).
-      throw commitError;
-    }
-
-    // Re-stage the fix-up's edits and retry the commit through the REAL hook
-    // (never --no-verify). If the retry also throws, re-throw the ORIGINAL
-    // commit error per the safety-net contract.
-    stageAll(opts.worktreePath);
-    try {
-      commitChanges(opts.worktreePath, message);
-    } catch {
-      throw commitError;
-    }
-  }
+  await commitWithFixupRetry({
+    worktreePath: opts.worktreePath,
+    message,
+    profilesDirs: opts.profilesDirs,
+    taskPrompt: opts.taskPrompt,
+    apiKeys: opts.apiKeys,
+  });
 }
 
 // ─── createLintValidationGate ────────────────────────────────────────────────

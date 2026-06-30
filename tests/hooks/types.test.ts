@@ -28,11 +28,6 @@
 //   export type AllRunHook<Contribution, Args> =
 //     (args: Args, ctx: HookContext) => Contribution | Promise<Contribution>;
 //
-//   export interface HookDefinition {
-//     name: string;
-//     rule: CompositionRule;
-//     reducer?: (acc: unknown, next: unknown) => unknown; // required for 'all-run'
-//   }
 //
 //   export interface HookRegistry {
 //     register(hooks: WorkflowHooks): void;
@@ -59,7 +54,6 @@ import type {
   CompositionRule,
   FirstWinsHook,
   HookContext,
-  HookDefinition,
   HookProvider,
   HookRegistry,
   ObserveHook,
@@ -98,12 +92,6 @@ type ExpectedFirstWinsHook<Result, Args> = (
 ) => Result | undefined | Promise<Result | undefined>;
 type ExpectedAllRunHook<Contribution, Args> = (args: Args, ctx: HookContext) => Contribution | Promise<Contribution>;
 
-interface ExpectedHookDefinition {
-  name: string;
-  rule: CompositionRule;
-  reducer?: (acc: unknown, next: unknown) => unknown;
-}
-
 interface ExpectedHookRegistry {
   register(hooks: WorkflowHooks): void;
   invokeObserve<K extends keyof WorkflowHooks>(name: K, args: unknown, ctx: HookContext): Promise<void>;
@@ -140,7 +128,6 @@ assertEqual<Equal<FirstWinsHook<boolean, { q: string }>, ExpectedFirstWinsHook<b
 assertEqual<Equal<AllRunHook<string[], { tag: number }>, ExpectedAllRunHook<string[], { tag: number }>>>(
   'AllRunHook<Contribution, Args> shape is unchanged',
 );
-assertEqual<Equal<HookDefinition, ExpectedHookDefinition>>('HookDefinition shape is unchanged');
 assertEqual<Equal<HookRegistry, ExpectedHookRegistry>>('HookRegistry interface matches the expected signatures');
 assertEqual<Equal<HookProvider, WorkflowHooks | WorkflowHooks[]>>('HookProvider is WorkflowHooks | WorkflowHooks[]');
 // NOTE: `WorkflowHooks` is no longer pinned to `{}` here. The mechanism-only
@@ -150,7 +137,7 @@ assertEqual<Equal<HookProvider, WorkflowHooks | WorkflowHooks[]>>('HookProvider 
 // workflow-level-hooks task). The exhaustive structural contract for those
 // fields lives in tests/hooks/workflow-hooks.test.ts; this file pins only the
 // MECHANISM types (CompositionRule, HookContext, the four hook-function
-// shapes, HookDefinition, HookRegistry).
+// shapes, HookRegistry).
 
 // Bidirectional assignability for HookRegistry — the gold-standard structural
 // equality check for an interface with generic methods. If both lines compile,
@@ -240,15 +227,6 @@ describe('CompositionRule', () => {
     // @ts-expect-error — 'concat' is not a member of CompositionRule
     const bad: CompositionRule = 'concat';
     expect(bad as string).toBe('concat');
-  });
-
-  it('every rule is a valid HookDefinition.rule value', () => {
-    // CompositionRule feeds HookDefinition.rule, so each member must round-trip.
-    const rules: CompositionRule[] = ['observe', 'pipeline', 'first-wins', 'all-run'];
-    for (const rule of rules) {
-      const def: HookDefinition = { name: `hook-${rule}`, rule };
-      expect(def.rule).toBe(rule);
-    }
   });
 });
 
@@ -378,62 +356,6 @@ describe('AllRunHook', () => {
   it('can contribute a Promise<Contribution>', async () => {
     const hook: AllRunHook<number, unknown> = async () => 7;
     await expect(hook(undefined, makeCtx())).resolves.toBe(7);
-  });
-});
-
-// ─── HookDefinition ────────────────────────────────────────────────────────
-
-describe('HookDefinition', () => {
-  it('accepts name + rule without a reducer', () => {
-    const def: HookDefinition = { name: 'onLog', rule: 'observe' };
-    expect(def.name).toBe('onLog');
-    expect(def.rule).toBe('observe');
-    expect(def.reducer).toBeUndefined();
-  });
-
-  it('accepts every CompositionRule as the rule value', () => {
-    const rules: CompositionRule[] = ['observe', 'pipeline', 'first-wins', 'all-run'];
-    for (const rule of rules) {
-      const def: HookDefinition = { name: `hook-${rule}`, rule };
-      expect(def.rule).toBe(rule);
-    }
-  });
-
-  it('accepts a reducer for an all-run hook', () => {
-    const def: HookDefinition = {
-      name: 'onPhaseSettled',
-      rule: 'all-run',
-      reducer: (acc: unknown, next: unknown) => [...((acc as unknown[]) ?? []), next],
-    };
-    expect(def.reducer!(undefined, 'x')).toEqual(['x']);
-    expect(def.reducer!(['x'], 'y')).toEqual(['x', 'y']);
-  });
-
-  it('reducer is typed (acc: unknown, next: unknown) => unknown', () => {
-    const def: HookDefinition = {
-      name: 'merge',
-      rule: 'all-run',
-      reducer: (acc, next) => ({ ...(acc as object), ...(next as object) }),
-    };
-    expect(def.reducer!({ a: 1 }, { b: 2 })).toEqual({ a: 1, b: 2 });
-  });
-
-  it('requires the name field (negative compile check)', () => {
-    // @ts-expect-error — missing required `name`
-    const bad: HookDefinition = { rule: 'observe' };
-    expect(bad).toBeDefined();
-  });
-
-  it('requires the rule field (negative compile check)', () => {
-    // @ts-expect-error — missing required `rule`
-    const bad: HookDefinition = { name: 'onLog' };
-    expect(bad).toBeDefined();
-  });
-
-  it('rejects an unknown rule string (negative compile check)', () => {
-    // @ts-expect-error — rule must be a CompositionRule member
-    const bad: HookDefinition = { name: 'onLog', rule: 'concat' };
-    expect(bad).toBeDefined();
   });
 });
 

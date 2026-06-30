@@ -1,17 +1,7 @@
 // ─── Default implementations of the workflow-level hooks ────────────────────
 //
-// `createDefaultOnPersist`, `createDefaultOnRestore`, `defaultBeforeRunMerge`,
-// `createDefaultOnRunMergeConflict`, `defaultOnWorkflowAbort`, and
-// `defaultOnWorkflowResume` are the DEFAULT implementations of the six
-// workflow-level hooks declared in hooks/types.ts (task-23). Each ships a
-// "zero-config" behavior so a workflow that registers NO hooks still gets
-// sensible persistence, restore, merge, abort, and resume semantics.
-//
-// They are also the building blocks `spir.ts`'s `runSpir` is being refactored
-// to call through — `createDefaultOnPersist` replaces the inline
-// `await tracker.save()`, `createDefaultOnRestore` replaces the inline
-// `WorkflowStatusTracker.load(workDir)`, and `defaultOnWorkflowAbort` replaces
-// the bespoke `'Workflow cancelled'` string-matching.
+// Each ships a "zero-config" behavior so a workflow that registers NO hooks
+// still gets sensible persistence, restore, merge, abort, and resume semantics.
 
 import type { WorkflowState } from '../../core/types.js';
 import { WorkflowStatusTracker } from '../../tracking/workflow-status.js';
@@ -28,6 +18,7 @@ import type {
   PipelineHook,
   RunMergeDecision,
 } from '../types.js';
+import { createAgentStrategyHook } from './shared.js';
 
 /**
  * DEFAULT `onPersist` (pipeline) hook factory.
@@ -41,8 +32,6 @@ import type {
  *
  * Unlike the tracker's fire-and-forget auto-persist, this default `await`s
  * `save()` — so a write failure rejects the hook rather than being swallowed.
- *
- * Replaces the inline `await tracker.save()` call in `spir.ts::runSpir`.
  */
 export function createDefaultOnPersist(tracker: WorkflowStatusTracker): PipelineHook<WorkflowState, OnPersistArgs> {
   return async (_value, _args, _ctx) => {
@@ -58,15 +47,9 @@ export function createDefaultOnPersist(tracker: WorkflowStatusTracker): Pipeline
  * factory-captured path) and returns the restored {@link WorkflowState}. The
  * INCOMING pipeline value is IGNORED — the state loaded from disk wins.
  *
- * The factory-captured `workDir` is accepted for API symmetry with
- * {@link createDefaultOnPersist} and to mirror `runSpir`'s existing
- * `WorkflowStatusTracker.load(workDir)` call site, but the hook honors the
- * invocation `args.workDir` so an engine that swaps work directories at
- * invoke time is respected. `load()` failures (e.g. a missing state file)
- * propagate — they are NOT swallowed.
- *
- * Replaces the inline `WorkflowStatusTracker.load(workDir)` call in
- * `spir.ts::runSpir`.
+ * The hook honors the invocation `args.workDir` so an engine that swaps work
+ * directories at invoke time is respected. `load()` failures (e.g. a missing
+ * state file) propagate — they are NOT swallowed.
  */
 export function createDefaultOnRestore(_workDir: string): PipelineHook<WorkflowState, OnRestoreArgs> {
   return async (_value, args, _ctx) => {
@@ -78,11 +61,10 @@ export function createDefaultOnRestore(_workDir: string): PipelineHook<WorkflowS
 /**
  * DEFAULT `beforeRunMerge` (first-wins) hook.
  *
- * Returns the current default merge decision: PROCEED with a SQUASH merge. The
- * decision is constant — it ignores the worktree / branch args — so a workflow
- * that registers no `beforeRunMerge` subscriber gets the legacy squash-merge
- * behavior unchanged. Returns a non-`undefined` value so it WINS in a
- * first-wins composition when no earlier subscriber has decided.
+ * Returns a constant merge decision: PROCEED with a SQUASH merge. The decision
+ * is independent of the worktree and branch args. Returns a non-`undefined`
+ * value so it WINS in a first-wins composition when no earlier subscriber has
+ * decided.
  */
 export const defaultBeforeRunMerge: FirstWinsHook<RunMergeDecision | undefined, BeforeRunMergeArgs> = async (
   _args,
@@ -102,24 +84,21 @@ export const defaultBeforeRunMerge: FirstWinsHook<RunMergeDecision | undefined, 
  * invokes the tooled agent against the captured profiles / API keys.
  *
  * The captured `profilesDirs` and `apiKeys` are accepted for signature
- * alignment with the downstream resolution primitive and for future expansion
- * (e.g. a default that resolves inline); the pure-marker default does not use
- * them directly. Pointing them at non-existent paths must NOT throw — the
- * default never touches the filesystem.
+ * alignment with the downstream resolution primitive; the pure-marker default
+ * does not use them directly. Pointing them at non-existent paths must NOT
+ * throw — the default never touches the filesystem.
  */
 export function createDefaultOnRunMergeConflict(
   _profilesDirs: string[],
   _apiKeys?: Record<string, string>,
 ): FirstWinsHook<ConflictResolution | undefined, OnRunMergeConflictArgs> {
-  return async (_args, _ctx) => ({ strategy: 'agent' });
+  return createAgentStrategyHook();
 }
 
 /**
  * DEFAULT `onWorkflowAbort` (observe) hook.
  *
- * Surfaces the abort reason via `console.warn`. Replaces the bespoke
- * `'Workflow cancelled'` string-matching previously inlined in `spir.ts` —
- * the reason is now logged as data, whatever string the caller supplies.
+ * Surfaces the abort reason via `console.warn`.
  */
 export const defaultOnWorkflowAbort: ObserveHook<OnWorkflowAbortArgs> = async (args, _ctx) => {
   console.warn(args.reason);
@@ -128,10 +107,9 @@ export const defaultOnWorkflowAbort: ObserveHook<OnWorkflowAbortArgs> = async (a
 /**
  * DEFAULT `onWorkflowResume` (observe) hook.
  *
- * No-op by default: the resume logic stays in the workflow for now. Resolves
- * `undefined` and performs no disk I/O. A future expansion could clear stale
- * sessions or warm caches; for now it exists so a workflow that registers no
- * `onWorkflowResume` subscriber still has a well-defined (identity) default.
+ * No-op. Resolves `undefined` and performs no disk I/O. Exists so a workflow
+ * that registers no `onWorkflowResume` subscriber still has a well-defined
+ * default.
  */
 export const defaultOnWorkflowResume: ObserveHook<OnWorkflowResumeArgs> = async (_args, _ctx) => {
   // Intentionally a no-op.

@@ -32,7 +32,6 @@ export type {
   ContextBlock,
   FirstWinsHook,
   HookContext,
-  HookDefinition,
   HookProvider,
   ObserveHook,
   OnCommitFailureArgs,

@@ -3,11 +3,11 @@
 // SessionScheduler is the centerpiece of the pool refactor. It drives a
 // TaskGraph through a SessionGate using a greedy tiered drain loop:
 //
-//   T1 (active affinity): continue specs in an active task's held batch.
-//   T2 (parked):           resume parked tasks whose pending specs now fit.
-//   T3 (ready):            initialize runner + first batch, start first specs
-//                          (LAZY: task becomes 'active' only when its first
-//                          session actually acquires a slot).
+//   Active affinity: continue specs in an active task's held batch.
+//   Parked:           resume parked tasks whose pending specs now fit.
+//   Ready:            initialize runner + first batch, start first specs
+//                    (LAZY: task becomes 'active' only when its first
+//                    session actually acquires a slot).
 //
 // Key invariants:
 //
@@ -49,10 +49,6 @@ import { isSessionCached } from './session.js';
 import type { TaskGraph, TaskGraphEntry } from './task-graph.js';
 
 // ─── Internal constants ───────────────────────────────────────────────────
-
-/** Re-export {@link GeneratorTimeoutError} for callers that depend on the
- *  historical pool surface (`pool/index.ts` → `session-scheduler.ts`). */
-export { GeneratorTimeoutError } from './scheduler-timeout.js';
 
 /** Maximum number of blank-slate retries a failed task gets after its initial
  *  attempt. Attempt 1 is the first run; up to MAX_RETRIES retries on top → at
@@ -147,17 +143,17 @@ export class SessionScheduler {
   private readonly prevStatuses = new Map<string, TaskStatus>();
 
   /** Per-task: true while advanceBatch is awaiting gen.next (prevents spurious
-   *  parking during the async gap — H1). */
+   *  parking during the async gap). */
   private readonly advancing = new Set<string>();
 
   /** Per-task: count of settled specs in the current held batch (O(1)
-   *  isBatchComplete — E2). Reset whenever a new batch is held. */
+   *  isBatchComplete). Reset whenever a new batch is held. */
   private readonly batchSettledCount = new Map<string, number>();
 
-  /** Per-task: cached SessionPlanContext for plan() calls (no apiKeys — S4). */
+  /** Per-task: cached SessionPlanContext for plan() calls (no apiKeys). */
   private readonly planCtxCache = new Map<string, SessionPlanContext>();
 
-  /** Per-task: cached SessionPlanContext for execute() calls (with apiKeys — S4). */
+  /** Per-task: cached SessionPlanContext for execute() calls (with apiKeys). */
   private readonly executeCtxCache = new Map<string, SessionPlanContext>();
 
   /** Per-task: 1-based attempt number (attempt 1 = first run; >1 = retry).
@@ -171,7 +167,7 @@ export class SessionScheduler {
 
   /** Task ids currently in 'failed' status with retry budget remaining — i.e.
    *  scheduled for a blank-slate retry. Reset to 'ready' at the start of the
-   *  next drain pass (then picked up by T3 like any ready task). */
+   *  next drain pass (then picked up by the ready tier like any ready task). */
   private readonly retryEligible = new Set<string>();
 
   /** Scoped clone of options.hookRegistry (created at start of run()). */
@@ -281,8 +277,8 @@ export class SessionScheduler {
       for (const entry of this.graph.getAllTasks()) {
         if (!isTerminalTaskStatus(entry.status)) {
           this.graph.setTaskStatus(entry.task.id, 'cancelled');
-          // Fire-and-forget generator cleanup so finally blocks run.
-          entry.planGen?.return(undefined).catch(() => {
+          // Timeout-wrapped generator cleanup so finally blocks run.
+          this.cleanupGenerator(entry.task.id).catch(() => {
             /* swallow — shutting down */
           });
         }
@@ -296,6 +292,8 @@ export class SessionScheduler {
       this.pendingDrainTrigger = 'abort';
       this.scheduleDrain();
     };
+    // { once: true } handles the abort path (auto-removes after signal fires);
+    // removeEventListener in the finally block handles normal completion cleanup.
     this.options.signal?.addEventListener('abort', abortActiveSessions, { once: true });
 
     // ── Main drain loop ──────────────────────────────────────────────────
@@ -312,12 +310,14 @@ export class SessionScheduler {
       while (true) {
         if (this.options.signal?.aborted) break;
 
-        // If there are in-flight sessions, wait for one to settle or for a
-        // drain trigger. If none are in-flight, skip the wait and drain
-        // immediately (avoids hanging on Promise.race([], freshWakePromise)).
+        // If there are in-flight sessions, wait for a drain trigger. Each
+        // inflight session's settlement callback calls scheduleDrain(),
+        // which resolves the wake signal, so the loop still wakes whenever
+        // one settles. If none are in-flight, skip the wait and drain
+        // immediately (avoids hanging on a never-resolved wake promise).
         if (this.inflight.size > 0) {
           this.rearmWake();
-          await Promise.race([...this.inflight, this.wakePromise]);
+          await this.wakePromise;
         }
 
         // Drain again — capacity freed or batches advanced.
@@ -327,7 +327,7 @@ export class SessionScheduler {
         if (this.inflight.size === 0) {
           if (this.isDone()) break;
           // False-deadlock guard: re-verify with one more drain pass.
-          // Capacity may have freed during T3's async initialization,
+          // Capacity may have freed during the ready tier's async initialization,
           // or a batch-advance may have just completed.
           await this.drainPass();
           if (this.inflight.size > 0) continue;
@@ -449,7 +449,7 @@ export class SessionScheduler {
       if (isTerminalTaskStatus(entry.status)) continue;
       // Skip tasks already initialized (have a live generator).
       if (entry.planGen) continue;
-      // 'ready' tasks are initialized by T3 in the drain pass.
+      // 'ready' tasks are initialized by the ready tier in the drain pass.
       if (entry.status === 'ready') continue;
       // 'blocked' tasks wait for their dependencies to settle.
       if (entry.status === 'blocked') continue;
@@ -469,9 +469,9 @@ export class SessionScheduler {
   /**
    * The greedy tiered session-starter. Processes three tiers in priority order:
    *
-   *   T1 (active): continue specs in active tasks' held batches.
-   *   T2 (parked): resume parked tasks whose specs now fit gate capacity.
-   *   T3 (ready):  initialize runner + first batch, start specs (lazy activate).
+   *   Active: continue specs in active tasks' held batches.
+   *   Parked: resume parked tasks whose specs now fit gate capacity.
+   *   Ready:  initialize runner + first batch, start specs (lazy activate).
    *
    * Within each tier, specs are started greedily until gate capacity is
    * exhausted. A spec that can't start parks an active task (emit task_parked).
@@ -483,27 +483,27 @@ export class SessionScheduler {
     this.pendingDrainTrigger = 'completion'; // default if re-armed mid-pass
     const candidates: CandidateTrace[] = [];
 
-    // T0: reset retry-eligible failed tasks → 'ready' (blank-slate retry).
+    // Reset retry-eligible failed tasks → 'ready' (blank-slate retry).
     // Each reset increments the attempt counter, clears per-attempt execution
     // state, assigns a NEW per-attempt session base dir (preserving the failed
     // attempt's data), and transitions failed → ready. They are then picked up
-    // by T3 below like any other ready task — retries are identical to ready
+    // by the ready tier below like any other ready task — retries are identical to ready
     // tasks for scheduling, just processed once their failed attempt settles.
     this.resetRetryEligibleTasks();
 
-    // T1: Active tasks — continue their held batch specs.
+    // Active tasks — continue their held batch specs.
     for (const entry of this.graph.getActiveTasks()) {
       const trace = this.tryStartBatchSpecs(entry);
       if (trace) candidates.push(trace);
     }
 
-    // T2: Parked tasks — resume specs that now fit.
+    // Parked tasks — resume specs that now fit.
     for (const entry of this.graph.getParkedTasks()) {
       const trace = this.tryStartBatchSpecs(entry);
       if (trace) candidates.push(trace);
     }
 
-    // T3: Ready tasks — initialize + start first specs (lazy activation).
+    // Ready tasks — initialize + start first specs (lazy activation).
     for (const entry of this.graph.getReadyTasks()) {
       if (!entry.heldBatch) {
         const ok = await this.initializeReadyTask(entry);
@@ -538,12 +538,12 @@ export class SessionScheduler {
     });
   }
 
-  // ─── Retry reset (T0) ────────────────────────────────────────────────────
+  // ─── Retry reset ───────────────────────────────────────────────────────────
 
   /**
    * Reset every retry-eligible 'failed' task for a blank-slate retry. Called
    * at the START of each drain pass. A task marked retry-eligible (by
-   * {@link failTask}) is transitioned 'failed' → 'ready' here so T3 picks it
+   * {@link failTask}) is transitioned 'failed' → 'ready' here so the ready tier picks it
    * up like any ready task.
    *
    * A retry is a BLANK-SLATE re-run, NOT a resume: the per-attempt session
@@ -588,7 +588,7 @@ export class SessionScheduler {
     this.retryEligible.delete(taskId);
 
     // Clear per-attempt execution state (blank slate).
-    this.clearTaskMaps(taskId);
+    this.clearPerTaskMaps(taskId);
 
     // Reset entry session-plan fields.
     entry.planGen = undefined;
@@ -603,7 +603,7 @@ export class SessionScheduler {
     const base = this.sessionBaseDirFor(taskId, attempt);
     this.taskSessionBaseDir.set(taskId, base);
 
-    // Transition failed → ready. T3 initializes + starts it this drain pass.
+    // Transition failed → ready. The ready tier initializes + starts it this drain pass.
     this.graph.setTaskStatus(taskId, 'ready');
 
     this.audit({
@@ -655,7 +655,7 @@ export class SessionScheduler {
    *
    * Profile-not-found is treated the same as canStart=false (can't start).
    *
-   * H1: Entries currently advancing (mid-advanceBatch) are skipped entirely —
+   * Entries currently advancing (mid-advanceBatch) are skipped entirely —
    * their heldBatch is the old settled batch and must not be re-processed.
    * A task whose heldBatch is already fully settled is also never parked.
    */
@@ -669,7 +669,7 @@ export class SessionScheduler {
       skipped: true,
     };
 
-    // H1: skip tasks mid-advance — their heldBatch is the old settled batch.
+    // Skip tasks mid-advance — their heldBatch is the old settled batch.
     if (this.advancing.has(entry.task.id)) {
       trace.skipReason = 'advancing (batch mid-advance)';
       return trace;
@@ -695,8 +695,12 @@ export class SessionScheduler {
         continue;
       }
 
-      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-      const spec = batch[i]!;
+      const spec = batch[i];
+      if (!spec) {
+        throw new Error(
+          `Session scheduler: spec at index ${i} is undefined in the held batch for task "${entry.task.id}" (sparse batch)`,
+        );
+      }
       const profile = this.options.profiles.get(spec.profile);
 
       if (!profile) {
@@ -730,7 +734,7 @@ export class SessionScheduler {
 
     // If the task is active and NONE of its un-started specs could start
     // (profiles missing / gate saturated / no capacity), park the task.
-    // H1: never park a task whose heldBatch is already fully settled
+    // Never park a task whose heldBatch is already fully settled
     // (isBatchComplete) — it's about to advance.
     if (!startedAny && entry.status === 'active' && !this.isBatchComplete(entry)) {
       this.graph.setTaskStatus(entry.task.id, 'parked');
@@ -738,7 +742,7 @@ export class SessionScheduler {
     return trace;
   }
 
-  // ─── T3 initialization: resolve runner, create worktree, get first batch ─
+  // ─── Ready-task initialization: resolve runner, create worktree, get first batch ─
 
   /**
    * Initialize a ready task: resolve its runner (beforeTask hook), create a
@@ -786,7 +790,7 @@ export class SessionScheduler {
     if (!this.taskAttempts.has(entry.task.id)) this.taskAttempts.set(entry.task.id, 1);
     const attempt = this.taskAttempts.get(entry.task.id) ?? 1;
     this.taskSessionBaseDir.set(entry.task.id, this.sessionBaseDirFor(entry.task.id, attempt));
-    // E3 + S4: build and cache two contexts — plan (no apiKeys) and execute
+    // Build and cache two contexts — plan (no apiKeys) and execute
     // (with apiKeys). plan() never needs credentials; execute() does.
     const planCtx = this.buildPlanContext(entry, agentId, false);
     const executeCtx = this.buildPlanContext(entry, agentId, true);
@@ -814,7 +818,7 @@ export class SessionScheduler {
     entry.batchResults = new Array(batchResult.value.length);
     entry.totalSessions += batchResult.value.length;
     this.batchStarted.set(entry.task.id, new Set());
-    this.batchSettledCount.set(entry.task.id, 0); // E2: O(1) isBatchComplete
+    this.batchSettledCount.set(entry.task.id, 0); // O(1) isBatchComplete
 
     return true;
   }
@@ -826,11 +830,11 @@ export class SessionScheduler {
    * runner.execute(), and handle completion (release, store result, advance
    * batch if complete, schedule drain).
    *
-   * E1: when the session is already cached (`.complete` sentinel exists and
+   * When the session is already cached (`.complete` sentinel exists and
    * the spec is NOT a resume), the gate acquire/release is skipped entirely —
    * the runner.execute() call returns the cached result instantly.
    *
-   * S1: runner.execute() is NOT wrapped in an external timeout here — freeze
+   * runner.execute() is NOT wrapped in an external timeout here — freeze
    * detection is handled by the in-session watchdog inside runSession
    * (session.ts). The gate slot is ALWAYS released via try/finally so a hung
    * runner cannot leak a slot or deadlock the scheduler.
@@ -841,14 +845,32 @@ export class SessionScheduler {
    */
   private startSession(entry: TaskGraphEntry, specIndex: number, profile: AgentProfile): void {
     const taskId = entry.task.id;
-    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-    const spec = entry.heldBatch![specIndex]!;
-    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-    const executeCtx = this.executeCtxCache.get(taskId)!;
-    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-    const runner = this.runners.get(taskId)!;
+    const batch = entry.heldBatch;
+    if (!batch) {
+      throw new Error(
+        `Session scheduler: held batch is undefined for task "${taskId}" — cannot start session at specIndex ${specIndex}`,
+      );
+    }
+    const spec = batch[specIndex];
+    if (!spec) {
+      throw new Error(
+        `Session scheduler: spec at index ${specIndex} is undefined in the held batch for task "${taskId}" (sparse batch)`,
+      );
+    }
+    const executeCtx = this.executeCtxCache.get(taskId);
+    if (!executeCtx) {
+      throw new Error(
+        `Session scheduler: no execute context cached for task "${taskId}" — task may not have been initialized`,
+      );
+    }
+    const runner = this.runners.get(taskId);
+    if (!runner) {
+      throw new Error(
+        `Session scheduler: no runner registered for task "${taskId}" — task may not have been initialized`,
+      );
+    }
 
-    // E1: idempotency pre-check — if the session is already cached, skip gate
+    // Idempotency pre-check — if the session is already cached, skip gate
     // acquire/release entirely. The runner.execute() call will return the
     // cached result instantly (via runSession's idempotency mechanism).
     // Uses the per-attempt session base dir so a retry (fresh dir) never sees
@@ -859,7 +881,7 @@ export class SessionScheduler {
     if (!cached) {
       // Acquire the gate slot (should always succeed — caller checked canStart).
       if (!this.gate.acquire(profile)) {
-        // Race: capacity vanished between canStart and acquire. Park if active.
+        // Acquire failed despite prior canStart check — defensive fallback. Park if active.
         if (entry.status === 'active') {
           this.graph.setTaskStatus(taskId, 'parked');
         }
@@ -869,8 +891,13 @@ export class SessionScheduler {
     }
 
     // Mark as started only after successful acquire (or cache hit).
-    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-    this.batchStarted.get(taskId)!.add(specIndex);
+    const started = this.batchStarted.get(taskId);
+    if (!started) {
+      throw new Error(
+        `Session scheduler: no batch-started tracking set for task "${taskId}" — cannot mark spec ${specIndex} as started`,
+      );
+    }
+    started.add(specIndex);
 
     const sessionPromise = (async (): Promise<void> => {
       let result: SessionResult | undefined;
@@ -903,15 +930,22 @@ export class SessionScheduler {
           // continuing would proceed to the next session in the plan (e.g. a
           // review session) with nothing to act on, masking the failure.
           await this.failTask(entry, executeError);
+        } else if (result === undefined) {
+          // runner.execute() resolved to undefined — a contract violation.
+          // Fail the task instead of silently storing a poisoned (undefined)
+          // result, which would let the task "complete" with corrupt state.
+          await this.failTask(
+            entry,
+            `Session "${spec.id}" for task "${taskId}" returned an undefined result — runner violated the SessionPlanRunner contract`,
+          );
         } else {
           // Store the result at the spec's position (spec order preserved).
-          // E2: track batchSettledCount for O(1) isBatchComplete.
+          // Track batchSettledCount for O(1) isBatchComplete.
           if (entry.batchResults[specIndex] === undefined) {
             const count = this.batchSettledCount.get(taskId) ?? 0;
             this.batchSettledCount.set(taskId, count + 1);
           }
-          // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-          entry.batchResults[specIndex] = result!;
+          entry.batchResults[specIndex] = result;
           entry.completedSessions++;
 
           // If the entire batch has settled, advance the generator.
@@ -930,15 +964,15 @@ export class SessionScheduler {
         // Force terminal: finalize the task as failed.
         await this.failTask(entry, errorMsg);
       } finally {
-        // S1: ALWAYS release the gate slot (even on throw/timeout).
+        // ALWAYS release the gate slot (even on throw/timeout).
         //
         // The release is deferred until AFTER batch advancement (not in the
         // execute-finally) so the completing task retains first claim on its
         // own freed slot for the next session. Releasing before advance let a
-        // ready (T3) task steal the slot during the advancing window, parking
+        // ready task steal the slot during the advancing window, parking
         // an active task that had capacity for its continuation. With the
-        // release here, the post-advance drain processes the active task (T1)
-        // before ready tasks (T3), letting it reclaim the slot it just freed.
+        // release here, the post-advance drain processes the active task first
+        // before ready tasks, letting it reclaim the slot it just freed.
         // (Slot accounting is unaffected: every successful acquire is still
         // matched by exactly one release on this path.)
         if (acquired) this.gate.release(profile);
@@ -963,9 +997,19 @@ export class SessionScheduler {
     })();
 
     this.inflight.add(sessionPromise);
+    // Settling an inflight session frees capacity and/or advances a batch,
+    // so trigger a drain pass. scheduleDrain() coalesces near-simultaneous
+    // settlements via the drainScheduled flag and resolves the wake signal
+    // that the drain loop awaits.
     sessionPromise.then(
-      () => this.inflight.delete(sessionPromise),
-      () => this.inflight.delete(sessionPromise),
+      () => {
+        this.inflight.delete(sessionPromise);
+        this.scheduleDrain();
+      },
+      () => {
+        this.inflight.delete(sessionPromise);
+        this.scheduleDrain();
+      },
     );
   }
 
@@ -975,7 +1019,7 @@ export class SessionScheduler {
    * Returns true when every spec in the held batch has settled (started AND
    * has a result).
    *
-   * E2: O(1) — uses batchSettledCount (incremented when batchResults[i]
+   * O(1) — uses batchSettledCount (incremented when batchResults[i]
    * transitions undefined→defined) instead of scanning the results array.
    */
   private isBatchComplete(entry: TaskGraphEntry): boolean {
@@ -993,7 +1037,7 @@ export class SessionScheduler {
    * order) to gen.next(results). If the generator yields a new batch, store
    * it as the new heldBatch. If done, finalize the task.
    *
-   * H1: sets the `advancing` flag for the duration of the async gen.next call
+   * Sets the `advancing` flag for the duration of the async gen.next call
    * so a coalesced drainPass doesn't try to start/park on the OLD settled
    * heldBatch.
    */
@@ -1014,7 +1058,7 @@ export class SessionScheduler {
       entry.batchResults = new Array(next.value.length);
       entry.totalSessions += next.value.length;
       this.batchStarted.set(taskId, new Set());
-      this.batchSettledCount.set(taskId, 0); // E2: O(1) isBatchComplete
+      this.batchSettledCount.set(taskId, 0); // O(1) isBatchComplete
     } finally {
       this.advancing.delete(taskId);
     }
@@ -1030,17 +1074,23 @@ export class SessionScheduler {
     seed: SessionResult[],
   ): Promise<IteratorResult<SessionSpec[], SessionResult[] | undefined>> {
     let emptyCount = 0;
-    // S2: wrap gen.next in a timeout race so a hanging generator can't block
+    // Wrap gen.next in a timeout race so a hanging generator can't block
     // the scheduler. Accept a leaked generator over blocking.
-    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-    let next = await withTimeout(entry.planGen!.next(seed), GENERATOR_TIMEOUT_MS, 'plan generator next()');
+    if (!entry.planGen) {
+      throw new Error(
+        'Session scheduler: plan generator is undefined — cannot fetch next batch (task may not have been initialized)',
+      );
+    }
+    let next = await withTimeout(entry.planGen.next(seed), GENERATOR_TIMEOUT_MS, 'plan generator next()');
     while (!next.done && next.value.length === 0) {
       emptyCount++;
       if (emptyCount > MAX_EMPTY_BATCHES) {
         throw new Error(`Session plan generator yielded ${emptyCount}+ empty batches without completing`);
       }
-      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-      next = await withTimeout(entry.planGen!.next([]), GENERATOR_TIMEOUT_MS, 'plan generator next()');
+      if (!entry.planGen) {
+        throw new Error('Session scheduler: plan generator is undefined — cannot fetch next batch');
+      }
+      next = await withTimeout(entry.planGen.next([]), GENERATOR_TIMEOUT_MS, 'plan generator next()');
     }
     return next;
   }
@@ -1120,7 +1170,7 @@ export class SessionScheduler {
         reason: retryable ? 'retry budget exhausted' : 'non-retryable failure',
         error: errs.join('; '),
       });
-      // The task is permanently terminal — release per-task state (fix 8).
+      // The task is permanently terminal — release per-task state.
       // Safe now: entry.task.result (with the aggregated error) is already set.
       this.cleanupTaskState(taskId);
     }
@@ -1181,7 +1231,7 @@ export class SessionScheduler {
     this.graph.setTaskStatus(taskId, 'complete');
     // Promote blocked dependents whose deps are now all settled.
     this.graph.recalculateReady(taskId);
-    // The task is permanently terminal — release per-task state (fix 8).
+    // The task is permanently terminal — release per-task state.
     this.cleanupTaskState(taskId);
 
     // Clean up the plan generator so any finally blocks run.
@@ -1215,10 +1265,9 @@ export class SessionScheduler {
    *
    * This is exactly the 10-field intersection of the two paths. The fields
    * that diverge between them — `retryEligible`, `taskSessionBaseDir`, and
-   * `taskAttempts` — are owned by each caller and deliberately NOT touched
-   * here.
+   * `taskAttempts` — are owned by each caller.
    */
-  private clearTaskMaps(taskId: string): void {
+  private clearPerTaskMaps(taskId: string): void {
     this.batchStarted.delete(taskId);
     this.batchSettledCount.delete(taskId);
     this.resolveCache.delete(taskId);
@@ -1238,7 +1287,7 @@ export class SessionScheduler {
    * exists and isn't already done. This lets the generator run any `finally`
    * blocks, releasing resources.
    *
-   * S2: wrapped in a timeout race so a hanging generator finally/await can't
+   * Wrapped in a timeout race so a hanging generator finally/await can't
    * block the scheduler. Accept a leaked generator over blocking.
    *
    * Safe to call multiple times — calling `.return()` on a generator that
@@ -1255,13 +1304,19 @@ export class SessionScheduler {
   }
 
   /** Per-task state cleanup: delete all scheduler-side map entries for a task
-   *  that has reached a terminal state. Bounds memory across long runs (fix 8). */
+   *  that has reached a terminal state. Bounds memory across long runs. */
   private cleanupTaskState(taskId: string): void {
-    this.clearTaskMaps(taskId);
+    this.clearPerTaskMaps(taskId);
     // Retry state (cleared once the task is permanently terminal).
     this.retryEligible.delete(taskId);
     this.taskSessionBaseDir.delete(taskId);
-    // taskAttempts is retained for result/audit reporting even after terminal.
+    // Attempt count is available via the audit trail (scheduler_task_failed_permanent
+    // / scheduler_task_complete events carry the final attempt number), so the
+    // per-task entry can be freed to prevent unbounded memory growth.
+    this.taskAttempts.delete(taskId);
+    // Status transition events have already been emitted for terminal tasks;
+    // the previous-status lookup is no longer needed.
+    this.prevStatuses.delete(taskId);
   }
 
   // ─── Runner resolution (beforeTask hook + factory fallback) ──────────────
@@ -1413,18 +1468,6 @@ export class SessionScheduler {
     }
   }
 
-  // ─── Timeout helper (delegates to the standalone utility) ───────────────
-
-  /**
-   * Race a promise against a timeout. Thin delegate over the standalone
-   * {@link withTimeout} utility in `scheduler-timeout.ts`, retained so the
-   * scheduler surface stays backward-compatible. The implementation lives in
-   * the extracted module so workflow code outside the scheduler can reuse it.
-   */
-  private withTimeout<T>(p: Promise<T>, ms: number, label?: string): Promise<T> {
-    return withTimeout(p, ms, label);
-  }
-
   // ─── Context builder ─────────────────────────────────────────────
 
   /**
@@ -1433,7 +1476,7 @@ export class SessionScheduler {
    *
    * @param includeApiKeys - When true (default), apiKeys from options are
    *   included in the context. Pass false for plan() which never needs
-   *   credentials (S4 security boundary).
+   *   credentials (security boundary).
    */
   private buildPlanContext(entry: TaskGraphEntry, agentId: string, includeApiKeys = true): SessionPlanContext {
     const worktreeCwd = this.worktreeCwds.get(entry.task.id);

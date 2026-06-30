@@ -21,7 +21,7 @@ export async function runCommand(options: CliOptions): Promise<void> {
   // repository, prompt before proceeding — the run will execute in-place
   // with no worktree (the server detects non-git and skips the worktree
   // setup). Default is No so accidental Enter aborts safely.
-  if (!isGitRepo(options.cwd)) {
+  if (!(await isGitRepo(options.cwd))) {
     const confirmed = await promptYesNo(
       `Warning: '${options.cwd}' is not a git repository. Continue without git and worktrees?`,
       false,

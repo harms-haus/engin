@@ -122,7 +122,7 @@ export async function startControlServer(options: {
 
   function broadcast(msg: ServerMessage): void {
     const payload = JSON.stringify(msg);
-    for (const ws of clients) {
+    for (const ws of Array.from(clients)) {
       try {
         ws.send(payload);
       } catch {

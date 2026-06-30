@@ -449,37 +449,31 @@ describe('compile-time type guards', () => {
   it('AgentRuntimeEvent rejects an unknown variant type', () => {
     // @ts-expect-error — 'unknown_type' is not a valid AgentRuntimeEvent type
     const _e: AgentRuntimeEvent = { type: 'unknown_type' };
-    expect(_e).toBeDefined();
   });
 
   it('AgentRuntimeEvent rejects turn_end without message', () => {
     // @ts-expect-error — turn_end requires a message field
     const _e: AgentRuntimeEvent = { type: 'turn_end' };
-    expect(_e).toBeDefined();
   });
 
   it('AgentRuntimeEvent rejects tool_execution_start without toolName', () => {
     // @ts-expect-error — tool_execution_start requires toolName and toolCallId
     const _e: AgentRuntimeEvent = { type: 'tool_execution_start', toolCallId: 'x' };
-    expect(_e).toBeDefined();
   });
 
   it('AgentRuntimeEvent rejects tool_execution_end without isError', () => {
     // @ts-expect-error — tool_execution_end requires isError
     const _e: AgentRuntimeEvent = { type: 'tool_execution_end', toolName: 'a', toolCallId: 'b' };
-    expect(_e).toBeDefined();
   });
 
   it('AgentRuntimeEvent rejects auto_retry_start without required fields', () => {
     // @ts-expect-error — auto_retry_start requires attempt, maxAttempts, delayMs, errorMessage
     const _e: AgentRuntimeEvent = { type: 'auto_retry_start', attempt: 1 };
-    expect(_e).toBeDefined();
   });
 
   it('AgentSessionOptions rejects missing required profile', () => {
     // @ts-expect-error — profile and cwd are required
     const _opts: AgentSessionOptions = { cwd: '/tmp' };
-    expect(_opts).toBeDefined();
   });
 
   it('AgentSessionOptions rejects missing required cwd', () => {
@@ -496,7 +490,6 @@ describe('compile-time type guards', () => {
         includeTools: [],
       },
     };
-    expect(_opts).toBeDefined();
   });
 
   it('AgentRuntime rejects missing prompt method', () => {
@@ -509,7 +502,6 @@ describe('compile-time type guards', () => {
       dispose() {},
       subscribe: () => () => {},
     };
-    expect(_r).toBeDefined();
   });
 
   it('AgentPlugin rejects missing id', () => {
@@ -527,18 +519,15 @@ describe('compile-time type guards', () => {
         };
       },
     };
-    expect(_p).toBeDefined();
   });
 
   it('AgentPlugin rejects missing createSession', () => {
     // @ts-expect-error — createSession is required
     const _p: AgentPlugin = { id: 'x' };
-    expect(_p).toBeDefined();
   });
 
   it('PromptOptions rejects non-signal field', () => {
     // @ts-expect-error — only signal is allowed
     const _o: PromptOptions = { timeout: 5000 };
-    expect(_o).toBeDefined();
   });
 });

@@ -45,7 +45,6 @@ import type {
   RunMergeDecision,
   WorkflowHooks,
 } from '../types.js';
-import * as defaultsBarrel from './index.js';
 import {
   createDefaultOnPersist,
   createDefaultOnRestore,
@@ -122,13 +121,6 @@ afterEach(async () => {
 // ── createDefaultOnPersist ──────────────────────────────────────────────────
 
 describe('createDefaultOnPersist', () => {
-  it('returns a function (a PipelineHook)', () => {
-    const tracker = new WorkflowStatusTracker('/tmp/never-written-persist');
-    const hook = createDefaultOnPersist(tracker);
-    expect(typeof hook).toBe('function');
-    tracker.dispose();
-  });
-
   it('is assignable to WorkflowHooks.onPersist (type-level + identity)', () => {
     const tracker = new WorkflowStatusTracker('/tmp/never-written-persist');
     const hook = createDefaultOnPersist(tracker);
@@ -222,11 +214,6 @@ describe('createDefaultOnPersist', () => {
 // ── createDefaultOnRestore ──────────────────────────────────────────────────
 
 describe('createDefaultOnRestore', () => {
-  it('returns a function (a PipelineHook)', () => {
-    const hook = createDefaultOnRestore('/tmp/never-read-restore');
-    expect(typeof hook).toBe('function');
-  });
-
   it('is assignable to WorkflowHooks.onRestore (type-level + identity)', () => {
     const hook = createDefaultOnRestore('/some/dir');
     const hooks: WorkflowHooks = { onRestore: hook };
@@ -323,10 +310,6 @@ describe('createDefaultOnRestore', () => {
 // ── defaultBeforeRunMerge ───────────────────────────────────────────────────
 
 describe('defaultBeforeRunMerge', () => {
-  it('is a function (a FirstWinsHook)', () => {
-    expect(typeof defaultBeforeRunMerge).toBe('function');
-  });
-
   it('is assignable to WorkflowHooks.beforeRunMerge (type-level + identity)', () => {
     const hooks: WorkflowHooks = { beforeRunMerge: defaultBeforeRunMerge };
     expect(hooks.beforeRunMerge).toBe(defaultBeforeRunMerge);
@@ -360,11 +343,6 @@ describe('defaultBeforeRunMerge', () => {
 // ── createDefaultOnRunMergeConflict ─────────────────────────────────────────
 
 describe('createDefaultOnRunMergeConflict', () => {
-  it('returns a function (a FirstWinsHook)', () => {
-    const hook = createDefaultOnRunMergeConflict(['/profiles']);
-    expect(typeof hook).toBe('function');
-  });
-
   it('is assignable to WorkflowHooks.onRunMergeConflict (type-level + identity)', () => {
     const hook = createDefaultOnRunMergeConflict(['/profiles']);
     const hooks: WorkflowHooks = { onRunMergeConflict: hook };
@@ -380,12 +358,6 @@ describe('createDefaultOnRunMergeConflict', () => {
     };
     const result = await hook(args, makeCtx());
     expect(result).toEqual({ strategy: 'agent' });
-  });
-
-  it('accepts an optional apiKeys map as the second factory argument', () => {
-    // Type-level + runtime: the factory signature is (profilesDirs, apiKeys?).
-    const hook = createDefaultOnRunMergeConflict(['/profiles'], { OPENAI_API_KEY: 'sk-test' });
-    expect(typeof hook).toBe('function');
   });
 
   it('returns the agent marker regardless of conflict count / paths', async () => {
@@ -418,10 +390,6 @@ describe('createDefaultOnRunMergeConflict', () => {
 // ── defaultOnWorkflowAbort ──────────────────────────────────────────────────
 
 describe('defaultOnWorkflowAbort', () => {
-  it('is a function (an ObserveHook)', () => {
-    expect(typeof defaultOnWorkflowAbort).toBe('function');
-  });
-
   it('is assignable to WorkflowHooks.onWorkflowAbort (type-level + identity)', () => {
     const hooks: WorkflowHooks = { onWorkflowAbort: defaultOnWorkflowAbort };
     expect(hooks.onWorkflowAbort).toBe(defaultOnWorkflowAbort);
@@ -448,10 +416,6 @@ describe('defaultOnWorkflowAbort', () => {
 // ── defaultOnWorkflowResume ─────────────────────────────────────────────────
 
 describe('defaultOnWorkflowResume', () => {
-  it('is a function (an ObserveHook)', () => {
-    expect(typeof defaultOnWorkflowResume).toBe('function');
-  });
-
   it('is assignable to WorkflowHooks.onWorkflowResume (type-level + identity)', () => {
     const hooks: WorkflowHooks = { onWorkflowResume: defaultOnWorkflowResume };
     expect(hooks.onWorkflowResume).toBe(defaultOnWorkflowResume);
@@ -590,26 +554,6 @@ describe('defaults compose through the HookRegistry', () => {
     );
 
     expect(result).toEqual({ proceed: false, strategy: 'merge' });
-  });
-});
-
-// ── Defaults barrel (./index.js) ────────────────────────────────────────────
-//
-// The task requires "Export all factories/functions. Add to
-// packages/engine/src/hooks/defaults/index.ts." These pin that re-export so a
-// consumer importing from the defaults barrel gets every default. Accessed via
-// a Record cast so the test is a pure runtime check (no hard type error while
-// index.ts still only does `export {}`).
-
-describe('defaults barrel (./index.js)', () => {
-  it('re-exports all six workflow defaults', () => {
-    const barrel = defaultsBarrel as unknown as Record<string, unknown>;
-    expect(typeof barrel.createDefaultOnPersist).toBe('function');
-    expect(typeof barrel.createDefaultOnRestore).toBe('function');
-    expect(typeof barrel.defaultBeforeRunMerge).toBe('function');
-    expect(typeof barrel.createDefaultOnRunMergeConflict).toBe('function');
-    expect(typeof barrel.defaultOnWorkflowAbort).toBe('function');
-    expect(typeof barrel.defaultOnWorkflowResume).toBe('function');
   });
 });
 

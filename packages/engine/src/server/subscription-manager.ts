@@ -68,7 +68,7 @@ export class SubscriptionManager {
    */
   broadcast(_runId: string, msg: ServerMessage, handle: RunHandle): void {
     const payload = JSON.stringify(msg);
-    for (const ws of handle.subscribers) {
+    for (const ws of Array.from(handle.subscribers)) {
       if (ws.readyState === WebSocket.OPEN) {
         try {
           ws.send(payload);

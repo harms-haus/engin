@@ -35,12 +35,17 @@ export interface WorktreeCopyEntry {
 
 /**
  * Creates a symlink at `linkPath` pointing to `target`, retrying on transient
- * errors (EEXIST, EPERM, etc.) with a synchronous backoff between attempts.
+ * errors (EEXIST, EPERM, etc.) with an asynchronous backoff between attempts.
  *
  * If a symlink already exists at `linkPath` and points to the correct target,
  * this is a no-op.
  */
-export function createSymlinkWithRetry(target: string, linkPath: string, maxRetries = 3, backoffMs = 75): void {
+export async function createSymlinkWithRetry(
+  target: string,
+  linkPath: string,
+  maxRetries = 3,
+  backoffMs = 75,
+): Promise<void> {
   // No-op when an existing symlink already points to the correct target
   try {
     if (existsSync(linkPath) && readlinkSync(linkPath) === target) {
@@ -56,7 +61,7 @@ export function createSymlinkWithRetry(target: string, linkPath: string, maxRetr
       return;
     } catch (err) {
       if (attempt < maxRetries) {
-        Bun.sleepSync(backoffMs);
+        await Bun.sleep(backoffMs);
         continue;
       }
       throw err;
@@ -116,7 +121,11 @@ export function readWorktreeCopyEntries(cwd: string): WorktreeCopyEntry[] {
  * Only the top-level entries of `sourceCwd` are considered for matching — there
  * is no recursive descent. The `.git` and `.engin` directories are always skipped.
  */
-export function populateWorktree(sourceCwd: string, worktreePath: string, entries?: WorktreeCopyEntry[]): void {
+export async function populateWorktree(
+  sourceCwd: string,
+  worktreePath: string,
+  entries?: WorktreeCopyEntry[],
+): Promise<void> {
   const resolvedEntries = entries ?? readWorktreeCopyEntries(sourceCwd);
   if (resolvedEntries.length === 0) {
     return;
@@ -141,7 +150,7 @@ export function populateWorktree(sourceCwd: string, worktreePath: string, entrie
     // Symlink mode takes precedence: matched entries become symlinks
     if (symlinkIgnore.ignores(name)) {
       mkdirSync(dirname(targetFullPath), { recursive: true });
-      createSymlinkWithRetry(sourceFullPath, targetFullPath);
+      await createSymlinkWithRetry(sourceFullPath, targetFullPath);
       continue;
     }
 

@@ -1,7 +1,6 @@
 // ─── Shared Utilities ────────────────────────────────────────────────────────
 
 import type { AgentStatusCallbacks, StatusCallbacks } from './types.js';
-import { STATUS_CALLBACK_METHODS } from './types.js';
 
 /**
  * Validates a workflow name, throwing if it contains path separators or "..".
@@ -25,37 +24,6 @@ export function isEnoentError(err: unknown): boolean {
  */
 export function safeErrorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
-}
-
-/**
- * Combines multiple {@link StatusCallbacks} consumers into a single one that
- * fans out each event to all consumers in array order.
- *
- * - If `callbacks` is empty, returns a no-op object (every method is a no-op).
- * - If `callbacks` has exactly one element, returns that element directly.
- * - Otherwise returns a composed object that calls every callback in order.
- */
-export function composeStatusCallbacks(callbacks: StatusCallbacks[]): StatusCallbacks {
-  if (callbacks.length === 0) {
-    return Object.fromEntries(STATUS_CALLBACK_METHODS.map((name) => [name, () => undefined])) as StatusCallbacks;
-  }
-  if (callbacks.length === 1) {
-    return callbacks[0];
-  }
-  return Object.fromEntries(
-    STATUS_CALLBACK_METHODS.map((name) => [
-      name,
-      (info: unknown) => {
-        for (const cb of callbacks) {
-          try {
-            (cb as Record<string, (info: unknown) => void>)[name]?.(info);
-          } catch (err) {
-            console.error('[composeStatusCallbacks] Error in ' + name + ':', err);
-          }
-        }
-      },
-    ]),
-  ) as StatusCallbacks;
 }
 
 /**

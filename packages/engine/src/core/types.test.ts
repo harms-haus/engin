@@ -424,7 +424,6 @@ describe('core/types barrel — AgentProfile @ts-expect-error guards', () => {
   it('requires id', () => {
     // @ts-expect-error — missing id
     const _bad: AgentProfile = { ...base };
-    expect(_bad).toBeDefined();
   });
 
   it('requires name', () => {
@@ -438,7 +437,6 @@ describe('core/types barrel — AgentProfile @ts-expect-error guards', () => {
       excludeTools: [],
       includeTools: [],
     };
-    expect(_bad).toBeDefined();
   });
 
   it('requires provider', () => {
@@ -452,7 +450,6 @@ describe('core/types barrel — AgentProfile @ts-expect-error guards', () => {
       excludeTools: [],
       includeTools: [],
     };
-    expect(_bad).toBeDefined();
   });
 
   it('requires model', () => {
@@ -466,7 +463,6 @@ describe('core/types barrel — AgentProfile @ts-expect-error guards', () => {
       excludeTools: [],
       includeTools: [],
     };
-    expect(_bad).toBeDefined();
   });
 
   it('requires thinkingLevel', () => {
@@ -480,7 +476,6 @@ describe('core/types barrel — AgentProfile @ts-expect-error guards', () => {
       excludeTools: [],
       includeTools: [],
     };
-    expect(_bad).toBeDefined();
   });
 
   it('requires systemPrompt', () => {
@@ -494,7 +489,6 @@ describe('core/types barrel — AgentProfile @ts-expect-error guards', () => {
       excludeTools: [],
       includeTools: [],
     };
-    expect(_bad).toBeDefined();
   });
 
   it('requires excludeTools', () => {
@@ -508,7 +502,6 @@ describe('core/types barrel — AgentProfile @ts-expect-error guards', () => {
       systemPrompt: '',
       includeTools: [],
     };
-    expect(_bad).toBeDefined();
   });
 
   it('requires includeTools', () => {
@@ -522,7 +515,6 @@ describe('core/types barrel — AgentProfile @ts-expect-error guards', () => {
       systemPrompt: '',
       excludeTools: [],
     };
-    expect(_bad).toBeDefined();
   });
 });
 
@@ -538,7 +530,6 @@ describe('core/types barrel — Task @ts-expect-error guards', () => {
       status: 'ready',
       phaseId: 'ph',
     };
-    expect(_bad).toBeDefined();
   });
 
   it('requires title', () => {
@@ -552,7 +543,6 @@ describe('core/types barrel — Task @ts-expect-error guards', () => {
       status: 'ready',
       phaseId: 'ph',
     };
-    expect(_bad).toBeDefined();
   });
 
   it('requires prompt', () => {
@@ -566,7 +556,6 @@ describe('core/types barrel — Task @ts-expect-error guards', () => {
       status: 'ready',
       phaseId: 'ph',
     };
-    expect(_bad).toBeDefined();
   });
 
   it('requires profile', () => {
@@ -580,7 +569,6 @@ describe('core/types barrel — Task @ts-expect-error guards', () => {
       status: 'ready',
       phaseId: 'ph',
     };
-    expect(_bad).toBeDefined();
   });
 
   it('requires files', () => {
@@ -594,13 +582,11 @@ describe('core/types barrel — Task @ts-expect-error guards', () => {
       status: 'ready',
       phaseId: 'ph',
     };
-    expect(_bad).toBeDefined();
   });
 
   it('requires dependencies', () => {
     // @ts-expect-error — missing dependencies
     const _bad: Task = { id: 't', title: 'x', prompt: 'p', profile: 'pr', files: [], status: 'ready', phaseId: 'ph' };
-    expect(_bad).toBeDefined();
   });
 
   it('requires phaseId', () => {
@@ -614,7 +600,6 @@ describe('core/types barrel — Task @ts-expect-error guards', () => {
       dependencies: [],
       status: 'ready',
     };
-    expect(_bad).toBeDefined();
   });
 });
 
@@ -622,19 +607,16 @@ describe('core/types barrel — WorkflowRunOptions / HarnessCreationOptions guar
   it('WorkflowRunOptions requires workDir', () => {
     // @ts-expect-error — missing workDir
     const _bad: WorkflowRunOptions = { cwd: '/proj' };
-    expect(_bad).toBeDefined();
   });
 
   it('WorkflowRunOptions requires cwd', () => {
     // @ts-expect-error — missing cwd
     const _bad: WorkflowRunOptions = { workDir: '/tmp' };
-    expect(_bad).toBeDefined();
   });
 
   it('HarnessCreationOptions requires profile', () => {
     // @ts-expect-error — missing profile
     const _bad: HarnessCreationOptions = { cwd: '/proj' };
-    expect(_bad).toBeDefined();
   });
 
   it('HarnessCreationOptions requires cwd', () => {
@@ -651,7 +633,6 @@ describe('core/types barrel — WorkflowRunOptions / HarnessCreationOptions guar
         includeTools: [],
       },
     };
-    expect(_bad).toBeDefined();
   });
 });
 
@@ -659,30 +640,25 @@ describe('core/types barrel — literal/union @ts-expect-error guards', () => {
   it('ThinkingLevel rejects arbitrary strings', () => {
     // @ts-expect-error — 'ultra' is not a valid ThinkingLevel
     const _bad: ThinkingLevel = 'ultra';
-    expect(_bad).toBeDefined();
   });
 
   it('AuditEvent rejects unknown type discriminator', () => {
     // @ts-expect-error — 'foo' is not a valid AuditEvent type
     const _bad: AuditEvent = { type: 'foo', agentId: 'a', timestamp: 'now' };
-    expect(_bad).toBeDefined();
   });
 
   it('WorkflowEntry.source rejects invalid string', () => {
     // @ts-expect-error — 'remote' is not a valid source
     const _bad: WorkflowEntry = { name: 'w', source: 'remote', path: '/p' };
-    expect(_bad).toBeDefined();
   });
 
   it('WorktreeInfo requires branchName', () => {
     // @ts-expect-error — missing branchName
     const _bad: WorktreeInfo = { worktreePath: '/p', originalCwd: '/c' };
-    expect(_bad).toBeDefined();
   });
 
   it('TaskStatus rejects invalid literal', () => {
     // @ts-expect-error — 'pending' is not a valid TaskStatus
     const _bad: TaskStatus = 'pending';
-    expect(_bad).toBeDefined();
   });
 });

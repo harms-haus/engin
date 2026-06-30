@@ -81,17 +81,22 @@ import type { TaskStatus } from '@engin/shared/types';
 import type { AgentProfile, Task } from '../core/types.js';
 
 import type { SessionPlanContext, SessionPlanRunner } from './runners/session-plan-types.js';
+import { GeneratorTimeoutError, withTimeout } from './scheduler-timeout.js';
 import { SessionGate } from './session-gate.js';
 import { SessionScheduler } from './session-scheduler.js';
 import type { TaskGraphEntry } from './task-graph.js';
-// Namespace import so this file still loads before the green team exports
-// GeneratorTimeoutError (a missing *named* export would otherwise abort the
-// whole file with a SyntaxError). `schedulerModule.GeneratorTimeoutError` is
-// `undefined` until exported.
+// Namespace import exposed by session-scheduler.ts for constants such as
+// MAX_EMPTY_BATCHES. GeneratorTimeoutError and withTimeout are imported
+// directly from scheduler-timeout.js (the private withTimeout delegate was
+// removed).
 import * as schedulerModule from './session-scheduler.js';
 import type { SessionResult, SessionSpec } from './session.js';
 import { SessionError } from './session.js';
 import { TaskGraph } from './task-graph.js';
+
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -177,11 +182,6 @@ function makeSpecControls(specIds: string[]): Map<string, SpecControl> {
 /** Resolve a spec control with a success result. */
 function completeSpec(controls: Map<string, SpecControl>, id: string, text = `result-${id}`): void {
   controls.get(id)?.deferred.resolve({ mode: 'text', text });
-}
-
-/** Reject a spec control (simulates execute() throwing). */
-function failSpec(controls: Map<string, SpecControl>, id: string, reason = `error-${id}`): void {
-  controls.get(id)?.deferred.reject(new Error(reason));
 }
 
 /**
@@ -282,6 +282,50 @@ function buildFixture(opts: {
   return { graph, gate: opts.gate, profiles: opts.profiles, activeSessions, log, events, scheduler };
 }
 
+/** A runner whose plan yields an empty batch then completes (used by the
+ *  per-task-state cleanup tests that exercise scheduler internals directly). */
+function noopRunnerFactory(): SessionPlanRunner {
+  return {
+    async *plan(): AsyncGenerator<SessionSpec[], SessionResult[] | undefined, SessionResult[]> {
+      yield [] as SessionSpec[];
+      return undefined;
+    },
+    async execute() {
+      return { mode: 'text', text: '' };
+    },
+  };
+}
+
+/**
+ * Standard fixture shared by the retry/cleanup test group (tests 33, 34,
+ * 36, 37, 45, 46, 47). Builds a scheduler with the canonical single-profile /
+ * permissive-gate configuration, adds task 'A' to the graph with the supplied
+ * runner factory, and returns the scheduler + graph references those tests
+ * assert against. Eliminates the ~30 lines of duplicated setup each test
+ * previously carried.
+ */
+function makeRetryCleanupFixture(factory: () => SessionPlanRunner): {
+  scheduler: SessionScheduler;
+  graph: TaskGraph;
+  profiles: Map<string, AgentProfile>;
+  gate: SessionGate;
+} {
+  const profiles = new Map([['default', makeProfile('default')]]);
+  const gate = new SessionGate({ total: 2, perModel: {} });
+  const graph = new TaskGraph();
+  graph.addTask({ ...makeTask('A') }, factory);
+  const scheduler = new SessionScheduler({
+    graph,
+    gate,
+    profiles,
+    sessionBaseDir: '/tmp/test-sessions',
+    cwd: '/tmp/test',
+    activeSessions: new Set(),
+    phaseId: 'test',
+  });
+  return { scheduler, graph, profiles, gate };
+}
+
 // ── Per-task state inspection helpers ───────────────────────────────────────
 //
 // cleanupTaskState(taskId) deletes the scheduler's per-task map/Set entries
@@ -319,7 +363,8 @@ function perTaskStateFor(scheduler: SessionScheduler, taskId: string): string[] 
 }
 
 /** True if the scheduler still knows the attempt count for `taskId`
- *  (taskAttempts is deliberately NOT cleared by cleanupTaskState). */
+ *  (taskAttempts IS cleared by cleanupTaskState — attempt counts are in the
+ *  audit trail). */
 function taskAttemptsKnown(scheduler: SessionScheduler, taskId: string): boolean {
   const s = scheduler as unknown as Record<string, unknown>;
   return Boolean((s['taskAttempts'] as Map<string, unknown> | undefined)?.has(taskId));
@@ -343,11 +388,12 @@ function isRetryEligible(scheduler: SessionScheduler, taskId: string): boolean {
   return Boolean((s['retryEligible'] as Set<string> | undefined)?.has(taskId));
 }
 
-/** The 10 per-task maps/sets cleared by the shared `clearTaskMaps(taskId)`
+/** The 10 per-task maps/sets cleared by the shared `clearPerTaskMaps(taskId)`
  *  helper — the exact intersection of resetForRetry's and cleanupTaskState's
  *  per-task cleanup. `retryEligible`, `taskSessionBaseDir`, and
  *  `taskAttempts` are intentionally NOT part of this shared subset (they
- *  diverge between the two callers). */
+ *  diverge between the two callers — e.g. cleanup DELETES taskAttempts while
+ *  reset INCREMENTS it). */
 const SHARED_CLEAR_FIELDS = [
   'batchStarted',
   'batchSettledCount',
@@ -966,7 +1012,7 @@ describe('SessionScheduler', () => {
 
     // Complete s1, fail s2.
     completeSpec(controls, 's1');
-    failSpec(controls, 's2');
+    controls.get('s2')?.deferred.reject(new Error('error-s2'));
     await tick();
 
     // After both settle, the batch advances. Since s2 had an error,
@@ -2192,8 +2238,6 @@ describe('SessionScheduler', () => {
   // before the task fails permanently. An always-throwing execute therefore
   // runs exactly MAX_RETRIES + 1 times and the task ends 'failed'.
   it('33. a session that throws fails the task after exhausting retries (transient throw)', async () => {
-    const profiles = new Map([['default', makeProfile('default')]]);
-    const gate = new SessionGate({ total: 2, perModel: {} });
     let attempt = 0;
     // Fake runner: execute always throws (transient). The scheduler retries
     // the whole plan blank-slate until the retry budget is exhausted.
@@ -2207,17 +2251,7 @@ describe('SessionScheduler', () => {
         throw new SessionError('watchdog timeout (transient)', { kind: 'transient', retryable: true });
       },
     });
-    const graph = new TaskGraph();
-    graph.addTask({ ...makeTask('A') }, factory);
-    const scheduler = new SessionScheduler({
-      graph,
-      gate,
-      profiles,
-      sessionBaseDir: '/tmp/test-sessions',
-      cwd: '/tmp/test',
-      activeSessions: new Set(),
-      phaseId: 'test',
-    });
+    const { scheduler, graph } = makeRetryCleanupFixture(factory);
     // Retry budget exhausted → permanently failed → run() rejects.
     await expect(scheduler.run()).rejects.toThrow(/permanently-failed/);
     expect(graph.getTask('A')?.status).toBe('failed');
@@ -2232,8 +2266,6 @@ describe('SessionScheduler', () => {
   // regardless of transient/permanent, both kinds fail the task the moment the
   // session throws (no synthetic empty result, no generator continuation).
   it('34. permanent error fails the task immediately', async () => {
-    const profiles = new Map([['default', makeProfile('default')]]);
-    const gate = new SessionGate({ total: 2, perModel: {} });
     const factory = (): SessionPlanRunner => ({
       async *plan(): AsyncGenerator<SessionSpec[], SessionResult[] | undefined, SessionResult[]> {
         yield [makeSpec('s1', 'default')];
@@ -2244,17 +2276,7 @@ describe('SessionScheduler', () => {
         throw new SessionError('schema missing — permanent', { kind: 'permanent', retryable: false });
       },
     });
-    const graph = new TaskGraph();
-    graph.addTask({ ...makeTask('A') }, factory);
-    const scheduler = new SessionScheduler({
-      graph,
-      gate,
-      profiles,
-      sessionBaseDir: '/tmp/test-sessions',
-      cwd: '/tmp/test',
-      activeSessions: new Set(),
-      phaseId: 'test',
-    });
+    const { scheduler, graph } = makeRetryCleanupFixture(factory);
     // Permanent (non-transient) error → permanently failed → run() rejects.
     await expect(scheduler.run()).rejects.toThrow(/permanently-failed/);
     expect(graph.getTask('A')?.status).toBe('failed');
@@ -2354,8 +2376,6 @@ describe('SessionScheduler', () => {
   // 'complete'. Verifies: failure is retryable, the retry runs a FRESH plan,
   // and a retry that succeeds completes normally.
   it('36. retry: execution failure succeeds on the 2nd attempt', async () => {
-    const profiles = new Map([['default', makeProfile('default')]]);
-    const gate = new SessionGate({ total: 2, perModel: {} });
     const observedBaseDirs: string[] = [];
     let planCalls = 0;
     // First execute throws; from the 2nd attempt onward it succeeds.
@@ -2373,17 +2393,7 @@ describe('SessionScheduler', () => {
         return { mode: 'text', text: 'ok' };
       },
     });
-    const graph = new TaskGraph();
-    graph.addTask({ ...makeTask('A') }, factory);
-    const scheduler = new SessionScheduler({
-      graph,
-      gate,
-      profiles,
-      sessionBaseDir: '/tmp/test-sessions',
-      cwd: '/tmp/test',
-      activeSessions: new Set(),
-      phaseId: 'test',
-    });
+    const { scheduler, graph } = makeRetryCleanupFixture(factory);
     const result = await scheduler.run();
     expect(result.completedTasks).toBe(1);
     expect(result.failedTasks).toBe(0);
@@ -2399,8 +2409,6 @@ describe('SessionScheduler', () => {
   // sessions remain at the original path for tracing. The blank-slate retry
   // never reads the failed attempt's session cache.
   it('37. retry: 2nd attempt uses a namespaced session base dir', async () => {
-    const profiles = new Map([['default', makeProfile('default')]]);
-    const gate = new SessionGate({ total: 2, perModel: {} });
     const observedBaseDirs: string[] = [];
     let planCalls = 0;
     const factory = (): SessionPlanRunner => ({
@@ -2417,17 +2425,7 @@ describe('SessionScheduler', () => {
         return { mode: 'text', text: 'ok' };
       },
     });
-    const graph = new TaskGraph();
-    graph.addTask({ ...makeTask('A') }, factory);
-    const scheduler = new SessionScheduler({
-      graph,
-      gate,
-      profiles,
-      sessionBaseDir: '/tmp/test-sessions',
-      cwd: '/tmp/test',
-      activeSessions: new Set(),
-      phaseId: 'test',
-    });
+    const { scheduler } = makeRetryCleanupFixture(factory);
     const result = await scheduler.run();
     expect(result.completedTasks).toBe(1);
     // Attempt 1 → base dir; attempt 2 → .retries/A/2.
@@ -2631,10 +2629,11 @@ describe('SessionScheduler', () => {
   // cleanupTaskState(taskId) deletes the scheduler-side per-task map entries
   // (runners, batchStarted, resolveCache, planCtxCache, executeCtxCache,
   // advancing, worktreeCreated, worktreeCwds, retryEligible,
-  // taskSessionBaseDir, taskErrors) once a task is permanently terminal. It
-  // must fire on NORMAL completion (finalizeTask) so the maps don't grow
-  // unboundedly across long runs. taskAttempts is deliberately PRESERVED
-  // (needed for result/audit reporting).
+  // taskSessionBaseDir, taskErrors, taskAttempts, prevStatuses) once a task
+  // is permanently terminal. It must fire on NORMAL completion (finalizeTask)
+  // so the maps don't grow unboundedly across long runs. taskAttempts is
+  // cleared because the audit trail already captures attempt counts in
+  // scheduler_task_failed_permanent / scheduler_task_complete events.
   it('42. per-task maps are cleaned up after a task completes normally', async () => {
     const profiles = new Map([['default', makeProfile('default')]]);
     const gate = new SessionGate({ total: 2, perModel: {} });
@@ -2660,8 +2659,8 @@ describe('SessionScheduler', () => {
 
     // After completion the per-task state must be gone (no leak).
     expect(perTaskStateFor(scheduler, 'A')).toEqual([]);
-    // taskAttempts is intentionally retained for reporting.
-    expect(taskAttemptsKnown(scheduler, 'A')).toBe(true);
+    // taskAttempts is cleared because the audit trail carries attempt counts.
+    expect(taskAttemptsKnown(scheduler, 'A')).toBe(false);
   });
 
   // ── 43. Per-task state is cleaned up after a PERMANENT failure ───────────
@@ -2669,7 +2668,7 @@ describe('SessionScheduler', () => {
   // The same cleanup must fire on the PERMANENT failure branch of failTask
   // (retry budget exhausted OR non-retryable structural failure). Maps that
   // accumulated errors / runner handles during the attempts must be released.
-  // Again, taskAttempts is preserved.
+  // taskAttempts is also cleared (attempt counts are in audit trail events).
   it('43. per-task maps are cleaned up after a task fails permanently', async () => {
     const profiles = new Map([['default', makeProfile('default')]]);
     const gate = new SessionGate({ total: 2, perModel: {} });
@@ -2703,8 +2702,8 @@ describe('SessionScheduler', () => {
 
     // Per-task state must be released on permanent failure (no leak).
     expect(perTaskStateFor(scheduler, 'A')).toEqual([]);
-    // taskAttempts retained for reporting.
-    expect(taskAttemptsKnown(scheduler, 'A')).toBe(true);
+    // taskAttempts cleared (audit trail carries attempt counts).
+    expect(taskAttemptsKnown(scheduler, 'A')).toBe(false);
   });
 
   // ── 44. Per-task state is NOT cleaned on a retryable (retry-eligible) failure ──
@@ -2780,47 +2779,25 @@ describe('SessionScheduler', () => {
     expect(perTaskStateFor(scheduler, 'A')).toEqual([]);
   });
 
-  // ── 45. clearTaskMaps clears exactly the shared per-task maps ───────────
+  // ── 45. clearPerTaskMaps clears exactly the shared per-task maps ───────────
   //
   // resetForRetry and cleanupTaskState both clear the same per-task execution-
   // state maps. That shared subset is extracted into a private
-  // clearTaskMaps(taskId) helper which clears EXACTLY these 10 maps:
+  // clearPerTaskMaps(taskId) helper which clears EXACTLY these 10 maps:
   //   batchStarted, batchSettledCount, resolveCache, runners, planCtxCache,
   //   executeCtxCache, advancing, worktreeCreated, worktreeCwds, taskErrors.
   //
   // It must NOT touch the three path-divergent fields:
   //   - retryEligible       (resetForRetry removes it; cleanupTaskState removes it)
   //   - taskSessionBaseDir  (resetForRetry SETS a new value; cleanupTaskState deletes)
-  //   - taskAttempts        (always retained for reporting)
+  //   - taskAttempts        (not touched by shared helper; cleanupTaskState deletes it,
+  //                           resetForRetry increments it)
   // Those divergent fields are owned by each caller, not the shared helper.
   //
-  // This test drives the extraction: clearTaskMaps does not exist yet, so it
+  // This test drives the extraction: clearPerTaskMaps does not exist yet, so it
   // fails until the green team extracts the helper.
-  it('45. clearTaskMaps clears exactly the shared per-task maps', () => {
-    const profiles = new Map([['default', makeProfile('default')]]);
-    const gate = new SessionGate({ total: 2, perModel: {} });
-    const graph = new TaskGraph();
-    graph.addTask(
-      { ...makeTask('A') },
-      (): SessionPlanRunner => ({
-        async *plan(): AsyncGenerator<SessionSpec[], SessionResult[] | undefined, SessionResult[]> {
-          yield [] as SessionSpec[];
-          return undefined;
-        },
-        async execute() {
-          return { mode: 'text', text: '' };
-        },
-      }),
-    );
-    const scheduler = new SessionScheduler({
-      graph,
-      gate,
-      profiles,
-      sessionBaseDir: '/tmp/test-sessions',
-      cwd: '/tmp/test',
-      activeSessions: new Set(),
-      phaseId: 'test',
-    });
+  it('45. clearPerTaskMaps clears exactly the shared per-task maps', () => {
+    const { scheduler } = makeRetryCleanupFixture(noopRunnerFactory);
 
     populateAllTaskState(scheduler, 'A');
 
@@ -2828,13 +2805,12 @@ describe('SessionScheduler', () => {
     expect(sharedFieldsPresent(scheduler, 'A')).toEqual([...SHARED_CLEAR_FIELDS]);
 
     // Invoke the extracted private helper directly.
-    const clearTaskMaps = (
+    const clearPerTaskMaps = (
       scheduler as unknown as {
-        clearTaskMaps?: (id: string) => void;
+        clearPerTaskMaps?: (id: string) => void;
       }
-    ).clearTaskMaps;
-    expect(clearTaskMaps).toBeTypeOf('function');
-    clearTaskMaps!.call(scheduler, 'A');
+    ).clearPerTaskMaps;
+    clearPerTaskMaps!.call(scheduler, 'A');
 
     // The 10 shared maps/sets are all gone.
     expect(sharedFieldsPresent(scheduler, 'A')).toEqual([]);
@@ -2848,7 +2824,7 @@ describe('SessionScheduler', () => {
   // ── 46. resetForRetry clears shared maps, drops retryEligible, sets a NEW base dir ──
   //
   // resetForRetry is the retry-reset path (failed → ready for a blank-slate
-  // re-run). It calls clearTaskMaps(taskId) for the shared maps and then does
+  // re-run). It calls clearPerTaskMaps(taskId) for the shared maps and then does
   // reset-specific work: increment the attempt counter, DELETE this task from
   // retryEligible (it was retry-eligible; now it's being re-run), and SET a
   // NEW per-attempt namespaced taskSessionBaseDir (NOT delete the old one).
@@ -2857,32 +2833,9 @@ describe('SessionScheduler', () => {
   // behavior-preserving. The differential vs cleanupTaskState (next test):
   //   - retryEligible:       removed (same as cleanup, but reset owns it)
   //   - taskSessionBaseDir:  SET to namespaced retry path (cleanup DELETES it)
-  //   - taskAttempts:        incremented & retained (cleanup also retains)
+  //   - taskAttempts:        incremented (cleanup DELETES it)
   it('46. resetForRetry clears shared maps, drops retryEligible, sets a NEW base dir', () => {
-    const profiles = new Map([['default', makeProfile('default')]]);
-    const gate = new SessionGate({ total: 2, perModel: {} });
-    const graph = new TaskGraph();
-    graph.addTask(
-      { ...makeTask('A') },
-      (): SessionPlanRunner => ({
-        async *plan(): AsyncGenerator<SessionSpec[], SessionResult[] | undefined, SessionResult[]> {
-          yield [] as SessionSpec[];
-          return undefined;
-        },
-        async execute() {
-          return { mode: 'text', text: '' };
-        },
-      }),
-    );
-    const scheduler = new SessionScheduler({
-      graph,
-      gate,
-      profiles,
-      sessionBaseDir: '/tmp/test-sessions',
-      cwd: '/tmp/test',
-      activeSessions: new Set(),
-      phaseId: 'test',
-    });
+    const { scheduler, graph } = makeRetryCleanupFixture(noopRunnerFactory);
 
     // Simulate a task that has failed attempt 1 and is awaiting a retry reset.
     graph.setTaskStatus('A', 'failed');
@@ -2909,44 +2862,22 @@ describe('SessionScheduler', () => {
     expect(graph.getTask('A')?.status).toBe('ready');
   });
 
-  // ── 47. cleanupTaskState clears shared maps AND retryEligible AND taskSessionBaseDir ──
+  // ── 47. cleanupTaskState clears shared maps AND retryEligible AND taskSessionBaseDir AND taskAttempts AND prevStatuses ──
   //
   // cleanupTaskState is the permanent-terminal cleanup path (normal
   // completion or exhausted/non-retryable failure). It calls
-  // clearTaskMaps(taskId) for the shared maps and then does cleanup-specific
-  // work: DELETE retryEligible and taskSessionBaseDir (the task is gone for
-  // good, so neither the retry flag nor the base dir is needed). taskAttempts
-  // is still retained for result/audit reporting.
+  // clearPerTaskMaps(taskId) for the shared maps and then does cleanup-specific
+  // work: DELETE retryEligible, taskSessionBaseDir, taskAttempts, and
+  // prevStatuses (the task is gone for good, so none are needed — audit trail
+  // events already carry attempt counts and status transitions).
   //
   // The differential vs resetForRetry (prev test):
   //   - retryEligible:       DELETED (reset also removes it — convergent here)
   //   - taskSessionBaseDir:  DELETED (reset SETS a new value)
-  //   - taskAttempts:        retained (reset increments it)
-  it('47. cleanupTaskState clears shared maps AND retryEligible AND taskSessionBaseDir', () => {
-    const profiles = new Map([['default', makeProfile('default')]]);
-    const gate = new SessionGate({ total: 2, perModel: {} });
-    const graph = new TaskGraph();
-    graph.addTask(
-      { ...makeTask('A') },
-      (): SessionPlanRunner => ({
-        async *plan(): AsyncGenerator<SessionSpec[], SessionResult[] | undefined, SessionResult[]> {
-          yield [] as SessionSpec[];
-          return undefined;
-        },
-        async execute() {
-          return { mode: 'text', text: '' };
-        },
-      }),
-    );
-    const scheduler = new SessionScheduler({
-      graph,
-      gate,
-      profiles,
-      sessionBaseDir: '/tmp/test-sessions',
-      cwd: '/tmp/test',
-      activeSessions: new Set(),
-      phaseId: 'test',
-    });
+  //   - taskAttempts:        DELETED (reset INCREMENTS it)
+  //   - prevStatuses:        DELETED (reset does not touch it)
+  it('47. cleanupTaskState clears shared maps AND retryEligible AND taskSessionBaseDir AND taskAttempts AND prevStatuses', () => {
+    const { scheduler } = makeRetryCleanupFixture(noopRunnerFactory);
 
     populateAllTaskState(scheduler, 'A');
 
@@ -2964,9 +2895,9 @@ describe('SessionScheduler', () => {
     // (unlike resetForRetry which keeps a fresh taskSessionBaseDir).
     expect(isRetryEligible(scheduler, 'A')).toBe(false);
     expect(taskSessionBaseDirValue(scheduler, 'A')).toBeUndefined();
-    // taskAttempts is retained for reporting (deliberately not cleared).
-    expect(taskAttemptsKnown(scheduler, 'A')).toBe(true);
-    expect(taskAttemptValue(scheduler, 'A')).toBe(1);
+    // taskAttempts is cleared (audit trail carries attempt counts).
+    expect(taskAttemptsKnown(scheduler, 'A')).toBe(false);
+    expect(taskAttemptValue(scheduler, 'A')).toBeUndefined();
   });
 
   // ── 48. Abort clears retryEligible (no retry reset / re-init after abort) ───
@@ -3058,62 +2989,16 @@ describe('SessionScheduler', () => {
 
 // ── withTimeout + GeneratorTimeoutError (S2 plan-generator timeout helper) ──
 //
-// SessionScheduler#withTimeout races a promise against a timeout. When the
-// timeout fires first it MUST reject with a dedicated GeneratorTimeoutError —
-// a distinct error class so callers can tell a generator/plan timeout apart
-// from a genuine error thrown by the wrapped promise. When the promise
-// settles first (resolve OR reject) the timeout timer MUST be cleared so no
-// timer leak lingers.
+// withTimeout races a promise against a timeout. When the timeout fires first
+// it MUST reject with a dedicated GeneratorTimeoutError — a distinct error
+// class so callers can tell a generator/plan timeout apart from a genuine
+// error thrown by the wrapped promise. When the promise settles first (resolve
+// OR reject) the timeout timer MUST be cleared so no timer leak lingers.
 //
-// withTimeout is a private method with no scheduler state, so these tests
-// exercise it directly on a bare scheduler instance.
+// Both symbols are imported directly from scheduler-timeout.js; the former
+// private delegate on SessionScheduler has been removed as dead code.
 
 describe('SessionScheduler.withTimeout / GeneratorTimeoutError', () => {
-  /** Bare scheduler — withTimeout is a pure helper that reads no scheduler state. */
-  function makeBareScheduler(): SessionScheduler {
-    const graph = new TaskGraph();
-    const gate = new SessionGate({ total: 1, perModel: {} });
-    const profiles = new Map([['default', makeProfile('default')]]);
-    return new SessionScheduler({
-      graph,
-      gate,
-      profiles,
-      sessionBaseDir: '/tmp/test',
-      cwd: '/tmp/test',
-      activeSessions: new Set(),
-      phaseId: 'test',
-    });
-  }
-
-  /** Typed view of the private withTimeout method. */
-  type WithTimeoutFn = <T>(p: Promise<T>, ms: number, label?: string) => Promise<T>;
-
-  function withTimeoutOf(scheduler: SessionScheduler): WithTimeoutFn {
-    return (scheduler as unknown as { withTimeout: WithTimeoutFn }).withTimeout.bind(scheduler);
-  }
-
-  /**
-   * Resolve the GeneratorTimeoutError class from the module namespace. Throws
-   * a clear, specific failure when it isn't exported yet (instead of a cryptic
-   * `undefined is not a constructor`), so the green team gets a precise spec.
-   */
-  function getGeneratorTimeoutError(): new (label: string, ms: number) => Error {
-    const cls = (
-      schedulerModule as {
-        GeneratorTimeoutError?: new (label: string, ms: number) => Error;
-      }
-    ).GeneratorTimeoutError;
-    if (typeof cls !== 'function') {
-      throw new Error(
-        'Expected GeneratorTimeoutError to be exported from session-scheduler.ts, ' +
-          'but it is not exported (typeof === ' +
-          typeof cls +
-          ').',
-      );
-    }
-    return cls;
-  }
-
   /** Install spies on global setTimeout/clearTimeout that record created and
    *  cleared timer ids. Returns accessors + a restore() function. */
   function spyTimers(): {
@@ -3145,21 +3030,16 @@ describe('SessionScheduler.withTimeout / GeneratorTimeoutError', () => {
   }
 
   it('withTimeout resolves with the promise value when it settles before the timeout', async () => {
-    const withTimeout = withTimeoutOf(makeBareScheduler());
     await expect(withTimeout(Promise.resolve('done'), 1000, 'plan generator next()')).resolves.toBe('done');
   });
 
   it('withTimeout rejects with a GeneratorTimeoutError when the promise does not settle in time', async () => {
-    const withTimeout = withTimeoutOf(makeBareScheduler());
-    const GeneratorTimeoutError = getGeneratorTimeoutError();
     // A promise that never settles — only the timeout can resolve the race.
     const hanging = new Promise<string>(() => {});
     await expect(withTimeout(hanging, 30, 'plan generator next()')).rejects.toBeInstanceOf(GeneratorTimeoutError);
   });
 
   it('the timeout error message includes the label and the timeout duration', async () => {
-    const withTimeout = withTimeoutOf(makeBareScheduler());
-    const GeneratorTimeoutError = getGeneratorTimeoutError();
     const hanging = new Promise<string>(() => {});
     const label = 'plan generator next()';
     const ms = 42;
@@ -3176,7 +3056,6 @@ describe('SessionScheduler.withTimeout / GeneratorTimeoutError', () => {
   });
 
   it('GeneratorTimeoutError is constructable as (label, ms) and is an Error subclass', () => {
-    const GeneratorTimeoutError = getGeneratorTimeoutError();
     const err = new GeneratorTimeoutError('plan generator next()', 5000);
     expect(err).toBeInstanceOf(Error);
     expect(err.message).toContain('plan generator next()');
@@ -3184,7 +3063,6 @@ describe('SessionScheduler.withTimeout / GeneratorTimeoutError', () => {
   });
 
   it('clears the timeout timer when the promise resolves before the timeout', async () => {
-    const withTimeout = withTimeoutOf(makeBareScheduler());
     const spy = spyTimers();
     try {
       const result = await withTimeout(Promise.resolve('done'), 1000, 'plan generator next()');
@@ -3199,8 +3077,6 @@ describe('SessionScheduler.withTimeout / GeneratorTimeoutError', () => {
   });
 
   it('clears the timeout timer when the promise rejects before the timeout and propagates the original error', async () => {
-    const withTimeout = withTimeoutOf(makeBareScheduler());
-    const GeneratorTimeoutError = getGeneratorTimeoutError();
     const spy = spyTimers();
     const originalError = new Error('genuine failure');
     try {
@@ -3307,5 +3183,539 @@ describe('SessionScheduler nextNonEmptyBatch infinite-loop guard (MAX_EMPTY_BATC
     const result = await nextNonEmptyBatch(entry, []);
     expect(result.done).toBe(false);
     expect(result.value).toEqual([spec]);
+  });
+});
+
+// ─── Drain-on-settle: settlement callback triggers scheduleDrain ───────────
+//
+// The drain loop previously waited on
+//   `await Promise.race([...this.inflight, this.wakePromise])`
+// spreading the ENTIRE inflight Set into a fresh array on every iteration
+// (O(n) allocation per pass). The refactor switches to a drain-on-settle
+// model: the loop awaits ONLY `this.wakePromise` (rearmed before each await
+// via `this.rearmWake()`), and each inflight promise's settlement callback —
+// the `.then(onFulfilled, onRejected)` registered in startSession — calls
+// `this.scheduleDrain()` so the wake signal fires whenever a session settles.
+// scheduleDrain's existing coalescing flag (`drainScheduled`) collapses
+// near-simultaneous settlements into a single drain pass.
+//
+// The session IIFE ALREADY calls scheduleDrain at its tail, and (for
+// non-cached sessions) gate.onRelease calls it too. The settlement callback's
+// invocation is therefore an ADDITIONAL, distinct call. These tests spy on
+// scheduleDrain and require that extra settlement-triggered call.
+//
+// They FAIL against the current (race-based) code: the settlement handler
+// only does `this.inflight.delete(sessionPromise)` and never invokes
+// scheduleDrain. They PASS once the green team adds scheduleDrain to both
+// settlement branches and switches the loop to `await this.wakePromise`.
+
+describe('SessionScheduler drain-on-settle (settlement triggers scheduleDrain)', () => {
+  /** Wrap the private scheduleDrain with a counter that still delegates to the
+   *  original (preserving coalescing + wake behavior). Instance-property
+   *  assignment shadows the prototype method, so every internal
+   *  `this.scheduleDrain()` call — from gate.onRelease, the session IIFE tail,
+   *  AND the settlement callback — routes through the spy. The raw call count
+   *  is recorded BEFORE the coalescing check inside the real scheduleDrain,
+   *  so it counts every invocation regardless of coalescing. */
+  function spyScheduleDrain(scheduler: SessionScheduler): {
+    count: () => number;
+    restore: () => void;
+  } {
+    const holder = scheduler as unknown as { scheduleDrain?: () => void };
+    const original = holder.scheduleDrain!.bind(scheduler);
+    let calls = 0;
+    const spy = () => {
+      calls += 1;
+      original();
+    };
+    holder.scheduleDrain = spy;
+    return {
+      count: () => calls,
+      restore: () => {
+        // Remove the own (spy) property so prototype lookup is restored.
+        delete holder.scheduleDrain;
+      },
+    };
+  }
+
+  // ── 49. Non-cached session: settlement adds a scheduleDrain call ──────
+  //
+  // One NON-cached session (gate slot acquired then released). scheduleDrain
+  // contributors during the run:
+  //   (a) gate.onRelease  — gate.release → onRelease → scheduleDrain
+  //   (b) IIFE tail       — the session IIFE's own `this.scheduleDrain()`
+  //   (c) settlement      — the .then(onFulfilled, onRejected) drain trigger
+  //                        added by the refactor (NEW)
+  // Current code produces (a)+(b) = 2 calls. The refactor adds (c) → ≥ 3.
+  it('49. non-cached session settlement triggers scheduleDrain beyond gate.onRelease + IIFE', async () => {
+    const profiles = new Map([['default', makeProfile('default')]]);
+    const gate = new SessionGate({ total: 2, perModel: {} });
+    const log: string[] = [];
+    const controls = makeSpecControls(['s1']);
+    const { scheduler, graph } = buildFixture({
+      tasks: [
+        {
+          ...makeTask('A'),
+          runnerFactory: makeFakeRunnerFactory([[makeSpec('s1', 'default')]], controls, log),
+        },
+      ],
+      profiles,
+      gate,
+      log,
+    });
+
+    const spy = spyScheduleDrain(scheduler);
+    try {
+      completeSpec(controls, 's1');
+      const result = await scheduler.run();
+      expect(result.completedTasks).toBe(1);
+      expect(graph.getTask('A')?.status).toBe('complete');
+    } finally {
+      spy.restore();
+    }
+
+    // Require all three contributors — the settlement trigger must be present.
+    // (Current race-based code only reaches 2; this fails until the green
+    // team wires scheduleDrain into the settlement callback.)
+    expect(spy.count()).toBeGreaterThanOrEqual(3);
+  });
+
+  // ── 50. Cached session: settlement adds a scheduleDrain call (no gate) ─
+  //
+  // A CACHED session (`.complete` sentinel present) skips gate.acquire /
+  // gate.release entirely (E1 idempotency), so gate.onRelease NEVER fires.
+  // This isolates the settlement-triggered call from the IIFE-tail call:
+  //   (b) IIFE tail       — the session IIFE's own `this.scheduleDrain()`
+  //   (c) settlement      — the .then(onFulfilled, onRejected) drain trigger
+  //                        added by the refactor (NEW)
+  // Current code produces (b) = 1 call. The refactor adds (c) → ≥ 2. This is
+  // the cleanest signal that the SETTLEMENT (not the gate) drives the wake.
+  it('50. cached session settlement triggers scheduleDrain (gate path eliminated)', async () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'sched-drain-settle-'));
+    try {
+      const specId = 's1';
+      // Persist the `.complete` sentinel so isSessionCached() returns true →
+      // the scheduler skips gate.acquire/release for this session (E1).
+      mkdirSync(join(tmp, specId), { recursive: true });
+      writeFileSync(join(tmp, specId, '.complete'), '');
+
+      const profiles = new Map([['default', makeProfile('default')]]);
+      const gate = new SessionGate({ total: 2, perModel: {} });
+      const log: string[] = [];
+      const controls = makeSpecControls([specId]);
+
+      const graph = new TaskGraph();
+      graph.addTask(makeTask('A'), makeFakeRunnerFactory([[makeSpec(specId, 'default')]], controls, log));
+
+      const scheduler = new SessionScheduler({
+        graph,
+        gate,
+        profiles,
+        sessionBaseDir: tmp,
+        cwd: '/tmp/test',
+        activeSessions: new Set(),
+        phaseId: 'test',
+      });
+
+      // Pre-resolve so the cached execute() returns instantly.
+      completeSpec(controls, specId);
+
+      const spy = spyScheduleDrain(scheduler);
+      try {
+        const result = await scheduler.run();
+        expect(result.completedTasks).toBe(1);
+        expect(graph.getTask('A')?.status).toBe('complete');
+      } finally {
+        spy.restore();
+      }
+
+      // IIFE-tail (1) + settlement trigger (1) → at least 2. Current code
+      // has only the single IIFE-tail call (gate path eliminated for cached).
+      expect(spy.count()).toBeGreaterThanOrEqual(2);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  // ── 51. Drain loop still wakes and progresses on each settlement ─────
+  //
+  // Behavioral regression guard for the refactor: even though the loop now
+  // awaits ONLY `this.wakePromise` (instead of racing the inflight set), it
+  // must STILL wake and start the next session promptly whenever the current
+  // one settles (the settlement → scheduleDrain → wakeResolve chain, with the
+  // wakePromise rearmed before each await). This scenario drives three
+  // sequential single-slot batches, settling each one and asserting the next
+  // starts. If the refactor breaks the wake/rearm mechanism this hangs and
+  // trips the safety timeout. It passes today (the race catches each
+  // settlement) and must keep passing after the switch to `await this.wakePromise`.
+  it('51. sequential multi-batch plan still drains on each settlement (no hang)', async () => {
+    const profiles = new Map([['default', makeProfile('default')]]);
+    const gate = new SessionGate({ total: 1, perModel: {} });
+    const log: string[] = [];
+    const controls = makeSpecControls(['s1', 's2', 's3']);
+    const { scheduler, graph } = buildFixture({
+      tasks: [
+        {
+          ...makeTask('A'),
+          runnerFactory: makeFakeRunnerFactory(
+            [[makeSpec('s1', 'default')], [makeSpec('s2', 'default')], [makeSpec('s3', 'default')]],
+            controls,
+            log,
+          ),
+        },
+      ],
+      profiles,
+      gate,
+      log,
+    });
+
+    const runPromise = scheduler.run();
+    await tick();
+
+    // s1 started (only slot). Settle it → loop must wake and start s2.
+    expect(log).toContain('start:s1');
+    expect(log).not.toContain('start:s2');
+    completeSpec(controls, 's1');
+    await tick();
+    expect(log).toContain('start:s2');
+
+    // Settle s2 → loop must wake and start s3.
+    completeSpec(controls, 's2');
+    await tick();
+    expect(log).toContain('start:s3');
+
+    completeSpec(controls, 's3');
+
+    // Race against a safety timeout: if the loop stopped waking on
+    // settlement it would hang here.
+    const result = await Promise.race([
+      runPromise,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('TIMEOUT: drain loop hung')), 5000)),
+    ]);
+
+    expect(result.completedTasks).toBe(1);
+    expect(graph.getTask('A')?.status).toBe('complete');
+  });
+});
+
+// ─── Non-null assertion guards — descriptive errors instead of bare TypeErrors ─
+//
+// session-scheduler.ts historically used ~9 non-null assertions (`!`) on
+// values that are typed `... | undefined` (entry.planGen!, entry.heldBatch!,
+// runners.get(id)!, executeCtxCache.get(id)!, batchStarted.get(id)!.add,
+// batch[i]!, result!, etc.). When the invariant they assume is violated, the
+// bare `!` produces an opaque V8 `TypeError: Cannot read properties of
+// undefined (reading 'X')` with no hint about WHICH scheduler field or task
+// was at fault — useless for debugging.
+//
+// The target behavior: each such site must GUARD the value and either throw a
+// DESCRIPTIVE `Error` (naming the field / task / spec) or handle the undefined
+// case gracefully. These tests drive that change by deliberately violating
+// each invariant and asserting the resulting error is descriptive (matches a
+// relevant keyword) — NOT the bare TypeError. They FAIL against the current
+// code (which crashes with bare TypeErrors / silently proceeds) and PASS once
+// the green team adds the guards.
+//
+// Compliance mapping (non-null assertion → test):
+//   entry.planGen!.next(...)        (×2, nextNonEmptyBatch) → test 1
+//   entry.heldBatch![specIndex]     (startSession)         → test 2
+//   [specIndex]!                    (startSession)         → test 3
+//   runners.get(taskId)!            (startSession)         → test 4
+//   executeCtxCache.get(taskId)!    (startSession)         → test 5
+//   batchStarted.get(taskId)!.add   (startSession)         → test 6
+//   batch[i]!                       (tryStartBatchSpecs)   → test 7
+//   result!                         (startSession IIFE)    → test 8
+describe('SessionScheduler non-null assertion guards — descriptive errors instead of bare TypeErrors', () => {
+  // ── Helpers ─────────────────────────────────────────────────────────────
+
+  /** A runner whose execute() ignores its arguments and always returns a
+   *  text result. Used to populate per-task state without exercising real
+   *  session logic, so tests can isolate individual guard violations. */
+  function tolerantRunner(): SessionPlanRunner {
+    return {
+      // eslint-disable-next-line require-yield
+      async *plan(_ctx: SessionPlanContext): AsyncGenerator<SessionSpec[], SessionResult[] | undefined> {
+        return undefined;
+      },
+      async execute(_ctx: SessionPlanContext, _spec: SessionSpec): Promise<SessionResult> {
+        return { mode: 'text', text: '' };
+      },
+    };
+  }
+
+  /** A runner whose execute() resolves to `undefined` (violating the
+   *  SessionPlanRunner contract) so the `result!` site in startSession's IIFE
+   *  receives an undefined result. */
+  function runnerReturningUndefined(): SessionPlanRunner {
+    return {
+      // eslint-disable-next-line require-yield
+      async *plan(_ctx: SessionPlanContext): AsyncGenerator<SessionSpec[], SessionResult[] | undefined> {
+        return undefined;
+      },
+      async execute(_ctx: SessionPlanContext, _spec: SessionSpec): Promise<SessionResult> {
+        return undefined as unknown as SessionResult;
+      },
+    };
+  }
+
+  /** A plan generator that completes immediately (yields nothing, returns). */
+  function completingPlanGen(): AsyncGenerator<SessionSpec[], SessionResult[] | undefined> {
+    // eslint-disable-next-line require-yield
+    return (async function* (): AsyncGenerator<SessionSpec[], SessionResult[] | undefined> {
+      return undefined;
+    })();
+  }
+
+  /** Minimal SessionPlanContext sufficient for the executeCtxCache slot. */
+  function makeMinimalCtx(taskId: string): SessionPlanContext {
+    return {
+      task: makeTask(taskId),
+      profiles: new Map(),
+      sessionBaseDir: '/tmp/guard-test',
+      cwd: '/tmp/test',
+      activeSessions: new Set(),
+      phaseId: 'test',
+      agentId: `scheduler-${taskId}`,
+    };
+  }
+
+  /** Bare scheduler (empty graph) — nextNonEmptyBatch reads only entry.planGen. */
+  function bareScheduler(): SessionScheduler {
+    const graph = new TaskGraph();
+    const gate = new SessionGate({ total: 1, perModel: {} });
+    const profiles = new Map([['default', makeProfile('default')]]);
+    return new SessionScheduler({
+      graph,
+      gate,
+      profiles,
+      sessionBaseDir: '/tmp/guard-test',
+      cwd: '/tmp/test',
+      activeSessions: new Set(),
+      phaseId: 'test',
+    });
+  }
+
+  /** A scheduler + graph + live entry for `taskId`, plus a gate with capacity.
+   *   The task starts 'ready'; tests may transition it via graph.setTaskStatus. */
+  function schedulerWithTask(taskId: string): {
+    scheduler: SessionScheduler;
+    graph: TaskGraph;
+    entry: TaskGraphEntry;
+    gate: SessionGate;
+  } {
+    const graph = new TaskGraph();
+    const gate = new SessionGate({ total: 2, perModel: {} });
+    const profiles = new Map([['default', makeProfile('default')]]);
+    const scheduler = new SessionScheduler({
+      graph,
+      gate,
+      profiles,
+      sessionBaseDir: '/tmp/guard-test',
+      cwd: '/tmp/test',
+      activeSessions: new Set(),
+      phaseId: 'test',
+    });
+    graph.addTask(makeTask(taskId), () => tolerantRunner());
+    const entry = graph.getTask(taskId)!;
+    return { scheduler, graph, entry, gate };
+  }
+
+  /** Set a scheduler private Map<String,V> entry (reaches into internals,
+   *  mirroring the populateAllTaskState helper used elsewhere in this file). */
+  function setMapEntry<V>(scheduler: SessionScheduler, field: string, taskId: string, value: V): void {
+    (scheduler as unknown as Record<string, Map<string, V>>)[field].set(taskId, value);
+  }
+
+  /** Typed view of the private startSession method. */
+  type StartSessionFn = (entry: TaskGraphEntry, specIndex: number, profile: AgentProfile) => void;
+  function startSessionOf(scheduler: SessionScheduler): StartSessionFn {
+    return (scheduler as unknown as { startSession: StartSessionFn }).startSession.bind(scheduler);
+  }
+
+  /** Typed view of the private tryStartBatchSpecs method. */
+  function tryStartBatchSpecsOf(scheduler: SessionScheduler): (entry: TaskGraphEntry) => unknown {
+    return (scheduler as unknown as { tryStartBatchSpecs: (e: TaskGraphEntry) => unknown }).tryStartBatchSpecs.bind(
+      scheduler,
+    );
+  }
+
+  /** Typed view of the private nextNonEmptyBatch method. */
+  type NextNonEmptyBatchFn = (
+    entry: TaskGraphEntry,
+    seed: SessionResult[],
+  ) => Promise<IteratorResult<SessionSpec[], SessionResult[] | undefined>>;
+  function nextNonEmptyBatchOf(scheduler: SessionScheduler): NextNonEmptyBatchFn {
+    return (scheduler as unknown as { nextNonEmptyBatch: NextNonEmptyBatchFn }).nextNonEmptyBatch.bind(scheduler);
+  }
+
+  // ── Descriptive-error assertion helpers ─────────────────────────────────
+  //
+  // The TARGET behavior is a *descriptive* Error: a real sentence a human can
+  // debug from, thrown deliberately at the guard site — as opposed to the
+  // CURRENT bare runtime crash, which is an opaque engine-generated TypeError
+  // whose message merely echoes the offending source expression:
+  //
+  //   JavaScriptCore (bun): "undefined is not an object (evaluating 'entry.planGen.next')"
+  //   V8 (node):             "Cannot read properties of undefined (reading 'next')"
+  //
+  // Crucially, the JSC form echoes the source expression, so a naive keyword
+  // regex (e.g. /planGen/) FALSELY matches the bare TypeError. These helpers
+  // instead require the thrown error to be (a) an Error instance, (b) NOT the
+  // bare engine crash pattern, and (c) mentioning a concept relevant to the
+  // violated invariant. That triplet only holds once a real guard is added.
+
+  /** Pattern matching the bare engine-generated TypeError for undefined
+   *  property access on either JSC or V8. A descriptive guard Error must NOT
+   *  match this. */
+  const BARE_TYPEERROR_PATTERN =
+    /is not an object \(evaluating|cannot read properties of (?:undefined|null)|undefined is not an object/i;
+
+  /** Assert that `fn` throws a *descriptive* Error (not a bare engine crash)
+   *  whose message mentions `keyword`. */
+  function expectDescriptiveThrow(fn: () => unknown, keyword: RegExp): void {
+    let caught: unknown;
+    try {
+      fn();
+    } catch (err) {
+      caught = err;
+    }
+    // Must actually throw.
+    expect(caught).toBeInstanceOf(Error);
+    const message = (caught as Error).message;
+    // Must NOT be the bare engine-generated TypeError crash.
+    expect(message).not.toMatch(BARE_TYPEERROR_PATTERN);
+    // Must be descriptive — mention the violated invariant's concept.
+    expect(message).toMatch(keyword);
+  }
+
+  /** Async variant for methods that reject. */
+  async function expectDescriptiveReject(fn: () => Promise<unknown>, keyword: RegExp): Promise<void> {
+    let caught: unknown;
+    try {
+      await fn();
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    const message = (caught as Error).message;
+    expect(message).not.toMatch(BARE_TYPEERROR_PATTERN);
+    expect(message).toMatch(keyword);
+  }
+
+  // ── 1. entry.planGen! (nextNonEmptyBatch: lines 1034 & 1041) ──────────────
+  it('nextNonEmptyBatch throws a descriptive error when entry.planGen is undefined (not a bare TypeError)', async () => {
+    const next = nextNonEmptyBatchOf(bareScheduler());
+    const entry = { planGen: undefined } as unknown as TaskGraphEntry;
+    // Current: bare TypeError "undefined is not an object (evaluating 'entry.planGen.next')".
+    // Target: a descriptive Error naming the plan generator / planGen.
+    await expectDescriptiveReject(() => next(entry, []), /plan generator|planGen|plan/i);
+  });
+
+  // ── 2. entry.heldBatch! (startSession: line 843) ──────────────────────────
+  it('startSession throws a descriptive error when entry.heldBatch is undefined', () => {
+    const { scheduler, entry } = schedulerWithTask('A');
+    // Populate sibling per-task state so heldBatch is the ONLY missing piece.
+    setMapEntry(scheduler, 'runners', 'A', tolerantRunner());
+    setMapEntry(scheduler, 'executeCtxCache', 'A', makeMinimalCtx('A'));
+    setMapEntry(scheduler, 'batchStarted', 'A', new Set<number>());
+    entry.heldBatch = undefined;
+
+    // Current: bare TypeError "undefined is not an object (evaluating 'entry.heldBatch[specIndex]')".
+    expectDescriptiveThrow(() => startSessionOf(scheduler)(entry, 0, makeProfile('default')), /batch/i);
+  });
+
+  // ── 3. [specIndex]! (startSession: line 843) ──────────────────────────────
+  it('startSession throws a descriptive error when the spec at specIndex is undefined (sparse batch)', () => {
+    const { scheduler, entry } = schedulerWithTask('A');
+    setMapEntry(scheduler, 'runners', 'A', tolerantRunner());
+    setMapEntry(scheduler, 'executeCtxCache', 'A', makeMinimalCtx('A'));
+    setMapEntry(scheduler, 'batchStarted', 'A', new Set<number>());
+    entry.heldBatch = [undefined as unknown as SessionSpec];
+
+    // Current: bare TypeError "undefined is not an object (evaluating 'spec.resume')".
+    expectDescriptiveThrow(() => startSessionOf(scheduler)(entry, 0, makeProfile('default')), /spec/i);
+  });
+
+  // ── 4. runners.get(taskId)! (startSession: line 847) ──────────────────────
+  it('startSession throws a descriptive error when no runner is registered for the task', () => {
+    const { scheduler, graph, entry } = schedulerWithTask('A');
+    // Terminal status keeps the fire-and-forget IIFE benign for the CURRENT
+    // (unguarded) code path so the only observable difference is the guard.
+    graph.setTaskStatus('A', 'cancelled');
+    setMapEntry(scheduler, 'executeCtxCache', 'A', makeMinimalCtx('A'));
+    setMapEntry(scheduler, 'batchStarted', 'A', new Set<number>());
+    entry.heldBatch = [makeSpec('s1', 'default')];
+    entry.planGen = completingPlanGen();
+    // NOTE: the `runners` map is intentionally NOT populated for 'A'.
+
+    // Current: NO synchronous throw — runner=undefined is assigned silently and
+    // the bare TypeError only surfaces later inside the fire-and-forget IIFE.
+    // Target: a descriptive synchronous Error naming the runner.
+    expectDescriptiveThrow(() => startSessionOf(scheduler)(entry, 0, makeProfile('default')), /runner/i);
+  });
+
+  // ── 5. executeCtxCache.get(taskId)! (startSession: line 845) ──────────────
+  it('startSession throws a descriptive error when no execute context is cached for the task', () => {
+    const { scheduler, graph, entry } = schedulerWithTask('A');
+    graph.setTaskStatus('A', 'cancelled');
+    setMapEntry(scheduler, 'runners', 'A', tolerantRunner());
+    setMapEntry(scheduler, 'batchStarted', 'A', new Set<number>());
+    entry.heldBatch = [makeSpec('s1', 'default')];
+    entry.planGen = completingPlanGen();
+    // NOTE: the `executeCtxCache` map is intentionally NOT populated for 'A'.
+
+    // Current: NO synchronous throw — executeCtx=undefined is assigned silently.
+    // Target: a descriptive synchronous Error naming the execute context.
+    expectDescriptiveThrow(
+      () => startSessionOf(scheduler)(entry, 0, makeProfile('default')),
+      /executeCtx|execute context|context|ctx/i,
+    );
+  });
+
+  // ── 6. batchStarted.get(taskId)!.add (startSession: line 871) ─────────────
+  it('startSession throws a descriptive error when no batchStarted set exists for the task', () => {
+    const { scheduler, entry } = schedulerWithTask('A');
+    setMapEntry(scheduler, 'runners', 'A', tolerantRunner());
+    setMapEntry(scheduler, 'executeCtxCache', 'A', makeMinimalCtx('A'));
+    // NOTE: the `batchStarted` map is intentionally NOT populated for 'A'.
+    entry.heldBatch = [makeSpec('s1', 'default')];
+
+    // Current: bare TypeError "undefined is not an object (evaluating 'this.batchStarted.get(taskId).add')".
+    // Target: a descriptive Error naming the batchStarted state.
+    expectDescriptiveThrow(() => startSessionOf(scheduler)(entry, 0, makeProfile('default')), /batch/i);
+  });
+
+  // ── 7. batch[i]! (tryStartBatchSpecs: line 697) ───────────────────────────
+  it('tryStartBatchSpecs throws a descriptive error when a held batch entry is undefined (sparse batch)', () => {
+    const { scheduler, graph, entry } = schedulerWithTask('A');
+    // 'active' so the tier helper reaches the per-spec loop (the crash happens
+    // at spec.profile before any status transition logic).
+    graph.setTaskStatus('A', 'active');
+    entry.heldBatch = [undefined as unknown as SessionSpec];
+
+    // Current: bare TypeError "undefined is not an object (evaluating 'spec.profile')".
+    // Target: a descriptive Error naming the spec / batch entry.
+    expectDescriptiveThrow(() => tryStartBatchSpecsOf(scheduler)(entry), /spec/i);
+  });
+
+  // ── 8. result! (startSession IIFE: line 912) ──────────────────────────────
+  it('startSession does not silently store an undefined result when runner.execute returns undefined', async () => {
+    const { scheduler, entry } = schedulerWithTask('A');
+    setMapEntry(scheduler, 'runners', 'A', runnerReturningUndefined());
+    setMapEntry(scheduler, 'executeCtxCache', 'A', makeMinimalCtx('A'));
+    setMapEntry(scheduler, 'batchStarted', 'A', new Set<number>());
+    entry.heldBatch = [makeSpec('s1', 'default')];
+    entry.planGen = completingPlanGen();
+
+    startSessionOf(scheduler)(entry, 0, makeProfile('default'));
+    await tick(25);
+
+    // Current (bug): `result!` silently stores undefined and the task
+    // "completes" with a poisoned batchResults entry — a silent corruption.
+    // Target: either fail the task with a descriptive error, OR store a
+    // defined result (graceful fallback). Either way, NOT a silent
+    // successful completion with an undefined result.
+    const silentlyCorrupted = entry.status === 'complete' && entry.batchResults[0] === undefined;
+    expect(silentlyCorrupted).toBe(false);
   });
 });

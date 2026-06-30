@@ -1,3 +1,19 @@
+// ─── Tests for core/git.ts — async conversion ──────────────────────────────
+//
+// Every exported function that shells out to git has been converted from a
+// blocking synchronous implementation to an `async` one returning a `Promise`
+// (the internal `execGit` now uses `Bun.spawn` + awaited `.exited` with stdout/
+// stderr drained via `new Response(proc.stdout).text()`). `sanitizeBranchSlug`
+// performs no git work and stays synchronous.
+//
+// Each test below uses `await expect(fn(...)).resolves.toBe(...)` /
+// `.rejects.toThrow()` — bun's `.resolves`/`.rejects` matchers REQUIRE a real
+// Promise, so these assertions FAIL on the current synchronous implementation
+// (which returns plain booleans/strings/void, or throws synchronously) and
+// PASS once the functions are made async. This drives + verifies the
+// conversion while pinning the full observable behavior via real temp git
+// repos (no mocking of execGit).
+
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import {
   existsSync,
@@ -15,6 +31,7 @@ import { join } from 'node:path';
 import {
   abortMerge,
   checkoutBranch,
+  cleanUntracked,
   commitChanges,
   createWorktree,
   deleteBranchForce,
@@ -27,6 +44,7 @@ import {
   mergeBranch,
   pushBranch,
   removeWorktree,
+  resetHard,
   restoreSavedBranch,
   sanitizeBranchSlug,
   squashMergeBranch,
@@ -102,25 +120,141 @@ function rawGit(args: string[], cwd: string): string {
   return new TextDecoder().decode(result.stdout).trim();
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// Async-signature contract — every git-touching function returns a Promise;
+// sanitizeBranchSlug does NOT.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+describe('async signature — git functions return Promises', () => {
+  const { getDir } = useTempDir();
+
+  it('isGitRepo returns a Promise', () => {
+    expect(isGitRepo(getDir())).toBeInstanceOf(Promise);
+  });
+  it('getRepoRoot returns a Promise', () => {
+    initRepo(getDir());
+    expect(getRepoRoot(getDir())).toBeInstanceOf(Promise);
+  });
+  it('getCurrentBranch returns a Promise', () => {
+    initRepo(getDir());
+    expect(getCurrentBranch(getDir())).toBeInstanceOf(Promise);
+  });
+  it('getMainBranch returns a Promise', () => {
+    initRepo(getDir());
+    expect(getMainBranch(getDir())).toBeInstanceOf(Promise);
+  });
+  it('createWorktree returns a Promise', () => {
+    const dir = getDir();
+    initRepo(dir);
+    expect(createWorktree(dir, 'b', join(dir, 'wt'))).toBeInstanceOf(Promise);
+  });
+  it('removeWorktree returns a Promise', () => {
+    const dir = getDir();
+    initRepo(dir);
+    rawGit(['worktree', 'add', '-b', 'b', join(dir, 'wt')], dir);
+    expect(removeWorktree(dir, join(dir, 'wt'))).toBeInstanceOf(Promise);
+  });
+  it('listConflictedFiles returns a Promise', () => {
+    initRepo(getDir());
+    expect(listConflictedFiles(getDir())).toBeInstanceOf(Promise);
+  });
+  it('stageAll returns a Promise', () => {
+    initRepo(getDir());
+    expect(stageAll(getDir())).toBeInstanceOf(Promise);
+  });
+  it('commitChanges returns a Promise', () => {
+    const dir = getDir();
+    initRepo(dir);
+    writeFileSync(join(dir, 'x.txt'), 'x');
+    rawGit(['add', '-A'], dir);
+    expect(commitChanges(dir, 'm')).toBeInstanceOf(Promise);
+  });
+  it('checkoutBranch returns a Promise', () => {
+    const dir = getDir();
+    initRepo(dir);
+    rawGit(['branch', 'b'], dir);
+    expect(checkoutBranch(dir, 'b')).toBeInstanceOf(Promise);
+  });
+  it('restoreSavedBranch returns a Promise', () => {
+    initRepo(getDir());
+    expect(restoreSavedBranch(getDir(), 'main')).toBeInstanceOf(Promise);
+  });
+  it('mergeBranch returns a Promise', () => {
+    initRepo(getDir());
+    expect(mergeBranch(getDir(), 'main')).toBeInstanceOf(Promise);
+  });
+  it('abortMerge returns a Promise', () => {
+    initRepo(getDir());
+    expect(abortMerge(getDir())).toBeInstanceOf(Promise);
+  });
+  it('resetHard returns a Promise', () => {
+    initRepo(getDir());
+    expect(resetHard(getDir())).toBeInstanceOf(Promise);
+  });
+  it('cleanUntracked returns a Promise', () => {
+    initRepo(getDir());
+    expect(cleanUntracked(getDir())).toBeInstanceOf(Promise);
+  });
+  it('getDiff returns a Promise', () => {
+    initRepo(getDir());
+    expect(getDiff(getDir())).toBeInstanceOf(Promise);
+  });
+  it('worktreePrune returns a Promise', () => {
+    initRepo(getDir());
+    expect(worktreePrune(getDir())).toBeInstanceOf(Promise);
+  });
+  it('squashMergeBranch returns a Promise', () => {
+    initRepo(getDir());
+    expect(squashMergeBranch(getDir(), 'main')).toBeInstanceOf(Promise);
+  });
+  it('stageFiles returns a Promise', () => {
+    initRepo(getDir());
+    expect(stageFiles(getDir(), ['README.md'])).toBeInstanceOf(Promise);
+  });
+  it('deleteBranchForce returns a Promise', () => {
+    const dir = getDir();
+    initRepo(dir);
+    rawGit(['branch', 'b'], dir);
+    expect(deleteBranchForce(dir, 'b')).toBeInstanceOf(Promise);
+  });
+  it('pushBranch returns a Promise (rejects without a remote)', async () => {
+    initRepo(getDir());
+    let result: unknown = undefined;
+    try {
+      result = pushBranch(getDir(), 'main');
+    } catch {
+      /* sync impl throws before returning — fall through to fail the assertion */
+    }
+    expect(result).toBeInstanceOf(Promise);
+    await expect(result as Promise<unknown>).rejects.toThrow();
+  });
+
+  it('sanitizeBranchSlug does NOT return a Promise (stays synchronous)', () => {
+    const result = sanitizeBranchSlug('Feature Branch!');
+    expect(result).not.toBeInstanceOf(Promise);
+    expect(typeof result).toBe('string');
+  });
+});
+
 // ─── isGitRepo ──────────────────────────────────────────────────────────────
 
 describe('isGitRepo', () => {
   const { getDir } = useTempDir();
 
-  it('returns true inside a git repo', () => {
+  it('returns a Promise resolving to true inside a git repo', async () => {
     const dir = getDir();
     initRepo(dir);
-    expect(isGitRepo(dir)).toBe(true);
+    await expect(isGitRepo(dir)).resolves.toBe(true);
   });
 
-  it('returns false in a plain directory (no .git)', () => {
+  it('returns a Promise resolving to false in a plain directory (no .git)', async () => {
     const dir = getDir();
     mkdirSync(dir, { recursive: true });
-    expect(isGitRepo(dir)).toBe(false);
+    await expect(isGitRepo(dir)).resolves.toBe(false);
   });
 
-  it('returns false for a non-existent directory', () => {
-    expect(isGitRepo('/no/such/directory/ever')).toBe(false);
+  it('returns a Promise resolving to false for a non-existent directory', async () => {
+    await expect(isGitRepo('/no/such/directory/ever')).resolves.toBe(false);
   });
 });
 
@@ -129,26 +263,24 @@ describe('isGitRepo', () => {
 describe('getRepoRoot', () => {
   const { getDir } = useTempDir();
 
-  it('returns the top-level repo directory', () => {
+  it('returns a Promise resolving to the top-level repo directory', async () => {
     const dir = getDir();
     initRepo(dir);
-    const root = getRepoRoot(dir);
-    expect(root).toBe(dir);
+    await expect(getRepoRoot(dir)).resolves.toBe(dir);
   });
 
-  it('returns parent root when called from a subdirectory', () => {
+  it('returns parent root when called from a subdirectory', async () => {
     const dir = getDir();
     initRepo(dir);
     const sub = join(dir, 'sub');
     mkdirSync(sub, { recursive: true });
-    const root = getRepoRoot(sub);
-    expect(root).toBe(dir);
+    await expect(getRepoRoot(sub)).resolves.toBe(dir);
   });
 
-  it('throws when not inside a git repo', () => {
+  it('rejects when not inside a git repo', async () => {
     const dir = getDir();
     mkdirSync(dir, { recursive: true });
-    expect(() => getRepoRoot(dir)).toThrow();
+    await expect(getRepoRoot(dir)).rejects.toThrow();
   });
 });
 
@@ -157,17 +289,17 @@ describe('getRepoRoot', () => {
 describe('getCurrentBranch', () => {
   const { getDir } = useTempDir();
 
-  it('returns the current branch name', () => {
+  it('returns a Promise resolving to the current branch name', async () => {
     const dir = getDir();
     initRepo(dir);
-    expect(getCurrentBranch(dir)).toBe('main');
+    await expect(getCurrentBranch(dir)).resolves.toBe('main');
   });
 
-  it('returns a new branch after checkout -b', () => {
+  it('reflects a new branch after checkout -b', async () => {
     const dir = getDir();
     initRepo(dir);
     rawGit(['checkout', '-b', 'feature-x'], dir);
-    expect(getCurrentBranch(dir)).toBe('feature-x');
+    await expect(getCurrentBranch(dir)).resolves.toBe('feature-x');
   });
 });
 
@@ -176,29 +308,23 @@ describe('getCurrentBranch', () => {
 describe('getMainBranch', () => {
   const { getDir } = useTempDir();
 
-  it('returns the local default branch when it is "main"', () => {
+  it('returns a Promise resolving to "main" when it is the default', async () => {
     const dir = getDir();
     initRepo(dir, 'main');
-    // In a local-only repo, symbolic-ref for origin/HEAD usually fails.
-    // The function should fall back to verifying "main" exists.
-    const result = getMainBranch(dir);
-    expect(result).toBe('main');
+    await expect(getMainBranch(dir)).resolves.toBe('main');
   });
 
-  it('returns "master" when repo was initialised with master', () => {
+  it('returns a Promise resolving to "master" when initialised with master', async () => {
     const dir = getDir();
     initRepo(dir, 'master');
-    const result = getMainBranch(dir);
-    expect(result).toBe('master');
+    await expect(getMainBranch(dir)).resolves.toBe('master');
   });
 
-  it('falls back to "main" when no known default branch exists', () => {
+  it('falls back to "main" when no known default branch exists', async () => {
     const dir = getDir();
     initRepo(dir, 'weird-branch');
-    // Rename the current branch so neither "main" nor "master" exists
     rawGit(['branch', '-m', 'weird-branch'], dir);
-    const result = getMainBranch(dir);
-    expect(result).toBe('main');
+    await expect(getMainBranch(dir)).resolves.toBe('main');
   });
 });
 
@@ -207,32 +333,27 @@ describe('getMainBranch', () => {
 describe('createWorktree and removeWorktree', () => {
   const { getDir } = useTempDir();
 
-  it('creates a worktree and then removes it', () => {
+  it('creates a worktree and then removes it', async () => {
     const dir = getDir();
     initRepo(dir);
     const wtPath = join(dir, 'wt-test');
 
-    createWorktree(dir, 'wt-branch', wtPath);
+    await createWorktree(dir, 'wt-branch', wtPath);
 
-    // Worktree directory should exist
     expect(existsSync(wtPath)).toBe(true);
-    // The branch should be listed
     const branches = rawGit(['branch', '--list', 'wt-branch'], dir);
     expect(branches).toContain('wt-branch');
 
-    // Clean up
-    removeWorktree(dir, wtPath);
+    await removeWorktree(dir, wtPath);
     expect(existsSync(wtPath)).toBe(false);
   });
 
-  it('throws when creating a worktree that already exists', () => {
+  it('rejects when creating a worktree that already exists', async () => {
     const dir = getDir();
     initRepo(dir);
     const wtPath = join(dir, 'wt-dup');
-    createWorktree(dir, 'wt-dup-branch', wtPath);
-
-    // Try creating a second worktree at the same path
-    expect(() => createWorktree(dir, 'wt-dup-branch2', wtPath)).toThrow();
+    await createWorktree(dir, 'wt-dup-branch', wtPath);
+    await expect(createWorktree(dir, 'wt-dup-branch2', wtPath)).rejects.toThrow();
   });
 });
 
@@ -241,39 +362,34 @@ describe('createWorktree and removeWorktree', () => {
 describe('listConflictedFiles', () => {
   const { getDir } = useTempDir();
 
-  it('returns empty array when there are no conflicts', () => {
+  it('returns a Promise resolving to [] when there are no conflicts', async () => {
     const dir = getDir();
     initRepo(dir);
-    expect(listConflictedFiles(dir)).toEqual([]);
+    await expect(listConflictedFiles(dir)).resolves.toEqual([]);
   });
 
-  it('returns conflicted file names after a failed merge', () => {
+  it('returns a Promise resolving to conflicted files after a failed merge', async () => {
     const dir = getDir();
     initRepo(dir);
 
-    // Create branch "a" with content in file.txt
     rawGit(['checkout', '-b', 'a'], dir);
     writeFileSync(join(dir, 'file.txt'), 'from-a\n');
     rawGit(['add', '-A'], dir);
     rawGit(['commit', '-m', 'commit on a'], dir);
 
-    // Switch back to main and create conflicting content
     rawGit(['checkout', 'main'], dir);
     writeFileSync(join(dir, 'file.txt'), 'from-main\n');
     rawGit(['add', '-A'], dir);
     rawGit(['commit', '-m', 'commit on main'], dir);
 
-    // Merge "a" into main → conflict
     const result = Bun.spawnSync(['git', 'merge', 'a'], {
       cwd: dir,
       stderr: 'pipe',
       stdout: 'pipe',
     });
-    // Expect non-zero exit (conflict)
     expect(result.exitCode).not.toBe(0);
 
-    const conflicts = listConflictedFiles(dir);
-    expect(conflicts).toContain('file.txt');
+    await expect(listConflictedFiles(dir)).resolves.toContain('file.txt');
   });
 });
 
@@ -282,25 +398,25 @@ describe('listConflictedFiles', () => {
 describe('stageAll and commitChanges', () => {
   const { getDir } = useTempDir();
 
-  it('stages a new file and commits it', () => {
+  it('stages a new file and commits it', async () => {
     const dir = getDir();
     initRepo(dir);
 
     writeFileSync(join(dir, 'new-file.txt'), 'hello');
-    stageAll(dir);
-    commitChanges(dir, 'add new file');
+    await stageAll(dir);
+    await commitChanges(dir, 'add new file');
 
     const log = rawGit(['log', '--oneline', '-1'], dir);
     expect(log).toContain('add new file');
   });
 
-  it('stages modifications and commits', () => {
+  it('stages modifications and commits', async () => {
     const dir = getDir();
     initRepo(dir);
 
     writeFileSync(join(dir, 'README.md'), 'updated content');
-    stageAll(dir);
-    commitChanges(dir, 'update readme');
+    await stageAll(dir);
+    await commitChanges(dir, 'update readme');
 
     const log = rawGit(['log', '--oneline', '-1'], dir);
     expect(log).toContain('update readme');
@@ -312,19 +428,19 @@ describe('stageAll and commitChanges', () => {
 describe('checkoutBranch', () => {
   const { getDir } = useTempDir();
 
-  it('switches to an existing branch', () => {
+  it('switches to an existing branch', async () => {
     const dir = getDir();
     initRepo(dir);
     rawGit(['branch', 'other'], dir);
 
-    checkoutBranch(dir, 'other');
-    expect(getCurrentBranch(dir)).toBe('other');
+    await checkoutBranch(dir, 'other');
+    await expect(getCurrentBranch(dir)).resolves.toBe('other');
   });
 
-  it('throws when branch does not exist', () => {
+  it('rejects when branch does not exist', async () => {
     const dir = getDir();
     initRepo(dir);
-    expect(() => checkoutBranch(dir, 'nonexistent')).toThrow();
+    await expect(checkoutBranch(dir, 'nonexistent')).rejects.toThrow();
   });
 });
 
@@ -333,32 +449,27 @@ describe('checkoutBranch', () => {
 describe('restoreSavedBranch', () => {
   const { getDir } = useTempDir();
 
-  it('switches to an existing branch (happy path)', () => {
+  it('switches to an existing branch (happy path)', async () => {
     const dir = getDir();
     initRepo(dir);
     rawGit(['checkout', '-b', 'feature-a'], dir);
 
-    restoreSavedBranch(dir, 'feature-a');
-    expect(getCurrentBranch(dir)).toBe('feature-a');
+    await restoreSavedBranch(dir, 'feature-a');
+    await expect(getCurrentBranch(dir)).resolves.toBe('feature-a');
   });
 
-  it('swallows errors when the branch does not exist (detached-HEAD contract)', () => {
+  it('swallows errors when the branch does not exist (detached-HEAD contract)', async () => {
     const dir = getDir();
     initRepo(dir);
-
-    // checkoutBranch would throw for a non-existent branch; restoreSavedBranch
-    // must swallow the error because the repo may be in a detached-HEAD state
-    // where the symbolic ref is gone.
-    expect(() => restoreSavedBranch(dir, 'nonexistent')).not.toThrow();
+    // restoreSavedBranch must resolve (not reject) for a non-existent branch.
+    await expect(restoreSavedBranch(dir, 'nonexistent')).resolves.toBeDefined();
   });
 
-  it('is a no-op when called with the already-checked-out branch', () => {
+  it('is a no-op when called with the already-checked-out branch', async () => {
     const dir = getDir();
     initRepo(dir);
-
-    // Already on 'main' — calling restoreSavedBranch with 'main' should be a no-op.
-    expect(() => restoreSavedBranch(dir, 'main')).not.toThrow();
-    expect(getCurrentBranch(dir)).toBe('main');
+    await expect(restoreSavedBranch(dir, 'main')).resolves.toBeDefined();
+    await expect(getCurrentBranch(dir)).resolves.toBe('main');
   });
 });
 
@@ -367,38 +478,34 @@ describe('restoreSavedBranch', () => {
 describe('mergeBranch', () => {
   const { getDir } = useTempDir();
 
-  it('returns { success: true } on clean merge', () => {
+  it('returns a Promise resolving to { success: true } on clean merge', async () => {
     const dir = getDir();
     initRepo(dir);
 
-    // Create branch with a different file (no conflict)
     rawGit(['checkout', '-b', 'feature'], dir);
     writeFileSync(join(dir, 'feature.txt'), 'feature content');
     rawGit(['add', '-A'], dir);
     rawGit(['commit', '-m', 'feature commit'], dir);
 
     rawGit(['checkout', 'main'], dir);
-    const result = mergeBranch(dir, 'feature');
-    expect(result).toEqual({ success: true });
+    await expect(mergeBranch(dir, 'feature')).resolves.toEqual({ success: true });
   });
 
-  it('returns { success: false, conflicts } on merge conflict', () => {
+  it('returns a Promise resolving to { success: false, conflicts } on merge conflict', async () => {
     const dir = getDir();
     initRepo(dir);
 
-    // Create branch "a" with conflicting content
     rawGit(['checkout', '-b', 'a'], dir);
     writeFileSync(join(dir, 'conflict.txt'), 'from-a\n');
     rawGit(['add', '-A'], dir);
     rawGit(['commit', '-m', 'commit a'], dir);
 
-    // Create conflicting content on main
     rawGit(['checkout', 'main'], dir);
     writeFileSync(join(dir, 'conflict.txt'), 'from-main\n');
     rawGit(['add', '-A'], dir);
     rawGit(['commit', '-m', 'commit main'], dir);
 
-    const result = mergeBranch(dir, 'a');
+    const result = await mergeBranch(dir, 'a');
     expect(result.success).toBe(false);
     if (!result.success) {
       expect(result.conflicts).toContain('conflict.txt');
@@ -411,11 +518,10 @@ describe('mergeBranch', () => {
 describe('abortMerge', () => {
   const { getDir } = useTempDir();
 
-  it('cleans up a merge conflict state', () => {
+  it('cleans up a merge conflict state', async () => {
     const dir = getDir();
     initRepo(dir);
 
-    // Create conflicting branches
     rawGit(['checkout', '-b', 'a'], dir);
     writeFileSync(join(dir, 'abort-test.txt'), 'from-a\n');
     rawGit(['add', '-A'], dir);
@@ -426,19 +532,16 @@ describe('abortMerge', () => {
     rawGit(['add', '-A'], dir);
     rawGit(['commit', '-m', 'main'], dir);
 
-    // Trigger conflict
     Bun.spawnSync(['git', 'merge', 'a'], {
       cwd: dir,
       stderr: 'pipe',
       stdout: 'pipe',
     });
 
-    // There should be conflicts now
-    expect(listConflictedFiles(dir).length).toBeGreaterThan(0);
+    expect((await listConflictedFiles(dir)).length).toBeGreaterThan(0);
 
-    // Abort
-    abortMerge(dir);
-    expect(listConflictedFiles(dir)).toEqual([]);
+    await abortMerge(dir);
+    await expect(listConflictedFiles(dir)).resolves.toEqual([]);
   });
 });
 
@@ -447,11 +550,10 @@ describe('abortMerge', () => {
 describe('pushBranch', () => {
   const { getDir } = useTempDir();
 
-  it('throws when no remote is configured (expected)', () => {
+  it('rejects when no remote is configured (expected)', async () => {
     const dir = getDir();
     initRepo(dir);
-    // No remote exists, so push will fail
-    expect(() => pushBranch(dir, 'main')).toThrow();
+    await expect(pushBranch(dir, 'main')).rejects.toThrow();
   });
 });
 
@@ -460,89 +562,69 @@ describe('pushBranch', () => {
 describe('getDiff', () => {
   const { getDir } = useTempDir();
 
-  it('returns empty string when working tree is clean', () => {
+  it('returns a Promise resolving to "" when the working tree is clean', async () => {
     const dir = getDir();
     initRepo(dir);
-    const diff = getDiff(dir);
-    // After initial commit with nothing changed, diff should be empty
-    expect(diff).toBe('');
+    await expect(getDiff(dir)).resolves.toBe('');
   });
 
-  it('returns diff for unstaged changes', () => {
+  it('returns the diff for unstaged changes', async () => {
     const dir = getDir();
     initRepo(dir);
     writeFileSync(join(dir, 'README.md'), 'modified content');
-    const diff = getDiff(dir);
+    const diff = await getDiff(dir);
     expect(diff).toContain('modified content');
   });
 
-  it('returns diff for staged changes when no unstaged changes exist', () => {
+  it('returns the diff for staged changes when no unstaged changes exist', async () => {
     const dir = getDir();
     initRepo(dir);
     writeFileSync(join(dir, 'staged.txt'), 'staged content');
     rawGit(['add', '-A'], dir);
-    const diff = getDiff(dir);
+    const diff = await getDiff(dir);
     expect(diff).toContain('staged content');
   });
 
-  it('does not throw when a tracked file named HEAD exists', () => {
+  it('does not throw when a tracked file named HEAD exists', async () => {
     const dir = getDir();
     initRepo(dir);
 
-    // Create a file literally named 'HEAD' and commit it
     writeFileSync(join(dir, 'HEAD'), 'HEAD file content');
     rawGit(['add', '-A'], dir);
     rawGit(['commit', '-m', 'add HEAD file'], dir);
 
-    // Modify a tracked (non-HEAD) file to create unstaged changes
     writeFileSync(join(dir, 'README.md'), 'modified content');
 
-    // getDiff must not throw — the trailing '.' pathspec after '--' ensures
-    // git treats HEAD as a revision, not a filename.
-    let diff: string;
-    expect(() => {
-      diff = getDiff(dir);
-    }).not.toThrow();
-
-    expect(diff!).toContain('modified content');
+    const diff = await getDiff(dir);
+    expect(diff).toContain('modified content');
   });
 
-  it('returns correct diff when an untracked file named HEAD exists', () => {
+  it('returns the correct diff when an untracked file named HEAD exists', async () => {
     const dir = getDir();
     initRepo(dir);
 
-    // Create an untracked file named HEAD (not committed)
     writeFileSync(join(dir, 'HEAD'), 'untracked HEAD content');
-
-    // Modify a tracked file
     writeFileSync(join(dir, 'README.md'), 'modified content');
 
-    // This must work: the untracked HEAD file should not interfere
-    const diff = getDiff(dir);
+    const diff = await getDiff(dir);
     expect(diff).toContain('modified content');
-    // Untracked HEAD file should NOT appear in the diff
     expect(diff).not.toContain('untracked HEAD content');
   });
 
-  it('shows both staged and unstaged changes when a file named HEAD exists', () => {
+  it('shows both staged and unstaged changes when a file named HEAD exists', async () => {
     const dir = getDir();
     initRepo(dir);
 
-    // Create and commit a file named HEAD
     writeFileSync(join(dir, 'HEAD'), 'HEAD file content');
     rawGit(['add', '-A'], dir);
     rawGit(['commit', '-m', 'add HEAD file'], dir);
 
-    // Stage a change (staged.txt is only in the index, not yet committed)
     writeFileSync(join(dir, 'staged.txt'), 'staged content');
     rawGit(['add', '-A'], dir);
 
-    // Also have an unstaged change (modify README)
     writeFileSync(join(dir, 'README.md'), 'unstaged modified');
 
-    // getDiff compares working tree against HEAD, so BOTH staged (staged.txt added)
-    // and unstaged (README.md modified) changes appear in the diff
-    const diff = getDiff(dir);
+    const diff = await getDiff(dir);
     expect(diff).toContain('unstaged modified');
     expect(diff).toContain('staged content');
   });
@@ -553,41 +635,40 @@ describe('getDiff', () => {
 describe('worktreePrune', () => {
   const { getDir } = useTempDir();
 
-  it('runs without error in a real git repo', () => {
+  it('runs without error in a real git repo', async () => {
     const dir = getDir();
     initRepo(dir);
-    expect(() => worktreePrune(dir)).not.toThrow();
+    await expect(worktreePrune(dir)).resolves.toBeDefined();
   });
 
-  it('removes orphaned worktree metadata after its directory is deleted', () => {
+  it('removes orphaned worktree metadata after its directory is deleted', async () => {
     const dir = getDir();
     initRepo(dir);
 
-    // Create a real worktree in a sibling directory
     const wtPath = join(dir, '..', `wt-prune-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-    createWorktree(dir, 'prune-branch', wtPath);
+    await createWorktree(dir, 'prune-branch', wtPath);
     expect(existsSync(wtPath)).toBe(true);
 
-    // Simulate a crashed run: delete the worktree directory without telling git
     rmSync(wtPath, { recursive: true, force: true });
 
-    // Before pruning, git still tracks the orphaned worktree
     const before = rawGit(['worktree', 'list'], dir);
     expect(before).toContain('prune-branch');
 
-    // Prune sweeps the orphaned metadata
-    worktreePrune(dir);
+    await worktreePrune(dir);
 
     const after = rawGit(['worktree', 'list'], dir);
     expect(after).not.toContain('prune-branch');
   });
 });
 
-// ─── sanitizeBranchSlug ─────────────────────────────────────────────────────
+// ─── sanitizeBranchSlug (stays synchronous) ────────────────────────────────
 
 describe('sanitizeBranchSlug', () => {
-  it('lowercases and replaces spaces/punctuation with dashes', () => {
-    expect(sanitizeBranchSlug('Feature: Add Login')).toBe('feature-add-login');
+  it('returns a plain string synchronously (not a Promise)', () => {
+    const result = sanitizeBranchSlug('Feature: Add Login');
+    expect(typeof result).toBe('string');
+    expect(result).not.toBeInstanceOf(Promise);
+    expect(result).toBe('feature-add-login');
   });
 
   it('replaces slashes and special characters with dashes', () => {
@@ -623,27 +704,20 @@ describe('sanitizeBranchSlug', () => {
   });
 
   it('falls back to engin-worktree-{timestamp} when the result is empty', () => {
-    const result = sanitizeBranchSlug('!!!');
-    expect(result).toMatch(/^engin-worktree-\d+$/);
+    expect(sanitizeBranchSlug('!!!')).toMatch(/^engin-worktree-\d+$/);
   });
 
   it('falls back to engin-worktree-{timestamp} for an empty string', () => {
-    const result = sanitizeBranchSlug('');
-    expect(result).toMatch(/^engin-worktree-\d+$/);
+    expect(sanitizeBranchSlug('')).toMatch(/^engin-worktree-\d+$/);
   });
 
   it('falls back to engin-worktree-{timestamp} for a dashes-only string', () => {
-    const result = sanitizeBranchSlug('---');
-    expect(result).toMatch(/^engin-worktree-\d+$/);
+    expect(sanitizeBranchSlug('---')).toMatch(/^engin-worktree-\d+$/);
   });
 
-  it('produces a unique-ish timestamp suffix on each fallback call', () => {
-    const a = sanitizeBranchSlug('!!!');
-    const b = sanitizeBranchSlug('!!!');
-    // The timestamps may collide if called within the same millisecond, but
-    // both must still be valid fallback slugs.
-    expect(a).toMatch(/^engin-worktree-\d+$/);
-    expect(b).toMatch(/^engin-worktree-\d+$/);
+  it('produces a valid fallback slug on each call', () => {
+    expect(sanitizeBranchSlug('!!!')).toMatch(/^engin-worktree-\d+$/);
+    expect(sanitizeBranchSlug('!!!')).toMatch(/^engin-worktree-\d+$/);
   });
 });
 
@@ -652,7 +726,7 @@ describe('sanitizeBranchSlug', () => {
 describe('createSymlinkWithRetry', () => {
   const { getDir } = useTempDir();
 
-  it('creates a symlink pointing to the target', () => {
+  it('creates a symlink pointing to the target', async () => {
     const dir = getDir();
     mkdirSync(dir, { recursive: true });
 
@@ -660,15 +734,14 @@ describe('createSymlinkWithRetry', () => {
     writeFileSync(target, 'hello');
     const link = join(dir, 'link');
 
-    createSymlinkWithRetry(target, link);
+    await createSymlinkWithRetry(target, link);
 
     expect(lstatSync(link).isSymbolicLink()).toBe(true);
     expect(readlinkSync(link)).toBe(target);
-    // Reading through the symlink resolves to the target contents
     expect(readFileSync(link, 'utf-8')).toBe('hello');
   });
 
-  it('is a no-op when the symlink already exists and points to the correct target', () => {
+  it('is a no-op when the symlink already exists and points to the correct target', async () => {
     const dir = getDir();
     mkdirSync(dir, { recursive: true });
 
@@ -676,20 +749,18 @@ describe('createSymlinkWithRetry', () => {
     writeFileSync(target, 'data');
     const link = join(dir, 'link');
 
-    // Pre-create the correct symlink
     symlinkSync(target, link);
     const originalIno = lstatSync(link).ino;
 
     // Should not throw and should leave the existing symlink untouched
-    expect(() => createSymlinkWithRetry(target, link)).not.toThrow();
+    await createSymlinkWithRetry(target, link);
 
     expect(lstatSync(link).isSymbolicLink()).toBe(true);
     expect(readlinkSync(link)).toBe(target);
-    // The symlink node itself was not replaced
     expect(lstatSync(link).ino).toBe(originalIno);
   });
 
-  it('throws after exhausting retries when a symlink exists pointing elsewhere', () => {
+  it('throws after exhausting retries when a symlink exists pointing elsewhere', async () => {
     const dir = getDir();
     mkdirSync(dir, { recursive: true });
 
@@ -697,16 +768,15 @@ describe('createSymlinkWithRetry', () => {
     const wrongTarget = join(dir, 'wrong.txt');
     const link = join(dir, 'link');
 
-    // Pre-create a symlink pointing to the wrong target
     symlinkSync(wrongTarget, link);
 
     // Because the existing symlink does NOT point to the requested target, the
     // function cannot treat it as a no-op; symlinkSync will fail with EEXIST on
     // every attempt and the function should throw after exhausting retries.
-    expect(() => createSymlinkWithRetry(correctTarget, link, 2, 5)).toThrow();
+    await expect(createSymlinkWithRetry(correctTarget, link, 2, 5)).rejects.toThrow();
   });
 
-  it('honours a small backoff/retry budget without hanging', () => {
+  it('honours a small backoff/retry budget without hanging', async () => {
     const dir = getDir();
     mkdirSync(dir, { recursive: true });
 
@@ -716,10 +786,9 @@ describe('createSymlinkWithRetry', () => {
     symlinkSync(wrongTarget, link);
 
     const start = Date.now();
-    expect(() => createSymlinkWithRetry(correctTarget, link, 1, 10)).toThrow();
+    await expect(createSymlinkWithRetry(correctTarget, link, 1, 10)).rejects.toThrow();
     const elapsed = Date.now() - start;
 
-    // With 1 retry and a 10ms backoff, it should complete well under a second.
     expect(elapsed).toBeLessThan(1000);
   });
 });
@@ -793,18 +862,12 @@ describe('readWorktreeCopyEntries', () => {
 describe('populateWorktree', () => {
   const { getDir } = useTempDir();
 
-  it('copies top-level files matched by copy-mode entries', () => {
+  it('copies top-level files matched by copy-mode entries', async () => {
     const dir = getDir();
     mkdirSync(dir, { recursive: true });
 
-    // Source layout
-    writeFileSync(join(dir, 'a.txt'), 'aaa');
-    writeFileSync(join(dir, 'b.txt'), 'bbb');
-    writeFileSync(join(dir, 'c.md'), 'ccc');
-
     const source = join(dir, 'source');
     const target = join(dir, 'target');
-    // Move created files into a dedicated source dir
     mkdirSync(source, { recursive: true });
     writeFileSync(join(source, 'a.txt'), 'aaa');
     writeFileSync(join(source, 'b.txt'), 'bbb');
@@ -812,15 +875,14 @@ describe('populateWorktree', () => {
     mkdirSync(target, { recursive: true });
 
     const entries: WorktreeCopyEntry[] = [{ pattern: '*.txt', mode: 'copy', negated: false }];
-    populateWorktree(source, target, entries);
+    await populateWorktree(source, target, entries);
 
     expect(readFileSync(join(target, 'a.txt'), 'utf-8')).toBe('aaa');
     expect(readFileSync(join(target, 'b.txt'), 'utf-8')).toBe('bbb');
-    // c.md does not match *.txt and must not be copied
     expect(existsSync(join(target, 'c.md'))).toBe(false);
   });
 
-  it('recursively copies a directory matched by a copy-mode entry', () => {
+  it('recursively copies a directory matched by a copy-mode entry', async () => {
     const dir = getDir();
     mkdirSync(dir, { recursive: true });
 
@@ -832,13 +894,13 @@ describe('populateWorktree', () => {
     mkdirSync(target, { recursive: true });
 
     const entries: WorktreeCopyEntry[] = [{ pattern: 'mydir', mode: 'copy', negated: false }];
-    populateWorktree(source, target, entries);
+    await populateWorktree(source, target, entries);
 
     expect(readFileSync(join(target, 'mydir', 'inner.txt'), 'utf-8')).toBe('inner');
     expect(readFileSync(join(target, 'mydir', 'deep', 'nested.txt'), 'utf-8')).toBe('nested');
   });
 
-  it('creates symlinks for symlink-mode entries', () => {
+  it('creates symlinks for symlink-mode entries', async () => {
     const dir = getDir();
     mkdirSync(dir, { recursive: true });
 
@@ -849,15 +911,14 @@ describe('populateWorktree', () => {
     mkdirSync(target, { recursive: true });
 
     const entries: WorktreeCopyEntry[] = [{ pattern: 'node_modules', mode: 'symlink', negated: false }];
-    populateWorktree(source, target, entries);
+    await populateWorktree(source, target, entries);
 
     const linkPath = join(target, 'node_modules');
     expect(lstatSync(linkPath).isSymbolicLink()).toBe(true);
-    // Reading through the symlink resolves into the source directory
     expect(readFileSync(join(linkPath, 'pkg', 'index.js'), 'utf-8')).toBe('module.exports = 1');
   });
 
-  it('honours negated copy entries to exclude otherwise-matched files', () => {
+  it('honours negated copy entries to exclude otherwise-matched files', async () => {
     const dir = getDir();
     mkdirSync(dir, { recursive: true });
 
@@ -868,19 +929,17 @@ describe('populateWorktree', () => {
     writeFileSync(join(source, '.env.example'), 'secret');
     mkdirSync(target, { recursive: true });
 
-    // Copy everything (*), but exclude .env.example
     const entries: WorktreeCopyEntry[] = [
       { pattern: '*', mode: 'copy', negated: false },
       { pattern: '.env.example', mode: 'copy', negated: true },
     ];
-    populateWorktree(source, target, entries);
+    await populateWorktree(source, target, entries);
 
     expect(readFileSync(join(target, 'keep.txt'), 'utf-8')).toBe('keep');
-    // .env.example is excluded by the negation and must not be copied
     expect(existsSync(join(target, '.env.example'))).toBe(false);
   });
 
-  it('does not walk into or copy .git and .engin directories', () => {
+  it('does not walk into or copy .git and .engin directories', async () => {
     const dir = getDir();
     mkdirSync(dir, { recursive: true });
 
@@ -893,16 +952,15 @@ describe('populateWorktree', () => {
     writeFileSync(join(source, 'keep.txt'), 'keep');
     mkdirSync(target, { recursive: true });
 
-    // * would match .git and .engin, but they must be skipped entirely
     const entries: WorktreeCopyEntry[] = [{ pattern: '*', mode: 'copy', negated: false }];
-    populateWorktree(source, target, entries);
+    await populateWorktree(source, target, entries);
 
     expect(readFileSync(join(target, 'keep.txt'), 'utf-8')).toBe('keep');
     expect(existsSync(join(target, '.git'))).toBe(false);
     expect(existsSync(join(target, '.engin'))).toBe(false);
   });
 
-  it('supports mixed copy and symlink entries in a single call', () => {
+  it('supports mixed copy and symlink entries in a single call', async () => {
     const dir = getDir();
     mkdirSync(dir, { recursive: true });
 
@@ -918,16 +976,14 @@ describe('populateWorktree', () => {
       { pattern: 'config.json', mode: 'copy', negated: false },
       { pattern: 'node_modules', mode: 'symlink', negated: false },
     ];
-    populateWorktree(source, target, entries);
+    await populateWorktree(source, target, entries);
 
-    // config.json was copied as a real file
     expect(lstatSync(join(target, 'config.json')).isFile()).toBe(true);
     expect(readFileSync(join(target, 'config.json'), 'utf-8')).toBe('{}');
-    // node_modules is a symlink
     expect(lstatSync(join(target, 'node_modules')).isSymbolicLink()).toBe(true);
   });
 
-  it('is a no-op when entries is an empty array', () => {
+  it('is a no-op when entries is an empty array', async () => {
     const dir = getDir();
     mkdirSync(dir, { recursive: true });
 
@@ -937,12 +993,12 @@ describe('populateWorktree', () => {
     writeFileSync(join(source, 'a.txt'), 'a');
     mkdirSync(target, { recursive: true });
 
-    populateWorktree(source, target, []);
+    await populateWorktree(source, target, []);
 
     expect(existsSync(join(target, 'a.txt'))).toBe(false);
   });
 
-  it('reads entries from .worktreecopy when entries is omitted', () => {
+  it('reads entries from .worktreecopy when entries is omitted', async () => {
     const dir = getDir();
     mkdirSync(dir, { recursive: true });
 
@@ -954,11 +1010,10 @@ describe('populateWorktree', () => {
     writeFileSync(join(source, 'b.md'), 'b');
     mkdirSync(target, { recursive: true });
 
-    populateWorktree(source, target);
+    await populateWorktree(source, target);
 
     expect(readFileSync(join(target, 'a.txt'), 'utf-8')).toBe('a');
     expect(existsSync(join(target, 'b.md'))).toBe(false);
-    // The .worktreecopy file itself is not matched by *.txt
     expect(existsSync(join(target, '.worktreecopy'))).toBe(false);
   });
 });
@@ -968,22 +1023,20 @@ describe('populateWorktree', () => {
 describe('squashMergeBranch', () => {
   const { getDir } = useTempDir();
 
-  it('returns { success: true } on a clean squash merge', () => {
+  it('returns a Promise resolving to { success: true } on a clean squash merge', async () => {
     const dir = getDir();
     initRepo(dir);
 
-    // Create a branch that adds a new file (no conflict with main)
     rawGit(['checkout', '-b', 'feature'], dir);
     writeFileSync(join(dir, 'feature.txt'), 'feature content');
     rawGit(['add', '-A'], dir);
     rawGit(['commit', '-m', 'feature commit'], dir);
 
     rawGit(['checkout', 'main'], dir);
-    const result = squashMergeBranch(dir, 'feature');
-    expect(result).toEqual({ success: true });
+    await expect(squashMergeBranch(dir, 'feature')).resolves.toEqual({ success: true });
   });
 
-  it('stages but does not auto-commit changes after a successful squash merge', () => {
+  it('stages but does not auto-commit changes after a successful squash merge', async () => {
     const dir = getDir();
     initRepo(dir);
 
@@ -993,18 +1046,16 @@ describe('squashMergeBranch', () => {
     rawGit(['commit', '-m', 'feature commit'], dir);
 
     rawGit(['checkout', 'main'], dir);
-    squashMergeBranch(dir, 'feature');
+    await squashMergeBranch(dir, 'feature');
 
-    // The merged change is staged...
     const staged = rawGit(['diff', '--cached', '--name-only'], dir);
     expect(staged).toContain('feature.txt');
-    // ...but no new commit was created (only the initial commit remains)
     const log = rawGit(['log', '--oneline'], dir);
     expect(log).not.toContain('feature commit');
     expect(log.split('\n').length).toBe(1);
   });
 
-  it('returns { success: false, conflicts } on a conflicting squash merge', () => {
+  it('returns { success: false, conflicts } on a conflicting squash merge', async () => {
     const dir = getDir();
     initRepo(dir);
 
@@ -1018,7 +1069,7 @@ describe('squashMergeBranch', () => {
     rawGit(['add', '-A'], dir);
     rawGit(['commit', '-m', 'main commit'], dir);
 
-    const result = squashMergeBranch(dir, 'feature');
+    const result = await squashMergeBranch(dir, 'feature');
     expect(result.success).toBe(false);
     if (!result.success) {
       expect(result.conflicts).toContain('conflict.txt');
@@ -1031,16 +1082,15 @@ describe('squashMergeBranch', () => {
 describe('stageFiles', () => {
   const { getDir } = useTempDir();
 
-  it('stages only the specified files, leaving untracked files untouched', () => {
+  it('stages only the specified files, leaving untracked files untouched', async () => {
     const dir = getDir();
     initRepo(dir);
 
-    // Create several untracked files
     writeFileSync(join(dir, 'stage-me.txt'), 'stage me');
     writeFileSync(join(dir, 'skip-me.txt'), 'skip me');
     writeFileSync(join(dir, 'also-skip.txt'), 'also skip');
 
-    stageFiles(dir, ['stage-me.txt']);
+    await stageFiles(dir, ['stage-me.txt']);
 
     const staged = rawGit(['diff', '--cached', '--name-only'], dir);
     expect(staged).toContain('stage-me.txt');
@@ -1048,24 +1098,21 @@ describe('stageFiles', () => {
     expect(staged).not.toContain('also-skip.txt');
   });
 
-  it('does not stage modifications to files that were not listed', () => {
+  it('does not stage modifications to files that were not listed', async () => {
     const dir = getDir();
     initRepo(dir);
 
-    // README.md is tracked (committed in initRepo); modify it
     writeFileSync(join(dir, 'README.md'), 'changed');
-    // Also add a new file to stage explicitly
     writeFileSync(join(dir, 'new.txt'), 'new');
 
-    stageFiles(dir, ['new.txt']);
+    await stageFiles(dir, ['new.txt']);
 
     const staged = rawGit(['diff', '--cached', '--name-only'], dir);
     expect(staged).toContain('new.txt');
-    // README.md modification must NOT be staged because it was not listed
     expect(staged).not.toContain('README.md');
   });
 
-  it('stages multiple specified files at once', () => {
+  it('stages multiple specified files at once', async () => {
     const dir = getDir();
     initRepo(dir);
 
@@ -1073,7 +1120,7 @@ describe('stageFiles', () => {
     writeFileSync(join(dir, 'two.txt'), '2');
     writeFileSync(join(dir, 'three.txt'), '3');
 
-    stageFiles(dir, ['one.txt', 'two.txt']);
+    await stageFiles(dir, ['one.txt', 'two.txt']);
 
     const staged = rawGit(['diff', '--cached', '--name-only'], dir);
     expect(staged).toContain('one.txt');
@@ -1087,11 +1134,10 @@ describe('stageFiles', () => {
 describe('deleteBranchForce', () => {
   const { getDir } = useTempDir();
 
-  it('force-deletes a branch even when it has unmerged commits', () => {
+  it('force-deletes a branch even when it has unmerged commits', async () => {
     const dir = getDir();
     initRepo(dir);
 
-    // Create a branch with a commit that is NOT merged into main
     rawGit(['checkout', '-b', 'feature'], dir);
     writeFileSync(join(dir, 'feature.txt'), 'feature');
     rawGit(['add', '-A'], dir);
@@ -1099,28 +1145,26 @@ describe('deleteBranchForce', () => {
 
     rawGit(['checkout', 'main'], dir);
 
-    // A plain `git branch -d` would refuse to delete an unmerged branch;
-    // `git branch -D` (force) must succeed.
-    deleteBranchForce(dir, 'feature');
+    await deleteBranchForce(dir, 'feature');
 
     const branches = rawGit(['branch', '--list'], dir);
     expect(branches).not.toContain('feature');
   });
 
-  it('deletes a fully-merged branch', () => {
+  it('deletes a fully-merged branch', async () => {
     const dir = getDir();
     initRepo(dir);
 
     rawGit(['branch', 'merged-branch'], dir);
-    deleteBranchForce(dir, 'merged-branch');
+    await deleteBranchForce(dir, 'merged-branch');
 
     const branches = rawGit(['branch', '--list'], dir);
     expect(branches).not.toContain('merged-branch');
   });
 
-  it('throws when the branch does not exist', () => {
+  it('rejects when the branch does not exist', async () => {
     const dir = getDir();
     initRepo(dir);
-    expect(() => deleteBranchForce(dir, 'no-such-branch')).toThrow();
+    await expect(deleteBranchForce(dir, 'no-such-branch')).rejects.toThrow();
   });
 });

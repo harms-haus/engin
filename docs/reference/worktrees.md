@@ -227,8 +227,10 @@ seams — `SessionScheduler` task processing and the `runSession` session primit
 (longest-root-first, start-of-string boundary match, exact-root → `.`), is idempotent and
 non-mutating, and leaves non-string leaves untouched. The consume side
 (`pool/file-context.ts::resolveFilePath`) already resolves relative paths against the
-downstream task's worktree cwd, so a relativized path resolves correctly there. This is
-purely internal — not part of the public engine API.
+downstream task's worktree cwd, so a relativized path resolves correctly there. It is exported
+from the engine package entry point (`@harms-haus/engin-engine`) as `relativizePathsIn` for reuse
+by custom runners, but it is an engine-internal transform (idempotent, non-mutating) not designed
+for general-purpose path manipulation.
 
 ### Task fails / retries (`SessionScheduler` session path)
 

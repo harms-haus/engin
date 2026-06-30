@@ -11,7 +11,11 @@ import { promptForStructured } from './structured-output.js';
 import { generateTitleAndBranch } from './title-generator.js';
 import type { WorktreeInfo } from './types.js';
 import { runTooledFixup } from './worktree-fixup.js';
-import { WorktreeManager } from './worktree-manager.js';
+// Type-only: erases the static value-level edge to worktree-manager.ts
+// (which value-imports `resolveConflictsWithAgent` from this module). The
+// runtime class is obtained lazily inside `setupWorktree` via a dynamic
+// `await import(...)` so there is no module-evaluation-order cycle.
+import type { WorktreeManager } from './worktree-manager.js';
 
 /** Maximum character length for agent context (diffs, conflict text) to avoid token overflow. */
 const MAX_AGENT_CONTEXT = 8000;
@@ -29,11 +33,9 @@ async function loadWorkerProfile(profilesDirs: string[]) {
 
 // ─── setupWorktree ───────────────────────────────────────────────────────────
 //
-// Refactored to delegate ALL worktree creation to a {@link WorktreeManager}
-// (via `setupMainWorktree()`) and to source the branch name from
-// {@link generateTitleAndBranch}. setupWorktree MUST NOT create the worktree
-// itself — doing so caused the double-worktree bug where both setupWorktree
-// and WorktreeManager tried to create the same worktree.
+// Delegates all worktree creation to a {@link WorktreeManager} (via
+// `setupMainWorktree()`) and sources the branch name from
+// {@link generateTitleAndBranch}.
 
 export async function setupWorktree(
   cwd: string,
@@ -42,11 +44,11 @@ export async function setupWorktree(
   taskPrompt: string,
   apiKeys?: Record<string, string>,
 ): Promise<WorktreeSetupResult> {
-  if (!isGitRepo(cwd)) {
+  if (!(await isGitRepo(cwd))) {
     throw new Error('Not a git repository. --worktree requires a git repo.');
   }
 
-  const repoRoot = getRepoRoot(cwd);
+  const repoRoot = await getRepoRoot(cwd);
 
   // Generate the branch name (and title) via a single LLM call.
   // generateTitleAndBranch owns its own harness and degrades to a
@@ -63,6 +65,12 @@ export async function setupWorktree(
   // The main worktree lives INSIDE the run dir. WorktreeManager is the SOLE creator.
   const mainWorktreePath = join(workDir, 'worktree');
 
+  // Loaded dynamically (not via a static value import) to avoid a value-level
+  // circular dependency with worktree-manager.ts, which imports
+  // `resolveConflictsWithAgent` from this module. `mock.module` intercepts
+  // dynamic imports just as it does static ones, so tests that replace
+  // `WorktreeManager` still take effect.
+  const { WorktreeManager } = await import('./worktree-manager.js');
   const manager = new WorktreeManager({
     repoRoot,
     sourceCwd: cwd,
@@ -126,20 +134,11 @@ export async function generateCommitMessage(
 
 // ─── resolveConflictsWithAgent ───────────────────────────────────────────────
 //
-// Resolves merge conflicts by delegating to the shared, self-verifying tooled
-// fix-up primitive (`runTooledFixup`). That primitive spawns its own agent
-// session with write/edit/bash tools, hands it the full conflict context for
-// ALL conflicted files at once, and self-verifies with `tsc --noEmit` +
-// `eslint` before reporting success — retrying up to `maxAttempts` times.
-//
-// This fixes every weakness of the previous `promptForStructured`-based loop:
-//   1. Context-starved  -> real per-file content (with conflict markers) is fed in.
-//   2. One file at a time -> the whole conflict set is resolved in ONE session.
-//   3. No verification  -> `runTooledFixup` runs tsc + eslint after each turn.
-//   4. stageAll sweeps  -> only `stageFiles(repoRoot, conflicts)` is staged.
-//   5. Silent writeFileSync catch -> the agent edits files directly via tools.
-//   6. No size cap      -> the conflict context is capped at MAX_AGENT_CONTEXT chars.
-//   7. Single-shot      -> a retry budget of 3 attempts is requested.
+// Resolves merge conflicts by delegating to the self-verifying tooled fix-up
+// primitive (`runTooledFixup`), which spawns an agent session with
+// write/edit/bash tools, hands it the full conflict context for all conflicted
+// files at once, and self-verifies with `tsc --noEmit` + `eslint` before
+// reporting success — retrying up to `maxAttempts` times.
 
 export async function resolveConflictsWithAgent(
   profilesDirs: string[],
@@ -191,7 +190,7 @@ export async function resolveConflictsWithAgent(
 
   // Stage ONLY the conflicted files — never a sweeping `stageAll` that would
   // also sweep up untracked / scratch files the agent may have produced.
-  stageFiles(repoRoot, conflicts);
+  await stageFiles(repoRoot, conflicts);
   return { resolved: true };
 }
 
@@ -205,7 +204,7 @@ export async function pushAndCreatePR(
   title: string,
   apiKeys?: Record<string, string>,
 ): Promise<void> {
-  pushBranch(repoRoot, branchName);
+  await pushBranch(repoRoot, branchName);
 
   const profile = await loadWorkerProfile(profilesDirs);
   const session = await requireAgentPlugin(profile.agent).createSession({ profile, cwd: repoRoot, apiKeys });
@@ -218,17 +217,18 @@ export async function pushAndCreatePR(
     );
 
     try {
-      const decoder = new TextDecoder();
-      const spawnResult = Bun.spawnSync({
+      const proc = Bun.spawn({
         cmd: ['gh', 'pr', 'create', '--title', result.prTitle, '--body', result.prBody],
         cwd: repoRoot,
         stdout: 'pipe',
         stderr: 'pipe',
       });
 
-      if (spawnResult.exitCode !== 0) {
-        const stderr = decoder.decode(spawnResult.stderr).trim();
-        throw new Error(`gh pr create failed (exit code ${spawnResult.exitCode}): ${stderr}`);
+      const exitCode = await proc.exited;
+
+      if (exitCode !== 0) {
+        const stderr = await new Response(proc.stderr).text();
+        throw new Error(`gh pr create failed (exit code ${exitCode}): ${stderr.trim()}`);
       }
     } catch {
       // gh pr create may fail in test environments or when gh CLI is unavailable

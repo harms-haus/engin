@@ -178,6 +178,43 @@ Recursively create a directory. Re-throws errors.
 Synchronously load and merge `.env` files. See
 [Configuration → `.env` file loading](configuration.md#env-file-loading).
 
+## Error classification
+
+Source: `packages/engine/src/core/error-classifier.ts`. Classifies thrown errors and
+assistant-message metadata into a structured `ErrorKind` + retryability verdict, so
+callers can decide whether to retry, abort, or escalate. Classification precedence is
+abort > empty > permanent > transient > unknown. Used by `runSession` to build the
+`SessionError.classification` verdict (see [Session primitive](#session-primitive)).
+
+### `classify(err: unknown, opts?: ClassifyOptions): Classification`
+
+Classify `err`, optionally enriched with the last assistant message and attempt number.
+Returns `{ kind, retryable, delayMs? }`: `kind` is one of `'transient'`, `'permanent'`,
+`'abort'`, `'empty'`, or `'unknown'`; `retryable` is `true` for transient/empty verdicts;
+`delayMs` is present only on transient verdicts (exponential backoff, jittered, capped).
+See [Types reference → `ErrorKind`](types.md#errorkind),
+[`Classification`](types.md#classification), and
+[`ClassifyOptions`](types.md#classifyoptions).
+
+### `ErrorKind`, `Classification`
+
+`ErrorKind = 'transient' | 'permanent' | 'abort' | 'empty' | 'unknown'`;
+`Classification = { kind: ErrorKind; retryable: boolean; delayMs?: number }`. See
+[Types reference → Error classification types](types.md#error-classification-types).
+
+### `extractLastAssistantMessage(session): LastAssistantMessage | undefined`
+
+Given a session-like object with a `messages` array, walk backwards to the last message
+with `role: 'assistant'` and return its `{ stopReason, errorMessage, content, usage }`.
+Returns `undefined` when the session is missing, has no messages, or contains no assistant
+message. Pass the result as `ClassifyOptions.lastAssistantMessage` to `classify`.
+
+### `CONTEXT_OVERFLOW_FALLBACK_RE`
+
+Secondary safety-net regex — `/context.*length|maximum.*context|context window|too many tokens/i` —
+for context-overflow patterns not yet covered by pi-ai's `isContextOverflow`. Applied to
+the assistant `errorMessage` during classification.
+
 ## Shared utilities
 
 ### `validateWorkflowName(name: string): void`
@@ -192,12 +229,6 @@ True when `err` is a non-null object with `code === 'ENOENT'`.
 
 `err.message` for `Error` instances, otherwise `String(err)`.
 
-### `composeStatusCallbacks(callbacks: StatusCallbacks[]): StatusCallbacks`
-
-Compose multiple `StatusCallbacks` into one. Empty input returns a no-op; a single input is
-returned directly; otherwise each method fans out to every callback **in array order**, with
-each call wrapped in try/catch (a failing callback is logged and does not stop the others).
-
 ### `forwardAgentStatus(onStatus?: StatusCallbacks): AgentStatusCallbacks | undefined`
 
 Return an `AgentStatusCallbacks` that forwards the four agent-level callbacks (`onTurnStart`,
@@ -211,6 +242,39 @@ Append a feedback string to `task.reviewFeedback`, initialising the array if abs
 ### `DEFAULT_TOOLS: readonly string[]`
 
 Frozen array: `['read', 'bash', 'edit', 'write', 'grep', 'find', 'ls']`.
+
+### `redactSecrets(text: string): string`
+
+Redact common API-key and secret patterns from `text`: `Bearer <token>`, `sk-ant-…`,
+`sk-…`, and key-value assignments whose key suggests a secret (`api_key`, `api-key`,
+`apikey`, `token`, `secret`, `password`, `authorization`). The key name is preserved while
+the value is replaced with `[REDACTED]`. Returns the input unchanged when no pattern
+matches. Source: `packages/engine/src/core/redact.ts`.
+
+### `getLocalNetworkIP(): string | null`
+
+Return the first non-loopback, non-docker, non-link-local IPv4 address found on the
+system, or `null` when no suitable interface exists. Source:
+`packages/engine/src/core/network.ts`.
+
+### `relativizePathsIn(value: unknown, roots: string[]): unknown`
+
+Recursively rewrite absolute paths that fall under any of `roots` to repo-relative tails
+inside a structured `value` (strings, plain objects, arrays). Exact-root matches become
+`.`; only the longest matching root applies per string leaf. Returns new containers (it
+does not mutate the input) and is idempotent. Applied at task result-capture seams — see
+[Worktrees reference → Task succeeds](worktrees.md#task-succeeds). Source:
+`packages/engine/src/core/path-relativizer.ts`.
+
+### `invokeRenderer(rendererRegistry, profileId, rawText, agentId, taskId, onAgentRender?): void`
+
+Invoke the renderer registered for `profileId` against the agent's raw assistant text and,
+when a non-empty rendering is produced, forward it to `onAgentRender`. If `rawText` holds a
+parseable JSON document the parsed value is passed to the renderer; otherwise the raw text
+is passed verbatim. No-ops (returns without firing) when there is no registry, no renderer
+for `profileId`, `rawText` is empty, or the renderer returns an empty/falsy value.
+`onAgentRender` is an [`AgentRenderHandler`](types.md#agentrenderhandler). Source:
+`packages/engine/src/core/renderer-invocation.ts`.
 
 ## Setup
 

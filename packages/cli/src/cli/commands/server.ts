@@ -5,15 +5,13 @@ import {
   readPidfile,
   startDaemon,
   stopDaemon,
+  WILDCARD_HOSTS,
 } from '@harms-haus/engin-engine';
 
 import { formatTime } from '../console-status.js';
 import type { CliOptions } from '../parse-args.js';
 import { promptYesNo } from '../prompt.js';
 import { DEFAULT_SERVER_HOST, DEFAULT_SERVER_PORT } from '../server-defaults.js';
-
-/** Hosts that bind to all network interfaces — refused without authentication. */
-const WILDCARD_HOSTS = new Set(['0.0.0.0', '::', '[::]', '::0', '*']);
 
 /**
  * Starts the engine server daemon.

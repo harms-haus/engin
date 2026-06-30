@@ -5,6 +5,8 @@ import { isEnoentError } from '../core/utils.js';
 import { AuditLog } from './audit-log.js';
 import { TaskTracker } from './task-status.js';
 
+const MAX_SPAWNED_AGENTS = 500;
+
 // ── Private serialization helpers for .engin-state.json ────────────────────
 //
 // Private module-level helpers for the .engin-state.json persistence path
@@ -284,14 +286,6 @@ export class WorkflowStatusTracker {
     this._worktree = { ...info };
   }
 
-  recordAgentSpawn(
-    agentId: string,
-    profile: string,
-    phaseId: string,
-    taskId?: string,
-    runnerRole?: string,
-    attempt?: number,
-  ): void;
   recordAgentSpawn(info: {
     agentId: string;
     profile: string;
@@ -299,39 +293,9 @@ export class WorkflowStatusTracker {
     taskId?: string;
     runnerRole?: string;
     attempt?: number;
-  }): void;
-  recordAgentSpawn(
-    agentIdOrInfo:
-      | string
-      | {
-          agentId: string;
-          profile: string;
-          phaseId: string;
-          taskId?: string;
-          runnerRole?: string;
-          attempt?: number;
-        },
-    profile?: string,
-    phaseId?: string,
-    taskId?: string,
-    runnerRole?: string,
-    attempt?: number,
-  ): void {
-    let record: PersistedAgentRecord;
-    if (typeof agentIdOrInfo === 'string') {
-      record = {
-        agentId: agentIdOrInfo,
-        profile: profile as string,
-        phaseId: phaseId as string,
-        taskId,
-        runnerRole,
-        attempt,
-      };
-    } else {
-      record = { ...agentIdOrInfo };
-    }
+  }): void {
+    const record: PersistedAgentRecord = { ...info };
     this._spawnedAgents.push(record);
-    const MAX_SPAWNED_AGENTS = 500;
     if (this._spawnedAgents.length > MAX_SPAWNED_AGENTS) {
       const completedIdx = this._spawnedAgents.findIndex((a) => a.completedAt);
       if (completedIdx >= 0) {

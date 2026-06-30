@@ -38,7 +38,7 @@
 // companion VALUES in the same module. Once the value bindings above are
 // observable in the barrel namespace, the interfaces/type aliases declared in
 // types.ts (CompositionRule, HookContext, ObserveHook, PipelineHook,
-// FirstWinsHook, AllRunHook, HookDefinition, HookRegistry, WorkflowHooks,
+// FirstWinsHook, AllRunHook, HookRegistry, WorkflowHooks,
 // HookProvider) are GUARANTEED importable as types from the same specifier.
 // The value/binding checks below therefore transitively pin type
 // accessibility — the same approach used by tests/engine-index.test.ts.
