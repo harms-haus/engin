@@ -1,8 +1,16 @@
 import type { TaskEntity } from '@engin/shared';
-import { describe, expect, it } from 'bun:test';
+import { afterEach, describe, expect, it } from 'bun:test';
+import { __resetClockForTesting } from '../hooks/use-clock.js';
 import { renderTest, stripAnsi } from '../test-harness.js';
 import { statusIconMap } from '../theme.js';
 import { TaskList, type TaskListProps } from './task-list.js';
+
+// The shared clock is a module-level singleton; reset it after each test so
+// the next test re-initializes `now` to a fresh Date.now() (otherwise later
+// tests drift by up to ~1s per preceding test, breaking live-elapsed asserts).
+afterEach(() => {
+  __resetClockForTesting();
+});
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 

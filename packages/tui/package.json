@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@harms-haus/engin-shared": "workspace:*",
+    "@harms-haus/ink-overlay": "^0.1.0",
     "ink": "^7.1.0",
     "ink-scroll-view": "^0.3.7",
     "qrcode": "^1.5.4",

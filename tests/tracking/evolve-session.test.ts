@@ -533,3 +533,160 @@ describe('evolve – all event types still routed (including new session types)'
     });
   }
 });
+
+// ── turn_ended log ordering (think → message → tool) ────────────────────────────
+
+describe('evolve – turn_ended content-block ordering', () => {
+  function spawnSession(): WorkflowProjection {
+    return evolve(
+      baseline(),
+      makeEvent(
+        'session_started',
+        { agentId: 'a1', profile: 'coder' },
+        { timestamp: '2026-06-26T10:00:00Z', agentId: 'a1', taskId: 't1' },
+      ),
+    );
+  }
+
+  it('places thinking/text content blocks BEFORE the turn tool calls', () => {
+    // Realistic event order within a turn: turn_started → tool_call_* (as
+    // tools execute) → turn_ended (carries the content blocks). The content
+    // blocks logically precede the tools, so they must splice in at the turn
+    // boundary, not append at the tail.
+    resetSeq();
+    let state = spawnSession();
+    state = evolve(state, makeEvent('turn_started', { turn: 1 }, { timestamp: '2026-06-26T10:00:01Z', agentId: 'a1' }));
+    state = evolve(
+      state,
+      makeEvent(
+        'tool_call_started',
+        { toolName: 'read', toolCallId: 'tc1', arguments: { path: 'file.ts' } },
+        { timestamp: '2026-06-26T10:00:02Z', agentId: 'a1' },
+      ),
+    );
+    state = evolve(
+      state,
+      makeEvent(
+        'tool_call_ended',
+        { toolName: 'read', toolCallId: 'tc1', isError: false },
+        { timestamp: '2026-06-26T10:00:03Z', agentId: 'a1' },
+      ),
+    );
+    state = evolve(
+      state,
+      makeEvent(
+        'turn_ended',
+        {
+          turn: 1,
+          tokens: { input: 10, output: 5 },
+          contentBlocks: [
+            { type: 'thinking', thinking: 'I should read the file first.' },
+            { type: 'text', text: "I'll read file.ts first" },
+          ],
+        },
+        { timestamp: '2026-06-26T10:00:04Z', agentId: 'a1' },
+      ),
+    );
+
+    const log = Object.values(state.sessions)[0]!.log;
+    const types = log.map((e) => e.type);
+    // Desired order: thinking → text → tool_call_start → tool_call_end.
+    expect(types).toEqual(['thinking', 'text', 'tool_call_start', 'tool_call_end']);
+    // And the actual content reads in the intended order.
+    const contents = Object.values(state.sessions)[0]!.log.map((e) => e.content);
+    expect(contents[0]).toBe('I should read the file first.');
+    expect(contents[1]).toBe("I'll read file.ts first");
+  });
+
+  it('keeps content blocks at the tail when a turn has no tool calls', () => {
+    resetSeq();
+    let state = spawnSession();
+    state = evolve(state, makeEvent('turn_started', { turn: 1 }, { timestamp: '2026-06-26T10:00:01Z', agentId: 'a1' }));
+    state = evolve(
+      state,
+      makeEvent(
+        'turn_ended',
+        { turn: 1, tokens: {}, contentBlocks: [{ type: 'text', text: 'final answer' }] },
+        { timestamp: '2026-06-26T10:00:02Z', agentId: 'a1' },
+      ),
+    );
+
+    const log = Object.values(state.sessions)[0]!.log;
+    expect(log.map((e) => e.type)).toEqual(['text']);
+    expect(log[0].content).toBe('final answer');
+  });
+
+  it('correctly orders across multiple turns (each turn blocks before its tools)', () => {
+    resetSeq();
+    let state = spawnSession();
+
+    // Turn 1: think + message + tool
+    state = evolve(state, makeEvent('turn_started', { turn: 1 }, { timestamp: 't1', agentId: 'a1' }));
+    state = evolve(
+      state,
+      makeEvent('tool_call_started', { toolName: 'bash', toolCallId: 'a' }, { timestamp: 't2', agentId: 'a1' }),
+    );
+    state = evolve(
+      state,
+      makeEvent('tool_call_ended', { toolName: 'bash', toolCallId: 'a' }, { timestamp: 't3', agentId: 'a1' }),
+    );
+    state = evolve(
+      state,
+      makeEvent(
+        'turn_ended',
+        { turn: 1, tokens: {}, contentBlocks: [{ type: 'text', text: 'turn1' }] },
+        { timestamp: 't4', agentId: 'a1' },
+      ),
+    );
+
+    // Turn 2: think + message + tool
+    state = evolve(state, makeEvent('turn_started', { turn: 2 }, { timestamp: 't5', agentId: 'a1' }));
+    state = evolve(
+      state,
+      makeEvent('tool_call_started', { toolName: 'read', toolCallId: 'b' }, { timestamp: 't6', agentId: 'a1' }),
+    );
+    state = evolve(
+      state,
+      makeEvent('tool_call_ended', { toolName: 'read', toolCallId: 'b' }, { timestamp: 't7', agentId: 'a1' }),
+    );
+    state = evolve(
+      state,
+      makeEvent(
+        'turn_ended',
+        { turn: 2, tokens: {}, contentBlocks: [{ type: 'text', text: 'turn2' }] },
+        { timestamp: 't8', agentId: 'a1' },
+      ),
+    );
+
+    const log = Object.values(state.sessions)[0]!.log.map((e) => e.content);
+    // Each turn's text precedes its own tool calls; turns stay in order.
+    expect(log).toEqual(['turn1', 'bash', 'bash', 'turn2', 'read', 'read']);
+  });
+
+  it('falls back to backward-scan when no turn_started marker exists', () => {
+    // Session restored mid-turn (snapshot) without a recorded marker: tools
+    // already in the log, then turn_ended arrives. The content blocks should
+    // still land before the trailing tool-call run.
+    resetSeq();
+    let state = spawnSession();
+    state = evolve(
+      state,
+      makeEvent('tool_call_started', { toolName: 'grep', toolCallId: 'g1' }, { timestamp: 't1', agentId: 'a1' }),
+    );
+    state = evolve(
+      state,
+      makeEvent('tool_call_ended', { toolName: 'grep', toolCallId: 'g1' }, { timestamp: 't2', agentId: 'a1' }),
+    );
+    state = evolve(
+      state,
+      makeEvent(
+        'turn_ended',
+        { turn: 1, tokens: {}, contentBlocks: [{ type: 'text', text: 'late text' }] },
+        { timestamp: 't3', agentId: 'a1' },
+      ),
+    );
+
+    const log = Object.values(state.sessions)[0]!.log.map((e) => e.content);
+    expect(log).toEqual(['late text', 'grep', 'grep']);
+  });
+});

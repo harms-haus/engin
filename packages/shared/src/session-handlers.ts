@@ -3,8 +3,8 @@
 // Handlers for session spawning, completion, and turn-level events:
 // session_started, session_completed, turn_started, turn_ended.
 
-import type { EventRecord, SessionEntity, WorkflowProjection } from './event-types.js';
-import { capLog, clone, extractSessionIdentity, resolveSession, sessionKey } from './evolve-utils.js';
+import type { EventRecord, LogEntry, SessionEntity, WorkflowProjection } from './event-types.js';
+import { MAX_SESSION_LOG, clone, extractSessionIdentity, resolveSession, sessionKey } from './evolve-utils.js';
 
 export function handleSessionStarted(state: WorkflowProjection, event: EventRecord): WorkflowProjection {
   const { agentId, taskId, runnerRole, attempt } = extractSessionIdentity(event);
@@ -94,8 +94,21 @@ export function handleSessionFailed(state: WorkflowProjection, event: EventRecor
 }
 
 export function handleTurnStarted(state: WorkflowProjection, event: EventRecord): WorkflowProjection {
-  // No-op — just bump seq
-  return clone(state, { seq: event.seq });
+  // Record the session.log length as a turn boundary marker. The turn's
+  // tool_call events append after this point; turn_ended consumes the marker
+  // to splice the turn's thinking/text content blocks in at this index so
+  // they render BEFORE the tool calls (think → message → tool).
+  const { agentId, taskId } = extractSessionIdentity(event);
+  const resolved = resolveSession(state.sessions, agentId, taskId);
+  if (!resolved) return clone(state, { seq: event.seq });
+  const { key, entity: existing } = resolved;
+  return clone(state, {
+    sessions: {
+      ...state.sessions,
+      [key]: clone(existing, { _turnStartLogIndex: existing.log.length }),
+    },
+    seq: event.seq,
+  });
 }
 
 export function handleTurnEnded(state: WorkflowProjection, event: EventRecord): WorkflowProjection {
@@ -107,19 +120,22 @@ export function handleTurnEnded(state: WorkflowProjection, event: EventRecord): 
   const tokens = event.data.tokens as { input?: number; output?: number } | undefined;
   const blocks = Array.isArray(event.data.contentBlocks) ? (event.data.contentBlocks as Record<string, unknown>[]) : [];
 
-  const newLog = [...existing.log];
+  // Build the turn's content-block entries (thinking + text). toolCall blocks
+  // are intentionally skipped — tools are logged via their own
+  // tool_call_started/ended events.
+  const newEntries: LogEntry[] = [];
   for (const block of blocks) {
     const blockType = String(block.type ?? '');
     if (blockType === 'text') {
-      newLog.push({
-        id: `log-${event.seq}-${newLog.length}`,
+      newEntries.push({
+        id: `log-${event.seq}-${newEntries.length}`,
         timestamp: event.metadata.timestamp,
         type: 'text',
         content: String(block.text ?? ''),
       });
     } else if (blockType === 'thinking') {
-      newLog.push({
-        id: `log-${event.seq}-${newLog.length}`,
+      newEntries.push({
+        id: `log-${event.seq}-${newEntries.length}`,
         timestamp: event.metadata.timestamp,
         type: 'thinking',
         content: String(block.thinking ?? ''),
@@ -127,13 +143,46 @@ export function handleTurnEnded(state: WorkflowProjection, event: EventRecord): 
     }
   }
 
+  // Insert the content blocks at the turn boundary so they precede this
+  // turn's tool calls. turn_started recorded the log length; tool_call events
+  // appended after it, so splicing at that index yields the desired
+  // think → message → tool order instead of tool → think → message.
+  let insertIndex: number;
+  const marker = existing._turnStartLogIndex;
+  if (typeof marker === 'number' && marker >= 0 && marker <= existing.log.length) {
+    insertIndex = marker;
+  } else {
+    // Fallback (no marker — e.g. session restored from a snapshot mid-turn):
+    // insert just before the trailing run of tool_call entries.
+    insertIndex = existing.log.length;
+    for (let i = existing.log.length - 1; i >= 0; i--) {
+      const t = existing.log[i].type;
+      if (t === 'tool_call_start' || t === 'tool_call_end') {
+        insertIndex = i;
+      } else {
+        break;
+      }
+    }
+  }
+
+  const reordered = [...existing.log];
+  if (newEntries.length > 0) {
+    reordered.splice(insertIndex, 0, ...newEntries);
+  }
+  const nextLog = reordered.length > MAX_SESSION_LOG ? reordered.slice(reordered.length - MAX_SESSION_LOG) : reordered;
+
   const inputTokens = existing.inputTokens + (tokens?.input ?? 0);
   const outputTokens = existing.outputTokens + (tokens?.output ?? 0);
 
   return clone(state, {
     sessions: {
       ...state.sessions,
-      [key]: clone(existing, { log: capLog(newLog), inputTokens, outputTokens }),
+      [key]: clone(existing, {
+        log: nextLog,
+        inputTokens,
+        outputTokens,
+        _turnStartLogIndex: undefined,
+      }),
     },
     stats: {
       ...state.stats,

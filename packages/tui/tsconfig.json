@@ -17,8 +17,7 @@
     "baseUrl": ".",
     "paths": {
       "@engin/shared": ["../shared/src/index"],
-      "@engin/shared/*": ["../shared/src/*"],
-      "@harms-haus/ink-overlay": ["../ink-overlay/dist/index.js"]
+      "@engin/shared/*": ["../shared/src/*"]
     }
   },
   "include": ["src"],

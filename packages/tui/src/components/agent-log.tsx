@@ -211,7 +211,7 @@ export function AgentLog({
   const isInputActive = !isCaptured && expanded;
 
   useInput(
-    (input: string, key: Record<string, boolean | undefined>) => {
+    (input: string, key) => {
       if (key.shift && key.upArrow) {
         scrollUp(10);
       } else if (key.shift && key.downArrow) {

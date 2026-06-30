@@ -25,6 +25,7 @@ import type { Instance } from 'ink';
 
 // ─── Imports ─────────────────────────────────────────────────────────────────
 
+import type { EventRecord, EventType } from '@engin/shared';
 import { ClientStore } from '@engin/shared/client-store';
 import { WorkflowTUI } from '../../packages/tui/src/workflow-tui.js';
 
@@ -56,11 +57,11 @@ const ISO_NOW = '2026-06-15T00:00:00.000Z';
 let eventSeq = 0;
 
 function ev(
-  type: string,
+  type: EventType,
   data: Record<string, unknown> = {},
-  meta: Record<string, unknown> = {},
+  meta: Partial<EventRecord['metadata']> = {},
   seqOverride?: number,
-) {
+): EventRecord {
   const s = seqOverride ?? ++eventSeq;
   return { seq: s, type, data, metadata: { timestamp: ISO_NOW, ...meta } };
 }

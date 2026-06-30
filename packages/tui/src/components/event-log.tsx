@@ -13,7 +13,7 @@
  */
 
 import { useInputCaptureState } from '@harms-haus/ink-overlay';
-import { Box, Text, useInput } from 'ink';
+import { Box, Text, useInput, type Key } from 'ink';
 import { useCallback, useEffect, useState } from 'react';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -72,7 +72,7 @@ export function EventLog({ lines, maxLines }: EventLogProps) {
   // End:      jump to the newest line, re-enable autoScroll
 
   const handleInput = useCallback(
-    (input: string, key: Record<string, boolean | undefined>) => {
+    (input: string, key: Key) => {
       const pageSize = Math.max(1, maxLines - 1);
 
       // j/k — vim-style line scrolling. j = toward newer (down), k = toward

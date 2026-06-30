@@ -5,7 +5,7 @@
  * Built on a bare `<Layer>` (not `<Modal>`) because Modal's default
  * `role='dialog'` auto-dismisses on any non-Escape/non-Tab input, which
  * would break arrow-key navigation of the two-option menu. Using a bare
- * `<Layer>` with `capture`, `anchor="center"`, `backdrop="dim"`, and
+ * `<Layer>` with `capture`, `anchor="center"`, `backdrop="none"`, and
  * `z={100}` gives us full input control while still providing the bordered
  * dialog aesthetic.
  *
@@ -111,7 +111,7 @@ export function DetachKillPrompt({ open, runId, onConfirm, onDismiss }: DetachKi
   // ── Render ──────────────────────────────────────────────────────────
 
   return (
-    <Layer anchor="center" capture backdrop="dim" z={100} open={open}>
+    <Layer anchor="center" capture backdrop="none" z={100} open={open}>
       <Box flexDirection="column" borderStyle="round" borderColor="cyan" width={50} padding={1}>
         {/* ── Title row (runId) ──────────────────────────────────── */}
         {runId && (

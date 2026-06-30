@@ -2,6 +2,7 @@ import type { TaskEntity, TaskStatus } from '@engin/shared';
 import { formatElapsed } from '@engin/shared/text-utils';
 import { Box, Text } from 'ink';
 import React, { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useClock } from '../hooks/use-clock.js';
 import { TASK_LIST_MAX_VISIBLE } from '../layout-constants.js';
 import { statusColorMap, statusIconMap } from '../theme.js';
 
@@ -113,19 +114,14 @@ function ensureVisible(index: number, scrollOffset: number, taskCount: number, m
 // ─── TaskElapsed Component ────────────────────────────────────────────
 //
 // Renders just the elapsed-time segment (" - 5s") for a task row.
-// Manages its own internal `now` state via setInterval so the parent
-// TaskList does not re-render on every tick. Only active tasks with
-// `activeStartedAt` trigger the interval; all other statuses render
+// Reads `now` from the shared singleton clock (useClock) so EVERY row's
+// timer advances in the same React commit — no per-instance phase drift
+// where timers visibly tick out of sync. Only active tasks with
+// `activeStartedAt` produce a changing value; all other statuses render
 // a static (frozen) elapsed value.
 
 function TaskElapsed({ task }: { task: TaskEntity }): ReactNode {
-  const [now, setNow] = useState(Date.now());
-
-  useEffect(() => {
-    if (task.status !== 'active' || task.activeStartedAt === undefined) return;
-    const id = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(id);
-  }, [task.status, task.activeStartedAt]);
+  const now = useClock();
 
   if (
     task.startedAt === undefined ||

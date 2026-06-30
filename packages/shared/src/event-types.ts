@@ -96,6 +96,15 @@ export interface SessionEntity {
   completedAt?: string;
   runnerRole: string;
   attempt: number;
+  /**
+   * Transient render-ordering marker: the session.log length recorded when
+   * the current turn started. Consumed by the `turn_ended` handler to splice
+   * that turn's thinking/text content blocks in BEFORE the turn's tool-call
+   * entries (which are appended during the turn, before `turn_ended` fires),
+   * yielding the intended think → message → tool order. Not part of the wire
+   * protocol; derived deterministically during evolve.
+   */
+  _turnStartLogIndex?: number;
 }
 
 // ─── Run Log Cap ────────────────────────────────────────────────────────────
