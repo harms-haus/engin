@@ -93,13 +93,20 @@ packages/
 │   └─ tracking/             EventStore, evolve re-export, store-callbacks, audit-log, persistence
 │      └─ task-status (TaskTracker) — now a thin read-only shim; scheduling lives in pool/task-graph.ts
 │
-├── tui/       @harms-haus/engin-tui  (PRIVATE — pi-tui CLIENT)
-│   Depends on shared + @earendil-works/pi-tui. Must NOT depend on engine.
-│   ├─ client-store          → imported from shared (ClientStore)
-│   ├─ ws-backed-tui.ts      syncs widgets from the ClientStore (replaces createStoreBackedTui)
-│   ├─ workflow-tui.ts       refactored: takes a ClientStore + onDetach/onKill callbacks
-│   ├─ components/           Dashboard, EventLog, PhaseBar, TaskList, AgentLog, QR, detach-kill-prompt
-│   └─ theme.ts, format-*.ts
+├── tui/       @harms-haus/engin-tui  (PRIVATE — Ink/React CLIENT)
+│   Depends on @harms-haus/engin-shared (workspace) + ink + react +
+│   @harms-haus/ink-overlay (linked via tsconfig path alias) + ink-scroll-view + qrcode.
+│   Must NOT depend on engine.
+│   ├─ index.ts              public exports (components, theme, WorkflowTUI, createWsBackedTui, TuiStore)
+│   ├─ workflow-tui.ts       entry: takes a ClientStore + onDetach/onKill callbacks
+│   ├─ ws-backed-tui.ts      wires ClientStore → TuiStore → Ink React tree (replaces createStoreBackedTui)
+│   ├─ tui-store.ts          TuiStore — useSyncExternalStore adapter over the shared ClientStore
+│   ├─ app.tsx               root Ink <App> component
+│   ├─ theme.tsx             Ink theme tokens
+│   ├─ layout-constants.ts   layout sizing constants
+│   ├─ hooks/use-tui-store.ts   React hook binding components to TuiStore
+│   ├─ test-harness.tsx      ink-testing-library harness
+│   └─ components/*.tsx      Dashboard, EventLog, PhaseBar, TaskList, AgentLog, detach-kill-prompt, qr-overlay
 │
 ├── cli/       @harms-haus/engin  (PUBLISHED — the `engin` binary, v0.2.0)
 │   Depends on shared + tui + engine. Spawns the engine daemon; re-exports the public API.
@@ -124,13 +131,13 @@ packages/
 
 ### Dependency rules
 
-| Package  | May import                                                                    |
-| -------- | ----------------------------------------------------------------------------- |
-| `shared` | only itself (and pure type-only zod). No `node:*`, `bun`, `react`, or `pi-*`. |
-| `engine` | `shared` + pi execution packages + node + bun.                                |
-| `tui`    | `shared` + `@earendil-works/pi-tui`. **Must not import `engine`.**            |
-| `cli`    | `shared`, `tui`, `engine` (spawns the daemon; re-exports the public API).     |
-| `web`    | `shared` only.                                                                |
+| Package  | May import                                                                                                           |
+| -------- | -------------------------------------------------------------------------------------------------------------------- |
+| `shared` | only itself (and pure type-only zod). No `node:*`, `bun`, `react`, or `pi-*`.                                        |
+| `engine` | `shared` + pi execution packages + node + bun.                                                                       |
+| `tui`    | `shared` + `ink` + `react` + `@harms-haus/ink-overlay` + `ink-scroll-view` + `qrcode`. **Must not import `engine`.** |
+| `cli`    | `shared`, `tui`, `engine` (spawns the daemon; re-exports the public API).                                            |
+| `web`    | `shared` only.                                                                                                       |
 
 Path aliases (`@engin/shared`, `@engin/shared/*`) resolve to `packages/shared/src`.
 The engine, tui, and cli reference `@harms-haus/engin-engine` / `@harms-haus/engin-tui`
@@ -169,9 +176,11 @@ shared `evolve` reducer.
                                                                                 ▼
                                                                 ┌───────────────────────────┐
                                                                 │ TUI: ClientStore          │
-                                web: zustand workflow-store ◄── │ web: zustand store        │
-                                (applySnapshot/applyEvents,     │ (replays via shared       │
-                                 reconcileSelection, runs list) │  evolve, same follow rules)│
+                                web: zustand workflow-store ◄── │   → TuiStore              │
+                                (applySnapshot/applyEvents,     │     (useSyncExternalStore)│
+                                 reconcileSelection, runs list) │   → Ink React tree        │
+                                                                │ (replays via shared       │
+                                                                │  evolve, same follow rules)│
                                                                 └───────────────────────────┘
 ```
 

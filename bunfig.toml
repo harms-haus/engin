@@ -4,7 +4,14 @@ root = "."
 # The web package's tests are React/jsdom and run under vitest (see
 # packages/web/vitest.config.ts + the root `test` script). Exclude them from
 # `bun test` so they aren't run under bun's runner (which has no DOM globals).
-pathIgnorePatterns = ["web/**", "packages/web/**"]
+pathIgnorePatterns = ["web/**", "packages/web/**", "packages/ink-overlay/**"]
+# packages/ink-overlay is a symlinked external repo (~/Documents/software/ink-overlay) with
+# its own vitest runner; exclude from `bun test` to avoid ~380 spurious toast/overlay/scene
+# timing failures.
+# Ink's render() has shared global state that breaks under bun's default max-concurrency
+# (20). Serial execution avoids "Cannot access 'Yoga' before initialization" and empty
+# lastFrame() failures in TUI tests. See packages/tui/src for Ink-based components.
+maxConcurrency = 1
 # Preload a beforeExit hook that clears `process.exitCode` set by CLI error-path
 # tests (see tests/helpers/reset-exit-code.ts), so `bun test` exits 0 when all
 # tests pass.

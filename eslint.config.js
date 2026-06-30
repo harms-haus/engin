@@ -58,7 +58,7 @@ export default ts.config(
 
   // Custom rule overrides for TypeScript files
   {
-    files: ['**/*.ts'],
+    files: ['**/*.ts', '**/*.tsx'],
     rules: {
       // Disable base no-unused-vars (doesn't understand TS syntax)
       'no-unused-vars': 'off',
@@ -156,7 +156,7 @@ export default ts.config(
 
   // Enforce TUI package boundary — tui depends only on shared.
   {
-    files: ['packages/tui/src/**/*.ts'],
+    files: ['packages/tui/src/**/*.ts', 'packages/tui/src/**/*.tsx'],
     rules: {
       'no-restricted-imports': [
         'error',
@@ -169,6 +169,10 @@ export default ts.config(
             {
               name: '@harms-haus/engin',
               message: 'The tui package depends only on shared; do not import the CLI package.',
+            },
+            {
+              name: '@earendil-works/pi-tui',
+              message: 'The TUI package has migrated to Ink; pi-tui is forbidden.',
             },
           ],
         },

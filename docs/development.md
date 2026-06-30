@@ -103,7 +103,7 @@ engin/
 ├── packages/
 │   ├── shared/         # PURE TS — types, protocol, evolve, EngineClient, ClientStore
 │   ├── engine/         # THE SERVER + ALL EXECUTION (core/, pool/, tracking/, server/)
-│   ├── tui/            # pi-tui CLIENT (WorkflowTUI, widgets, detach/kill prompt)
+│   ├── tui/            # Ink/React CLIENT (WorkflowTUI, dashboard, overlays)
 │   ├── cli/            # THE `engin` BINARY (@harms-haus/engin, published)
 │   └── web/            # REACT CLIENT (zustand store, runs frame, components)
 ├── tests/              # Test files (cli/, core/, pool/, tracking/, server/, shared/, tui/, web/)
