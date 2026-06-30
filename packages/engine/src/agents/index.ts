@@ -33,8 +33,11 @@ export {
   canonicalizePath,
   createWriteSandboxExtension,
   findAllowedDir,
+  findEscapingCdTarget,
   isPathWithin,
   resolveAllowedDirs,
   resolveToolPath,
+  shellWords,
+  splitSimpleCommands,
 } from './pi-coding-agent/write-sandbox.js';
 export type { WriteSandboxOptions } from './pi-coding-agent/write-sandbox.js';
