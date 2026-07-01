@@ -147,8 +147,11 @@ describe('engine barrel — existing exports preserved (regression)', () => {
     expect(indexSource).toContain("export * from './pool/index.js';");
   });
 
-  it('still has the named createStoreCallbacks re-export', () => {
-    expect(indexSource).toContain("export { createStoreCallbacks } from './tracking/store-callbacks.js';");
+  it('still re-exports createStoreCallbacks via the tracking barrel', () => {
+    // createStoreCallbacks flows through the tracking barrel wildcard
+    // (tracking/index.js re-exports it from store-callbacks.js). The functional
+    // export is also verified by the PRESERVED_VALUE_EXPORTS `it.each`.
+    expect(indexSource).toContain("export * from './tracking/index.js';");
   });
 
   it('still re-exports @engin/shared/event-types and @engin/shared/evolve', () => {

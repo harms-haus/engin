@@ -173,7 +173,7 @@ describe('getMainBranch', () => {
   it('returns a Promise resolving to "master" when the default branch is master', async () => {
     const masterRepo = mkdtempSync(join(tmpdir(), 'engin-git-async-master-'));
     try {
-      git(['init', '-q', '-b', 'master', '--force'], masterRepo);
+      git(['init', '-q', '-b', 'master'], masterRepo);
       git(['config', 'user.email', 'engin-test@example.com'], masterRepo);
       git(['config', 'user.name', 'Engin Test'], masterRepo);
       writeFileSync(join(masterRepo, 'README.md'), 'm\n');

@@ -285,11 +285,16 @@ describe('index.ts — Core section re-exports the new modules', () => {
     expect(indexSource).toContain("export * from './core/worktree-manager.js';");
   });
 
-  it('lists the new Core wildcard exports (agent-lifecycle + worktree-fixup + worktree-manager + worktree-final-merge)', () => {
+  it('lists the new Core wildcard exports (agent-lifecycle + error-classifier + network + path-relativizer + redact + renderer-invocation + worktree-final-merge + worktree-fixup + worktree-manager)', () => {
     expect(coreSpecifiers).toContain('agent-lifecycle.js');
+    expect(coreSpecifiers).toContain('error-classifier.js');
+    expect(coreSpecifiers).toContain('network.js');
+    expect(coreSpecifiers).toContain('path-relativizer.js');
+    expect(coreSpecifiers).toContain('redact.js');
+    expect(coreSpecifiers).toContain('renderer-invocation.js');
+    expect(coreSpecifiers).toContain('worktree-final-merge.js');
     expect(coreSpecifiers).toContain('worktree-fixup.js');
     expect(coreSpecifiers).toContain('worktree-manager.js');
-    expect(coreSpecifiers).toContain('worktree-final-merge.js');
   });
 
   it('does not remove or rename any pre-existing Core wildcard export', () => {
@@ -298,12 +303,13 @@ describe('index.ts — Core section re-exports the new modules', () => {
     }
   });
 
-  it('adds exactly four new Core wildcard exports (ORIGINAL_CORE_SPECIFIERS + agent-lifecycle + worktree-fixup + worktree-manager + worktree-final-merge)', () => {
-    // 17 pre-existing core exports + 4 new (agent-lifecycle, worktree-fixup,
-    // worktree-manager, worktree-final-merge) = 21. harness-factory.js and
+  it('adds exactly nine new Core wildcard exports on top of ORIGINAL_CORE_SPECIFIERS', () => {
+    // 17 pre-existing core exports + 9 new (agent-lifecycle, error-classifier,
+    // network, path-relativizer, redact, renderer-invocation, worktree-final-merge,
+    // worktree-fixup, worktree-manager) = 26. harness-factory.js and
     // write-sandbox.js were removed from the barrel (harness-factory deleted,
     // write-sandbox moved), so they are not counted.
-    expect(coreSpecifiers).toHaveLength(ORIGINAL_CORE_SPECIFIERS.length + 4);
+    expect(coreSpecifiers).toHaveLength(ORIGINAL_CORE_SPECIFIERS.length + 9);
   });
 });
 
@@ -321,8 +327,11 @@ describe('index.ts — Pool / Tracking / Server sections unchanged', () => {
     expect(indexSource).toContain("export * from '@engin/shared/evolve';");
   });
 
-  it('still has the named createStoreCallbacks re-export', () => {
-    expect(indexSource).toContain("export { createStoreCallbacks } from './tracking/store-callbacks.js';");
+  it('still re-exports createStoreCallbacks via the tracking barrel', () => {
+    // createStoreCallbacks flows through the tracking barrel wildcard
+    // (tracking/index.js re-exports it from store-callbacks.js). The functional
+    // export is also verified by the PRESERVED_VALUE_EXPORTS `it.each` above.
+    expect(indexSource).toContain("export * from './tracking/index.js';");
   });
 
   it('still wildcard-exports the Server control-server module', () => {
