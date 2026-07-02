@@ -296,17 +296,18 @@ Runners are built by composing factory functions from
 `() => SessionPlanRunner`) that the scheduler invokes once, lazily, when the task
 becomes active:
 
-| Runner              | Purpose                                                             |
-| ------------------- | ------------------------------------------------------------------- |
-| `singleSession`     | Run exactly one session. The basic building block.                  |
-| `linearRunner`      | Run children sequentially; short-circuit on first failure.          |
-| `reviewRunner`      | Execute→review loop with approve/reject feedback (up to N rounds).  |
-| `councilRunner`     | Run workers in parallel, then synthesise their outputs.             |
-| `parallelRunner`    | Run arbitrary child runners in parallel.                            |
-| `mapRunner`         | Fan out over a collection, one session per item.                    |
-| `branchRunner`      | Select one child runner based on task conditions.                   |
-| `coordinatorRunner` | Run a coordinator session, then delegate to children via a factory. |
-| `coalescingRunner`  | Coordinator → children → coordinator loop (dynamic rounds).         |
+| Runner                       | Purpose                                                                  |
+| ---------------------------- | ------------------------------------------------------------------------ |
+| `singleSession`              | Run exactly one session. The basic building block.                       |
+| `linearRunner`               | Run children sequentially; short-circuit on first failure.               |
+| `reviewRunner`               | Execute→review loop with approve/reject feedback (up to N rounds).       |
+| `councilRunner`              | Run workers in parallel, then synthesise their outputs.                  |
+| `parallelRunner`             | Run arbitrary child runners in parallel.                                 |
+| `mapRunner`                  | Fan out over a collection, one session per item.                         |
+| `branchRunner`               | Select one child runner based on task conditions.                        |
+| `coordinatorRunner`          | Run a coordinator session, then delegate to children via a factory.      |
+| `coalescingRunner`           | Coordinator → children → coordinator loop (dynamic rounds).              |
+| `retrospectiveCouncilRunner` | Convener → parallel members → retrospective loop (iterative fix rounds). |
 
 > **`linearRunner` / `parallelRunner` take runner instances, not factories.** They expect
 > `SessionPlanRunner[]`, so you invoke the factory inline: `singleSession(spec)()`,

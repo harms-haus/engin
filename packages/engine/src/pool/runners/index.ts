@@ -15,6 +15,8 @@ export { linearRunner } from './linear-runner.js';
 export { mapRunner } from './map-runner.js';
 export type { MapRunnerOptions } from './map-runner.js';
 export { parallelRunner } from './parallel-runner.js';
+export { retrospectiveCouncilRunner } from './retrospective-council-runner.js';
+export type { RetrospectiveCouncilRunnerOptions } from './retrospective-council-runner.js';
 export { reviewRunner } from './review-runner.js';
 export { singleSession } from './single-session.js';
 

@@ -148,7 +148,7 @@ tests/
 - **`runSession`** (the session primitive) is tested for idempotency (`.complete` sentinel +
   `result.json` checksum), watchdog timeout/escalation, and structured/text/filesystem output modes.
 - **Composable runners** (`singleSession`, `linearRunner`, `reviewRunner`, `coalescingRunner`,
-  `coordinatorRunner`) are tested in isolation against synthetic `SessionPlanContext` values.
+  `coordinatorRunner`, `retrospectiveCouncilRunner`) are tested in isolation against synthetic `SessionPlanContext` values.
 - **Concurrency** tests (e.g. `session-gate`, `workflow-status-atomic-save`) cover the
   tricky timing/serialisation paths.
 

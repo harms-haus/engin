@@ -861,6 +861,98 @@ Worker IDs and the synthesizer id are taken directly from the supplied specs.
 
 ---
 
+#### `retrospectiveCouncilRunner(options)`
+
+```typescript
+import { retrospectiveCouncilRunner } from '../pool/runners/retrospective-council-runner.js';
+
+const factory = retrospectiveCouncilRunner({
+  convener: {
+    id: `${taskId}/convener#1`,
+    profile: 'planner',
+    prompt: 'Identify what needs fixing and produce member assignments.',
+    outputMode: 'structured',
+    schema: convenerSchema,
+    runnerRole: 'convener',
+    attempt: 1,
+  },
+  buildMembers: (convenerResult) => {
+    const plan = convenerResult.data as ConvenerOutput;
+    return plan.tasks.map((t) => ({
+      id: `${taskId}/member[${t.id}]#1`,
+      profile: 'fixer',
+      prompt: t.instructions,
+      outputMode: 'filesystem',
+      runnerRole: 'member',
+      attempt: 1,
+    }));
+  },
+  retrospective: {
+    id: `${taskId}/retro#1`,
+    profile: 'reviewer',
+    prompt: 'Re-read the diff and decide what remains.',
+    outputMode: 'structured',
+    schema: retroSchema,
+    runnerRole: 'retrospective',
+    attempt: 1,
+  },
+  buildRetrospectivePrompt: async (_ctx, round) => {
+    const diff = await getDiff(cwd);
+    return `Round ${round} retrospective.\n\nCurrent diff:\n${diff}`;
+  },
+  interpretRetrospective: (retroResult) => {
+    const verdict = retroResult.data as RetroOutput;
+    return {
+      terminate: verdict.done,
+      nextMembers: verdict.remaining.map((t) => ({
+        id: `${taskId}/member[${t.id}]#1`,
+        profile: 'fixer',
+        prompt: t.instructions,
+        outputMode: 'filesystem',
+        runnerRole: 'member',
+        attempt: 1,
+      })),
+    };
+  },
+  maxRounds: 10,
+  onMaxRoundsExhausted: () => updateAuditStatus('capped'),
+});
+```
+
+Runs a **convener → (members → retrospective)\*** loop — fusing `councilRunner`'s parallel-members
+batch pattern with `reviewRunner`'s loop/terminate pattern. The flow:
+
+1. **Convener** — yields `[convener]` as the first batch and awaits its result.
+2. **Build members** — `buildMembers(convenerResult)` returns the first member batch. When the
+   array is **empty**, the generator returns immediately (pressure-valve — no work to do).
+3. **Loop** (`1..maxRounds`, default `DEFAULT_MAX_ROUNDS` = 3):
+   1. Yield the members batch (all run in **parallel**, like `councilRunner`'s workers).
+   2. Optionally rebuild the retrospective prompt via `buildRetrospectivePrompt(ctx, round)`. The
+      callback **may be async** (e.g. it collects a fresh `git diff`); the runner awaits the
+      result before yielding the spec. When omitted, `retrospective.prompt` is used as-is.
+   3. Yield `[retrospective]` (the prompt from step 3.2).
+   4. `interpretRetrospective(retroResult)` → `{ terminate, nextMembers }`.
+   5. If `terminate` is `true` **or** `nextMembers` is empty → generator returns.
+   6. Otherwise `members = nextMembers` and the loop continues.
+4. **Max rounds exhausted** — calls `onMaxRoundsExhausted` (if provided; errors are swallowed)
+   and **returns silently**. Unlike `reviewRunner` / `coalescingRunner`, this runner does **not**
+   throw: reaching the cap is a normal "still has findings" outcome, not a task failure.
+
+**Idempotency guard:** when `buildRetrospectivePrompt` is provided, each round's retrospective
+session gets a fresh id (`${retrospective.id}-r${round}`) to prevent the session cache from
+replaying a stale earlier-round result. When the callback is absent, the template id is kept
+unchanged (for single-round or caller-managed reuse).
+
+**Member results are not available** to `buildRetrospectivePrompt` — the prompt can only be built
+from `ctx` and `round`. Member outputs (fixers writing code) are accessible only indirectly
+(e.g. via filesystem state / a fresh `git diff`). The retrospective re-reads the resulting diff.
+
+`execute` delegates to `defaultExecute` (gate-free). Generic and schema-agnostic: no council
+schemas, no finding shapes, no profile or git knowledge — all structure is caller-provided via
+the transform callbacks.
+
+---
+
 #### `mapRunner(options)`
 
 ```typescript
@@ -987,17 +1079,18 @@ fails).
 
 ### Decision guide
 
-| Pattern                                    | Runner              |
-| ------------------------------------------ | ------------------- |
-| One session, done                          | `singleSession`     |
-| Sequential pipeline                        | `linearRunner`      |
-| Parallel fan-out (first batches)           | `parallelRunner`    |
-| Multiple workers merged by a synthesizer   | `councilRunner`     |
-| Fan-out over a collection of items         | `mapRunner`         |
-| Execute → review → fix loop                | `reviewRunner`      |
-| Coordinator decides, then children run     | `coordinatorRunner` |
-| Coordinator loop until `done: true`        | `coalescingRunner`  |
-| Conditional routing based on task metadata | `branchRunner`      |
+| Pattern                                                                 | Runner                       |
+| ----------------------------------------------------------------------- | ---------------------------- |
+| One session, done                                                       | `singleSession`              |
+| Sequential pipeline                                                     | `linearRunner`               |
+| Parallel fan-out (first batches)                                        | `parallelRunner`             |
+| Multiple workers merged by a synthesizer                                | `councilRunner`              |
+| Fan-out over a collection of items                                      | `mapRunner`                  |
+| Execute → review → fix loop                                             | `reviewRunner`               |
+| Coordinator decides, then children run                                  | `coordinatorRunner`          |
+| Coordinator loop until `done: true`                                     | `coalescingRunner`           |
+| Conditional routing based on task metadata                              | `branchRunner`               |
+| Convener → parallel members → retrospective loop (iterative fix rounds) | `retrospectiveCouncilRunner` |
 
 ### Composability
 
