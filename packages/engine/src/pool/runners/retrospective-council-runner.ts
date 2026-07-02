@@ -50,21 +50,25 @@ export interface RetrospectiveCouncilRunnerOptions {
 
   /**
    * Optional callback that builds a custom prompt for the retrospective session
-   * each round. Called with (ctx, round). When omitted, `retrospective.prompt`
-   * is used as-is every round.
+   * each round. When omitted, `retrospective.prompt` is used as-is every round.
    *
    * The callback MAY be async (return a `Promise<string>`); the runner awaits
    * the result before yielding the retrospective spec. A sync callback that
    * returns a plain string is also accepted (await on a non-promise value is
    * a no-op), so existing sync callers continue to work unchanged.
    *
-   * NOTE: Member/fixer results from the preceding batch are NOT available to
-   * this callback — the prompt can only be built from {@code ctx} and
-   * {@code round}. Member outputs are only accessible indirectly (e.g. via
-   * filesystem state / a fresh git diff). This is by design: members are
-   * fixers that write code; the retrospective re-reads the resulting diff.
+   * @param ctx - Session plan context.
+   * @param round - The current 1-based round number.
+   * @param memberResults - The `SessionResult[]` from the member batch that
+   *   just settled this round, in spec order. On round 1 these are the members
+   *   built from the convener result; on later rounds they are the `nextMembers`
+   *   from the prior retrospective's `interpretRetrospective` call.
    */
-  buildRetrospectivePrompt?: (ctx: SessionPlanContext, round: number) => string | Promise<string>;
+  buildRetrospectivePrompt?: (
+    ctx: SessionPlanContext,
+    round: number,
+    memberResults: SessionResult[],
+  ) => string | Promise<string>;
 
   /**
    * Interpret the retrospective session result and decide whether to terminate
@@ -131,15 +135,14 @@ export function retrospectiveCouncilRunner(options: RetrospectiveCouncilRunnerOp
         // ── Step 3: Loop rounds ─────────────────────────────────────────
         for (let round = 1; round <= maxRounds; round++) {
           // ── a. Yield members batch (parallel) ─────────────────────────
-          const _memberResults: SessionResult[] = yield members;
+          const memberResults: SessionResult[] = yield members;
 
           // ── b. Build retrospective spec ───────────────────────────────
-          // The callback may be async (e.g. it collects a fresh git diff via
-          // the async getDiff). Await FIRST so the resolved string is what
-          // ends up on the spec, not a `[object Promise]`.
+          // The callback may be async. Await FIRST so the resolved string is
+          // what ends up on the spec, not a `[object Promise]`.
           const retroPrompt =
             options.buildRetrospectivePrompt !== undefined
-              ? await options.buildRetrospectivePrompt(ctx, round)
+              ? await options.buildRetrospectivePrompt(ctx, round, memberResults)
               : options.retrospective.prompt;
 
           // Session-idempotency guard: when buildRetrospectivePrompt is

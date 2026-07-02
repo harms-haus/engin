@@ -896,8 +896,11 @@ const factory = retrospectiveCouncilRunner({
     runnerRole: 'retrospective',
     attempt: 1,
   },
-  buildRetrospectivePrompt: async (_ctx, round) => {
+  buildRetrospectivePrompt: async (_ctx, round, memberResults) => {
     const diff = await getDiff(cwd);
+    // memberResults: the SessionResult[] from this round's member batch (in spec
+    // order) — useful when the retrospective must read member outputs directly
+    // (e.g. scout reports) rather than just the resulting diff.
     return `Round ${round} retrospective.\n\nCurrent diff:\n${diff}`;
   },
   interpretRetrospective: (retroResult) => {
@@ -927,9 +930,12 @@ batch pattern with `reviewRunner`'s loop/terminate pattern. The flow:
    array is **empty**, the generator returns immediately (pressure-valve — no work to do).
 3. **Loop** (`1..maxRounds`, default `DEFAULT_MAX_ROUNDS` = 3):
    1. Yield the members batch (all run in **parallel**, like `councilRunner`'s workers).
-   2. Optionally rebuild the retrospective prompt via `buildRetrospectivePrompt(ctx, round)`. The
-      callback **may be async** (e.g. it collects a fresh `git diff`); the runner awaits the
-      result before yielding the spec. When omitted, `retrospective.prompt` is used as-is.
+   2. Optionally rebuild the retrospective prompt via
+      `buildRetrospectivePrompt(ctx, round, memberResults)`, where `memberResults` is the
+      `SessionResult[]` from the member batch that just settled this round (in spec order).
+      The callback **may be async** (e.g. it collects a fresh `git diff`, or renders the member
+      outputs into the prompt); the runner awaits the result before yielding the spec.
+      When omitted, `retrospective.prompt` is used as-is.
    3. Yield `[retrospective]` (the prompt from step 3.2).
    4. `interpretRetrospective(retroResult)` → `{ terminate, nextMembers }`.
    5. If `terminate` is `true` **or** `nextMembers` is empty → generator returns.
@@ -943,9 +949,11 @@ session gets a fresh id (`${retrospective.id}-r${round}`) to prevent the session
 replaying a stale earlier-round result. When the callback is absent, the template id is kept
 unchanged (for single-round or caller-managed reuse).
 
-**Member results are not available** to `buildRetrospectivePrompt` — the prompt can only be built
-from `ctx` and `round`. Member outputs (fixers writing code) are accessible only indirectly
-(e.g. via filesystem state / a fresh `git diff`). The retrospective re-reads the resulting diff.
+**Member results are available** to `buildRetrospectivePrompt` via its 3rd `memberResults`
+parameter (the `SessionResult[]` from the preceding member batch, in spec order). This lets the
+retrospective read member outputs directly — e.g. a scouting reviewer rendering scout reports
+into its prompt. (For review/fix loops where members are code-writing fixers, the retrospective
+can instead just re-read the resulting `git diff`; `memberResults` is there when you need it.)
 
 `execute` delegates to `defaultExecute` (gate-free). Generic and schema-agnostic: no council
 schemas, no finding shapes, no profile or git knowledge — all structure is caller-provided via

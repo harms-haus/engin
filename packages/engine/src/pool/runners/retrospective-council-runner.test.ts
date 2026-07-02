@@ -653,4 +653,85 @@ describe('retrospectiveCouncilRunner (SessionPlan)', () => {
     expect(received).toHaveLength(1);
     expect(received[0]).toEqual(convenerInput);
   });
+
+  // ── 18. buildRetrospectivePrompt receives the correct member results ──
+
+  it('18. plan: buildRetrospectivePrompt receives the exact memberResults array from the preceding member batch', async () => {
+    const capturedRounds: { round: number; memberResults: SessionResult[] }[] = [];
+
+    const memberA = makeSpec('memberA');
+    const memberB = makeSpec('memberB');
+    const memberC = makeSpec('memberC');
+
+    let interpretCallCount = 0;
+
+    const options: RetrospectiveCouncilRunnerOptions = {
+      convener: makeSpec('convener'),
+      buildMembers: () => [memberA, memberB],
+      retrospective: makeSpec('retro'),
+      buildRetrospectivePrompt: (_ctx, round, memberResults) => {
+        capturedRounds.push({ round, memberResults: [...memberResults] });
+        return `prompt-r${round}`;
+      },
+      interpretRetrospective: () => {
+        interpretCallCount++;
+        if (interpretCallCount === 1) {
+          // Continue with a different member spec for round 2
+          return { terminate: false, nextMembers: [memberC] };
+        }
+        return { terminate: true, nextMembers: [] };
+      },
+      maxRounds: 2,
+    };
+
+    const factory = retrospectiveCouncilRunner(options);
+    const runner = factory();
+    const ctx = makePlanContext();
+    const gen = runner.plan(ctx);
+
+    // ── Convener ──────────────────────────────────────────────────────
+    await gen.next();
+    await gen.next([convenerResult()]);
+
+    // ── Round 1: member batch ─────────────────────────────────────────
+    // Feed distinctive results for memberA and memberB
+    const memberResults1: SessionResult[] = [
+      { mode: 'text', text: 'alice output' },
+      { mode: 'structured', data: { key: 'bob' } },
+    ];
+    // This yields the retrospective batch for round 1; BEFORE yielding,
+    // buildRetrospectivePrompt fires with memberResults1
+    const retro1 = await gen.next(memberResults1);
+    expect(retro1.done).toBe(false);
+    expect((retro1.value as SessionSpec[])[0].prompt).toBe('prompt-r1');
+
+    // ── Round 2: interpretRetrospective says continue with [memberC] ──
+    await gen.next([retroResult({ terminate: false })]);
+
+    // ── Round 2: member batch (single memberC) ────────────────────────
+    const memberResults2: SessionResult[] = [{ mode: 'text', text: 'charlie output' }];
+    const retro2 = await gen.next(memberResults2);
+    expect(retro2.done).toBe(false);
+    expect((retro2.value as SessionSpec[])[0].prompt).toBe('prompt-r2');
+
+    // ── Terminate ─────────────────────────────────────────────────────
+    await gen.next([retroResult({ terminate: true })]);
+
+    // ── Assert captured memberResults ─────────────────────────────────
+    expect(capturedRounds).toHaveLength(2);
+
+    // Round 1: memberResults must be exactly memberResults1
+    expect(capturedRounds[0].round).toBe(1);
+    expect(capturedRounds[0].memberResults).toHaveLength(2);
+    expect(capturedRounds[0].memberResults[0]).toEqual(memberResults1[0]);
+    expect(capturedRounds[0].memberResults[1]).toEqual(memberResults1[1]);
+    // Deep equality of the full array
+    expect(capturedRounds[0].memberResults).toEqual(memberResults1);
+
+    // Round 2: memberResults must be exactly memberResults2
+    expect(capturedRounds[1].round).toBe(2);
+    expect(capturedRounds[1].memberResults).toHaveLength(1);
+    expect(capturedRounds[1].memberResults[0]).toEqual(memberResults2[0]);
+    expect(capturedRounds[1].memberResults).toEqual(memberResults2);
+  });
 });
