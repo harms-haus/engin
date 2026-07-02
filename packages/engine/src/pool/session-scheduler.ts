@@ -910,7 +910,19 @@ export class SessionScheduler {
         // sessions, leak the still-running session, poison taskErrors, and cause
         // approved tasks to be marked failed. A genuine freeze surfaces as a
         // thrown WatchdogTimeoutError from runner.execute() — handled below.
-        result = await runner.execute(executeCtx, spec);
+        //
+        // Per-spec agent identity: parallel members of ONE task (e.g. a
+        // retrospective-council runner's scout/fixer batches) share a task-level
+        // agentId (`scheduler-${taskId}`). Since every event path — session
+        // identity keys AND turn/tool log routing — keys off agentId, shared
+        // agentIds collapse parallel sessions into a single TUI entity and
+        // misroute their logs. Qualifying with spec.id gives each parallel
+        // session a unique identity WITHOUT changing the task-level agentId
+        // used by onTaskStart (dashboard groups sessions by taskId, not
+        // agentId). Resume/idempotency-safe: deterministic from spec.id, and
+        // session FILES are keyed on spec.id (not agentId), so persistence is
+        // unaffected.
+        result = await runner.execute({ ...executeCtx, agentId: `${executeCtx.agentId}/${spec.id}` }, spec);
       } catch (err) {
         executeError = safeErrorMessage(err);
         const errs = this.taskErrors.get(taskId) ?? [];

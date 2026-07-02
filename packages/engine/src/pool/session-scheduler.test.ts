@@ -1685,6 +1685,54 @@ describe('SessionScheduler', () => {
     expect(synthStart).toBeGreaterThan(w2End);
   });
 
+  // ── 24b. Parallel members of one task get DISTINCT per-spec agentIds ──────
+  //
+  // Regression: a retrospective-council runner yields multiple parallel
+  // members (e.g. scouts/fixers) within ONE task. They used to share the
+  // task-level agentId (`scheduler-${taskId}`), which collapsed them into a
+  // single TUI session entity and misrouted turn/tool logs (every event path
+  // keys off agentId). The scheduler now qualifies the execute context's
+  // agentId with `/${spec.id}` so each parallel session is uniquely
+  // identifiable, while the task-level agentId (onTaskStart) is unchanged.
+  it('24b. parallel members of one task receive distinct per-spec agentIds', async () => {
+    const profiles = new Map([['default', makeProfile('default')]]);
+    const gate = new SessionGate({ total: 4, perModel: { 'p:m': 4 } });
+    // Capture the agentId each execute() call receives.
+    const executeAgentIds: Record<string, string> = {};
+
+    const { scheduler, graph } = buildFixture({
+      tasks: [
+        {
+          ...makeTask('Council'),
+          runnerFactory: (): SessionPlanRunner => ({
+            async *plan() {
+              yield [makeSpec('m1', 'default'), makeSpec('m2', 'default'), makeSpec('m3', 'default')];
+              return undefined;
+            },
+            async execute(ctx: SessionPlanContext, spec: SessionSpec): Promise<SessionResult> {
+              executeAgentIds[spec.id] = ctx.agentId;
+              return { mode: 'text', text: `result-${spec.id}` } as SessionResult;
+            },
+          }),
+        },
+      ],
+      profiles,
+      gate,
+    });
+
+    const result = await scheduler.run();
+
+    expect(result.completedTasks).toBe(1);
+    expect(graph.getTask('Council')?.status).toBe('complete');
+
+    // Each member's execute context carried a UNIQUE agentId incorporating spec.id.
+    const ids = Object.values(executeAgentIds);
+    expect(new Set(ids).size).toBe(3); // all distinct
+    for (const [specId, agentId] of Object.entries(executeAgentIds)) {
+      expect(agentId).toBe(`scheduler-Council/${specId}`);
+    }
+  });
+
   // ── 25. Coordinator dynamic fan-out based on results ──────────────────
   //
   // A coordinator runner whose batch2 contents depend on batch1's results.
